@@ -113,7 +113,10 @@ has no contract import or handwritten Command codec.
 
 `getState`, `readAfter`, `readBefore`, and `watch` take Session, Run, and exact tool
 invocation IDs. Existing records validate all three associations. Absent capture
-returns `state: absent`, distinct from an admitted empty command. Chunk positions
+returns `state: absent`, distinct from an admitted empty command. One bounded SQL
+snapshot selects the exact Run/invocation or a foreign candidate, so concurrent
+admission cannot turn an earlier empty lookup into a false association mismatch.
+Chunk positions
 are stable one-based ordinals in observed combined pipe-arrival order, not byte
 offsets or a stronger cross-pipe ordering guarantee. Cursors are exclusive:
 `readAfter(..., 0, ...)` starts at the beginning; `readBefore(..., null, ...)`
@@ -148,6 +151,12 @@ Known setup failure prevents launch. Append failure stops consumption and cancel
 the producer through its existing bounded path. The tool returns infrastructure
 failure with uncertain effects once execution was admitted, preserving known
 termination/exit facts. A failed seal does not invent another exit code. Failure
+diagnostics prefer typed completion as a whole, including its null timed-out exit
+code. Untyped optional facts are accepted only as `exited` plus an integer code or
+`timedOut` plus null. Invalid pairs are omitted, not cast, reinterpreted, or copied
+into structured diagnostics; the original error remains the failure cause. The
+same plugin-local validator protects failure writes and stored-header reads.
+Failure
 marking is best-effort and conditional on the last acknowledged extent: a lost
 append acknowledgement is not blindly retried or overwritten. If the marker
 cannot commit, live state reports failure; without a committed seal the stored row

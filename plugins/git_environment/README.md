@@ -139,18 +139,27 @@ controller queue. Supervisor-local pending and message budgets can be reduced
 for focused overflow/drain tests; they are not Environment request settings.
 
 Completion requires both pipe EOFs and delivery of all admitted text. After
-process-group cleanup, a one-second idle drain deadline refreshes on pipe or
-delivery progress, with a ten-second hard maximum. Active slow consumption can
-finish after the child exits, but even progressing delivery fails when the hard
-maximum is reached. That cap prevents an escaped descendant continually writing
-an inherited pipe from extending drain indefinitely; it is not unlimited lossless
-delivery. A stalled observer also makes output explicitly incomplete.
+process-group cleanup, upstream liveness has a one-second idle budget and a
+ten-second cumulative hard budget. Both clocks advance only while at least one
+unfinished real pipe subscription is unpaused. Pausing for downstream credit or
+to split an admitted string suspends both clocks without resetting their remaining
+budgets. A pipe read or EOF refreshes only the idle budget; delivery does not
+refresh either budget. Both EOFs stop these clocks, not the remaining delivery.
+Consequently, finite buffered output can drain beyond either former wall-clock
+interval, and a temporary downstream pause does not discard admitted text. A
+genuinely unfinished escaped pipe holder still fails after one idle or ten total
+readable seconds, including a writer that keeps making progress. These are not
+wall-clock limits on an observer that indefinitely withholds credit: its bounded
+queue remains owned until demand resumes or execution is interrupted.
 `process_output_overflow`, `process_output_failed`, and
 `process_output_incomplete` are declared `EnvironmentFailure` codes, not successful
 completed events. Their details retain `outputIncomplete: true`, known
 `termination`/`exitCode`, and per-pipe `stdoutTruncated`/`stderrTruncated` evidence.
-Cancellation, timeout, and provider shutdown do not wait for output credit to
-terminate the process group and release pipe subscriptions. A paused observer sees
+Cancellation and provider shutdown release output independently of credit. The
+execution timeout runs on wall time while the leader is alive; if it expires with
+blocked delivery (or delivery pauses after timeout), output fails explicitly and
+pipe cleanup does not wait for credit. Normal leader exit stops that execution
+timer, not the upstream drain budgets. A paused observer sees
 the bounded queued failure only when it resumes; cleanup does not depend on that.
 
 Foreground execution uses the trusted system `setsid` supplied by util-linux.

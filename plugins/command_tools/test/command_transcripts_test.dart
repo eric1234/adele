@@ -74,6 +74,69 @@ void main() {
     },
   );
 
+  for (final subscribeFirst in [false, true]) {
+    test(
+      '${subscribeFirst ? 'watch' : 'getState'} absent snapshot racing admission never rejects its own association',
+      () async {
+        final queried = Completer<void>();
+        final release = Completer<void>();
+        var gated = false;
+        storage.afterQuery = (sql, rows) async {
+          if (!gated && sql.contains('SELECT * FROM adele_command_captures')) {
+            gated = true;
+            expect(rows, isEmpty);
+            queried.complete();
+            await release.future;
+          }
+        };
+        StreamIterator<CommandCaptureState>? observer;
+        if (subscribeFirst) {
+          observer = StreamIterator(
+            store.watch('session', 'run', 'invocation'),
+          );
+        }
+        final initial = observer == null
+            ? _state(store)
+            : observer.moveNext().then((hasState) {
+                expect(hasState, isTrue);
+                return observer!.current;
+              });
+        await queried.future.timeout(const Duration(seconds: 2));
+        final writer = await _begin(store);
+        release.complete();
+        final state = await initial.timeout(const Duration(seconds: 2));
+        expect(state.state, isIn(['absent', 'capturing']));
+        expect(
+          (state.sessionId, state.runId, state.toolInvocationId),
+          ('session', 'run', 'invocation'),
+        );
+        observer ??= StreamIterator(
+          store.watch('session', 'run', 'invocation'),
+        );
+        final watching = observer;
+        addTearDown(watching.cancel);
+        if (!subscribeFirst) expect(await watching.moveNext(), isTrue);
+        await writer.append(_output('after admission'));
+        while (watching.current.highWater < 1) {
+          expect(
+            await watching.moveNext().timeout(const Duration(seconds: 2)),
+            isTrue,
+          );
+        }
+        expect((await _after(store)).chunks.single.text, 'after admission');
+        await writer.seal(_completed());
+        while (watching.current.state != 'complete') {
+          expect(
+            await watching.moveNext().timeout(const Duration(seconds: 2)),
+            isTrue,
+          );
+        }
+        expect(watching.current.highWater, 1);
+        expect(storage.transactionKinds, ['setup', 'append', 'complete']);
+      },
+    );
+  }
+
   test(
     '12 Mi UTF16 survives many bounded writes with no retained pending chunks',
     () async {
@@ -690,6 +753,23 @@ void main() {
     ('capturing failure', "failure='unexpected terminal field'"),
     ('failed without failure', "state='failed'"),
     ('failed with empty failure', "state='failed',failure=''"),
+    (
+      'unknown termination',
+      "state='failed',failure='known',termination='cancelled',exit_code=23",
+    ),
+    (
+      'exit without code',
+      "state='failed',failure='known',termination='exited'",
+    ),
+    (
+      'timeout with code',
+      "state='failed',failure='known',termination='timedOut',exit_code=23",
+    ),
+    ('code without termination', "state='failed',failure='known',exit_code=23"),
+    (
+      'noninteger code',
+      "state='failed',failure='known',termination='exited',exit_code='invalid'",
+    ),
   ]) {
     test('rejects stored header with ${invalid.$1}', () async {
       final writer = await _begin(store);
@@ -781,6 +861,26 @@ void main() {
       expect(fresh.uncertainCaptureCount, 0);
     },
   );
+
+  test('failure writer omits unsupported optional outcome pairs', () async {
+    final writer = await _begin(store);
+    await writer.append(_output('prefix'));
+    await writer.fail(
+      'primary failure',
+      termination: 'cancelled',
+      exitCode: 23,
+    );
+    expect(store.activeCaptureCount, 0);
+    expect(store.uncertainCaptureCount, 0);
+    final fresh = CommandTranscriptStore(storage);
+    addTearDown(fresh.close);
+    final state = await _state(fresh);
+    expect(
+      (state.state, state.failure, state.termination, state.exitCode),
+      ('failed', 'primary failure', null, null),
+    );
+    expect((await _after(fresh)).chunks.single.text, 'prefix');
+  });
 
   for (final lostAck in [false, true]) {
     test(

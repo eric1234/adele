@@ -51,6 +51,7 @@ final class GitForegroundProcessSupervisor {
   GitForegroundProcessSupervisor({
     this.maximumPendingOutputCharacters = _maximumPendingOutputCharacters,
     this.maximumEventCharacters = environmentProcessTextLimit,
+    this.drainClock,
   }) {
     if (maximumPendingOutputCharacters < 1 ||
         maximumPendingOutputCharacters > _maximumPendingOutputCharacters) {
@@ -64,10 +65,17 @@ final class GitForegroundProcessSupervisor {
 
   final int maximumPendingOutputCharacters;
   final int maximumEventCharacters;
+  final GitForegroundProcessDrainClock? drainClock;
   final Set<_ForegroundProcessExecution> _active =
       <_ForegroundProcessExecution>{};
   bool _closing = false;
   Future<void>? _closeFuture;
+
+  /// Full decoded Strings retained across active executions, including prefixes.
+  int get pendingOutputCharacters => _active.fold(
+    0,
+    (total, execution) => total + execution._pendingCharacters,
+  );
 
   Stream<EnvironmentProcessEvent> run({
     required EnvironmentId environmentId,
@@ -81,6 +89,7 @@ final class GitForegroundProcessSupervisor {
       request: request,
       maximumPendingOutputCharacters: maximumPendingOutputCharacters,
       maximumEventCharacters: maximumEventCharacters,
+      drainClock: drainClock ?? GitForegroundProcessDrainClock(),
       canStart: () => !_closing,
       onStarted: () => _active.add(execution),
       onFinished: () => _active.remove(execution),
@@ -101,6 +110,16 @@ final class GitForegroundProcessSupervisor {
           ),
     );
   }
+}
+
+/// Supervisor-local monotonic clock seam; not an Environment request setting.
+class GitForegroundProcessDrainClock {
+  final Stopwatch _watch = Stopwatch()..start();
+
+  Duration get elapsed => _watch.elapsed;
+
+  Timer schedule(Duration delay, void Function() callback) =>
+      Timer(delay, callback);
 }
 
 final class _LinuxEffectiveAccess {
@@ -149,6 +168,7 @@ final class _ForegroundProcessExecution {
     required this.request,
     required this.maximumPendingOutputCharacters,
     required this.maximumEventCharacters,
+    required this.drainClock,
     required bool Function() canStart,
     required void Function() onStarted,
     required void Function() onFinished,
@@ -172,6 +192,7 @@ final class _ForegroundProcessExecution {
   final EnvironmentForegroundProcessRequest request;
   final int maximumPendingOutputCharacters;
   final int maximumEventCharacters;
+  final GitForegroundProcessDrainClock drainClock;
   final bool Function() _canStart;
   final void Function() _onStarted;
   final void Function() _onFinished;
@@ -190,7 +211,11 @@ final class _ForegroundProcessExecution {
   Future<int>? _exitCode;
   Timer? _timeout;
   Timer? _outputPump;
-  Timer? _drainIdleTimer;
+  Timer? _drainTimer;
+  Duration? _drainActiveSince;
+  Duration _drainIdleRemaining = _processPipeCloseGrace;
+  Duration _drainHardRemaining = _processMaximumDrain;
+  bool _draining = false;
   Future<void>? _outputCancellation;
   Future<void>? _terminationFuture;
   bool _cancelled = false;
@@ -281,6 +306,9 @@ final class _ForegroundProcessExecution {
       _timeout = Timer(Duration(seconds: request.timeoutSeconds), () {
         if (_cancelled || _producerClosing) return;
         _timedOut = true;
+        if (_controller.isPaused && !_outputDelivered.isCompleted) {
+          _failOutput('process_output_incomplete');
+        }
         unawaited(_terminateProcessGroup());
       });
       if (_cancelled || !_canStart()) {
@@ -395,6 +423,7 @@ final class _ForegroundProcessExecution {
     // One admitted OS read can span several transport messages. Hold its
     // remainder here, not in the controller's otherwise unbounded paused queue.
     _pauseOutputSubscriptions();
+    if (_cancelled || _outputFailure != null) return;
     if (text.length > maximumPendingOutputCharacters - _pendingCharacters) {
       _failOutput('process_output_overflow');
       return;
@@ -410,6 +439,10 @@ final class _ForegroundProcessExecution {
     for (final subscription in [_stdoutSubscription, _stderrSubscription]) {
       if (subscription != null && !subscription.isPaused) subscription.pause();
     }
+    if (_timedOut && _controller.isPaused && !_outputDelivered.isCompleted) {
+      _failOutput('process_output_incomplete');
+    }
+    _updateDrainDeadline();
   }
 
   void _scheduleOutput() {
@@ -455,7 +488,6 @@ final class _ForegroundProcessExecution {
         ),
       );
       if (_cancelled || _producerClosing || _outputFailure != null) return;
-      _noteOutputProgress();
     }
     if (_pendingOutput.isEmpty && !_controller.isPaused) {
       // Give the other pipe first opportunity after an admitted read. A busy
@@ -469,6 +501,7 @@ final class _ForegroundProcessExecution {
           subscription.resume();
         }
       }
+      _updateDrainDeadline();
     }
     if (_pendingOutput.isNotEmpty ||
         (_stdoutDone.isCompleted && _stderrDone.isCompleted)) {
@@ -524,30 +557,56 @@ final class _ForegroundProcessExecution {
 
   Future<void> _settleOutputSubscriptions() async {
     if (_outputDelivered.isCompleted) return;
-    // Credit-controlled delivery may take longer than an idle pipe grace even
-    // after the child has exited. Refresh on progress, but also bound a noisy
-    // escaped descendant that keeps an inherited pipe open indefinitely.
-    _drainIdleTimer = Timer(_processPipeCloseGrace, () {
-      _failOutput('process_output_incomplete');
-    });
-    final hardDeadline = Timer(_processMaximumDrain, () {
-      _failOutput('process_output_incomplete');
-    });
+    _draining = true;
+    _updateDrainDeadline();
     try {
       await _outputDelivered.future;
     } finally {
-      _drainIdleTimer?.cancel();
-      _drainIdleTimer = null;
-      hardDeadline.cancel();
+      _draining = false;
+      _drainTimer?.cancel();
+      _drainTimer = null;
     }
   }
 
-  void _noteOutputProgress() {
-    if (_drainIdleTimer == null) return;
-    _drainIdleTimer!.cancel();
-    _drainIdleTimer = Timer(_processPipeCloseGrace, () {
+  void _noteOutputProgress() => _updateDrainDeadline(pipeProgress: true);
+
+  void _updateDrainDeadline({bool pipeProgress = false}) {
+    if (!_draining) return;
+    final Duration now = drainClock.elapsed;
+    if (_drainActiveSince case final Duration since) {
+      final Duration elapsed = now - since;
+      _drainIdleRemaining -= elapsed;
+      _drainHardRemaining -= elapsed;
+      _drainActiveSince = null;
+    }
+    _drainTimer?.cancel();
+    _drainTimer = null;
+    if (pipeProgress) _drainIdleRemaining = _processPipeCloseGrace;
+    if (_cancelled ||
+        _outputFailure != null ||
+        (_stdoutDone.isCompleted && _stderrDone.isCompleted)) {
+      return;
+    }
+    if (_drainIdleRemaining <= Duration.zero ||
+        _drainHardRemaining <= Duration.zero) {
       _failOutput('process_output_incomplete');
-    });
+      return;
+    }
+    // These budgets measure upstream liveness, not downstream delivery. Actual
+    // reads are paused while credit or an admitted String's remainder is pending.
+    // Keep the remaining hard budget across pauses so an escaped writer cannot
+    // reset it with each read. EOF ends both clocks, but not queued delivery.
+    final bool reading =
+        (!_stdoutDone.isCompleted && _stdoutSubscription?.isPaused == false) ||
+        (!_stderrDone.isCompleted && _stderrSubscription?.isPaused == false);
+    if (!reading) return;
+    _drainActiveSince = now;
+    _drainTimer = drainClock.schedule(
+      _drainIdleRemaining < _drainHardRemaining
+          ? _drainIdleRemaining
+          : _drainHardRemaining,
+      _updateDrainDeadline,
+    );
   }
 
   Future<void> _cancelOutputSubscriptions() {
@@ -556,8 +615,8 @@ final class _ForegroundProcessExecution {
       return Future<void>.value();
     }
     return _outputCancellation ??= () async {
-      _drainIdleTimer?.cancel();
-      _drainIdleTimer = null;
+      _drainTimer?.cancel();
+      _drainTimer = null;
       _outputPump?.cancel();
       _outputPump = null;
       _pendingOutput.clear();

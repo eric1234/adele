@@ -7,6 +7,8 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 
+import 'process_outcome.dart';
+
 /// Plugin-owned SQL and observation. No output history is retained in RAM.
 final class CommandTranscriptStore implements CommandOutputService {
   CommandTranscriptStore(this.storage);
@@ -117,27 +119,22 @@ final class CommandTranscriptStore implements CommandOutputService {
     // The query may return an earlier committed snapshot after its writer has
     // sealed and detached. Do not reinterpret that snapshot as interrupted.
     final writerWasActive = _writers.containsKey(key);
+    // Exact association or one foreign candidate, from the same SQL snapshot.
+    // Both branches use the (invocation_id, run_id) primary-key index; the
+    // fallback cannot mistake admission after an empty exact read for foreign.
     final rows = await storage.queryForSession(
       sessionId,
-      'SELECT * FROM adele_command_captures WHERE invocation_id=:id AND run_id=:run LIMIT 1',
+      '''SELECT * FROM adele_command_captures WHERE invocation_id=:id AND run_id=:run
+         UNION ALL
+         SELECT * FROM adele_command_captures WHERE invocation_id=:id
+           AND NOT EXISTS (SELECT 1 FROM adele_command_captures
+             WHERE invocation_id=:id AND run_id=:run)
+         LIMIT 1''',
       {':id': toolInvocationId, ':run': runId},
       _access,
     );
     _requireOpen();
     if (rows.isEmpty) {
-      final other = await storage.queryForSession(
-        sessionId,
-        'SELECT run_id FROM adele_command_captures WHERE invocation_id=:id LIMIT 1',
-        {':id': toolInvocationId},
-        _access,
-      );
-      _requireOpen();
-      if (other.isNotEmpty) {
-        throw _failure(
-          'association_mismatch',
-          'The command belongs to another Run.',
-        );
-      }
       return CommandCaptureState(
         sessionId: sessionId,
         runId: runId,
@@ -202,9 +199,8 @@ final class CommandTranscriptStore implements CommandOutputService {
                   .any(
                     (part) => part.isEmpty || part == '.' || part == '..',
                   )) ||
-          (row['termination'] != null &&
-              !['exited', 'timedOut'].contains(row['termination'])) ||
-          (row['exit_code'] != null && row['exit_code'] is! int) ||
+          parseCommandProcessOutcome(row['termination'], row['exit_code']) ==
+              null ||
           (row['failure'] != null && row['failure'] is! String) ||
           (storedState == 'complete' &&
               (row['termination'] == null || row['failure'] != null)) ||
@@ -214,9 +210,7 @@ final class CommandTranscriptStore implements CommandOutputService {
                   row['failure'] != null)) ||
           (storedState == 'failed' &&
               (row['failure'] is! String ||
-                  (row['failure']! as String).isEmpty)) ||
-          (row['termination'] == 'exited' && row['exit_code'] == null) ||
-          (row['termination'] != 'exited' && row['exit_code'] != null)) {
+                  (row['failure']! as String).isEmpty))) {
         throw const FormatException(
           'Invalid stored capture outcome or extent.',
         );
@@ -558,6 +552,7 @@ final class CommandCaptureWriter {
     int? exitCode,
   }) async {
     if (_finished) return;
+    final outcome = parseCommandProcessOutcome(termination, exitCode);
     _finished = true;
     final bounded = message.length <= 1024
         ? message
@@ -565,15 +560,15 @@ final class CommandCaptureWriter {
     if (!_store._closed) {
       _store._failures[_key] = (
         message: bounded,
-        termination: termination,
-        exitCode: exitCode,
+        termination: outcome?.termination,
+        exitCode: outcome?.exitCode,
       );
     }
     try {
       _store._requireOpen();
       // One best-effort marker, conditional on our last acknowledged extent.
       // An uncertain committed append cannot be overwritten or retried here.
-      await _finish('failed', termination, exitCode, bounded);
+      await _finish('failed', outcome?.termination, outcome?.exitCode, bounded);
       _store._failures.remove(_key);
     } on Object {
       // Live failure remains visible; reopened capturing rows are interrupted.

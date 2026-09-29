@@ -770,6 +770,152 @@ void main() {
       storage.close();
     });
 
+    Future<void> checkFailureFacts({
+      required Object? termination,
+      required Object? exitCode,
+      required (String?, int?) expected,
+      EnvironmentProcessEvent? completion,
+      bool outputIncomplete = true,
+    }) async {
+      final failure = EnvironmentFailure(
+        code: 'original_provider_failure',
+        message: 'Original provider failure.',
+        details: {
+          'outputIncomplete': outputIncomplete,
+          'termination': termination,
+          'exitCode': exitCode,
+        },
+      );
+      Stream<EnvironmentProcessEvent> events() async* {
+        yield _output(
+          EnvironmentProcessOutputStream.stdout,
+          'committed prefix',
+        );
+        if (completion != null) yield completion;
+        throw failure;
+      }
+
+      final process = _ProcessFacet(events: events);
+      final tool = await _tool(process, transcripts: transcripts);
+      final result = await tool.executable
+          .execute(
+            await _canonical(tool, {'program': 'fixture'}),
+            _executionContext(),
+          )
+          .toList()
+          .timeout(const Duration(seconds: 2));
+      expect(result, hasLength(1));
+      final outcome = (result.single as ToolExecutionTerminal).outcome;
+      expect(outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(outcome.effectCertainty, EffectCertainty.uncertain);
+      expect(
+        outcome.failureKind,
+        outputIncomplete
+            ? ToolFailureKind.infrastructure
+            : ToolFailureKind.domain,
+      );
+      expect(outcome.hostData['code'], 'original_provider_failure');
+      expect(outcome.hostDiagnostic, contains('original_provider_failure'));
+      expect(outcome.cause, same(failure));
+      expect(outcome.hostData['details'], {
+        'outputIncomplete': outputIncomplete,
+      });
+      expect(outcome.hostData['stdout'], 'committed prefix');
+      expect((
+        outcome.hostData['termination'],
+        outcome.hostData['exitCode'],
+      ), expected);
+      expect(process.executions, 1);
+      expect(transcripts.activeCaptureCount, 0);
+      expect(transcripts.uncertainCaptureCount, 0);
+      expect(storage.transactionKinds, ['setup', 'append', 'failed']);
+
+      final fresh = CommandTranscriptStore(storage);
+      addTearDown(fresh.close);
+      for (final reader in [transcripts, fresh]) {
+        final state = await reader.getState(
+          'session-command',
+          'run-command',
+          'tool-command',
+        );
+        expect(state.state, 'failed');
+        expect(state.highWater, 1);
+        expect((state.termination, state.exitCode), expected);
+        final page = await reader.readAfter(
+          'session-command',
+          'run-command',
+          'tool-command',
+          0,
+          16,
+          65536,
+        );
+        expect(page.chunks.single.text, 'committed prefix');
+        final watched = await reader
+            .watch('session-command', 'run-command', 'tool-command')
+            .first
+            .timeout(const Duration(seconds: 2));
+        expect((watched.state, watched.highWater), ('failed', 1));
+        expect((watched.termination, watched.exitCode), expected);
+      }
+    }
+
+    for (final fixture in <(String, Object?, Object?, (String?, int?))>[
+      ('non-string termination', 7, 23, (null, null)),
+      ('unstructured termination', Object(), 23, (null, null)),
+      ('non-integer exitCode', 'exited', '23', (null, null)),
+      ('floating-point exitCode', 'exited', 23.0, (null, null)),
+      ('unstructured exitCode', 'exited', Object(), (null, null)),
+      ('unknown termination', 'cancelled', 23, (null, null)),
+      ('exited without exitCode', 'exited', null, (null, null)),
+      ('timedOut with exitCode', 'timedOut', 0, (null, null)),
+      ('exitCode without termination', null, 23, (null, null)),
+      ('absent outcome', null, null, (null, null)),
+      ('valid exited zero', 'exited', 0, ('exited', 0)),
+      ('valid exited nonzero', 'exited', 23, ('exited', 23)),
+      ('valid timedOut', 'timedOut', null, ('timedOut', null)),
+    ]) {
+      test(
+        'provider outcome facts: ${fixture.$1} keep failed capture readable',
+        () => checkFailureFacts(
+          termination: fixture.$2,
+          exitCode: fixture.$3,
+          expected: fixture.$4,
+        ),
+      );
+    }
+
+    test(
+      'malformed optional facts preserve the original domain failure',
+      () => checkFailureFacts(
+        termination: false,
+        exitCode: 'invalid',
+        expected: (null, null),
+        outputIncomplete: false,
+      ),
+    );
+
+    for (final termination in EnvironmentProcessTermination.values) {
+      for (final malformedDetails in [false, true]) {
+        test(
+          'typed ${termination.name} outcome takes precedence over ${malformedDetails ? 'malformed' : 'conflicting'} diagnostics',
+          () => checkFailureFacts(
+            termination: malformedDetails ? 7 : 'exited',
+            exitCode: malformedDetails ? 'wrong' : 99,
+            completion: _completed(
+              termination: termination,
+              exitCode: termination == EnvironmentProcessTermination.exited
+                  ? 23
+                  : null,
+            ),
+            expected: (
+              termination.name,
+              termination == EnvironmentProcessTermination.exited ? 23 : null,
+            ),
+          ),
+        );
+      }
+    }
+
     test('missing storage rejects execution before any process call', () async {
       final process = _ProcessFacet();
       final executable = commandToolRegistration(process).executable;

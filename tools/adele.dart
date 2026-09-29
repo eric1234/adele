@@ -266,6 +266,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'app',
     executable: 'flutter',
     arguments: <String>['test'],
+    ciTestConcurrency: 1,
     linuxDesktopDeps: true,
   ),
 ];

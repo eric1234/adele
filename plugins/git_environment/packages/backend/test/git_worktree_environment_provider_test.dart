@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -3165,17 +3166,20 @@ void main() {
   );
 
   test(
-    'active slow drain continues beyond the idle grace after leader exit',
+    'finite admitted backlog drains beyond the hard grace with full String accounting',
     () async {
       final fixture = await _createProcessFixture();
-      final exited = File('${fixture.container.path}/slow-drain-exited');
+      final clock = _ManualDrainClock();
       final supervisor = GitForegroundProcessSupervisor(
         maximumEventCharacters: 256,
+        drainClock: clock,
       );
       addTearDown(supervisor.close);
-      final afterExit = Stopwatch();
       final done = Completer<void>();
-      int characters = 0;
+      var next = Completer<void>();
+      final text = StringBuffer();
+      final failures = <Object>[];
+      final expected = 'prefix:${'x' * 4082}:suffix';
       EnvironmentProcessCompleted? completion;
       late StreamSubscription<EnvironmentProcessEvent> subscription;
       subscription = supervisor
@@ -3188,9 +3192,9 @@ void main() {
               program: '/bin/sh',
               arguments: [
                 '-c',
-                r'head -c 4096 /dev/zero; printf exited >"$1"; exit 23',
+                r'''printf '%s' "$1"; exit 23''',
                 'probe',
-                exited.path,
+                expected,
               ],
               relativeWorkingDirectory: '',
               timeoutSeconds: 10,
@@ -3198,24 +3202,43 @@ void main() {
           )
           .listen(
             (event) {
-              if (!afterExit.isRunning && exited.existsSync()) {
-                afterExit.start();
-              }
               if (event.output case final output?) {
-                characters += output.text.length;
-                subscription.pause(
-                  Future<void>.delayed(const Duration(milliseconds: 100)),
-                );
+                text.write(output.text);
+                subscription.pause();
+                next.complete();
               }
               completion = event.completed ?? completion;
             },
-            onError: done.completeError,
+            onError: failures.add,
             onDone: done.complete,
           );
       addTearDown(subscription.cancel);
-      await done.future.timeout(const Duration(seconds: 10));
-      expect(afterExit.elapsed, greaterThan(const Duration(seconds: 1)));
-      expect(characters, 4096);
+      await next.future.timeout(const Duration(seconds: 5));
+      await clock.started.future.timeout(const Duration(seconds: 5));
+      for (
+        var delivered = 256;
+        delivered <= expected.length;
+        delivered += 256
+      ) {
+        expect(text.length, delivered);
+        expect(completion, isNull);
+        expect(
+          supervisor.pendingOutputCharacters,
+          delivered == expected.length ? 0 : expected.length,
+          reason: 'Emitted prefixes still belong to the admitted String.',
+        );
+        clock.elapse(const Duration(milliseconds: 900));
+        next = Completer<void>();
+        subscription.resume();
+        if (delivered < expected.length) {
+          await next.future.timeout(const Duration(seconds: 5));
+        }
+      }
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(clock.elapsed, greaterThan(const Duration(seconds: 10)));
+      expect(failures, isEmpty);
+      expect(text.toString(), expected);
+      expect(supervisor.pendingOutputCharacters, 0);
       expect(completion!.exitCode, 23);
       expect(completion!.stdoutTruncated, isFalse);
     },
@@ -3223,18 +3246,24 @@ void main() {
   );
 
   test(
-    'failed final drain preserves exit facts and never claims completion',
+    'normal exit survives a downstream pause beyond the idle grace',
     () async {
       final fixture = await _createProcessFixture();
+      final clock = _ManualDrainClock();
+      final supervisor = GitForegroundProcessSupervisor(drainClock: clock);
+      addTearDown(supervisor.close);
       final first = Completer<void>();
       final done = Completer<void>();
       final events = <EnvironmentProcessEvent>[];
       Object? failure;
       late StreamSubscription<EnvironmentProcessEvent> subscription;
-      subscription = fixture.provider
-          .runForegroundProcess(
-            fixture.environment.id,
-            EnvironmentForegroundProcessRequest(
+      subscription = supervisor
+          .run(
+            environmentId: fixture.environment.id,
+            environment: fixture.provider.liveObjects.resolve(
+              fixture.environment.id,
+            ),
+            request: EnvironmentForegroundProcessRequest(
               program: '/bin/sh',
               arguments: ['-c', 'printf partial; exit 23'],
               relativeWorkingDirectory: '',
@@ -3255,20 +3284,104 @@ void main() {
             onDone: done.complete,
           );
       addTearDown(subscription.cancel);
-      await first.future;
-      await Future<void>.delayed(const Duration(milliseconds: 1600));
+      await first.future.timeout(const Duration(seconds: 5));
+      await clock.started.future.timeout(const Duration(seconds: 5));
+      clock.elapse(const Duration(seconds: 2));
+      expect(done.isCompleted, isFalse);
       subscription.resume();
       await done.future.timeout(const Duration(seconds: 2));
-      expect(events.every((event) => event.completed == null), isTrue);
-      expect(failure, _failureWithCode('process_output_incomplete'));
-      final details = (failure! as EnvironmentFailure).details;
-      expect(details['outputIncomplete'], isTrue);
-      expect(details['termination'], 'exited');
-      expect(details['exitCode'], 23);
-      expect(details['stdoutTruncated'], isTrue);
+      expect(failure, isNull);
+      expect(_outputText(events), 'partial');
+      expect(_completion(events).exitCode, 23);
+      expect(_completion(events).stdoutTruncated, isFalse);
+      expect(_completion(events).stderrTruncated, isFalse);
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
+
+  for (final noisy in [false, true]) {
+    test(
+      'escaped unfinished pipe holder fails at the ${noisy ? 'hard' : 'idle'} readable-time deadline',
+      () async {
+        final fixture = await _createProcessFixture();
+        final clock = _ManualDrainClock();
+        final supervisor = GitForegroundProcessSupervisor(drainClock: clock);
+        addTearDown(supervisor.close);
+        final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(server.close);
+        final connection = server.first;
+        final events = <EnvironmentProcessEvent>[];
+        final failures = <Object>[];
+        final done = Completer<void>();
+        var output = Completer<void>();
+        late StreamSubscription<EnvironmentProcessEvent> subscription;
+        subscription = supervisor
+            .run(
+              environmentId: fixture.environment.id,
+              environment: fixture.provider.liveObjects.resolve(
+                fixture.environment.id,
+              ),
+              request: fixture.request([
+                'escaped-pipe-parent',
+                '${server.port}',
+              ], timeoutSeconds: 20),
+            )
+            .listen(
+              (event) {
+                events.add(event);
+                if (event.output != null) {
+                  subscription.pause();
+                  output.complete();
+                }
+              },
+              onError: failures.add,
+              onDone: done.complete,
+            );
+        addTearDown(subscription.cancel);
+        final socket = await connection.timeout(const Duration(seconds: 5));
+        addTearDown(socket.destroy);
+        final peerLines = StreamIterator(
+          socket
+              .cast<List<int>>()
+              .transform(utf8.decoder)
+              .transform(const LineSplitter()),
+        );
+        addTearDown(peerLines.cancel);
+        expect(await peerLines.moveNext(), isTrue);
+        final escapedPid = int.parse(peerLines.current);
+        addTearDown(() => Process.killPid(escapedPid, ProcessSignal.sigkill));
+        await clock.started.future.timeout(const Duration(seconds: 5));
+        await clock.whenReading.timeout(const Duration(seconds: 5));
+        if (noisy) {
+          for (var i = 0; i < 11; i++) {
+            clock.elapse(const Duration(milliseconds: 900));
+            expect(failures, isEmpty);
+            output = Completer<void>();
+            socket.add([1]);
+            await output.future.timeout(const Duration(seconds: 5));
+            clock.elapse(const Duration(seconds: 2));
+            expect(failures, isEmpty);
+            subscription.resume();
+            await clock.whenReading.timeout(const Duration(seconds: 5));
+          }
+          clock.elapse(const Duration(milliseconds: 100));
+        } else {
+          clock.elapse(const Duration(seconds: 1));
+        }
+        await done.future.timeout(const Duration(seconds: 5));
+        expect(events.every((event) => event.completed == null), isTrue);
+        expect(failures, hasLength(1));
+        expect(failures.single, _failureWithCode('process_output_incomplete'));
+        final details = (failures.single as EnvironmentFailure).details;
+        expect(details['outputIncomplete'], isTrue);
+        expect(details['termination'], 'exited');
+        expect(details['exitCode'], 23);
+        expect(details['stdoutTruncated'], isTrue);
+        expect(supervisor.pendingOutputCharacters, 0);
+      },
+      skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+    );
+  }
 
   test(
     'hard admitted-read overflow fails explicitly and preserves exit evidence',
@@ -3315,6 +3428,9 @@ void main() {
     'timeout interrupts blocked output without waiting for consumer credit',
     () async {
       final fixture = await _createProcessFixture();
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      final connection = server.first;
       final first = Completer<void>();
       final done = Completer<void>();
       int? pid;
@@ -3324,8 +3440,12 @@ void main() {
           .runForegroundProcess(
             fixture.environment.id,
             EnvironmentForegroundProcessRequest(
-              program: '/bin/sh',
-              arguments: ['-c', r'printf "%s\n" "$$"; exec /usr/bin/yes x'],
+              program: '/bin/bash',
+              arguments: [
+                '-c',
+                'exec 3<>/dev/tcp/127.0.0.1/${server.port}; '
+                    r'printf "%s\n" "$$"; exec /usr/bin/yes x',
+              ],
               relativeWorkingDirectory: '',
               timeoutSeconds: 1,
             ),
@@ -3348,8 +3468,13 @@ void main() {
             onDone: done.complete,
           );
       addTearDown(subscription.cancel);
-      await first.future;
-      await Future<void>.delayed(const Duration(milliseconds: 2600));
+      final socket = await connection.timeout(const Duration(seconds: 5));
+      addTearDown(socket.destroy);
+      final terminated = socket.drain<void>();
+      await first.future.timeout(const Duration(seconds: 5));
+      // Process death closes its independent control socket while output credit
+      // is still withheld. No wall-clock wait stands in for cleanup evidence.
+      await terminated.timeout(const Duration(seconds: 5));
       expect(await Directory('/proc/$pid').exists(), isFalse);
       subscription.resume();
       await done.future.timeout(const Duration(seconds: 2));
@@ -3365,6 +3490,50 @@ void main() {
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
+
+  for (final shutdown in [false, true]) {
+    test(
+      '${shutdown ? 'shutdown' : 'cancellation'} interrupts a paused post-exit backlog',
+      () async {
+        final fixture = await _createProcessFixture();
+        final clock = _ManualDrainClock();
+        final supervisor = GitForegroundProcessSupervisor(
+          maximumEventCharacters: 2,
+          drainClock: clock,
+        );
+        addTearDown(supervisor.close);
+        final first = Completer<void>();
+        late StreamSubscription<EnvironmentProcessEvent> subscription;
+        subscription = supervisor
+            .run(
+              environmentId: fixture.environment.id,
+              environment: fixture.provider.liveObjects.resolve(
+                fixture.environment.id,
+              ),
+              request: EnvironmentForegroundProcessRequest(
+                program: '/bin/sh',
+                arguments: ['-c', 'printf partial; exit 23'],
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            )
+            .listen((event) {
+              expect(event.output!.text, 'pa');
+              subscription.pause();
+              first.complete();
+            });
+        addTearDown(subscription.cancel);
+        await first.future.timeout(const Duration(seconds: 5));
+        await clock.started.future.timeout(const Duration(seconds: 5));
+        expect(supervisor.pendingOutputCharacters, 7);
+        await (shutdown ? supervisor.close() : subscription.cancel()).timeout(
+          const Duration(seconds: 2),
+        );
+        expect(supervisor.pendingOutputCharacters, 0);
+      },
+      skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+    );
+  }
 
   test(
     'cancellation interrupts a blocked pipe without consumer resume',
@@ -3430,22 +3599,29 @@ void main() {
     () async {
       final _ProcessFixture fixture = await _createProcessFixture();
       final Completer<void> firstOutput = Completer<void>();
+      int? pid;
       late final StreamSubscription<EnvironmentProcessEvent> subscription;
       subscription = fixture.provider
           .runForegroundProcess(
             fixture.environment.id,
-            fixture.request(<String>['stdout']),
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: ['-c', r'printf "%s\n" "$$"; exec /usr/bin/yes x'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 20,
+            ),
           )
           .listen((EnvironmentProcessEvent event) {
             if (!firstOutput.isCompleted && event.output != null) {
               subscription.pause();
+              pid = int.parse(event.output!.text.split('\n').first);
               firstOutput.complete();
             }
           });
 
       await firstOutput.future;
-      await Future<void>.delayed(const Duration(milliseconds: 200));
       await fixture.provider.close().timeout(const Duration(seconds: 2));
+      expect(await Directory('/proc/$pid').exists(), isFalse);
       await subscription.cancel();
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
@@ -3620,6 +3796,26 @@ Future<void> main(List<String> arguments) async {
       await commands.cancel();
       socket.destroy();
       return;
+    case 'escaped-pipe-parent':
+      final ready = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final connected = ready.first;
+      await Process.start('/usr/bin/setsid', [
+        '--', Platform.resolvedExecutable, Platform.script.toFilePath(),
+        'escaped-pipe-writer', arguments[1], '${ready.port}',
+      ], mode: ProcessStartMode.inheritStdio);
+      (await connected).destroy();
+      await ready.close();
+      exit(23);
+    case 'escaped-pipe-writer':
+      (await Socket.connect(InternetAddress.loopbackIPv4, int.parse(arguments[2]))).destroy();
+      final socket = await Socket.connect(InternetAddress.loopbackIPv4, int.parse(arguments[1]));
+      socket.writeln(pid);
+      await socket.flush();
+      await for (final _ in socket) {
+        stdout.write('tick');
+        await stdout.flush();
+      }
+      return;
     case 'nul-output':
       stdout.add(<int>[0x00, 0x61]);
       await stdout.flush();
@@ -3643,6 +3839,67 @@ TypeMatcher<EnvironmentFailure> _failureWithCode(String code) =>
       'code',
       code,
     );
+
+final class _ManualDrainClock extends GitForegroundProcessDrainClock {
+  Duration _elapsed = Duration.zero;
+  final started = Completer<void>();
+  final _timers = <_ManualDrainTimer>[];
+  Completer<void>? _reading;
+
+  @override
+  Duration get elapsed {
+    if (!started.isCompleted) started.complete();
+    return _elapsed;
+  }
+
+  Future<void> get whenReading => _timers.any((timer) => timer.isActive)
+      ? Future<void>.value()
+      : (_reading ??= Completer<void>()).future;
+
+  @override
+  Timer schedule(Duration delay, void Function() callback) {
+    if (!started.isCompleted) started.complete();
+    final timer = _ManualDrainTimer(_elapsed + delay, callback);
+    _timers.add(timer);
+    _reading?.complete();
+    _reading = null;
+    return timer;
+  }
+
+  void elapse(Duration duration) {
+    final end = _elapsed + duration;
+    while (true) {
+      _timers.removeWhere((timer) => !timer.isActive);
+      _timers.sort((a, b) => a.due.compareTo(b.due));
+      if (_timers.isEmpty || _timers.first.due > end) break;
+      final timer = _timers.removeAt(0);
+      _elapsed = timer.due;
+      timer.fire();
+    }
+    _elapsed = end;
+  }
+}
+
+final class _ManualDrainTimer implements Timer {
+  _ManualDrainTimer(this.due, this.callback);
+
+  final Duration due;
+  final void Function() callback;
+  @override
+  bool isActive = true;
+  @override
+  int tick = 0;
+
+  @override
+  void cancel() => isActive = false;
+
+  void fire() {
+    if (!isActive) return;
+    isActive = false;
+    tick = 1;
+    callback();
+  }
+}
 
 final bool _runningAsRoot =
     Platform.isLinux &&

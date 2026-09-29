@@ -242,7 +242,7 @@ void main() {
           for (final TestTarget target in testTargets)
             target.name: switch (target.name) {
               'contract_codegen' => 4,
-              'git_environment_backend' => 1,
+              'git_environment_backend' || 'adele_desktop' => 1,
               _ => null,
             },
         },
@@ -251,6 +251,16 @@ void main() {
   });
 
   group('target lookup', () {
+    test(
+      'desktop CI serializes compiler-heavy fixtures without changing local defaults',
+      () {
+        final target = lookupTestTarget('adele_desktop');
+        expect(target.argumentsFor(), ['test']);
+        expect(target.argumentsFor(ci: true), ['test', '--concurrency', '1']);
+        expect(target.ciTestConcurrency, 1);
+      },
+    );
+
     test('returns the exact target', () {
       expect(lookupTestTarget('contract_codegen').name, 'contract_codegen');
     });

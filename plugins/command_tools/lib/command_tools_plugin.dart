@@ -9,6 +9,7 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 import 'src/command_transcripts.dart';
+import 'src/process_outcome.dart';
 
 export 'src/command_transcripts.dart';
 
@@ -311,9 +312,19 @@ final class _RunCommandExecutable implements ToolExecutable {
         final details = error is EnvironmentFailure
             ? error.details
             : const <String, Object?>{};
-        final termination =
-            completed?.termination.name ?? details['termination'] as String?;
-        final exitCode = completed?.exitCode ?? details['exitCode'] as int?;
+        // Typed completion is one coherent fact, including a null timeout exit
+        // code. Optional diagnostics may supply only a valid complete pair.
+        final processOutcome = completed == null
+            ? parseCommandProcessOutcome(
+                details['termination'],
+                details['exitCode'],
+              )
+            : (
+                termination: completed.termination.name,
+                exitCode: completed.exitCode,
+              );
+        final termination = processOutcome?.termination;
+        final exitCode = processOutcome?.exitCode;
         await capture?.fail(
           'Command execution or capture failed; effects may have occurred.',
           termination: termination,
@@ -354,7 +365,13 @@ final class _RunCommandExecutable implements ToolExecutable {
             if (error is EnvironmentFailure) ...{
               'code': error.code,
               'message': error.message,
-              'details': error.details,
+              // Outcome facts are exposed only in the validated fields above;
+              // malformed optional values must not break structured diagnostics.
+              'details': {
+                for (final entry in error.details.entries)
+                  if (entry.key != 'termination' && entry.key != 'exitCode')
+                    entry.key: entry.value,
+              },
             },
           },
         );

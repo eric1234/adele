@@ -101,6 +101,12 @@ The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` a
 runs each matrix entry with `test --target NAME --ci` after independent bootstrap.
 The local two-process default does not limit CI matrix parallelism.
 
+The `adele_desktop` CI target runs Flutter test files with one worker. Its real-AOT
+and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
+unchanged activity timing and full-capture deadlines through resource contention.
+Serial CI execution preserves those assertions, full transcript volumes, and all
+test selection. The non-CI target retains Flutter's normal worker default.
+
 When adding a package/plugin, verify workspace membership and update maintained
 analysis/test discovery and relevant wiring checks where appropriate. Passing
 the package's direct `dart test` alone does not establish repository or CI
