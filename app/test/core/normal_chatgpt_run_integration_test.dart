@@ -32,6 +32,7 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
@@ -412,11 +413,12 @@ void main() {
             _terminalBuffer(_projectionEngine(tester, consoleHost)),
             frozen,
           );
-          await _terminalTap(
-            tester,
-            find.descendant(
-              of: consoleHost,
-              matching: find.byTooltip('Follow output'),
+          await tester.sendEventToBinding(
+            PointerScrollEvent(
+              position:
+                  tester.getTopLeft(_projectionView(consoleHost)) +
+                  const Offset(50, 30),
+              scrollDelta: const Offset(0, 20000),
             ),
           );
           await _projectionText(tester, consoleHost, 'T3B_LATE_PART');

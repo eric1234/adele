@@ -21,6 +21,7 @@ class TerminalProjectionDeclarations implements EvalPlugin {
   void configureForCompile(BridgeDeclarationRegistry registry) {
     const string = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string));
     const integer = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.int));
+    const boolean = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool));
     const voidType = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.voidType));
     const handle = BridgeParameter('handle', string, false);
     const listener = BridgeParameter(
@@ -32,7 +33,10 @@ class TerminalProjectionDeclarations implements EvalPlugin {
       (
         'requestTerminalProjection',
         string,
-        const [BridgeParameter('rows', integer, false)],
+        const [
+          BridgeParameter('rows', integer, false),
+          BridgeParameter('alwaysFollow', boolean, false),
+        ],
       ),
       (
         'buildTerminalProjection',
@@ -73,11 +77,8 @@ class TerminalProjectionDeclarations implements EvalPlugin {
         voidType,
         const [
           handle,
-          BridgeParameter(
-            'following',
-            BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
-            false,
-          ),
+          BridgeParameter('following', boolean, false),
+          BridgeParameter('resumeAtEnd', boolean, false),
         ],
       ),
       (
@@ -170,16 +171,19 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
     runtime
       ..registerBridgeFunc(_library, 'requestTerminalProjection', (_, _, args) {
         _validate();
-        final rows = args.single!.$value as int;
+        final rows = args[0]!.$value as int;
+        final alwaysFollow = args[1]!.$value as bool;
         if (_surface case final surface?) {
-          if (surface.readProjection()['rows'] != rows) {
+          final state = surface.readProjection();
+          if (state['rows'] != rows || state['alwaysFollow'] != alwaysFollow) {
             throw StateError(
-              'Projection geometry is fixed for this presentation.',
+              'Projection geometry and policy are fixed for this presentation.',
             );
           }
         } else {
           _surface = NativeTerminalSurface.projection(
             rows: rows,
+            alwaysFollow: alwaysFollow,
             maxLines: _maxLines,
           );
           final random = Random.secure();
@@ -241,7 +245,10 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
         _,
         args,
       ) {
-        _resolve(args[0]!.$value).setProjectionFollow(args[1]!.$value as bool);
+        _resolve(args[0]!.$value).setProjectionFollow(
+          args[1]!.$value as bool,
+          resumeAtEnd: args[2]!.$value as bool,
+        );
         return null;
       })
       ..registerBridgeFunc(_library, 'scrollTerminalProjection', (_, _, args) {

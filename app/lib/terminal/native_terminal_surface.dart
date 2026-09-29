@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -25,6 +24,7 @@ final class NativeTerminalSurface {
     onScopedResize,
   }) : _readOnly = readOnly,
        _projectionRows = null,
+       _alwaysFollow = false,
        _maxLines = maxLines,
        _onInput = onInput,
        _onResponse = onResponse,
@@ -44,10 +44,14 @@ final class NativeTerminalSurface {
 
   /// Separate, presentation-only pipe projection. The interactive constructor
   /// and its PTY/parser/layout authority are deliberately unchanged.
-  NativeTerminalSurface.projection({required int rows, int maxLines = 200})
-    : _readOnly = true,
-      _projectionRows = rows,
-      _maxLines = maxLines {
+  NativeTerminalSurface.projection({
+    required int rows,
+    bool alwaysFollow = false,
+    int maxLines = 200,
+  }) : _readOnly = true,
+       _projectionRows = rows,
+       _alwaysFollow = alwaysFollow,
+       _maxLines = maxLines {
     if (rows != 6 && rows != 20) {
       throw ArgumentError.value(rows, 'rows', '6 or 20');
     }
@@ -61,7 +65,9 @@ final class NativeTerminalSurface {
   static const int maxProjectionRepeatCount = 1024;
 
   final int? _projectionRows;
+  final bool _alwaysFollow;
   final int _maxLines;
+  bool _resumeAtEnd = true;
   bool _following = true;
   int _acceptedCodeUnits = 0;
   int _lineAdvances = 0;
@@ -81,6 +87,8 @@ final class NativeTerminalSurface {
     final position = _attached?._projectionScrollPosition;
     return Map.unmodifiable({
       'following': _following,
+      'alwaysFollow': _alwaysFollow,
+      'resumeAtEnd': _resumeAtEnd,
       'columns': 80,
       'rows': _projectionRows!,
       'maxLines': _maxLines,
@@ -193,8 +201,18 @@ final class NativeTerminalSurface {
     _projectionChanged();
   }
 
-  void setProjectionFollow(bool following) {
+  void setProjectionFollow(bool following, {bool resumeAtEnd = true}) {
     _requireProjection();
+    if (_resumeAtEnd != resumeAtEnd) {
+      _resumeAtEnd = resumeAtEnd;
+      _projectionChanged();
+    }
+    if (following) _attached?._controller.clearSelection();
+    _setProjectionFollowing(following);
+  }
+
+  void _setProjectionFollowing(bool following) {
+    following = _alwaysFollow || following;
     if (_following != following) {
       _following = following;
       _projectionChanged();
@@ -208,7 +226,11 @@ final class NativeTerminalSurface {
   void scrollProjection(double offset) {
     _requireProjection();
     if (!offset.isFinite) throw ArgumentError.value(offset, 'offset');
-    setProjectionFollow(false);
+    if (_alwaysFollow) {
+      _attached?._scrollProjectionToEnd();
+      return;
+    }
+    _setProjectionFollowing(false);
     _projectionRequestedOffset = offset;
     _attached?._scrollProjectionTo(offset);
   }
@@ -433,7 +455,9 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   late final NativeTerminalSurface _surface = widget.surface;
   _ViewTerminal? _terminal;
   late final _ViewController _controller = _ViewController(this);
-  final ScrollController _projectionScroll = ScrollController();
+  late final ScrollController _projectionScroll = _ProjectionScrollController(
+    _projectionUserScrolled,
+  );
   final _projectionViewKey = GlobalKey<xterm.TerminalViewState>();
   double _projectionGridWidth = 0;
   int _projectionScrollRevision = 0;
@@ -519,37 +543,24 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
     WidgetsBinding.instance.addPostFrameCallback((_) => apply());
   }
 
-  bool _projectionScrolled(ScrollNotification notification) {
-    if (!_available) return false;
-    if (notification.metrics.axis != Axis.vertical) return false;
-    final userScroll =
-        notification is UserScrollNotification &&
-            notification.direction != ScrollDirection.idle ||
-        notification is ScrollUpdateNotification &&
-            notification.dragDetails != null;
+  void _projectionUserScrolled() {
+    if (!_available || _surface._alwaysFollow) return;
     final position = _projectionScrollPosition;
-    if (userScroll &&
-        position != null &&
-        (position.pixels - _projectionFollowOffset(position)).abs() > 0.5) {
+    if (position == null) return;
+    if (position.pixels < _projectionFollowOffset(position) - 0.5) {
       _projectionScrollRevision++;
-      _surface.setProjectionFollow(false);
+      _surface._setProjectionFollowing(false);
+    } else if (_surface._resumeAtEnd && _controller.selection == null) {
+      _surface._setProjectionFollowing(true);
+    }
+    if (!_surface._following) {
+      _surface._projectionRequestedOffset = position.pixels;
     }
     _surface._projectionChanged();
-    return false;
   }
 
   void _projectionOffsetChanged() {
-    if (!_available) return;
-    final position = _projectionScrollPosition;
-    // Wheel updates have no dragDetails. Observe the position synchronously
-    // while its user direction is set, before the idle notification follows.
-    if (position != null &&
-        position.userScrollDirection != ScrollDirection.idle &&
-        (position.pixels - _projectionFollowOffset(position)).abs() > 0.5) {
-      _projectionScrollRevision++;
-      _surface.setProjectionFollow(false);
-    }
-    _surface._projectionChanged();
+    if (_available) _surface._projectionChanged();
   }
 
   bool get _available {
@@ -586,6 +597,9 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   @override
   void deactivate() {
+    if (_surface._projectionRows != null && !_surface._following) {
+      _surface._projectionRequestedOffset = _projectionScrollPosition?.pixels;
+    }
     // Deliver an authorized blur before retiring the mount. Disposal still
     // clears emulator focus silently when presentation access was revoked.
     _terminal?.focusInput(false);
@@ -676,8 +690,12 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
               removeRight: true,
               removeTop: true,
               removeBottom: true,
-              child: NotificationListener<ScrollNotification>(
-                onNotification: _projectionScrolled,
+              child: ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  physics: _surface._alwaysFollow
+                      ? const NeverScrollableScrollPhysics()
+                      : null,
+                ),
                 child: Actions(
                   dispatcher: _ProjectionActionDispatcher(this),
                   actions: const {},
@@ -701,6 +719,65 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       _surface._attached = null;
     }
     super.dispose();
+  }
+}
+
+/// User-originated motion only. Direction notifications can remain non-idle
+/// during layout or programmatic movement and must not authorize live resumption.
+final class _ProjectionScrollController extends ScrollController {
+  _ProjectionScrollController(this.onUserScroll);
+
+  final VoidCallback onUserScroll;
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _ProjectionScrollPosition(
+    physics: physics,
+    context: context,
+    oldPosition: oldPosition,
+    onUserScroll: onUserScroll,
+  );
+}
+
+final class _ProjectionScrollPosition extends ScrollPositionWithSingleContext {
+  _ProjectionScrollPosition({
+    required super.physics,
+    required super.context,
+    super.oldPosition,
+    required this.onUserScroll,
+  });
+
+  final VoidCallback onUserScroll;
+  bool _pointerScroll = false;
+  bool _userBallistic = false;
+
+  @override
+  void pointerScroll(double delta) {
+    _pointerScroll = true;
+    try {
+      super.pointerScroll(delta);
+    } finally {
+      _pointerScroll = false;
+    }
+  }
+
+  @override
+  void beginActivity(ScrollActivity? newActivity) {
+    _userBallistic =
+        newActivity is BallisticScrollActivity &&
+        (activity is DragScrollActivity || _userBallistic);
+    super.beginActivity(newActivity);
+  }
+
+  @override
+  void didUpdateScrollPositionBy(double delta) {
+    if (_pointerScroll || activity is DragScrollActivity || _userBallistic) {
+      onUserScroll();
+    }
+    super.didUpdateScrollPositionBy(delta);
   }
 }
 
@@ -761,7 +838,7 @@ final class _ViewController extends xterm.TerminalController {
       return;
     }
     if (_view._surface._projectionRows != null) {
-      _view._surface.setProjectionFollow(false);
+      _view._surface._setProjectionFollowing(false);
     }
     super.setSelection(base, extent, mode: mode);
   }

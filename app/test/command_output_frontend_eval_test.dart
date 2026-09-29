@@ -12,6 +12,7 @@ import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm2/xterm.dart';
@@ -57,14 +58,17 @@ void main() {
   });
   tearDown(() async {
     frontend.invalidate();
+    if (output.readGate case final gate? when !gate.isCompleted) {
+      gate.complete();
+    }
     await channel.dispatcher.close();
     await output.close();
   });
 
-  Future<void> mount(WidgetTester tester, {bool preview = false}) {
+  Widget presentation({bool preview = false}) {
     final source = preview ? _InspectionSource() : null;
     if (source != null) addTearDown(source.dispose);
-    final presentation = frontend.createPresentation(
+    return frontend.createPresentation(
       library: preview
           ? 'package:command_tools_frontend/command_tools_frontend.dart'
           : 'package:command_tools_frontend/command_output_view.dart',
@@ -82,15 +86,43 @@ void main() {
         TerminalProjectionBridge(isActive: () => true, maxLines: 32),
       ]),
     );
+  }
+
+  Future<void> mount(
+    WidgetTester tester, {
+    bool preview = false,
+    bool both = false,
+  }) {
+    // Failed assertions must still detach generated watches before dispatcher
+    // teardown; otherwise a useful failure can wait on an unrelated subscription.
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    });
     return tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: SizedBox(
             width: 720,
-            height: preview ? 560 : 360,
-            child: preview
-                ? SingleChildScrollView(child: presentation)
-                : presentation,
+            height: preview ? 320 : 360,
+            child: both
+                ? Row(
+                    children: [
+                      Expanded(
+                        key: const ValueKey('preview'),
+                        child: SingleChildScrollView(
+                          child: presentation(preview: true),
+                        ),
+                      ),
+                      Expanded(
+                        key: const ValueKey('expanded'),
+                        child: presentation(),
+                      ),
+                    ],
+                  )
+                : preview
+                ? SingleChildScrollView(child: presentation(preview: true))
+                : presentation(),
           ),
         ),
       ),
@@ -249,6 +281,7 @@ void main() {
     expect(output.maximumPageUnits, lessThanOrEqualTo(16384));
     expect(content.state.keys.toSet(), {
       'following',
+      'liveTail',
       'codeUnits',
       'knownLines',
       'scrollOffset',
@@ -355,12 +388,20 @@ void main() {
       expect(_text(_view(tester).terminal), original);
       expect(content.state['codeUnits'], retained['codeUnits']);
       expect(content.state['following'], false);
+      expect(content.state['liveTail'], true);
       expect(
         _view(tester).scrollController!.offset,
         closeTo((retained['scrollOffset']! as num).toDouble(), 1),
       );
       expect(output.watches, 2);
-      await tester.tap(find.byTooltip('Follow output'));
+      final scroll = _view(tester).scrollController!;
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pump();
+      expect(content.state['following'], false);
+      expect(content.state['codeUnits'], retained['codeUnits']);
+      scroll.jumpTo((retained['scrollOffset']! as num).toDouble());
+      await tester.pump();
+      await _userToEnd(tester, find.byType(TerminalView));
       await caughtUp(tester);
       expect(_text(_view(tester).terminal), contains('while-hidden-29'));
       expect(_text(_view(tester).terminal), isNot(contains('original-')));
@@ -588,7 +629,7 @@ void main() {
 
   for (final selection in [false, true]) {
     testWidgets(
-      'stock Inspection preview Follow resumes after native ${selection ? 'selection' : 'scroll'}',
+      'stock Inspection preview stays live after native ${selection ? 'selection' : 'scroll'}',
       (tester) async {
         output.publish('capturing');
         output.append(List.generate(100, (i) => 'preview-$i\r\n').join());
@@ -613,37 +654,24 @@ void main() {
             view.terminal.buffer.createAnchor(4, 0),
           );
         } else {
+          final outer = tester
+              .stateList<ScrollableState>(find.byType(Scrollable))
+              .firstWhere((state) => state.position.axis == Axis.vertical);
+          final before = outer.position.pixels;
+          expect(before, greaterThan(0));
           await tester.dragFrom(
             tester.getTopLeft(find.byType(TerminalView)) + const Offset(80, 50),
             const Offset(0, 50),
           );
+          expect(outer.position.pixels, lessThan(before));
         }
-        await _until(
-          tester,
-          () =>
-              find.text('Reading history').evaluate().isNotEmpty &&
-              find.byTooltip('Follow output').evaluate().isNotEmpty,
-          'preview freeze exposes Follow',
-        );
-        final frozen = _text(_view(tester).terminal);
-        final reads = output.cursors.length;
-        final notifications = channel.items;
         output.append('preview-late\r\n');
-        await _until(
-          tester,
-          () => channel.items > notifications,
-          'frozen preview notification',
-        );
-        expect(_text(_view(tester).terminal), frozen);
-        expect(output.cursors.length, reads);
-        await tester.ensureVisible(find.byTooltip('Follow output'));
-        await tester.tap(find.byTooltip('Follow output'));
         await _until(
           tester,
           () =>
               find.text('Following output').evaluate().isNotEmpty &&
               _text(_view(tester).terminal).contains('preview-late'),
-          'preview Follow resumes committed catch-up',
+          'preview remains live without a Follow action',
         );
         expect(find.byTooltip('Follow output'), findsNothing);
         expect(find.text('Show more'), findsOneWidget);
@@ -654,6 +682,214 @@ void main() {
       },
     );
   }
+
+  testWidgets('user live-end return resumes the actual expanded reader', (
+    tester,
+  ) async {
+    output.publish('capturing');
+    output.append(List.generate(100, (i) => 'live-$i\r\n').join());
+    await mount(tester);
+    await caughtUp(tester);
+    await tester.drag(find.byType(TerminalView), const Offset(0, 100));
+    await _until(
+      tester,
+      () => content.state['following'] == false,
+      'pause live tail',
+    );
+    final frozen = _text(_view(tester).terminal);
+    final units = content.state['codeUnits'];
+    final notifications = channel.items;
+    output.append('manual-return-late\r\n');
+    await _until(
+      tester,
+      () => channel.items > notifications,
+      'paused extent advances',
+    );
+    expect(_text(_view(tester).terminal), frozen);
+    expect(content.state['codeUnits'], units);
+    output.readGate = Completer<void>();
+    final reads = output.cursors.length;
+    await _userToEnd(tester, find.byType(TerminalView));
+    await _until(
+      tester,
+      () => output.activeReads == 1,
+      'return begins one catch-up read',
+    );
+    await tester.pump();
+    expect(find.text('Replaying output...'), findsOneWidget);
+    expect(find.text('Following output'), findsNothing);
+    expect(content.state['codeUnits'], units);
+    output.readGate!.complete();
+    await caughtUp(tester);
+    expect(output.cursors.length, reads + 1);
+    expect(_text(_view(tester).terminal), contains('manual-return-late'));
+    output.append('subsequent-partial');
+    await caughtUp(tester);
+    expect(_text(_view(tester).terminal), contains('subsequent-partial'));
+    expect(output.maximumReads, 1);
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'explicit historical window stays chosen at its local end and on remount',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'window-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      await history(tester, 'Middle');
+      expect(content.state['liveTail'], false);
+      final frozen = _text(_view(tester).terminal);
+      final units = content.state['codeUnits'];
+      final notifications = channel.items;
+      output.append('explicit-window-late\r\n');
+      await _until(
+        tester,
+        () => channel.items > notifications,
+        'historical observation',
+      );
+      await _userToEnd(tester, find.byType(TerminalView));
+      await tester.pump();
+      expect(content.state['following'], false);
+      expect(content.state['codeUnits'], units);
+      expect(_text(_view(tester).terminal), frozen);
+      await unmount(tester);
+      await mount(tester);
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'history restoration',
+      );
+      expect(content.state['liveTail'], false);
+      await _userToEnd(tester, find.byType(TerminalView));
+      await tester.pump();
+      expect(content.state['codeUnits'], units);
+      expect(_text(_view(tester).terminal), frozen);
+      await tester.tap(find.byTooltip('Follow output'));
+      await caughtUp(tester);
+      expect(content.state['liveTail'], true);
+      expect(_text(_view(tester).terminal), contains('explicit-window-late'));
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'expanded selection protects its region while the independent preview follows',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'independent-$i\r\n').join());
+      await mount(tester, both: true);
+      await caughtUp(tester);
+      final expanded = find.descendant(
+        of: find.byKey(const ValueKey('expanded')),
+        matching: find.byType(TerminalView),
+      );
+      final preview = find.descendant(
+        of: find.byKey(const ValueKey('preview')),
+        matching: find.byType(TerminalView),
+      );
+      await _until(
+        tester,
+        () =>
+            preview.evaluate().isNotEmpty &&
+            _text(
+              tester.widget<TerminalView>(preview).terminal,
+            ).contains('independent-99'),
+        'independent preview',
+      );
+      final view = tester.widget<TerminalView>(expanded);
+      view.controller!.setSelection(
+        view.terminal.buffer.createAnchor(0, 0),
+        view.terminal.buffer.createAnchor(4, 0),
+      );
+      await _until(
+        tester,
+        () => content.state['following'] == false,
+        'selection freeze',
+      );
+      final frozen = _text(view.terminal);
+      output.append('selection-protected-late\r\n');
+      await _until(
+        tester,
+        () => _text(
+          tester.widget<TerminalView>(preview).terminal,
+        ).contains('selection-protected-late'),
+        'preview remains live during expanded selection',
+      );
+      await _userToEnd(tester, expanded);
+      await tester.pump();
+      expect(content.state['following'], false);
+      expect(_text(view.terminal), frozen);
+      expect(view.controller!.selection, isNotNull);
+      await tester.drag(
+        find.descendant(
+          of: find.byKey(const ValueKey('expanded')),
+          matching: find.byType(ListView),
+        ),
+        const Offset(-300, 0),
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('Follow output'));
+      await caughtUp(tester);
+      expect(view.controller!.selection, isNull);
+      expect(_text(view.terminal), contains('selection-protected-late'));
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'disposal during manual return leaves late read settlement inert',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'disposed-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      await tester.drag(find.byType(TerminalView), const Offset(0, 100));
+      await _until(
+        tester,
+        () => content.state['following'] == false,
+        'paused projection',
+      );
+      output.readGate = Completer<void>();
+      output.append('not-applied-after-disposal\r\n');
+      await _userToEnd(tester, find.byType(TerminalView));
+      await _until(
+        tester,
+        () => output.activeReads == 1,
+        'manual catch-up held',
+      );
+      final retained = Map<String, Object?>.of(content.state);
+      expect(retained['following'], true);
+      expect(retained['liveTail'], true);
+      await unmount(tester);
+      output.readGate!.complete();
+      await _until(
+        tester,
+        () => output.activeReads == 0,
+        'obsolete read settles',
+      );
+      expect(content.state, retained);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(output.observers, isEmpty);
+      await mount(tester);
+      await caughtUp(tester);
+      expect(
+        _text(_view(tester).terminal),
+        contains('not-applied-after-disposal'),
+      );
+      expect(output.watches, 2);
+      await unmount(tester);
+    },
+  );
+}
+
+Future<void> _userToEnd(WidgetTester tester, Finder view) async {
+  await tester.sendEventToBinding(
+    PointerScrollEvent(
+      position: tester.getTopLeft(view) + const Offset(50, 30),
+      scrollDelta: const Offset(0, 20000),
+    ),
+  );
 }
 
 final class _InspectionSource extends ChangeNotifier

@@ -6,6 +6,7 @@ import 'package:adele_ui/terminal_projection_bridge.dart' as public_bridge;
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -46,7 +47,7 @@ void main() {
 
   test('native public stubs confer no projection or feed authority', () {
     expect(
-      () => public_bridge.requestTerminalProjection(6),
+      () => public_bridge.requestTerminalProjection(6, false),
       throwsUnsupportedError,
     );
     expect(
@@ -70,7 +71,7 @@ void main() {
       throwsUnsupportedError,
     );
     expect(
-      () => public_bridge.setTerminalProjectionFollow('fake', true),
+      () => public_bridge.setTerminalProjectionFollow('fake', true, true),
       throwsUnsupportedError,
     );
     expect(
@@ -107,6 +108,257 @@ void main() {
       throwsA(anything),
     );
   });
+
+  for (final gesture in ['wheel', 'drag']) {
+    testWidgets(
+      'actual EVC observes user $gesture return and accepts exactly the frozen suffix',
+      (tester) async {
+        final bridge = TerminalProjectionBridge(
+          isActive: () => true,
+          maxLines: 40,
+        );
+        addTearDown(bridge.invalidate);
+        final runtime = Runtime.ofProgram(program)
+          ..addPlugin(flutterEvalPlugin)
+          ..addPlugin(bridge);
+        final handle = _invoke(runtime, 'requestRows', [$int(20)]) as String;
+        final args = [$String(handle)];
+        for (var i = 0; i < 60; i++) {
+          expect(
+            _invoke(runtime, 'feedHandle', [
+              ...args,
+              $String('row\n'),
+              $int(20),
+            ]),
+            4,
+          );
+        }
+        final view = _invoke(runtime, 'buildHandle', args) as Widget;
+        await tester.pumpWidget(_host(view));
+        await tester.pump();
+        final observedStates = <Map<dynamic, dynamic>>[];
+        _invoke(runtime, 'observeHandle', [
+          ...args,
+          $Closure((_, _, values) {
+            observedStates.add(values.single!.$reified as Map);
+            return null;
+          }),
+        ]);
+        final point =
+            tester.getTopLeft(find.byType(TerminalView)) + const Offset(50, 60);
+        if (gesture == 'wheel') {
+          await tester.sendEventToBinding(
+            PointerScrollEvent(
+              position: point,
+              scrollDelta: const Offset(0, -60),
+            ),
+          );
+        } else {
+          await tester.dragFrom(point, const Offset(0, 60));
+        }
+        expect(
+          (_invoke(runtime, 'readHandle', args) as Map)['following'],
+          isFalse,
+        );
+        await tester.pumpAndSettle();
+        expect(observedStates.last, containsPair('following', false));
+        final applied =
+            (_invoke(runtime, 'readHandle', args) as Map)['acceptedCodeUnits'];
+        expect(
+          _invoke(runtime, 'feedHandle', [
+            ...args,
+            $String('suffix'),
+            $int(20),
+          ]),
+          0,
+        );
+        final scroll = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .scrollController!;
+        scroll.jumpTo(scroll.position.maxScrollExtent);
+        await tester.pumpAndSettle();
+        expect(
+          (_invoke(runtime, 'readHandle', args) as Map)['following'],
+          isFalse,
+        );
+        expect(observedStates.last, containsPair('following', false));
+        scroll.jumpTo(0);
+        if (gesture == 'wheel') {
+          await tester.sendEventToBinding(
+            PointerScrollEvent(
+              position: point,
+              scrollDelta: const Offset(0, 5000),
+            ),
+          );
+        } else {
+          await tester.dragFrom(point, const Offset(0, -5000));
+        }
+        expect(
+          (_invoke(runtime, 'readHandle', args) as Map)['following'],
+          isTrue,
+        );
+        expect(
+          (_invoke(runtime, 'readHandle', args) as Map)['acceptedCodeUnits'],
+          applied,
+        );
+        await tester.pumpAndSettle();
+        final observed = observedStates.last;
+        expect(observed['following'], isTrue);
+        expect(observed['acceptedCodeUnits'], applied);
+        expect(
+          _invoke(runtime, 'feedHandle', [
+            ...args,
+            $String('suffix'),
+            $int(20),
+          ]),
+          6,
+        );
+        await tester.pump();
+        expect('suffix'.allMatches(_text(tester)), hasLength(1));
+        _invoke(runtime, 'followHandle', [...args, $bool(false)]);
+        final count = observedStates.length;
+        bridge.invalidate();
+        await tester.pump();
+        expect(observedStates.length, count);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
+  testWidgets(
+    'actual EVC history policy rejects user-bottom resume and survives reset',
+    (tester) async {
+      final bridge = TerminalProjectionBridge(
+        isActive: () => true,
+        maxLines: 40,
+      );
+      addTearDown(bridge.invalidate);
+      final runtime = Runtime.ofProgram(program)
+        ..addPlugin(flutterEvalPlugin)
+        ..addPlugin(bridge);
+      final handle = _invoke(runtime, 'requestRows', [$int(6)]) as String;
+      final args = [$String(handle)];
+      _invoke(runtime, 'followPolicy', [...args, $bool(false), $bool(false)]);
+      _invoke(runtime, 'resetHandle', args);
+      expect(
+        (_invoke(runtime, 'readHandle', args) as Map)['resumeAtEnd'],
+        isFalse,
+      );
+      for (var i = 0; i < 60; i++) {
+        _invoke(runtime, 'feedHandle', [...args, $String('row\n'), $int(6)]);
+      }
+      final view = _invoke(runtime, 'buildHandle', args) as Widget;
+      await tester.pumpWidget(_host(view));
+      await tester.pump();
+      final observedStates = <Map<dynamic, dynamic>>[];
+      _invoke(runtime, 'observeHandle', [
+        ...args,
+        $Closure((_, _, values) {
+          observedStates.add(values.single!.$reified as Map);
+          return null;
+        }),
+      ]);
+      _invoke(runtime, 'followPolicy', [...args, $bool(false), $bool(false)]);
+      _invoke(runtime, 'scrollHandle', [...args, $double(0)]);
+      await tester.pumpAndSettle();
+      final point =
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(50, 60);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: const Offset(0, 5000)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        (_invoke(runtime, 'readHandle', args) as Map)['following'],
+        isFalse,
+      );
+      expect(observedStates.last, containsPair('following', false));
+      expect(
+        _invoke(runtime, 'feedHandle', [...args, $String('blocked'), $int(6)]),
+        0,
+      );
+      _invoke(runtime, 'followPolicy', [...args, $bool(true), $bool(true)]);
+      expect(
+        _invoke(runtime, 'feedHandle', [...args, $String('LIVE'), $int(6)]),
+        4,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'actual EVC explicitly chooses always-follow independent of rows',
+    (tester) async {
+      final bridge = TerminalProjectionBridge(
+        isActive: () => true,
+        maxLines: 40,
+      );
+      addTearDown(bridge.invalidate);
+      final runtime = Runtime.ofProgram(program)
+        ..addPlugin(flutterEvalPlugin)
+        ..addPlugin(bridge);
+      final handle =
+          _invoke(runtime, 'requestPolicy', [$int(20), $bool(true)]) as String;
+      final args = [$String(handle)];
+      expect(
+        _invoke(runtime, 'requestPolicy', [$int(20), $bool(true)]),
+        handle,
+      );
+      expect(
+        () => _invoke(runtime, 'requestPolicy', [$int(20), $bool(false)]),
+        throwsA(anything),
+      );
+      final outer = ScrollController();
+      addTearDown(outer.dispose);
+      for (var i = 0; i < 60; i++) {
+        _invoke(runtime, 'feedHandle', [...args, $String('row\n'), $int(20)]);
+      }
+      final view = _invoke(runtime, 'buildHandle', args) as Widget;
+      await tester.pumpWidget(
+        _host(
+          ListView(
+            controller: outer,
+            children: [
+              SizedBox(height: 130, child: view),
+              const SizedBox(height: 1000),
+            ],
+          ),
+        ),
+      );
+      await tester.pump();
+      final native = tester.widget<TerminalView>(find.byType(TerminalView));
+      final buffer = native.terminal.buffer;
+      native.controller!.setSelection(
+        buffer.createAnchor(0, 0),
+        buffer.createAnchor(3, 0),
+      );
+      _invoke(runtime, 'followPolicy', [...args, $bool(false), $bool(false)]);
+      _invoke(runtime, 'scrollHandle', [...args, $double(0)]);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position:
+              tester.getTopLeft(find.byType(TerminalView)) +
+              const Offset(50, 60),
+          scrollDelta: const Offset(0, 60),
+        ),
+      );
+      expect(outer.offset, 60);
+      expect(
+        (_invoke(runtime, 'readHandle', args) as Map)['following'],
+        isTrue,
+      );
+      expect(
+        (_invoke(runtime, 'readHandle', args) as Map)['alwaysFollow'],
+        isTrue,
+      );
+      expect(
+        _invoke(runtime, 'feedHandle', [...args, $String('LIVE'), $int(20)]),
+        4,
+      );
+      await tester.pump();
+      expect(_text(tester), endsWith('LIVE'));
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets(
     'actual EVC owns independent handles and bounded coherent feeds',

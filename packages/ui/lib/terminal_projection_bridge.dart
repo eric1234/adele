@@ -1,15 +1,19 @@
 import 'package:flutter/widgets.dart';
 
 /// Creates this presentation's independent, revocable, read-only projection.
-/// Repeated requests return the same handle and must use the same [rows].
-/// Geometry is fixed at 80 columns and 6 (preview) or 20 (console) rows, with
+/// Repeated requests must use the same [rows] and [alwaysFollow] policy.
+/// The plugin explicitly selects [alwaysFollow]; it is never inferred from rows.
+/// When true, local selection cannot freeze feeding and vertical user scrolling
+/// passes to the surrounding view. Selection and explicit copy remain local.
+/// Geometry is fixed at 80 columns and 6 or 20 rows, with
 /// 200 retained lines including the viewport. Neither layout nor output can
 /// resize it. Pipe LF starts the next line at column zero, unlike a PTY feed.
 /// CSI REP renders up to 1024 repetitions exactly. A larger count fails and
 /// retires this projection rather than silently truncating captured output.
-String requestTerminalProjection(int rows) => throw UnsupportedError(
-  'Terminal projection access is available only to interpreted frontends.',
-);
+String requestTerminalProjection(int rows, bool alwaysFollow) =>
+    throw UnsupportedError(
+      'Terminal projection access is available only to interpreted frontends.',
+    );
 
 /// Builds the single native view. Local scroll, selection and explicit copy are
 /// supported; no input, paste, response, resize, signal or ambient action is
@@ -43,13 +47,14 @@ Future<bool> yieldTerminalProjection(String handle) => throw UnsupportedError(
 );
 
 /// Clears parser, screen, selection and progress, and enables feeding/follow.
+/// Preserves the configured resumeAtEnd policy for bounded history replay.
 /// History readers replay from the beginning to restore parser state; this is
 /// not permission to fetch, execute, or continue any backend operation.
 void resetTerminalProjection(String handle) => throw UnsupportedError(
   'Terminal projection access is available only to interpreted frontends.',
 );
 
-/// Immutable snapshot: following (bool), columns/rows/maxLines,
+/// Immutable snapshot: following/alwaysFollow/resumeAtEnd (bool), columns/rows/maxLines,
 /// maxFeedCodeUnits, historyWindowCodeUnits, acceptedCodeUnits, lineAdvances,
 /// firstRetainedLine, retainedLines (int), scrollOffset/maxScrollOffset (double).
 /// Progress starts at zero on reset. Row advances count downward cursor movement
@@ -63,16 +68,24 @@ Map<String, dynamic> readTerminalProjection(String handle) =>
       'Terminal projection access is available only to interpreted frontends.',
     );
 
-/// False freezes the feed as well as follow. User scroll-away or selection freezes it
-/// synchronously, so a queued plugin feed cannot evict the inspected region.
-/// True resumes feed and scrolls to the current bottom; the reader must replay
-/// missing history before treating that position as the current output tail.
-void setTerminalProjectionFollow(String handle, bool following) =>
-    throw UnsupportedError(
-      'Terminal projection access is available only to interpreted frontends.',
-    );
+/// For a non-always-follow projection, false freezes feed as well as follow.
+/// User scroll-away or selection freezes synchronously before queued feeds.
+/// [resumeAtEnd] allows actual user scrolling back to the rendered cursor end
+/// to resume, but only without active selection. Set false for explicit history
+/// windows, including before reset/replay. Programmatic scroll, layout and remount
+/// never resume a frozen feed. True explicitly clears selection and follows the
+/// rendered cursor; the reader must drain missing history from its applied cursor.
+/// Always-follow projections cannot be frozen by this operation.
+void setTerminalProjectionFollow(
+  String handle,
+  bool following,
+  bool resumeAtEnd,
+) => throw UnsupportedError(
+  'Terminal projection access is available only to interpreted frontends.',
+);
 
-/// Scrolls within the local retained buffer in logical pixels and freezes feed.
+/// Scrolls within the local retained buffer in logical pixels and freezes feed,
+/// preserving resumeAtEnd. Always-follow projections remain at the rendered end.
 void scrollTerminalProjection(String handle, double offset) =>
     throw UnsupportedError(
       'Terminal projection access is available only to interpreted frontends.',

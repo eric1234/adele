@@ -70,6 +70,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   bool disposed = false;
   bool draining = false;
   bool following = true;
+  bool liveTail = true;
   bool replaying = true;
   bool resetPending = false;
   bool opening = false;
@@ -94,6 +95,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
       final retained = readConsoleContentState();
       if (retained['following'] == false) {
         following = false;
+        liveTail = retained['liveTail'] as bool;
         targetUnits = retained['codeUnits'] as int;
         restoreScroll = (retained['scrollOffset'] as num).toDouble();
         knownLines = retained['knownLines'] as int;
@@ -146,7 +148,11 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     }
     if (value.state == 'absent') replaying = false;
     if (projection.isEmpty && value.state != 'absent') {
-      projection = requestTerminalProjection(expanded ? 20 : 6);
+      projection = requestTerminalProjection(expanded ? 20 : 6, !expanded);
+      if (!following) {
+        // Prefix restoration follows locally, but is not a live-end gesture.
+        setTerminalProjectionFollow(projection, true, false);
+      }
       final geometry = readTerminalProjection(projection);
       rows = geometry['rows'] as int;
       windowRows = (geometry['maxLines'] as int) - rows - 2;
@@ -164,24 +170,38 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   }
 
   void projectionChanged() {
-    if (disposed || projection.isEmpty) return;
+    if (disposed || projection.isEmpty || failure.isNotEmpty) return;
     final state = readTerminalProjection(projection);
-    if (state['following'] == false && following) {
+    if (state['following'] == false && (following || replaying)) {
       following = false;
       replaying = false;
       targetLines = -1;
       targetUnits = -1;
       revision++;
+    } else if (state['following'] == true &&
+        !following &&
+        !replaying &&
+        liveTail) {
+      // Only the native user-return transition can re-enable a frozen live
+      // projection. Explicit windows and programmatic replay never take it.
+      follow();
+      return;
     }
     remember();
     setState(() {});
   }
 
-  void remember() {
-    if (!expanded || disposed || projection.isEmpty || replaying) return;
+  void remember([bool includeReplay = false]) {
+    if (!expanded ||
+        disposed ||
+        projection.isEmpty ||
+        (replaying && !includeReplay)) {
+      return;
+    }
     final state = readTerminalProjection(projection);
     writeConsoleContentState(<String, dynamic>{
       'following': following,
+      'liveTail': liveTail,
       'codeUnits': consumedUnits,
       'knownLines': knownLines,
       'scrollOffset': state['scrollOffset'],
@@ -349,19 +369,22 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     following = false;
     targetLines = -1;
     targetUnits = -1;
-    setTerminalProjectionFollow(projection, false);
+    setTerminalProjectionFollow(projection, false, liveTail);
     scrollTerminalProjection(projection, restoreScroll);
   }
 
   void history(int endLine) {
     if (disposed || projection.isEmpty || failure.isNotEmpty) return;
     revision++;
+    liveTail = false;
     following = false;
     replaying = true;
     targetLines = endLine < windowRows ? windowRows : endLine;
     targetUnits = -1;
     restoreScroll = 0;
     resetPending = true;
+    setTerminalProjectionFollow(projection, true, false);
+    remember(true);
     setState(() {});
     drain();
   }
@@ -369,11 +392,15 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   void follow() {
     if (disposed || projection.isEmpty || failure.isNotEmpty) return;
     revision++;
+    liveTail = true;
     following = true;
     replaying = true;
     targetLines = -1;
     targetUnits = -1;
-    setTerminalProjectionFollow(projection, true);
+    setTerminalProjectionFollow(projection, true, true);
+    // Retain the user's new mode even if this view hides during catch-up. The
+    // position still describes only text accepted by this projection.
+    remember(true);
     setState(() {});
     drain();
   }
@@ -492,15 +519,6 @@ class _CommandOutputViewState extends State<CommandOutputView> {
         ...controls,
         if (projection.isNotEmpty)
           SizedBox(height: 128, child: buildTerminalProjection(projection)),
-        if (projection.isNotEmpty && !following && failure.isEmpty)
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              tooltip: 'Follow output',
-              onPressed: () => follow(),
-              icon: Icon(Icons.arrow_downward),
-            ),
-          ),
         if (state != null && state.state != 'absent')
           TextButton(onPressed: () => showMore(), child: Text('Show more')),
         if (openingFailure.isNotEmpty)

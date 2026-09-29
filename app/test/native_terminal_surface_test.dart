@@ -32,6 +32,303 @@ void _expectProjectionRowVisible(WidgetTester tester, int row) {
 }
 
 void main() {
+  for (final rows in [6, 20]) {
+    testWidgets(
+      'always-follow policy with $rows rows bubbles scroll and keeps copy local',
+      (tester) async {
+        final surface = NativeTerminalSurface.projection(
+          rows: rows,
+          alwaysFollow: true,
+          maxLines: 40,
+        );
+        addTearDown(surface.dispose);
+        _feedProjection(surface, '${'row\n' * 60}TAIL');
+        final outer = ScrollController();
+        addTearDown(outer.dispose);
+        final copied = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied.add((call.arguments as Map)['text'] as String);
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 250,
+                height: 300,
+                child: ListView(
+                  controller: outer,
+                  children: [
+                    const SizedBox(height: 100),
+                    SizedBox(
+                      height: 100,
+                      child: surface.buildView(isActive: () => true),
+                    ),
+                    const SizedBox(height: 1000),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        final view = tester.widget<TerminalView>(find.byType(TerminalView));
+        final terminal = view.terminal;
+        final cursor = terminal.buffer.absoluteCursorY;
+        view.controller!.setSelection(
+          terminal.buffer.createAnchor(0, cursor),
+          terminal.buffer.createAnchor(4, cursor),
+        );
+        expect(surface.readProjection()['following'], isTrue);
+        final context = tester.element(
+          find
+              .descendant(
+                of: find.byType(TerminalView),
+                matching: find.byType(Scrollable),
+              )
+              .last,
+        );
+        Actions.invoke(context, CopySelectionTextIntent.copy);
+        await tester.pump();
+        expect(copied, ['TAIL']);
+        final offset = view.scrollController!.offset;
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            position:
+                tester.getTopLeft(find.byType(TerminalView)) +
+                const Offset(40, 50),
+            scrollDelta: const Offset(0, 60),
+          ),
+        );
+        expect(outer.offset, 60);
+        expect(view.scrollController!.offset, offset);
+        expect(surface.readProjection()['following'], isTrue);
+        await tester.pump();
+        await tester.dragFrom(
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(40, 50),
+          const Offset(0, -40),
+        );
+        await tester.pumpAndSettle();
+        expect(outer.offset, greaterThan(60));
+        surface.setProjectionFollow(false, resumeAtEnd: false);
+        surface.scrollProjection(0);
+        expect(surface.readProjection()['following'], isTrue);
+        expect(surface.feedProjection('\nNEXT', rows), 5);
+        await tester.pump();
+        await tester.pump();
+        expect(_text(_terminal(tester)), endsWith('TAIL\nNEXT'));
+        view.controller!.clearSelection();
+        expect(surface.readProjection()['following'], isTrue);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'explicit history cannot auto-resume at bottom across reset or remount',
+    (tester) async {
+      final surface = NativeTerminalSurface.projection(rows: 6, maxLines: 40);
+      addTearDown(surface.dispose);
+      surface.setProjectionFollow(false, resumeAtEnd: false);
+      surface.resetProjection();
+      expect(surface.readProjection()['resumeAtEnd'], isFalse);
+      _feedProjection(surface, '${'row\n' * 60}HISTORY');
+      surface.setProjectionFollow(false, resumeAtEnd: false);
+      surface.scrollProjection(0);
+      await tester.pumpWidget(
+        _host(surface.buildView(isActive: () => true), height: 100),
+      );
+      await tester.pump();
+      final point =
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(50, 50);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: const Offset(0, 5000)),
+      );
+      expect(surface.readProjection()['following'], isFalse);
+      expect(surface.feedProjection('blocked', 6), 0);
+      final position = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .scrollController!
+          .position;
+      expect(position.pixels, position.maxScrollExtent);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(
+        _host(surface.buildView(isActive: () => true), height: 100),
+      );
+      await tester.pump();
+      expect(surface.readProjection()['following'], isFalse);
+      expect(surface.readProjection()['resumeAtEnd'], isFalse);
+      surface.setProjectionFollow(true);
+      expect(surface.readProjection()['following'], isTrue);
+      expect(surface.feedProjection('\nLIVE', 6), 5);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  for (final gesture in ['wheel', 'drag']) {
+    testWidgets('user $gesture return to live end resumes frozen feed', (
+      tester,
+    ) async {
+      final surface = NativeTerminalSurface.projection(rows: 20, maxLines: 40);
+      addTearDown(surface.dispose);
+      _feedProjection(surface, '${'row\n' * 60}TAIL');
+      await tester.pumpWidget(
+        _host(surface.buildView(isActive: () => true), height: 130),
+      );
+      await tester.pump();
+      final point =
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(50, 60);
+      if (gesture == 'wheel') {
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            position: point,
+            scrollDelta: const Offset(0, -60),
+          ),
+        );
+      } else {
+        await tester.dragFrom(point, const Offset(0, 60));
+        await tester.pumpAndSettle();
+      }
+      expect(surface.readProjection()['following'], isFalse);
+      expect(surface.feedProjection('\nqueued', 20), 0);
+      if (gesture == 'wheel') {
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            position: point,
+            scrollDelta: const Offset(0, 5000),
+          ),
+        );
+      } else {
+        await tester.dragFrom(point, const Offset(0, -1000));
+        await tester.pumpAndSettle();
+      }
+      expect(surface.readProjection()['following'], isTrue);
+      expect(surface.feedProjection('\nqueued', 20), 7);
+      await tester.pump();
+      await tester.pump();
+      expect(_text(_terminal(tester)), endsWith('TAIL\nqueued'));
+      _expectProjectionRowVisible(
+        tester,
+        _terminal(tester).buffer.absoluteCursorY,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets(
+    'live-end return uses rendered cursor before blank padding and protects selection',
+    (tester) async {
+      final surface = NativeTerminalSurface.projection(rows: 20);
+      addTearDown(surface.dispose);
+      _feedProjection(surface, '${'row\n' * 9}TAIL');
+      await tester.pumpWidget(
+        _host(surface.buildView(isActive: () => true), height: 80),
+      );
+      await tester.pump();
+      final view = tester.widget<TerminalView>(find.byType(TerminalView));
+      final end = view.scrollController!.offset;
+      expect(end, greaterThan(0));
+      expect(end, lessThan(view.scrollController!.position.maxScrollExtent));
+      final point =
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(50, 40);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: point,
+          scrollDelta: const Offset(0, -5000),
+        ),
+      );
+      expect(surface.readProjection()['following'], isFalse);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: Offset(0, end)),
+      );
+      expect(surface.readProjection()['following'], isTrue);
+      _expectProjectionRowVisible(tester, 9);
+      final terminal = view.terminal;
+      view.controller!.setSelection(
+        terminal.buffer.createAnchor(0, 9),
+        terminal.buffer.createAnchor(4, 9),
+      );
+      expect(surface.readProjection()['following'], isFalse);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: point,
+          scrollDelta: const Offset(0, -5000),
+        ),
+      );
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: Offset(0, end)),
+      );
+      expect(surface.readProjection()['following'], isFalse);
+      expect(surface.feedProjection('blocked', 20), 0);
+      view.controller!.clearSelection();
+      await tester.pump();
+      expect(surface.readProjection()['following'], isFalse);
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: const Offset(0, -20)),
+      );
+      await tester.sendEventToBinding(
+        PointerScrollEvent(position: point, scrollDelta: const Offset(0, 20)),
+      );
+      expect(surface.readProjection()['following'], isTrue);
+      surface.dispose();
+      await tester.pump();
+      expect(find.byType(TerminalView), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'programmatic movement layout and remount do not resume a paused tail',
+    (tester) async {
+      final surface = NativeTerminalSurface.projection(rows: 20, maxLines: 40);
+      addTearDown(surface.dispose);
+      _feedProjection(surface, 'row\n' * 60);
+      final view = surface.buildView(isActive: () => true);
+      await tester.pumpWidget(_host(view, height: 130));
+      await tester.pump();
+      surface.scrollProjection(0);
+      await tester.pump();
+      final controller = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .scrollController!;
+      controller.jumpTo(controller.position.maxScrollExtent);
+      expect(surface.readProjection()['following'], isFalse);
+      controller.jumpTo(0);
+      final animation = controller.animateTo(
+        controller.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.linear,
+      );
+      await tester.pumpAndSettle();
+      await animation;
+      expect(surface.readProjection()['following'], isFalse);
+      await tester.pumpWidget(_host(view, height: 300));
+      await tester.pump();
+      expect(surface.readProjection()['following'], isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(
+        _host(surface.buildView(isActive: () => true), height: 130),
+      );
+      await tester.pump();
+      expect(surface.readProjection()['following'], isFalse);
+      expect(surface.feedProjection('blocked', 20), 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets(
     'short projection output stays painted above fixed screen padding',
     (tester) async {

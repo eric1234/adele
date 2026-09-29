@@ -165,8 +165,13 @@ native implementations supply their behavior; calling a stub natively throws
   console view has its own revocable handle, parser, buffer, and viewport; none
   reuses an interactive terminal or another view's projection. The public contract
   fixes 80 columns, 6 or 20 viewport rows, and 200 retained lines, with bounded
-  accepted-prefix feeding and no queued remainder. User scroll-away freezes feeding
-  synchronously, as does selection. Local scroll, selection, and explicit copy do not grant input,
+  accepted-prefix feeding and no queued remainder. The plugin explicitly chooses
+  always-follow or interactive-follow policy, independent of geometry. Interactive
+  scroll-away/selection freezes feeding; user return to the rendered end may resume
+  a live-tail view but not a plugin-selected historical window. Programmatic
+  scrolling never grants that intent. Always-follow leaves vertical scrolling to
+  its parent and never persistently pauses for selection. Local scroll, selection,
+  and explicit copy do not grant input,
   paste, terminal replies, resize, process, signal, or backend authority. Plugin
   readers own fetching and history position; the native projection is not history
   storage. See the [bridge contract](lib/terminal_projection_bridge.dart) for the

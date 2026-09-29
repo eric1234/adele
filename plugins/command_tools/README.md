@@ -252,19 +252,34 @@ local scrolling provide access beyond evicted native scrollback, without one
 retained checkpoint/widget per chunk. Middle uses the furthest rendered extent
 observed by this reader; Follow output first catches up to include newer history.
 
-User scrolling away freezes native feed synchronously, before delayed reads or
-notifications can move the viewport or evict the inspected region. Observation
-continues, coalescing committed state/extent while the historical projection stays
-fixed. The down-arrow **Follow output** action resumes from the actually applied
-position, drains committed backlog, and reports replay until caught up. The
-Inspection reader follows independently from an expanded historical reader.
-Selection also freezes a projection to protect the selected region; the preview
-offers its own Follow output control when the user freezes it.
+Inspection explicitly selects the projection's always-follow policy: it is a
+small live recent-output preview, not an independent historical reader. Vertical
+scroll gestures remain available to the surrounding card instead of latching the
+preview into history mode. Selection and explicit safe copy remain available,
+but selection does not stop the preview's feed. Show more opens the historical
+reader; the preview has no separate Follow action.
+
+Expanded output selects interactive follow. User scrolling away freezes native
+feed synchronously, before delayed reads or notifications can move or evict the
+inspected region. Selection also protects that region. Observation continues,
+coalescing committed state/extent. A user wheel/drag return to the rendered end
+of a paused live-tail projection resumes from its exact applied cursor and
+intra-chunk offset, drains committed backlog, and reports replay until caught up.
+The rendered end accounts for blank fixed-geometry screen padding; programmatic
+scrolling, layout, and restoration never count as user return.
+
+Beginning/Earlier/Middle/Later deliberately select an explicit historical window.
+Scrolling to that window's local bottom does not resume live following. The
+down-arrow **Follow output** action leaves that mode, clears the protected
+selection, and catches up to live output. One retained boolean distinguishes
+paused live-tail intent from an explicit window; remount restores that distinction
+alongside the bounded reading position. Both presentations remain independent,
+so the preview continues advancing while the expanded reader inspects history.
 
 ### Presentation lifetime and failures
 
 Hiding/unmounting a console releases its evaluator, watch, page, and native
-projection. The tab retains only logical follow mode, consumed text extent,
+projection. The tab retains only logical follow/live-tail mode, consumed text extent,
 known rendered extent, and local scroll offset. Remount reconstructs the prefix
 into an empty emulator before restoring a frozen position or catching up live;
 it never resumes an old cursor against an empty surface. Prefix reconstruction

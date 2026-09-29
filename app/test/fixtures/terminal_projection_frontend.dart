@@ -1,7 +1,9 @@
 import 'package:adele_ui/terminal_projection_bridge.dart';
 import 'package:flutter/material.dart';
 
-String requestRows(int rows) => requestTerminalProjection(rows);
+String requestRows(int rows) => requestTerminalProjection(rows, false);
+String requestPolicy(int rows, bool alwaysFollow) =>
+    requestTerminalProjection(rows, alwaysFollow);
 Widget buildHandle(String handle) => buildTerminalProjection(handle);
 int feedHandle(String handle, String text, int budget) =>
     feedTerminalProjection(handle, text, budget);
@@ -10,9 +12,21 @@ Map<String, dynamic> readHandle(String handle) =>
 void resetHandle(String handle) => resetTerminalProjection(handle);
 Future<bool> yieldHandle(String handle) => yieldTerminalProjection(handle);
 void followHandle(String handle, bool following) =>
-    setTerminalProjectionFollow(handle, following);
+    setTerminalProjectionFollow(handle, following, true);
+void followPolicy(String handle, bool following, bool resumeAtEnd) =>
+    setTerminalProjectionFollow(handle, following, resumeAtEnd);
 void scrollHandle(String handle, double offset) =>
     scrollTerminalProjection(handle, offset);
+
+void observeHandle(
+  String handle,
+  void Function(Map<String, dynamic>) observer,
+) {
+  subscribeTerminalProjection(handle, () {
+    final Map<String, dynamic> state = readTerminalProjection(handle);
+    observer(state);
+  });
+}
 
 Widget buildProjection() => ProjectionProbe();
 
@@ -30,7 +44,7 @@ class ProjectionProbeState extends State<ProjectionProbe> {
   @override
   void initState() {
     super.initState();
-    handle = requestTerminalProjection(6);
+    handle = requestTerminalProjection(6, false);
     nativeView = buildTerminalProjection(handle);
     listener = () {
       setState(() {
@@ -60,7 +74,7 @@ class ProjectionProbeState extends State<ProjectionProbe> {
         child: const Text('Reset'),
       ),
       TextButton(
-        onPressed: () => setTerminalProjectionFollow(handle, false),
+        onPressed: () => setTerminalProjectionFollow(handle, false, true),
         child: const Text('Freeze'),
       ),
       TextButton(
