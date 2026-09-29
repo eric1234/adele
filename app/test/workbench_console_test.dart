@@ -155,6 +155,154 @@ void main() {
     },
   );
 
+  testWidgets('opted-in hidden content keeps stable state and finite layout', (
+    tester,
+  ) async {
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
+    final one = _Evidence(
+      'One',
+      keepAlive: true,
+      body: () =>
+          TextField(key: const ValueKey('resident-input'), focusNode: focus),
+    );
+    final two = _Evidence('Two', keepAlive: true);
+    contribute([one, two]);
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    final input = find.byKey(const ValueKey('resident-input'));
+    final inputState = tester.state(input);
+    final inputSize = tester.getSize(input);
+    await tester.tap(input);
+    await tester.pump();
+    expect(focus.hasFocus, isTrue);
+    final epoch = one.mounts.single.interaction!;
+    await controller.invoke(controller.actions.single);
+    expect(epoch.isActive, isFalse);
+    expect(one.mounts.single.isActive, isTrue);
+    expect(focus.canRequestFocus, isFalse);
+    await tester.pump();
+    expect(focus.hasFocus, isFalse);
+    expect(input, findsNothing);
+    final hidden = find.byKey(
+      const ValueKey('resident-input'),
+      skipOffstage: false,
+    );
+    expect(tester.state(hidden), same(inputState));
+    expect(tester.getSize(hidden), inputSize);
+    expect(TickerMode.of(tester.element(hidden)), isFalse);
+    await tester.tap(find.widgetWithText(TextButton, 'One'));
+    await tester.pump();
+    expect(tester.state(input), same(inputState));
+    expect(one.mounts, hasLength(1));
+    expect(two.mounts, hasLength(1));
+    expect(epoch.isActive, isFalse);
+    expect(one.mounts.single.interaction!.isActive, isTrue);
+    expect(TickerMode.of(tester.element(input)), isTrue);
+    expect(focus.hasFocus, isFalse);
+    await tester.tap(find.byTooltip('Hide console'));
+    expect(one.mounts.single.isActive, isFalse);
+    expect(two.mounts.single.isActive, isFalse);
+    await tester.pump();
+    expect(hidden, findsNothing);
+    expect(one.releases, 0);
+    expect(two.releases, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('two-slot churn disposes only LRU views and preserves tabs', (
+    tester,
+  ) async {
+    await controller.close();
+    controller.dispose();
+    controller = ConsoleController(registry, presentationLimit: 2)
+      ..setSession(
+        Session(
+          id: SessionId('session'),
+          taskId: TaskId('task'),
+          strategyId: OrchestrationStrategyId('test.strategy'),
+        ),
+      );
+    final contents = List.generate(
+      4,
+      (index) => _Evidence('Tab $index', keepAlive: true),
+    );
+    contribute(contents);
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    final tabs = controller.eligibleTabs;
+    final first = contents[0].mounts.single;
+    controller.select(tabs[0]);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    expect(contents[1].mounts.single.isActive, isFalse);
+    expect(first.isActive, isTrue);
+    expect(controller.eligibleTabs, hasLength(3));
+    expect(
+      find.byKey(const ValueKey('evidence-body'), skipOffstage: false),
+      findsNWidgets(2),
+    );
+    expect(find.text('Evidence for Tab 2'), findsOneWidget);
+    // Several synchronous changes before Flutter disposes removed children must
+    // not resurrect an old grant or create an unvisited fourth presentation.
+    controller.select(tabs[1]);
+    controller.selectedPresentation;
+    controller.select(tabs[0]);
+    controller.selectedPresentation;
+    controller.select(tabs[1]);
+    await tester.pump();
+    expect(first.isActive, isFalse);
+    expect(contents[1].mounts, hasLength(2));
+    expect(contents[1].mounts.first.isActive, isFalse);
+    expect(contents[3].mounts, isEmpty);
+    expect(controller.residentPresentations, hasLength(2));
+    expect(contents.every((content) => content.releases == 0), isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(
+      contents
+          .expand((content) => content.mounts)
+          .every((access) => !access.isActive),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('warm selection withdraws exact close dialog', (tester) async {
+    final one = _Evidence('One', keepAlive: true);
+    final two = _Evidence('Two', keepAlive: true);
+    contribute([one, two]);
+    await tester.pumpWidget(host(width: 800));
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await tester.tap(find.byTooltip('Close Two'));
+    await tester.pumpAndSettle();
+    final lateAccept = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Close'))
+        .onPressed!;
+    controller.select(controller.eligibleTabs.first);
+    expect(two.mounts.single.isActive, isTrue);
+    expect(two.mounts.single.interaction, isNull);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(_dialogBarriers(), findsNothing);
+    lateAccept();
+    await tester.pump();
+    expect(two.releases, 0);
+    expect(controller.eligibleTabs, hasLength(2));
+    expect(one.mounts, hasLength(1));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'close cancellation is inert and confirmation leaves warning outside tab',
     (tester) async {
@@ -506,11 +654,19 @@ Finder _dialogBarriers() => find.byWidgetPredicate(
 );
 
 class _Evidence {
-  _Evidence(this.title, {this.warning, this.noConfirmation = false});
+  _Evidence(
+    this.title, {
+    this.warning,
+    this.noConfirmation = false,
+    this.keepAlive = false,
+    this.body,
+  });
 
   final String title;
   final String? warning;
   final bool noConfirmation;
+  final bool keepAlive;
+  final Widget Function()? body;
   final List<ConsolePresentationAccess> mounts = [];
   late ConsoleTabRegistration registration;
   var releases = 0;
@@ -520,11 +676,12 @@ class _Evidence {
       ConsoleContent(
         metadata: ConsoleMetadata(title: title, status: ConsoleStatus.running),
         isEligible: (_) => true,
+        keepAlive: keepAlive,
         createPresentation: (access) {
           mounts.add(access);
           return SizedBox.expand(
             key: const ValueKey('evidence-body'),
-            child: Text('Evidence for $title'),
+            child: body?.call() ?? Text('Evidence for $title'),
           );
         },
         closeAdvice: () =>

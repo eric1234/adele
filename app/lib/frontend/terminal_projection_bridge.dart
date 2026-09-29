@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:adele_ui/console.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
@@ -169,13 +170,18 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
     required bool Function() isActive,
     int maxLines = 200,
     TerminalProjectionRetention? retention,
+    ConsolePresentationAccess? presentation,
   }) : _isActive = isActive,
+       _presentation = presentation,
        _maxLines = maxLines,
        _retention = retention,
        _lease = retention?._acquire(),
-       _initialProjection = Map.of(retention?.snapshot ?? const {});
+       _initialProjection = Map.of(retention?.snapshot ?? const {}) {
+    presentation?.changes.addListener(_presentationChanged);
+  }
 
   final bool Function() _isActive;
+  final ConsolePresentationAccess? _presentation;
   final int _maxLines;
   final TerminalProjectionRetention? _retention;
   final int? _lease;
@@ -199,12 +205,21 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
       return false;
     }
     try {
-      if (_isActive()) return true;
+      if (_isActive() && (_presentation?.isActive ?? true)) return true;
     } on Object {
       // A failing liveness check revokes this exact presentation.
     }
     invalidate();
     return false;
+  }
+
+  void _presentationChanged() {
+    if (!(_presentation?.isActive ?? true)) invalidate();
+  }
+
+  bool Function() _captureInteraction() {
+    final grant = _presentation!.interaction;
+    return () => grant?.isActive ?? false;
   }
 
   void _validate() {
@@ -257,6 +272,10 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
         return $Widget.wrap(
           _view ??= surface.buildView(
             isActive: () => _available,
+            interactionChanges: _presentation?.changes,
+            captureInteraction: _presentation == null
+                ? null
+                : _captureInteraction,
             onUnavailable: () {
               invalidate();
               onFailure?.call();
@@ -403,6 +422,7 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
   void retainPresentation() {
     _checkpoint();
     _active = false;
+    _presentation?.changes.removeListener(_presentationChanged);
     _listeners.clear();
     _detach?.call();
     _detach = null;

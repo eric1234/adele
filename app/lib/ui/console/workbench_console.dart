@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 
 import 'console_controller.dart';
@@ -99,6 +100,7 @@ class _WorkbenchConsoleState extends State<WorkbenchConsole> {
       final controller = widget.controller;
       final tabs = controller.eligibleTabs;
       final actions = controller.actions;
+      final residents = controller.residentPresentations;
       final colors = Theme.of(context).colorScheme;
       return LayoutBuilder(
         builder: (context, constraints) => ConstrainedBox(
@@ -258,17 +260,30 @@ class _WorkbenchConsoleState extends State<WorkbenchConsole> {
                               ),
                             Expanded(
                               child: ClipRect(
-                                child:
-                                    controller.selectedPresentation ??
-                                    Center(
-                                      child: Text(
-                                        tabs.isNotEmpty
-                                            ? 'Select a console tab.'
-                                            : actions.isEmpty
-                                            ? 'No console contributions are available.'
-                                            : 'Create a console from the + menu.',
+                                child: residents.isEmpty
+                                    ? Center(
+                                        child: Text(
+                                          tabs.isNotEmpty
+                                              ? 'Select a console tab.'
+                                              : actions.isEmpty
+                                              ? 'No console contributions are available.'
+                                              : 'Create a console from the + menu.',
+                                        ),
+                                      )
+                                    : Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          for (final resident in residents)
+                                            _ResidentView(
+                                              key: ObjectKey(resident),
+                                              resident: resident,
+                                              selected: identical(
+                                                resident.tab,
+                                                controller.selectedTab,
+                                              ),
+                                            ),
+                                        ],
                                       ),
-                                    ),
                               ),
                             ),
                           ],
@@ -283,4 +298,64 @@ class _WorkbenchConsoleState extends State<WorkbenchConsole> {
       );
     },
   );
+}
+
+/// Stable parentage and finite layout even while hidden. Lifetime and interaction
+/// are enforced by access grants too, not by these next-frame wrappers alone.
+class _ResidentView extends StatefulWidget {
+  const _ResidentView({
+    super.key,
+    required this.resident,
+    required this.selected,
+  });
+
+  final ConsoleResidentPresentation resident;
+  final bool selected;
+
+  @override
+  State<_ResidentView> createState() => _ResidentViewState();
+}
+
+class _ResidentViewState extends State<_ResidentView> {
+  final _focus = FocusScopeNode(debugLabel: 'Console presentation');
+
+  ConsolePresentationAccess get _access => widget.resident.access;
+
+  @override
+  void initState() {
+    super.initState();
+    _access.changes.addListener(_accessChanged);
+    _accessChanged();
+  }
+
+  void _accessChanged() {
+    final interactive = _access.interaction?.isActive == true;
+    if (!interactive && _focus.hasFocus) _focus.unfocus();
+    _focus.canRequestFocus = interactive;
+  }
+
+  @override
+  Widget build(BuildContext context) => Offstage(
+    offstage: !widget.selected,
+    child: TickerMode(
+      enabled: widget.selected,
+      child: ExcludeSemantics(
+        excluding: !widget.selected,
+        child: IgnorePointer(
+          ignoring: !widget.selected,
+          child: ExcludeFocus(
+            excluding: !widget.selected,
+            child: FocusScope(node: _focus, child: widget.resident.widget),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  @override
+  void dispose() {
+    _access.changes.removeListener(_accessChanged);
+    _focus.dispose();
+    super.dispose();
+  }
 }

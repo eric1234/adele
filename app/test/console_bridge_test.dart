@@ -8,6 +8,7 @@ import 'package:adele_desktop/frontend/terminal_projection_bridge.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/console_bridge.dart' as public_bridge;
 import 'package:dart_eval/dart_eval.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _library = 'package:console_probe/main.dart';
@@ -35,6 +36,15 @@ Map<String, dynamic> state() => readConsoleContentState();
 bool remember() => writeConsoleContentState({'following': false, 'offset': 42});
 bool oversized() => writeConsoleContentState({'text': '${'x' * 8193}'});
 Future<List<dynamic>> badKey() => openPreparedConsole('test.output', '', 'Output', {});
+final captured = <int>[0];
+final notifications = <int>[0];
+void Function() listener = () { notifications[0] = notifications[0] + 1; };
+int interaction() => readConsoleInteraction();
+int capture() => captured[0] = readConsoleInteraction();
+bool capturedActive() => isConsoleInteractionActive(captured[0]);
+void subscribe() => subscribeConsoleInteraction(listener);
+void unsubscribe() => unsubscribeConsoleInteraction(listener);
+int changes() => notifications[0];
 ''',
               },
             });
@@ -62,6 +72,104 @@ Future<List<dynamic>> badKey() => openPreparedConsole('test.output', '', 'Output
     expect(
       () => public_bridge.writeConsoleContentState({}),
       throwsUnsupportedError,
+    );
+    expect(public_bridge.readConsoleInteraction, throwsUnsupportedError);
+    expect(
+      () => public_bridge.isConsoleInteractionActive(1),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => public_bridge.subscribeConsoleInteraction(() {}),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => public_bridge.unsubscribeConsoleInteraction(() {}),
+      throwsUnsupportedError,
+    );
+  });
+
+  testWidgets(
+    'EVC interaction epochs never revive while resident state stays usable',
+    (tester) async {
+      final presentation = _Presentation();
+      final retained = content();
+      final bridge = ConsoleBridge(
+        isActive: () => true,
+        presentation: presentation,
+        content: retained,
+      );
+      final eval = runtime(bridge);
+      Object? call(String name) =>
+          copyStructuredBridgeData(eval.executeLib(_library, name));
+      final first = call('capture') as int;
+      expect(first, greaterThan(0));
+      expect(call('capturedActive'), isTrue);
+      expect(bridge.isInteractionActive(0), isFalse);
+      call('subscribe');
+      expect(presentation.hasSubscribers, isTrue);
+      presentation.select(false);
+      expect(call('capturedActive'), isFalse);
+      expect(call('interaction'), 0);
+      expect(call('remember'), isTrue);
+      expect(call('data'), {'identity': 'opaque'});
+      presentation.select(true);
+      expect(call('capturedActive'), isFalse);
+      expect(call('interaction'), greaterThan(first));
+      expect(call('changes'), 0);
+      await tester.pump();
+      expect(
+        call('changes'),
+        1,
+        reason: 'Multiple changes coalesce outside build.',
+      );
+      expect(call('capture'), greaterThan(first));
+      expect(call('capturedActive'), isTrue);
+
+      presentation.select(false);
+      call('unsubscribe');
+      await tester.pump();
+      expect(
+        call('changes'),
+        1,
+        reason: 'Unsubscribe fences queued callbacks.',
+      );
+      call('subscribe');
+      presentation.select(true);
+      presentation.retire();
+      expect(presentation.hasSubscribers, isFalse);
+      expect(call('interaction'), 0);
+      expect(call('remember'), isFalse);
+      expect(call('data'), isEmpty);
+      await tester.pump();
+      expect(call('changes'), 1, reason: 'Retirement fences queued callbacks.');
+      bridge.invalidate();
+      presentation.dispose();
+    },
+  );
+
+  test('absent presentation grants no interaction', () {
+    var active = true;
+    final bridge = ConsoleBridge(isActive: () => active);
+    final eval = runtime(bridge);
+    expect(copyStructuredBridgeData(eval.executeLib(_library, 'capture')), 0);
+    expect(
+      copyStructuredBridgeData(eval.executeLib(_library, 'capturedActive')),
+      isFalse,
+    );
+    active = false;
+    expect(
+      copyStructuredBridgeData(eval.executeLib(_library, 'capturedActive')),
+      isFalse,
+    );
+    expect(
+      copyStructuredBridgeData(eval.executeLib(_library, 'interaction')),
+      0,
+    );
+    bridge.invalidate();
+    active = true;
+    expect(
+      copyStructuredBridgeData(eval.executeLib(_library, 'interaction')),
+      0,
     );
   });
 
@@ -187,4 +295,31 @@ Future<List<dynamic>> badKey() => openPreparedConsole('test.output', '', 'Output
       expect(retained.state, isEmpty);
     },
   );
+}
+
+final class _Presentation extends ChangeNotifier
+    implements ConsolePresentationAccess {
+  @override
+  bool isActive = true;
+  @override
+  Listenable get changes => this;
+  bool get hasSubscribers => hasListeners;
+  @override
+  _Interaction? interaction = _Interaction();
+
+  void select(bool selected) {
+    interaction?.isActive = false;
+    interaction = selected && isActive ? _Interaction() : null;
+    notifyListeners();
+  }
+
+  void retire() {
+    isActive = false;
+    select(false);
+  }
+}
+
+final class _Interaction implements ConsoleInteractionAccess {
+  @override
+  bool isActive = true;
 }

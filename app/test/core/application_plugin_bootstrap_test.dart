@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -215,7 +216,20 @@ void main() {
         throwsStateError,
       );
       live = true;
+      var retirements = 0;
+      var detachedRetirements = 0;
+      final retired = Completer<void>();
+      backend.onRetire(() {
+        retirements++;
+        retired.complete();
+      });
+      final detach = backend.onRetire(() => detachedRetirements++);
+      detach();
       await backend.connection!.close();
+      await retired.future;
+      expect(retirements, 1);
+      expect(detachedRetirements, 0);
+      expect(() => backend.onRetire(() {}), throwsStateError);
       expect(bootstrap.backendForInstallation(installation), isNull);
       final replacement = await bootstrap.host!.startPlugin(
         pluginId: pluginId,
@@ -251,6 +265,11 @@ void main() {
       );
       expect(bootstrap.backendForInstallation(installation), isNull);
       await activation.close();
+      expect(
+        retirements,
+        1,
+        reason: 'Replacement cannot retire the old owner again.',
+      );
       final closing = bootstrap.close();
       expect(bootstrap.backendForInstallation(installation), isNull);
       await closing;

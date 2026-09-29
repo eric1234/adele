@@ -187,8 +187,9 @@ void main() {
     },
   );
 
-  Future<(PreparedFrontend, ExtensionRegistration, ConsoleBridge)>
-  readOnly() async {
+  Future<(PreparedFrontend, ExtensionRegistration, ConsoleBridge)> readOnly({
+    bool keepAlive = false,
+  }) async {
     final generation = await PreparedFrontend.load(contentArtifact);
     addTearDown(generation.invalidate);
     late ExtensionRegistration registration;
@@ -204,6 +205,7 @@ void main() {
           entrypoint: 'buildContent',
           actions: [],
           readOnly: true,
+          keepAlive: keepAlive,
         ),
         isActive: () => !registration.isClosed,
       ),
@@ -329,6 +331,558 @@ void main() {
       expect(fixture.controller.eligibleTabs, isEmpty);
       expect(fixture.provider.requests, isEmpty);
     },
+  );
+
+  for (final departure in ['failure', 'retirement', 'host close', 'dispose']) {
+    testWidgets(
+      'prepared content detaches resident listeners on $departure',
+      (tester) => tester.runAsync(() async {
+        final generation = await PreparedFrontend.load(contentArtifact);
+        addTearDown(generation.invalidate);
+        final contribution = fixture.host.createContribution(
+          installation: catalog.installations.single,
+          generation: generation,
+          descriptor: PreparedConsolePresentation(
+            extensionId: ExtensionId('test.listener-cleanup'),
+            library: _contentLibrary,
+            entrypoint: departure == 'failure' ? 'missing' : 'buildContent',
+            actions: [],
+            readOnly: true,
+            keepAlive: true,
+          ),
+          isActive: () => true,
+        );
+        final creation = _CaptureCreation(fixture.sessionA);
+        await contribution.openPrepared!(
+          creation,
+          ConsoleContentDescriptor(
+            key: 'listener-cleanup',
+            metadata: ConsoleMetadata(title: 'Output'),
+            data: {'identity': 'opaque'},
+          ),
+        );
+        expect(creation.content.keepAlive, isTrue);
+        final access = _ObservedPresentation();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: creation.content.createPresentation(access)),
+          ),
+        );
+        await tester.pump();
+        if (departure == 'failure') {
+          expect(find.text('Frontend unavailable.'), findsOneWidget);
+        } else {
+          expect(access.hasSubscribers, isTrue);
+          switch (departure) {
+            case 'retirement':
+              access.retire();
+            case 'host close':
+              final closing = fixture.host.close();
+              expect(access.hasSubscribers, isFalse);
+              await closing;
+              await tester.pump();
+              expect(find.text('Frontend unavailable.'), findsOneWidget);
+            case 'dispose':
+              await tester.pumpWidget(const SizedBox.shrink());
+          }
+        }
+        // Failure and resident retirement clean up even before Flutter disposes
+        // the prepared subtree. A second disposal must remain harmless.
+        expect(access.hasSubscribers, isFalse);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await creation.content.release();
+        access.dispose();
+        expect(tester.takeException(), isNull);
+      }),
+    );
+  }
+
+  Future<_CommandHost> commandHost(WidgetTester tester) async {
+    final backends = ApplicationPluginBootstrap(
+      fixture.capabilities,
+      fixture.extensions,
+    );
+    final host = PreparedConsoleHost(
+      store: fixture.store,
+      terminals: fixture.terminals,
+      extensions: fixture.extensions,
+      controller: fixture.controller,
+      backends: backends,
+    );
+    final frontends = ApplicationFrontendBootstrap(
+      extensions: fixture.extensions,
+      consoleHost: host,
+      backends: backends,
+    );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await frontends.close();
+      await host.close();
+      await backends.close();
+    });
+    await backends.start(
+      installationRoot: commandInstallation.path,
+      dartaotruntimeExecutable:
+          '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+      hostArtifactPath: File(
+        'test/fixtures/command_output_host.dart',
+      ).absolute.path,
+    );
+    await frontends.start(backends.catalog!);
+    expect(frontends.generations.single.state, InstalledFrontendState.active);
+    fixture.controller.setSession(fixture.sessionA);
+    return _CommandHost(
+      tester,
+      fixture,
+      backends,
+      backends.backends.single.connection!,
+      fixture.extensions
+          .discover(consoleContributions)
+          .singleWhere(
+            (binding) =>
+                binding.id ==
+                ExtensionId('dev.adele.plugin.command-tools.output'),
+          ),
+    );
+  }
+
+  testWidgets(
+    'stock warm tabs keep native parser, watch and forward cursors while hidden',
+    (tester) => tester.runAsync(() async {
+      final host = await commandHost(tester);
+      final prefix =
+          '${List.generate(600, (i) => 'row-${i.toString().padLeft(3, '0')}:'.padRight(78, '.')).join('\r\n')}\r\nprogress\rOK\x1b[K\r\n\x1b[3';
+      await host.control('append', text: prefix);
+      final a = await host.open('a');
+      await host.mount();
+      await host.until(
+        () => host.hasText(a, 'Following output'),
+        'A initial replay',
+      );
+      final engine = host.view(a).terminal.buffer.terminal as Terminal;
+      final element = tester.state(host.findView(a));
+      final presentation = fixture.controller.selectedPresentation;
+      final reads = host.cursors('a');
+      final highWater = host.stats['highWater'];
+      expect(reads.length, greaterThan(2));
+      expect(_terminalText(engine), contains('row-599'));
+      expect(_terminalText(engine), isNot(contains('row-000')));
+      expect(engine.buffer.height, lessThanOrEqualTo(200));
+      final b = await host.open('b');
+      await host.until(
+        () => host.hasText(b, 'Following output'),
+        'B initial replay',
+      );
+      expect(find.byType(TerminalView), findsOneWidget);
+      expect(find.byType(TerminalView, skipOffstage: false), findsNWidgets(2));
+      final suffix =
+          '1;1mred\x1b[0m \u03bb\u754c \u{1f600}\r\npartial-\x1b]2;hidden';
+      await host.control('append', text: suffix);
+      await host.until(
+        () =>
+            _terminalText(engine).contains('partial-') &&
+            host.cursors('a').length == reads.length + 1,
+        'hidden A consumes only its new suffix',
+      );
+      expect(host.cursors('a'), [...reads, highWater]);
+      expect(host.watches('a'), 1);
+      expect(host.watches('b'), 1);
+      final hiddenOffset = host.view(a).scrollController!.offset;
+      await tester.tap(find.widgetWithText(TextButton, 'Output a'));
+      await tester.pump();
+      expect(fixture.controller.selectedPresentation, same(presentation));
+      expect(host.view(a).terminal.buffer.terminal, same(engine));
+      expect(tester.state(host.findView(a)), same(element));
+      expect(host.painted(a), true);
+      expect(host.view(a).scrollController!.offset, closeTo(hiddenOffset, .01));
+      expect(host.hasText(a, 'Replaying output...'), false);
+      await host.control('append', text: ' title\x1b\\-done');
+      await host.until(
+        () => _terminalText(engine).contains('partial--done'),
+        'split OSC resumes across warm selection',
+      );
+      final reference = Terminal(maxLines: 200)..resize(80, 20);
+      reference.write('$prefix$suffix title\x1b\\-done');
+      expect(_terminalText(engine), _terminalText(reference));
+      final redLine = engine.buffer.lines.length - 2;
+      expect(
+        engine.buffer.lines[redLine].getForeground(0) & CellColor.valueMask,
+        1,
+      );
+      expect(
+        engine.buffer.lines[redLine].getAttributes(0) & CellAttr.bold,
+        isNonZero,
+      );
+      expect(host.cursors('a').where((cursor) => cursor == 0), [0]);
+      expect(host.stats['maximumPageChunks'], 4);
+      expect(host.stats['maximumPageUnits'], lessThanOrEqualTo(16384));
+      expect((host.stats['maximumReads']! as Map)['a'], 1);
+      expect(fixture.provider.requests, isEmpty);
+      await host.unmount();
+    }),
+  );
+
+  testWidgets(
+    'stock warm switch during held initial replay keeps one finite reveal target',
+    (tester) => tester.runAsync(() async {
+      final host = await commandHost(tester);
+      await host.control(
+        'append',
+        text: List.generate(260, (i) => 'initial-$i\r\n').join(),
+      );
+      await host.control('hold', invocation: 'a');
+      final a = await host.open('a');
+      await host.mount();
+      await host.until(() => host.activeReads('a') == 1, 'initial A read held');
+      final engine = host.view(a).terminal.buffer.terminal as Terminal;
+      final element = tester.state(host.findView(a));
+      expect(host.painted(a), false);
+      await host.open('b');
+      await tester.pump();
+      expect(find.text('Output b'), findsOneWidget);
+      await host.control('append', text: 'beyond-initial-target\r\n');
+      await host.control('releaseAndHoldNext', invocation: 'a');
+      await host.until(
+        () =>
+            host.activeReads('a') == 1 &&
+            host.cursors('a').length == 2 &&
+            host.painted(a),
+        'hidden A reveals its initial prefix before the held live suffix',
+      );
+      expect(_terminalText(engine), contains('initial-259'));
+      expect(_terminalText(engine), isNot(contains('beyond-initial-target')));
+      expect(host.hasText(a, 'Following output (catching up)'), true);
+      fixture.controller.select(a);
+      await tester.pump();
+      await tester.pump();
+      expect(host.view(a).terminal.buffer.terminal, same(engine));
+      expect(tester.state(host.findView(a)), same(element));
+      expect(host.painted(a), true);
+      expect(host.watches('a'), 1);
+      expect(host.cursors('a'), [0, 1]);
+      await host.control('release', invocation: 'a');
+      await host.until(
+        () => _terminalText(engine).contains('beyond-initial-target'),
+        'live suffix resumes without resetting initial readiness',
+      );
+      expect(host.painted(a), true);
+      expect(host.cursors('a'), [0, 1]);
+      await host.unmount();
+    }),
+  );
+
+  for (final mode in ['live tail', 'selection', 'explicit history']) {
+    testWidgets(
+      'stock warm $mode preserves same-turn native freeze and rejects stale controls',
+      (tester) => tester.runAsync(() async {
+        final host = await commandHost(tester);
+        await host.control(
+          'append',
+          text: List.generate(
+            650,
+            (i) => 'frozen-$i:'.padRight(78, '.'),
+          ).join('\r\n'),
+        );
+        final a = await host.open('a');
+        await host.mount();
+        await host.until(
+          () => host.hasText(a, 'Following output'),
+          'initial A output',
+        );
+        final b = await host.open('b');
+        await host.until(
+          () => host.hasText(b, 'Following output'),
+          'initial B output',
+        );
+        fixture.controller.select(a);
+        await tester.pump();
+        await tester.pump();
+        if (mode == 'explicit history') {
+          await tester.tap(find.text('Middle'));
+          await host.until(
+            () => host.hasText(a, 'Reading history'),
+            'explicit middle prefix',
+          );
+        }
+        final staleBeginning = tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Beginning'))
+            .onPressed!;
+        final staleFollow = tester
+            .widget<IconButton>(
+              find.byWidgetPredicate(
+                (widget) =>
+                    widget is IconButton && widget.tooltip == 'Follow output',
+              ),
+            )
+            .onPressed!;
+        final engine = host.view(a).terminal.buffer.terminal as Terminal;
+        final element = tester.state(host.findView(a));
+        final frozen = _terminalText(engine);
+        if (mode != 'explicit history') {
+          await host.control('hold', invocation: 'a');
+          await host.control('append', text: 'held-before-freeze\r\n');
+          await host.until(
+            () => host.activeReads('a') == 1,
+            'A suffix read held',
+          );
+        }
+        final scroll = host.view(a).scrollController!;
+        if (mode == 'selection') {
+          host
+              .view(a)
+              .controller!
+              .setSelection(
+                engine.buffer.createAnchor(0, 0),
+                engine.buffer.createAnchor(4, 0),
+              );
+        } else {
+          scroll.position.pointerScroll(mode == 'live tail' ? -100 : 40);
+        }
+        final offset = scroll.offset;
+        // No frame or event turn between the native checkpoint and selection.
+        fixture.controller.select(b);
+        staleBeginning();
+        staleFollow();
+        await host.control('release', invocation: 'a');
+        await host.until(
+          () => host.hasText(b, 'Following output'),
+          'B catches up while A is frozen',
+        );
+        await host.control('append', text: '\r\nhidden-frozen-suffix\r\n');
+        await host.until(
+          () =>
+              host.activeReads('a') == 0 &&
+              _terminalText(
+                host.view(b).terminal,
+              ).contains('hidden-frozen-suffix'),
+          'late A settlement and independent B progression',
+        );
+        final reads = host.cursors('a');
+        expect(_terminalText(engine), frozen);
+        fixture.controller.select(a);
+        await tester.pump();
+        await tester.pump();
+        staleBeginning();
+        staleFollow();
+        await host.control('barrier');
+        await tester.pump();
+        expect(host.cursors('a'), reads);
+        expect(host.watches('a'), 1);
+        expect(host.hasText(a, 'Reading history'), true);
+        expect(host.view(a).terminal.buffer.terminal, same(engine));
+        expect(tester.state(host.findView(a)), same(element));
+        expect(_terminalText(engine), frozen);
+        expect(host.view(a).scrollController!.offset, closeTo(offset, .01));
+        if (mode == 'selection') {
+          expect(host.view(a).controller!.selection, isNotNull);
+        }
+        host.view(a).scrollController!.position.pointerScroll(20000);
+        if (mode != 'live tail') {
+          await tester.pump();
+          await host.control('barrier');
+          expect(host.cursors('a'), reads);
+          expect(_terminalText(engine), frozen);
+          await tester.tap(find.byTooltip('Follow output'));
+        }
+        await host.until(
+          () =>
+              host.hasText(a, 'Following output') &&
+              _terminalText(engine).contains('hidden-frozen-suffix'),
+          'fresh selected interaction resumes the exact reader',
+        );
+        expect(
+          _terminalText(engine).split('hidden-frozen-suffix'),
+          hasLength(2),
+        );
+        expect(host.watches('a'), 1);
+        expect(
+          host.cursors('a').where((cursor) => cursor == 0),
+          hasLength(mode == 'explicit history' ? 2 : 1),
+        );
+        expect((host.stats['maximumReads']! as Map)['a'], 1);
+        await host.unmount();
+      }),
+    );
+  }
+
+  testWidgets(
+    'stock hidden reader failure stays local to its resident sibling',
+    (tester) => tester.runAsync(() async {
+      final host = await commandHost(tester);
+      await host.control('append', text: 'before-failure\r\n');
+      final a = await host.open('a');
+      await host.mount();
+      await host.until(() => host.hasText(a, 'Following output'), 'A ready');
+      final engineA = host.view(a).terminal.buffer.terminal as Terminal;
+      final frozen = _terminalText(engineA);
+      final b = await host.open('b');
+      await host.until(() => host.hasText(b, 'Following output'), 'B ready');
+      final engineB = host.view(b).terminal.buffer.terminal as Terminal;
+      await host.control('failNextRead', invocation: 'a');
+      await host.control('append', text: 'surviving-sibling\r\n');
+      await host.until(
+        () =>
+            host.hasText(
+              a,
+              'Stored output could not be read. Close and reopen to try fresh access.',
+            ) &&
+            _terminalText(engineB).contains('surviving-sibling'),
+        'hidden A fails without disturbing B',
+      );
+      await host.until(
+        () => !(host.stats['observers']! as List).contains('a'),
+        'failed watch detached',
+      );
+      final reads = host.cursors('a');
+      fixture.controller.select(a);
+      await tester.pump();
+      await tester.pump();
+      expect(_terminalText(engineA), frozen);
+      expect(find.text('Frontend unavailable.'), findsNothing);
+      expect(find.textContaining('SECRET'), findsNothing);
+      fixture.controller.select(b);
+      await tester.pump();
+      await host.control('append', text: 'still-capturing\r\n');
+      await host.until(
+        () => _terminalText(engineB).contains('still-capturing'),
+        'B remains live after failed sibling reselection',
+      );
+      expect(host.view(b).terminal.buffer.terminal, same(engineB));
+      expect(host.cursors('a'), reads);
+      expect(host.watches('a'), 1);
+      expect(host.watches('b'), 1);
+      expect(fixture.provider.requests, isEmpty);
+      await host.unmount();
+    }),
+  );
+
+  testWidgets(
+    'stock two-slot LRU retires the evicted reader and reconstructs only on revisit',
+    (tester) => tester.runAsync(() async {
+      await fixture.close();
+      fixture = _Fixture(presentationLimit: 2);
+      final host = await commandHost(tester);
+      await host.control(
+        'append',
+        text: List.generate(260, (i) => 'resident-$i\r\n').join(),
+      );
+      final a = await host.open('a');
+      await host.mount();
+      await host.until(
+        () => host.hasText(a, 'Following output'),
+        'A initial reader',
+      );
+      final engineA = host.view(a).terminal.buffer.terminal as Terminal;
+      final b = await host.open('b');
+      await host.until(
+        () => host.hasText(b, 'Following output'),
+        'B initial reader',
+      );
+      final engineB = host.view(b).terminal.buffer.terminal as Terminal;
+      final accessB = fixture.controller.residentPresentations
+          .singleWhere((resident) => identical(resident.tab, b))
+          .access;
+      await tester.tap(find.widgetWithText(TextButton, 'Output a'));
+      await tester.pump();
+      expect(host.view(a).terminal.buffer.terminal, same(engineA));
+      await host.control('hold', invocation: 'b');
+      await host.control('append', text: 'pending-at-eviction\r\n');
+      await host.until(
+        () => host.activeReads('b') == 1,
+        'B pending read before eviction',
+      );
+      final frozenB = _terminalText(engineB);
+      final c = await host.open('c');
+      await tester.pump();
+      expect(accessB.isActive, false);
+      expect(fixture.controller.residentPresentations, hasLength(2));
+      expect(
+        fixture.controller.residentPresentations.map(
+          (resident) => resident.tab,
+        ),
+        [a, c],
+      );
+      expect(host.view(a).terminal.buffer.terminal, same(engineA));
+      await host.control('release', invocation: 'b');
+      await host.until(
+        () =>
+            host.hasText(c, 'Following output') &&
+            !(host.stats['observers']! as List).contains('b'),
+        'evicted B detaches while surviving readers finish',
+      );
+      final readsB = host.cursors('b');
+      await host.control('append', text: 'capture-after-eviction\r\n');
+      await host.until(
+        () => _terminalText(engineA).contains('capture-after-eviction'),
+        'resident A and capture continue without B',
+      );
+      expect(_terminalText(engineB), frozenB);
+      expect(host.cursors('b'), readsB);
+      expect(host.watches('b'), 1);
+      await tester.tap(find.widgetWithText(TextButton, 'Output b'));
+      await tester.pump();
+      await host.until(
+        () =>
+            host.hasText(b, 'Following output') &&
+            _terminalText(
+              host.view(b).terminal,
+            ).contains('capture-after-eviction'),
+        'evicted B rebuilds a fresh prefix only when revisited',
+      );
+      expect(host.view(b).terminal.buffer.terminal, isNot(same(engineB)));
+      expect(host.watches('b'), 2);
+      expect(host.cursors('b').where((cursor) => cursor == 0), hasLength(2));
+      expect(accessB.isActive, false);
+      expect(fixture.controller.residentPresentations, hasLength(2));
+      expect(fixture.provider.requests, isEmpty);
+      await host.unmount();
+    }),
+  );
+
+  testWidgets(
+    'stock hidden residents retire with their exact backend without closing Terminal',
+    (tester) => tester.runAsync(() async {
+      final host = await commandHost(tester);
+      await host.control('append', text: 'owned-before-retirement\r\n');
+      final a = await host.open('a');
+      await host.mount();
+      await host.until(
+        () => host.hasText(a, 'Following output'),
+        'A ready before retirement',
+      );
+      final staleBeginning = tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Beginning'))
+          .onPressed!;
+      final b = await host.open('b');
+      await host.until(
+        () => host.hasText(b, 'Following output'),
+        'B ready before retirement',
+      );
+      await fixture.create();
+      await tester.pump();
+      await tester.pump();
+      final terminal = fixture.owners.single;
+      expect(fixture.controller.residentPresentations, hasLength(3));
+      await host.backends.close();
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Frontend unavailable.', skipOffstage: false),
+        findsNWidgets(2),
+      );
+      expect(find.byType(TerminalView, skipOffstage: false), findsOneWidget);
+      expect(fixture.owners.single, same(terminal));
+      expect(terminal.state, EnvironmentTerminalState.running);
+      expect(fixture.provider.closes, isEmpty);
+      staleBeginning();
+      fixture.controller.select(a);
+      await tester.pump();
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 3));
+    }),
   );
 
   for (final departure in ['hide', 'switch tab', 'leave Session']) {
@@ -838,8 +1392,130 @@ String _terminalText(Terminal terminal) => [
     terminal.buffer.lines[i].getText().trimRight(),
 ].join('\n');
 
+final class _CommandHost {
+  _CommandHost(
+    this.tester,
+    this.fixture,
+    this.backends,
+    this.connection,
+    this.owner,
+  );
+
+  final WidgetTester tester;
+  final _Fixture fixture;
+  final ApplicationPluginBootstrap backends;
+  final PluginBackendConnection connection;
+  final ExtensionBinding<ConsoleContribution> owner;
+  Map<Object?, Object?> stats = {};
+
+  Future<void> control(
+    String method, {
+    String? text,
+    String? invocation,
+  }) async {
+    stats =
+        (await connection.request(method, {
+              'text': ?text,
+              'invocation': ?invocation,
+            }))!
+            as Map;
+  }
+
+  int watches(String invocation) =>
+      (stats['watches']! as Map)[invocation] as int? ?? 0;
+  int activeReads(String invocation) =>
+      (stats['activeReads']! as Map)[invocation] as int? ?? 0;
+  List<int> cursors(String invocation) =>
+      List<int>.from((stats['cursors']! as Map)[invocation] as List? ?? []);
+
+  Future<ConsoleTab> open(String invocation) async {
+    await fixture.controller.openOrFocus(
+      owner: owner,
+      session: fixture.sessionA,
+      descriptor: ConsoleContentDescriptor(
+        key: invocation,
+        metadata: ConsoleMetadata(title: 'Output $invocation'),
+        data: {
+          'sessionId': 'a',
+          'runId': 'run',
+          'toolInvocationId': invocation,
+          'title': 'Output $invocation',
+        },
+      ),
+    );
+    return fixture.controller.selectedTab!;
+  }
+
+  Future<void> mount() => tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(body: WorkbenchConsole(controller: fixture.controller)),
+    ),
+  );
+
+  Future<void> unmount() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await until(
+      () => (stats['observers']! as List).isEmpty,
+      'all resident watches detached',
+    );
+    await tester.pump(const Duration(seconds: 3));
+    expect(tester.takeException(), isNull);
+  }
+
+  Finder presentation(ConsoleTab tab) => find.byWidget(
+    fixture.controller.residentPresentations
+        .singleWhere((resident) => identical(resident.tab, tab))
+        .widget,
+    skipOffstage: false,
+  );
+
+  Finder findView(ConsoleTab tab) => find.descendant(
+    of: presentation(tab),
+    matching: find.byType(TerminalView, skipOffstage: false),
+    skipOffstage: false,
+  );
+
+  TerminalView view(ConsoleTab tab) =>
+      tester.widget<TerminalView>(findView(tab));
+
+  bool hasText(ConsoleTab tab, String value) => find
+      .descendant(
+        of: presentation(tab),
+        matching: find.text(value, skipOffstage: false),
+        skipOffstage: false,
+      )
+      .evaluate()
+      .isNotEmpty;
+
+  bool painted(ConsoleTab tab) =>
+      tester
+          .widget<Opacity>(
+            find.ancestor(
+              of: findView(tab),
+              matching: find.byType(Opacity, skipOffstage: false),
+            ),
+          )
+          .opacity ==
+      1;
+
+  Future<void> until(bool Function() ready, String reason) async {
+    for (var turn = 0; turn < 1000; turn++) {
+      // Advance real backend I/O and one bounded frame without a sleep or a
+      // pumpAndSettle loop over native cursor animation.
+      await control('barrier');
+      await tester.pump();
+      expect(tester.takeException(), isNull, reason: reason);
+      expect(find.text('Frontend unavailable.'), findsNothing, reason: reason);
+      if (ready()) return;
+    }
+    fail(
+      'Did not reach $reason; stats: $stats; text: ${tester.widgetList<Text>(find.byType(Text, skipOffstage: false)).map((text) => text.data).join(' | ')}',
+    );
+  }
+}
+
 final class _Fixture {
-  _Fixture() {
+  _Fixture({int presentationLimit = 4}) {
     task = Task(id: TaskId('task'), projectId: project.id, title: 'Fixture');
     primary = Environment(
       id: EnvironmentId('primary'),
@@ -898,6 +1574,7 @@ final class _Fixture {
     controller = ConsoleController(
       extensions,
       cleanupTimeout: const Duration(milliseconds: 200),
+      presentationLimit: presentationLimit,
     );
     host = PreparedConsoleHost(
       store: store,
@@ -946,6 +1623,46 @@ final class _Fixture {
     await terminals.close();
     controller.dispose();
   }
+}
+
+final class _ObservedPresentation extends ChangeNotifier
+    implements ConsolePresentationAccess {
+  @override
+  bool isActive = true;
+  @override
+  Listenable get changes => this;
+  @override
+  ConsoleInteractionAccess? get interaction => null;
+  bool get hasSubscribers => hasListeners;
+
+  void retire() {
+    isActive = false;
+    notifyListeners();
+  }
+}
+
+final class _CaptureCreation implements ConsoleCreationAccess {
+  _CaptureCreation(this.session);
+  @override
+  final Session session;
+  @override
+  bool get isActive => true;
+  late ConsoleContent content;
+
+  @override
+  ConsoleTabRegistration open(ConsoleContent content) {
+    this.content = content;
+    return _CapturedRegistration();
+  }
+}
+
+final class _CapturedRegistration implements ConsoleTabRegistration {
+  @override
+  bool get isActive => true;
+  @override
+  void updateMetadata(ConsoleMetadata metadata) {}
+  @override
+  Future<void> requestRemoval() async {}
 }
 
 final class _Provider

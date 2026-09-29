@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_desktop/terminal/native_terminal_surface.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +34,278 @@ void _expectProjectionRowVisible(WidgetTester tester, int row) {
 }
 
 void main() {
+  for (final kind in ['tap', 'selection', 'long press']) {
+    testWidgets('resident epoch change cancels pending native $kind', (
+      tester,
+    ) async {
+      final surface = NativeTerminalSurface.projection(rows: 20);
+      final interaction = _InteractionScope();
+      addTearDown(surface.dispose);
+      addTearDown(interaction.dispose);
+      _feedProjection(surface, 'selectable line\n' * 10);
+      await tester.pumpWidget(
+        _host(
+          surface.buildView(
+            isActive: () => true,
+            interactionChanges: interaction,
+            captureInteraction: interaction.capture,
+          ),
+        ),
+      );
+      await tester.pump();
+      final point =
+          tester.getTopLeft(find.byType(TerminalView)) + const Offset(30, 40);
+      final gesture = await tester.createGesture(
+        kind: kind == 'long press'
+            ? PointerDeviceKind.touch
+            : PointerDeviceKind.mouse,
+      );
+      await gesture.down(point);
+      if (kind == 'selection') await gesture.moveBy(const Offset(40, 0));
+      if (kind == 'long press') {
+        await tester.pump(const Duration(milliseconds: 600));
+      }
+      if (kind != 'tap') expect(surface.readProjection()['following'], isFalse);
+      surface.setProjectionFollow(true);
+      interaction.select(false);
+      interaction.select(true);
+      await tester.pump();
+      final current = tester.widget<TerminalView>(find.byType(TerminalView));
+      await gesture.moveBy(const Offset(80, 20));
+      await gesture.up();
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(current.controller!.selection, isNull);
+      expect(surface.readProjection()['following'], isTrue);
+      expect(current.focusNode!.hasFocus, isFalse);
+      await tester.dragFrom(
+        point,
+        const Offset(70, 0),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(surface.readProjection()['following'], isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets(
+    'resident offstage projection settles and follows without remount',
+    (tester) async {
+      final surface = NativeTerminalSurface.projection(rows: 20, maxLines: 40);
+      final interaction = _InteractionScope()..select(false);
+      addTearDown(surface.dispose);
+      addTearDown(interaction.dispose);
+      surface.hideProjection();
+      final view = surface.buildView(
+        isActive: () => true,
+        interactionChanges: interaction,
+        captureInteraction: interaction.capture,
+      );
+      Widget host(bool hidden) => _host(
+        Offstage(offstage: hidden, child: view),
+        width: 250,
+        height: 130,
+      );
+      await tester.pumpWidget(host(true));
+      final nativeFinder = find.byType(TerminalView, skipOffstage: false);
+      final original = tester.widget<TerminalView>(nativeFinder);
+      final state = tester.state<TerminalViewState>(nativeFinder);
+      final engine = original.terminal.buffer.terminal;
+      _feedProjection(surface, '${'row\n' * 60}HIDDEN');
+      final ready = surface.revealProjection();
+      for (var frame = 0; frame < 5; frame++) {
+        await tester.pump();
+      }
+      expect(await ready, isTrue);
+      expect(surface.readProjection()['ready'], isTrue);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(state.renderTerminal.size.height, 130);
+      expect(surface.readProjection()['scrollOffset'], greaterThan(0));
+      _feedProjection(surface, '\nLIVE WHILE HIDDEN');
+      await tester.pump();
+      await tester.pump();
+      expect(_text(original.terminal), endsWith('LIVE WHILE HIDDEN'));
+      final hiddenOffset = surface.readProjection()['scrollOffset'];
+
+      interaction.select(true);
+      await tester.pumpWidget(host(false));
+      expect(tester.state<TerminalViewState>(nativeFinder), same(state));
+      expect(_terminal(tester).buffer.terminal, same(engine));
+      expect(surface.readProjection()['ready'], isTrue);
+      expect(surface.readProjection()['scrollOffset'], hiddenOffset);
+      _expectProjectionRowVisible(
+        tester,
+        _terminal(tester).buffer.absoluteCursorY,
+      );
+
+      final selected = tester.widget<TerminalView>(nativeFinder);
+      final cursor = selected.terminal.buffer.absoluteCursorY;
+      selected.controller!.setSelection(
+        selected.terminal.buffer.createAnchor(0, cursor),
+        selected.terminal.buffer.createAnchor(4, cursor),
+      );
+      surface.scrollProjection(120);
+      final checkpoint = surface.readProjection();
+      interaction.select(false);
+      // Native callbacks are denied synchronously, even before Offstage rebuilds.
+      selected.scrollController!.position.pointerScroll(200);
+      selected.controller!.clearSelection();
+      expect(surface.readProjection(), checkpoint);
+      await tester.pumpWidget(host(true));
+      expect(surface.feedProjection('frozen', 20), 0);
+      interaction.select(true);
+      await tester.pumpWidget(host(false));
+      final current = tester.widget<TerminalView>(nativeFinder);
+      expect(current.controller!.selection, isNotNull);
+      expect(surface.readProjection(), checkpoint);
+      expect(tester.state<TerminalViewState>(nativeFinder), same(state));
+      expect(current.terminal.buffer.terminal, same(engine));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'interaction epochs fence cached native actions and delayed paste',
+    (tester) async {
+      final input = <String>[];
+      final admitted = <bool Function()>[];
+      final surface = NativeTerminalSurface(
+        onScopedInput: (text, grant) {
+          input.add(text);
+          admitted.add(grant);
+        },
+      );
+      final interaction = _InteractionScope();
+      addTearDown(surface.dispose);
+      addTearDown(interaction.dispose);
+      final clipboard = Completer<String>();
+      final copied = <String>[];
+      var reads = 0;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            reads++;
+            return {'text': await clipboard.future};
+          }
+          if (call.method == 'Clipboard.setData') {
+            copied.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      surface.write('COPY\r\n\x1b[?1004h\x1b[?1000h\x1b[?1006h');
+      await tester.pumpWidget(
+        _host(
+          surface.buildView(
+            isActive: () => true,
+            interactionChanges: interaction,
+            captureInteraction: interaction.capture,
+          ),
+        ),
+      );
+      final first = tester.widget<TerminalView>(find.byType(TerminalView));
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final engine = first.terminal.buffer.terminal;
+      first.focusNode!.requestFocus();
+      await tester.pump();
+      expect(first.focusNode!.hasFocus, isTrue);
+      first.terminal.textInput('admitted');
+      expect(admitted.last(), isTrue);
+      final oldGrant = admitted.last;
+      final context = tester.element(
+        find
+            .descendant(
+              of: find.byType(TerminalView),
+              matching: find.byType(Scrollable),
+            )
+            .last,
+      );
+      final oldCopy = Actions.find<CopySelectionTextIntent>(context);
+      final oldSelect = Actions.find<SelectAllTextIntent>(context);
+      final oldDispatcher = Actions.of(context);
+      Actions.invoke(
+        context,
+        const PasteTextIntent(SelectionChangedCause.keyboard),
+      );
+      await tester.pump();
+      expect(reads, 1);
+
+      interaction.select(false);
+      expect(first.focusNode!.canRequestFocus, isFalse);
+      expect(oldGrant(), isFalse);
+      await tester.pump();
+      expect(first.focusNode!.hasFocus, isFalse);
+      final captures = interaction.captures;
+      for (var index = 0; index < 200; index++) {
+        interaction.select(true);
+        interaction.select(false);
+      }
+      expect(interaction.captures, captures);
+      interaction.select(true);
+      await tester.pump();
+      final current = tester.widget<TerminalView>(find.byType(TerminalView));
+      expect(
+        tester.state<TerminalViewState>(find.byType(TerminalView)),
+        same(state),
+      );
+      expect(current.terminal.buffer.terminal, same(engine));
+      expect(current.terminal, isNot(same(first.terminal)));
+      current.controller!.setSelection(
+        current.terminal.buffer.createAnchor(0, 0),
+        current.terminal.buffer.createAnchor(4, 0),
+      );
+      input.clear();
+      first.terminal.textInput('stale');
+      first.focusNode!.requestFocus();
+      first.terminal.paste('stale');
+      first.terminal.focusInput(true);
+      expect(first.terminal.keyInput(TerminalKey.keyX), isFalse);
+      expect(
+        first.terminal.mouseInput(
+          TerminalMouseButton.left,
+          TerminalMouseButtonState.down,
+          const CellOffset(0, 0),
+        ),
+        isFalse,
+      );
+      first.controller!.clearSelection();
+      // ignore: invalid_use_of_protected_member
+      oldSelect.invoke(
+        const SelectAllTextIntent(SelectionChangedCause.keyboard),
+      );
+      // ignore: invalid_use_of_protected_member
+      oldCopy.invoke(CopySelectionTextIntent.copy);
+      oldDispatcher.invokeAction(
+        Actions.find<CopySelectionTextIntent>(context),
+        CopySelectionTextIntent.copy,
+        context,
+      );
+      clipboard.complete('late paste');
+      await tester.pump();
+      expect(input, isEmpty);
+      expect(current.focusNode!.hasFocus, isFalse);
+      expect(copied, isEmpty);
+      expect(oldGrant(), isFalse);
+      expect(current.controller!.selection!.end.x, 4);
+      Actions.invoke(context, CopySelectionTextIntent.copy);
+      await tester.pump();
+      expect(copied, ['COPY']);
+      current.terminal.textInput('fresh');
+      expect(input, ['fresh']);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final following in [false, true]) {
     testWidgets('reveal paints only settled ${following ? 'tail' : 'offset'}', (
       tester,
@@ -1318,4 +1592,25 @@ void _feedProjection(NativeTerminalSurface surface, String text) {
     expect(accepted, greaterThan(0));
     offset += accepted;
   }
+}
+
+final class _InteractionScope extends ChangeNotifier {
+  _InteractionGrant _grant = _InteractionGrant();
+  int captures = 0;
+
+  bool Function() capture() {
+    captures++;
+    final grant = _grant;
+    return () => grant.active;
+  }
+
+  void select(bool selected) {
+    _grant.active = false;
+    _grant = _InteractionGrant()..active = selected;
+    notifyListeners();
+  }
+}
+
+final class _InteractionGrant {
+  bool active = true;
 }

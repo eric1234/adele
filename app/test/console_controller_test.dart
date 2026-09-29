@@ -707,6 +707,154 @@ void main() {
   );
 
   test(
+    'resident budget is lazy LRU, including selected-only content',
+    () async {
+      await controller.close();
+      controller.dispose();
+      controller = ConsoleController(registry, presentationLimit: 2)
+        ..setSession(first);
+      final contents = [
+        _Content('A', keepAlive: true),
+        _Content('B', keepAlive: true),
+        _Content('C', keepAlive: true),
+        _Content('Selected only'),
+      ];
+      var next = 0;
+      await register((access) async => contents[next++].open(access));
+      for (final _ in contents) {
+        await controller.invoke(controller.actions.single);
+      }
+      final tabs = controller.eligibleTabs;
+      expect(contents.every((content) => content.mounts.isEmpty), isTrue);
+      controller.select(tabs[0]);
+      final a = controller.selectedPresentation;
+      final accessA = contents[0].mounts.single;
+      final firstInteraction = accessA.interaction!;
+      var changes = 0;
+      accessA.changes.addListener(() => changes++);
+      controller.select(tabs[1]);
+      expect(firstInteraction.isActive, isFalse);
+      expect(accessA.isActive, isTrue);
+      expect(accessA.interaction, isNull);
+      final b = controller.selectedPresentation;
+      controller.select(tabs[0]);
+      expect(controller.selectedPresentation, same(a));
+      expect(accessA.interaction!.isActive, isTrue);
+      expect(firstInteraction.isActive, isFalse);
+      expect(changes, 2);
+      // Hidden output and metadata are not selection recency.
+      contents[1].complete('new output');
+      controller.select(tabs[2]);
+      controller.selectedPresentation;
+      expect(controller.residentPresentations.map((entry) => entry.tab), [
+        tabs[0],
+        tabs[2],
+      ]);
+      expect(contents[1].mounts.single.isActive, isFalse);
+      expect(contents[2].mounts.single.interaction!.isActive, isTrue);
+      expect(controller.eligibleTabs, tabs);
+      expect(contents.every((content) => content.releases == 0), isTrue);
+      controller.select(tabs[3]);
+      controller.selectedPresentation;
+      expect(accessA.isActive, isFalse);
+      expect(controller.residentPresentations, hasLength(2));
+      final transient = contents[3].mounts.single;
+      controller.select(tabs[2]);
+      expect(transient.isActive, isFalse);
+      expect(controller.residentPresentations, hasLength(1));
+      controller.select(tabs[1]);
+      expect(controller.selectedPresentation, isNot(same(b)));
+      expect(contents[1].mounts, hasLength(2));
+      expect(contents[1].mounts.first.isActive, isFalse);
+      expect(contents.every((content) => content.releases == 0), isTrue);
+    },
+  );
+
+  for (final departure in ['collapse', 'session', 'null', 'unmount', 'close']) {
+    test('working-set $departure retires every exact resident', () async {
+      final a = _Content('A', keepAlive: true);
+      final b = _Content('B', keepAlive: true);
+      var next = 0;
+      await register((access) async => (next++ == 0 ? a : b).open(access));
+      await controller.invoke(controller.actions.single);
+      controller.selectedPresentation;
+      await controller.invoke(controller.actions.single);
+      controller.selectedPresentation;
+      final selected = controller.selectedTab;
+      final accesses = [a.mounts.single, b.mounts.single];
+      switch (departure) {
+        case 'collapse':
+          controller.setVisible(false);
+        case 'session':
+          // Eligibility shared across Sessions does not share presentation life.
+          controller.setSession(second);
+        case 'null':
+          controller.setSession(null);
+        case 'unmount':
+          controller.unmountPresentation();
+        case 'close':
+          await controller.close();
+      }
+      expect(accesses.every((access) => !access.isActive), isTrue);
+      expect(a.releases, departure == 'close' ? 1 : 0);
+      expect(b.releases, departure == 'close' ? 1 : 0);
+      if (departure != 'close') {
+        controller.setSession(first);
+        controller.setVisible(true);
+        expect(controller.selectedTab, same(selected));
+        controller.selectedPresentation;
+        expect(b.mounts, hasLength(2));
+        expect(a.mounts, hasLength(1));
+        expect(accesses.every((access) => !access.isActive), isTrue);
+      }
+    });
+  }
+
+  test('hidden resident close retires it without affecting siblings', () async {
+    final a = _Content('A', keepAlive: true);
+    final b = _Content('B', keepAlive: true);
+    var next = 0;
+    await register((access) async => (next++ == 0 ? a : b).open(access));
+    await controller.invoke(controller.actions.single);
+    controller.selectedPresentation;
+    await controller.invoke(controller.actions.single);
+    final selected = controller.selectedPresentation;
+    await a.registration.requestRemoval();
+    expect(a.mounts.single.isActive, isFalse);
+    expect(a.releases, 1);
+    expect(b.mounts.single.isActive, isTrue);
+    expect(controller.selectedPresentation, same(selected));
+    expect(controller.residentPresentations, hasLength(1));
+    expect(b.releases, 0);
+  });
+
+  test('resident selection still withdraws pending confirmation', () async {
+    final a = _Content('A', keepAlive: true);
+    final b = _Content('B', keepAlive: true);
+    var next = 0;
+    await register((access) async => (next++ == 0 ? a : b).open(access));
+    await controller.invoke(controller.actions.single);
+    final aWidget = controller.selectedPresentation;
+    await controller.invoke(controller.actions.single);
+    controller.selectedPresentation;
+    final gate = Completer<bool>();
+    late ConsoleCloseRequest request;
+    final closing = controller.closeTab(controller.selectedTab!, (value) {
+      request = value;
+      return gate.future;
+    });
+    controller.select(controller.eligibleTabs.first);
+    expect(request.isPending, isFalse);
+    expect(b.mounts.single.isActive, isTrue);
+    expect(b.mounts.single.interaction, isNull);
+    expect(controller.selectedPresentation, same(aWidget));
+    await closing;
+    gate.complete(true);
+    await Future<void>.delayed(Duration.zero);
+    expect(b.releases, 0);
+  });
+
+  test(
     'metadata authority stays with exact content, even while unmounted',
     () async {
       final one = _Content('One');
@@ -1166,9 +1314,16 @@ Session _session(String id) => Session(
 
 /// Test-only read-only output, with no terminal/process/Environment dependencies.
 class _Content {
-  _Content(this.title, {this.eligible, this.advice, this.release});
+  _Content(
+    this.title, {
+    this.eligible,
+    this.advice,
+    this.release,
+    this.keepAlive = false,
+  });
 
   final String title;
+  final bool keepAlive;
   final bool Function(Session)? eligible;
   final ConsoleCloseAdvice? Function()? advice;
   final Future<ConsoleCleanupResult> Function()? release;
@@ -1182,6 +1337,7 @@ class _Content {
       ConsoleContent(
         metadata: ConsoleMetadata(title: title, status: ConsoleStatus.running),
         isEligible: eligible ?? (_) => true,
+        keepAlive: keepAlive,
         createPresentation: (access) {
           mounts.add(access);
           return Text(evidence.join('\n'));

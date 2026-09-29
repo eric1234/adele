@@ -9,7 +9,11 @@ import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/terminal_projection_bridge.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
+import 'package:adele_desktop/ui/console/console_controller.dart';
+import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:flutter/gestures.dart';
@@ -65,7 +69,13 @@ void main() {
     await output.close();
   });
 
-  Widget presentation({bool preview = false}) {
+  Widget presentation({
+    bool preview = false,
+    ConsolePresentationAccess? access,
+  }) {
+    final standalone = access == null ? _StandalonePresentationAccess() : null;
+    if (standalone != null) addTearDown(standalone.dispose);
+    final resident = access ?? standalone!;
     final source = preview ? _InspectionSource() : null;
     if (source != null) addTearDown(source.dispose);
     return frontend.createPresentation(
@@ -80,13 +90,22 @@ void main() {
           ToolActivityInspectionBridge(source: source, isActive: () => true),
         OwningBackendBridge(
           channels: {commandOutputServiceId: channel},
-          validateBinding: () {},
+          validateBinding: () {
+            if (!resident.isActive) {
+              throw StateError('Fixture presentation retired.');
+            }
+          },
         ),
-        ConsoleBridge(isActive: () => true, content: content),
+        ConsoleBridge(
+          isActive: () => resident.isActive,
+          content: content,
+          presentation: resident,
+        ),
         TerminalProjectionBridge(
-          isActive: () => true,
+          isActive: () => resident.isActive,
           maxLines: 32,
           retention: preview ? null : content.projection,
+          presentation: resident,
         ),
       ]),
     );
@@ -156,6 +175,159 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
     expect(tester.takeException(), isNull);
   }
+
+  Future<(ConsoleController, ConsoleTab, ConsoleTab)> mountResident(
+    WidgetTester tester,
+  ) async {
+    final extensions = ExtensionRegistry();
+    final controller = ConsoleController(extensions);
+    extensions.register(
+      point: consoleContributions,
+      id: ExtensionId('test.output'),
+      value: ConsoleContribution(
+        actions: [
+          for (final name in ['output', 'other'])
+            ConsoleCreationAction(
+              id: name,
+              label: name,
+              create: (access) async {
+                access.open(
+                  ConsoleContent(
+                    metadata: ConsoleMetadata(title: name),
+                    keepAlive: true,
+                    isEligible: (_) => true,
+                    createPresentation: (access) => name == 'output'
+                        ? presentation(access: access)
+                        : const Text('Sibling content'),
+                    closeAdvice: () =>
+                        const ConsoleCloseAdvice.noConfirmation(),
+                    release: () async => ConsoleCleanupResult(),
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+    controller.setSession(
+      Session(
+        id: SessionId('session'),
+        taskId: TaskId('task'),
+        strategyId: OrchestrationStrategyId('test.strategy'),
+      ),
+    );
+    await controller.invoke(
+      controller.actions.singleWhere((a) => a.id == 'other'),
+    );
+    final other = controller.selectedTab!;
+    await controller.invoke(
+      controller.actions.singleWhere((a) => a.id == 'output'),
+    );
+    final tab = controller.selectedTab!;
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await controller.close();
+      controller.dispose();
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: WorkbenchConsole(controller: controller)),
+      ),
+    );
+    return (controller, tab, other);
+  }
+
+  testWidgets(
+    'resident historical replay keeps its page and exact goal across switches',
+    (tester) async {
+      output.publish('capturing');
+      output.append('x' * 120000);
+      final (controller, tab, other) = await mountResident(tester);
+      await caughtUp(tester);
+      final staleBeginning = tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Beginning'))
+          .onPressed!;
+      final staleFollow = tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is IconButton && widget.tooltip == 'Follow output',
+            ),
+          )
+          .onPressed!;
+      output.readGateAfterCursor = 4;
+      output.readGate = Completer<void>();
+      await tester.tap(find.text('Middle'));
+      final target = content.state['targetLines']! as int;
+      expect(target, greaterThan(500));
+      await _until(
+        tester,
+        () => output.activeReads == 1 && output.cursors.last == 4,
+        'history replay held after one page',
+      );
+      final engine = _view(tester).terminal.buffer.terminal as Terminal;
+      final element = tester.state(find.byType(TerminalView));
+      final reads = List<int>.of(output.cursors);
+      final accepted = content.projection.snapshot['acceptedCodeUnits'];
+      expect(accepted, 16384);
+      for (var attempt = 0; attempt < 2; attempt++) {
+        controller.select(other);
+        staleBeginning();
+        staleFollow();
+        await tester.pump();
+        expect(find.byType(TerminalView), findsNothing);
+        expect(find.byType(TerminalView, skipOffstage: false), findsOneWidget);
+        controller.select(tab);
+        await tester.pump();
+        await tester.pump();
+        staleBeginning();
+        staleFollow();
+        expect(_view(tester).terminal.buffer.terminal, same(engine));
+        expect(tester.state(find.byType(TerminalView)), same(element));
+        expect(content.projection.snapshot['acceptedCodeUnits'], accepted);
+        expect(content.state['targetLines'], target);
+        expect(content.state['liveTail'], false);
+        expect(_painted(tester), false);
+        expect(output.cursors, reads);
+        expect(output.watches, 1);
+      }
+      output.readGate!.complete();
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'the original finite historical goal finishes',
+      );
+      expect(content.projection.snapshot['lineAdvances'], target);
+      expect(content.state['targetLines'], -1);
+      expect(output.cursors.where((cursor) => cursor == 0), hasLength(2));
+      final frozen = _text(engine);
+      final units = content.state['codeUnits'];
+      controller.select(other);
+      await tester.pump();
+      output.append('hidden-history-suffix\r\n');
+      await _until(
+        tester,
+        () => output.activeReads == 0,
+        'hidden history remains idle',
+      );
+      controller.select(tab);
+      await tester.pump();
+      await tester.pump();
+      await _userToEnd(tester, find.byType(TerminalView));
+      await tester.pump();
+      expect(_text(engine), frozen);
+      expect(content.state['codeUnits'], units);
+      expect(content.state['liveTail'], false);
+      await tester.tap(find.byTooltip('Follow output'));
+      await caughtUp(tester);
+      expect(_text(engine), contains('hidden-history-suffix'));
+      expect(output.watches, 1);
+      expect(output.maximumReads, 1);
+      expect(output.maximumPageChunks, lessThanOrEqualTo(4));
+      expect(output.maximumPageUnits, lessThanOrEqualTo(16384));
+      await unmount(tester);
+    },
+  );
 
   for (final preview in [false, true]) {
     testWidgets(
@@ -1332,6 +1504,34 @@ Future<void> _userToEnd(WidgetTester tester, Finder view) async {
       scrollDelta: const Offset(0, 20000),
     ),
   );
+}
+
+final class _StandalonePresentationAccess extends ChangeNotifier
+    implements ConsolePresentationAccess {
+  bool _active = true;
+  late final _interaction = _StandaloneInteractionAccess(this);
+
+  @override
+  bool get isActive => _active;
+  @override
+  Listenable get changes => this;
+  @override
+  ConsoleInteractionAccess? get interaction => _active ? _interaction : null;
+
+  @override
+  void dispose() {
+    _active = false;
+    notifyListeners();
+    super.dispose();
+  }
+}
+
+final class _StandaloneInteractionAccess implements ConsoleInteractionAccess {
+  _StandaloneInteractionAccess(this.presentation);
+  final _StandalonePresentationAccess presentation;
+
+  @override
+  bool get isActive => presentation.isActive;
 }
 
 final class _InspectionSource extends ChangeNotifier

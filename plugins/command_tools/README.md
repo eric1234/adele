@@ -215,8 +215,10 @@ Run/invocation IDs; the host additionally scopes it to the exact contribution
 generation and canonical Session. Repeated opens focus the existing tab without
 resetting the reader; identical argv never determines identity. The host retains
 only validated descriptors and bounded opaque data, not callbacks into the card.
-The console EVC independently reads its content identity and acquires fresh
-revocable own-backend and projection access.
+The console EVC independently reads its content identity and acquires revocable
+own-backend and projection access. Its prepared descriptor explicitly sets
+`keepAlive`; Inspection and interactive Terminal do not acquire resident console
+behavior merely by displaying output.
 
 ### Replay and history
 
@@ -290,17 +292,32 @@ so the preview continues advancing while the expanded reader inspects history.
 
 ### Presentation lifetime and failures
 
-Hiding/unmounting a console releases its evaluator, watch, page, and native
-projection. The tab retains bounded logical reading intent plus a native scalar
-projection checkpoint: follow/policy flags, accepted text extent, rendered extent,
-and viewport offset. Native changes checkpoint synchronously without calling
-eval; a final native copy also precedes bridge disposal. Detachment preserves the
+Switching tabs inside the same expanded Session console keeps recently selected
+Command Output readers warm within the host's bounded resident working set. The
+same evaluator/widget, generated watch, page drain, emulator/parser, viewport,
+selection, reading mode, and accepted cursor/intra-chunk offset survive. A following
+hidden resident can consume later committed output; a paused or historical reader
+keeps its frozen position while observing newer extent. Reselecting a warm tab or
+repeating Show more does not recreate the reader or replay its prefix. Hidden
+residents have no selected interaction authority; old action callbacks remain
+revoked after reselection. Interactive Terminal is selected-only and remains a
+separate resource owner. The [host map](../../app/README.md#session-console) owns
+the four-slot bound, selected-slot accounting, and short Flutter-disposal overlap.
+
+Collapsing the console, Session departure or identity change, console unmount, or
+host close ends the working set. Eviction, content close, and owner retirement
+end the affected resident. These cold departures release its evaluator, watch,
+page, and native projection. Surviving tabs retain bounded logical reading intent
+plus a native scalar projection checkpoint: follow/policy flags, accepted text
+extent, rendered extent, and viewport offset. Native changes checkpoint
+synchronously without calling eval; a final native copy also precedes bridge
+disposal. Detachment preserves the
 last known offset. Neither callback delivery nor plugin `dispose` is required to
 save an immediate scroll/selection freeze, a newer frozen offset, or a manual
 live-end return before the tab hides.
 
-The plugin reads that exact retained checkpoint on remount. Native accepted text
-extent is authoritative for the last revealed position even inside a chunk or
+The plugin reads that exact retained checkpoint on a cold remount. Native accepted
+text extent is authoritative for the last revealed position even inside a chunk or
 while a page read was in flight; logical live-tail versus explicit-history intent
 remains plugin-owned. A pending historical destination and its requested offset
 are saved separately from partially reconstructed native extent. Hiding again
@@ -311,7 +328,7 @@ intent. A fresh projection reconstructs the accepted prefix before restoring a
 frozen position or catching up live;
 it never resumes an old cursor against an empty surface. Prefix reconstruction
 is incremental and cancellable, but costs O(prefix length) on historical seeks
-and remounts. This deliberately basic history UI has no search, export,
+and cold remounts. This deliberately basic history UI has no search, export,
 virtualized transcript scrollbar, or durable emulator checkpoints.
 
 The native checkpoint belongs to the exact retained content owner, not its key
@@ -356,7 +373,9 @@ Focused generated-client EVC behavior belongs to
 path belongs to `app/test/core/normal_chatgpt_run_integration_test.dart`. The
 latter uses local deterministic model responses and socket-gated Command/Git AOT
 output before completion, two identical invocations, simultaneous card/console
-views, interactive Terminal coexistence, old history, and fresh Project/backend
+views, two warm output tabs with hidden committed output and unchanged
+tab/mount/emulator identity, selected interactive Terminal coexistence, Session
+departure revocation and cold historical reconstruction, and fresh Project/backend
 reopen without Git. `command_output_capture_integration_test.dart` retains the
 independent full-volume capture proof. See the maintained
 [validation map](../../docs/development/testing.md#focused-command-output-checks)

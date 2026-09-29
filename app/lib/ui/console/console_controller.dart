@@ -39,9 +39,20 @@ final class ConsoleTab {
   Future<void>? _removal;
   ConsoleCloseRequest? _confirmation;
   _PreparedOpening? _prepared;
+  int _lastSelected = 0;
 
   ConsoleMetadata get metadata => _metadata;
   bool get isActive => _active && !_controller._closed && _isLive(_owner);
+}
+
+/// One stably parented native presentation, separate from its lightweight tab.
+final class ConsoleResidentPresentation {
+  ConsoleResidentPresentation._(this.tab, this._access);
+
+  final ConsoleTab tab;
+  final _PresentationAccess _access;
+  ConsolePresentationAccess get access => _access;
+  late final Widget widget;
 }
 
 /// App-private identity for one confirmation, not permission to close content.
@@ -71,9 +82,13 @@ final class ConsoleController extends ChangeNotifier {
   ConsoleController(
     this._extensions, {
     this.cleanupTimeout = const Duration(seconds: 2),
+    this.presentationLimit = 4,
   }) {
     if (cleanupTimeout <= Duration.zero) {
       throw ArgumentError.value(cleanupTimeout, 'cleanupTimeout');
+    }
+    if (presentationLimit < 1) {
+      throw ArgumentError.value(presentationLimit, 'presentationLimit');
     }
     _refreshActions();
     _changes = _extensions.changes.listen((_) => _registryChanged());
@@ -81,6 +96,9 @@ final class ConsoleController extends ChangeNotifier {
 
   final ExtensionRegistry _extensions;
   final Duration cleanupTimeout;
+
+  /// Includes selected-only and initializing presentations, not unvisited tabs.
+  final int presentationLimit;
   late final StreamSubscription<void> _changes;
   final List<ConsoleTab> _tabs = [];
   final Map<SessionId, ConsoleTab> _selections = {};
@@ -96,8 +114,8 @@ final class ConsoleController extends ChangeNotifier {
   bool _disposed = false;
   Object _context = Object();
   Object _view = Object();
-  _PresentationAccess? _presentationAccess;
-  Widget? _presentation;
+  final Map<ConsoleTab, ConsoleResidentPresentation> _residents = {};
+  int _selectionSequence = 0;
   String? _warning;
   Future<void>? _closing;
 
@@ -144,12 +162,16 @@ final class ConsoleController extends ChangeNotifier {
     if (_closed ||
         !_visible ||
         !_tabs.contains(tab) ||
-        !_eligible(tab, _session) ||
-        identical(_selected, tab)) {
+        !_eligible(tab, _session)) {
       return;
     }
-    _revokePresentation();
+    if (identical(_selected, tab)) {
+      tab._lastSelected = ++_selectionSequence;
+      return;
+    }
+    _endSelection();
     _selected = tab;
+    _activateSelection();
     _selections[_session!.id] = tab;
     _notify();
   }
@@ -300,8 +322,9 @@ final class ConsoleController extends ChangeNotifier {
             identical(access._prepared!.view, _view)) &&
         _visible &&
         _eligible(tab, _session)) {
-      _revokePresentation();
+      _endSelection();
       _selected = tab;
+      _activateSelection();
       _selections[_session!.id] = tab;
     } else {
       // An admitted background result must not steal the new context's view.
@@ -396,6 +419,8 @@ final class ConsoleController extends ChangeNotifier {
         ..._tabs.take(index).toList().reversed,
       ],
     ];
+    if (identical(_selected, tab)) _endSelection();
+    _evict(tab);
     tab._active = false;
     if (tab._prepared case final prepared?) {
       prepared.active = false;
@@ -404,7 +429,6 @@ final class ConsoleController extends ChangeNotifier {
     _tabs.remove(tab);
     _selections.removeWhere((_, selected) => identical(selected, tab));
     if (identical(_selected, tab)) {
-      _revokePresentation();
       // Prefer the next eligible neighbor, then the previous one. Closing an
       // unrelated tab never changes selection or constructs a presentation.
       _selected = _closed
@@ -440,41 +464,76 @@ final class ConsoleController extends ChangeNotifier {
     _notify();
   }
 
-  /// Called only by the native host for the selected visible content. Retained
-  /// across ordinary rebuilds; never used to inspect or close unselected tabs.
+  /// Constructs only selected content, sharing the same resident used by the
+  /// workbench collection. Reading tab metadata never calls a factory.
   Widget? get selectedPresentation {
     final tab = selectedTab;
     if (_closed || !_visible || tab == null) {
-      if (_presentationAccess != null) _revokePresentation();
       return null;
     }
-    if (_presentation != null) return _presentation;
+    final existing = _residents[tab];
+    if (existing != null) return existing.widget;
+    while (_residents.length >= presentationLimit) {
+      final hidden = _residents.keys.where((other) => !identical(other, tab));
+      final oldest = hidden.reduce(
+        (a, b) => a._lastSelected < b._lastSelected ? a : b,
+      );
+      _evict(oldest);
+    }
     final access = _PresentationAccess(this, tab);
-    _presentationAccess = access;
+    final resident = ConsoleResidentPresentation._(tab, access);
+    _residents[tab] = resident;
+    access._select();
     Widget presentation;
     try {
       presentation = tab._content.createPresentation(access);
-      if (!access.isActive) return null;
+      if (!identical(_residents[tab], resident)) return null;
     } on Object {
-      access._active = false;
+      access._revoke();
       presentation = const Center(
         child: Text('Console presentation is unavailable.'),
       );
     }
-    _presentation = KeyedSubtree(key: UniqueKey(), child: presentation);
-    return _presentation;
+    resident.widget = KeyedSubtree(key: ObjectKey(access), child: presentation);
+    return resident.widget;
+  }
+
+  List<ConsoleResidentPresentation> get residentPresentations {
+    selectedPresentation;
+    return List.unmodifiable(_residents.values);
   }
 
   void unmountPresentation() => _revokePresentation();
 
   void _revokePresentation() {
-    _presentationAccess?._active = false;
-    _presentationAccess = null;
-    _presentation = null;
+    _endSelection();
+    for (final tab in _residents.keys.toList()) {
+      _evict(tab);
+    }
+  }
+
+  void _evict(ConsoleTab tab) {
+    // Remove before notifying: reentrant listeners cannot find a revoked entry.
+    _residents.remove(tab)?._access._revoke();
+  }
+
+  void _endSelection() {
+    final tab = _selected;
+    if (tab != null) {
+      _residents[tab]?._access._deselect();
+      if (!tab._content.keepAlive) _evict(tab);
+    }
     _view = Object();
     for (final tab in _tabs) {
       if (tab._confirmation case final request?) _settle(request);
     }
+  }
+
+  void _activateSelection() {
+    final tab = _selected;
+    if (tab == null) return;
+    tab._lastSelected = ++_selectionSequence;
+    if (_visible) _residents[tab]?._access._select();
   }
 
   bool _eligible(ConsoleTab tab, Session? session) {
@@ -502,6 +561,7 @@ final class ConsoleController extends ChangeNotifier {
     if (session != null && _selected != null) {
       _selections[session.id] = _selected!;
     }
+    _activateSelection();
   }
 
   void _refreshActions() {
@@ -640,20 +700,59 @@ final class _TabRegistration implements ConsoleTabRegistration {
   Future<void> requestRemoval() => _tab._controller._remove(_tab);
 }
 
-final class _PresentationAccess implements ConsolePresentationAccess {
+final class _PresentationAccess extends ChangeNotifier
+    implements ConsolePresentationAccess {
   _PresentationAccess(this._controller, this._tab);
 
   final ConsoleController _controller;
   final ConsoleTab _tab;
   bool _active = true;
+  _InteractionAccess? _interaction;
+
+  @override
+  Listenable get changes => this;
+
+  @override
+  ConsoleInteractionAccess? get interaction =>
+      _interaction?.isActive == true ? _interaction : null;
+
+  void _select() {
+    if (!_active || _interaction != null) return;
+    _interaction = _InteractionAccess(this);
+    notifyListeners();
+  }
+
+  void _deselect() {
+    if (_interaction == null) return;
+    _interaction = null;
+    notifyListeners();
+  }
+
+  void _revoke() {
+    if (!_active) return;
+    _active = false;
+    _interaction = null;
+    notifyListeners();
+  }
 
   @override
   bool get isActive =>
       _active &&
       _tab.isActive &&
       _controller._visible &&
-      identical(_controller._presentationAccess, this) &&
-      identical(_controller.selectedTab, _tab);
+      identical(_controller._residents[_tab]?._access, this);
+}
+
+final class _InteractionAccess implements ConsoleInteractionAccess {
+  _InteractionAccess(this._presentation);
+
+  final _PresentationAccess _presentation;
+
+  @override
+  bool get isActive =>
+      _presentation.isActive &&
+      identical(_presentation._interaction, this) &&
+      identical(_presentation._controller.selectedTab, _presentation._tab);
 }
 
 bool _isLive(ExtensionBinding<ConsoleContribution> binding) {

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show Drag, GestureBinding;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -213,7 +214,7 @@ final class NativeTerminalSurface {
   void resetProjection() {
     _requireProjection();
     final previous = _requireTerminal();
-    _attached?._controller.clearSelection();
+    _attached?._selection.clearSelection();
     _terminal = _Emulator(maxLines: _maxLines, projectionRows: _projectionRows)
       ..focusInput(false);
     _acceptedCodeUnits = 0;
@@ -235,7 +236,7 @@ final class NativeTerminalSurface {
       _resumeAtEnd = resumeAtEnd;
       _projectionChanged();
     }
-    if (following) _attached?._controller.clearSelection();
+    if (following) _attached?._selection.clearSelection();
     _setProjectionFollowing(following);
   }
 
@@ -375,8 +376,12 @@ final class NativeTerminalSurface {
       _terminal ?? (throw StateError('Terminal surface is disposed.'));
 
   /// Builds a presentation, not a new emulator. Access is rechecked on delivery.
+  /// [isActive] is mount lifetime, not selection. Optional interaction grants
+  /// permanently identify a selection epoch; deselection must notify synchronously.
   Widget buildView({
     required bool Function() isActive,
+    Listenable? interactionChanges,
+    bool Function() Function()? captureInteraction,
     VoidCallback? onUnavailable,
   }) {
     _requireTerminal();
@@ -384,6 +389,8 @@ final class NativeTerminalSurface {
       key: UniqueKey(),
       surface: this,
       isActive: isActive,
+      interactionChanges: interactionChanges,
+      captureInteraction: captureInteraction,
       onUnavailable: onUnavailable,
     );
   }
@@ -469,11 +476,15 @@ class _NativeTerminalView extends StatefulWidget {
     super.key,
     required this.surface,
     required this.isActive,
+    this.interactionChanges,
+    this.captureInteraction,
     this.onUnavailable,
   });
 
   final NativeTerminalSurface surface;
   final bool Function() isActive;
+  final Listenable? interactionChanges;
+  final bool Function() Function()? captureInteraction;
   final VoidCallback? onUnavailable;
 
   @override
@@ -483,15 +494,82 @@ class _NativeTerminalView extends StatefulWidget {
 class _NativeTerminalViewState extends State<_NativeTerminalView> {
   late final NativeTerminalSurface _surface = widget.surface;
   _ViewTerminal? _terminal;
-  late final _ViewController _controller = _ViewController(this);
+  final _selection = xterm.TerminalController();
+  late _ViewController _controller;
+  late FocusNode _focusNode;
+  late bool Function() _interaction;
   late final ScrollController _projectionScroll = _ProjectionScrollController(
     _projectionUserScrolled,
+    () => _interaction,
+  );
+  late final ScrollController _localScroll = _ProjectionScrollController(
+    () {},
+    () => _interaction,
   );
   final _projectionViewKey = GlobalKey<xterm.TerminalViewState>();
   double _projectionGridWidth = 0;
   int _projectionScrollRevision = 0;
   bool _projectionFollowScheduled = false;
   bool _retired = false;
+  bool _interactionDirty = false;
+  final _pointers = <int>{};
+
+  bool Function() _captureInteraction() {
+    final bool Function() grant;
+    try {
+      grant = widget.captureInteraction?.call() ?? () => true;
+    } on Object {
+      return () => false;
+    }
+    return () {
+      if (!_available) return false;
+      try {
+        return grant();
+      } on Object {
+        return false;
+      }
+    };
+  }
+
+  void _interactionChanged() {
+    // Revoke focus and in-flight user motion before the next Flutter frame.
+    _focusNode.canRequestFocus = false;
+    _focusNode.unfocus();
+    _cancelPointers();
+    for (final controller in [_projectionScroll, _localScroll]) {
+      for (final position in controller.positions) {
+        (position as _ProjectionScrollPosition).revokeGesture();
+      }
+    }
+    if (!_available) return;
+    _terminal?._blurSilently();
+    _interactionDirty = true;
+    _rebuild();
+  }
+
+  void _cancelPointers() {
+    for (final pointer in _pointers) {
+      GestureBinding.instance.cancelPointer(pointer);
+    }
+    _pointers.clear();
+  }
+
+  void _refreshInteraction() {
+    if (!_interactionDirty || !_available) return;
+    _interactionDirty = false;
+    _interaction = _captureInteraction();
+    final previousFocus = _focusNode;
+    _focusNode = _InteractionFocusNode(_interaction);
+    final previous = _controller;
+    _controller = _ViewController(this, _interaction);
+    _terminal?.dispose();
+    _terminal = _ViewTerminal(this, _surface._requireTerminal(), _interaction);
+    // The renderer still listens to the old facade until this frame rebuilds.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      previous.dispose();
+      previousFocus.dispose();
+    });
+  }
 
   @override
   void didChangeDependencies() {
@@ -541,8 +619,8 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
           _cacheProjectionOffset();
           _rebuild();
           _surface._projectionChanged();
-          // Hold the producer until that settled viewport has actually painted;
-          // immediate live feeds must not race ahead of the first revealed frame.
+          // Hold the producer through the reveal frame. Resident offstage views
+          // settle the same bounded layout without requiring a paint.
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!identical(_surface._projectionReveal, request)) return;
             if (!_available) {
@@ -567,7 +645,7 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   void _replaceProjectionTerminal() {
     _terminal?.dispose();
-    _terminal = _ViewTerminal(this, _surface._requireTerminal());
+    _terminal = _ViewTerminal(this, _surface._requireTerminal(), _interaction);
     _rebuild();
     _scrollProjectionToEnd();
   }
@@ -618,13 +696,13 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   }
 
   void _projectionUserScrolled() {
-    if (!_available || _surface._alwaysFollow) return;
+    if (!_interaction() || _surface._alwaysFollow) return;
     final position = _projectionScrollPosition;
     if (position == null) return;
     if (position.pixels < _projectionFollowOffset(position) - 0.5) {
       _projectionScrollRevision++;
       _surface._setProjectionFollowing(false);
-    } else if (_surface._resumeAtEnd && _controller.selection == null) {
+    } else if (_surface._resumeAtEnd && _selection.selection == null) {
       _surface._setProjectionFollowing(true);
     }
     if (!_surface._following) {
@@ -661,6 +739,11 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   @override
   void initState() {
     super.initState();
+    _interaction = _captureInteraction();
+    _focusNode = _InteractionFocusNode(_interaction);
+    _controller = _ViewController(this, _interaction);
+    _focusNode.canRequestFocus = _interaction();
+    widget.interactionChanges?.addListener(_interactionChanged);
     final surface = widget.surface;
     if (!_available || surface._attached != null) {
       _retired = true;
@@ -670,7 +753,7 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       return;
     }
     surface._attached = this;
-    _terminal = _ViewTerminal(this, surface._requireTerminal());
+    _terminal = _ViewTerminal(this, surface._requireTerminal(), _interaction);
     if (surface._projectionRows != null) {
       _projectionScroll.addListener(_projectionOffsetChanged);
       if (surface._projectionRequestedOffset case final offset?) {
@@ -684,6 +767,8 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   @override
   void deactivate() {
+    widget.interactionChanges?.removeListener(_interactionChanged);
+    _cancelPointers();
     if (_surface._projectionRows != null) {
       _surface._cancelProjectionReveal();
       _cacheProjectionOffset();
@@ -714,6 +799,9 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   void _ownerDisposed() {
     _retired = true;
+    _cancelPointers();
+    _focusNode.canRequestFocus = false;
+    _focusNode.unfocus();
     _terminal?.dispose();
     _terminal = null;
     _rebuild();
@@ -734,22 +822,37 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   @override
   Widget build(BuildContext context) {
+    _refreshInteraction();
     final terminal = _terminal;
     if (terminal == null || widget.surface.isDisposed) {
       // Let the old render subtree detach before disposing its controller.
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _controller.dispose(),
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _controller.dispose();
+        if (mounted) _selection.clearSelection();
+      });
       return const Text('Terminal surface unavailable.');
     }
     final projection = _surface._projectionRows != null;
-    final view = xterm.TerminalView(
+    final canInteract = _interaction();
+    final interaction = _interaction;
+    final focusNode = _focusNode;
+    final nativeView = xterm.TerminalView(
       terminal,
       key: projection ? _projectionViewKey : null,
       controller: _controller,
-      readOnly: widget.surface.readOnly || !_available,
+      focusNode: _focusNode,
+      onKeyEvent: widget.captureInteraction == null
+          ? null
+          : (node, event) => interaction() && identical(node, focusNode)
+                ? KeyEventResult.ignored
+                : KeyEventResult.handled,
+      readOnly: widget.surface.readOnly || !canInteract,
       autoResize: !projection,
-      scrollController: projection ? _projectionScroll : null,
+      scrollController: projection
+          ? _projectionScroll
+          : widget.captureInteraction == null
+          ? null
+          : _localScroll,
       shortcuts: projection
           ? const {
               SingleActivator(
@@ -766,13 +869,39 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
             }
           : null,
     );
-    if (!projection) return view;
+    // Cancel the native recognizers' active pointer sequence on epoch loss. The
+    // pinned widget's gesture state otherwise reads its *new* controller after
+    // A -> B -> A, lending a fresh grant to an old drag/long-press/tap.
+    final view = widget.captureInteraction == null
+        ? nativeView
+        : Listener(
+            onPointerDown: (event) {
+              if (interaction()) _pointers.add(event.pointer);
+            },
+            onPointerUp: (event) => _pointers.remove(event.pointer),
+            onPointerCancel: (event) => _pointers.remove(event.pointer),
+            child: nativeView,
+          );
+    if (!projection) {
+      if (widget.captureInteraction == null) return view;
+      return ExcludeFocus(
+        excluding: !canInteract,
+        child: IgnorePointer(
+          ignoring: !canInteract,
+          child: Actions(
+            dispatcher: _ProjectionActionDispatcher(this, _interaction),
+            actions: const {},
+            child: view,
+          ),
+        ),
+      );
+    }
     return ExcludeFocus(
-      excluding: !_surface._projectionReady,
+      excluding: !_surface._projectionReady || !canInteract,
       child: IgnorePointer(
-        ignoring: !_surface._projectionReady,
+        ignoring: !_surface._projectionReady || !canInteract,
         child: ExcludeSemantics(
-          excluding: !_surface._projectionReady,
+          excluding: !_surface._projectionReady || !canInteract,
           child: Opacity(
             opacity: _surface._projectionReady ? 1 : 0,
             child: LayoutBuilder(
@@ -780,6 +909,7 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
                 _scrollProjectionToEnd();
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
+                  controller: _localScroll,
                   child: SizedBox(
                     width: math.max(_projectionGridWidth, constraints.maxWidth),
                     height: constraints.maxHeight,
@@ -796,7 +926,10 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
                               : null,
                         ),
                         child: Actions(
-                          dispatcher: _ProjectionActionDispatcher(this),
+                          dispatcher: _ProjectionActionDispatcher(
+                            this,
+                            _interaction,
+                          ),
                           actions: const {},
                           child: view,
                         ),
@@ -815,9 +948,13 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   @override
   void dispose() {
     _retired = true;
+    widget.interactionChanges?.removeListener(_interactionChanged);
     _terminal?.dispose();
     _controller.dispose();
+    _selection.dispose();
+    _focusNode.dispose();
     _projectionScroll.dispose();
+    _localScroll.dispose();
     if (identical(_surface._attached, this)) {
       _surface._attached = null;
     }
@@ -825,12 +962,24 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   }
 }
 
+final class _InteractionFocusNode extends FocusNode {
+  _InteractionFocusNode(this._interaction);
+
+  final bool Function() _interaction;
+
+  @override
+  void requestFocus([FocusNode? node]) {
+    if (_interaction()) super.requestFocus(node);
+  }
+}
+
 /// User-originated motion only. Direction notifications can remain non-idle
 /// during layout or programmatic movement and must not authorize live resumption.
 final class _ProjectionScrollController extends ScrollController {
-  _ProjectionScrollController(this.onUserScroll);
+  _ProjectionScrollController(this.onUserScroll, this.captureInteraction);
 
   final VoidCallback onUserScroll;
+  final bool Function() Function() captureInteraction;
 
   @override
   ScrollPosition createScrollPosition(
@@ -842,6 +991,7 @@ final class _ProjectionScrollController extends ScrollController {
     context: context,
     oldPosition: oldPosition,
     onUserScroll: onUserScroll,
+    captureInteraction: captureInteraction,
   );
 }
 
@@ -851,20 +1001,41 @@ final class _ProjectionScrollPosition extends ScrollPositionWithSingleContext {
     required super.context,
     super.oldPosition,
     required this.onUserScroll,
+    required this.captureInteraction,
   });
 
   final VoidCallback onUserScroll;
+  final bool Function() Function() captureInteraction;
+  bool Function()? _gesture;
   bool _pointerScroll = false;
   bool _userBallistic = false;
 
   @override
   void pointerScroll(double delta) {
+    if (!captureInteraction()()) return;
     _pointerScroll = true;
     try {
       super.pointerScroll(delta);
     } finally {
       _pointerScroll = false;
     }
+  }
+
+  void revokeGesture() {
+    _gesture = null;
+    if (activity is DragScrollActivity || _userBallistic) goIdle();
+  }
+
+  @override
+  Drag drag(DragStartDetails details, VoidCallback dragCancelCallback) {
+    _gesture = captureInteraction();
+    return super.drag(details, dragCancelCallback);
+  }
+
+  @override
+  void applyUserOffset(double delta) {
+    if (!(_gesture?.call() ?? false)) return;
+    super.applyUserOffset(delta);
   }
 
   @override
@@ -877,7 +1048,9 @@ final class _ProjectionScrollPosition extends ScrollPositionWithSingleContext {
 
   @override
   void didUpdateScrollPositionBy(double delta) {
-    if (_pointerScroll || activity is DragScrollActivity || _userBallistic) {
+    if (_pointerScroll ||
+        ((_gesture?.call() ?? false) &&
+            (activity is DragScrollActivity || _userBallistic))) {
       onUserScroll();
     }
     super.didUpdateScrollPositionBy(delta);
@@ -887,9 +1060,14 @@ final class _ProjectionScrollPosition extends ScrollPositionWithSingleContext {
 /// The pinned native paste action reads Clipboard even for read-only views.
 /// Projection mode denies that action before the read, not merely its output.
 final class _ProjectionActionDispatcher extends ActionDispatcher {
-  const _ProjectionActionDispatcher(this._view);
+  const _ProjectionActionDispatcher(this._view, this._interaction);
 
   final _NativeTerminalViewState _view;
+  final bool Function() _interaction;
+
+  bool _allows(Intent intent) =>
+      _interaction() &&
+      (_view._surface._projectionRows == null || intent is! PasteTextIntent);
 
   @override
   Object? invokeAction(
@@ -897,7 +1075,7 @@ final class _ProjectionActionDispatcher extends ActionDispatcher {
     Intent intent, [
     BuildContext? context,
   ]) {
-    if (!_view._available || intent is PasteTextIntent) return null;
+    if (!_allows(intent)) return null;
     return super.invokeAction(action, intent, context);
   }
 
@@ -907,7 +1085,7 @@ final class _ProjectionActionDispatcher extends ActionDispatcher {
     Intent intent, [
     BuildContext? context,
   ]) {
-    if (!_view._available || intent is PasteTextIntent) return (false, null);
+    if (!_allows(intent)) return (false, null);
     return super.invokeActionIfEnabled(action, intent, context);
   }
 }
@@ -915,19 +1093,35 @@ final class _ProjectionActionDispatcher extends ActionDispatcher {
 /// The pinned widget's paste action awaits Clipboard and then clears selection,
 /// even after unmount. Both its captured terminal and controller must be inert.
 final class _ViewController extends xterm.TerminalController {
-  _ViewController(this._view);
+  _ViewController(this._view, this._interaction) {
+    _view._selection.addListener(notifyListeners);
+  }
 
   final _NativeTerminalViewState _view;
+  final bool Function() _interaction;
   bool _disposed = false;
 
   @override
+  xterm.BufferRange? get selection => _view._selection.selection;
+
+  @override
+  xterm.SelectionMode get selectionMode => _view._selection.selectionMode;
+
+  @override
+  void setSelectionMode(xterm.SelectionMode mode) {
+    if (!_disposed && _interaction()) _view._selection.setSelectionMode(mode);
+  }
+
+  @override
   void clearSelection() {
-    if (!_disposed && _view._available) super.clearSelection();
+    if (!_disposed && _interaction()) _view._selection.clearSelection();
   }
 
   @override
   xterm.BufferRange? selectionFor(xterm.Buffer buffer) =>
-      !_disposed && _view._available ? super.selectionFor(buffer) : null;
+      !_disposed && _interaction()
+      ? _view._selection.selectionFor(buffer)
+      : null;
 
   @override
   void setSelection(
@@ -935,7 +1129,7 @@ final class _ViewController extends xterm.TerminalController {
     xterm.CellAnchor extent, {
     xterm.SelectionMode? mode,
   }) {
-    if (_disposed || !_view._available) {
+    if (_disposed || !_interaction()) {
       base.dispose();
       extent.dispose();
       return;
@@ -943,13 +1137,13 @@ final class _ViewController extends xterm.TerminalController {
     if (_view._surface._projectionRows != null) {
       _view._surface._setProjectionFollowing(false);
     }
-    super.setSelection(base, extent, mode: mode);
+    _view._selection.setSelection(base, extent, mode: mode);
   }
 
   @override
   void dispose() {
     if (_disposed) return;
-    super.clearSelection();
+    _view._selection.removeListener(notifyListeners);
     _disposed = true;
     super.dispose();
   }
@@ -959,7 +1153,7 @@ final class _ViewController extends xterm.TerminalController {
 /// emulator or a plugin API. Every UI effect captures this exact mount. Rendering
 /// reads the owner's state; parser operations always run on the owner emulator.
 final class _ViewTerminal extends xterm.Terminal {
-  _ViewTerminal(this._view, this._engine)
+  _ViewTerminal(this._view, this._engine, this._interaction)
     : super(
         platform: _engine.platform,
         onClipboardStore: (_, _) {},
@@ -972,13 +1166,14 @@ final class _ViewTerminal extends xterm.Terminal {
 
   final _NativeTerminalViewState _view;
   final _Emulator _engine;
+  final bool Function() _interaction;
   bool _disposed = false;
   bool _focused = false;
   (int, int)? _reportedSize;
   NativeTerminalSurface get _owner => _view._surface;
   bool get _available =>
       !_disposed && _view._available && identical(_owner._attached, _view);
-  bool get _interactive => _available && !_owner.readOnly;
+  bool get _interactive => _available && _interaction() && !_owner.readOnly;
 
   T _input<T>(T unavailable, T Function() action) {
     if (!_interactive) return unavailable;
@@ -1086,10 +1281,15 @@ final class _ViewTerminal extends xterm.Terminal {
     if (_disposed) return;
     _disposed = true;
     _engine.removeListener(notifyListeners);
+    _blurSilently();
+    super.dispose();
+  }
+
+  void _blurSilently() {
+    _focused = false;
     if (!_owner.isDisposed && identical(_owner._attached, _view)) {
       _owner._withOutput((_) {}, () => _engine.focusInput(false));
     }
-    super.dispose();
   }
 
   @override

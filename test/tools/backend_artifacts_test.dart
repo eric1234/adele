@@ -1042,9 +1042,23 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'package:terminal_frontend/terminal_frontend.dart',
         );
         expect(console.entrypoint, 'buildTerminal');
+        expect(console.keepAlive, isFalse);
         expect(console.actions.single.id, 'new-terminal');
         expect(console.actions.single.label, 'New Terminal');
         expect(console.actions.single.entrypoint, 'newTerminal');
+        final commandOutput = catalog.installations
+            .singleWhere(
+              (installation) =>
+                  installation.metadata.id.value ==
+                  'dev.adele.plugin.command-tools',
+            )
+            .frontend!
+            .presentations
+            .whereType<PreparedConsolePresentation>()
+            .single;
+        expect(commandOutput.keepAlive, isTrue);
+        expect(commandOutput.readOnly, isTrue);
+        expect(commandOutput.backendServices, ['command.output']);
         final localDirectoryProjectInstallation = catalog.installations
             .singleWhere(
               (installation) =>

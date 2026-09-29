@@ -1,6 +1,7 @@
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -33,6 +34,7 @@ final class PreparedConsoleHost {
   final ConsoleController controller;
   final ApplicationPluginBootstrap? backends;
   final _metadata = Expando<(PreparedPluginInstallation, PreparedFrontend)>();
+  final Set<_ConsolePresentationBridge> _presentations = {};
   bool _closed = false;
   int _terminalSequence = 0;
 
@@ -82,14 +84,15 @@ final class PreparedConsoleHost {
 
               // Capture once at admission, never select a replacement backend on remount.
               OwningBackendChannel? backend;
+              InstalledBackendActivation? backendOwner;
               if (descriptor.backendServices.isNotEmpty) {
                 try {
-                  backend = backends
-                      ?.backendForInstallation(installation)
-                      ?.openPresentationChannel(
-                        backendServices: descriptor.backendServices,
-                        validatePresentation: validateContent,
-                      );
+                  final owner = backends?.backendForInstallation(installation);
+                  backend = owner?.openPresentationChannel(
+                    backendServices: descriptor.backendServices,
+                    validatePresentation: validateContent,
+                  );
+                  if (backend != null) backendOwner = owner;
                 } on Object {
                   // Factual content remains available; backend access stays unavailable.
                 }
@@ -97,6 +100,7 @@ final class PreparedConsoleHost {
               access.open(
                 ConsoleContent(
                   metadata: content.metadata,
+                  keepAlive: descriptor.keepAlive,
                   isEligible: (candidate) =>
                       identical(candidate, session) && _canonical(session),
                   closeAdvice: () => const ConsoleCloseAdvice.noConfirmation(),
@@ -106,35 +110,63 @@ final class PreparedConsoleHost {
                     return ConsoleCleanupResult();
                   },
                   createPresentation: (presentation) {
-                    bool available() =>
-                        retainedActive() && presentation.isActive;
+                    bool available() {
+                      if (!retainedActive() || !presentation.isActive) {
+                        return false;
+                      }
+                      try {
+                        backend?.validate();
+                        return true;
+                      } on Object {
+                        return false;
+                      }
+                    }
+
                     void validateView() {
                       if (!available()) {
                         throw StateError('Console view is retired.');
                       }
                     }
 
+                    validateView();
                     return generation.createPresentation(
                       library: descriptor.library,
                       entrypoint: descriptor.entrypoint,
                       key: ObjectKey(presentation),
-                      createBridge: () => PreparedFrontendBridges([
-                        ConsoleBridge(isActive: available, content: state),
-                        TerminalProjectionBridge(
-                          isActive: available,
-                          retention: state.projection,
-                        ),
-                        if (backend case final channel?)
-                          OwningBackendBridge.channel(
-                            channel,
-                            validateBinding: validateView,
-                          )
-                        else
-                          OwningBackendBridge(
-                            channels: const {},
-                            validateBinding: validateView,
+                      createBridge: () {
+                        validateView();
+                        final bridges = <PreparedFrontendBridge>[
+                          TerminalProjectionBridge(
+                            isActive: available,
+                            presentation: presentation,
+                            retention: state.projection,
                           ),
-                      ]),
+                          ConsoleBridge(
+                            isActive: available,
+                            content: state,
+                            presentation: presentation,
+                          ),
+                          if (backend case final channel?)
+                            OwningBackendBridge.channel(
+                              channel,
+                              validateBinding: validateView,
+                            )
+                          else
+                            OwningBackendBridge(
+                              channels: const {},
+                              validateBinding: validateView,
+                            ),
+                        ];
+                        late final _ConsolePresentationBridge bridge;
+                        bridge = _ConsolePresentationBridge(
+                          presentation,
+                          bridges,
+                          () => _presentations.remove(bridge),
+                          backendOwner,
+                        );
+                        _presentations.add(bridge);
+                        return bridge;
+                      },
                     );
                   },
                 ),
@@ -243,5 +275,117 @@ final class PreparedConsoleHost {
     );
   }
 
-  Future<void> close() async => _closed = true;
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    final presentations = _presentations.toList();
+    controller.unmountPresentation();
+    // Exit-retained views may already have detached their resident listeners.
+    // Closing this owner ends that working set as well as ordinary residents.
+    Object? failure;
+    StackTrace? failureStack;
+    for (final bridge in presentations) {
+      try {
+        // The owning host can close before its Flutter parent unmounts. End the
+        // loaded evaluator as well as bridge access in that surviving subtree.
+        bridge.retire();
+      } on Object catch (error, stack) {
+        failure ??= error;
+        failureStack ??= stack;
+      }
+    }
+    if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
+  }
+}
+
+/// Constructed only when PreparedFrontend loads the view, so missing bytecode
+/// cannot leave an unattached access listener. Its cleanup also runs on eval
+/// configuration/build failure, independently of eventual widget disposal.
+final class _ConsolePresentationBridge
+    implements
+        PreparedFrontendBridge,
+        PreparedFrontendFailureSource,
+        PreparedFrontendRetainable {
+  _ConsolePresentationBridge(
+    this._presentation,
+    this._bridges,
+    this._onRelease,
+    this._backendOwner,
+  ) : _combined = PreparedFrontendBridges(_bridges) {
+    _presentation.changes.addListener(_changed);
+  }
+
+  final ConsolePresentationAccess _presentation;
+  final List<PreparedFrontendBridge> _bridges;
+  final PreparedFrontendBridges _combined;
+  final VoidCallback _onRelease;
+  final InstalledBackendActivation? _backendOwner;
+  VoidCallback? _detachBackend;
+  VoidCallback? _onFailure;
+  bool _invalidated = false;
+
+  @override
+  String get identifier => _combined.identifier;
+
+  @override
+  void configureForCompile(BridgeDeclarationRegistry registry) =>
+      _combined.configureForCompile(registry);
+
+  @override
+  void configureForRuntime(Runtime runtime) {
+    if (_invalidated || !_presentation.isActive) {
+      throw StateError('Console view is retired.');
+    }
+    _detachBackend = _backendOwner?.onRetire(retire);
+    _combined.configureForRuntime(runtime);
+  }
+
+  @override
+  set onFailure(VoidCallback? callback) {
+    _onFailure = callback;
+    _combined.onFailure = callback;
+  }
+
+  void retire() {
+    try {
+      invalidate();
+    } finally {
+      _onFailure?.call();
+    }
+  }
+
+  void _changed() {
+    if (!_presentation.isActive) invalidate();
+  }
+
+  @override
+  void retainPresentation() {
+    _presentation.changes.removeListener(_changed);
+    _detachBackend?.call();
+    _detachBackend = null;
+    _combined.retainPresentation();
+  }
+
+  @override
+  void invalidate() {
+    if (_invalidated) return;
+    _invalidated = true;
+    _presentation.changes.removeListener(_changed);
+    _detachBackend?.call();
+    _detachBackend = null;
+    _onRelease();
+    Object? failure;
+    StackTrace? failureStack;
+    for (final bridge in _bridges) {
+      try {
+        // Projection invalidation checkpoints native bounded state before it
+        // disposes the surface; no revoked evaluator callback is required.
+        bridge.invalidate();
+      } on Object catch (error, stack) {
+        failure ??= error;
+        failureStack ??= stack;
+      }
+    }
+    if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
+  }
 }

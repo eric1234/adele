@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/terminal_projection_bridge.dart';
+import 'package:adele_ui/console.dart';
 import 'package:adele_ui/terminal_projection_bridge.dart' as public_bridge;
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
@@ -114,6 +115,165 @@ void main() {
     active = false;
     expect(() => _invoke(runtime, 'readRetained', []), throwsA(anything));
   });
+
+  testWidgets('resident EVC keeps hidden feed reveal and follow authority', (
+    tester,
+  ) async {
+    final presentation = _Presentation();
+    addTearDown(presentation.dispose);
+    final retention = TerminalProjectionRetention();
+    final bridge = TerminalProjectionBridge(
+      isActive: () => true,
+      presentation: presentation,
+      retention: retention,
+      maxLines: 40,
+    );
+    final runtime = bind(bridge);
+    final handle = _invoke(runtime, 'requestRows', [$int(20)]) as String;
+    final args = [$String(handle)];
+    _invoke(runtime, 'hideHandle', args);
+    final view = _invoke(runtime, 'buildHandle', args) as Widget;
+    Widget host(bool hidden) => _host(Offstage(offstage: hidden, child: view));
+    await tester.pumpWidget(host(false));
+    final nativeFinder = find.byType(TerminalView, skipOffstage: false);
+    final original = tester.widget<TerminalView>(nativeFinder);
+    final state = tester.state<TerminalViewState>(nativeFinder);
+    final engine = original.terminal.buffer.terminal;
+    var observed = 0;
+    _invoke(runtime, 'observeHandle', [
+      ...args,
+      $Closure((_, _, _) {
+        observed++;
+        return null;
+      }),
+    ]);
+    bool? revealed;
+    (_invoke(runtime, 'revealHandle', args) as Future).then(
+      (value) => revealed = value as bool,
+    );
+    presentation.select(false);
+    await tester.pumpWidget(host(true));
+    for (var row = 0; row < 60; row++) {
+      expect(
+        _invoke(runtime, 'feedHandle', [
+          ...args,
+          $String('row $row\n'),
+          $int(20),
+        ]),
+        greaterThan(0),
+      );
+    }
+    bool? yielded;
+    (_invoke(runtime, 'yieldHandle', args) as Future).then(
+      (value) => yielded = value as bool,
+    );
+    for (var frame = 0; frame < 5; frame++) {
+      await tester.pump(const Duration(milliseconds: 1));
+    }
+    expect(revealed, isTrue);
+    expect(yielded, isTrue);
+    expect(observed, greaterThan(0));
+    final hidden = _invoke(runtime, 'readHandle', args) as Map;
+    expect(hidden['ready'], isTrue);
+    expect(hidden['following'], isTrue);
+    expect(hidden['scrollOffset'], greaterThan(0));
+    expect(retention.snapshot, hidden);
+    final hiddenNative = tester.widget<TerminalView>(nativeFinder);
+    hiddenNative.scrollController!.position.pointerScroll(-50);
+    hiddenNative.controller!.setSelection(
+      hiddenNative.terminal.buffer.createAnchor(0, 0),
+      hiddenNative.terminal.buffer.createAnchor(2, 0),
+    );
+    expect(_invoke(runtime, 'readHandle', args), hidden);
+
+    // Replay/history operations are resident work, not selected interaction.
+    _invoke(runtime, 'followPolicy', [...args, $bool(false), $bool(false)]);
+    _invoke(runtime, 'scrollHandle', [...args, $double(120)]);
+    expect(
+      (_invoke(runtime, 'readHandle', args) as Map)['scrollOffset'],
+      120.0,
+    );
+    _invoke(runtime, 'followHandle', [...args, $bool(true)]);
+    expect(
+      _invoke(runtime, 'feedHandle', [
+        ...args,
+        $String('HIDDEN TAIL'),
+        $int(20),
+      ]),
+      11,
+    );
+    await tester.pump();
+    await tester.pump();
+    final beforeReturn = _invoke(runtime, 'readHandle', args);
+    presentation.select(true);
+    await tester.pumpWidget(host(false));
+    expect(_invoke(runtime, 'buildHandle', args), same(view));
+    expect(tester.state<TerminalViewState>(nativeFinder), same(state));
+    expect(
+      tester.widget<TerminalView>(nativeFinder).terminal.buffer.terminal,
+      same(engine),
+    );
+    expect(_invoke(runtime, 'readHandle', args), beforeReturn);
+    expect(_text(tester), endsWith('HIDDEN TAIL'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'resident revocation synchronously cancels reveal and notifications',
+    (tester) async {
+      final presentation = _Presentation();
+      addTearDown(presentation.dispose);
+      final retention = TerminalProjectionRetention();
+      final runtime = bind(
+        TerminalProjectionBridge(
+          isActive: () => true,
+          presentation: presentation,
+          retention: retention,
+        ),
+      );
+      final handle = _invoke(runtime, 'requestRows', [$int(6)]) as String;
+      final args = [$String(handle)];
+      final view = _invoke(runtime, 'buildHandle', args) as Widget;
+      await tester.pumpWidget(_host(view));
+      var observed = 0;
+      _invoke(runtime, 'observeHandle', [
+        ...args,
+        $Closure((_, _, _) {
+          observed++;
+          return null;
+        }),
+      ]);
+      _invoke(runtime, 'feedHandle', [...args, $String('checkpoint'), $int(6)]);
+      _invoke(runtime, 'hideHandle', args);
+      final pending = _invoke(runtime, 'revealHandle', args) as Future;
+      final finalCheckpoint = retention.snapshot;
+      presentation.retire();
+      expect(await pending, isFalse);
+      expect(retention.snapshot, finalCheckpoint);
+      expect(() => _invoke(runtime, 'readHandle', args), throwsA(anything));
+      expect(
+        () =>
+            _invoke(runtime, 'feedHandle', [...args, $String('late'), $int(6)]),
+        throwsA(anything),
+      );
+      await tester.pump();
+      expect(observed, 0);
+      expect(find.byType(TerminalView), findsNothing);
+      final freshPresentation = _Presentation();
+      addTearDown(freshPresentation.dispose);
+      final fresh = bind(
+        TerminalProjectionBridge(
+          isActive: () => true,
+          presentation: freshPresentation,
+          retention: retention,
+        ),
+      );
+      expect(_invoke(fresh, 'readRetained', []), finalCheckpoint);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('native prefix checkpoints precede interpreted accounting', (
     tester,
@@ -983,4 +1143,32 @@ String _text(WidgetTester tester) {
     for (var index = 0; index < buffer.height; index++)
       buffer.lines[index].getText().trimRight(),
   ].join('\n');
+}
+
+final class _Presentation extends ChangeNotifier
+    implements ConsolePresentationAccess {
+  @override
+  bool isActive = true;
+
+  @override
+  Listenable get changes => this;
+
+  @override
+  _Interaction? interaction = _Interaction();
+
+  void select(bool selected) {
+    interaction?.isActive = false;
+    interaction = selected && isActive ? _Interaction() : null;
+    notifyListeners();
+  }
+
+  void retire() {
+    isActive = false;
+    select(false);
+  }
+}
+
+final class _Interaction implements ConsoleInteractionAccess {
+  @override
+  bool isActive = true;
 }
