@@ -2,13 +2,20 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart'
     show ToolInvocationActivity;
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:flutter/widgets.dart';
 
-/// Read-only observation of one invocation. Its invocation and Tool identities
-/// remain fixed for the source's lifetime; updates replace only the snapshot.
+/// Read-only observation of one invocation. Its Session, Run, invocation and Tool
+/// identities remain fixed for the source's lifetime; updates replace only the
+/// snapshot.
 /// Presentation may listen, but neither disposes the source nor gains authority
 /// to execute a tool or resolve an approval.
 abstract interface class ToolActivityInspectionSource implements Listenable {
+  SessionId get sessionId;
+  RunId get runId;
+
+  /// The invocation identity is [ToolInvocationActivity.id], never an alias or
+  /// provider proposal ID. Together these facts identify one canonical occurrence.
   ToolInvocationActivity get snapshot;
 }
 

@@ -22,6 +22,7 @@ class StreamProbeState extends State<StreamProbe> {
   );
   String text = 'idle';
   dynamic subscription;
+  bool disposed = false;
 
   void start() {
     subscription = client
@@ -52,6 +53,17 @@ class StreamProbeState extends State<StreamProbe> {
         text = '${entry.sequence}:${entry.text}';
       });
     });
+  }
+
+  void readSettled() async {
+    final result = await settleOwningBackendOperation(client.read('captured'));
+    if (disposed) return;
+    if (result[0] == true) {
+      final StreamEntry entry = result[1];
+      setState(() { text = 'settled:${entry.sequence}:${entry.text}'; });
+    } else {
+      setState(() { text = 'settled:unavailable'; });
+    }
   }
 
   void startNullData() {
@@ -88,6 +100,7 @@ class StreamProbeState extends State<StreamProbe> {
 
   @override
   void dispose() {
+    disposed = true;
     if (subscription != null) subscription.cancel();
     super.dispose();
   }
@@ -98,6 +111,7 @@ class StreamProbeState extends State<StreamProbe> {
       Text(text),
       TextButton(onPressed: start, child: Text('Listen')),
       TextButton(onPressed: read, child: Text('Read')),
+      TextButton(onPressed: readSettled, child: Text('Read settled')),
       TextButton(onPressed: startNullData, child: Text('Null Data')),
       TextButton(
         onPressed: startNullErrorAndDone,

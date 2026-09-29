@@ -2,6 +2,11 @@
 /// Maps and all nested maps/lists are immutable. This is not execution state,
 /// progress history, or approval authority.
 abstract interface class ToolActivityInspectionSnapshot {
+  /// Exact canonical occurrence, including for restored historical activity.
+  String get sessionId;
+  String get runId;
+  String get toolInvocationId;
+
   Map<String, dynamic> get canonicalArguments;
   Map<String, dynamic> get hostData;
 

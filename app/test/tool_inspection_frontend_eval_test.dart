@@ -1205,6 +1205,10 @@ ToolInvocationActivity _activity({
 class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
   _Source(this.value);
 
+  @override
+  final SessionId sessionId = SessionId('session');
+  @override
+  final RunId runId = RunId('run');
   ToolInvocationActivity value;
   int reads = 0;
   int subscriptions = 0;

@@ -74,10 +74,76 @@ void main() {
     },
   );
 
+  for (final reusedId in [false, true]) {
+    test(
+      'watch observes absence then admission${reusedId ? ' with the same invocation ID in another Run' : ''}',
+      () async {
+        if (reusedId) {
+          final other = await _begin(store, run: 'other-run');
+          await other.append(_output('unrelated output'));
+          await other.seal(_completed());
+        }
+        final transactions = storage.transactions;
+        expect((await _state(store)).state, 'absent');
+        expect((await _after(store)).chunks, isEmpty);
+        expect(
+          (await store.readBefore(
+            'session',
+            'run',
+            'invocation',
+            null,
+            16,
+            65536,
+          )).chunks,
+          isEmpty,
+        );
+        final observed = <CommandCaptureState>[];
+        final initial = Completer<void>();
+        final admitted = Completer<void>();
+        final subscription = store.watch('session', 'run', 'invocation').listen(
+          (state) {
+            observed.add(state);
+            if (state.state == 'absent') initial.complete();
+            if (state.state == 'capturing') admitted.complete();
+          },
+        );
+        addTearDown(subscription.cancel);
+        await initial.future.timeout(const Duration(seconds: 2));
+        expect(
+          (
+            observed.single.state,
+            observed.single.version,
+            observed.single.highWater,
+          ),
+          ('absent', 0, 0),
+        );
+        expect(observed.single.program, isNull);
+        expect(store.observerCount, 1);
+        expect(store.activeCaptureCount, 0);
+        expect(storage.transactions, transactions);
+
+        final writer = await _begin(store);
+        await admitted.future.timeout(const Duration(seconds: 2));
+        expect(observed.map((state) => state.state), ['absent', 'capturing']);
+        expect(
+          (observed.last.version, observed.last.highWater, observed.last.runId),
+          (1, 0, 'run'),
+        );
+        expect(storage.transactions, transactions + 1);
+        await subscription.cancel();
+        expect(store.observerCount, 0);
+        expect(store.activeCaptureCount, 1);
+        await writer.seal(_completed());
+      },
+    );
+  }
+
   for (final subscribeFirst in [false, true]) {
     test(
-      '${subscribeFirst ? 'watch' : 'getState'} absent snapshot racing admission never rejects its own association',
+      '${subscribeFirst ? 'watch' : 'getState'} absent snapshot racing admission ignores a reused ID in another Run',
       () async {
+        final other = await _begin(store, run: 'other-run');
+        await other.seal(_completed());
         final queried = Completer<void>();
         final release = Completer<void>();
         var gated = false;
@@ -89,50 +155,46 @@ void main() {
             await release.future;
           }
         };
-        StreamIterator<CommandCaptureState>? observer;
+        final observed = <CommandCaptureState>[];
+        final initialObserved = Completer<CommandCaptureState>();
+        final admitted = Completer<CommandCaptureState>();
         if (subscribeFirst) {
-          observer = StreamIterator(
-            store.watch('session', 'run', 'invocation'),
-          );
-        }
-        final initial = observer == null
-            ? _state(store)
-            : observer.moveNext().then((hasState) {
-                expect(hasState, isTrue);
-                return observer!.current;
+          final subscription = store
+              .watch('session', 'run', 'invocation')
+              .listen((state) {
+                observed.add(state);
+                if (!initialObserved.isCompleted) {
+                  initialObserved.complete(state);
+                }
+                if (state.state == 'capturing') admitted.complete(state);
               });
+          addTearDown(subscription.cancel);
+        }
+        final initial = subscribeFirst ? initialObserved.future : _state(store);
         await queried.future.timeout(const Duration(seconds: 2));
         final writer = await _begin(store);
         release.complete();
         final state = await initial.timeout(const Duration(seconds: 2));
-        expect(state.state, isIn(['absent', 'capturing']));
+        expect(state.state, 'absent');
         expect(
           (state.sessionId, state.runId, state.toolInvocationId),
           ('session', 'run', 'invocation'),
         );
-        observer ??= StreamIterator(
-          store.watch('session', 'run', 'invocation'),
+        // No append, resume, or replacement subscription may be needed to
+        // observe admission after the in-flight absent snapshot settles.
+        final capturing = subscribeFirst
+            ? await admitted.future.timeout(const Duration(seconds: 2))
+            : await _state(store);
+        expect(
+          (capturing.state, capturing.version, capturing.highWater),
+          ('capturing', 1, 0),
         );
-        final watching = observer;
-        addTearDown(watching.cancel);
-        if (!subscribeFirst) expect(await watching.moveNext(), isTrue);
-        await writer.append(_output('after admission'));
-        while (watching.current.highWater < 1) {
-          expect(
-            await watching.moveNext().timeout(const Duration(seconds: 2)),
-            isTrue,
-          );
+        if (subscribeFirst) {
+          expect(observed.map((state) => state.state), ['absent', 'capturing']);
         }
-        expect((await _after(store)).chunks.single.text, 'after admission');
+        expect(storage.queries, 2);
+        expect(storage.transactionKinds, ['setup', 'complete', 'setup']);
         await writer.seal(_completed());
-        while (watching.current.state != 'complete') {
-          expect(
-            await watching.moveNext().timeout(const Duration(seconds: 2)),
-            isTrue,
-          );
-        }
-        expect(watching.current.highWater, 1);
-        expect(storage.transactionKinds, ['setup', 'append', 'complete']);
       },
     );
   }
@@ -324,7 +386,7 @@ void main() {
   );
 
   test(
-    'invalid page bounds and mismatched associations reject reads and watch',
+    'invalid page bounds and exact foreign Session reject reads and watch',
     () async {
       final writer = await _begin(store);
       await writer.seal(_completed());
@@ -340,30 +402,22 @@ void main() {
           throwsA(_failure('invalid_page')),
         );
       }
-      for (final association in [('other', 'run'), ('session', 'other-run')]) {
-        await expectLater(
-          store.getState(association.$1, association.$2, 'invocation'),
-          throwsA(_failure('association_mismatch')),
-        );
-        await expectLater(
-          store.readAfter(
-            association.$1,
-            association.$2,
-            'invocation',
-            0,
-            16,
-            65536,
-          ),
-          throwsA(_failure('association_mismatch')),
-        );
-        await expectLater(
-          store.watch(association.$1, association.$2, 'invocation'),
-          emitsInOrder([
-            emitsError(_failure('association_mismatch')),
-            emitsDone,
-          ]),
-        );
-      }
+      await expectLater(
+        store.getState('other', 'run', 'invocation'),
+        throwsA(_failure('association_mismatch')),
+      );
+      await expectLater(
+        store.readAfter('other', 'run', 'invocation', 0, 16, 65536),
+        throwsA(_failure('association_mismatch')),
+      );
+      await expectLater(
+        store.readBefore('other', 'run', 'invocation', null, 16, 65536),
+        throwsA(_failure('association_mismatch')),
+      );
+      await expectLater(
+        store.watch('other', 'run', 'invocation'),
+        emitsInOrder([emitsError(_failure('association_mismatch')), emitsDone]),
+      );
       expect(store.observerCount, 0);
       await expectLater(
         store.getState('', 'run', 'invocation'),
@@ -617,9 +671,9 @@ void main() {
         store.getState('other', 'run', 'invocation'),
         throwsA(_failure('association_mismatch')),
       );
-      await expectLater(
-        store.getState('session', 'missing-run', 'invocation'),
-        throwsA(_failure('association_mismatch')),
+      expect(
+        (await store.getState('session', 'missing-run', 'invocation')).state,
+        'absent',
       );
       final fresh = CommandTranscriptStore(storage);
       addTearDown(fresh.close);

@@ -220,6 +220,18 @@ Missing, retired, or mismatched ownership fails explicitly, without retargeting 
 native/in-process fallback. Same-plugin identity alone grants no arbitrary service
 access.
 
+Rich activity Inspection and declared read-only console content reuse this routing
+without resolving or materializing a Session strategy. Their Session, Run, and
+tool-invocation identities select plugin-owned evidence as ordinary request data,
+not host-invocation authority. The host captures the owning installation's exact
+live backend/configuration route and applies that descriptor's service allowlist;
+frontend code cannot promote an identity into execution, Environment, or approval
+access. Compact activity presentation does not acquire an owning-backend channel.
+Unavailable observation preserves independent factual presentation, not a backend
+fallback. Safe interpreted Future settlement preserves success values or reports
+failure without native diagnostics; it neither widens access nor changes the
+producer's domain outcome.
+
 Chat's `ChatSessionService` is a generated plugin-internal service reached through
 direct/owning-backend routing; it is not an advertised Chat Session Capability.
 Chat installs its Session dispatcher on the backend router but advertises only its

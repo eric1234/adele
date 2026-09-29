@@ -89,16 +89,37 @@ final class InstalledBackendActivation {
         presentation.strategyAffinity == PreparedStrategyAffinity.owningBackend
         ? origin
         : null;
+    return openPresentationChannel(
+      backendServices: presentation.backendServices,
+      configurationOrigin: affinityOrigin,
+      validatePresentation: validatePresentation,
+    );
+  }
+
+  /// Captures this exact installation/context without resolving a strategy or
+  /// granting execution authority. Only Session affinity supplies an origin.
+  OwningBackendChannel openPresentationChannel({
+    required Iterable<String> backendServices,
+    required void Function() validatePresentation,
+    RemoteExtensionContext? configurationOrigin,
+  }) {
+    validate();
+    if (configurationOrigin != null) {
+      configurationOrigin.validate();
+      if (!identical(configurationOrigin.connection, _connection)) {
+        throw StateError('The configuration belongs to another backend.');
+      }
+    }
     return OwningBackendChannel(
       connection: _connection!,
       configurationContext:
-          affinityOrigin?.configurationContext ??
+          configurationOrigin?.configurationContext ??
           _connection!.defaultConfigurationContext,
-      backendServices: presentation.backendServices,
+      backendServices: backendServices,
       observeOwnerRetirement: _activation!.onRetire,
       validateOwner: () {
         validate();
-        affinityOrigin?.validate();
+        configurationOrigin?.validate();
       },
       validatePresentation: validatePresentation,
     );

@@ -105,7 +105,10 @@ final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
     required super.library,
     required this.entrypoint,
     required Iterable<PreparedConsoleAction> actions,
-  }) : actions = List.unmodifiable(actions) {
+    this.readOnly = false,
+    Iterable<String> backendServices = const [],
+  }) : actions = List.unmodifiable(actions),
+       backendServices = List.unmodifiable(backendServices) {
     _library(library, 'library');
     _entrypoint(entrypoint, 'entrypoint');
     final seen = <String>{};
@@ -114,11 +117,30 @@ final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
         throw const FormatException('actions must have unique ids.');
       }
     }
+    if (readOnly && this.actions.isNotEmpty) {
+      throw const FormatException(
+        'Read-only console must not declare actions.',
+      );
+    }
+    if (!readOnly && this.backendServices.isNotEmpty) {
+      throw const FormatException('Console backendServices require readOnly.');
+    }
+    final services = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!services.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
   }
 
   final ExtensionId extensionId;
   final String entrypoint;
   final List<PreparedConsoleAction> actions;
+  final bool readOnly;
+  final List<String> backendServices;
 }
 
 final class PreparedTaskBrowserPresentation
@@ -167,20 +189,43 @@ final class PreparedSessionPresentation extends PreparedPresentationDescriptor {
 
 final class PreparedToolActivityPresentation
     extends PreparedPresentationDescriptor {
-  const PreparedToolActivityPresentation({
+  PreparedToolActivityPresentation({
     required this.toolId,
     required this.inspectionExtensionId,
     required this.compactExtensionId,
     required this.inspectionEntrypoint,
     required this.compactEntrypoint,
     required super.library,
-  });
+    Iterable<String> backendServices = const [],
+    Iterable<ExtensionId> consoleExtensions = const [],
+  }) : backendServices = List.unmodifiable(backendServices),
+       consoleExtensions = List.unmodifiable(consoleExtensions) {
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
+    if (this.consoleExtensions.toSet().length !=
+        this.consoleExtensions.length) {
+      throw const FormatException(
+        'consoleExtensions must not contain duplicates.',
+      );
+    }
+  }
 
   final ToolId toolId;
   final ExtensionId inspectionExtensionId;
   final ExtensionId compactExtensionId;
   final String inspectionEntrypoint;
   final String compactEntrypoint;
+
+  /// Available only to rich Inspection, never compact presentation.
+  final List<String> backendServices;
+  final List<ExtensionId> consoleExtensions;
 }
 
 final class PreparedModelNativeActivityPresentation
@@ -490,7 +535,21 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'library',
         'entrypoint',
         'actions',
+        'readOnly',
+        'backendServices',
       });
+      final readOnly = value['readOnly'] ?? false;
+      if (readOnly is! bool ||
+          (value.containsKey('readOnly') && value['readOnly'] == null)) {
+        throw FormatException('$label.readOnly must be a boolean.');
+      }
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
       final actions = value['actions'];
       if (actions is! List<Object?>) {
         throw FormatException('$label.actions must be an array.');
@@ -519,6 +578,8 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         library: _library(value['library'], '$label.library'),
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         actions: descriptors,
+        readOnly: readOnly,
+        backendServices: services.cast<String>(),
       );
     case 'taskBrowser':
       _object(value, label, {
@@ -579,7 +640,25 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'compactExtensionId',
         'inspectionEntrypoint',
         'compactEntrypoint',
+        'backendServices',
+        'consoleExtensions',
       });
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      final consoles = value.containsKey('consoleExtensions')
+          ? value['consoleExtensions']
+          : const <String>[];
+      if (consoles is! List<Object?> ||
+          consoles.any((item) => item is! String)) {
+        throw FormatException(
+          '$label.consoleExtensions must be a string array.',
+        );
+      }
       return PreparedToolActivityPresentation(
         toolId: ToolId(text('toolId')),
         inspectionExtensionId: ExtensionId(text('inspectionExtensionId')),
@@ -587,6 +666,8 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         inspectionEntrypoint: text('inspectionEntrypoint'),
         compactEntrypoint: text('compactEntrypoint'),
         library: text('library'),
+        backendServices: services.cast<String>(),
+        consoleExtensions: consoles.cast<String>().map(ExtensionId.new),
       );
     case 'modelNativeActivity':
       _object(value, label, {

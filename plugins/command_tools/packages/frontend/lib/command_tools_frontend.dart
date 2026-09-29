@@ -2,6 +2,10 @@ import 'package:adele_ui/inspection_display.dart';
 import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:flutter/material.dart';
 
+import 'command_output_view.dart';
+
+export 'command_output_view.dart' show buildRunCommandOutput;
+
 Widget buildRunCommandInspection() => RunCommandInspection();
 Widget buildRunCommandCompact() => RunCommandInspection(compact: true);
 
@@ -135,6 +139,7 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
         Text('Failure code: ${inspectionDisplayText("${data['code']}")}'),
       );
     }
+    children.add(Text('Bounded model result (not the stored transcript):'));
     for (final String stream in <String>['stdout', 'stderr']) {
       children.add(
         Text(
@@ -165,6 +170,15 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
         children.add(Text('Failure detail preview truncated.'));
       }
     }
+    children.add(
+      CommandOutputView(
+        sessionId: snapshot.sessionId,
+        runId: snapshot.runId,
+        invocationId: snapshot.toolInvocationId,
+        title:
+            'Command: ${compactDisplayText("${arguments['program'] ?? 'Unavailable'}", maximumCharacters: 64)}',
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,

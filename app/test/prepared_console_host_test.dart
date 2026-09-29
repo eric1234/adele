@@ -5,7 +5,10 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/console_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
@@ -13,7 +16,9 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -21,11 +26,13 @@ import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/terminal_frontend_compiler.dart';
 
 const _plugin = 'dev.adele.plugin.terminal';
+const _contentLibrary = 'package:console_content_probe/main.dart';
 final _providerId = ProviderId('test.console-environment');
 
 void main() {
   late Directory temporary;
   late PreparedPluginCatalog catalog;
+  late File contentArtifact;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('prepared-console-');
@@ -53,6 +60,26 @@ void main() {
     );
     catalog = await PreparedPluginCatalog.discover(temporary.path);
     expect(catalog.issues, isEmpty);
+    final program =
+        (Compiler()
+              ..addPlugin(flutterEvalPlugin)
+              ..addPlugin(const ConsoleDeclarations())
+              ..entrypoints.add(_contentLibrary))
+            .compile({
+              'console_content_probe': {
+                'main.dart': await File(
+                  'test/fixtures/console_content_frontend.dart',
+                ).readAsString(),
+              },
+              'adele_ui': {
+                'console_bridge.dart': await File(
+                  '../packages/ui/lib/console_bridge.dart',
+                ).readAsString(),
+              },
+            });
+    contentArtifact = await File(
+      '${temporary.path}/content.evc',
+    ).writeAsBytes(program.write());
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
@@ -63,6 +90,212 @@ void main() {
     await _turn();
   });
   tearDown(() => fixture.close());
+
+  test(
+    'missing optional read-only host preserves factual frontend roles',
+    () async {
+      final root = await Directory(
+        '${temporary.path}/optional-console',
+      ).create();
+      final installation = await Directory('${root.path}/owner').create();
+      await contentArtifact.copy('${installation.path}/frontend.evc');
+      await File(
+        '${installation.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'test.optional-console',
+            'version': '1',
+            'displayName': 'Optional',
+          },
+          'components': {
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': [
+                {
+                  'role': 'console',
+                  'extensionId': 'test.read-only',
+                  'library': _contentLibrary,
+                  'entrypoint': 'buildContent',
+                  'actions': <Object?>[],
+                  'readOnly': true,
+                },
+                {
+                  'role': 'toolActivity',
+                  'toolId': 'test.tool',
+                  'library': _contentLibrary,
+                  'inspectionExtensionId': 'test.inspection',
+                  'compactExtensionId': 'test.compact',
+                  'inspectionEntrypoint': 'buildContent',
+                  'compactEntrypoint': 'buildContent',
+                  'consoleExtensions': ['test.read-only'],
+                },
+              ],
+            },
+          },
+        }),
+      );
+      final extensions = ExtensionRegistry();
+      final frontends = ApplicationFrontendBootstrap(extensions: extensions);
+      addTearDown(frontends.close);
+      await frontends.start(await PreparedPluginCatalog.discover(root.path));
+      expect(frontends.generations.single.state, InstalledFrontendState.active);
+      expect(extensions.discover(consoleContributions), isEmpty);
+      expect(
+        extensions.discover(toolActivityInspectionContributions),
+        hasLength(1),
+      );
+      expect(
+        extensions.discover(toolActivityCompactPresentationContributions),
+        hasLength(1),
+      );
+    },
+  );
+
+  Future<(PreparedFrontend, ExtensionRegistration, ConsoleBridge)>
+  readOnly() async {
+    final generation = await PreparedFrontend.load(contentArtifact);
+    addTearDown(generation.invalidate);
+    late ExtensionRegistration registration;
+    registration = fixture.extensions.register(
+      point: consoleContributions,
+      id: ExtensionId('test.read-only'),
+      value: fixture.host.createContribution(
+        installation: catalog.installations.single,
+        generation: generation,
+        descriptor: PreparedConsolePresentation(
+          extensionId: ExtensionId('test.read-only'),
+          library: _contentLibrary,
+          entrypoint: 'buildContent',
+          actions: [],
+          readOnly: true,
+        ),
+        isActive: () => !registration.isClosed,
+      ),
+    );
+    final bridge =
+        fixture.host.createOpeningBridge(
+              installation: catalog.installations.single,
+              generation: generation,
+              sessionId: fixture.sessionA.id,
+              consoleExtensions: [ExtensionId('test.read-only')],
+              isActive: () => true,
+            )
+            as ConsoleBridge;
+    fixture.controller.setSession(fixture.sessionA);
+    return (generation, registration, bridge);
+  }
+
+  testWidgets(
+    'prepared read-only content outlives opener and retains only logical state',
+    (tester) => tester.runAsync(() async {
+      final (generation, registration, bridge) = await readOnly();
+      final result = await generation.invoke<Object?>(
+        library: _contentLibrary,
+        entrypoint: 'open',
+        createBridge: () => bridge,
+        decodeResult: copyStructuredBridgeData,
+      );
+      expect(result, [true, null]);
+      expect(bridge.isActive, isFalse);
+      final tab = fixture.controller.selectedTab!;
+      expect(fixture.provider.requests, isEmpty);
+      expect(fixture.provider.restores, 0);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WorkbenchConsole(controller: fixture.controller),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 0'), findsOneWidget);
+      final oldButton = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Identity: opaque; history: 0'),
+      );
+      oldButton.onPressed!();
+      fixture.controller.setVisible(false);
+      await tester.pump();
+      fixture.controller.setVisible(true);
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 1'), findsOneWidget);
+      await tester.tap(find.text('Identity: opaque; history: 1'));
+      fixture.controller.setVisible(false);
+      await tester.pump();
+      oldButton.onPressed!();
+      fixture.controller.setVisible(true);
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 2'), findsOneWidget);
+      fixture.controller.setSession(fixture.sessionB);
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      fixture.controller.setSession(fixture.sessionA);
+      expect(fixture.controller.selectedTab, same(tab));
+      await fixture.controller.closeTab(
+        tab,
+        (_) async => fail('Read-only content never confirms.'),
+      );
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      expect(fixture.provider.closes, isEmpty);
+      await registration.close();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  test(
+    'opening requires exact declared installation generation and owner',
+    () async {
+      final (generation, registration, bridge) = await readOnly();
+      final descriptor = ConsoleContentDescriptor(
+        key: 'same',
+        metadata: ConsoleMetadata(title: 'Output'),
+        data: const {},
+      );
+      expect(await bridge.open('test.unlisted', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      final otherGeneration = await PreparedFrontend.load(contentArtifact);
+      addTearDown(otherGeneration.invalidate);
+      final foreign =
+          fixture.host.createOpeningBridge(
+                installation: catalog.installations.single,
+                generation: otherGeneration,
+                sessionId: fixture.sessionA.id,
+                consoleExtensions: [ExtensionId('test.read-only')],
+                isActive: () => true,
+              )
+              as ConsoleBridge;
+      expect(await foreign.open('test.read-only', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      expect(await bridge.open('test.read-only', descriptor), [true, null]);
+      final tab = fixture.controller.selectedTab;
+      expect(await bridge.open('test.read-only', descriptor), [true, null]);
+      expect(fixture.controller.eligibleTabs, [tab]);
+      final value = fixture.extensions
+          .discover(consoleContributions)
+          .singleWhere((entry) => entry.id == ExtensionId('test.read-only'))
+          .value;
+      await registration.close();
+      fixture.extensions.register(
+        point: consoleContributions,
+        id: ExtensionId('test.read-only'),
+        value: value,
+      );
+      expect(await bridge.open('test.read-only', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      await _turn();
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      expect(fixture.provider.requests, isEmpty);
+    },
+  );
 
   test(
     'corrupt stock artifact exposes no action or native replacement',
@@ -450,10 +683,15 @@ final class _Fixture {
       environmentRuntime: environmentRuntime,
       cleanupTimeout: const Duration(milliseconds: 100),
     );
-    host = PreparedConsoleHost(store: store, terminals: terminals);
     controller = ConsoleController(
       extensions,
       cleanupTimeout: const Duration(milliseconds: 200),
+    );
+    host = PreparedConsoleHost(
+      store: store,
+      terminals: terminals,
+      extensions: extensions,
+      controller: controller,
     );
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,

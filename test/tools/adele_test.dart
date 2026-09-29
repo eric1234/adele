@@ -646,7 +646,17 @@ void main() {
         ...stockFrontendDescriptors.values,
         ...stockFrontendExtensionDescriptors.values,
       ]) {
-        expect(descriptors, hasLength(1));
+        expect(
+          descriptors,
+          hasLength(
+            identical(
+                  descriptors,
+                  stockFrontendDescriptors['dev.adele.plugin.command-tools'],
+                )
+                ? 2
+                : 1,
+          ),
+        );
         for (final descriptor in descriptors) {
           final library = Uri.parse(descriptor['library']! as String);
           expect(library.scheme, 'package');
@@ -700,6 +710,17 @@ void main() {
           }
         }
       }
+      final command =
+          stockFrontendDescriptors['dev.adele.plugin.command-tools']!;
+      final inspection = command.singleWhere(
+        (value) => value['role'] == 'toolActivity',
+      );
+      final output = command.singleWhere((value) => value['role'] == 'console');
+      expect(inspection['backendServices'], ['command.output']);
+      expect(inspection['consoleExtensions'], [output['extensionId']]);
+      expect(output['backendServices'], ['command.output']);
+      expect(output['readOnly'], isTrue);
+      expect(output['actions'], isEmpty);
     },
   );
 

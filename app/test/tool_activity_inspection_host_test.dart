@@ -322,6 +322,11 @@ class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
         changes: const [],
       );
 
+  @override
+  final SessionId sessionId = SessionId('session');
+  @override
+  final RunId runId = RunId('run');
+
   ToolInvocationActivity value;
   bool fail = false;
   bool get listening => hasListeners;

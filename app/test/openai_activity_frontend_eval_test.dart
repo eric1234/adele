@@ -860,6 +860,10 @@ ModelNativeOutput _output(
 
 class _CommandSource extends ChangeNotifier
     implements ToolActivityInspectionSource {
+  @override
+  final SessionId sessionId = SessionId('session');
+  @override
+  final RunId runId = RunId('run');
   bool get listening => hasListeners;
 
   @override

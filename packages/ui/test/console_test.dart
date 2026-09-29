@@ -40,6 +40,53 @@ void main() {
     expect(action('read-only.log_1').id, 'read-only.log_1');
   });
 
+  test('prepared descriptors deeply copy bounded opaque data and keys', () {
+    final nested = <Object?>['original'];
+    final data = <String, Object?>{'nested': nested};
+    final descriptor = ConsoleContentDescriptor(
+      key: 'run/invocation',
+      metadata: ConsoleMetadata(title: 'Output'),
+      data: data,
+    );
+    nested[0] = 'changed';
+    data.clear();
+    expect(descriptor.data, {
+      'nested': ['original'],
+    });
+    expect(() => descriptor.data.clear(), throwsUnsupportedError);
+    expect(
+      () => (descriptor.data['nested'] as List).clear(),
+      throwsUnsupportedError,
+    );
+    for (final key in ['', ' ', 'k' * 257, 'bad\nkey']) {
+      expect(
+        () => ConsoleContentDescriptor(
+          key: key,
+          metadata: ConsoleMetadata(title: 'Output'),
+          data: const {},
+        ),
+        throwsFormatException,
+      );
+    }
+    final cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    for (final invalid in <Map<String, Object?>>[
+      cyclic,
+      {'callback': () {}},
+      {'object': Object()},
+      {'nan': double.nan},
+      {'text': 'x' * 8193},
+      {'nodes': List.filled(257, null)},
+    ]) {
+      expect(() => copyConsoleContentData(invalid), throwsFormatException);
+    }
+    Object? deep = 0;
+    for (var i = 0; i < 17; i++) {
+      deep = [deep];
+    }
+    expect(() => copyConsoleContentData({'deep': deep}), throwsFormatException);
+  });
+
   test('metadata and messages have bounded safe display text', () {
     final metadata = ConsoleMetadata(
       title: 'Name\n\u001b\u202e${'x' * 200}',

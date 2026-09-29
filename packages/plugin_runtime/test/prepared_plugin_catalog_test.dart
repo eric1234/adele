@@ -204,6 +204,8 @@ void main() {
       );
       expect(tool.inspectionEntrypoint, _toolActivity['inspectionEntrypoint']);
       expect(tool.compactEntrypoint, _toolActivity['compactEntrypoint']);
+      expect(tool.backendServices, isEmpty);
+      expect(tool.consoleExtensions, isEmpty);
       final session = frontend.presentations[1] as PreparedSessionPresentation;
       expect(session.library, _session['library']);
       expect(session.extensionId, ExtensionId(_session['extensionId']!));
@@ -250,6 +252,90 @@ void main() {
       expect(() => copy.extensions.clear(), throwsUnsupportedError);
     },
   );
+
+  test(
+    'Tool Inspection allowlists are optional, explicit and immutable',
+    () async {
+      await install(
+        'inspection',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {
+                  ..._toolActivity,
+                  'backendServices': ['example.read'],
+                  'consoleExtensions': ['org.example.output'],
+                },
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final descriptor =
+          catalog.installations.single.frontend!.presentations.single
+              as PreparedToolActivityPresentation;
+      expect(descriptor.backendServices, ['example.read']);
+      expect(descriptor.consoleExtensions, [ExtensionId('org.example.output')]);
+      expect(() => descriptor.backendServices.clear(), throwsUnsupportedError);
+      expect(
+        () => descriptor.consoleExtensions.clear(),
+        throwsUnsupportedError,
+      );
+    },
+  );
+
+  for (final entry in <String, Object?>{
+    'non-list services': 'example.read',
+    'non-string service': [1],
+    'blank service': [''],
+    'duplicate services': ['example.read', 'example.read'],
+  }.entries) {
+    test('Tool Inspection rejects ${entry.key}', () async {
+      await install(
+        'inspection',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {..._toolActivity, 'backendServices': entry.value},
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
+
+  for (final targets in <Object?>[
+    'org.example.output',
+    [1],
+    ['not-an-extension-id'],
+    ['org.example.output', 'org.example.output'],
+  ]) {
+    test('Tool Inspection rejects invalid console targets $targets', () async {
+      await install(
+        'inspection',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {..._toolActivity, 'consoleExtensions': targets},
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
 
   test('Console is frontend-only with ordered immutable actions', () async {
     await install(
@@ -348,6 +434,76 @@ void main() {
       );
     }
   });
+
+  test(
+    'read-only console descriptors declare immutable backend services',
+    () async {
+      await install(
+        'read-only',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {
+                  ..._console,
+                  'readOnly': true,
+                  'actions': <Object?>[],
+                  'backendServices': ['example.read'],
+                },
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final descriptor =
+          catalog.installations.single.frontend!.presentations.single
+              as PreparedConsolePresentation;
+      expect(descriptor.readOnly, isTrue);
+      expect(descriptor.actions, isEmpty);
+      expect(descriptor.backendServices, ['example.read']);
+      expect(() => descriptor.backendServices.clear(), throwsUnsupportedError);
+    },
+  );
+
+  for (final fields in <Map<String, Object?>>[
+    {'readOnly': true},
+    {'readOnly': null},
+    {'readOnly': 'true'},
+    {
+      'backendServices': ['example.read'],
+    },
+    {'readOnly': true, 'actions': [], 'backendServices': null},
+    {
+      'readOnly': true,
+      'actions': [],
+      'backendServices': [''],
+    },
+    {
+      'readOnly': true,
+      'actions': [],
+      'backendServices': ['example.read', 'example.read'],
+    },
+  ]) {
+    test('rejects incompatible read-only console metadata $fields', () async {
+      await install(
+        'invalid-read-only',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {..._console, ...fields},
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
 
   final invalidConsoles = <String, Object?>{
     for (final field in ['extensionId', 'library', 'entrypoint', 'actions'])

@@ -23,6 +23,12 @@ Future<Object?> requestOwningBackend(
   Map<String, Object?> payload,
 ) => throw UnsupportedError('Interpreted host only.');
 
+/// Safely awaits a generated backend query without transporting native errors.
+/// Preserves the interpreted success value as [true, value], or [false, null].
+/// This grants no authority; the originating channel enforces its own lifetime.
+Future<List<dynamic>> settleOwningBackendOperation(Future<dynamic> operation) =>
+    throw UnsupportedError('Interpreted host only.');
+
 Stream<Object?> streamOwningBackend(
   String serviceId,
   String method,

@@ -122,6 +122,16 @@ void main() {
     expect(invoke('inspectOutcome'), 'opaque nested evidence');
   });
 
+  test('snapshot identity is canonical rather than alias or provider call', () {
+    expect(invoke('inspectIdentity'), 'session-exact/run-exact/tool-1');
+    invoke('retain');
+    source.value = _activity(terminal: true);
+    expect(invoke('inspectIdentity'), 'session-exact/run-exact/tool-1');
+    bridge.retainPresentation();
+    active = false;
+    expect(invoke('inspectIdentity'), 'session-exact/run-exact/tool-1');
+  });
+
   test('old snapshots stay immutable and do not track later source updates', () {
     invoke('retain');
     source.value = _activity(terminal: true);
@@ -477,6 +487,10 @@ void main() {
 }
 
 class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
+  @override
+  final SessionId sessionId = SessionId('session-exact');
+  @override
+  final RunId runId = RunId('run-exact');
   ToolInvocationActivity value = _activity();
   int reads = 0;
   bool fail = false;
@@ -557,6 +571,10 @@ List<dynamic> inspect() {
   ];
 }
 String inspectOutcome() => readToolActivitySnapshot().hostData['opaque'][0]['value'];
+String inspectIdentity() {
+  final ToolActivityInspectionSnapshot snapshot = readToolActivitySnapshot();
+  return '${snapshot.sessionId}/${snapshot.runId}/${snapshot.toolInvocationId}';
+}
 void retain() { retained = readToolActivitySnapshot(); }
 String retainedLifecycle() => retained!.lifecycle;
 void mutateArguments() { readToolActivitySnapshot().canonicalArguments['path'] = 'changed'; }

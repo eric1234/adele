@@ -321,6 +321,16 @@ Content registration is independent of mounted presentation: metadata and lifecy
 observation may continue while hidden, but hiding, selection/context change,
 unmount, or retirement permanently revokes view-originated access.
 
+Read-only content can also be opened through an explicitly declared console target
+from a rich Inspection. The host captures the target's exact registration within
+the same installation/frontend generation and the canonical Session, rather than
+letting transported IDs choose authority. An opaque content key deduplicates only
+within that owner and Session; equal keys cannot replace an existing descriptor or
+its logical state. Admission transfers bounded structured plugin data to a
+host-owned declared factory, never a callback or evaluator runtime from the
+originating view. The content can outlive that view; its new presentations receive
+fresh access while retaining only bounded logical state and exact owned bindings.
+
 Close advice is synchronous and advisory only, with no veto or asynchronous
 settlement hook. Missing/failed advice triggers host confirmation. Confirmed close,
 content-requested removal, retirement, and host shutdown release resources without
@@ -332,11 +342,38 @@ The current workbench exposes the console only while presenting a Session. Task
 Browser has no console panel, toggle, or creation actions. Terminal content uses
 the Session's canonical Environment association, not a primary-Environment guess;
 that resource ownership is defined by the [product model](product-model.md#interactive-terminal-resources).
-Future read-only command output is independent contributed content with invocation
+Read-only command output is independent contributed content with invocation
 provenance, not a Terminal child. Concrete public types belong to
 [UI](../../packages/ui/README.md#shared-console), prepared ABI to the
 [catalog](../../packages/plugin_runtime/README.md#prepared-catalog), and stock
-behavior to [Terminal](../../plugins/terminal/README.md).
+behavior to [Terminal](../../plugins/terminal/README.md) and
+[Command Tools](../../plugins/command_tools/README.md).
+
+### Activity Inspection
+
+Tool Inspection observes one canonical Session/Run/tool-invocation occurrence.
+Those immutable identities distinguish repeated aliases or provider call IDs and
+remain factual data for both live and historical activity, not execution handles
+or authority. Core supplies the occurrence and public execution evidence; plugins
+own interpretation of their domain data and any fuller historical reads. Neither
+Inspection nor a console becomes a second transcript store or canonical strategy
+state owner.
+
+Prepared rich Inspection may use explicitly allowlisted services on its exact
+owning backend and open declared console content. These are separate read-only
+hosting facilities, not Session strategy materialization, tool execution, or
+approval authority. Missing backend observation preserves factual Inspection;
+compact presentation remains factual and never acquires these facilities.
+Own-backend routing follows [contracts and capabilities](contracts-and-capabilities.md#own-backend-frontend-requests).
+
+Native read-only terminal projections are independent per-view renderers, separate
+from interactive terminal resources. Each view owns a bounded parser/buffer and
+viewport with revocable access. Local feed/reset, scroll, selection, and explicit
+copy confer no input, paste, terminal-reply, resize, signal, process, or backend
+authority. Plugin readers retain history semantics; renderer lifetime, hiding, or
+closing cannot cancel independently owned capture. Public API and bounds belong
+to [UI](../../packages/ui/README.md#interpreted-bridges), not a Command-specific
+contract in the app.
 
 ### Session presentation settlement
 
@@ -389,7 +426,7 @@ and persistence boundaries.
 
 Command Tools owns its invocation-associated command headers, ordered decoded
 stdout/stderr chunks, incremental capture/completeness, bounded model result,
-historical reads, and live availability service. Its future Inspection and console
+historical reads, and live availability service. Its Inspection and console
 presentations consume its generated own-backend contract, not a core transcript
 repository or native Command codec. The Environment provider owns direct process
 execution, decoding, bounded producer delivery, and cleanup. Core owns canonical

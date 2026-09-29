@@ -595,7 +595,16 @@ void main() {
     final source = tester
         .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
         .source;
+    expect(source.sessionId, session.id);
+    expect(source.runId, RunId('first'));
+    expect(source.snapshot.id, ToolInvocationId('tool-2'));
     await tester.pumpWidget(output('second'));
+    final nextSource = tester
+        .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
+        .source;
+    expect(nextSource.sessionId, session.id);
+    expect(nextSource.runId, RunId('second'));
+    expect(nextSource.snapshot.id, source.snapshot.id);
     expect(
       tester
           .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
@@ -604,6 +613,66 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  for (final compact in [true, false]) {
+    testWidgets(
+      'terminal source preserves each canonical occurrence compact=$compact',
+      (tester) async {
+        final snapshot = activity(
+          run: 'retained',
+          state: RunState.completed,
+          tools: [
+            tool(2, alias: 'same-alias'),
+            tool(3, alias: 'same-alias'),
+          ],
+        );
+        await tester.pumpWidget(
+          frame(
+            Column(
+              children: [
+                for (final sequence in [2, 3])
+                  ActivityOutputPresentation(
+                    extensions: extensions,
+                    activity: snapshot,
+                    target: target(sequence, run: 'retained'),
+                    compact: compact,
+                  ),
+              ],
+            ),
+          ),
+        );
+        final sources = compact
+            ? tester
+                  .widgetList<ToolActivityCompactHost>(
+                    find.byType(ToolActivityCompactHost),
+                  )
+                  .map((host) => host.source)
+                  .toList()
+            : tester
+                  .widgetList<ToolActivityInspectionHost>(
+                    find.byType(ToolActivityInspectionHost),
+                  )
+                  .map((host) => host.source)
+                  .toList();
+        expect(sources.map((source) => source.sessionId), [
+          session.id,
+          session.id,
+        ]);
+        expect(sources.map((source) => source.runId), [
+          RunId('retained'),
+          RunId('retained'),
+        ]);
+        expect(sources.map((source) => source.snapshot.id), [
+          ToolInvocationId('tool-2'),
+          ToolInvocationId('tool-3'),
+        ]);
+        expect(
+          sources.map((source) => source.snapshot.providerCallId).toSet(),
+          {'same-provider-call'},
+        );
+      },
+    );
+  }
 
   testWidgets(
     'missing compact presenters use bounded escaped factual fallbacks',

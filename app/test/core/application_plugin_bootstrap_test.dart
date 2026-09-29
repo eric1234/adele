@@ -121,6 +121,20 @@ void main() {
         strategyAffinity: affinity,
       );
       var live = true;
+      final inspection = backend.openPresentationChannel(
+        backendServices: ['inspection.read'],
+        validatePresentation: () {
+          if (!live) throw StateError('View retired.');
+        },
+      );
+      expect(await inspection.request('inspection.read', 'echo', {}), {
+        'configurationContext': 'default',
+        'serviceId': 'inspection.read',
+      });
+      await expectLater(
+        inspection.request('history', 'echo', {}),
+        throwsStateError,
+      );
       final channel = backend.openChannel(
         presentation: presentation(
           strategyA.value.strategyId,
@@ -193,6 +207,10 @@ void main() {
       });
       live = false;
       await expectLater(
+        inspection.request('inspection.read', 'echo', {}),
+        throwsStateError,
+      );
+      await expectLater(
         channel.request('history', 'echo', {}),
         throwsStateError,
       );
@@ -219,6 +237,10 @@ void main() {
         same(replacement),
       );
       expect(originA.validate, throwsA(isA<StaleExtensionBinding>()));
+      await expectLater(
+        inspection.request('inspection.read', 'echo', {}),
+        throwsStateError,
+      );
       await expectLater(
         channel.request('history', 'echo', {}),
         throwsStateError,

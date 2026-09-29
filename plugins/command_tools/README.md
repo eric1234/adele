@@ -114,8 +114,10 @@ has no contract import or handwritten Command codec.
 `getState`, `readAfter`, `readBefore`, and `watch` take Session, Run, and exact tool
 invocation IDs. Existing records validate all three associations. Absent capture
 returns `state: absent`, distinct from an admitted empty command. One bounded SQL
-snapshot selects the exact Run/invocation or a foreign candidate, so concurrent
-admission cannot turn an earlier empty lookup into a false association mismatch.
+snapshot selects only the exact Run/invocation; a reused invocation string in
+another Run does not establish an association. Watch registration precedes the
+initial read, so a watcher remains subscribed after absence and observes later
+admission, including admission racing that initial snapshot.
 Chunk positions
 are stable one-based ordinals in observed combined pipe-arrival order, not byte
 offsets or a stronger cross-pipe ordering guarantee. Cursors are exclusive:
@@ -179,32 +181,127 @@ the terminal model result, and continue after an existing-file source mutation.
 Shell classification, background processes, stdin, signals, environment
 overrides, and network policy remain outside this plugin.
 
-## Run Command Inspection
+## Live Inspection and console output
 
 The separate Flutter package `packages/frontend` (`command_tools_frontend`) owns
-the interpreted `run_command` card. It interprets immutable structured arguments
-and terminal data: program, individual direct-argv arguments, working directory,
-timeout, common lifecycle, tool-result disposition, process termination/exit code,
-and bounded stdout/stderr previews with truncation indicators. Successful tool
-delivery does not imply exit code zero. Previews come from terminal outcome data,
-not flattened progress history or a live Console stream.
+both interpreted output presentations. It depends on Flutter, `adele_ui`, and its
+deliberate `command_tools_contract`, not the headless implementation, app, or
+kernel. `command_tools_frontend.dart` retains argument boundaries and factual
+tool lifecycle/disposition metadata. `command_output_view.dart` owns generated
+`CommandOutputServiceClient` reads/watch, ordered replay, capture/process status,
+history navigation, and follow behavior. Model-result head/tail previews remain
+explicitly separate from the stored transcript.
 
-Prepared `toolActivity` metadata supplies the exact tool and compact/Inspection
-registration identities to generic frontend activation. The frontend depends only on
-Flutter and `adele_ui`, not the headless implementation, app, or kernel. The
-generic host matches exact Tool ID and transports immutable maps/latest common
-lifecycle without interpreting command fields.
+An ordinary Chat activity click opens the Command Tools Inspection card. Its
+Session/Run/invocation strings come from the canonical activity occurrence,
+including historical activity, through the generic read-only Inspection snapshot.
+The card subscribes before reading, so opening before header admission shows
+absence and then observes admission without a retry timer. Prepared, waiting,
+denied, absent capture, admitted empty output, process outcome, capture failure,
+reader failure, and replay state remain distinct. Nonzero exit can have complete
+capture; partial failed captures still offer **Show more**.
 
-The same EVC exposes a distinct compact entrypoint through
-`ToolActivityCompactPresentationContribution`. It shows bounded program/argv
-tokens with boundaries preserved, never reconstructed shell quoting. Common
-hosting owns inspect interaction in Chat, group rows, and card headers. Missing
-compact UI retains a factual alias fallback, not native command-field parsing.
+The compact entrypoint remains a separate bounded program/argv summary. It does
+not create an output reader, replay history, or request a terminal projection.
+Common hosting owns inspect interaction and exact-invocation approval controls.
+The card cannot execute, approve, rerun, send input, or materialize an Environment.
+Opening it does not open the console.
 
-Generic catalog-driven activation independently loads prepared EVC through `PreparedFrontend`;
-coalesced read-only snapshot updates retain the same view/runtime. Missing/corrupt
-or retired presentation stays unavailable without backend failure or a native
-tool-card fallback. Only common host approval UI supplies exact-invocation
-Allow/Deny; this card cannot execute, resume, approve, or navigate. Console
-navigation and arbitrary plugin drill-down remain deferred. Build-time preparation is documented in
-[`app/README.md`](../../app/README.md#prepared-chat-frontend).
+Show more calls the generic declared-console bridge for
+`dev.adele.plugin.command-tools.output`. Its opaque content key length-delimits
+Run/invocation IDs; the host additionally scopes it to the exact contribution
+generation and canonical Session. Repeated opens focus the existing tab without
+resetting the reader; identical argv never determines identity. The host retains
+only validated descriptors and bounded opaque data, not callbacks into the card.
+The console EVC independently reads its content identity and acquires fresh
+revocable own-backend and projection access.
+
+### Replay and history
+
+Each presentation has an independent native read-only projection: fixed 80 columns,
+6 rows for the preview or 20 rows for expanded output, and 200 retained lines
+including the viewport. Narrow views can scroll horizontally without changing
+the replay geometry. Follow targets the painted cursor/output rather than blank
+emulator padding, including when the available height is less than 20 rows.
+Pipe-display LF starts the next line at column zero; stored
+text is unchanged, explicit CR/ANSI retain their behavior, and interactive PTY
+handling is separate. No terminal-library types cross the public bridge.
+REP controls through 1,024 repetitions render exactly; larger single-operation
+amplification is an explicit unavailable projection, not silently clamped output.
+The native owner discards that failed projection and acknowledges no text from
+the failed feed. This bounds synchronous parser work independently of page size.
+
+The plugin feeds stored chunks in their combined recorded order, preserving each
+chunk's stream field in its read model without inserting stream labels. A fresh
+emulator always replays from cursor zero, never from an arbitrary tail. One drain
+owns at most four chunks / 16,384 UTF-16 code units, and feeds at most 1,024 units
+or one screen's row advances before yielding through the scoped native projection
+bridge. That yield checks exact presentation liveness before resumption and
+avoids a pinned evaluator multi-compiler constructor limitation. Accepted feed counts
+advance an intra-chunk offset; a chunk cursor advances only after its entire text
+has been applied. Partial lines and split control sequences need no newline or
+final model result to become visible.
+
+Expanded output initially follows. **Beginning**, **Earlier**, **Middle**, and
+**Later** replay a prefix to a rendered-row endpoint. Adjacent windows advance
+`maxLines - rows - 2` row advances (178 with stock expanded geometry), with overlap
+inside the finite buffer. Native feed can stop within a stored chunk, so a long
+unbroken soft-wrapped line cannot skip a window. Beginning and middle are real
+prefix reconstructions, not cursor labels over a tail. Earlier/later controls and
+local scrolling provide access beyond evicted native scrollback, without one
+retained checkpoint/widget per chunk. Middle uses the furthest rendered extent
+observed by this reader; Follow output first catches up to include newer history.
+
+User scrolling away freezes native feed synchronously, before delayed reads or
+notifications can move the viewport or evict the inspected region. Observation
+continues, coalescing committed state/extent while the historical projection stays
+fixed. The down-arrow **Follow output** action resumes from the actually applied
+position, drains committed backlog, and reports replay until caught up. The
+Inspection reader follows independently from an expanded historical reader.
+Selection also freezes a projection to protect the selected region; the preview
+offers its own Follow output control when the user freezes it.
+
+### Presentation lifetime and failures
+
+Hiding/unmounting a console releases its evaluator, watch, page, and native
+projection. The tab retains only logical follow mode, consumed text extent,
+known rendered extent, and local scroll offset. Remount reconstructs the prefix
+into an empty emulator before restoring a frozen position or catching up live;
+it never resumes an old cursor against an empty surface. Prefix reconstruction
+is incremental and cancellable, but costs O(prefix length) on historical seeks
+and remounts. This deliberately basic history UI has no search, export,
+virtualized transcript scrollbar, or durable emulator checkpoints.
+
+Closing a card or output tab detaches only that presentation. Admitted tabs
+survive card closure; closing them requires no process confirmation, cannot
+cancel execution/capture, and does not delete stored output. Completion does not
+remove an output tab. Output tabs belong only to their originating Session,
+unlike interactive Terminal's Environment eligibility, and the console remains
+confined to the Session workbench.
+
+Missing backends, read/watch/decoder failures, and incomplete capture produce
+bounded safe states. No exception dump or native Command fallback is shown.
+Retired access never selects a replacement generation; closing and explicitly
+opening again may acquire fresh permitted access. Stored history needs only the
+compatible Command backend and Project storage, not Git activation or Environment
+materialization. Generic safe Future settlement is supplied by the own-backend
+bridge, not Session execution authority.
+
+### Preparation and evidence
+
+`app/tool/tool_inspection_frontend_compiler.dart` builds the stock compact,
+Inspection, and output entrypoints with the generated evaluator contract and
+compile-only own-backend, console, and terminal-projection declarations. The
+same `tools/stock_frontend_descriptors.dart` metadata drives normal preparation
+and maintained fixtures; generated native contract siblings remain ignored.
+
+Focused generated-client EVC behavior belongs to
+`app/test/command_output_frontend_eval_test.dart`; the real normal-application
+path belongs to `app/test/core/normal_chatgpt_run_integration_test.dart`. The
+latter uses local deterministic model responses and socket-gated Command/Git AOT
+output before completion, two identical invocations, simultaneous card/console
+views, interactive Terminal coexistence, old history, and fresh Project/backend
+reopen without Git. `command_output_capture_integration_test.dart` retains the
+independent full-volume capture proof. See the maintained
+[validation map](../../docs/development/testing.md#focused-command-output-checks)
+for proportional commands and evidence boundaries.

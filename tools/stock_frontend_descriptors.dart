@@ -58,6 +58,17 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'toolId': 'dev.adele.plugin.command-tools.run-command',
       'inspectionEntrypoint': 'buildRunCommandInspection',
       'compactEntrypoint': 'buildRunCommandCompact',
+      'backendServices': ['command.output'],
+      'consoleExtensions': ['dev.adele.plugin.command-tools.output'],
+    },
+    {
+      'role': 'console',
+      'extensionId': 'dev.adele.plugin.command-tools.output',
+      'library': 'package:command_tools_frontend/command_output_view.dart',
+      'entrypoint': 'buildRunCommandOutput',
+      'readOnly': true,
+      'backendServices': ['command.output'],
+      'actions': [],
     },
   ],
   'dev.adele.openai': [

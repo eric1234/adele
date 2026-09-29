@@ -202,6 +202,10 @@ the PTY target. From `app/`:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/owning_backend_stream_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/command_output_frontend_eval_test.dart test/tool_inspection_frontend_eval_test.dart test/tool_activity_inspection_bridge_test.dart test/inspection_host_test.dart
+flutter test --no-pub --concurrency 1 test/terminal_projection_bridge_test.dart test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/console_bridge_test.dart test/console_controller_test.dart test/prepared_console_host_test.dart test/workbench_console_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/command_output_capture_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/remote_model_tool_host_test.dart test/core/remote_model_tool_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/project_storage_host_test.dart test/core/project_database_test.dart test/core/product_lifecycle_test.dart
@@ -219,14 +223,34 @@ Bounded pages establish live marker availability and exact full reconstruction
 before exit. Two identical invocations share one Run but not one capture. A fresh
 Project/backend read requires neither Git nor an Environment materialization.
 
-The test-only interpreted Command consumer uses the plugin-generated client over
+The test-only interpreted capture consumer uses the plugin-generated client over
 actual backend transport, reads pages and live state, unmounts without stopping
-capture, and remounts with fresh access. No production Inspection, Show more,
-console content, follow/scroll control, or terminal rendering is added; those are
-the subsequent presentation slice. Fixture source and compilation live in
+capture, and remounts with fresh access. It remains independent of production
+presentation, so rendering changes do not weaken the full-volume capture proof.
+Fixture source and compilation live in
 `app/test/fixtures/command_output_frontend.dart` and
 `app/tool/command_output_frontend_compiler.dart`, not runtime preparation of a
 stock view.
+
+The stock output EVC is built through the existing tool-Inspection compiler with
+generated own-backend reads/watch and generic console/projection declarations.
+`command_output_frontend_eval_test.dart` tests that actual client and stock UI with
+small native retention, including prefix reconstruction, long unbroken lines,
+state-only updates, frozen history, bounded read admission, safe failures, and
+scalar-only remount state. `terminal_projection_bridge_test.dart` separately
+exercises scoped handles and revocation; existing interactive surface regressions
+remain selected alongside it.
+
+The normal-application Command case in `normal_chatgpt_run_integration_test.dart`
+uses the ordinary Chat activity click, stock Inspection/console EVCs, real Command
+and Git AOT backends, SQLite, and deterministic local model responses. Its opt-in
+mode in the existing socket-gated process fixture supplies ANSI, CR repainting,
+partial lines, and known beginning/middle/late output. It checks both views before
+completion, deduplication, identical-command independence, native scroll/follow,
+history beyond configured retention, interactive Terminal coexistence, closing
+readers without stopping capture, nonzero completion, and fresh compatible backend
+history after Project reopen without installing Git. These are debug
+widget/evaluator/Linux-AOT checks, not paid-model or desktop/profile evidence.
 
 Memory checks are accounting assertions, not absolute RSS claims: provider pending
 decoded units/admitted reads and pause/resume, plugin pending batch row/text limits,

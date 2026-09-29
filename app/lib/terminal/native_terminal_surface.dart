@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm2/xterm.dart' as xterm;
 
@@ -21,6 +24,8 @@ final class NativeTerminalSurface {
     void Function(int columns, int rows, bool Function() isActive)?
     onScopedResize,
   }) : _readOnly = readOnly,
+       _projectionRows = null,
+       _maxLines = maxLines,
        _onInput = onInput,
        _onResponse = onResponse,
        _onResize = onResize,
@@ -37,7 +42,176 @@ final class NativeTerminalSurface {
       ..onTitleChange = _setTitle;
   }
 
+  /// Separate, presentation-only pipe projection. The interactive constructor
+  /// and its PTY/parser/layout authority are deliberately unchanged.
+  NativeTerminalSurface.projection({required int rows, int maxLines = 200})
+    : _readOnly = true,
+      _projectionRows = rows,
+      _maxLines = maxLines {
+    if (rows != 6 && rows != 20) {
+      throw ArgumentError.value(rows, 'rows', '6 or 20');
+    }
+    if (maxLines < 24) throw ArgumentError.value(maxLines, 'maxLines', '>= 24');
+    _terminal = _Emulator(maxLines: maxLines, projectionRows: rows)
+      ..focusInput(false);
+  }
+
   static const int maxTitleCodeUnits = 160;
+  static const int maxProjectionFeedCodeUnits = 1024;
+  static const int maxProjectionRepeatCount = 1024;
+
+  final int? _projectionRows;
+  final int _maxLines;
+  bool _following = true;
+  int _acceptedCodeUnits = 0;
+  int _lineAdvances = 0;
+  int _firstRetainedLine = 0;
+  String? _projectionHighSurrogate;
+  double? _projectionRequestedOffset;
+  final _projectionObservers = <VoidCallback>{};
+  bool _projectionNotificationPending = false;
+
+  void _requireProjection() {
+    _requireTerminal();
+    if (_projectionRows == null) throw StateError('Not a pipe projection.');
+  }
+
+  Map<String, Object> readProjection() {
+    _requireProjection();
+    final position = _attached?._projectionScrollPosition;
+    return Map.unmodifiable({
+      'following': _following,
+      'columns': 80,
+      'rows': _projectionRows!,
+      'maxLines': _maxLines,
+      'maxFeedCodeUnits': maxProjectionFeedCodeUnits,
+      'historyWindowCodeUnits': _maxLines - _projectionRows - 2,
+      'acceptedCodeUnits': _acceptedCodeUnits,
+      'lineAdvances': _lineAdvances,
+      'firstRetainedLine': _firstRetainedLine,
+      'retainedLines': _requireTerminal().buffer.height,
+      'scrollOffset': position?.pixels ?? 0.0,
+      'maxScrollOffset': position?.maxScrollExtent ?? 0.0,
+    });
+  }
+
+  VoidCallback observeProjection(VoidCallback observer) {
+    _requireProjection();
+    void listener() => observer();
+    _projectionObservers.add(listener);
+    return () => _projectionObservers.remove(listener);
+  }
+
+  void _projectionChanged() {
+    if (_projectionNotificationPending || isDisposed) return;
+    _projectionNotificationPending = true;
+    scheduleMicrotask(() {
+      _projectionNotificationPending = false;
+      for (final observer in _projectionObservers.toList()) {
+        if (!_projectionObservers.contains(observer)) continue;
+        try {
+          observer();
+        } on Object {
+          // Observation cannot interrupt the native feed or other observers.
+        }
+      }
+    });
+  }
+
+  int feedProjection(String text, int lineBudget) {
+    _requireProjection();
+    if (!_following || lineBudget <= 0) return 0;
+    final terminal = _requireTerminal();
+    final target = _lineAdvances + math.min(lineBudget, _projectionRows!);
+    final end = math.min(text.length, maxProjectionFeedCodeUnits);
+    var accepted = 0;
+    while (accepted < end && _lineAdvances < target) {
+      var count = 1;
+      final unit = text.codeUnitAt(accepted);
+      if (unit >= 0xd800 && unit <= 0xdbff && accepted + 1 < text.length) {
+        final next = text.codeUnitAt(accepted + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) count = 2;
+      }
+      if (accepted + count > end) break;
+      var output = text.substring(accepted, accepted + count);
+      final pending = _projectionHighSurrogate;
+      _projectionHighSurrogate = null;
+      if (count == 1 &&
+          unit >= 0xd800 &&
+          unit <= 0xdbff &&
+          accepted + 1 == text.length) {
+        // The pin decodes surrogate pairs only within a write String. Carry at
+        // most one accepted unit across caller-supplied chunk boundaries.
+        _projectionHighSurrogate = output;
+        output = '';
+      }
+      if (pending != null) output = pending + output;
+      final before = terminal.buffer;
+      final cursor = before.absoluteCursorY;
+      final anchor = before.lines[before.height - 1];
+      final anchorIndex = anchor.index;
+      try {
+        if (output.isNotEmpty) terminal.write(output);
+      } on UnsupportedError {
+        // A failed call acknowledges no prefix. Retire the partial rendering so
+        // a caller cannot mistake it for faithfully consumed source or resume it.
+        dispose();
+        return -1;
+      }
+      final after = terminal.buffer;
+      if (identical(before, after)) {
+        final evicted = anchor.attached
+            ? math.max(0, anchorIndex - anchor.index)
+            : 0;
+        _firstRetainedLine += evicted;
+        _lineAdvances += math.max(0, after.absoluteCursorY - cursor + evicted);
+      }
+      accepted += count;
+    }
+    _acceptedCodeUnits += accepted;
+    if (accepted != 0) {
+      _attached?._scrollProjectionToEnd();
+      _projectionChanged();
+    }
+    return accepted;
+  }
+
+  void resetProjection() {
+    _requireProjection();
+    final previous = _requireTerminal();
+    _attached?._controller.clearSelection();
+    _terminal = _Emulator(maxLines: _maxLines, projectionRows: _projectionRows)
+      ..focusInput(false);
+    _acceptedCodeUnits = 0;
+    _lineAdvances = 0;
+    _firstRetainedLine = 0;
+    _projectionHighSurrogate = null;
+    _following = true;
+    _projectionRequestedOffset = null;
+    _attached?._replaceProjectionTerminal();
+    previous.dispose();
+    _projectionChanged();
+  }
+
+  void setProjectionFollow(bool following) {
+    _requireProjection();
+    if (_following != following) {
+      _following = following;
+      _projectionChanged();
+    }
+    if (following) {
+      _projectionRequestedOffset = null;
+      _attached?._scrollProjectionToEnd();
+    }
+  }
+
+  void scrollProjection(double offset) {
+    _requireProjection();
+    if (!offset.isFinite) throw ArgumentError.value(offset, 'offset');
+    setProjectionFollow(false);
+    _projectionRequestedOffset = offset;
+    _attached?._scrollProjectionTo(offset);
+  }
 
   /// Host-selected authority can only be narrowed, never expanded by a view.
   final bool _readOnly;
@@ -176,6 +350,7 @@ final class NativeTerminalSurface {
     _onScopedInput = null;
     _onScopedResize = null;
     _titleObservers.clear();
+    _projectionObservers.clear();
     terminal.onOutput = null;
     terminal.onTitleChange = null;
     terminal.dispose();
@@ -185,7 +360,7 @@ final class NativeTerminalSurface {
 
 // Bounds also cover output-requested geometry changes, not only Flutter layout.
 final class _Emulator extends xterm.Terminal {
-  _Emulator({required super.maxLines})
+  _Emulator({required super.maxLines, this.projectionRows})
     : super(
         platform: switch (defaultTargetPlatform) {
           TargetPlatform.android => xterm.TerminalTargetPlatform.android,
@@ -199,7 +374,26 @@ final class _Emulator extends xterm.Terminal {
         onClipboardQuery: (_) => null,
         onColorQuery: (_, _) => null,
         onColorSchemeQuery: () => null,
-      );
+      ) {
+    if (projectionRows != null) super.resize(80, projectionRows!);
+  }
+
+  final int? projectionRows;
+
+  @override
+  bool get lineFeedMode => projectionRows != null || super.lineFeedMode;
+
+  @override
+  void repeatPreviousCharacter(int count) {
+    // The pin otherwise loops an unbounded CSI REP count inside one parser
+    // operation. Reject excessive projection work rather than silently changing
+    // captured output. PTY emulation retains its existing behavior.
+    if (projectionRows != null &&
+        count > NativeTerminalSurface.maxProjectionRepeatCount) {
+      throw UnsupportedError('Terminal projection repeat limit exceeded.');
+    }
+    super.repeatPreviousCharacter(count);
+  }
 
   // xterm otherwise accumulates an iTerm2 clipboard transcript even when its
   // clipboard callback denies access. This slice never authorizes that capture.
@@ -208,6 +402,7 @@ final class _Emulator extends xterm.Terminal {
 
   @override
   void resize(int width, int height, [int? pixelWidth, int? pixelHeight]) {
+    if (projectionRows != null) return;
     if (width <= 0 || height <= 0) return;
     super.resize(
       width.clamp(1, 1000),
@@ -238,7 +433,124 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   late final NativeTerminalSurface _surface = widget.surface;
   _ViewTerminal? _terminal;
   late final _ViewController _controller = _ViewController(this);
+  final ScrollController _projectionScroll = ScrollController();
+  final _projectionViewKey = GlobalKey<xterm.TerminalViewState>();
+  double _projectionGridWidth = 0;
+  int _projectionScrollRevision = 0;
+  bool _projectionFollowScheduled = false;
   bool _retired = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_surface._projectionRows == null) return;
+    // Match the pinned renderer's widest printable ASCII cell, including
+    // platform fallback fonts and accessibility scaling, without reflow.
+    final painter = TextPainter(
+      text: TextSpan(
+        text: List.generate(
+          94,
+          (index) => String.fromCharCode(33 + index),
+        ).join('\n'),
+        style: const xterm.TerminalStyle().toTextStyle(),
+      ),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout();
+    _projectionGridWidth = (painter.width * 80).ceilToDouble();
+    painter.dispose();
+  }
+
+  ScrollPosition? get _projectionScrollPosition =>
+      _projectionScroll.hasClients &&
+          _projectionScroll.position.hasContentDimensions
+      ? _projectionScroll.position
+      : null;
+
+  void _replaceProjectionTerminal() {
+    _terminal?.dispose();
+    _terminal = _ViewTerminal(this, _surface._requireTerminal());
+    _rebuild();
+    _scrollProjectionToEnd();
+  }
+
+  void _scrollProjectionToEnd() {
+    if (!_surface._following || _projectionFollowScheduled) return;
+    _projectionFollowScheduled = true;
+    _projectionScrollRevision++;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _projectionFollowScheduled = false;
+      if (!_available || !_surface._following) return;
+      final position = _projectionScrollPosition;
+      if (position != null) position.jumpTo(_projectionFollowOffset(position));
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  double _projectionFollowOffset(ScrollPosition position) {
+    final nativeView = _projectionViewKey.currentState;
+    if (nativeView == null) return position.minScrollExtent;
+    // Fixed emulator rows include unused screen padding. The physical viewport
+    // can be much shorter; following its scroll extent would hide early output.
+    final cursorBottom =
+        (_surface._requireTerminal().buffer.absoluteCursorY + 1) *
+        nativeView.renderTerminal.lineHeight;
+    return (cursorBottom - position.viewportDimension).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+  }
+
+  void _scrollProjectionTo(double offset) {
+    final revision = ++_projectionScrollRevision;
+    void apply() {
+      if (!_available || revision != _projectionScrollRevision) return;
+      final position = _projectionScrollPosition;
+      if (position != null) {
+        position.jumpTo(
+          offset.clamp(position.minScrollExtent, position.maxScrollExtent),
+        );
+      }
+    }
+
+    apply();
+    // Prefix replay can finish before a frame lays out the newly filled buffer.
+    // Apply again against that extent, not only the old/empty viewport's extent.
+    WidgetsBinding.instance.addPostFrameCallback((_) => apply());
+  }
+
+  bool _projectionScrolled(ScrollNotification notification) {
+    if (!_available) return false;
+    if (notification.metrics.axis != Axis.vertical) return false;
+    final userScroll =
+        notification is UserScrollNotification &&
+            notification.direction != ScrollDirection.idle ||
+        notification is ScrollUpdateNotification &&
+            notification.dragDetails != null;
+    final position = _projectionScrollPosition;
+    if (userScroll &&
+        position != null &&
+        (position.pixels - _projectionFollowOffset(position)).abs() > 0.5) {
+      _projectionScrollRevision++;
+      _surface.setProjectionFollow(false);
+    }
+    _surface._projectionChanged();
+    return false;
+  }
+
+  void _projectionOffsetChanged() {
+    if (!_available) return;
+    final position = _projectionScrollPosition;
+    // Wheel updates have no dragDetails. Observe the position synchronously
+    // while its user direction is set, before the idle notification follows.
+    if (position != null &&
+        position.userScrollDirection != ScrollDirection.idle &&
+        (position.pixels - _projectionFollowOffset(position)).abs() > 0.5) {
+      _projectionScrollRevision++;
+      _surface.setProjectionFollow(false);
+    }
+    _surface._projectionChanged();
+  }
 
   bool get _available {
     if (_retired || !mounted || _surface.isDisposed) return false;
@@ -264,6 +576,12 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
     }
     surface._attached = this;
     _terminal = _ViewTerminal(this, surface._requireTerminal());
+    if (surface._projectionRows != null) {
+      _projectionScroll.addListener(_projectionOffsetChanged);
+      if (surface._projectionRequestedOffset case final offset?) {
+        _scrollProjectionTo(offset);
+      }
+    }
   }
 
   @override
@@ -319,10 +637,57 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       );
       return const Text('Terminal surface unavailable.');
     }
-    return xterm.TerminalView(
+    final projection = _surface._projectionRows != null;
+    final view = xterm.TerminalView(
       terminal,
+      key: projection ? _projectionViewKey : null,
       controller: _controller,
       readOnly: widget.surface.readOnly || !_available,
+      autoResize: !projection,
+      scrollController: projection ? _projectionScroll : null,
+      shortcuts: projection
+          ? const {
+              SingleActivator(
+                LogicalKeyboardKey.keyC,
+                control: true,
+                shift: true,
+              ): CopySelectionTextIntent.copy,
+              SingleActivator(LogicalKeyboardKey.keyC, meta: true):
+                  CopySelectionTextIntent.copy,
+              SingleActivator(LogicalKeyboardKey.keyA, control: true):
+                  SelectAllTextIntent(SelectionChangedCause.keyboard),
+              SingleActivator(LogicalKeyboardKey.keyA, meta: true):
+                  SelectAllTextIntent(SelectionChangedCause.keyboard),
+            }
+          : null,
+    );
+    if (!projection) return view;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _scrollProjectionToEnd();
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: math.max(_projectionGridWidth, constraints.maxWidth),
+            height: constraints.maxHeight,
+            child: MediaQuery.removePadding(
+              context: context,
+              removeLeft: true,
+              removeRight: true,
+              removeTop: true,
+              removeBottom: true,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _projectionScrolled,
+                child: Actions(
+                  dispatcher: _ProjectionActionDispatcher(this),
+                  actions: const {},
+                  child: view,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -331,10 +696,39 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
     _retired = true;
     _terminal?.dispose();
     _controller.dispose();
+    _projectionScroll.dispose();
     if (identical(_surface._attached, this)) {
       _surface._attached = null;
     }
     super.dispose();
+  }
+}
+
+/// The pinned native paste action reads Clipboard even for read-only views.
+/// Projection mode denies that action before the read, not merely its output.
+final class _ProjectionActionDispatcher extends ActionDispatcher {
+  const _ProjectionActionDispatcher(this._view);
+
+  final _NativeTerminalViewState _view;
+
+  @override
+  Object? invokeAction(
+    Action<Intent> action,
+    Intent intent, [
+    BuildContext? context,
+  ]) {
+    if (!_view._available || intent is PasteTextIntent) return null;
+    return super.invokeAction(action, intent, context);
+  }
+
+  @override
+  (bool, Object?) invokeActionIfEnabled(
+    Action<Intent> action,
+    Intent intent, [
+    BuildContext? context,
+  ]) {
+    if (!_view._available || intent is PasteTextIntent) return (false, null);
+    return super.invokeActionIfEnabled(action, intent, context);
   }
 }
 
@@ -365,6 +759,9 @@ final class _ViewController extends xterm.TerminalController {
       base.dispose();
       extent.dispose();
       return;
+    }
+    if (_view._surface._projectionRows != null) {
+      _view._surface.setProjectionFollow(false);
     }
     super.setSelection(base, extent, mode: mode);
   }

@@ -243,7 +243,25 @@ See [focused commands](../docs/development/testing.md#focused-terminal-checks) a
 [dependency/toolchain evidence](../docs/development/toolchain.md#native-terminal-dependency).
 The surface alone registers no catalog role. The separately prepared stock
 [Terminal](../plugins/terminal/README.md) uses it through the shared Session console
-below. Command-output console integration and terminal persistence remain absent.
+below. Interactive terminal persistence remains absent.
+
+[`TerminalProjectionBridge`](lib/frontend/terminal_projection_bridge.dart) is a
+separate read-only capability for interpreted output presentations. Each view
+lazily owns its own `NativeTerminalSurface.projection`; card and console never
+share one mounted attachment. The bridge exposes bounded accepted text feeds,
+controlled reset, scalar render/scroll state, and coalesced observation. It grants
+no interactive surface writes, execution input, clipboard reads, resize callbacks,
+or resource lookup. Native explicit selection/copy and local scrolling remain
+available. Fixed projection geometry, pipe LF policy, and synchronous user-scroll
+freeze are separate from the unchanged interactive PTY path. See the
+[public capability](../packages/ui/lib/terminal_projection_bridge.dart) and
+[Command Tools replay policy](../plugins/command_tools/README.md#replay-and-history).
+The projection bridge owns disposal, unlike the host-selected interactive surface
+bridge; a new view reconstructs output through its plugin rather than inheriting
+an emulator cursor. Scoped replay yields check the original view before resuming;
+follow uses painted cursor geometry so short layouts do not follow empty screen
+padding. Native and actual-EVC coverage lives in
+`test/native_terminal_surface_test.dart` and `test/terminal_projection_bridge_test.dart`.
 
 ### Environment terminal ownership
 
@@ -345,6 +363,18 @@ describes conservative confirmation, actual-exit-only automatic removal, and
 failure retention. Shell selection/startup remains with the
 [Environment contract](../packages/environment/README.md#interactive-terminals)
 and [Git provider](../plugins/git_environment/README.md#interactive-terminals).
+
+Prepared read-only console descriptors use `PreparedConsoleHost` and
+[`ConsoleBridge`](lib/frontend/console_bridge.dart), not Terminal creation. An
+authorized presentation may open only its explicit `consoleExtensions` from the
+same prepared installation/generation. `ConsoleController.openOrFocus` deduplicates
+the opaque key within the exact contribution and canonical Session. It admits
+bounded plugin data plus metadata, never originating evaluator callbacks. Each
+remount receives fresh view-scoped backend/projection bridges; retained logical
+state is bounded opaque data, not a rendered transcript. Missing optional console
+hosting does not disable factual Inspection. Read-only content closes without
+confirmation and releases no process resource. Command-specific reads, status,
+history, and follow behavior remain in its stock EVC.
 
 Close fences console actions immediately and starts forced content cleanup without
 waiting for plugin advice or a confirmation dialog. After accepted Task/Run work
@@ -742,6 +772,13 @@ rich hosts resolve contributions by their public semantic identity and retain
 exact presenter bindings. Retirement/failure affects the view, not execution;
 replacements require fresh resolution. Compact roles can show factual host content
 without a custom presenter; this is not a native implementation of plugin behavior.
+
+`ActivityOutputPresentation` constructs the tool source with the exact occurrence's
+Session/Run identity and canonical tool snapshot; historical activity follows the
+same path. Prepared rich Inspection may declare owning-backend service and console
+target allowlists. `ApplicationFrontendBootstrap` captures those exact counterparts
+once per view, without strategy affinity or Session execution controls. Compact
+presentation receives only facts and never opens output observation or rendering.
 
 Common execution/approval UI remains host-owned. Plugins interpret and render
 tool/provider-specific fields; generic app hosts must not do so. Follow

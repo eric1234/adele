@@ -124,6 +124,40 @@ void main() {
     expect(channel.opens, 0);
   });
 
+  testWidgets(
+    'safe settlement preserves generated DTOs and hides native failures',
+    (tester) async {
+      final channel = _Channel();
+      await mount(tester, channel);
+      await tester.tap(find.text('Read settled'));
+      await tester.pump();
+      expect(find.text('settled:0:unary'), findsOneWidget);
+      channel.failRead = true;
+      await tester.tap(find.text('Read settled'));
+      await tester.pump();
+      expect(find.text('settled:unavailable'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('safe settlement rejects a result admitted before retirement', (
+    tester,
+  ) async {
+    final channel = _Channel()..pendingRead = Completer<Object?>();
+    final bridge = await mount(tester, channel);
+    await tester.tap(find.text('Read settled'));
+    await tester.pump();
+    bridge.invalidate();
+    channel.pendingRead!.complete({
+      'sequence': 1,
+      'text': 'late-private-result',
+    });
+    await tester.pump();
+    expect(find.text('settled:unavailable'), findsOneWidget);
+    expect(find.textContaining('late-private-result'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final nullData in [true, false]) {
     testWidgets('explicit null stream callbacks with nullData=$nullData', (
       tester,
@@ -311,6 +345,8 @@ class _Channel implements AdeleStreamChannel {
   late final StreamController<Object?> events;
   int opens = 0;
   int cancels = 0;
+  bool failRead = false;
+  Completer<Object?>? pendingRead;
 
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
@@ -321,6 +357,9 @@ class _Channel implements AdeleStreamChannel {
   }
 
   @override
-  Future<Object?> request(String method, Map<String, Object?> payload) async =>
-      {'sequence': 0, 'text': 'unary'};
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (failRead) throw StateError('SECRET backend diagnostic');
+    if (pendingRead case final pending?) return pending.future;
+    return {'sequence': 0, 'text': 'unary'};
+  }
 }
