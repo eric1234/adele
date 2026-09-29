@@ -38,6 +38,7 @@ final class ConsoleTab {
   bool _active = true;
   Future<void>? _removal;
   ConsoleCloseRequest? _confirmation;
+  _PreparedOpening? _prepared;
 
   ConsoleMetadata get metadata => _metadata;
   bool get isActive => _active && !_controller._closed && _isLive(_owner);
@@ -84,6 +85,7 @@ final class ConsoleController extends ChangeNotifier {
   final List<ConsoleTab> _tabs = [];
   final Map<SessionId, ConsoleTab> _selections = {};
   final Map<ConsoleActionBinding, Future<void>> _creating = {};
+  final List<_PreparedOpening> _prepared = [];
   final Set<Future<void>> _cleaning = {};
   final Expando<ConsoleTab> _transferred = Expando<ConsoleTab>();
   List<ConsoleActionBinding> _actions = [];
@@ -124,12 +126,16 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   void setVisible(bool visible) {
-    if (_closed || _visible == visible) return;
+    if (_changeVisibility(visible)) _notify();
+  }
+
+  bool _changeVisibility(bool visible) {
+    if (_closed || _visible == visible) return false;
     _visible = visible;
     _context = Object();
     _revokePresentation();
     _refreshActions();
-    _notify();
+    return true;
   }
 
   void toggleVisibility() => setVisible(!_visible);
@@ -168,6 +174,85 @@ final class ConsoleController extends ChangeNotifier {
     return completion.future;
   }
 
+  /// Native admission from an authorized presentation. The canonical Session is
+  /// checked by its host before entry; this controller never resolves IDs.
+  Future<void> openOrFocus({
+    required ExtensionBinding<ConsoleContribution> owner,
+    required Session session,
+    required ConsoleContentDescriptor descriptor,
+  }) {
+    if (_closed ||
+        !identical(session, _session) ||
+        !_isLive(owner) ||
+        !_extensions
+            .discover(consoleContributions)
+            .any(owner.isSameRegistration)) {
+      return Future.error(StateError('Prepared console is unavailable.'));
+    }
+    final create = owner.value.openPrepared;
+    if (create == null) {
+      return Future.error(StateError('Prepared console is unavailable.'));
+    }
+    // Capture/admit before publishing reveal, as invoke does. A synchronous
+    // listener may retire the owner or navigate, including back to this Session.
+    final revealed = _changeVisibility(true);
+    final existing = _prepared
+        .where(
+          (entry) =>
+              entry.active &&
+              entry.owner.isSameRegistration(owner) &&
+              identical(entry.session, session) &&
+              entry.key == descriptor.key,
+        )
+        .firstOrNull;
+    if (existing != null) {
+      existing.context = _context;
+      existing.view = _view;
+      if (existing.tab case final tab?) select(tab);
+      if (revealed) _notify();
+      return existing.completion.future;
+    }
+    final entry = _PreparedOpening(
+      owner,
+      session,
+      descriptor.key,
+      _context,
+      _view,
+    );
+    _prepared.add(entry);
+    final access = _CreationAccess(
+      this,
+      owner,
+      session,
+      _context,
+      prepared: entry,
+    );
+    Future<void>.sync(() => create(access, descriptor)).then(
+      (_) {
+        access._active = false;
+        if (entry.tab == null) {
+          entry.active = false;
+          _prepared.remove(entry);
+          entry.completion.completeError(
+            StateError('No console content admitted.'),
+          );
+        } else {
+          entry.completion.complete();
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        access._active = false;
+        if (entry.tab == null) {
+          entry.active = false;
+          _prepared.remove(entry);
+        }
+        entry.completion.completeError(error, stack);
+      },
+    );
+    if (revealed) _notify();
+    return entry.completion.future;
+  }
+
   void _finishCreation(
     ConsoleActionBinding action,
     _CreationAccess access,
@@ -195,12 +280,24 @@ final class ConsoleController extends ChangeNotifier {
     final tab = ConsoleTab._(this, access._owner, content);
     _transferred[content] = tab;
     final registration = _TabRegistration(tab);
+    if (access._prepared case final prepared?) {
+      if (prepared.tab != null) {
+        // A prepared request admits one content. Additional or late transfers
+        // still receive the normal bounded release, never replace that content.
+        unawaited(_remove(tab));
+        return registration;
+      }
+      prepared.tab = tab;
+      tab._prepared = prepared;
+    }
     if (!access.isActive || !_eligible(tab, access.session)) {
       unawaited(_remove(tab));
       return registration;
     }
     _tabs.add(tab);
-    if (identical(access._context, _context) &&
+    if (identical(access._prepared?.context ?? access._context, _context) &&
+        (access._prepared == null ||
+            identical(access._prepared!.view, _view)) &&
         _visible &&
         _eligible(tab, _session)) {
       _revokePresentation();
@@ -300,6 +397,10 @@ final class ConsoleController extends ChangeNotifier {
       ],
     ];
     tab._active = false;
+    if (tab._prepared case final prepared?) {
+      prepared.active = false;
+      _prepared.remove(prepared);
+    }
     _tabs.remove(tab);
     _selections.removeWhere((_, selected) => identical(selected, tab));
     if (identical(_selected, tab)) {
@@ -378,6 +479,10 @@ final class ConsoleController extends ChangeNotifier {
 
   bool _eligible(ConsoleTab tab, Session? session) {
     if (session == null || !tab.isActive) return false;
+    if (tab._prepared case final prepared?
+        when !identical(prepared.session, session)) {
+      return false;
+    }
     try {
       return tab._content.isEligible(session) && tab.isActive;
     } on Object {
@@ -427,6 +532,11 @@ final class ConsoleController extends ChangeNotifier {
   void _registryChanged() {
     if (_closed) return;
     _refreshActions();
+    _prepared.removeWhere((entry) {
+      if (_isLive(entry.owner)) return false;
+      entry.active = false;
+      return true;
+    });
     for (final tab in _tabs.toList()) {
       if (!_isLive(tab._owner)) unawaited(_remove(tab));
     }
@@ -438,6 +548,10 @@ final class ConsoleController extends ChangeNotifier {
     final completion = Completer<void>();
     _closing = completion.future;
     _closed = true;
+    for (final entry in _prepared) {
+      entry.active = false;
+    }
+    _prepared.clear();
     _context = Object();
     _actions = [];
     _revokePresentation();
@@ -466,21 +580,45 @@ final class ConsoleController extends ChangeNotifier {
 }
 
 final class _CreationAccess implements ConsoleCreationAccess {
-  _CreationAccess(this._controller, this._owner, this.session, this._context);
+  _CreationAccess(
+    this._controller,
+    this._owner,
+    this.session,
+    this._context, {
+    _PreparedOpening? prepared,
+  }) : _prepared = prepared;
 
   final ConsoleController _controller;
   final ExtensionBinding<ConsoleContribution> _owner;
   final Object _context;
+  final _PreparedOpening? _prepared;
   bool _active = true;
   @override
   final Session session;
 
   @override
-  bool get isActive => _active && !_controller._closed && _isLive(_owner);
+  bool get isActive =>
+      _active &&
+      (_prepared?.active ?? true) &&
+      !_controller._closed &&
+      _isLive(_owner);
 
   @override
   ConsoleTabRegistration open(ConsoleContent content) =>
       _controller._open(this, content);
+}
+
+final class _PreparedOpening {
+  _PreparedOpening(this.owner, this.session, this.key, this.context, this.view);
+
+  final ExtensionBinding<ConsoleContribution> owner;
+  final Session session;
+  final String key;
+  Object context;
+  Object view;
+  final completion = Completer<void>();
+  bool active = true;
+  ConsoleTab? tab;
 }
 
 final class _TabRegistration implements ConsoleTabRegistration {

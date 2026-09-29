@@ -69,6 +69,414 @@ void main() {
     expect(controller.selectedPresentation, isNull);
   });
 
+  ConsoleContentDescriptor descriptor(String key, {String title = 'Output'}) =>
+      ConsoleContentDescriptor(
+        key: key,
+        metadata: ConsoleMetadata(title: title),
+        data: {'key': key},
+      );
+
+  ExtensionBinding<ConsoleContribution> prepared(
+    Future<void> Function(ConsoleCreationAccess, ConsoleContentDescriptor)
+    create, {
+    String id = 'test.prepared',
+  }) {
+    registry.register(
+      point: consoleContributions,
+      id: ExtensionId(id),
+      value: ConsoleContribution(actions: [], openPrepared: create),
+    );
+    return registry
+        .discover(consoleContributions)
+        .singleWhere((entry) => entry.id.value == id);
+  }
+
+  test(
+    'prepared double open joins, reveals and focuses without replacing content',
+    () async {
+      final gate = Completer<void>();
+      final contents = <_Content>[];
+      final owner = prepared((access, data) async {
+        final content = _Content(data.metadata.title);
+        contents.add(content);
+        content.open(access);
+        await gate.future;
+      });
+      controller.setVisible(false);
+      final opening = controller.openOrFocus(
+        owner: owner,
+        session: first,
+        descriptor: descriptor('one'),
+      );
+      expect(controller.visible, isTrue);
+      final tab = controller.selectedTab;
+      expect(
+        controller.openOrFocus(
+          owner: owner,
+          session: first,
+          descriptor: descriptor('one', title: 'Replacement'),
+        ),
+        same(opening),
+      );
+      gate.complete();
+      await opening;
+      expect(contents, hasLength(1));
+      expect(tab!.metadata.title, 'Output');
+      await controller.openOrFocus(
+        owner: owner,
+        session: first,
+        descriptor: descriptor('two'),
+      );
+      expect(controller.eligibleTabs, hasLength(2));
+      controller.setVisible(false);
+      await controller.openOrFocus(
+        owner: owner,
+        session: first,
+        descriptor: descriptor('one'),
+      );
+      expect(controller.selectedTab, same(tab));
+      expect(controller.visible, isTrue);
+      expect(contents, hasLength(2));
+      expect(contents.every((content) => content.releases == 0), isTrue);
+    },
+  );
+
+  test(
+    'prepared navigation while opening keeps exact Session and does not steal focus',
+    () async {
+      final gate = Completer<void>();
+      final content = _Content('Retained');
+      final owner = prepared((access, _) async {
+        await gate.future;
+        content.open(access);
+      });
+      final opening = controller.openOrFocus(
+        owner: owner,
+        session: first,
+        descriptor: descriptor('one'),
+      );
+      controller.setSession(second);
+      gate.complete();
+      await opening;
+      expect(content.registration.isActive, isTrue);
+      expect(controller.eligibleTabs, isEmpty);
+      expect(controller.selectedTab, isNull);
+      controller.setSession(_session('first'));
+      expect(controller.eligibleTabs, isEmpty);
+      controller.setSession(first);
+      expect(controller.selectedTab!.metadata.title, 'Retained');
+      controller.selectedPresentation;
+      final view = content.mounts.single;
+      controller.setSession(null);
+      expect(view.isActive, isFalse);
+      expect(controller.eligibleTabs, isEmpty);
+      await expectLater(
+        controller.openOrFocus(
+          owner: owner,
+          session: first,
+          descriptor: descriptor('one'),
+        ),
+        throwsStateError,
+      );
+      expect(content.releases, 0);
+    },
+  );
+
+  for (final departure in ['close', 'retire', 'replace']) {
+    test('prepared reveal admits before a listener can $departure', () async {
+      final gate = Completer<void>();
+      final events = <String>[];
+      final content = _Content('Late');
+      late ConsoleCreationAccess captured;
+      var replacements = 0;
+      final registration = registry.register(
+        point: consoleContributions,
+        id: ExtensionId('test.reentrant'),
+        value: ConsoleContribution(
+          actions: [],
+          openPrepared: (access, _) async {
+            events.add('admitted');
+            captured = access;
+            expect(access.isActive, isTrue);
+            expect(access.session, same(first));
+            await gate.future;
+            content.open(access);
+          },
+        ),
+      );
+      final owner = registry.discover(consoleContributions).single;
+      controller.setVisible(false);
+      Future<void>? retirement;
+      var revealed = false;
+      controller.addListener(() {
+        if (revealed || !controller.visible) return;
+        revealed = true;
+        events.add('revealed');
+        if (departure == 'close') {
+          retirement = controller.close();
+        } else {
+          retirement = registration.close();
+          if (departure == 'replace') {
+            registry.register(
+              point: consoleContributions,
+              id: owner.id,
+              value: ConsoleContribution(
+                actions: [],
+                openPrepared: (_, _) async {
+                  replacements++;
+                },
+              ),
+            );
+          }
+        }
+      });
+      final opening = controller.openOrFocus(
+        owner: owner,
+        session: first,
+        descriptor: descriptor('same'),
+      );
+      expect(events, ['admitted', 'revealed']);
+      expect(captured.isActive, isFalse);
+      await retirement;
+      gate.complete();
+      await opening;
+      await content.registration.requestRemoval();
+      expect(content.registration.isActive, isFalse);
+      expect(content.releases, 1);
+      expect(controller.eligibleTabs, isEmpty);
+      expect(replacements, 0);
+    });
+  }
+
+  for (final alreadyPending in [false, true]) {
+    test(
+      'prepared reveal preserves original intent across listener navigation (pending: $alreadyPending)',
+      () async {
+        await open(title: 'Keep selected');
+        final selected = controller.selectedTab;
+        final gate = Completer<void>();
+        final content = _Content('Late');
+        var calls = 0;
+        late ConsoleCreationAccess captured;
+        final owner = prepared((access, _) async {
+          calls++;
+          captured = access;
+          await gate.future;
+          content.open(access);
+        });
+        final pending = alreadyPending
+            ? controller.openOrFocus(
+                owner: owner,
+                session: first,
+                descriptor: descriptor('late'),
+              )
+            : null;
+        controller.setVisible(false);
+        var revealed = false;
+        controller.addListener(() {
+          if (revealed || !controller.visible) return;
+          revealed = true;
+          expect(calls, 1);
+          controller.setSession(second);
+          controller.setSession(first);
+        });
+        final opening = controller.openOrFocus(
+          owner: owner,
+          session: first,
+          descriptor: descriptor('late'),
+        );
+        if (pending != null) expect(opening, same(pending));
+        expect(revealed, isTrue);
+        expect(calls, 1);
+        expect(captured.session, same(first));
+        expect(captured.isActive, isTrue);
+        gate.complete();
+        await opening;
+        expect(content.registration.isActive, isTrue);
+        expect(controller.eligibleTabs, hasLength(2));
+        expect(controller.selectedTab, same(selected));
+        expect(content.releases, 0);
+        await controller.openOrFocus(
+          owner: owner,
+          session: first,
+          descriptor: descriptor('late'),
+        );
+        expect(controller.selectedTab!.metadata.title, 'Late');
+        expect(calls, 1);
+      },
+    );
+  }
+
+  test(
+    'prepared keys are separate across Sessions and registrations',
+    () async {
+      final contents = <_Content>[];
+      Future<void> create(
+        ConsoleCreationAccess access,
+        ConsoleContentDescriptor _,
+      ) async {
+        final content = _Content('Independent');
+        contents.add(content);
+        content.open(access);
+      }
+
+      final one = prepared(create);
+      final two = prepared(create, id: 'test.second');
+      await controller.openOrFocus(
+        owner: one,
+        session: first,
+        descriptor: descriptor('same'),
+      );
+      await controller.openOrFocus(
+        owner: two,
+        session: first,
+        descriptor: descriptor('same'),
+      );
+      expect(controller.eligibleTabs, hasLength(2));
+      controller.setSession(second);
+      await controller.openOrFocus(
+        owner: one,
+        session: second,
+        descriptor: descriptor('same'),
+      );
+      expect(controller.eligibleTabs, hasLength(1));
+      expect(contents, hasLength(3));
+      controller.setSession(first);
+      expect(controller.eligibleTabs, hasLength(2));
+    },
+  );
+
+  test('pending prepared content cannot steal a newer tab selection', () async {
+    final gate = Completer<void>();
+    final owner = prepared((access, descriptor) async {
+      if (descriptor.key == 'late') await gate.future;
+      _Content(descriptor.key).open(access);
+    });
+    await controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('one'),
+    );
+    final firstTab = controller.selectedTab;
+    await controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('two'),
+    );
+    final pending = controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('late'),
+    );
+    controller.select(firstTab!);
+    gate.complete();
+    await pending;
+    expect(controller.eligibleTabs, hasLength(3));
+    expect(controller.selectedTab, same(firstTab));
+    await controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('late'),
+    );
+    expect(controller.selectedTab!.metadata.title, 'late');
+  });
+
+  test('prepared closed tab is not resurrected by late settlement', () async {
+    final gate = Completer<void>();
+    final contents = <_Content>[];
+    late ConsoleCreationAccess oldAccess;
+    final owner = prepared((access, _) async {
+      final content = _Content(
+        'Output',
+        advice: () => const ConsoleCloseAdvice.noConfirmation(),
+      );
+      contents.add(content);
+      content.open(access);
+      if (contents.length == 1) {
+        oldAccess = access;
+        await gate.future;
+      }
+    });
+    final opening = controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('same'),
+    );
+    await controller.closeTab(
+      controller.selectedTab!,
+      (_) async => fail('No confirmation'),
+    );
+    expect(oldAccess.isActive, isFalse);
+    final lateTransfer = _Content('Late duplicate');
+    lateTransfer.open(oldAccess);
+    await lateTransfer.registration.requestRemoval();
+    expect(lateTransfer.registration.isActive, isFalse);
+    expect(lateTransfer.releases, 1);
+    await controller.openOrFocus(
+      owner: owner,
+      session: first,
+      descriptor: descriptor('same'),
+    );
+    final replacement = controller.selectedTab;
+    gate.complete();
+    await opening;
+    expect(controller.eligibleTabs, [replacement]);
+    expect(contents.first.releases, 1);
+    expect(contents.last.releases, 0);
+  });
+
+  for (final closeHost in [false, true]) {
+    test(
+      'prepared late admission fenced by ${closeHost ? 'host close' : 'owner replacement'}',
+      () async {
+        final gate = Completer<void>();
+        final content = _Content('Late');
+        final value = ConsoleContribution(
+          actions: [],
+          openPrepared: (access, _) async {
+            await gate.future;
+            content.open(access);
+          },
+        );
+        final registration = registry.register(
+          point: consoleContributions,
+          id: ExtensionId('test.owner'),
+          value: value,
+        );
+        final owner = registry.discover(consoleContributions).single;
+        final opening = controller.openOrFocus(
+          owner: owner,
+          session: first,
+          descriptor: descriptor('same'),
+        );
+        if (closeHost) {
+          await controller.close();
+        } else {
+          await registration.close();
+          registry.register(
+            point: consoleContributions,
+            id: owner.id,
+            value: value,
+          );
+        }
+        gate.complete();
+        await opening;
+        await content.registration.requestRemoval();
+        expect(content.registration.isActive, isFalse);
+        expect(content.releases, 1);
+        expect(controller.eligibleTabs, isEmpty);
+        await expectLater(
+          controller.openOrFocus(
+            owner: owner,
+            session: first,
+            descriptor: descriptor('same'),
+          ),
+          throwsStateError,
+        );
+      },
+    );
+  }
+
   test(
     'actions compose in deterministic identity order; getters are immutable',
     () async {

@@ -8,6 +8,23 @@ import 'package:flutter_eval/flutter_eval.dart';
 
 const commandOutputFrontendLibrary = 'package:command_output_probe/main.dart';
 
+Future<String> commandOutputContractSource(Directory repositoryRoot) async {
+  var directory = File(Platform.resolvedExecutable).parent;
+  while (!File('${directory.path}/dart-sdk/lib/core/core.dart').existsSync()) {
+    if (directory.parent.path == directory.path) {
+      throw StateError('Cannot locate the pinned Dart SDK.');
+    }
+    directory = directory.parent;
+  }
+  return ContractGenerator(
+    sdkPath: '${directory.path}/dart-sdk',
+  ).generateEvalClient(
+    File(
+      '${repositoryRoot.path}/plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
+    ),
+  );
+}
+
 Future<void> compileCommandOutputFrontend({
   required Directory repositoryRoot,
   required File artifact,
@@ -16,21 +33,7 @@ Future<void> compileCommandOutputFrontend({
   required String toolInvocationId,
 }) async {
   final root = repositoryRoot.path;
-  var directory = File(Platform.resolvedExecutable).parent;
-  while (!File('${directory.path}/dart-sdk/lib/core/core.dart').existsSync()) {
-    if (directory.parent.path == directory.path) {
-      throw StateError('Cannot locate the pinned Dart SDK.');
-    }
-    directory = directory.parent;
-  }
-  final contract =
-      await ContractGenerator(
-        sdkPath: '${directory.path}/dart-sdk',
-      ).generateEvalClient(
-        File(
-          '$root/plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
-        ),
-      );
+  final contract = await commandOutputContractSource(repositoryRoot);
   final fixture =
       (await File(
             '$root/app/test/fixtures/command_output_frontend.dart',

@@ -145,6 +145,8 @@ int main(int argc, char **argv) {
     raise(SIGSTOP); // Test observes this only after all output has been written.
     for (;;) pause();
   }
+  const int gated_startup = argc > 1 && !strcmp(argv[1], "--gated-startup");
+  if (gated_startup && raw()) return 90;
   int tty = open("/dev/tty", O_RDWR);
   printf("TTY=%d,%d,%d CTTY=%d SID=%d PID=%d PGID=%d FG=%d\n",
          isatty(0), isatty(1), isatty(2), tty >= 0, getsid(0), getpid(),
@@ -154,11 +156,20 @@ int main(int argc, char **argv) {
   if (!getcwd(cwd, sizeof(cwd))) return 91;
   printf("CWD=%s TERM=%s SENTINEL=%s\n", cwd, getenv("TERM"),
          getenv("ADELE_PTY_SENTINEL") ? "leaked" : "absent");
+  if (gated_startup) {
+    // The early environment marker cannot imply that startup output is drained.
+    fflush(stdout);
+    char byte;
+    ssize_t n;
+    do { n = read(0, &byte, 1); } while (n < 0 && errno == EINTR);
+    if (n != 1 || byte != 's') return 90;
+  }
   // Deliberately split a UTF-8 sequence across writes; transport is raw bytes.
   if (write(1, "\033[31m\xe2", 6) != 6) return 95;
   if (write(1, "\x98\x83\033[0m\n", 7) != 7) return 95;
   fprintf(stderr, "STDERR-MERGED\n");
   fflush(stdout);
+  if (gated_startup && write_all(1, "STARTUP-DONE\n", 13)) return 90;
   char line[16384];
   while (fgets(line, sizeof(line), stdin)) {
     if (!strcmp(line, "size\n")) {

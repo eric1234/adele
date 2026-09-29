@@ -11,5 +11,6 @@ resolution: workspace
 
 dependencies:
   adele_ui: ^0.1.0
+  command_tools_contract: ^0.1.0
   flutter:
     sdk: flutter

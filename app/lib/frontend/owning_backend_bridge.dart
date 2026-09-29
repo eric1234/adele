@@ -23,6 +23,30 @@ class OwningBackendDeclarations implements EvalPlugin {
     registry.defineBridgeTopLevelFunction(
       const BridgeFunctionDeclaration(
         _bridgeLibrary,
+        'settleOwningBackendOperation',
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(
+            BridgeTypeRef(CoreTypes.future, [
+              BridgeTypeAnnotation(
+                BridgeTypeRef(CoreTypes.list, [
+                  BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.dynamic)),
+                ]),
+              ),
+            ]),
+          ),
+          params: [
+            BridgeParameter(
+              'operation',
+              BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.future)),
+              false,
+            ),
+          ],
+        ),
+      ),
+    );
+    registry.defineBridgeTopLevelFunction(
+      const BridgeFunctionDeclaration(
+        _bridgeLibrary,
         'streamOwningBackend',
         BridgeFunctionDef(
           returns: BridgeTypeAnnotation(
@@ -276,6 +300,26 @@ final class OwningBackendBridge extends OwningBackendDeclarations
 
   @override
   void configureForRuntime(Runtime runtime) {
+    runtime.registerBridgeFunc(_bridgeLibrary, 'settleOwningBackendOperation', (
+      _,
+      _,
+      args,
+    ) {
+      final operation = args.single! as $Future;
+      return $Future<$Value>.wrap(
+        operation.$value.then<$Value>(
+          (value) => $List.wrap(
+            List<$Value>.unmodifiable([
+              $bool(true),
+              value is $Value ? value : runtime.wrap(value),
+            ]),
+          ),
+          onError: (Object error, StackTrace stack) => $List.wrap(
+            List<$Value>.unmodifiable([$bool(false), const $null()]),
+          ),
+        ),
+      );
+    });
     runtime.registerBridgeFunc(_bridgeLibrary, 'streamOwningBackend', (
       _,
       _,

@@ -93,8 +93,14 @@ Console descriptors use `role: 'console'` with required `extensionId`, `library`
 and its own operation `entrypoint`; action IDs must be unique within the descriptor.
 Libraries are canonical `package:` Dart URIs and entrypoints are top-level
 identifiers. Strategy/backend-affinity fields and role-level `displayName` are
-not part of this role. A frontend-only installation can contribute independently
-to the shared host console, without an owning backend. App activation validates
+not part of this role. Optional `readOnly` defaults to false. With `readOnly: true`,
+`actions` must be empty and optional `backendServices` declares a duplicate-free
+service-ID allowlist; a nonempty backend allowlist is rejected for action-based
+console descriptors. Read-only content is admitted through declared presentation
+targets, not a creation action or implicit execution grant.
+
+A frontend-only installation can contribute independently to the shared host
+console, without an owning backend. App activation validates
 both operation and content entrypoint presence before registering the contribution;
 actual invocation/rendering may still fail. Content/resources are not created by
 discovery or activation. The public [console contract](../ui/README.md#shared-console)
@@ -114,6 +120,17 @@ allowlist (default empty); optional `strategyAffinity` is `independent` (default
 or `owningBackend`. The retired `hostAdapter` field is rejected. Stock Chat
 allowlists generated `chatSessionServiceId` and declares `owningBackend`; runtime does not know those stock
 identities or service semantics.
+
+Tool activity descriptors use `role: 'toolActivity'` with `toolId`, `library`,
+`inspectionExtensionId`, `compactExtensionId`, `inspectionEntrypoint`, and
+`compactEntrypoint`. Optional `backendServices` and `consoleExtensions` default
+to empty immutable lists and reject duplicates. They contain service IDs and
+console Extension IDs respectively. These allowlists apply only to rich Inspection:
+compact hosting receives neither owning-backend access nor console-opening access.
+An allowed console target must additionally belong to the same exact installation
+and frontend generation as the requesting presentation; an ID in metadata is not
+proof of a live binding. Tool activity descriptors have no strategy affinity.
+
 These descriptor families use existing public identity types without importing
 Flutter, `adele_ui`, eval, or concrete plugins. Strict role/kind-specific fields describe executable
 ABI/preparation data, not profile or activation state.
@@ -248,6 +265,16 @@ generated plugin clients use it without importing this internal package. Fronten
 startup remains independent of backend startup. Registration availability does not
 promise that a view's own-backend service is ready, and failure has no native or
 in-process fallback.
+
+Generic Inspection and read-only console composition captures the exact
+installation's backend and its default configuration context without resolving a
+strategy. Only Session hosting with explicit owning-backend affinity supplies the
+validated strategy origin described above. Neither route creates host-invocation
+authority. A rich Inspection retains canonical facts when backend observation is
+unavailable. A retained read-only console keeps its captured channel across view
+remounts; each fresh view gets a new revocable adapter, never a new backend lookup
+for the old content. These lifetimes are app-owned; this package supplies the
+exact channel and metadata, not console state, plugin DTOs, or rendering.
 
 `stream` is lazy and single-subscription, snapshots data, revalidates on delivery,
 and forwards pause/resume/cancel to the captured transport. Owners with a lifetime

@@ -19,6 +19,7 @@ import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -29,7 +30,9 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
+import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
@@ -95,58 +98,740 @@ void main() {
   });
 
   testWidgets(
+    'T3b normal Chat opens live stock Command Inspection and retained read-only output',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1600, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final root = await prepared.copyInstallations(fixture.directory);
+      final helper = await prepared.installTerminal(root);
+      final processServer = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final children = <_PresentationProcess>[];
+      final processSubscription = processServer.listen((socket) {
+        children.add(_PresentationProcess(socket));
+      });
+      final arguments = <String, Object?>{
+        'program': prepared.dartaotruntime,
+        'arguments': [
+          prepared.commandProcess.path,
+          '${processServer.port}',
+          'presentation',
+        ],
+        'workingDirectory': '',
+        'timeoutSeconds': 180,
+      };
+      final outbound = <Map<String, Object?>>[];
+      final endpointFailures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          if (outbound.length <= 2) {
+            if (outbound.length == 2) {
+              expect(
+                _toolOutput(body, 'presentation-1'),
+                contains('Exit code: 23'),
+              );
+            }
+            _output(
+              request.response,
+              _call(
+                'presentation-${outbound.length}',
+                'run_command',
+                arguments,
+              ),
+            );
+          } else {
+            expect(outbound, hasLength(3));
+            expect(
+              _toolOutput(body, 'presentation-2'),
+              contains('Exit code: 23'),
+            );
+            _output(
+              request.response,
+              _message(
+                'presentation-final',
+                'Both commands exited with code 23.',
+              ),
+            );
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': 't3b-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          endpointFailures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+        await processSubscription.cancel();
+        await processServer.close();
+      });
+      await fixture.launch(
+        tester,
+        prepared,
+        root: root,
+        dartaotruntimeExecutable: await fixture.isolatedRuntime(prepared),
+        endpoint: server,
+        startupArguments: {
+          _gitPluginId: ['--pty-helper=${helper.path}'],
+        },
+      );
+      // Kill only fixture children on failed assertions, before application exit
+      // drains an accepted Run. Observation must never be its cancellation route.
+      addTearDown(() async {
+        for (final child in children) {
+          if (!child.exited && child.pid != null) {
+            Process.killPid(child.pid!, ProcessSignal.sigterm);
+          }
+          child.socket.destroy();
+          await child.lines.cancel();
+        }
+      });
+      final runtime = fixture.runtime;
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      expect(runtime.plugins.host, isA<PluginBackendHost>());
+      final commandBackend = runtime.plugins.backends.singleWhere(
+        (backend) => backend.installation.metadata.id.value == _commandPluginId,
+      );
+      expect(commandBackend.state, InstalledBackendState.active);
+      final command = CommandOutputServiceClient(
+        commandBackend.connection!.channelFor(
+          commandBackend.connection!.defaultConfigurationContext,
+          commandOutputServiceId,
+        ),
+      );
+      await fixture.openTask(tester);
+      final project = fixture.shell(tester).project!;
+      final task = fixture.shell(tester).task!;
+      final environment = fixture.shell(tester).environment!;
+      final worktree = developmentGitWorktreePath(project, environment);
+      expect(
+        runtime.lifecycle.environmentRuntime
+            .currentMaterialization(environment.id)!
+            .provider,
+        isA<GeneratedEnvironmentProvider>(),
+      );
+      await _tap(tester, 'New Chat Session');
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final session = _session(tester);
+      final console = tester
+          .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+          .controller;
+      expect(console.eligibleTabs, isEmpty);
+      await _send(
+        tester,
+        'Run the same controlled command twice and report both exit codes.',
+      );
+      final captures = <_PresentedCapture>[];
+      final completed = <CommandCaptureState>[];
+      Object? previousApproval;
+
+      for (var index = 0; index < 2; index++) {
+        await _terminalUntil(
+          tester,
+          () =>
+              fixture.status(tester).pendingApproval != null &&
+              !identical(
+                fixture.status(tester).pendingApproval,
+                previousApproval,
+              ),
+          'ordinary command approval',
+        );
+        previousApproval = fixture.status(tester).pendingApproval;
+        expect(
+          jsonDecode(
+            fixture.status(tester).pendingApproval!.canonicalArgumentsJson,
+          ),
+          arguments,
+        );
+        _rethrowEndpointFailure(endpointFailures);
+        final compactText = find
+            .descendant(
+              of: find.byType(SessionPresentationHost),
+              matching: find.textContaining('Run Command:'),
+            )
+            .last;
+        final compact = find
+            .ancestor(of: compactText, matching: find.byType(TextButton))
+            .first;
+        await _terminalTap(tester, compact);
+        await _terminalUntil(
+          tester,
+          () => find.byType(ToolActivityInspectionHost).evaluate().isNotEmpty,
+          'stock rich Command Inspection',
+        );
+        final inspection = find.byType(ToolActivityInspectionHost).first;
+        final source = tester
+            .widget<ToolActivityInspectionHost>(inspection)
+            .source;
+        final capture = _PresentedCapture(
+          command,
+          session.id.value,
+          fixture.runIds.values.single.value,
+          source.snapshot.id.value,
+        );
+        captures.add(capture);
+        expect(source.sessionId, session.id);
+        expect(source.runId.value, capture.runId);
+        expect(source.snapshot.canonicalArguments, arguments);
+        expect(
+          find.descendant(
+            of: inspection,
+            matching: find.byWidgetPredicate(
+              (widget) => widget is $StatefulWidget$bridge,
+            ),
+          ),
+          findsWidgets,
+        );
+        expect((await capture.state()).state, 'absent');
+        await _terminalUntil(
+          tester,
+          () => find
+              .descendant(
+                of: inspection,
+                matching: find.text('No output capture has been admitted.'),
+              )
+              .evaluate()
+              .isNotEmpty,
+          'stock pre-admission watch is subscribed',
+        );
+        expect(
+          find.descendant(of: inspection, matching: find.text('Show more')),
+          findsNothing,
+        );
+        expect(children, hasLength(index));
+        expect(console.eligibleTabs, hasLength(index == 0 ? 0 : 2));
+        await _terminalTap(tester, find.text('Allow once'));
+        await _terminalUntil(
+          tester,
+          () => children.length == index + 1,
+          'one admitted foreground process',
+        );
+        final child = children[index];
+        await child.stage('connected');
+        expect(
+          child.workingDirectory,
+          await Directory(worktree).resolveSymbolicLinks(),
+        );
+        child.release('produce');
+        await child.stage('started');
+        await _projectionText(tester, inspection, 'T3B_PART');
+        final preview = _projectionEngine(tester, inspection);
+        expect(_terminalBuffer(preview), contains('T3B_BEGIN'));
+        expect(_terminalBuffer(preview), contains('T3B_CR\nT3B_PART'));
+        expect(_terminalBuffer(preview), isNot(contains('obsolete status')));
+        final red = [
+          for (var line = 0; line < preview.buffer.height; line++)
+            preview.buffer.lines[line],
+        ].singleWhere((line) => line.getText().trimRight() == 'T3B_RED');
+        expect(red.getForeground(0) & CellColor.valueMask, 1);
+        expect((await capture.state()).state, 'capturing');
+        expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+        await _terminalTap(
+          tester,
+          find.descendant(of: inspection, matching: find.text('Show more')),
+        );
+        final consoleHost = find.byType(WorkbenchConsole);
+        await _projectionText(tester, consoleHost, 'T3B_PART');
+        final tab = console.selectedTab!;
+        expect(console.eligibleTabs, hasLength(index == 0 ? 1 : 3));
+        expect(_projectionEngine(tester, consoleHost), isNot(same(preview)));
+        for (final parent in [inspection, consoleHost]) {
+          expect(
+            tester.widget<TerminalView>(_projectionView(parent)).readOnly,
+            isTrue,
+          );
+          _expectOutputPainted(tester, parent, 'T3B_PART');
+        }
+        await _terminalTap(
+          tester,
+          find.descendant(of: inspection, matching: find.text('Show more')),
+        );
+        expect(console.selectedTab, same(tab));
+        expect(console.eligibleTabs, hasLength(index == 0 ? 1 : 3));
+        expect(children, hasLength(index + 1));
+        expect(fixture.runIds.values, hasLength(1));
+        child.release('middle');
+        await child.stage('middle');
+        await _projectionText(tester, consoleHost, 'T3B_BULK_END');
+        await _projectionText(tester, inspection, 'T3B_BULK_END');
+        expect(_projectionEngine(tester, consoleHost).maxLines, 200);
+        expect(
+          _terminalBuffer(_projectionEngine(tester, consoleHost)),
+          isNot(contains('T3B_BEGIN')),
+        );
+        expect(
+          _terminalBuffer(_projectionEngine(tester, consoleHost)),
+          isNot(contains('T3B_MIDDLE')),
+        );
+
+        if (index == 0) {
+          // Actual native scroll freezes this reader before later output arrives;
+          // the independently mounted Inspection must continue following.
+          await tester.drag(_projectionView(consoleHost), const Offset(0, 180));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 350));
+          await _terminalUntil(
+            tester,
+            () => find
+                .descendant(
+                  of: consoleHost,
+                  matching: find.text('Reading history'),
+                )
+                .evaluate()
+                .isNotEmpty,
+            'scroll-away pauses follow',
+          );
+          final frozen = _terminalBuffer(
+            _projectionEngine(tester, consoleHost),
+          );
+          child.release('late');
+          await child.stage('late');
+          await _projectionText(tester, inspection, 'T3B_LATE_PART');
+          expect(
+            _terminalBuffer(_projectionEngine(tester, consoleHost)),
+            frozen,
+          );
+          await tester.sendEventToBinding(
+            PointerScrollEvent(
+              position:
+                  tester.getTopLeft(_projectionView(consoleHost)) +
+                  const Offset(50, 30),
+              scrollDelta: const Offset(0, 20000),
+            ),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_LATE_PART');
+          expect((await capture.state()).state, 'capturing');
+          await _terminalTap(
+            tester,
+            find.descendant(of: consoleHost, matching: find.text('Beginning')),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_BEGIN');
+          expect(
+            _terminalBuffer(_projectionEngine(tester, consoleHost)),
+            contains('T3B_PART-continued'),
+          );
+          await _terminalTap(
+            tester,
+            find.descendant(of: consoleHost, matching: find.text('Middle')),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_MIDDLE');
+          await tester.drag(_projectionView(consoleHost), const Offset(0, -72));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 350));
+          final historicalScroll = tester
+              .widget<TerminalView>(_projectionView(consoleHost))
+              .scrollController!
+              .offset;
+          expect(historicalScroll, greaterThan(0));
+
+          final historicalBuffer = _terminalBuffer(
+            _projectionEngine(tester, consoleHost),
+          );
+          await _terminalTap(tester, find.byTooltip('Hide console'));
+          expect(_projectionView(consoleHost), findsNothing);
+          child.release('hidden');
+          await child.stage('hidden');
+          await _projectionText(tester, inspection, 'T3B_HIDDEN');
+          await _terminalTap(tester, find.byTooltip('Show console'));
+          await _projectionText(tester, consoleHost, 'T3B_MIDDLE');
+          expect(
+            _terminalBuffer(_projectionEngine(tester, consoleHost)),
+            historicalBuffer,
+          );
+          expect(
+            tester
+                .widget<TerminalView>(_projectionView(consoleHost))
+                .scrollController!
+                .offset,
+            closeTo(historicalScroll, 1),
+          );
+          await _terminalTap(
+            tester,
+            find.descendant(
+              of: consoleHost,
+              matching: find.byTooltip('Follow output'),
+            ),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_HIDDEN');
+
+          // The interactive stock Terminal remains a different resource and mode.
+          await _newTerminal(tester);
+          await _terminalUntil(
+            tester,
+            () =>
+                runtime.terminals.forEnvironment(environment.id).length == 1 &&
+                _projectionView(consoleHost).evaluate().isNotEmpty,
+            'interactive Terminal coexists',
+          );
+          final shell = runtime.terminals.forEnvironment(environment.id).single;
+          expect(
+            tester.widget<TerminalView>(_projectionView(consoleHost)).readOnly,
+            isFalse,
+          );
+          await _terminalCommandIn(
+            tester,
+            consoleHost,
+            r'''stty -echo; PS1=; printf '\nT3B_SHELL_READY\n' ''',
+          );
+          await _projectionText(tester, consoleHost, 'T3B_SHELL_READY');
+          expect(console.eligibleTabs, hasLength(2));
+          await _terminalTap(
+            tester,
+            find.descendant(
+              of: find.byKey(ObjectKey(tab)),
+              matching: find.byType(TextButton),
+            ),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_HIDDEN');
+          expect(shell.state, EnvironmentTerminalState.running);
+          await _terminalTap(
+            tester,
+            find.descendant(
+              of: find.byKey(ObjectKey(tab)),
+              matching: find.byType(IconButton),
+            ),
+          );
+          await _terminalUntil(
+            tester,
+            () => console.eligibleTabs.length == 1,
+            'close output without confirmation',
+          );
+          expect(find.byType(AlertDialog), findsNothing);
+          await _terminalTap(
+            tester,
+            find.byTooltip('Dismiss Inspection').first,
+          );
+          expect(find.byType(ToolActivityInspectionHost), findsNothing);
+          child.release('closed');
+          await child.stage('closed');
+          await _terminalUntil(
+            tester,
+            () async => (await capture.tail()).contains('T3B_AFTER_CLOSE'),
+            'capture commits with neither Command reader mounted',
+          );
+          expect((await capture.state()).state, 'capturing');
+          expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          await _terminalTap(tester, compact);
+          await _projectionText(tester, inspection, 'T3B_AFTER_CLOSE');
+          await _terminalTap(
+            tester,
+            find.descendant(of: inspection, matching: find.text('Show more')),
+          );
+          await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
+          expect(console.eligibleTabs, hasLength(2));
+          expect(console.selectedTab, isNot(same(tab)));
+          expect(runtime.terminals.forEnvironment(environment.id), [
+            same(shell),
+          ]);
+        } else {
+          await _terminalTap(
+            tester,
+            find.byTooltip('Dismiss Inspection').first,
+          );
+          expect(find.byType(ToolActivityInspectionHost), findsNothing);
+          expect((await capture.state()).state, 'capturing');
+          for (final (release, stage) in [
+            ('late', 'late'),
+            ('hidden', 'hidden'),
+            ('closed', 'closed'),
+          ]) {
+            child.release(release);
+            await child.stage(stage);
+          }
+          await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
+          expect(console.selectedTab, same(tab));
+          expect((await capture.state()).state, 'capturing');
+          await _terminalTap(tester, compact);
+          await _projectionText(tester, inspection, 'T3B_AFTER_CLOSE');
+          expect(
+            captures.last.invocationId,
+            isNot(captures.first.invocationId),
+          );
+          expect(await children.first.isAlive(), isFalse);
+        }
+        final retainedTab = console.selectedTab;
+        child.release('exit');
+        final state = await capture.client
+            .watch(capture.sessionId, capture.runId, capture.invocationId)
+            .firstWhere((state) => state.state == 'complete')
+            .timeout(const Duration(seconds: 15));
+        completed.add(state);
+        child.exited = true;
+        expect(state.exitCode, 23);
+        expect(state.termination, 'exited');
+        expect(state.failure, isNull);
+        await _terminalUntil(
+          tester,
+          () => find
+              .descendant(of: inspection, matching: find.text('Exit code: 23'))
+              .evaluate()
+              .isNotEmpty,
+          'completed nonzero Inspection',
+        );
+        await _terminalUntil(
+          tester,
+          () => find
+              .descendant(
+                of: consoleHost,
+                matching: find.textContaining(
+                  'Capture: complete | Process: exited | Exit: 23',
+                ),
+              )
+              .evaluate()
+              .isNotEmpty,
+          'completed nonzero console capture',
+        );
+        expect(console.eligibleTabs, contains(same(retainedTab)));
+        expect(console.selectedTab, same(retainedTab));
+        await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
+        expect(children, hasLength(index + 1));
+        await _terminalTap(tester, find.byTooltip('Dismiss Inspection').first);
+      }
+      await _terminalUntil(
+        tester,
+        () => find
+            .text('Both commands exited with code 23.')
+            .evaluate()
+            .isNotEmpty,
+        'ordinary Chat continuation',
+      );
+      _rethrowEndpointFailure(endpointFailures);
+      expect(outbound, hasLength(3));
+      expect(children, hasLength(2));
+      expect(children[0].pid, isNot(children[1].pid));
+      expect(fixture.runIds.values, hasLength(1));
+      final runId = fixture.runIds.values.single;
+      final retained = runtime.lifecycle.runActivity(runId)!;
+      expect(retained.state, RunState.completed);
+      expect(retained.tools.map((tool) => tool.canonicalArguments), [
+        arguments,
+        arguments,
+      ]);
+      expect(
+        retained.tools.map((tool) => tool.id.value),
+        captures.map((capture) => capture.invocationId),
+      );
+      for (final tool in retained.tools) {
+        expect(
+          tool.changes.where(
+            (change) => change.kind == ToolActivityKind.progress,
+          ),
+          isEmpty,
+        );
+        expect(tool.outcome!.hostData['stdoutTruncated'], isTrue);
+        expect(tool.outcome!.hostData['stdout'], isNot(contains('T3B_MIDDLE')));
+      }
+      final inventory = await _git(fixture.source, [
+        'worktree',
+        'list',
+        '--porcelain',
+      ]);
+      final marker = await File('$worktree/.git').readAsBytes();
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      expect(commandBackend.connection!.isClosed, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      // Fresh host, Project, backend and EVC. Git is not installed at all; history
+      // must not restore an Environment or obtain process/execution authority.
+      final freshRootParent = await Directory(
+        '${fixture.directory.path}/fresh',
+      ).create();
+      final freshRoot = await prepared.copyInstallations(freshRootParent);
+      await Directory(
+        '${freshRoot.path}/$_gitPluginId',
+      ).delete(recursive: true);
+      final ids = _NoReopenIds();
+      final fresh = NativeAdeleRuntime(ids: ids, runIds: ids);
+      addTearDown(fresh.close);
+      await fixture.launch(
+        tester,
+        prepared,
+        root: freshRoot,
+        usingRuntime: fresh,
+        usingRunIds: ids,
+      );
+      expect(
+        fresh.registry.providersFor(environmentProviderCapability),
+        isEmpty,
+      );
+      expect(fresh.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(
+        fresh.plugins.backends.any(
+          (backend) => backend.installation.metadata.id.value == _gitPluginId,
+        ),
+        isFalse,
+      );
+      await _tap(tester, 'Open Local Directory...');
+      await _pumpUntil(tester, () => fixture.shell(tester).project != null);
+      expect(fixture.shell(tester).project!.id, project.id);
+      expect(fixture.shell(tester).project, isNot(same(project)));
+      await _tap(tester, task.title);
+      await _openSession(tester, session.id);
+      await _terminalUntil(
+        tester,
+        () =>
+            find
+                .descendant(
+                  of: find.byType(SessionPresentationHost),
+                  matching: find.textContaining('Run Command:'),
+                )
+                .evaluate()
+                .length ==
+            2,
+        'historical Chat compact occurrences',
+      );
+      final freshConsole = tester
+          .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+          .controller;
+      expect(freshConsole.eligibleTabs, isEmpty);
+      final replacement = fresh.plugins.backends.singleWhere(
+        (backend) => backend.installation.metadata.id.value == _commandPluginId,
+      );
+      expect(replacement.connection, isNot(same(commandBackend.connection)));
+      for (var index = 0; index < 2; index++) {
+        await _terminalTap(
+          tester,
+          find
+              .ancestor(
+                of: find
+                    .descendant(
+                      of: find.byType(SessionPresentationHost),
+                      matching: find.textContaining('Run Command:'),
+                    )
+                    .at(index),
+                matching: find.byType(TextButton),
+              )
+              .first,
+        );
+        final inspection = find.byType(ToolActivityInspectionHost).first;
+        await _projectionText(tester, inspection, 'T3B_AFTER_CLOSE');
+        expect(
+          tester
+              .widget<ToolActivityInspectionHost>(inspection)
+              .source
+              .snapshot
+              .id
+              .value,
+          captures[index].invocationId,
+        );
+        await _terminalTap(
+          tester,
+          find.descendant(of: inspection, matching: find.text('Show more')),
+        );
+        await _projectionText(
+          tester,
+          find.byType(WorkbenchConsole),
+          'T3B_AFTER_CLOSE',
+        );
+        expect(freshConsole.eligibleTabs, hasLength(index + 1));
+        await _terminalTap(
+          tester,
+          find.descendant(
+            of: find.byType(WorkbenchConsole),
+            matching: find.text('Beginning'),
+          ),
+        );
+        await _projectionText(
+          tester,
+          find.byType(WorkbenchConsole),
+          'T3B_PID=${children[index].pid}',
+        );
+        expect(
+          _terminalBuffer(
+            _projectionEngine(tester, find.byType(WorkbenchConsole)),
+          ),
+          isNot(contains('T3B_PID=${children[1 - index].pid}')),
+        );
+        final freshCapture = _PresentedCapture(
+          CommandOutputServiceClient(
+            replacement.connection!.channelFor(
+              replacement.connection!.defaultConfigurationContext,
+              commandOutputServiceId,
+            ),
+          ),
+          session.id.value,
+          runId.value,
+          captures[index].invocationId,
+        );
+        final state = await freshCapture.state();
+        expect(
+          (
+            state.state,
+            state.version,
+            state.highWater,
+            state.totalCodeUnits,
+            state.exitCode,
+          ),
+          (
+            'complete',
+            completed[index].version,
+            completed[index].highWater,
+            completed[index].totalCodeUnits,
+            23,
+          ),
+        );
+        await _terminalTap(tester, find.byTooltip('Dismiss Inspection').first);
+      }
+      expect(ids.calls, 0);
+      expect(outbound, hasLength(3));
+      expect(children, hasLength(2));
+      expect(
+        fresh.lifecycle.environmentRuntime.currentMaterialization(
+          environment.id,
+        ),
+        isNull,
+      );
+      expect(fresh.terminals.forEnvironment(environment.id), isEmpty);
+      expect(
+        await _git(fixture.source, ['worktree', 'list', '--porcelain']),
+        inventory,
+      );
+      expect(await File('$worktree/.git').readAsBytes(), marker);
+      expect(tester.takeException(), isNull);
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }),
+    skip: !Platform.isLinux || Abi.current() != Abi.linuxX64,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  testWidgets(
     'T2 installed Terminal keeps real shells across tabs and Session navigation',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final fixture = await _ProductFixture.create();
       final root = await prepared.copyInstallations(fixture.directory);
-      final terminalInstallation = await Directory(
-        '${root.path}/$_terminalPluginId',
-      ).create();
-      await File(
-        '${terminalInstallation.path}/adele_plugin.installation.json',
-      ).writeAsString(
-        jsonEncode({
-          'manifestVersion': 1,
-          'metadata': {
-            'id': _terminalPluginId,
-            'version': '1.0.0',
-            'displayName': 'Terminal',
-          },
-          'components': {
-            'frontend': {
-              'artifact': 'frontend.evc',
-              'presentations': stockFrontendDescriptors[_terminalPluginId]!,
-            },
-          },
-        }),
-      );
-      await File('${terminalInstallation.path}/frontend.evc').writeAsBytes(
-        await compileTerminalFrontend(repositoryRoot: Directory.current.parent),
-      );
-      final helper = File('${root.path}/$_gitPluginId/git-pty-helper');
-      await prepareGitPtyHelper(
-        repositoryRoot: Directory.current.parent,
-        output: helper,
-      );
-      final home = await Directory('${fixture.directory.path}/home').create();
-      // Only the child host's ambient environment changes. The stock host and
-      // Git AOT entrypoints, default-shell resolution and PTY remain unmodified.
-      final launcher = File('${fixture.directory.path}/dartaotruntime');
-      await launcher.writeAsString(
-        '#!/bin/sh\n'
-        'exec /usr/bin/env -i HOME=${_shellQuote(home.path)} '
-        'SHELL=/bin/sh PATH=/usr/bin:/bin LANG=C.UTF-8 '
-        '${_shellQuote(prepared.dartaotruntime)} "\$@"\n',
-      );
-      final chmod = await Process.run('chmod', ['700', launcher.path]);
-      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final helper = await prepared.installTerminal(root);
+      final launcher = await fixture.isolatedRuntime(prepared);
+      final home = Directory('${fixture.directory.path}/home');
       await fixture.launch(
         tester,
         prepared,
         root: root,
-        dartaotruntimeExecutable: launcher.path,
+        dartaotruntimeExecutable: launcher,
         startupArguments: {
           _gitPluginId: ['--pty-helper=${helper.path}'],
         },
@@ -160,12 +845,16 @@ void main() {
       expect(installed.frontend, isNotNull);
       await _terminalUntil(
         tester,
-        () => runtime.extensions.discover(consoleContributions).isNotEmpty,
+        () => runtime.extensions
+            .discover(consoleContributions)
+            .any((entry) => entry.id.value == '$_terminalPluginId.console'),
         'prepared stock console registration',
       );
       expect(
-        runtime.extensions.discover(consoleContributions).single.id.value,
-        '$_terminalPluginId.console',
+        runtime.extensions
+            .discover(consoleContributions)
+            .map((entry) => entry.id.value),
+        contains('$_terminalPluginId.console'),
       );
       expect(runtime.plugins.host, isA<PluginBackendHost>());
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
@@ -1949,6 +2638,102 @@ void main() {
   }
 }
 
+final class _PresentationProcess {
+  _PresentationProcess(this.socket)
+    : lines = StreamIterator(
+        socket
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter()),
+      );
+
+  final Socket socket;
+  final StreamIterator<String> lines;
+  int? pid;
+  bool exited = false;
+  late String workingDirectory;
+
+  Future<void> stage(String stage) async {
+    expect(await lines.moveNext().timeout(const Duration(seconds: 15)), isTrue);
+    final parts = lines.current.split(':');
+    expect(parts.first, stage);
+    pid = int.parse(parts[1]);
+    workingDirectory = parts.skip(2).join(':');
+  }
+
+  void release(String stage) => socket.writeln(stage);
+  Future<bool> isAlive() => Directory('/proc/$pid').exists();
+}
+
+final class _PresentedCapture {
+  const _PresentedCapture(
+    this.client,
+    this.sessionId,
+    this.runId,
+    this.invocationId,
+  );
+  final CommandOutputServiceClient client;
+  final String sessionId;
+  final String runId;
+  final String invocationId;
+
+  Future<CommandCaptureState> state() => client
+      .getState(sessionId, runId, invocationId)
+      .timeout(const Duration(seconds: 15));
+
+  Future<String> tail() async {
+    final page = await client
+        .readBefore(
+          sessionId,
+          runId,
+          invocationId,
+          null,
+          commandOutputPageChunks,
+          commandOutputPageCodeUnits,
+        )
+        .timeout(const Duration(seconds: 15));
+    return page.chunks.map((chunk) => chunk.text).join();
+  }
+}
+
+Finder _projectionView(Finder parent) =>
+    find.descendant(of: parent, matching: find.byType(TerminalView));
+
+void _expectOutputPainted(WidgetTester tester, Finder parent, String text) {
+  final view = _projectionView(parent);
+  final buffer = tester.widget<TerminalView>(view).terminal.buffer;
+  final row = List.generate(
+    buffer.height,
+    (index) => index,
+  ).singleWhere((index) => buffer.lines[index].getText().contains(text));
+  final render = tester.state<TerminalViewState>(view).renderTerminal;
+  final top = render.getOffset(CellOffset(0, row)).dy;
+  expect(top, greaterThanOrEqualTo(-0.01));
+  expect(top + render.lineHeight, lessThanOrEqualTo(render.size.height + 0.01));
+}
+
+Terminal _projectionEngine(WidgetTester tester, Finder parent) =>
+    tester
+            .widget<TerminalView>(_projectionView(parent))
+            .terminal
+            .buffer
+            .terminal
+        as Terminal;
+
+Future<void> _projectionText(WidgetTester tester, Finder parent, String text) =>
+    _terminalUntil(tester, () {
+      final views = _projectionView(parent).evaluate();
+      return views.length == 1 &&
+          find
+              .descendant(
+                of: parent,
+                matching: find.text('Replaying output...'),
+              )
+              .evaluate()
+              .isEmpty &&
+          _terminalBuffer(_projectionEngine(tester, parent)).contains(text);
+    }, 'native projection contains $text');
+
 final class _PreparedProduct {
   _PreparedProduct(this.directory, this.root, this.dart, this.dartaotruntime);
   final Directory directory;
@@ -1957,6 +2742,7 @@ final class _PreparedProduct {
   final String dartaotruntime;
   File get host => File('${directory.path}/host.aot');
   File get gatedChat => File('${directory.path}/gated-chat.aot');
+  File get commandProcess => File('${directory.path}/command-process.aot');
   File backend(String id) => File('${root.path}/$id/backend.aot');
 
   static Future<_PreparedProduct> prepare() async {
@@ -2061,6 +2847,13 @@ final class _PreparedProduct {
       artifact: result.gatedChat,
       stage: 'normal-chatgpt-gated-storage',
     );
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint: 'app/test/fixtures/command_output_process.dart',
+      artifact: result.commandProcess,
+      stage: 'normal-chatgpt-command-process',
+    );
     return result;
   }
 
@@ -2089,6 +2882,39 @@ final class _PreparedProduct {
       }
     }
     return copy;
+  }
+
+  Future<File> installTerminal(Directory root) async {
+    final installed = await Directory(
+      '${root.path}/$_terminalPluginId',
+    ).create();
+    await File(
+      '${installed.path}/adele_plugin.installation.json',
+    ).writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': _terminalPluginId,
+          'version': '1.0.0',
+          'displayName': 'Terminal',
+        },
+        'components': {
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations': stockFrontendDescriptors[_terminalPluginId]!,
+          },
+        },
+      }),
+    );
+    await File('${installed.path}/frontend.evc').writeAsBytes(
+      await compileTerminalFrontend(repositoryRoot: Directory.current.parent),
+    );
+    final helper = File('${root.path}/$_gitPluginId/git-pty-helper');
+    await prepareGitPtyHelper(
+      repositoryRoot: Directory.current.parent,
+      output: helper,
+    );
+    return helper;
   }
 }
 
@@ -2122,6 +2948,22 @@ final class _ProductFixture {
       tester.widget<AdeleShell>(find.byType(AdeleShell));
   RunExecutionStatus status(WidgetTester tester) =>
       tester.widget<RunExecutionStatus>(find.byType(RunExecutionStatus));
+
+  Future<String> isolatedRuntime(_PreparedProduct prepared) async {
+    final home = await Directory('${directory.path}/home').create();
+    // Only the child host's ambient environment changes. The stock host and
+    // Git AOT entrypoints, default-shell resolution and PTY remain unmodified.
+    final launcher = File('${directory.path}/dartaotruntime');
+    await launcher.writeAsString(
+      '#!/bin/sh\n'
+      'exec /usr/bin/env -i HOME=${_shellQuote(home.path)} '
+      'SHELL=/bin/sh PATH=/usr/bin:/bin LANG=C.UTF-8 '
+      '${_shellQuote(prepared.dartaotruntime)} "\$@"\n',
+    );
+    final chmod = await Process.run('chmod', ['700', launcher.path]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    return launcher.path;
+  }
 
   Future<void> launch(
     WidgetTester tester,
@@ -2420,15 +3262,18 @@ Terminal _terminalEngine(WidgetTester tester) =>
             .terminal
         as Terminal;
 
-Future<void> _terminalCommand(WidgetTester tester, String command) async {
-  await _terminalTap(tester, find.byType(TerminalView));
+Future<void> _terminalCommand(WidgetTester tester, String command) =>
+    _terminalCommandIn(tester, find.byType(WorkbenchConsole), command);
+
+Future<void> _terminalCommandIn(
+  WidgetTester tester,
+  Finder parent,
+  String command,
+) async {
+  final view = _projectionView(parent);
+  await _terminalTap(tester, view);
   final context = tester.element(
-    find
-        .descendant(
-          of: find.byType(TerminalView),
-          matching: find.byType(Scrollable),
-        )
-        .last,
+    find.descendant(of: view, matching: find.byType(Scrollable)).last,
   );
   expect(Focus.of(context).hasFocus, isTrue);
   final messenger = tester.binding.defaultBinaryMessenger;

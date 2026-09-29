@@ -116,7 +116,7 @@ final class ToolActivityInspectionBridge
         }
         try {
           final _ToolSnapshot snapshot = _ToolSnapshot(
-            _InspectionData(_source.snapshot),
+            _InspectionData(_source, _source.snapshot),
           );
           if (!_available) {
             throw StateError('Tool activity inspection is unavailable.');
@@ -202,15 +202,22 @@ final class ToolActivityInspectionBridge
   @override
   void retainPresentation() {
     if (!_active) return;
-    _retainedSnapshot = _ToolSnapshot(_InspectionData(_source.snapshot));
+    _retainedSnapshot = _ToolSnapshot(
+      _InspectionData(_source, _source.snapshot),
+    );
     _active = false;
     _unsubscribe();
   }
 }
 
 final class _InspectionData implements ToolActivityInspectionSnapshot {
-  _InspectionData(ToolInvocationActivity activity)
-    : canonicalArguments = activity.canonicalArguments,
+  _InspectionData(
+    ToolActivityInspectionSource source,
+    ToolInvocationActivity activity,
+  ) : sessionId = source.sessionId.value,
+      runId = source.runId.value,
+      toolInvocationId = activity.id.value,
+      canonicalArguments = activity.canonicalArguments,
       hostData = activity.outcome?.hostData ?? const {},
       lifecycle =
           activity.changes.reversed
@@ -223,6 +230,12 @@ final class _InspectionData implements ToolActivityInspectionSnapshot {
       failureKind = activity.outcome?.failureKind?.name,
       modelContent = activity.outcome?.modelContent ?? '';
 
+  @override
+  final String sessionId;
+  @override
+  final String runId;
+  @override
+  final String toolInvocationId;
   @override
   final Map<String, dynamic> canonicalArguments;
   @override
@@ -270,6 +283,9 @@ final class _ToolSnapshot implements $Instance {
     BridgeClassType($type),
     constructors: {},
     getters: {
+      'sessionId': _stringGetter,
+      'runId': _stringGetter,
+      'toolInvocationId': _stringGetter,
       'canonicalArguments': _mapGetter,
       'hostData': _mapGetter,
       'lifecycle': _stringGetter,
@@ -294,6 +310,9 @@ final class _ToolSnapshot implements $Instance {
   @override
   $Value? $getProperty(Runtime runtime, String identifier) =>
       switch (identifier) {
+        'sessionId' => $String(data.sessionId),
+        'runId' => $String(data.runId),
+        'toolInvocationId' => $String(data.toolInvocationId),
         'canonicalArguments' => _arguments,
         'hostData' => _hostData,
         'lifecycle' => $String(data.lifecycle),

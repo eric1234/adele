@@ -3,9 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/console_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
@@ -13,19 +17,26 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:xterm2/xterm.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/terminal_frontend_compiler.dart';
+import '../tool/tool_inspection_frontend_compiler.dart';
 
 const _plugin = 'dev.adele.plugin.terminal';
+const _contentLibrary = 'package:console_content_probe/main.dart';
 final _providerId = ProviderId('test.console-environment');
 
 void main() {
   late Directory temporary;
   late PreparedPluginCatalog catalog;
+  late File contentArtifact;
+  late Directory commandInstallation;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('prepared-console-');
@@ -53,6 +64,56 @@ void main() {
     );
     catalog = await PreparedPluginCatalog.discover(temporary.path);
     expect(catalog.issues, isEmpty);
+    final program =
+        (Compiler()
+              ..addPlugin(flutterEvalPlugin)
+              ..addPlugin(const ConsoleDeclarations())
+              ..entrypoints.add(_contentLibrary))
+            .compile({
+              'console_content_probe': {
+                'main.dart': await File(
+                  'test/fixtures/console_content_frontend.dart',
+                ).readAsString(),
+              },
+              'adele_ui': {
+                'console_bridge.dart': await File(
+                  '../packages/ui/lib/console_bridge.dart',
+                ).readAsString(),
+              },
+            });
+    contentArtifact = await File(
+      '${temporary.path}/content.evc',
+    ).writeAsBytes(program.write());
+    commandInstallation = await Directory(
+      '${temporary.path}/command-installation',
+    ).create();
+    final command = await Directory(
+      '${commandInstallation.path}/command',
+    ).create();
+    await compileToolInspectionFrontend(
+      repositoryRoot: Directory.current.parent,
+      artifact: File('${command.path}/frontend.evc'),
+      frontend: ToolInspectionFrontend.command,
+    );
+    await File('${command.path}/backend.aot').writeAsString('fixture');
+    await File('${command.path}/adele_plugin.installation.json').writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': 'dev.adele.plugin.command-tools',
+          'version': 'test',
+          'displayName': 'Command Tools',
+        },
+        'components': {
+          'backend': {'artifact': 'backend.aot'},
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations':
+                stockFrontendDescriptors['dev.adele.plugin.command-tools'],
+          },
+        },
+      }),
+    );
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
@@ -63,6 +124,385 @@ void main() {
     await _turn();
   });
   tearDown(() => fixture.close());
+
+  test(
+    'missing optional read-only host preserves factual frontend roles',
+    () async {
+      final root = await Directory(
+        '${temporary.path}/optional-console',
+      ).create();
+      final installation = await Directory('${root.path}/owner').create();
+      await contentArtifact.copy('${installation.path}/frontend.evc');
+      await File(
+        '${installation.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'test.optional-console',
+            'version': '1',
+            'displayName': 'Optional',
+          },
+          'components': {
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': [
+                {
+                  'role': 'console',
+                  'extensionId': 'test.read-only',
+                  'library': _contentLibrary,
+                  'entrypoint': 'buildContent',
+                  'actions': <Object?>[],
+                  'readOnly': true,
+                },
+                {
+                  'role': 'toolActivity',
+                  'toolId': 'test.tool',
+                  'library': _contentLibrary,
+                  'inspectionExtensionId': 'test.inspection',
+                  'compactExtensionId': 'test.compact',
+                  'inspectionEntrypoint': 'buildContent',
+                  'compactEntrypoint': 'buildContent',
+                  'consoleExtensions': ['test.read-only'],
+                },
+              ],
+            },
+          },
+        }),
+      );
+      final extensions = ExtensionRegistry();
+      final frontends = ApplicationFrontendBootstrap(extensions: extensions);
+      addTearDown(frontends.close);
+      await frontends.start(await PreparedPluginCatalog.discover(root.path));
+      expect(frontends.generations.single.state, InstalledFrontendState.active);
+      expect(extensions.discover(consoleContributions), isEmpty);
+      expect(
+        extensions.discover(toolActivityInspectionContributions),
+        hasLength(1),
+      );
+      expect(
+        extensions.discover(toolActivityCompactPresentationContributions),
+        hasLength(1),
+      );
+    },
+  );
+
+  Future<(PreparedFrontend, ExtensionRegistration, ConsoleBridge)>
+  readOnly() async {
+    final generation = await PreparedFrontend.load(contentArtifact);
+    addTearDown(generation.invalidate);
+    late ExtensionRegistration registration;
+    registration = fixture.extensions.register(
+      point: consoleContributions,
+      id: ExtensionId('test.read-only'),
+      value: fixture.host.createContribution(
+        installation: catalog.installations.single,
+        generation: generation,
+        descriptor: PreparedConsolePresentation(
+          extensionId: ExtensionId('test.read-only'),
+          library: _contentLibrary,
+          entrypoint: 'buildContent',
+          actions: [],
+          readOnly: true,
+        ),
+        isActive: () => !registration.isClosed,
+      ),
+    );
+    final bridge =
+        fixture.host.createOpeningBridge(
+              installation: catalog.installations.single,
+              generation: generation,
+              sessionId: fixture.sessionA.id,
+              consoleExtensions: [ExtensionId('test.read-only')],
+              isActive: () => true,
+            )
+            as ConsoleBridge;
+    fixture.controller.setSession(fixture.sessionA);
+    return (generation, registration, bridge);
+  }
+
+  testWidgets(
+    'prepared read-only content outlives opener and retains only logical state',
+    (tester) => tester.runAsync(() async {
+      final (generation, registration, bridge) = await readOnly();
+      final result = await generation.invoke<Object?>(
+        library: _contentLibrary,
+        entrypoint: 'open',
+        createBridge: () => bridge,
+        decodeResult: copyStructuredBridgeData,
+      );
+      expect(result, [true, null]);
+      expect(bridge.isActive, isFalse);
+      final tab = fixture.controller.selectedTab!;
+      expect(fixture.provider.requests, isEmpty);
+      expect(fixture.provider.restores, 0);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WorkbenchConsole(controller: fixture.controller),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 0'), findsOneWidget);
+      final oldButton = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Identity: opaque; history: 0'),
+      );
+      oldButton.onPressed!();
+      fixture.controller.setVisible(false);
+      await tester.pump();
+      fixture.controller.setVisible(true);
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 1'), findsOneWidget);
+      await tester.tap(find.text('Identity: opaque; history: 1'));
+      fixture.controller.setVisible(false);
+      await tester.pump();
+      oldButton.onPressed!();
+      fixture.controller.setVisible(true);
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Identity: opaque; history: 2'), findsOneWidget);
+      fixture.controller.setSession(fixture.sessionB);
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      fixture.controller.setSession(fixture.sessionA);
+      expect(fixture.controller.selectedTab, same(tab));
+      await fixture.controller.closeTab(
+        tab,
+        (_) async => fail('Read-only content never confirms.'),
+      );
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      expect(fixture.provider.closes, isEmpty);
+      await registration.close();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  test(
+    'opening requires exact declared installation generation and owner',
+    () async {
+      final (generation, registration, bridge) = await readOnly();
+      final descriptor = ConsoleContentDescriptor(
+        key: 'same',
+        metadata: ConsoleMetadata(title: 'Output'),
+        data: const {},
+      );
+      expect(await bridge.open('test.unlisted', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      final otherGeneration = await PreparedFrontend.load(contentArtifact);
+      addTearDown(otherGeneration.invalidate);
+      final foreign =
+          fixture.host.createOpeningBridge(
+                installation: catalog.installations.single,
+                generation: otherGeneration,
+                sessionId: fixture.sessionA.id,
+                consoleExtensions: [ExtensionId('test.read-only')],
+                isActive: () => true,
+              )
+              as ConsoleBridge;
+      expect(await foreign.open('test.read-only', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      expect(await bridge.open('test.read-only', descriptor), [true, null]);
+      final tab = fixture.controller.selectedTab;
+      expect(await bridge.open('test.read-only', descriptor), [true, null]);
+      expect(fixture.controller.eligibleTabs, [tab]);
+      final value = fixture.extensions
+          .discover(consoleContributions)
+          .singleWhere((entry) => entry.id == ExtensionId('test.read-only'))
+          .value;
+      await registration.close();
+      fixture.extensions.register(
+        point: consoleContributions,
+        id: ExtensionId('test.read-only'),
+        value: value,
+      );
+      expect(await bridge.open('test.read-only', descriptor), [
+        false,
+        'Console content is unavailable.',
+      ]);
+      await _turn();
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      expect(fixture.provider.requests, isEmpty);
+    },
+  );
+
+  for (final departure in ['hide', 'switch tab', 'leave Session']) {
+    testWidgets(
+      'stock Command retains immediate native scroll before $departure',
+      (tester) => tester.runAsync(() async {
+        final backends = ApplicationPluginBootstrap(
+          fixture.capabilities,
+          fixture.extensions,
+        );
+        final host = PreparedConsoleHost(
+          store: fixture.store,
+          terminals: fixture.terminals,
+          extensions: fixture.extensions,
+          controller: fixture.controller,
+          backends: backends,
+        );
+        final frontends = ApplicationFrontendBootstrap(
+          extensions: fixture.extensions,
+          consoleHost: host,
+          backends: backends,
+        );
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await frontends.close();
+          await host.close();
+          await backends.close();
+        });
+        await backends.start(
+          installationRoot: commandInstallation.path,
+          dartaotruntimeExecutable:
+              '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+          hostArtifactPath: File(
+            'test/fixtures/command_output_host.dart',
+          ).absolute.path,
+        );
+        await frontends.start(backends.catalog!);
+        expect(
+          frontends.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        final connection = backends.backends.single.connection!;
+        Future<Object?> control(String method, [String? text]) =>
+            connection.request(method, {'text': ?text});
+        Map<Object?, Object?> backendState = {};
+        Future<void> until(bool Function() ready, String reason) async {
+          for (var turn = 0; turn < 200; turn++) {
+            // A backend acknowledgement advances real I/O without sleeps.
+            backendState = (await control('barrier'))! as Map;
+            await tester.pump();
+            expect(tester.takeException(), isNull, reason: reason);
+            if (ready()) return;
+          }
+          fail(
+            'Did not reach $reason; visible text: '
+            '${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).join(' | ')}',
+          );
+        }
+
+        await control(
+          'append',
+          List.generate(260, (i) => 'original-$i\r\n').join(),
+        );
+        fixture.controller.setSession(fixture.sessionA);
+        final owner = fixture.extensions
+            .discover(consoleContributions)
+            .singleWhere(
+              (binding) =>
+                  binding.id ==
+                  ExtensionId('dev.adele.plugin.command-tools.output'),
+            );
+        Future<void> open(String key) => fixture.controller.openOrFocus(
+          owner: owner,
+          session: fixture.sessionA,
+          descriptor: ConsoleContentDescriptor(
+            key: key,
+            metadata: ConsoleMetadata(title: key),
+            data: const {
+              'sessionId': 'a',
+              'runId': 'run',
+              'toolInvocationId': 'invocation',
+              'title': 'Command output',
+            },
+          ),
+        );
+        await open('other output');
+        final other = fixture.controller.selectedTab!;
+        await open('reading output');
+        final tab = fixture.controller.selectedTab!;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: WorkbenchConsole(controller: fixture.controller),
+            ),
+          ),
+        );
+        TerminalView view() =>
+            tester.widget<TerminalView>(find.byType(TerminalView));
+        await until(
+          () =>
+              find.text('Following output').evaluate().isNotEmpty &&
+              find.byType(TerminalView).evaluate().isNotEmpty &&
+              _terminalText(view().terminal).contains('original-259'),
+          'initial stock reader catch-up',
+        );
+        await tester.pump();
+        final previous = view();
+        final frozen = _terminalText(previous.terminal);
+        final oldPresentation = fixture.controller.selectedPresentation;
+        final scroll = previous.scrollController!;
+        final liveOffset = scroll.offset;
+        expect(liveOffset, greaterThan(120));
+
+        // This is the actual native wheel path, not jumpTo or a plugin callback.
+        // Revoke in the same synchronous turn: no await, microtask, or frame may
+        // let the stock reader save the newly frozen mode/offset before departure.
+        scroll.position.pointerScroll(-100);
+        final frozenOffset = scroll.offset;
+        expect(frozenOffset, closeTo(liveOffset - 100, 0.01));
+        expect(find.text('Following output'), findsOneWidget);
+        switch (departure) {
+          case 'hide':
+            fixture.controller.setVisible(false);
+          case 'switch tab':
+            fixture.controller.select(other);
+          case 'leave Session':
+            fixture.controller.setSession(fixture.sessionB);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await control('append', 'while-away\r\n');
+        fixture.controller.setSession(fixture.sessionA);
+        fixture.controller.setVisible(true);
+        fixture.controller.select(tab);
+        expect(fixture.controller.selectedTab, same(tab));
+        expect(
+          fixture.controller.selectedPresentation,
+          isNot(same(oldPresentation)),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: WorkbenchConsole(controller: fixture.controller),
+            ),
+          ),
+        );
+        await until(
+          () => find.text('Reading history').evaluate().isNotEmpty,
+          'frozen mode after immediate $departure',
+        );
+        await tester.pump();
+        expect(view().terminal, isNot(same(previous.terminal)));
+        expect(_terminalText(view().terminal), frozen);
+        expect(view().terminal.buffer.height, lessThanOrEqualTo(200));
+        expect(view().scrollController!.offset, closeTo(frozenOffset, 0.01));
+        await control('append', 'after-remount\r\n');
+        await until(
+          () => backendState['deliveredVersion'] == 3,
+          'post-remount append delivered through generated watch',
+        );
+        expect(find.text('Reading history'), findsOneWidget);
+        expect(_terminalText(view().terminal), frozen);
+        expect(view().scrollController!.offset, closeTo(frozenOffset, 0.01));
+        view().scrollController!.position.pointerScroll(20000);
+        await until(
+          () =>
+              find.text('Following output').evaluate().isNotEmpty &&
+              _terminalText(view().terminal).contains('after-remount'),
+          'retained live-tail policy resumes on real user return',
+        );
+        expect(fixture.provider.requests, isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }),
+    );
+  }
 
   test(
     'corrupt stock artifact exposes no action or native replacement',
@@ -393,6 +833,11 @@ void main() {
 
 Future<void> _turn() => Future<void>.delayed(Duration.zero);
 
+String _terminalText(Terminal terminal) => [
+  for (var i = 0; i < terminal.buffer.lines.length; i++)
+    terminal.buffer.lines[i].getText().trimRight(),
+].join('\n');
+
 final class _Fixture {
   _Fixture() {
     task = Task(id: TaskId('task'), projectId: project.id, title: 'Fixture');
@@ -450,10 +895,15 @@ final class _Fixture {
       environmentRuntime: environmentRuntime,
       cleanupTimeout: const Duration(milliseconds: 100),
     );
-    host = PreparedConsoleHost(store: store, terminals: terminals);
     controller = ConsoleController(
       extensions,
       cleanupTimeout: const Duration(milliseconds: 200),
+    );
+    host = PreparedConsoleHost(
+      store: store,
+      terminals: terminals,
+      extensions: extensions,
+      controller: controller,
     );
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,

@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter/widgets.dart';
@@ -9,8 +11,10 @@ final ExtensionPoint<ConsoleContribution> consoleContributions =
     ExtensionPoint<ConsoleContribution>('dev.adele.extension.consoles');
 
 final class ConsoleContribution {
-  ConsoleContribution({required List<ConsoleCreationAction> actions})
-    : actions = List.unmodifiable(actions) {
+  ConsoleContribution({
+    required List<ConsoleCreationAction> actions,
+    this.openPrepared,
+  }) : actions = List.unmodifiable(actions) {
     final ids = <String>{};
     for (final action in actions) {
       if (!ids.add(action.id)) {
@@ -22,6 +26,75 @@ final class ConsoleContribution {
   }
 
   final List<ConsoleCreationAction> actions;
+
+  /// A declared, host-owned factory, not a callback retained from the requesting
+  /// presentation. The host deduplicates by exact owner, Session, and key.
+  final Future<void> Function(ConsoleCreationAccess, ConsoleContentDescriptor)?
+  openPrepared;
+}
+
+/// Opaque plugin data copied out of the requesting presentation. It confers no
+/// backend, Session, or resource authority. Equal keys focus existing content;
+/// subsequent requests do not replace its data or logical state.
+final class ConsoleContentDescriptor {
+  ConsoleContentDescriptor({
+    required this.key,
+    required this.metadata,
+    required Map<String, Object?> data,
+  }) : data = copyConsoleContentData(data) {
+    if (key.trim().isEmpty ||
+        key.length > 256 ||
+        key.contains(RegExp(r'[\x00-\x1f\x7f-\x9f]'))) {
+      throw const FormatException('Invalid console content key.');
+    }
+  }
+
+  final String key;
+  final ConsoleMetadata metadata;
+  final Map<String, Object?> data;
+}
+
+/// Shared bounds for descriptors and retained logical view state. Neither may
+/// carry a transcript, executable object, or evaluator lifetime.
+Map<String, Object?> copyConsoleContentData(Map<String, Object?> data) {
+  final visiting = HashSet<Object>.identity();
+  var nodes = 256;
+  var text = 8192;
+  Object? copy(Object? value, int depth) {
+    if (--nodes < 0 || depth > 16) {
+      throw const FormatException('Console content data is too large.');
+    }
+    if (value is String) {
+      text -= value.length;
+      if (text < 0) {
+        throw const FormatException('Console content data is too large.');
+      }
+      return value;
+    }
+    if (value == null || value is bool || value is int) return value;
+    if (value is double && value.isFinite) return value;
+    if (value is! List && value is! Map<String, Object?>) {
+      throw const FormatException('Console content data must be structured.');
+    }
+    if (!visiting.add(value)) {
+      throw const FormatException('Console content data must not be cyclic.');
+    }
+    try {
+      if (value is List) {
+        return List<Object?>.unmodifiable([
+          for (final item in value) copy(item, depth + 1),
+        ]);
+      }
+      return Map<String, Object?>.unmodifiable({
+        for (final entry in (value as Map<String, Object?>).entries)
+          copy(entry.key, depth + 1) as String: copy(entry.value, depth + 1),
+      });
+    } finally {
+      visiting.remove(value);
+    }
+  }
+
+  return copy(data, 0) as Map<String, Object?>;
 }
 
 final class ConsoleCreationAction {

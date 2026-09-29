@@ -21,7 +21,9 @@ class StreamProbeState extends State<StreamProbe> {
     OwningBackendRequestChannel(streamServiceId),
   );
   String text = 'idle';
+  String cancelState = '';
   dynamic subscription;
+  bool disposed = false;
 
   void start() {
     subscription = client
@@ -52,6 +54,24 @@ class StreamProbeState extends State<StreamProbe> {
         text = '${entry.sequence}:${entry.text}';
       });
     });
+  }
+
+  void readSettled() async {
+    final result = await settleOwningBackendOperation(client.read('captured'));
+    if (disposed) return;
+    if (result[0] == true) {
+      final StreamEntry entry = result[1];
+      setState(() { text = 'settled:${entry.sequence}:${entry.text}'; });
+    } else {
+      setState(() { text = 'settled:unavailable'; });
+    }
+  }
+
+  void cancel() async {
+    setState(() { cancelState = 'cancel:pending'; });
+    await subscription.cancel();
+    if (disposed) return;
+    setState(() { cancelState = 'cancel:settled'; });
   }
 
   void startNullData() {
@@ -88,6 +108,7 @@ class StreamProbeState extends State<StreamProbe> {
 
   @override
   void dispose() {
+    disposed = true;
     if (subscription != null) subscription.cancel();
     super.dispose();
   }
@@ -96,8 +117,10 @@ class StreamProbeState extends State<StreamProbe> {
   Widget build(BuildContext context) => Column(
     children: [
       Text(text),
+      Text(cancelState),
       TextButton(onPressed: start, child: Text('Listen')),
       TextButton(onPressed: read, child: Text('Read')),
+      TextButton(onPressed: readSettled, child: Text('Read settled')),
       TextButton(onPressed: startNullData, child: Text('Null Data')),
       TextButton(
         onPressed: startNullErrorAndDone,
@@ -116,9 +139,7 @@ class StreamProbeState extends State<StreamProbe> {
         child: Text('Resume'),
       ),
       TextButton(
-        onPressed: () {
-          subscription.cancel();
-        },
+        onPressed: cancel,
         child: Text('Cancel'),
       ),
     ],

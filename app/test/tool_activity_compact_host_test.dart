@@ -218,6 +218,11 @@ class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
   _Source(this.toolId) {
     update('Prepared');
   }
+
+  @override
+  final SessionId sessionId = SessionId('session');
+  @override
+  final RunId runId = RunId('run');
   final ToolId toolId;
   late ToolInvocationActivity _snapshot;
   bool broken = false;

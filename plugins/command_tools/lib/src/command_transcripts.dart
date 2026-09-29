@@ -119,17 +119,11 @@ final class CommandTranscriptStore implements CommandOutputService {
     // The query may return an earlier committed snapshot after its writer has
     // sealed and detached. Do not reinterpret that snapshot as interrupted.
     final writerWasActive = _writers.containsKey(key);
-    // Exact association or one foreign candidate, from the same SQL snapshot.
-    // Both branches use the (invocation_id, run_id) primary-key index; the
-    // fallback cannot mistake admission after an empty exact read for foreign.
+    // Invocation IDs are Run-local. An absent exact key says nothing about
+    // another Run that happens to use the same invocation string.
     final rows = await storage.queryForSession(
       sessionId,
-      '''SELECT * FROM adele_command_captures WHERE invocation_id=:id AND run_id=:run
-         UNION ALL
-         SELECT * FROM adele_command_captures WHERE invocation_id=:id
-           AND NOT EXISTS (SELECT 1 FROM adele_command_captures
-             WHERE invocation_id=:id AND run_id=:run)
-         LIMIT 1''',
+      'SELECT * FROM adele_command_captures WHERE invocation_id=:id AND run_id=:run',
       {':id': toolInvocationId, ':run': runId},
       _access,
     );
@@ -396,6 +390,8 @@ final class CommandTranscriptStore implements CommandOutputService {
           unawaited(controller.close());
           return;
         }
+        // Register before reading so admission racing an absent snapshot leaves
+        // the observer dirty and delivers the newly committed state.
         (_observers[(sessionId, runId, toolInvocationId)] ??= {}).add(observer);
         observer.changed();
       },

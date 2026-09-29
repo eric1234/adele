@@ -283,9 +283,9 @@ void main() {
       final descriptors = await Directory('/proc/$hostPid/fd').list().length;
       final pid = await open();
       final helperPid = (await _processIdentity(pid)).parent;
-      await _readUntil(backend, 'SENTINEL=absent');
+      await _readUntil(backend, 'STDERR-MERGED\r\n');
       await write('block\n');
-      await _readUntil(backend, 'BLOCKED');
+      await _readUntil(backend, 'BLOCKED\n');
       final read = expectLater(backend.request('read', {}), completion(isNull));
       final input = () async {
         for (var i = 0; i < 64; i++) {
@@ -325,8 +325,20 @@ void main() {
   );
 
   test('close interrupts an empty pending read', () async {
-    final pid = await open();
-    await _readUntil(backend, 'SENTINEL=absent');
+    final pid = await open(arguments: ['--gated-startup']);
+    final helperPid = (await _processIdentity(pid)).parent;
+    await _readUntil(backend, 'SENTINEL=absent\n');
+    // Force startup bytes to arrive after the early marker, then drain them all.
+    final startup = _readUntil(backend, 'STARTUP-DONE\n');
+    await _waitFor(
+      () async =>
+          ((await backend.request('pending', {}))! as Map)['reading'] == true,
+    );
+    await write('s');
+    expect(
+      await startup,
+      '\u001b[31m\u2603\u001b[0m\nSTDERR-MERGED\nSTARTUP-DONE\n',
+    );
     final read = expectLater(backend.request('read', {}), completion(isNull));
     await _waitFor(
       () async =>
@@ -337,7 +349,9 @@ void main() {
       read,
     ]).timeout(const Duration(seconds: 3));
     expect(await backend.request('exit', {}), 143);
-    expect(await Directory('/proc/$pid').exists(), isFalse);
+    for (final gone in [pid, helperPid]) {
+      expect(await Directory('/proc/$gone').exists(), isFalse);
+    }
   });
 
   test('close cleans up with paused consumption and a stopped child', () async {

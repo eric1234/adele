@@ -60,6 +60,8 @@ final class ActivityOutputPresentation extends StatelessWidget {
           key: occurrenceKey,
           child: _ToolOutput(
             key: ValueKey((tool.id, tool.toolId)),
+            sessionId: snapshot.sessionId,
+            runId: snapshot.runId,
             activity: tool,
             extensions: extensions,
             compact: compact,
@@ -119,12 +121,16 @@ final class ActivityOutputPresentation extends StatelessWidget {
 final class _ToolOutput extends StatefulWidget {
   const _ToolOutput({
     super.key,
+    required this.sessionId,
+    required this.runId,
     required this.activity,
     required this.extensions,
     required this.compact,
     required this.runEndedWithoutOutcome,
   });
 
+  final SessionId sessionId;
+  final RunId runId;
   final ToolInvocationActivity activity;
   final ExtensionRegistry extensions;
   final bool compact;
@@ -135,7 +141,11 @@ final class _ToolOutput extends StatefulWidget {
 }
 
 final class _ToolOutputState extends State<_ToolOutput> {
-  late final _ToolSource _source = _ToolSource(widget.activity);
+  late final _ToolSource _source = _ToolSource(
+    widget.sessionId,
+    widget.runId,
+    widget.activity,
+  );
 
   @override
   void didUpdateWidget(_ToolOutput oldWidget) {
@@ -186,7 +196,12 @@ final class _ToolOutputState extends State<_ToolOutput> {
 
 final class _ToolSource extends ChangeNotifier
     implements ToolActivityInspectionSource {
-  _ToolSource(this._snapshot);
+  _ToolSource(this.sessionId, this.runId, this._snapshot);
+
+  @override
+  final SessionId sessionId;
+  @override
+  final RunId runId;
 
   ToolInvocationActivity _snapshot;
 

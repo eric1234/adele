@@ -9,12 +9,14 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
+import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
@@ -43,6 +45,7 @@ void main() {
       ..addPlugin(const ToolActivityInspectionDeclarations())
       ..addPlugin(const ModelNativeActivityDeclarations())
       ..addPlugin(const DirectoryPickerDeclarations())
+      ..addPlugin(const OwningBackendDeclarations())
       ..entrypoints.add(_library);
     final program = compiler.compile({
       'installed_probe': {
@@ -51,10 +54,45 @@ import 'package:flutter/material.dart';
 import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:adele_ui/model_native_activity_bridge.dart';
 import 'package:adele_ui/directory_picker_bridge.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
 Widget toolRich() => Text('rich ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget toolCompact() => Text('compact ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget nativeRich() => Text('rich ' + readModelNativeActivityData()['label']);
 Widget nativeCompact() => Text('compact ' + readModelNativeActivityData()['label']);
+Widget toolBackend() => ToolBackendProbe();
+Widget toolCompactBackendProbe() {
+  requestOwningBackend('fixture.read', 'read', <String, dynamic>{});
+  return Text('compact backend acquired');
+}
+class ToolBackendProbe extends StatefulWidget {
+  @override
+  State<ToolBackendProbe> createState() => ToolBackendState();
+}
+class ToolBackendState extends State<ToolBackendProbe> {
+  String status = 'idle';
+  bool disposed = false;
+  void query() async {
+    final result = await settleOwningBackendOperation(
+      requestOwningBackend('fixture.read', 'read', <String, dynamic>{}),
+    );
+    if (disposed) return;
+    setState(() { status = result[0] == true ? 'ready' : 'unavailable'; });
+  }
+  @override
+  void dispose() {
+    disposed = true;
+    super.dispose();
+  }
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = readToolActivitySnapshot();
+    return Column(children: [
+      Text('facts ' + snapshot.sessionId + '/' + snapshot.runId + '/' + snapshot.toolInvocationId),
+      Text(status),
+      TextButton(onPressed: query, child: Text('Query backend')),
+    ]);
+  }
+}
 Future<String?> customSelector() async => 'catalog://example/project';
 Future<String?> cancellation() async => null;
 Future<String?> badUri() async => 'https://[invalid';
@@ -74,11 +112,13 @@ Future<String?> nativeSelector() async => await pickDirectory();
           'tool_activity_inspection_bridge.dart',
           'model_native_activity_bridge.dart',
           'directory_picker_bridge.dart',
+          'owning_backend_bridge.dart',
         ])
           file: File(
             '${Directory.current.parent.path}/packages/ui/lib/$file',
           ).readAsStringSync(),
       },
+      'adele_contract': {'adele_contract.dart': evalContractSupportSource},
     });
     bytes = program.write();
   });
@@ -215,6 +255,86 @@ Future<String?> nativeSelector() async => await pickDirectory();
       expect(owner.generations.single.failure, isNull);
     },
   );
+
+  testWidgets(
+    'rich missing backend preserves facts and compact never acquires it',
+    (tester) async {
+      await owner.close();
+      final backends = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        extensions,
+      );
+      addTearDown(backends.close);
+      owner = ApplicationFrontendBootstrap(
+        extensions: extensions,
+        backends: backends,
+      );
+      await tester.runAsync(() async {
+        await install('tool-backend', [
+          {
+            ..._toolDescriptor('tool-backend'),
+            'inspectionEntrypoint': 'toolBackend',
+            'backendServices': ['fixture.read'],
+          },
+        ]);
+        await owner.start(await discover());
+      });
+      final source = _ToolSource();
+      addTearDown(source.dispose);
+      final compact = extensions
+          .discover(toolActivityCompactPresentationContributions)
+          .single;
+      await tester.pumpWidget(
+        MaterialApp(home: compact.value.createPresentation(source)),
+      );
+      expect(find.text('compact tool'), findsOneWidget);
+      expect(backends.state, ApplicationPluginState.unconfigured);
+      expect(backends.host, isNull);
+      final rich = extensions
+          .discover(toolActivityInspectionContributions)
+          .single;
+      await tester.pumpWidget(
+        MaterialApp(home: rich.value.createPresentation(source)),
+      );
+      expect(find.text('facts session/run/tool'), findsOneWidget);
+      await tester.tap(find.text('Query backend'));
+      await tester.pump();
+      expect(find.text('unavailable'), findsOneWidget);
+      expect(find.text('facts session/run/tool'), findsOneWidget);
+      expect(backends.state, ApplicationPluginState.unconfigured);
+      expect(backends.host, isNull);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('compact entrypoint cannot access the rich backend bridge', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      await install('compact-backend', [
+        {
+          ..._toolDescriptor('compact-backend'),
+          'compactEntrypoint': 'toolCompactBackendProbe',
+          'backendServices': ['fixture.read'],
+        },
+      ]);
+      await owner.start(await discover());
+    });
+    final source = _ToolSource();
+    addTearDown(source.dispose);
+    final compact = extensions
+        .discover(toolActivityCompactPresentationContributions)
+        .single;
+    await tester.pumpWidget(
+      MaterialApp(home: compact.value.createPresentation(source)),
+    );
+    await tester.pump();
+    expect(find.text('compact backend acquired'), findsNothing);
+    expect(find.text('Frontend unavailable.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   test(
     'multiple descriptors retain exact metadata independently of Session hosting',
@@ -814,6 +934,10 @@ Map<String, Object?> _nativeDescriptor(String name) => {
 
 final class _ToolSource extends ChangeNotifier
     implements ToolActivityInspectionSource {
+  @override
+  final SessionId sessionId = SessionId('session');
+  @override
+  final RunId runId = RunId('run');
   @override
   final snapshot = ToolInvocationActivity(
     id: ToolInvocationId('tool'),

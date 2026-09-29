@@ -47,8 +47,8 @@ optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
 ## Shared Console
 
 [`console.dart`](lib/console.dart) defines an additive extension point:
-`ConsoleContribution(actions)` registers at `consoleContributions`. Independent
-contributions coexist; there is no single winning console provider or zero/one/many
+`ConsoleContribution(actions, openPrepared)` registers at `consoleContributions`.
+Independent contributions coexist; there is no single winning console provider or zero/one/many
 resolver. The host owns common tabs, creation-action discovery, selection,
 visibility, confirmation, and bounded cleanup. Contributions own independent content,
 not another tab strip. See [console architecture](../../docs/architecture/plugin-system.md#shared-console).
@@ -60,6 +60,25 @@ revoke already admitted creation. Access ends when that action's Future settles,
 or earlier on owner retirement or host close; it is not reusable background
 creation authority. Late content received after access ends is released rather
 than published, and each content object may be transferred only once.
+
+The optional `openPrepared` factory admits declared read-only content through the
+same captured creation scope. A `ConsoleContentDescriptor(key, metadata, data)`
+contains bounded, immutable structured plugin data, not a widget or callback from
+the requesting view. Opening targets must be explicitly allowlisted by that
+presentation and belong to the same exact installation and frontend generation.
+The host deduplicates admitted and pending openings by exact console registration,
+canonical Session object, and content key. Reopening focuses that content without
+replacing its descriptor or logical state; another owner, generation, or Session
+cannot acquire it by reusing the key.
+
+Descriptor data and retained logical view state each have bounds of 256 nodes,
+nesting depth 16, and 8192 UTF-16 string units. They may contain ordinary structured
+values, not transcripts, executable objects, or retained evaluator callbacks.
+The native host retains these values independently of the requesting Inspection
+runtime and mounted console views. Closing the Inspection does not close admitted
+content. Hiding/remounting creates fresh view access, not a replacement backend
+binding; closing a read-only tab releases its presentation data and observation,
+not the independently owned execution or durable history.
 
 `ConsoleContent` supplies `metadata`, `isEligible(Session)`, `createPresentation`,
 optional synchronous `closeAdvice`, and `release`. Eligibility is content-owned;
@@ -79,7 +98,11 @@ a removed tab or indefinitely prevent host cleanup.
 selection/context changes, unmount, or retirement permanently revoke that access;
 a fresh view receives fresh access. View-originated effects must check it,
 including after asynchronous work. This does not stop a hidden content owner's
-independent resource observation. The current [application host](../../app/README.md#session-console)
+independent resource observation. Prepared read-only projection hosting can copy
+already-owned scalar native state into its exact retained content record without
+invoking a revoked presenter. The record contains no view objects or transcript;
+new-view leases fence stale checkpoints and content removal clears it permanently.
+The current [application host](../../app/README.md#session-console)
 is Session-only; Task Browser exposes no console panel, toggle, or creation actions.
 
 ## Interpreted Bridges
@@ -105,7 +128,12 @@ native implementations supply their behavior; calling a stub natively throws
   codec or SDK/dependency patch. Runtime null callbacks are supported, but the pin's
   SDK declarations still reject literal null callback arguments at compilation;
   omit unused callbacks or use the tested dynamic-null shape. `PreparedFrontend` can host this bridge independently
-  of Session/strategy presentation.
+  of Session/strategy presentation. `settleOwningBackendOperation(Future<dynamic>)`
+  returns `[true, value]` or `[false, null]`, preserving generated interpreted
+  success values while containing native Future rejection. It grants no authority;
+  originating operations still enforce their captured lifetime. Rich Inspection
+  and read-only console hosting do not resolve a strategy or acquire Session
+  execution access merely to use an allowlisted backend service.
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.
@@ -135,6 +163,34 @@ native implementations supply their behavior; calling a stub natively throws
   fresh presentations require fresh access. Public contracts expose no terminal
   library types. The [application adapter](../../app/README.md#native-terminal-surface)
   owns interactive/read-only policy, bounds, attachment, and native callbacks.
+- `terminal_projection_bridge.dart` is a separate, presentation-owned read-only
+  projection API: request/build, bounded feed/reset, revocable replay yields, immutable observation,
+  follow/local scroll, and change subscriptions. Each rich Inspection or read-only
+  console view has its own revocable handle, parser, buffer, and viewport; none
+  reuses an interactive terminal or another view's projection. The public contract
+  fixes 80 columns, 6 or 20 viewport rows, and 200 retained lines, with bounded
+  accepted-prefix feeding and no queued remainder. The plugin explicitly chooses
+  always-follow or interactive-follow policy, independent of geometry. Interactive
+  scroll-away/selection freezes feeding; user return to the rendered end may resume
+  a live-tail view but not a plugin-selected historical window. Programmatic
+  scrolling never grants that intent. Always-follow leaves vertical scrolling to
+  its parent and never persistently pauses for selection. Local scroll, selection,
+  and explicit copy do not grant input,
+  paste, terminal replies, resize, process, signal, or backend authority. Plugin
+  readers own fetching and history position; the native projection is not history
+  storage. See the [bridge contract](lib/terminal_projection_bridge.dart) for the
+  exact operations and [app adapter](../../app/README.md#native-terminal-surface)
+  for native hosting.
+- `console_bridge.dart` supplies
+  `openPreparedConsole(extensionId, key, title, data)` to an authorized rich
+  presentation. It settles as `[true, null]` or `[false, safeErrorString]`; its
+  strings and structured data cannot choose an arbitrary installation, generation,
+  or Session. An admitted console view receives `readConsoleContentData()`,
+  `readConsoleContentState()`, and `writeConsoleContentState(Map)`. State writes
+  are bounded and return false after view revocation; readers save logical changes
+  while active rather than relying on disposal-time writes. No originating eval
+  callback is retained as a content factory. Missing host/target access is explicitly
+  unavailable, not another contribution or a native content substitute.
 - `environment_terminal_bridge.dart` supplies
   `openEnvironmentTerminal(label, liveCloseMessage, followTitle, removeAfterExit)`
   only to an admitted interpreted console creation action. It returns
@@ -211,12 +267,27 @@ immutable `ModelNativePresentation`, not raw provider envelopes, including when
 rendering restored terminal evidence. Compact and rich
 roles are distinct, not size variants of one host card schema.
 
+`ToolActivityInspectionSource.sessionId`, `.runId`, and `.snapshot.id` identify
+one canonical invocation occurrence. The interpreted
+`ToolActivityInspectionSnapshot` exposes their strings as `sessionId`, `runId`,
+and `toolInvocationId`, alongside immutable arguments and bounded public outcome
+facts. These are not aliases, provider call IDs, execution handles, transcript
+cursors, or authority. Live and historical activity use the same source boundary;
+updates preserve its identities and replace only the observed snapshot.
+
 Exact zero/one/many resolution and registration liveness apply to every role.
 Missing or failed rich presentation is unavailable; compact presentation retains
 bounded factual identity or provider-approved text without parsing plugin fields.
 Factories receive no execution, approval, navigation, or inspect callbacks. The
 common host owns Inspection interaction, card identity/order, collapse/dismiss,
 and group-row composition; strategy frontends own grouping and timeline placement.
+
+Prepared rich Inspection may separately receive descriptor-allowlisted owning
+backend reads, declared console opening, and an independent read-only projection.
+Compact presentation receives only the factual source and acquires none of those
+bridges. Missing backend or console access does not discard canonical Inspection
+facts or authorize a substitute backend. Exact descriptor fields belong to the
+[runtime catalog](../plugin_runtime/README.md#prepared-catalog).
 
 Frontend activation and backend readiness are independent. Missing/corrupt EVC or
 view failure does not trigger compilation, native presentation fallback, or backend

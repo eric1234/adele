@@ -90,6 +90,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _consoleHost = PreparedConsoleHost(
       store: _runtime.store,
       terminals: _runtime.terminals,
+      extensions: _runtime.extensions,
+      controller: _console,
+      backends: _runtime.plugins,
     );
     _sessionHost = PreparedSessionHost(
       extensions: _runtime.extensions,
@@ -108,6 +111,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     );
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
+      backends: _runtime.plugins,
       sessionHost: _sessionHost,
       consoleHost: _consoleHost,
       taskBrowserHost: PreparedTaskBrowserHost(

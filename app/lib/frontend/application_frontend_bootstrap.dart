@@ -11,12 +11,15 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/application_plugin_bootstrap.dart';
 import '../core/resource_cleanup.dart';
+import 'console_bridge.dart';
 import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
+import 'owning_backend_bridge.dart';
 import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_host.dart';
 import 'prepared_task_browser_host.dart';
+import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
 
 enum ApplicationFrontendState { unconfigured, starting, ready, closing, closed }
@@ -34,15 +37,18 @@ enum InstalledFrontendState {
 final class ApplicationFrontendBootstrap {
   ApplicationFrontendBootstrap({
     required ExtensionRegistry extensions,
+    ApplicationPluginBootstrap? backends,
     PreparedSessionHost? sessionHost,
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
   }) : _extensions = extensions,
+       _backends = backends,
        _sessionHost = sessionHost,
        _taskBrowserHost = taskBrowserHost,
        _consoleHost = consoleHost;
 
   final ExtensionRegistry _extensions;
+  final ApplicationPluginBootstrap? _backends;
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -99,6 +105,7 @@ final class ApplicationFrontendBootstrap {
           InstalledFrontendActivation._(
             installation,
             _extensions,
+            _backends,
             _sessionHost,
             _taskBrowserHost,
             _consoleHost,
@@ -187,6 +194,7 @@ final class InstalledFrontendActivation {
   InstalledFrontendActivation._(
     this.installation,
     this._extensions,
+    this._backends,
     this._sessionHost,
     this._taskBrowserHost,
     this._consoleHost,
@@ -194,6 +202,7 @@ final class InstalledFrontendActivation {
 
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
+  final ApplicationPluginBootstrap? _backends;
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -237,6 +246,9 @@ final class InstalledFrontendActivation {
         if (_closed) return;
         switch (descriptor) {
           case PreparedConsolePresentation():
+            // Optional read-only hosting must not retire unrelated factual
+            // presentation roles. No registration means opening is unavailable.
+            if (descriptor.readOnly && _consoleHost == null) continue;
             generation.validateOperation(
               library: descriptor.library,
               entrypoint: descriptor.entrypoint,
@@ -255,6 +267,7 @@ final class InstalledFrontendActivation {
               point: consoleContributions,
               id: descriptor.extensionId,
               contribution: (isActive) => host.createContribution(
+                installation: installation,
                 generation: generation,
                 descriptor: descriptor,
                 isActive: isActive,
@@ -322,17 +335,63 @@ final class InstalledFrontendActivation {
             Widget create(
               ToolActivityInspectionSource source,
               String entrypoint,
-              bool Function() isActive,
-            ) {
+              bool Function() isActive, {
+              required bool inspection,
+            }) {
               _requireActive(isActive);
               return generation.createPresentation(
                 library: descriptor.library,
                 entrypoint: entrypoint,
                 key: ObjectKey(source),
-                createBridge: () => ToolActivityInspectionBridge(
-                  source: source,
-                  isActive: isActive,
-                ),
+                createBridge: () {
+                  final facts = ToolActivityInspectionBridge(
+                    source: source,
+                    isActive: isActive,
+                  );
+                  if (!inspection) return facts;
+                  void validate() => _requireActive(isActive);
+                  OwningBackendChannel? backend;
+                  // Backend observation is optional: retain canonical facts when
+                  // its exact owner is absent or has already retired.
+                  if (descriptor.backendServices.isNotEmpty) {
+                    try {
+                      backend = _backends
+                          ?.backendForInstallation(installation)
+                          ?.openPresentationChannel(
+                            backendServices: descriptor.backendServices,
+                            validatePresentation: validate,
+                          );
+                    } on Object {
+                      backend = null;
+                    }
+                  }
+                  validate();
+                  return PreparedFrontendBridges([
+                    facts,
+                    if (backend != null)
+                      OwningBackendBridge.channel(
+                        backend,
+                        validateBinding: validate,
+                      )
+                    else
+                      OwningBackendBridge(
+                        channels: const {},
+                        validateBinding: validate,
+                      ),
+                    TerminalProjectionBridge(isActive: isActive),
+                    if (_consoleHost case final host?
+                        when descriptor.consoleExtensions.isNotEmpty)
+                      host.createOpeningBridge(
+                        installation: installation,
+                        generation: generation,
+                        sessionId: source.sessionId,
+                        consoleExtensions: descriptor.consoleExtensions,
+                        isActive: isActive,
+                      )
+                    else
+                      ConsoleBridge(isActive: isActive),
+                  ]);
+                },
               );
             }
 
@@ -341,8 +400,12 @@ final class InstalledFrontendActivation {
               id: descriptor.inspectionExtensionId,
               contribution: (isActive) => ToolActivityInspectionContribution(
                 toolId: descriptor.toolId,
-                createPresentation: (source) =>
-                    create(source, descriptor.inspectionEntrypoint, isActive),
+                createPresentation: (source) => create(
+                  source,
+                  descriptor.inspectionEntrypoint,
+                  isActive,
+                  inspection: true,
+                ),
               ),
             );
             _register(
@@ -351,8 +414,12 @@ final class InstalledFrontendActivation {
               contribution: (isActive) =>
                   ToolActivityCompactPresentationContribution(
                     toolId: descriptor.toolId,
-                    createPresentation: (source) =>
-                        create(source, descriptor.compactEntrypoint, isActive),
+                    createPresentation: (source) => create(
+                      source,
+                      descriptor.compactEntrypoint,
+                      isActive,
+                      inspection: false,
+                    ),
                   ),
             );
           case PreparedModelNativeActivityPresentation():
