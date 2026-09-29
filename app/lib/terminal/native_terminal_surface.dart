@@ -76,6 +76,8 @@ final class NativeTerminalSurface {
   double? _projectionRequestedOffset;
   double _projectionScrollOffset = 0;
   double _projectionMaxScrollOffset = 0;
+  bool _projectionReady = true;
+  Completer<bool>? _projectionReveal;
   final _projectionObservers = <VoidCallback>{};
 
   void _requireProjection() {
@@ -87,6 +89,7 @@ final class NativeTerminalSurface {
     _requireProjection();
     final position = _attached?._projectionScrollPosition;
     return Map.unmodifiable({
+      'ready': _projectionReady,
       'following': _following,
       'alwaysFollow': _alwaysFollow,
       'resumeAtEnd': _resumeAtEnd,
@@ -103,6 +106,29 @@ final class NativeTerminalSurface {
       'maxScrollOffset':
           position?.maxScrollExtent ?? _projectionMaxScrollOffset,
     });
+  }
+
+  /// Reconstruct off-paint while keeping real viewport layout attached.
+  void hideProjection() {
+    _requireProjection();
+    _cancelProjectionReveal();
+    _projectionReady = false;
+    _attached?._rebuild();
+    _projectionChanged();
+  }
+
+  Future<bool> revealProjection() {
+    _requireProjection();
+    if (_projectionReveal case final pending?) return pending.future;
+    if (_projectionReady) return Future.value(true);
+    final request = _projectionReveal = Completer<bool>();
+    _attached?._revealProjection(request);
+    return request.future;
+  }
+
+  void _cancelProjectionReveal() {
+    _projectionReveal?.complete(false);
+    _projectionReveal = null;
   }
 
   /// Synchronous native checkpoints; interpreted notifications remain deferred
@@ -367,6 +393,7 @@ final class NativeTerminalSurface {
   void dispose() {
     final terminal = _terminal;
     if (terminal == null) return;
+    _cancelProjectionReveal();
     _terminal = null;
     _onInput = null;
     _onResponse = null;
@@ -493,6 +520,51 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       ? _projectionScroll.position
       : null;
 
+  void _revealProjection(Completer<bool> request, [int frame = 0]) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!identical(_surface._projectionReveal, request)) return;
+      if (!_available) {
+        _surface._cancelProjectionReveal();
+        return;
+      }
+      final position = _projectionScrollPosition;
+      if (position != null) {
+        final target = _surface._following
+            ? _projectionFollowOffset(position)
+            : (_surface._projectionRequestedOffset ??
+                      _surface._projectionScrollOffset)
+                  .clamp(position.minScrollExtent, position.maxScrollExtent);
+        // A jump invalidates layout. Reveal only after a subsequent frame has
+        // laid out that offset, never in the frame that first applies it.
+        if (frame > 0 && (position.pixels - target).abs() < .01) {
+          _surface._projectionReady = true;
+          _cacheProjectionOffset();
+          _rebuild();
+          _surface._projectionChanged();
+          // Hold the producer until that settled viewport has actually painted;
+          // immediate live feeds must not race ahead of the first revealed frame.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!identical(_surface._projectionReveal, request)) return;
+            if (!_available) {
+              _surface._cancelProjectionReveal();
+              return;
+            }
+            _surface._projectionReveal = null;
+            request.complete(true);
+          });
+          return;
+        }
+        position.jumpTo(target);
+      }
+      if (frame >= 3) {
+        _surface._cancelProjectionReveal();
+      } else {
+        _revealProjection(request, frame + 1);
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _replaceProjectionTerminal() {
     _terminal?.dispose();
     _terminal = _ViewTerminal(this, _surface._requireTerminal());
@@ -604,12 +676,16 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       if (surface._projectionRequestedOffset case final offset?) {
         _scrollProjectionTo(offset);
       }
+      if (surface._projectionReveal case final request?) {
+        _revealProjection(request);
+      }
     }
   }
 
   @override
   void deactivate() {
     if (_surface._projectionRows != null) {
+      _surface._cancelProjectionReveal();
       _cacheProjectionOffset();
       if (!_surface._following) {
         _surface._projectionRequestedOffset = _surface._projectionScrollOffset;
@@ -691,36 +767,48 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
           : null,
     );
     if (!projection) return view;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        _scrollProjectionToEnd();
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: math.max(_projectionGridWidth, constraints.maxWidth),
-            height: constraints.maxHeight,
-            child: MediaQuery.removePadding(
-              context: context,
-              removeLeft: true,
-              removeRight: true,
-              removeTop: true,
-              removeBottom: true,
-              child: ScrollConfiguration(
-                behavior: ScrollConfiguration.of(context).copyWith(
-                  physics: _surface._alwaysFollow
-                      ? const NeverScrollableScrollPhysics()
-                      : null,
-                ),
-                child: Actions(
-                  dispatcher: _ProjectionActionDispatcher(this),
-                  actions: const {},
-                  child: view,
-                ),
-              ),
+    return ExcludeFocus(
+      excluding: !_surface._projectionReady,
+      child: IgnorePointer(
+        ignoring: !_surface._projectionReady,
+        child: ExcludeSemantics(
+          excluding: !_surface._projectionReady,
+          child: Opacity(
+            opacity: _surface._projectionReady ? 1 : 0,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                _scrollProjectionToEnd();
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: math.max(_projectionGridWidth, constraints.maxWidth),
+                    height: constraints.maxHeight,
+                    child: MediaQuery.removePadding(
+                      context: context,
+                      removeLeft: true,
+                      removeRight: true,
+                      removeTop: true,
+                      removeBottom: true,
+                      child: ScrollConfiguration(
+                        behavior: ScrollConfiguration.of(context).copyWith(
+                          physics: _surface._alwaysFollow
+                              ? const NeverScrollableScrollPhysics()
+                              : null,
+                        ),
+                        child: Actions(
+                          dispatcher: _ProjectionActionDispatcher(this),
+                          actions: const {},
+                          child: view,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 

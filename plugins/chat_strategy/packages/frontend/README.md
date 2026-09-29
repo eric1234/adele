@@ -40,8 +40,12 @@ the composer and starts no Run. Acceptance clears the composer before scheduling
 if scheduling fails, Send retries only that accepted entry's Run, even with the
 empty composer. Successful scheduling retains the entry/activity mapping. Editing
 remains disabled while submitting, awaiting an accepted entry's Run retry, or
-during active Runs. Execution settlement, including approval resume, triggers a
-fresh canonical history snapshot; failure never synthesizes an answer. There is
+during active Runs. The host's semantic `sessionStateRevision` changes after
+strategy materialization and terminal settlement. Chat captures it before initial
+hydration, checks it after subscribing, and rechecks asynchronous history reads.
+This discovers a late Run association and a final answer committed during loading
+without polling or reloading history on ordinary activity notifications. Failure
+never synthesizes an answer. There is
 no cross-window draft conflict resolution or rich-document editor in this slice.
 
 The existing evaluated `TextField` remains single-line. Storage and initial
@@ -58,7 +62,8 @@ handles remain presentation-local. After hydration, the frontend calls
 `openSessionRunActivity` only for associated entries without an existing live
 handle. The host validates the presented Session and issues a read-only handle;
 the frontend then uses the same activity reads, compact widgets, and Inspection
-operations as for live Runs. Missing terminal evidence does not start execution or
+operations for retained live/waiting Runs and terminal history. A remount receives
+fresh handles; the prior view's actions and handles stay revoked. Missing evidence does not start execution or
 invent activity. Fresh rendering reconstructs placement, not open cards, expansion
 state, subscriptions, or other workbench state. Historical native data is never
 continuation input, and the bridge still exposes only safe presentation data.

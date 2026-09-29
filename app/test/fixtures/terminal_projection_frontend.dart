@@ -12,6 +12,8 @@ Map<String, dynamic> readHandle(String handle) =>
 Map<String, dynamic> readRetained() => readRetainedTerminalProjection();
 void resetHandle(String handle) => resetTerminalProjection(handle);
 Future<bool> yieldHandle(String handle) => yieldTerminalProjection(handle);
+void hideHandle(String handle) => hideTerminalProjection(handle);
+Future<bool> revealHandle(String handle) => revealTerminalProjection(handle);
 void followHandle(String handle, bool following) =>
     setTerminalProjectionFollow(handle, following, true);
 void followPolicy(String handle, bool following, bool resumeAtEnd) =>

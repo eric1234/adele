@@ -10,6 +10,7 @@ Future<Widget> buildChat() async {
     OwningBackendRequestChannel(chatSessionServiceId),
   );
   final sessionId = currentSessionId();
+  final stateRevision = readSessionExecution()['sessionStateRevision'] as int;
   ChatSessionSnapshot? snapshot;
   String failure = '';
   final result = await settleSessionOperation(client.snapshot(sessionId));
@@ -24,6 +25,7 @@ Future<Widget> buildChat() async {
     initialSnapshot: snapshot,
     sessionId: sessionId,
     initialFailure: failure,
+    initialStateRevision: stateRevision,
   );
 }
 
@@ -33,11 +35,13 @@ class ChatFrontend extends StatefulWidget {
     required this.initialSnapshot,
     required this.sessionId,
     required this.initialFailure,
+    required this.initialStateRevision,
   });
   final ChatSessionServiceClient client;
   final ChatSessionSnapshot? initialSnapshot;
   final String sessionId;
   final String initialFailure;
+  final int initialStateRevision;
 
   @override
   State<ChatFrontend> createState() => _ChatFrontendState();
@@ -62,7 +66,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
   bool submitting = false;
   bool refreshing = false;
   bool refreshRequested = false;
-  bool wasExecuting = false;
+  int sessionStateRevision = 0;
   int revision = 0;
   int draftRevision = 0;
   int savedDraftRevision = 0;
@@ -82,24 +86,27 @@ class _ChatFrontendState extends State<ChatFrontend> {
       controller = TextEditingController(text: initial.draftRequest);
     }
     historyFailure = widget.initialFailure;
-    final execution = readSessionExecution();
-    wasExecuting =
-        execution['running'] == true || execution['advancing'] == true;
+    sessionStateRevision = widget.initialStateRevision;
     listener = () => executionChanged();
     subscribeSessionExecution(listener);
     deactivation = () => prepareToDeactivate();
     registerSessionPrepareToDeactivate(deactivation);
+    // Materialization/terminal settlement can occur while buildChat hydrates,
+    // before this view has a listener. Reconcile that missed semantic change.
+    reconcileSessionState();
   }
 
   void executionChanged() {
     if (disposed) return;
-    final execution = readSessionExecution();
-    final bool executing =
-        execution['running'] == true || execution['advancing'] == true;
-    final bool terminal = wasExecuting && !executing;
-    wasExecuting = executing;
     setState(() {});
-    if (terminal) refreshCanonical();
+    reconcileSessionState();
+  }
+
+  void reconcileSessionState() {
+    final next = readSessionExecution()['sessionStateRevision'] as int;
+    if (next == sessionStateRevision) return;
+    sessionStateRevision = next;
+    refreshCanonical();
   }
 
   Future<void> refreshCanonical() async {
@@ -109,6 +116,9 @@ class _ChatFrontendState extends State<ChatFrontend> {
     while (refreshRequested && !disposed) {
       refreshRequested = false;
       final int requestedRevision = revision;
+      final int requestedStateRevision =
+          readSessionExecution()['sessionStateRevision'] as int;
+      sessionStateRevision = requestedStateRevision;
       final ChatSessionServiceClient client = widget.client;
       final result = await settleSessionOperation(client.snapshot(sessionId));
       if (disposed) return;
@@ -116,7 +126,9 @@ class _ChatFrontendState extends State<ChatFrontend> {
         final next = result[1] as ChatSessionSnapshot;
         // An entry accepted while this read was pending must not be erased by
         // an older snapshot. Read again rather than merging invented history.
-        if (requestedRevision != revision) {
+        if (requestedRevision != revision ||
+            requestedStateRevision !=
+                readSessionExecution()['sessionStateRevision']) {
           refreshRequested = true;
         } else {
           setState(() {

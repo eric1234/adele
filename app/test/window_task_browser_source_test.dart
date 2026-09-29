@@ -28,6 +28,9 @@ void main() {
   late ExtensionRegistration presentationRegistration;
   late Completer<TaskCreationResult> establishment;
   late bool windowBusy;
+  late _ExecutionChanges executionChanges;
+  late Map<SessionId, String> executionStatuses;
+  late List<Session> statusReads;
   final strategyId = OrchestrationStrategyId('test.strategy');
 
   ExtensionRegistration registerStrategy() => runtime.extensions.register(
@@ -102,6 +105,9 @@ void main() {
     activated = null;
     establishment = Completer<TaskCreationResult>();
     windowBusy = false;
+    executionChanges = _ExecutionChanges();
+    executionStatuses = {};
+    statusReads = [];
     source = WindowTaskBrowserSource(
       project: project,
       lifecycle: runtime.lifecycle,
@@ -118,9 +124,15 @@ void main() {
         activated = session;
       },
       onDispose: () {},
+      executionStatusFor: (session) {
+        statusReads.add(session);
+        return executionStatuses[session.id] ?? 'idle';
+      },
+      executionChanges: executionChanges,
     );
     addTearDown(() async {
       source.dispose();
+      executionChanges.dispose();
       await host.close();
       await runtime.close();
     });
@@ -154,6 +166,7 @@ void main() {
         'strategyId': strategyId.value,
         'presentationName': 'Example',
         'available': true,
+        'executionStatus': 'idle',
       });
       expect(
         runtime.lifecycle.environmentRuntime.currentMaterialization(
@@ -161,6 +174,98 @@ void main() {
         ),
         isNull,
       );
+    },
+  );
+
+  test(
+    'execution counts are passive, Project-scoped Session status reads',
+    () async {
+      final states = <SessionId, String>{retained.id: 'running'};
+      for (final status in [
+        'idle',
+        'preparing',
+        'waitingForApproval',
+        'completed',
+        'cancelled',
+        'failed',
+      ]) {
+        final session = runtime.lifecycle.createSession(
+          taskId: first.id,
+          strategyId: strategyId,
+        );
+        states[session.id] = status;
+      }
+      final outside = runtime.lifecycle.createSession(
+        taskId: foreign.id,
+        strategyId: strategyId,
+      );
+      executionStatuses.addAll({...states, outside.id: 'running'});
+      await source.selectTask(first.id.value);
+      final snapshot = source.read();
+      final tasks = snapshot['tasks'] as List;
+      expect(tasks.first, {
+        'id': first.id.value,
+        'title': first.title,
+        'sessionCount': 7,
+        'executionCounts': {
+          'preparing': 1,
+          'running': 1,
+          'waiting': 1,
+          'terminal': 3,
+          'completed': 1,
+          'cancelled': 1,
+          'failed': 1,
+        },
+      });
+      expect(tasks.last['executionCounts'], {
+        'preparing': 0,
+        'running': 0,
+        'waiting': 0,
+        'terminal': 0,
+        'completed': 0,
+        'cancelled': 0,
+        'failed': 0,
+      });
+      final details = snapshot['selectedTask']! as Map;
+      expect(
+        (details['sessions'] as List).map((row) => row['executionStatus']),
+        states.values,
+      );
+      expect(statusReads, isNot(contains(outside)));
+      for (final session in statusReads) {
+        expect(runtime.store.session(session.id), same(session));
+        expect(runtime.store.runsForSession(session.id), isEmpty);
+        expect(
+          runtime.lifecycle.environmentRuntime.currentMaterialization(
+            runtime.store.requireSessionAuthority(session.id).environmentId,
+          ),
+          isNull,
+        );
+      }
+      expect(activated, isNull);
+    },
+  );
+
+  test('status changes notify only the source and unsubscribe on disposal', () {
+    var notifications = 0;
+    source.addListener(() => notifications++);
+    expect(executionChanges.observed, isTrue);
+    executionStatuses[retained.id] = 'preparing';
+    executionChanges.notifyListeners();
+    expect(notifications, 1);
+    expect(statusReads, isEmpty);
+    source.dispose();
+    expect(executionChanges.observed, isFalse);
+    executionChanges.notifyListeners();
+    expect(notifications, 1);
+    expect(source.read, throwsStateError);
+  });
+
+  test(
+    'unknown execution status fails explicitly instead of inventing idle',
+    () {
+      executionStatuses[retained.id] = 'not-a-status';
+      expect(source.read, throwsStateError);
     },
   );
 
@@ -242,6 +347,7 @@ void main() {
     'missing presentation retains stored strategy identity in the list',
     () async {
       await presentationRegistration.close();
+      executionStatuses[retained.id] = 'waitingForApproval';
       await source.selectTask(first.id.value);
       final details = source.read()['selectedTask']! as Map;
       expect((details['sessions'] as List).single, {
@@ -249,6 +355,7 @@ void main() {
         'strategyId': strategyId.value,
         'presentationName': strategyId.value,
         'available': false,
+        'executionStatus': 'waitingForApproval',
       });
       expect(details['sessionCreationOptions'], isEmpty);
       expect(runtime.store.session(retained.id), same(retained));
@@ -408,4 +515,8 @@ void main() {
       expect(selected, isNull);
     },
   );
+}
+
+final class _ExecutionChanges extends ChangeNotifier {
+  bool get observed => hasListeners;
 }

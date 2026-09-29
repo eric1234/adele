@@ -189,8 +189,10 @@ deliberate `command_tools_contract`, not the headless implementation, app, or
 kernel. `command_tools_frontend.dart` retains argument boundaries and factual
 tool lifecycle/disposition metadata. `command_output_view.dart` owns generated
 `CommandOutputServiceClient` reads/watch, ordered replay, capture/process status,
-history navigation, and follow behavior. Model-result head/tail previews remain
-explicitly separate from the stored transcript.
+history navigation, and follow behavior. Normal stdout/stderr appears only in
+the terminal projection, not duplicate plaintext model-result previews or
+truncation chrome. The bounded backend model result remains unchanged; factual
+failure metadata and bounded failure detail remain available without a capture.
 
 An ordinary Chat activity click opens the Command Tools Inspection card. Its
 Session/Run/invocation strings come from the canonical activity occurrence,
@@ -242,6 +244,16 @@ advance an intra-chunk offset; a chunk cursor advances only after its entire tex
 has been applied. Partial lines and split control sequences need no newline or
 final model result to become visible.
 
+Initial and remounted projections remain laid out but do not paint, accept local
+interaction, or expose output semantics during reconstruction. A following reader
+captures one finite committed high-water at initialization, reveals after that
+prefix and its viewport settle, then drains newer live output without hiding again.
+While newer committed output remains pending, following status reports that the
+reader is catching up rather than implying it has consumed the current high-water.
+Historical seeks likewise reveal only after their saved endpoint and local scroll
+offset settle. Readiness grants no capture or execution authority; a failed replay
+shows safe status instead of exposing a misleading partial reconstruction.
+
 Expanded output initially follows. **Beginning**, **Earlier**, **Middle**, and
 **Later** replay a prefix to a rendered-row endpoint. Adjacent windows advance
 `maxLines - rows - 2` row advances (178 with stock expanded geometry), with overlap
@@ -288,8 +300,12 @@ save an immediate scroll/selection freeze, a newer frozen offset, or a manual
 live-end return before the tab hides.
 
 The plugin reads that exact retained checkpoint on remount. Native accepted text
-extent is authoritative even inside a chunk or while a page read/replay was in
-flight; logical live-tail versus explicit-history intent remains plugin-owned.
+extent is authoritative for the last revealed position even inside a chunk or
+while a page read was in flight; logical live-tail versus explicit-history intent
+remains plugin-owned. A pending historical destination and its requested offset
+are saved separately from partially reconstructed native extent. Hiding again
+before reveal therefore preserves the original destination, not the replay's
+temporary progress.
 Following during programmatic prefix replay is not interpreted as new live-tail
 intent. A fresh projection reconstructs the accepted prefix before restoring a
 frozen position or catching up live;

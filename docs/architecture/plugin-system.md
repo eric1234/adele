@@ -385,11 +385,17 @@ live presentation available for correction or retry. A missing hook means nothin
 to flush. This does not transfer navigation ownership, plugin state semantics, or
 storage codecs into the host, and is not a general plugin lifecycle hook system.
 
-The current window refuses to leave a Session with running/advancing work or a
-pending approval. Successful quiescent navigation closes execution resources,
-revokes the exact presentation binding and its actions, and clears Session-local
-Inspection before changing the window selection. It neither cancels a Run nor
-resolves an approval. Retirement cannot preserve or retarget an old hook. Exact
+Accepted navigation revokes the exact presentation binding and its actions, and
+clears Session-local Inspection and console context before changing selection.
+It does not close the Session's execution owner: preparation, advancement,
+approval waits, and terminal persistence may continue without a mounted view.
+Pending local saves or message acceptance may still refuse deactivation for retry;
+they must not turn that short settlement into a wait for the entire Run.
+Reentry obtains fresh view-scoped handles and native action authority over the
+same retained owner. Old actions remain revoked even after the same Session is
+presented again. Presentation replacement and executable-generation replacement
+are distinct; exact backend affinity is validated without migrating retained work.
+Retirement cannot preserve or retarget an old hook. Exact
 public names belong to [UI](../../packages/ui/README.md#interpreted-bridges); current
 ordering and shutdown distinctions belong to the
 [application lifecycle map](../../app/README.md#session-lifecycle).

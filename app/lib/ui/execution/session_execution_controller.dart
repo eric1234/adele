@@ -51,7 +51,7 @@ final class SessionExecutionController extends ChangeNotifier {
   final VoidCallback? onActivityChanged;
   final ValueNotifier<int> _activityChanges = ValueNotifier(0);
   final Map<RunId, RunActivitySnapshot> _activity = {};
-  // Accepted scheduling can fail before an execution exposes Run activity.
+  // Scheduling/startup can fail before a materialized Run actually starts.
   final Map<RunId, RunState> _preparationStates = {};
   RunActivitySource? _activitySource;
   StreamSubscription<void>? _activitySubscription;
@@ -64,9 +64,14 @@ final class SessionExecutionController extends ChangeNotifier {
   bool _running = false;
   bool _advancing = false;
   int _revision = 0;
+  int _sessionStateRevision = 0;
+  RunId? _latestRunId;
+  ResolvedOrchestrationStrategy? _capturedStrategy;
+  ProviderBinding? _capturedProvider;
   PendingToolApproval? _pendingApproval;
   ToolApprovalInterruption? _pendingInterruption;
   Object? _failure;
+  Object? _releaseFailure;
 
   Listenable get activityChanges => _activityChanges;
   SessionOrchestrationRun? get currentRun => _currentRun;
@@ -107,14 +112,23 @@ final class SessionExecutionController extends ChangeNotifier {
 
   RunState? stateForRun(RunId runId) => _closed
       ? null
-      : _activity[runId]?.state ??
-            _preparationStates[runId] ??
+      : _preparationStates[runId] ??
+            _activity[runId]?.state ??
             _terminalStateForRun(runId);
+  bool ownsScheduledRun(RunId runId) =>
+      !_closed &&
+      (_preparationStates.containsKey(runId) || _activity.containsKey(runId));
   Future<void>? get activeRunFuture => _activeRunFuture;
   bool get isRunning => _running;
   bool get isAdvancing => _advancing;
   bool get isClosed => _closed;
   int get revision => _revision;
+
+  /// Changes only when strategy-owned association/history may have committed.
+  int get sessionStateRevision => _sessionStateRevision;
+  RunId? get latestRunId => _latestRunId;
+  ResolvedOrchestrationStrategy? get capturedStrategy =>
+      _capturedStrategy ?? strategy;
   bool get canStart =>
       !_closed && !_running && !_advancing && unavailableReason == null;
   PendingToolApproval? get pendingApproval => _pendingApproval;
@@ -122,6 +136,10 @@ final class SessionExecutionController extends ChangeNotifier {
 
   String? get unavailableReason {
     if (_closed) return 'Model execution is unavailable: window is closing.';
+    if (_releaseFailure != null) {
+      return 'Session execution is unavailable: its previous execution could '
+          'not be released.';
+    }
     if (configurationUnavailableReason != null) {
       return configurationUnavailableReason;
     }
@@ -131,14 +149,18 @@ final class SessionExecutionController extends ChangeNotifier {
     try {
       _runtime.lifecycle.validateResolvedStrategy(
         session.strategyId,
-        strategy ?? _runtime.lifecycle.resolveSessionStrategy(session.id),
+        (_running || _advancing ? _capturedStrategy : strategy) ??
+            _runtime.lifecycle.resolveSessionStrategy(session.id),
       );
     } on Object {
       return 'Session execution is unavailable: its strategy is not available.';
     }
     try {
-      _runtime.registry
-          .resolve(modelProviderCapability, providerId: providerId)
+      ((_running || _advancing ? _capturedProvider : null) ??
+              _runtime.registry.resolve(
+                modelProviderCapability,
+                providerId: providerId,
+              ))
           .streamChannel;
     } on Object {
       return 'Model execution is unavailable: the selected provider is not '
@@ -161,7 +183,14 @@ final class SessionExecutionController extends ChangeNotifier {
     if (!canStart) {
       throw StateError(unavailableReason ?? 'A Run is already active.');
     }
+    _capturedStrategy =
+        strategy ?? _runtime.lifecycle.resolveSessionStrategy(session.id);
+    _capturedProvider = _runtime.registry.resolve(
+      modelProviderCapability,
+      providerId: providerId,
+    );
     final runId = _runIds.nextRunId();
+    _latestRunId = runId;
     _preparationStates[runId] = RunState.created;
     _failure = null;
     _currentRun = null;
@@ -206,10 +235,7 @@ final class SessionExecutionController extends ChangeNotifier {
         // Terminal execution may retain backend mutation guards until close.
         await _ownedExecution?.close();
         _ownedExecution = null;
-        final binding = _runtime.registry.resolve(
-          modelProviderCapability,
-          providerId: providerId,
-        );
+        final binding = _capturedProvider!;
         final adapter = ModelProviderCapabilityAdapter(
           binding,
           selectedModel: model!,
@@ -223,7 +249,7 @@ final class SessionExecutionController extends ChangeNotifier {
           lifecycle: _runtime.lifecycle,
           sessionId: session.id,
           runId: runId!,
-          resolvedStrategy: strategy,
+          resolvedStrategy: _capturedStrategy,
           contextComposer: _runtime.contextComposer,
           model: adapter,
           toolCatalog: tools,
@@ -232,7 +258,9 @@ final class SessionExecutionController extends ChangeNotifier {
         _ownedExecution = execution;
         if (!_closed) {
           _currentRun = execution;
+          _sessionStateRevision++;
           _observeActivity(execution.activity);
+          refresh();
         }
         await execution.start();
       } else {
@@ -243,7 +271,7 @@ final class SessionExecutionController extends ChangeNotifier {
     } on Object catch (error) {
       if (!_closed) {
         final run = execution?.run;
-        if (run == null && runId != null) {
+        if ((run == null || run.state == RunState.created) && runId != null) {
           _preparationStates[runId] = RunState.failed;
         }
         if (run?.state == RunState.running || run?.state == RunState.waiting) {
@@ -258,13 +286,18 @@ final class SessionExecutionController extends ChangeNotifier {
       if (!_running || _closed) {
         try {
           await execution?.close();
+          if (identical(_ownedExecution, execution)) _ownedExecution = null;
         } on Object catch (error) {
+          _releaseFailure ??= error;
           if (!_closed) _failure ??= error;
         }
       }
       if (!_closed) {
         if (_activitySource case final source?) _captureActivity(source);
-        if (!_running) _detachActivity();
+        if (!_running) {
+          _detachActivity();
+          _sessionStateRevision++;
+        }
         _advancing = false;
       }
       _activeRunFuture = null;
@@ -295,7 +328,9 @@ final class SessionExecutionController extends ChangeNotifier {
     final snapshot = source.snapshot;
     if (identical(_activity[snapshot.runId], snapshot)) return;
     _activity[snapshot.runId] = snapshot;
-    _preparationStates.remove(snapshot.runId);
+    if (_preparationStates[snapshot.runId] != RunState.failed) {
+      _preparationStates.remove(snapshot.runId);
+    }
     _notify(() => _activityChanges.value++);
     _notify(onActivityChanged);
     refresh();

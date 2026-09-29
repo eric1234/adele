@@ -28,7 +28,11 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     required this.establishTask,
     required this.activateSession,
     required this.onDispose,
-  });
+    this.executionStatusFor,
+    this.executionChanges,
+  }) {
+    executionChanges?.addListener(refresh);
+  }
 
   final Project project;
   final ProductLifecycleCoordinator lifecycle;
@@ -43,6 +47,13 @@ final class WindowTaskBrowserSource extends ChangeNotifier
   final Future<TaskCreationResult> Function(String) establishTask;
   final void Function(Session, SessionPresentationSelection) activateSession;
   final VoidCallback onDispose;
+
+  /// Passive retained-owner lookup, never an execution-owner factory.
+  /// Values follow the public Task Browser snapshot's executionStatus contract.
+  final String Function(Session)? executionStatusFor;
+
+  /// Generic status changes only, not per-packet execution activity.
+  final Listenable? executionChanges;
   final Map<String, SessionPresentationSelection> _options = {};
   Task? _optionsTask;
   int _nextOption = 0;
@@ -136,14 +147,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
         'displayName': projectDisplayName(project),
       },
       'selectedTaskId': task?.id.value,
-      'tasks': [
-        for (final task in store.tasksFor(project.id))
-          {
-            'id': task.id.value,
-            'title': task.title,
-            'sessionCount': store.sessionsForTask(task.id).length,
-          },
-      ],
+      'tasks': [for (final task in store.tasksFor(project.id)) _taskRow(task)],
       'selectedTask': task == null
           ? null
           : {
@@ -170,6 +174,50 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     };
   }
 
+  String _executionStatus(Session session) {
+    final status = executionStatusFor?.call(session) ?? 'idle';
+    return switch (status) {
+      'idle' ||
+      'preparing' ||
+      'running' ||
+      'waitingForApproval' ||
+      'completed' ||
+      'cancelled' ||
+      'failed' => status,
+      _ => throw StateError('Unknown Session execution status.'),
+    };
+  }
+
+  Map<String, Object?> _taskRow(Task task) {
+    final sessions = store.sessionsForTask(task.id);
+    final counts = {
+      'preparing': 0,
+      'running': 0,
+      'waiting': 0,
+      'terminal': 0,
+      'completed': 0,
+      'cancelled': 0,
+      'failed': 0,
+    };
+    for (final session in sessions) {
+      final status = _executionStatus(session);
+      if (status == 'idle') continue;
+      final category = status == 'waitingForApproval' ? 'waiting' : status;
+      counts[category] = counts[category]! + 1;
+      if (status == 'completed' ||
+          status == 'cancelled' ||
+          status == 'failed') {
+        counts['terminal'] = counts['terminal']! + 1;
+      }
+    }
+    return {
+      'id': task.id.value,
+      'title': task.title,
+      'sessionCount': sessions.length,
+      'executionCounts': counts,
+    };
+  }
+
   Map<String, Object?> _sessionRow(Session session) {
     var label = session.strategyId.value;
     var available = false;
@@ -178,7 +226,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
         extensions,
       ).resolve(session.strategyId);
       label = presentation.value.displayName;
-      sessionHost.resolve(presentation).validate();
+      sessionHost.resolve(presentation, session: session).validate();
       available = true;
     } on Object {
       // Persisted Sessions remain visible even when their execution is absent.
@@ -188,6 +236,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
       'strategyId': session.strategyId.value,
       'presentationName': label,
       'available': available,
+      'executionStatus': _executionStatus(session),
     };
   }
 
@@ -264,7 +313,8 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     final presentation = SessionPresentationResolver(
       extensions,
     ).resolve(session.strategyId);
-    final selection = sessionHost.resolve(presentation)..validate();
+    final selection = sessionHost.resolve(presentation, session: session)
+      ..validate();
     activateSession(session, selection);
   });
 
@@ -272,6 +322,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    executionChanges?.removeListener(refresh);
     _options.clear();
     onDispose();
     // A bridge can detect retirement and revoke this source from its own change

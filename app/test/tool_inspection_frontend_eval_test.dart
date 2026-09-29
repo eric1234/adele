@@ -540,6 +540,12 @@ Future<Widget> buildSession() async {
           if (disposition == ToolOutcomeDisposition.failure) {
             expect(find.text('Failure kind: domain'), findsOneWidget);
             expect(find.text('Failure code: $code'), findsOneWidget);
+            if (!patch) {
+              expect(
+                find.text('Failure detail: Tool outcome.'),
+                findsOneWidget,
+              );
+            }
             if (patch) {
               expect(
                 find.text('Failed edit index (zero-based): 0'),
@@ -562,7 +568,7 @@ Future<Widget> buildSession() async {
   }
 
   testWidgets(
-    'actual EVC escapes controls in fields, argv and bounded output',
+    'actual EVC escapes metadata and omits duplicate plaintext model output',
     (tester) async {
       const String unsafe = 'a\n\r\t\u001b[31m\u202E\u200B\\n';
       final String escaped = inspectionDisplayText(unsafe);
@@ -598,10 +604,9 @@ Future<Widget> buildSession() async {
       expect(find.text('Process termination: timedOut'), findsOneWidget);
       expect(find.text('Tool delivery: success'), findsOneWidget);
       expect(find.text('Exit code: Not reported'), findsOneWidget);
-      expect(find.text('stdout truncated: true'), findsOneWidget);
-      expect(find.text('stderr truncated: false'), findsOneWidget);
-      expect(find.text('stdout preview truncated.'), findsOneWidget);
-      expect(find.text('stderr preview: $escaped'), findsOneWidget);
+      expect(find.textContaining('Bounded model result'), findsNothing);
+      expect(find.textContaining('stdout'), findsNothing);
+      expect(find.textContaining('stderr'), findsNothing);
       expect(find.textContaining('HIDDEN-END'), findsNothing);
       for (final Text text in tester.widgetList<Text>(find.byType(Text))) {
         expect(text.data, isNot(contains('\u001b')));
@@ -609,6 +614,13 @@ Future<Widget> buildSession() async {
         expect(text.data, isNot(contains('\n')));
       }
       expect(source.value.canonicalArguments['program'], unsafe);
+      expect(
+        source.value.outcome!.hostData['stdout'],
+        '$unsafe${'x' * 5000}HIDDEN-END',
+      );
+      expect(source.value.outcome!.hostData['stderr'], unsafe);
+      expect(source.value.outcome!.hostData['stdoutTruncated'], isTrue);
+      expect(source.value.outcome!.modelContent, 'Tool outcome.');
       expect(tester.takeException(), isNull);
 
       final _Source patch = _Source(

@@ -7,16 +7,19 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
+import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart' show $Value;
@@ -141,6 +144,40 @@ Widget build(String handle) => buildSessionActivity(handle);
           (await (execute('start') as $Future).$value as $String).$value;
       final advancing = controller.activeRunFuture!;
       final call = await fixture.model.callAt(0);
+      // Drain both asynchronous evidence invalidations before the capture frame.
+      await Future<void>.delayed(Duration.zero);
+      await tester.pump();
+      final runId = controller.currentRun!.run.id;
+      final liveView = SessionExecutionPresentationSource(
+        controller: controller,
+        extensions: fixture.runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
+      addTearDown(liveView.invalidate);
+      final liveHandle = liveView.openRunActivity(runId.value)!;
+      expect(liveHandle, isNot(handle));
+      expect(liveView.readRunActivity(liveHandle)['state'], 'running');
+      expect(() => liveView.readRunActivity(handle), throwsStateError);
+      final foreignSession = fixture.runtime.lifecycle.createSession(
+        taskId: fixture.session.taskId,
+        strategyId: fixture.session.strategyId,
+      );
+      final foreignController = SessionExecutionController(
+        runtime: fixture.runtime,
+        session: foreignSession,
+        providerId: _providerId,
+        model: 'fixture',
+      );
+      addTearDown(foreignController.close);
+      final foreignView = SessionExecutionPresentationSource(
+        controller: foreignController,
+        extensions: fixture.runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
+      addTearDown(foreignView.invalidate);
+      expect(foreignView.openRunActivity(runId.value), isNull);
       call.propose(
         'view-owned',
         arguments: {
@@ -204,6 +241,12 @@ Widget build(String handle) => buildSessionActivity(handle);
       );
       expect(() => otherView.readRunActivity(handle), throwsStateError);
       expect(otherView.inspectActivity(activity), isFalse);
+      final waitingHandle = otherView.openRunActivity(runId.value)!;
+      expect(waitingHandle, isNot(handle));
+      expect(waitingHandle, isNot(liveHandle));
+      expect(otherView.readRunActivity(waitingHandle)['state'], 'waiting');
+      expect(liveView.readRunActivity(liveHandle)['state'], 'waiting');
+      expect(foreignView.openRunActivity(runId.value), isNull);
       expect(
         source.inspectActivity(controller.currentRun!.run.id.value),
         isFalse,
@@ -233,6 +276,12 @@ Widget build(String handle) => buildSessionActivity(handle);
       expect(source.buildActivity(activity), isA<SizedBox>());
       retainedAction();
       expect(inspections, 1);
+      active = true;
+      expect(source.readExecution, throwsStateError);
+      expect(() => source.openRunActivity(runId.value), throwsStateError);
+      retainedAction();
+      expect(inspections, 1);
+      expect(otherView.readRunActivity(waitingHandle)['state'], 'waiting');
       expect(controller.currentRun!.run.state, RunState.waiting);
       expect(fixture.tool.executions, 0);
       otherView.invalidate();
@@ -348,7 +397,10 @@ Widget build(String handle) => buildSessionActivity(handle);
     (tester) => tester.runAsync(() async {
       var notifications = 0;
       var activityNotifications = 0;
-      final controller = fixture.controller(onChanged: () => notifications++);
+      var ownerNotifications = 0;
+      final owners = fixture.owners()..addListener(() => ownerNotifications++);
+      final controller = owners.getOrCreate(fixture.session)
+        ..addListener(() => notifications++);
       controller.activityChanges.addListener(() => activityNotifications++);
       fixture.tool.gate = Completer<void>();
       await controller.startRun();
@@ -368,6 +420,8 @@ Widget build(String handle) => buildSessionActivity(handle);
       final tool = before.tools.single.id;
       final beforeNotifications = notifications;
       final beforeActivity = activityNotifications;
+      final beforeOwners = ownerNotifications;
+      expect(controller.sessionStateRevision, 1);
       for (var i = 0; i < 1000; i++) {
         run.record(
           ToolProgressObserved(
@@ -391,6 +445,8 @@ Widget build(String handle) => buildSessionActivity(handle);
       );
       expect(notifications, beforeNotifications + 1);
       expect(activityNotifications, beforeActivity + 1);
+      expect(ownerNotifications, beforeOwners);
+      expect(controller.sessionStateRevision, 1);
       expect(controller.activityForRun(run.id), same(captured));
       await tester.pump();
       expect(activityNotifications, beforeActivity + 1);
@@ -401,7 +457,7 @@ Widget build(String handle) => buildSessionActivity(handle);
         ),
       );
       await Future<void>.value();
-      final closing = controller.close();
+      final closing = owners.close();
       fixture.tool.gate!.complete();
       (await fixture.model.callAt(1)).settle();
       await closing;
@@ -409,6 +465,8 @@ Widget build(String handle) => buildSessionActivity(handle);
       expect(controller.activitySnapshots.single, same(captured));
       expect(notifications, beforeNotifications + 1);
       expect(activityNotifications, beforeActivity + 1);
+      expect(ownerNotifications, beforeOwners);
+      expect(controller.sessionStateRevision, 1);
       expect(controller.activityForRun(run.id), isNull);
       expect(run.state, RunState.completed);
       expect(tester.takeException(), isNull);
@@ -707,6 +765,60 @@ Widget build(String handle) => buildSessionActivity(handle);
     },
   );
 
+  for (final replaceWhileActive in [false, true]) {
+    test(
+      'unpinned affinity permits a fresh strategy only after settlement ($replaceWhileActive)',
+      () async {
+        final controller = fixture.controller(pinStrategy: false);
+        final presentation = fixture.runtime.extensions.register(
+          point: sessionPresentationContributions,
+          id: ExtensionId('dev.adele.test.unpinned.presentation'),
+          value: SessionPresentationContribution(
+            strategyId: _strategyId,
+            displayName: 'Independent frontend',
+            createPresentation: (_) => const SizedBox.shrink(),
+          ),
+        );
+        addTearDown(presentation.close);
+        final host = PreparedSessionHost(
+          extensions: fixture.runtime.extensions,
+          backends: fixture.runtime.plugins,
+          controllerForSession: (_) => controller,
+          lookupControllerForSession: (_) => controller,
+          inspectActivity: (_, _) => false,
+        );
+        addTearDown(host.close);
+        SessionPresentationSelection resolve() => host.resolve(
+          SessionPresentationResolver(
+            fixture.runtime.extensions,
+          ).resolve(_strategyId),
+          session: fixture.session,
+        );
+        await controller.startRun();
+        final first = controller.activeRunFuture!;
+        final call = await fixture.model.callFor(fixture.session);
+        if (!replaceWhileActive) {
+          call.settle();
+          await first;
+        }
+        await fixture.strategy.close();
+        fixture.strategy = fixture.registerStrategy();
+        if (replaceWhileActive) {
+          expect(resolve, throwsA(isA<StaleExtensionBinding>()));
+          call.settle();
+          await first;
+        }
+        expect(resolve, returnsNormally);
+        expect(controller.canStart, isTrue);
+        await controller.startRun();
+        final second = controller.activeRunFuture!;
+        (await fixture.model.callFor(fixture.session, 1)).settle();
+        await second;
+        expect(controller.currentRun!.run.state, RunState.completed);
+      },
+    );
+  }
+
   test(
     'Allow once does not authorize the same arguments in a later model turn',
     () async {
@@ -898,6 +1010,41 @@ Widget build(String handle) => buildSessionActivity(handle);
     },
   );
 
+  test(
+    'failure before host start remains failed after reentry and retry',
+    () async {
+      final failure = StateError('Backend failed before starting');
+      final gates = fixture.gatesFor(fixture.session)..startError = failure;
+      final controller = fixture.controller();
+      final runId = await controller.startRun();
+      await controller.activeRunFuture;
+      expect(controller.failure, same(failure));
+      expect(controller.stateForRun(runId), RunState.failed);
+      expect(controller.currentRun!.run.state, RunState.created);
+      expect(fixture.runtime.store.runRecord(runId), isNull);
+      expect(fixture.executions.single.closeCalls, 1);
+      final reopened = SessionExecutionPresentationSource(
+        controller: controller,
+        extensions: fixture.runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
+      addTearDown(reopened.invalidate);
+      final handle = reopened.openRunActivity(runId.value)!;
+      expect(reopened.readRunActivity(handle)['state'], 'failed');
+      expect(reopened.readRunActivity(handle)['models'], isEmpty);
+      gates.startError = null;
+      await controller.startRun();
+      final retry = controller.activeRunFuture!;
+      (await fixture.model.callFor(fixture.session)).settle();
+      await retry;
+      expect(controller.failure, isNull);
+      expect(reopened.readRunActivity(handle)['state'], 'failed');
+      expect(fixture.runtime.store.runRecord(runId), isNull);
+      expect(controller.currentRun!.run.state, RunState.completed);
+    },
+  );
+
   for (final model in <String?>[null, ' \t ']) {
     test('missing model rejects work before Run allocation ($model)', () async {
       final controller = fixture.controller(model: model);
@@ -1062,6 +1209,477 @@ Widget build(String handle) => buildSessionActivity(handle);
     },
   );
 
+  test(
+    'owner lookup is passive and rejects equivalent noncanonical Sessions',
+    () async {
+      final owners = fixture.owners();
+      final other = fixture.anotherSession();
+      var notifications = 0;
+      owners.addListener(() => notifications++);
+      for (final session in [fixture.session, other]) {
+        expect(owners.lookup(session), isNull);
+        expect(owners.statusFor(session), 'idle');
+      }
+      owners.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(owners.length, 0);
+      expect(notifications, 0);
+      expect(fixture.ids.values, isEmpty);
+      expect(fixture.executions, isEmpty);
+      expect(fixture.model.calls, isEmpty);
+
+      final equivalent = Session(
+        id: fixture.session.id,
+        taskId: fixture.session.taskId,
+        strategyId: fixture.session.strategyId,
+      );
+      expect(() => owners.lookup(equivalent), throwsArgumentError);
+      expect(() => owners.statusFor(equivalent), throwsArgumentError);
+      expect(() => owners.getOrCreate(equivalent), throwsArgumentError);
+      expect(owners.length, 0);
+
+      final strategy = fixture.runtime.lifecycle.resolveSessionStrategy(
+        fixture.session.id,
+      );
+      final first = owners.getOrCreate(fixture.session, strategy: strategy);
+      expect(first.capturedStrategy, same(strategy));
+      expect(owners.getOrCreate(fixture.session), same(first));
+      final second = owners.getOrCreate(other);
+      expect(second, isNot(same(first)));
+      expect(owners.length, 2);
+      expect(first.latestRunId, isNull);
+      expect(first.sessionStateRevision, 0);
+      expect(fixture.executions, isEmpty);
+      expect(fixture.ids.values, isEmpty);
+      owners.refresh();
+      owners.refresh();
+      expect(notifications, 0);
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+      owners.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+      final closing = owners.close();
+      expect(owners.isClosed, isTrue);
+      expect(first.isClosed, isTrue);
+      expect(second.isClosed, isTrue);
+      expect(owners.close(), same(closing));
+      expect(() => owners.getOrCreate(fixture.session), throwsStateError);
+      expect(
+        () => owners.getOrCreate(fixture.anotherSession()),
+        throwsStateError,
+      );
+      await closing;
+      expect(notifications, 1);
+    },
+  );
+
+  test(
+    'owners forward explicit Run IDs and unavailable configuration',
+    () async {
+      final ids = _RunIds();
+      final owners = fixture.owners(runIds: ids);
+      final first = owners.getOrCreate(fixture.session);
+      final second = owners.getOrCreate(fixture.anotherSession());
+      await first.startRun();
+      final startingA = first.activeRunFuture!;
+      await second.startRun();
+      final startingB = second.activeRunFuture!;
+      (await fixture.model.callFor(second.session)).settle();
+      await startingB;
+      (await fixture.model.callFor(first.session)).settle();
+      await startingA;
+      expect(ids.values, [RunId('execution-1'), RunId('execution-2')]);
+      expect(fixture.ids.values, isEmpty);
+
+      final unavailable = SessionExecutionOwners(
+        runtime: fixture.runtime,
+        providerId: _providerId,
+        model: 'fixture-model',
+        configurationUnavailableReason: 'Test configuration unavailable',
+      );
+      fixture.ownerCollections.add(unavailable);
+      final disabled = unavailable.getOrCreate(fixture.session);
+      expect(disabled.unavailableReason, 'Test configuration unavailable');
+      await expectLater(disabled.startRun(), throwsStateError);
+      expect(disabled.latestRunId, isNull);
+      expect(disabled.sessionStateRevision, 0);
+      expect(fixture.ids.values, isEmpty);
+    },
+  );
+
+  test(
+    'two owners progress independently through preparation, approval and settlement',
+    () async {
+      final owners = fixture.owners();
+      final a = fixture.session;
+      final b = fixture.anotherSession();
+      final gatesA = fixture.gatesFor(a)..materialization = Completer<void>();
+      final gatesB = fixture.gatesFor(b)..closeGate = Completer<void>();
+      final effectGate = Completer<void>();
+      fixture.tool.sessionGates[a.id] = effectGate;
+      final first = owners.getOrCreate(a);
+      final second = owners.getOrCreate(b);
+      final acceptedA = first.startRun();
+      final activeA = first.activeRunFuture!;
+      expect(first.latestRunId, RunId('execution-1'));
+      expect(first.sessionStateRevision, 0);
+      expect(owners.statusFor(a), 'preparing');
+      expect(owners.getOrCreate(a), same(first));
+      final runA = await acceptedA;
+      await gatesA.materializing.future;
+
+      final runB = await second.startRun();
+      final activeB = second.activeRunFuture!;
+      expect(runB, RunId('execution-2'));
+      expect(runB, isNot(runA));
+      final callB = await fixture.model.callFor(b);
+      expect(owners.statusFor(a), 'preparing');
+      expect(owners.statusFor(b), 'running');
+      expect(second.sessionStateRevision, 1);
+      expect(owners.getOrCreate(b), same(second));
+      callB.propose('same-provider-call');
+      callB.settle();
+      await activeB;
+      expect(owners.statusFor(b), 'waitingForApproval');
+      expect(second.sessionStateRevision, 1);
+      expect(gatesA.materialization!.isCompleted, isFalse);
+
+      gatesA.materialization!.complete();
+      final callA = await fixture.model.callFor(a);
+      callA.propose('same-provider-call');
+      callA.settle();
+      await activeA;
+      expect(owners.statusFor(a), 'waitingForApproval');
+      expect(first.sessionStateRevision, 1);
+      final approvalA = first.pendingApproval!;
+      final approvalB = second.pendingApproval!;
+      expect(
+        approvalA.canonicalArgumentsJson,
+        approvalB.canonicalArgumentsJson,
+      );
+      expect(first.resolveApproval(approvalB, approved: true), isFalse);
+      expect(second.resolveApproval(approvalA, approved: false), isFalse);
+      expect(owners.getOrCreate(a), same(first));
+      expect(owners.getOrCreate(b), same(second));
+      expect(first.resolveApproval(approvalA, approved: true), isTrue);
+      final effectA = first.activeRunFuture!;
+      await fixture.tool.enteredFor(a);
+      expect(owners.statusFor(a), 'running');
+      expect(owners.statusFor(b), 'waitingForApproval');
+      expect(second.pendingApproval, same(approvalB));
+      expect(fixture.tool.executedSessions, [a.id]);
+
+      expect(second.resolveApproval(approvalB, approved: false), isTrue);
+      final finishB = second.activeRunFuture!;
+      final continuationB = await fixture.model.callFor(b, 1);
+      expect(continuationB.outcomes.single['status'], 'rejected');
+      continuationB.settle();
+      final executionB = fixture.executions.singleWhere(
+        (execution) => execution.host.sessionId == b.id,
+      );
+      await executionB.closing.future;
+      expect(second.currentRun!.run.state, RunState.completed);
+      expect(second.isAdvancing, isTrue);
+      expect(second.canStart, isFalse);
+      expect(second.sessionStateRevision, 1);
+      expect(owners.statusFor(b), 'running');
+      expect(owners.getOrCreate(b), same(second));
+      await expectLater(second.startRun(), throwsStateError);
+      expect(fixture.ids.values, [runA, runB]);
+      expect(effectGate.isCompleted, isFalse);
+      gatesB.closeGate!.complete();
+      await finishB;
+      expect(second.sessionStateRevision, 2);
+      expect(owners.statusFor(b), 'completed');
+      expect(executionB.closeCalls, 1);
+      expect(owners.statusFor(a), 'running');
+
+      effectGate.complete();
+      final continuationA = await fixture.model.callFor(a, 1);
+      expect(continuationA.outcomes.single['status'], 'success');
+      continuationA.settle();
+      await effectA;
+      expect(first.sessionStateRevision, 2);
+      expect(first.latestRunId, runA);
+      expect(second.latestRunId, runB);
+      expect(owners.statusFor(a), 'completed');
+      expect(first.activityForRun(runB), isNull);
+      expect(second.activityForRun(runA), isNull);
+      expect(first.resolveApproval(approvalA, approved: true), isFalse);
+      expect(second.resolveApproval(approvalB, approved: false), isFalse);
+      expect(
+        first.activityForRun(runA)!.tools.single.outcome!.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(
+        second.activityForRun(runB)!.tools.single.outcome!.disposition,
+        ToolOutcomeDisposition.userRejected,
+      );
+      expect(fixture.executions.map((execution) => execution.closeCalls), [
+        1,
+        1,
+      ]);
+
+      final next = await owners.getOrCreate(a).startRun();
+      final restarting = first.activeRunFuture!;
+      expect(next, RunId('execution-3'));
+      expect(first.sessionStateRevision, 2);
+      (await fixture.model.callFor(a, 2)).settle();
+      await restarting;
+      expect(first.sessionStateRevision, 4);
+      expect(first.latestRunId, next);
+      expect(first.activityForRun(runA)!.state, RunState.completed);
+      expect(second.latestRunId, runB);
+      await owners.close();
+      expect(fixture.executions.map((execution) => execution.closeCalls), [
+        1,
+        1,
+        1,
+      ]);
+    },
+  );
+
+  for (final retired in ['strategy', 'provider']) {
+    test(
+      'acceptance captures $retired synchronously before scheduled preparation',
+      () async {
+        final controller = fixture.controller(pinStrategy: false);
+        final strategy = fixture.runtime.lifecycle.resolveSessionStrategy(
+          fixture.session.id,
+        );
+        expect(controller.capturedStrategy, isNull);
+        final accepted = controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        expect(
+          controller.capturedStrategy!.binding.isSameRegistration(
+            strategy.binding,
+          ),
+          isTrue,
+        );
+        expect(controller.latestRunId, RunId('execution-1'));
+        expect(controller.sessionStateRevision, 0);
+        Future<void> retirement;
+        if (retired == 'strategy') {
+          retirement = fixture.strategy.close();
+          fixture.strategy = fixture.registerStrategy();
+        } else {
+          retirement = fixture.modelRegistration.close();
+          fixture.modelRegistration = fixture.registerModel(_ModelChannel());
+        }
+        await retirement;
+        expect(await accepted, RunId('execution-1'));
+        await advancing;
+        expect(controller.failure, isNotNull);
+        expect(controller.isRunning, isFalse);
+        expect(
+          controller.stateForRun(controller.latestRunId!),
+          RunState.failed,
+        );
+        expect(controller.sessionStateRevision, retired == 'strategy' ? 1 : 2);
+        expect(fixture.models.every((model) => model.calls.isEmpty), isTrue);
+        expect(fixture.ids.values, [RunId('execution-1')]);
+        expect(
+          controller.capturedStrategy!.binding.isSameRegistration(
+            strategy.binding,
+          ),
+          isTrue,
+        );
+      },
+    );
+  }
+
+  test(
+    'refresh observes provider retirement without replacing a waiting binding',
+    () async {
+      final owners = fixture.owners();
+      final a = fixture.session;
+      final b = fixture.anotherSession();
+      final first = owners.getOrCreate(a);
+      final second = owners.getOrCreate(b);
+      final runId = await first.startRun();
+      final starting = first.activeRunFuture!;
+      final call = await fixture.model.callFor(a);
+      call.propose('retained');
+      call.settle();
+      await starting;
+      await Future<void>.delayed(Duration.zero);
+      var notifications = 0;
+      owners.addListener(() => notifications++);
+      final approval = first.pendingApproval;
+      final revision = first.sessionStateRevision;
+      await fixture.modelRegistration.close();
+      owners.refresh();
+      owners.refresh();
+      expect(notifications, 0);
+      expect(first.unavailableReason, contains('provider'));
+      expect(second.unavailableReason, contains('provider'));
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+      final replacement = _ModelChannel();
+      fixture.modelRegistration = fixture.registerModel(replacement);
+      owners.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 2);
+      expect(first.unavailableReason, contains('provider'));
+      expect(second.unavailableReason, isNull);
+      expect(first.pendingApproval, same(approval));
+      expect(first.latestRunId, runId);
+      expect(first.sessionStateRevision, revision);
+      expect(owners.statusFor(a), 'waitingForApproval');
+      expect(owners.statusFor(b), 'idle');
+      expect(owners.length, 2);
+      expect(replacement.calls, isEmpty);
+      expect(fixture.ids.values, [runId]);
+    },
+  );
+
+  test(
+    'close fences all owners before draining and waits for siblings after cleanup failure',
+    () async {
+      final owners = fixture.owners();
+      final a = fixture.session;
+      final b = fixture.anotherSession();
+      final failure = StateError('First owner cleanup failed');
+      final gatesA = fixture.gatesFor(a)
+        ..closeGate = Completer<void>()
+        ..closeError = failure;
+      final gatesB = fixture.gatesFor(b)..closeGate = Completer<void>();
+      var ownerNotifications = 0;
+      var controllerNotifications = 0;
+      owners.addListener(() => ownerNotifications++);
+      final first = owners.getOrCreate(a)
+        ..addListener(() => controllerNotifications++);
+      final second = owners.getOrCreate(b)
+        ..addListener(() => controllerNotifications++);
+      final runA = await first.startRun();
+      final callA = await fixture.model.callFor(a);
+      final runB = await second.startRun();
+      final waitingB = second.activeRunFuture!;
+      final callB = await fixture.model.callFor(b);
+      callB.propose('abandoned');
+      callB.settle();
+      await waitingB;
+      await Future<void>.delayed(Duration.zero);
+      final approval = second.pendingApproval!;
+      final journalB = second.currentRun!.run.journal.records;
+      final beforeOwners = ownerNotifications;
+      final beforeControllers = controllerNotifications;
+      final revisions = [
+        first.sessionStateRevision,
+        second.sessionStateRevision,
+      ];
+      final closing = owners.close();
+      expect(owners.close(), same(closing));
+      expect(owners.isClosed, isTrue);
+      expect(first.isClosed, isTrue);
+      expect(second.isClosed, isTrue);
+      expect(first.canStart, isFalse);
+      expect(second.resolveApproval(approval, approved: true), isFalse);
+      expect(second.resolveApproval(approval, approved: false), isFalse);
+      expect(() => owners.getOrCreate(a), throwsStateError);
+      var settled = false;
+      final observed = closing.then<void>(
+        (_) => fail('The cleanup failure must be retained'),
+        onError: (Object error) {
+          expect(error, same(failure));
+          settled = true;
+        },
+      );
+      final executionB = fixture.executions.singleWhere(
+        (execution) => execution.host.sessionId == b.id,
+      );
+      // B begins release while A's model invocation still prevents A draining.
+      await executionB.closing.future;
+      expect(first.activeRunFuture, isNotNull);
+      expect(executionB.closeCalls, 1);
+      expect(settled, isFalse);
+      callA.settle();
+      final executionA = fixture.executions.singleWhere(
+        (execution) => execution.host.sessionId == a.id,
+      );
+      await executionA.closing.future;
+      gatesA.closeGate!.complete();
+      await first.activeRunFuture;
+      await Future<void>.delayed(Duration.zero);
+      expect(settled, isFalse);
+      expect(gatesB.closeGate!.isCompleted, isFalse);
+      gatesB.closeGate!.complete();
+      await observed;
+      expect(settled, isTrue);
+      expect(owners.close(), same(closing));
+      await expectLater(owners.close(), throwsA(same(failure)));
+      fixture.ownerCollections.remove(owners);
+      owners.refresh();
+      first.refresh();
+      second.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(ownerNotifications, beforeOwners);
+      expect(controllerNotifications, beforeControllers);
+      expect([
+        first.sessionStateRevision,
+        second.sessionStateRevision,
+      ], revisions);
+      expect(fixture.executions.map((execution) => execution.closeCalls), [
+        1,
+        1,
+      ]);
+      expect(second.currentRun!.run.state, RunState.waiting);
+      expect(second.currentRun!.run.journal.records, journalB);
+      expect(fixture.runtime.store.runRecord(runB), isNull);
+      expect(
+        fixture.runtime.store.runRecord(runA)!.state,
+        RunTerminalState.completed,
+      );
+      expect(fixture.tool.executions, 0);
+    },
+  );
+
+  test('failed terminal release fences only that retained owner', () async {
+    final owners = fixture.owners();
+    final a = fixture.session;
+    final b = fixture.anotherSession();
+    final failure = StateError('Execution release failed');
+    fixture.gatesFor(a).closeError = failure;
+    final first = owners.getOrCreate(a);
+    final runA = await first.startRun();
+    final advancingA = first.activeRunFuture!;
+    (await fixture.model.callFor(a)).settle();
+    await advancingA;
+    expect(first.failure, same(failure));
+    expect(first.canStart, isFalse);
+    expect(first.unavailableReason, contains('could not be released'));
+    expect(owners.statusFor(a), 'failed');
+    await expectLater(first.startRun(), throwsStateError);
+    expect(fixture.ids.values, [runA]);
+    final second = owners.getOrCreate(b);
+    final runB = await second.startRun();
+    final advancingB = second.activeRunFuture!;
+    (await fixture.model.callFor(b)).settle();
+    await advancingB;
+    expect(second.canStart, isTrue);
+    expect(owners.statusFor(b), 'completed');
+    expect(
+      fixture.runtime.store.runRecord(runB)!.state,
+      RunTerminalState.completed,
+    );
+    await expectLater(owners.close(), throwsA(same(failure)));
+    fixture.ownerCollections.remove(owners);
+    expect(fixture.executions.map((execution) => execution.closeCalls), [1, 1]);
+  });
+
+  test('close suppresses an already queued owner notification', () async {
+    final owners = fixture.owners();
+    var notifications = 0;
+    owners.addListener(() => notifications++);
+    owners.getOrCreate(fixture.session);
+    final closing = owners.close();
+    await closing;
+    await Future<void>.delayed(Duration.zero);
+    expect(notifications, 0);
+    expect(fixture.ids.values, isEmpty);
+  });
+
   for (final preparing in [true, false]) {
     for (final fails in [true, false]) {
       test(
@@ -1120,6 +1738,8 @@ final class _Fixture {
   final tool = _Tool();
   final executions = <_Execution>[];
   final controllers = <SessionExecutionController>[];
+  final ownerCollections = <SessionExecutionOwners>[];
+  final sessionGates = <SessionId, _SessionGates>{};
   final materializing = Completer<void>();
   Completer<void>? materialization;
   Completer<void>? executionCloseGate;
@@ -1128,6 +1748,25 @@ final class _Fixture {
   late CapabilityRegistration modelRegistration;
   late CapabilityRegistration environmentRegistration;
   late Session session;
+
+  Session anotherSession() => runtime.lifecycle.createSession(
+    taskId: session.taskId,
+    strategyId: _strategyId,
+  );
+
+  _SessionGates gatesFor(Session session) =>
+      sessionGates.putIfAbsent(session.id, _SessionGates.new);
+
+  SessionExecutionOwners owners({RunIdSource? runIds}) {
+    final owners = SessionExecutionOwners(
+      runtime: runtime,
+      providerId: _providerId,
+      model: 'fixture-model',
+      runIds: runIds,
+    );
+    ownerCollections.add(owners);
+    return owners;
+  }
 
   static Future<_Fixture> create() async {
     final fixture = _Fixture();
@@ -1195,8 +1834,16 @@ final class _Fixture {
       strategyId: _strategyId,
       materialize: (context) async {
         if (!materializing.isCompleted) materializing.complete();
+        final gates = gatesFor(context.session);
+        if (!gates.materializing.isCompleted) gates.materializing.complete();
         await materialization?.future;
-        final execution = _Execution(context.host, executionCloseGate);
+        await gates.materialization?.future;
+        final execution = _Execution(
+          context.host,
+          gates.closeGate ?? executionCloseGate,
+          closeError: gates.closeError,
+          startError: gates.startError,
+        );
         executions.add(execution);
         return execution;
       },
@@ -1210,14 +1857,19 @@ final class _Fixture {
   );
 
   SessionExecutionController controller({
+    Session? session,
+    bool pinStrategy = true,
     String? model = 'fixture-model',
     RunIdSource? runIds,
     VoidCallback? onChanged,
   }) {
+    session ??= this.session;
     final controller = SessionExecutionController(
       runtime: runtime,
       session: session,
-      strategy: runtime.lifecycle.resolveSessionStrategy(session.id),
+      strategy: pinStrategy
+          ? runtime.lifecycle.resolveSessionStrategy(session.id)
+          : null,
       providerId: _providerId,
       model: model,
       runIds: runIds,
@@ -1238,13 +1890,25 @@ final class _Fixture {
     if (executionCloseGate case final gate? when !gate.isCompleted) {
       gate.complete();
     }
-    for (final model in models) {
-      for (final call in model.calls) {
-        unawaited(call.events.close());
+    for (final gates in sessionGates.values) {
+      if (gates.materialization case final gate? when !gate.isCompleted) {
+        gate.complete();
       }
+      if (gates.closeGate case final gate? when !gate.isCompleted) {
+        gate.complete();
+      }
+    }
+    for (final gate in tool.sessionGates.values) {
+      if (!gate.isCompleted) gate.complete();
+    }
+    for (final model in models) {
+      model.close();
     }
     for (final controller in controllers) {
       await controller.close();
+    }
+    for (final owners in ownerCollections) {
+      await owners.close();
     }
     await tools.close();
     await strategy.close();
@@ -1254,12 +1918,22 @@ final class _Fixture {
   }
 }
 
-// Only the public host facade is used. This test strategy has no Chat history,
-// instructions, frontend, or plugin implementation dependency.
+final class _SessionGates {
+  final materializing = Completer<void>();
+  Completer<void>? materialization;
+  Completer<void>? closeGate;
+  Object? closeError;
+  Object? startError;
+}
+
+// Only the public host facade is used, without Chat or frontend dependencies.
+// The Session marker routes model requests by identity, not arrival order.
 final class _Execution implements OrchestrationExecution {
-  _Execution(this.host, this.closeGate);
+  _Execution(this.host, this.closeGate, {this.closeError, this.startError});
   final OrchestrationExecutionHost host;
   final Completer<void>? closeGate;
+  final Object? closeError;
+  final Object? startError;
   final closing = Completer<void>();
   final outcomes = <SemanticModelInputItem>[];
   late StrategyModelTurn turn;
@@ -1268,12 +1942,18 @@ final class _Execution implements OrchestrationExecution {
 
   @override
   Future<void> start() async {
+    if (startError case final error?) throw error;
     host.start();
     await nextTurn();
   }
 
   Future<void> nextTurn() async {
-    turn = await host.invokeModel(StrategyInferenceMaterial(input: outcomes));
+    turn = await host.invokeModel(
+      StrategyInferenceMaterial(
+        instructions: 'Fixture Session: ${host.sessionId.value}',
+        input: outcomes,
+      ),
+    );
     if (turn.failure case final failure?) {
       host.fail(failure);
       return;
@@ -1313,6 +1993,7 @@ final class _Execution implements OrchestrationExecution {
     closeCalls++;
     if (!closing.isCompleted) closing.complete();
     await closeGate?.future;
+    if (closeError case final error?) throw error;
   }
 }
 
@@ -1324,6 +2005,12 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
   final entered = Completer<void>();
   Completer<void>? materializeGate;
   final materializing = Completer<void>();
+  final sessionGates = <SessionId, Completer<void>>{};
+  final sessionEntered = <SessionId, Completer<void>>{};
+  final executedSessions = <SessionId>[];
+
+  Future<void> enteredFor(Session session) =>
+      sessionEntered.putIfAbsent(session.id, Completer<void>.new).future;
 
   @override
   Future<Iterable<ToolRegistration>> materialize(
@@ -1367,8 +2054,15 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
     ToolExecutionContext context,
   ) async* {
     executions++;
+    executedSessions.add(context.sessionId);
     if (!entered.isCompleted) entered.complete();
+    final entry = sessionEntered.putIfAbsent(
+      context.sessionId,
+      Completer<void>.new,
+    );
+    if (!entry.isCompleted) entry.complete();
     await gate?.future;
+    await sessionGates[context.sessionId]?.future;
     yield ToolExecutionProgress(
       ToolProgress(kind: ToolProgressKind.stdout, content: 'fixture progress'),
     );
@@ -1437,12 +2131,35 @@ final class _RunIds implements RunIdSource {
 
 final class _ModelChannel implements AdeleStreamChannel {
   final calls = <_ModelCall>[];
+  bool closed = false;
   Completer<void> changed = Completer<void>();
+
+  void close() {
+    closed = true;
+    for (final call in calls) {
+      unawaited(call.events.close());
+    }
+  }
+
   Future<_ModelCall> callAt(int index) async {
     while (calls.length <= index) {
       await changed.future;
     }
     return calls[index];
+  }
+
+  Future<_ModelCall> callFor(Session session, [int index = 0]) async {
+    while (true) {
+      final matching = calls
+          .where(
+            (call) =>
+                call.request['instructions'] ==
+                'Fixture Session: ${session.id.value}',
+          )
+          .toList();
+      if (matching.length > index) return matching[index];
+      await changed.future;
+    }
   }
 
   @override
@@ -1451,6 +2168,7 @@ final class _ModelChannel implements AdeleStreamChannel {
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
     expect(method, modelProviderServiceInvokeId);
+    if (closed) return const Stream<Object?>.empty();
     final call = _ModelCall(payload['request']! as Map<String, Object?>);
     calls.add(call);
     changed.complete();

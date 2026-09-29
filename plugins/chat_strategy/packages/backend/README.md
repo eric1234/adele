@@ -92,6 +92,10 @@ in one SQL transaction before memory publication. Appends persist the candidate
 entry and counter atomically before returning it. Expected row counts and prior
 counter/configuration/draft predicates reject writes from stale generation caches.
 Read-only snapshots and other Sessions remain available.
+Both generated entrypoint dispatchers explicitly admit concurrent requests;
+Session claims and per-execution advancement guards, not a backend-global request
+queue, enforce exclusion. A model/tool wait in one Session cannot delay another
+Session's materialization, execution, or canonical reads through that router.
 Chat-owned `ChatRemoteOrchestrationBackend`
 runs sequencing against an execution-local history copy and commits its final
 assistant entry and counter only after `RemoteOrchestrationBackend` returns

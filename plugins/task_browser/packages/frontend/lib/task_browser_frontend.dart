@@ -190,9 +190,20 @@ class _TaskBrowserFrontendState extends State<TaskBrowserFrontend> {
     final String id = task['id'] as String;
     final String title = task['title'] as String;
     final int count = task['sessionCount'] as int;
+    final counts = task['executionCounts'];
+    final int preparing = counts['preparing'] as int;
+    final int running = counts['running'] as int;
+    final int waiting = counts['waiting'] as int;
+    final int terminal = counts['terminal'] as int;
+    final int failed = counts['failed'] as int;
+    final String sessions = count == 1 ? '1 Session' : '$count Sessions';
     return ListTile(
       title: Text(title),
-      subtitle: Text(count == 1 ? '1 Session' : '$count Sessions'),
+      subtitle: Text(
+        '$sessions\n$preparing preparing | $running running | '
+        '$waiting waiting | $terminal terminal ($failed failed)',
+      ),
+      isThreeLine: true,
       selected: selected,
       enabled: canAct(),
       onTap: actionCallback('selectTask', id),
@@ -260,9 +271,19 @@ class _TaskBrowserFrontendState extends State<TaskBrowserFrontend> {
     final String strategy = session['strategyId'] as String;
     final String name = session['presentationName'] as String;
     final bool available = session['available'] == true;
+    final labels = <String, String>{
+      'idle': 'Idle',
+      'preparing': 'Preparing',
+      'running': 'Running',
+      'waitingForApproval': 'Waiting for approval',
+      'completed': 'Completed',
+      'cancelled': 'Cancelled',
+      'failed': 'Failed',
+    };
+    final String status = labels[session['executionStatus']] as String;
     return ListTile(
       title: Text(name),
-      subtitle: Text('Session: $id\nStrategy: $strategy'),
+      subtitle: Text('Session: $id\nStrategy: $strategy\nStatus: $status'),
       isThreeLine: true,
       trailing: Text(available ? 'Open' : 'Unavailable'),
       enabled: available && canAct(),

@@ -79,6 +79,16 @@ class TerminalProjectionDeclarations implements EvalPlugin {
         ],
       ),
       ('resetTerminalProjection', voidType, const [handle]),
+      ('hideTerminalProjection', voidType, const [handle]),
+      (
+        'revealTerminalProjection',
+        const BridgeTypeAnnotation(
+          BridgeTypeRef(CoreTypes.future, [
+            BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
+          ]),
+        ),
+        const [handle],
+      ),
       (
         'yieldTerminalProjection',
         const BridgeTypeAnnotation(
@@ -269,6 +279,19 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
       ..registerBridgeFunc(_library, 'resetTerminalProjection', (_, _, args) {
         _resolve(args.single!.$value).resetProjection();
         return null;
+      })
+      ..registerBridgeFunc(_library, 'hideTerminalProjection', (_, _, args) {
+        _resolve(args.single!.$value).hideProjection();
+        return null;
+      })
+      ..registerBridgeFunc(_library, 'revealTerminalProjection', (_, _, args) {
+        final surface = _resolve(args.single!.$value);
+        return $Future.wrap(
+          surface.revealProjection().then<$Value>(
+            (ready) =>
+                $bool(ready && _available && identical(_surface, surface)),
+          ),
+        );
       })
       ..registerBridgeFunc(_library, 'yieldTerminalProjection', (_, _, args) {
         final handle = args.single!.$value;

@@ -32,6 +32,28 @@ final class SessionPresentationSelection {
     strategy.validateBinding();
     backend?.validate();
   }
+
+  /// Reattachment must use the backend strategy already captured by execution,
+  /// not a same-ID replacement or the lifetime of an earlier frontend view.
+  void validateController(SessionExecutionController controller) {
+    validate();
+    if (controller.isClosed ||
+        controller.session.strategyId != strategy.strategyId) {
+      throw StateError('The Session execution owner is unavailable.');
+    }
+    final captured =
+        controller.strategy ??
+        (controller.isRunning || controller.isAdvancing
+            ? controller.capturedStrategy
+            : null);
+    if (captured == null) return;
+    captured.validateBinding();
+    if (!captured.binding.isSameRegistration(strategy.binding)) {
+      throw StateError(
+        'The Session has a different captured strategy binding.',
+      );
+    }
+  }
 }
 
 /// One generic Session hosting path. Metadata selects ABI and affinity, not a
@@ -42,11 +64,14 @@ final class PreparedSessionHost {
     required this.backends,
     required this.controllerForSession,
     required this.inspectActivity,
+    this.lookupControllerForSession,
   });
 
   final ExtensionRegistry extensions;
   final ApplicationPluginBootstrap backends;
   final SessionExecutionController Function(Session) controllerForSession;
+  final SessionExecutionController? Function(Session)?
+  lookupControllerForSession;
   final bool Function(Session, InspectionTarget) inspectActivity;
   // Metadata must not keep retired contribution generations alive.
   final _metadata =
@@ -63,8 +88,9 @@ final class PreparedSessionHost {
   }
 
   SessionPresentationSelection resolve(
-    ExtensionBinding<SessionPresentationContribution> presentation,
-  ) {
+    ExtensionBinding<SessionPresentationContribution> presentation, {
+    Session? session,
+  }) {
     if (_closed) throw StateError('Session hosting is closed.');
     presentation.validate();
     final exact = SessionPresentationResolver(
@@ -97,12 +123,25 @@ final class PreparedSessionHost {
         );
       }
     }
-    return SessionPresentationSelection._(
+    final selection = SessionPresentationSelection._(
       presentation: presentation,
       strategy: strategy,
       pinStrategy: pin,
       backend: backend,
     )..validate();
+    if (session != null) {
+      if (session.strategyId != strategy.strategyId) {
+        throw StateError('Presentation belongs to another Session strategy.');
+      }
+      final controller = lookupControllerForSession?.call(session);
+      if (controller != null) {
+        if (!identical(controller.session, session)) {
+          throw StateError('Execution belongs to another canonical Session.');
+        }
+        selection.validateController(controller);
+      }
+    }
+    return selection;
   }
 
   void bind(Session session, SessionPresentationSelection selection) {
@@ -114,7 +153,7 @@ final class PreparedSessionHost {
     _sessions[session] = _SessionPresentationBinding(selection);
   }
 
-  /// Await local presentation state before closing execution or changing views.
+  /// Await local presentation state before changing views, not Run settlement.
   /// No hook means no pending presentation state, including absent native views.
   Future<void> prepareToDeactivate(Session session) async {
     final binding = _sessions[session];
@@ -143,6 +182,10 @@ final class PreparedSessionHost {
     }
     selection.presentation.validate();
     final controller = controllerForSession(session);
+    if (!identical(controller.session, session)) {
+      throw StateError('Execution belongs to another canonical Session.');
+    }
+    selection.validateController(controller);
     bool available() {
       if (_closed ||
           !identical(_sessions[session], binding) ||
@@ -150,7 +193,7 @@ final class PreparedSessionHost {
           controller.isClosed) {
         return false;
       }
-      selection.presentation.validate();
+      selection.validateController(controller);
       return true;
     }
 

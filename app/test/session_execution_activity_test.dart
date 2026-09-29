@@ -354,9 +354,34 @@ void main() {
         isActive: () => true,
         inspect: (_, _) => false,
       );
+      final reopened = SessionExecutionPresentationSource(
+        controller: controller,
+        extensions: runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
+      final foreignSession = runtime.lifecycle.createSession(
+        taskId: task.task.id,
+        strategyId: strategyId,
+      );
+      final foreignController = SessionExecutionController(
+        runtime: runtime,
+        session: foreignSession,
+        providerId: providerId,
+        model: 'fixture',
+      );
+      final foreign = SessionExecutionPresentationSource(
+        controller: foreignController,
+        extensions: runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
       addTearDown(() async {
         if (!preparation.gate.isCompleted) preparation.gate.complete();
         source.invalidate();
+        reopened.invalidate();
+        foreign.invalidate();
+        await foreignController.close();
         await controller.close();
         await tools.close();
         await strategy.close();
@@ -367,15 +392,23 @@ void main() {
       });
 
       final failedHandle = await source.startRun();
+      final failedId = controller.latestRunId!;
       final failedAdvance = controller.activeRunFuture!;
       await preparation.entered.future;
       expect(source.readRunActivity(failedHandle)['state'], 'created');
+      final reopenedHandle = reopened.openRunActivity(failedId.value)!;
+      expect(reopenedHandle, isNot(failedHandle));
+      expect(reopened.readRunActivity(reopenedHandle)['state'], 'created');
+      expect(reopened.readRunActivity(reopenedHandle)['models'], isEmpty);
+      expect(foreign.openRunActivity(failedId.value), isNull);
       expect(controller.currentRun, isNull);
       preparation.gate.completeError(StateError('Tool preparation failed.'));
       await failedAdvance;
       final failed = source.readRunActivity(failedHandle);
       expect(failed['state'], 'failed');
       expect(failed['models'], isEmpty);
+      expect(reopened.readRunActivity(reopenedHandle)['state'], 'failed');
+      expect(foreign.openRunActivity(failedId.value), isNull);
       expect(materializations, 0);
       expect(controller.activitySnapshots, isEmpty);
       expect(controller.canStart, isTrue);
@@ -393,6 +426,8 @@ void main() {
       await retryAdvance;
       expect(source.readRunActivity(retryHandle)['state'], 'completed');
       expect(source.readRunActivity(failedHandle), failed);
+      expect(reopened.openRunActivity(failedId.value), reopenedHandle);
+      expect(reopened.readRunActivity(reopenedHandle)['state'], 'failed');
       expect(materializations, 1);
       expect(controller.failure, isNull);
       expect(controller.activitySnapshots, hasLength(1));
@@ -541,13 +576,33 @@ void main() {
     expect(first.inspectActivity(tool), isFalse);
     expect(targets.length, count);
     active = true;
-    first.retainPresentation();
+    expect(
+      first.inspectActivity(tool),
+      isFalse,
+      reason: 'An observed retired presentation never revives.',
+    );
+    expect(() => first.openRunActivity(run.id.value), throwsStateError);
+    final freshHandle = other.openRunActivity(run.id.value)!;
+    final freshData = other.readRunActivity(freshHandle);
+    final freshModel = (freshData['models']! as List).single as Map;
+    final freshSafe =
+        ((freshModel['outputs']! as List)[2] as Map)['handle']! as String;
+    expect(freshHandle, isNot(handle));
+    expect(freshSafe, isNot(safe));
+    final cached = other.buildActivity(freshSafe);
+    other.retainPresentation();
     await controller.close();
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: cached)));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Safe native'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: first.buildActivity(safe))),
+      MaterialApp(home: Scaffold(body: other.buildActivity(freshSafe))),
     );
     await tester.pumpAndSettle();
     expect(find.textContaining('Safe native'), findsOneWidget);
+    tester.widget<TextButton>(find.byType(TextButton).first).onPressed?.call();
+    expect(other.inspectActivity(freshSafe), isFalse);
     expect(first.inspectActivity(tool), isFalse);
     expect(targets.length, count);
     first.invalidate();

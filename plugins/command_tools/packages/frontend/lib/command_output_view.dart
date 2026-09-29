@@ -72,6 +72,8 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   bool following = true;
   bool liveTail = true;
   bool replaying = true;
+  bool restoring = true;
+  bool revealing = false;
   bool resetPending = false;
   bool opening = false;
   int revision = 0;
@@ -85,6 +87,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   int rows = 20;
   int targetLines = -1;
   int targetUnits = -1;
+  int revealHighWater = -1;
   double restoreScroll = 0;
 
   @override
@@ -98,7 +101,14 @@ class _CommandOutputViewState extends State<CommandOutputView> {
       if (retained['knownLines'] != null) {
         knownLines = retained['knownLines'] as int;
       }
-      if (native.isNotEmpty) {
+      targetLines = (retained['targetLines'] ?? -1) as int;
+      targetUnits = (retained['targetUnits'] ?? -1) as int;
+      if (targetLines >= 0 || targetUnits >= 0) {
+        // A hidden reconstruction's accepted prefix is progress, not its goal.
+        // Preserve the destination even across another hide before reveal.
+        following = false;
+        restoreScroll = (retained['restoreScroll'] as num).toDouble();
+      } else if (native.isNotEmpty) {
         // Native state precedes deferred eval observation. A following emulator
         // with return-to-end disabled is reconstructing history, not live intent.
         following =
@@ -166,6 +176,11 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     if (value.state == 'absent') replaying = false;
     if (projection.isEmpty && value.state != 'absent') {
       projection = requestTerminalProjection(expanded ? 20 : 6, !expanded);
+      hideTerminalProjection(projection);
+      restoring = true;
+      replaying = true;
+      // A live producer must not move the initial reveal destination forever.
+      revealHighWater = value.highWater;
       if (!following) {
         // Prefix restoration follows locally, but is not a live-end gesture.
         setTerminalProjectionFollow(projection, true, false);
@@ -174,6 +189,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
       rows = geometry['rows'] as int;
       windowRows = (geometry['maxLines'] as int) - rows - 2;
       subscribeTerminalProjection(projection, projectionListener);
+      remember(true);
     }
     setState(() {});
   }
@@ -181,6 +197,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   void fail(String message) {
     if (disposed) return;
     failure = message;
+    if (revealing) hideTerminalProjection(projection);
     replaying = false;
     subscription?.cancel();
     setState(() {});
@@ -188,6 +205,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
 
   void projectionChanged() {
     if (disposed || projection.isEmpty || failure.isNotEmpty) return;
+    if (restoring) return;
     final state = readTerminalProjection(projection);
     if (state['following'] == false && (following || replaying)) {
       following = false;
@@ -211,10 +229,13 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   void remember([bool includeReplay = false]) {
     if (!expanded ||
         disposed ||
+        failure.isNotEmpty ||
         projection.isEmpty ||
-        (replaying && !includeReplay)) {
+        ((replaying || (draining && following)) && !includeReplay)) {
       return;
     }
+    // Native checkpoints already retain every accepted prefix. Save logical
+    // position at drain settlement or a user-mode change, not on every live feed.
     final state = readTerminalProjection(projection);
     writeConsoleContentState(<String, dynamic>{
       'following': following,
@@ -222,6 +243,9 @@ class _CommandOutputViewState extends State<CommandOutputView> {
       'codeUnits': consumedUnits,
       'knownLines': knownLines,
       'scrollOffset': state['scrollOffset'],
+      'targetLines': targetLines,
+      'targetUnits': targetUnits,
+      'restoreScroll': restoreScroll,
     });
   }
 
@@ -247,11 +271,20 @@ class _CommandOutputViewState extends State<CommandOutputView> {
         settleDrain();
         return;
       }
-      if ((targetLines >= 0 && lines >= targetLines) ||
-          (targetUnits >= 0 && consumedUnits >= targetUnits)) {
-        finishHistory();
-        settleDrain();
-        return;
+      if (restoring &&
+          (cursor >= revealHighWater ||
+              (targetLines >= 0 && lines >= targetLines) ||
+              (targetUnits >= 0 && consumedUnits >= targetUnits))) {
+        final ready = await finishRestore();
+        if (!ready) {
+          settleDrain();
+          drain();
+          return;
+        }
+        if (!following) {
+          settleDrain();
+          return;
+        }
       }
       final native = readTerminalProjection(projection);
       if (native['following'] == false) {
@@ -266,16 +299,10 @@ class _CommandOutputViewState extends State<CommandOutputView> {
         page = <CommandOutputChunk>[];
         chunkIndex = 0;
         if (cursor >= capture!.highWater) {
-          if (!following) {
-            finishHistory();
-          } else {
-            replaying = false;
-          }
+          replaying = false;
           settleDrain();
           return;
         }
-        replaying = true;
-        setState(() {});
         final requested = revision;
         final result = await settleOwningBackendOperation(
           client.readAfter(sessionId, runId, invocationId, cursor, 4, 16384),
@@ -381,13 +408,33 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     }
   }
 
-  void finishHistory() {
+  Future<bool> finishRestore() async {
+    final requested = revision;
+    if (!following) {
+      if (targetUnits > consumedUnits) {
+        fail('Stored output position is unavailable.');
+        return false;
+      }
+      setTerminalProjectionFollow(projection, false, liveTail);
+      scrollTerminalProjection(projection, restoreScroll);
+    }
+    revealing = true;
+    final ready = await revealTerminalProjection(projection);
+    revealing = false;
+    if (disposed || requested != revision || failure.isNotEmpty) return false;
+    if (!ready) {
+      fail(
+        'Output layout is unavailable. Close and reopen to try fresh access.',
+      );
+      return false;
+    }
+    restoring = false;
     replaying = false;
-    following = false;
     targetLines = -1;
     targetUnits = -1;
-    setTerminalProjectionFollow(projection, false, liveTail);
-    scrollTerminalProjection(projection, restoreScroll);
+    remember();
+    setState(() {});
+    return true;
   }
 
   void history(int endLine) {
@@ -396,10 +443,13 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     liveTail = false;
     following = false;
     replaying = true;
+    restoring = true;
+    revealHighWater = capture!.highWater;
     targetLines = endLine < windowRows ? windowRows : endLine;
     targetUnits = -1;
     restoreScroll = 0;
     resetPending = true;
+    hideTerminalProjection(projection);
     setTerminalProjectionFollow(projection, true, false);
     remember(true);
     setState(() {});
@@ -414,6 +464,10 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     replaying = true;
     targetLines = -1;
     targetUnits = -1;
+    if (restoring) {
+      hideTerminalProjection(projection);
+      revealHighWater = capture!.highWater;
+    }
     setTerminalProjectionFollow(projection, true, true);
     // Retain the user's new mode even if this view hides during catch-up. The
     // position still describes only text accepted by this projection.
@@ -481,6 +535,9 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     }
     String readingStatus = 'Reading history';
     if (following) readingStatus = 'Following output';
+    if (following && state != null && cursor < state.highWater) {
+      readingStatus = 'Following output (catching up)';
+    }
     if (replaying) readingStatus = 'Replaying output...';
     final controls = <Widget>[
       Text(status, maxLines: 2, overflow: TextOverflow.ellipsis),
