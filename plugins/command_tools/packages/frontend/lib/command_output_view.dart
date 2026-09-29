@@ -93,12 +93,29 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     projectionListener = () => projectionChanged();
     if (expanded) {
       final retained = readConsoleContentState();
-      if (retained['following'] == false) {
+      final native = readRetainedTerminalProjection();
+      liveTail = retained['liveTail'] != false;
+      if (retained['knownLines'] != null) {
+        knownLines = retained['knownLines'] as int;
+      }
+      if (native.isNotEmpty) {
+        // Native state precedes deferred eval observation. A following emulator
+        // with return-to-end disabled is reconstructing history, not live intent.
+        following =
+            native['following'] == true && native['resumeAtEnd'] == true;
+        if (native['resumeAtEnd'] == true) liveTail = true;
+        final nativeLines = native['lineAdvances'] as int;
+        if (nativeLines > knownLines) knownLines = nativeLines;
+        if (!following) {
+          targetUnits = native['acceptedCodeUnits'] as int;
+          restoreScroll = (native['scrollOffset'] as num).toDouble();
+        }
+      } else if (retained['following'] == false) {
+        // No projection has been checkpointed (for example, admission has not
+        // produced output yet). Logical state alone remains bounded and factual.
         following = false;
-        liveTail = retained['liveTail'] as bool;
         targetUnits = retained['codeUnits'] as int;
         restoreScroll = (retained['scrollOffset'] as num).toDouble();
-        knownLines = retained['knownLines'] as int;
       }
     }
     final Stream<CommandCaptureState> changes = client.watch(

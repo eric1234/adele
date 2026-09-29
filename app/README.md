@@ -371,7 +371,17 @@ same prepared installation/generation. `ConsoleController.openOrFocus` deduplica
 the opaque key within the exact contribution and canonical Session. It admits
 bounded plugin data plus metadata, never originating evaluator callbacks. Each
 remount receives fresh view-scoped backend/projection bridges; retained logical
-state is bounded opaque data, not a rendered transcript. Missing optional console
+state is bounded opaque data, not a rendered transcript. `ConsoleContentState`
+also owns one scalar `TerminalProjectionRetention` record. Native progress and
+viewport changes checkpoint synchronously without entering eval; final bridge
+release copies already-owned local state before disposal, even if presentation
+authority has already been revoked. Detachment retains the known viewport offset.
+Each new view takes an exact-owner lease, fencing stale snapshots; content release
+clears and permanently retires that record. The plugin combines this accepted
+native prefix/viewport with its logical reading mode when reconstructing a fresh
+emulator. No evaluator/widget/controller or hidden observer is retained, and no
+global `PreparedFrontend` lifecycle or post-revocation plugin authority is added.
+Missing optional console
 hosting does not disable factual Inspection. Read-only content closes without
 confirmation and releases no process resource. Command-specific reads, status,
 history, and follow behavior remain in its stock EVC.

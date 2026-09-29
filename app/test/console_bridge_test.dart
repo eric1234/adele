@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:adele_desktop/frontend/console_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
+import 'package:adele_desktop/frontend/terminal_projection_bridge.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/console_bridge.dart' as public_bridge;
 import 'package:dart_eval/dart_eval.dart';
@@ -61,6 +62,26 @@ Future<List<dynamic>> badKey() => openPreparedConsole('test.output', '', 'Output
     expect(
       () => public_bridge.writeConsoleContentState({}),
       throwsUnsupportedError,
+    );
+  });
+
+  test('content release permanently retires its native checkpoint owner', () {
+    final state = content();
+    final oldView = TerminalProjectionBridge(
+      isActive: () => true,
+      retention: state.projection,
+    );
+    state.write({'following': false});
+    state.clear();
+    oldView.invalidate();
+    expect(state.state, isEmpty);
+    expect(state.projection.snapshot, isEmpty);
+    expect(
+      () => TerminalProjectionBridge(
+        isActive: () => true,
+        retention: state.projection,
+      ),
+      throwsStateError,
     );
   });
 

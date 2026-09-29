@@ -74,8 +74,9 @@ final class NativeTerminalSurface {
   int _firstRetainedLine = 0;
   String? _projectionHighSurrogate;
   double? _projectionRequestedOffset;
+  double _projectionScrollOffset = 0;
+  double _projectionMaxScrollOffset = 0;
   final _projectionObservers = <VoidCallback>{};
-  bool _projectionNotificationPending = false;
 
   void _requireProjection() {
     _requireTerminal();
@@ -98,11 +99,14 @@ final class NativeTerminalSurface {
       'lineAdvances': _lineAdvances,
       'firstRetainedLine': _firstRetainedLine,
       'retainedLines': _requireTerminal().buffer.height,
-      'scrollOffset': position?.pixels ?? 0.0,
-      'maxScrollOffset': position?.maxScrollExtent ?? 0.0,
+      'scrollOffset': position?.pixels ?? _projectionScrollOffset,
+      'maxScrollOffset':
+          position?.maxScrollExtent ?? _projectionMaxScrollOffset,
     });
   }
 
+  /// Synchronous native checkpoints; interpreted notifications remain deferred
+  /// by the presentation bridge, never called during native state changes.
   VoidCallback observeProjection(VoidCallback observer) {
     _requireProjection();
     void listener() => observer();
@@ -111,19 +115,15 @@ final class NativeTerminalSurface {
   }
 
   void _projectionChanged() {
-    if (_projectionNotificationPending || isDisposed) return;
-    _projectionNotificationPending = true;
-    scheduleMicrotask(() {
-      _projectionNotificationPending = false;
-      for (final observer in _projectionObservers.toList()) {
-        if (!_projectionObservers.contains(observer)) continue;
-        try {
-          observer();
-        } on Object {
-          // Observation cannot interrupt the native feed or other observers.
-        }
+    if (isDisposed) return;
+    for (final observer in _projectionObservers.toList()) {
+      if (!_projectionObservers.contains(observer)) continue;
+      try {
+        observer();
+      } on Object {
+        // Observation cannot interrupt the native feed or other observers.
       }
-    });
+    }
   }
 
   int feedProjection(String text, int lineBudget) {
@@ -196,6 +196,8 @@ final class NativeTerminalSurface {
     _projectionHighSurrogate = null;
     _following = true;
     _projectionRequestedOffset = null;
+    _projectionScrollOffset = 0;
+    _projectionMaxScrollOffset = 0;
     _attached?._replaceProjectionTerminal();
     previous.dispose();
     _projectionChanged();
@@ -560,7 +562,17 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
   }
 
   void _projectionOffsetChanged() {
-    if (_available) _surface._projectionChanged();
+    if (!identical(_surface._attached, this)) return;
+    _cacheProjectionOffset();
+    _surface._projectionChanged();
+  }
+
+  void _cacheProjectionOffset() {
+    if (!identical(_surface._attached, this)) return;
+    final position = _projectionScrollPosition;
+    if (position == null) return;
+    _surface._projectionScrollOffset = position.pixels;
+    _surface._projectionMaxScrollOffset = position.maxScrollExtent;
   }
 
   bool get _available {
@@ -597,8 +609,11 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   @override
   void deactivate() {
-    if (_surface._projectionRows != null && !_surface._following) {
-      _surface._projectionRequestedOffset = _projectionScrollPosition?.pixels;
+    if (_surface._projectionRows != null) {
+      _cacheProjectionOffset();
+      if (!_surface._following) {
+        _surface._projectionRequestedOffset = _surface._projectionScrollOffset;
+      }
     }
     // Deliver an authorized blur before retiring the mount. Disposal still
     // clears emulator focus silently when presentation access was revoked.

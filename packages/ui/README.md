@@ -98,7 +98,11 @@ a removed tab or indefinitely prevent host cleanup.
 selection/context changes, unmount, or retirement permanently revoke that access;
 a fresh view receives fresh access. View-originated effects must check it,
 including after asynchronous work. This does not stop a hidden content owner's
-independent resource observation. The current [application host](../../app/README.md#session-console)
+independent resource observation. Prepared read-only projection hosting can copy
+already-owned scalar native state into its exact retained content record without
+invoking a revoked presenter. The record contains no view objects or transcript;
+new-view leases fence stale checkpoints and content removal clears it permanently.
+The current [application host](../../app/README.md#session-console)
 is Session-only; Task Browser exposes no console panel, toggle, or creation actions.
 
 ## Interpreted Bridges

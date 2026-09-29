@@ -83,7 +83,11 @@ void main() {
           validateBinding: () {},
         ),
         ConsoleBridge(isActive: () => true, content: content),
-        TerminalProjectionBridge(isActive: () => true, maxLines: 32),
+        TerminalProjectionBridge(
+          isActive: () => true,
+          maxLines: 32,
+          retention: preview ? null : content.projection,
+        ),
       ]),
     );
   }
@@ -502,6 +506,94 @@ void main() {
     await unmount(tester);
   });
 
+  for (final cleanup in ['reject', 'timeout']) {
+    testWidgets(
+      'stock fail cancels generated watch with $cleanup cleanup without escaping EVC',
+      (tester) async {
+        output.publish('capturing');
+        output.append('committed-capture\r\n');
+        output.readMode = 'error-once';
+        final pending = Completer<void>();
+        channel.cancelCleanup = () => cleanup == 'reject'
+            ? Future<void>.error(StateError('SECRET producer cleanup'))
+            : pending.future;
+        await mount(tester, both: true);
+        await _until(
+          tester,
+          () =>
+              channel.cancellations == 1 &&
+              output.observers.length == 1 &&
+              find
+                  .textContaining('Stored output could not be read')
+                  .evaluate()
+                  .isNotEmpty,
+          'failed reader cancels live producer',
+        );
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        final expandedFailed = find
+            .descendant(
+              of: find.byKey(const ValueKey('expanded')),
+              matching: find.textContaining('Stored output could not be read'),
+            )
+            .evaluate()
+            .isNotEmpty;
+        final survivor = find.descendant(
+          of: find.byKey(ValueKey(expandedFailed ? 'preview' : 'expanded')),
+          matching: find.byType(TerminalView),
+        );
+        await _until(
+          tester,
+          () =>
+              survivor.evaluate().isNotEmpty &&
+              _text(
+                tester.widget<TerminalView>(survivor).terminal,
+              ).contains('committed-capture'),
+          'unrelated stock reader survives',
+        );
+        final failingCard = find.byKey(
+          ValueKey(expandedFailed ? 'expanded' : 'preview'),
+        );
+        final before = tester
+            .widgetList<Text>(
+              find.descendant(of: failingCard, matching: find.byType(Text)),
+            )
+            .map((text) => text.data)
+            .toList();
+        channel.cancelledControllers.single.add({
+          'invalid': 'late producer event',
+        });
+        output.append('capture-continues\r\n');
+        await _until(
+          tester,
+          () => _text(
+            tester.widget<TerminalView>(survivor).terminal,
+          ).contains('capture-continues'),
+          'capture and sibling keep advancing',
+        );
+        await tester.pump(const Duration(seconds: 3));
+        expect(tester.takeException(), isNull);
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(find.textContaining('SECRET'), findsNothing);
+        expect(
+          tester
+              .widgetList<Text>(
+                find.descendant(of: failingCard, matching: find.byType(Text)),
+              )
+              .map((text) => text.data)
+              .toList(),
+          before,
+        );
+        expect(output.watches, 2);
+        expect(channel.cancellations, 1);
+        expect(output.status, 'capturing');
+        await unmount(tester);
+        expect(channel.cancellations, 2);
+        if (!pending.isCompleted) pending.complete();
+        await tester.pump();
+      },
+    );
+  }
+
   testWidgets('empty completion is not absence or a reason to read output', (
     tester,
   ) async {
@@ -729,6 +821,198 @@ void main() {
     expect(output.maximumReads, 1);
     await unmount(tester);
   });
+
+  testWidgets(
+    'immediate selection and unmount preserve native reading state before eval notification',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'immediate-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      final view = _view(tester);
+      final consumed = content.state['codeUnits'];
+      view.controller!.setSelection(
+        view.terminal.buffer.createAnchor(0, 0),
+        view.terminal.buffer.createAnchor(4, 0),
+      );
+      // Native feeding is already frozen, but the post-frame eval callback has
+      // not run. The stale logical record is the exact race being exercised.
+      expect(view.controller!.selection, isNotNull);
+      expect(content.state['following'], true);
+      final frozen = _text(view.terminal);
+      await unmount(tester);
+      await mount(tester);
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'immediate native freeze restored',
+      );
+      expect(content.state['following'], false);
+      expect(content.state['liveTail'], true);
+      expect(content.state['codeUnits'], consumed);
+      expect(_text(_view(tester).terminal), frozen);
+      final notifications = channel.items;
+      output.append('after-immediate-remount\r\n');
+      await _until(
+        tester,
+        () => channel.items > notifications,
+        'frozen observer remains live',
+      );
+      expect(_text(_view(tester).terminal), frozen);
+      expect(content.state['codeUnits'], consumed);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'immediate newer frozen offset preserves explicit history and accepted prefix',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(200, (i) => 'offset-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      await history(tester, 'Middle');
+      final view = _view(tester);
+      final frozen = _text(view.terminal);
+      final oldOffset = content.state['scrollOffset'];
+      view.scrollController!.position.pointerScroll(40);
+      final latest = content.projection.snapshot;
+      expect(latest['following'], false);
+      expect(latest['scrollOffset'], isNot(oldOffset));
+      expect(content.state['scrollOffset'], oldOffset);
+      await unmount(tester);
+      expect(
+        content.projection.snapshot['scrollOffset'],
+        latest['scrollOffset'],
+      );
+      await mount(tester);
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'newest historical offset restored',
+      );
+      expect(content.state['liveTail'], false);
+      expect(content.state['codeUnits'], latest['acceptedCodeUnits']);
+      expect(_text(_view(tester).terminal), frozen);
+      expect(
+        _view(tester).scrollController!.offset,
+        closeTo(latest['scrollOffset']! as double, .01),
+      );
+      final notifications = channel.items;
+      output.append('history-stays-frozen\r\n');
+      await _until(
+        tester,
+        () => channel.items > notifications,
+        'history extent changes',
+      );
+      expect(_text(_view(tester).terminal), frozen);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'immediate native live-end return retains intent before plugin callback',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'return-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      _view(tester).scrollController!.position.pointerScroll(-100);
+      await _until(
+        tester,
+        () => content.state['following'] == false,
+        'initial pause saved',
+      );
+      final notifications = channel.items;
+      output.append('returned-live-once\r\n');
+      await _until(
+        tester,
+        () => channel.items > notifications,
+        'paused live extent',
+      );
+      _view(tester).scrollController!.position.pointerScroll(10000);
+      expect(content.projection.snapshot['following'], true);
+      expect(content.state['following'], false);
+      await unmount(tester);
+      await mount(tester);
+      await caughtUp(tester);
+      expect(
+        _text(_view(tester).terminal).split('returned-live-once').length,
+        2,
+      );
+      output.append('following-after-remount');
+      await caughtUp(tester);
+      expect(
+        _text(_view(tester).terminal),
+        contains('following-after-remount'),
+      );
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'immediate freeze during held read retains only native accepted text',
+    (tester) async {
+      output.publish('capturing');
+      output.append(List.generate(100, (i) => 'held-$i\r\n').join());
+      await mount(tester);
+      await caughtUp(tester);
+      final before = output.units;
+      final frozen = _text(_view(tester).terminal);
+      output.readGate = Completer<void>();
+      output.append('committed-but-not-applied\r\n');
+      await _until(tester, () => output.activeReads == 1, 'new page held');
+      _view(tester).scrollController!.position.pointerScroll(-100);
+      expect(content.projection.snapshot['acceptedCodeUnits'], before);
+      expect(content.projection.snapshot['following'], false);
+      expect(content.state['following'], true);
+      await unmount(tester);
+      output.readGate!.complete();
+      await _until(
+        tester,
+        () => output.activeReads == 0,
+        'revoked read settles',
+      );
+      await mount(tester);
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'accepted prefix restored',
+      );
+      expect(content.state['codeUnits'], before);
+      expect(_text(_view(tester).terminal), frozen);
+      expect(output.maximumReads, 1);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'native intra-chunk checkpoint reconstructs a bounded prefix on remount',
+    (tester) async {
+      output.publish('capturing');
+      output.append(
+        List.generate(12000, (i) => String.fromCharCode(33 + i % 90)).join(),
+      );
+      await mount(tester);
+      await caughtUp(tester);
+      await history(tester, 'Middle');
+      final accepted = content.projection.snapshot['acceptedCodeUnits']! as int;
+      expect(accepted % 4096, isNot(0));
+      expect(accepted, lessThan(output.units));
+      final frozen = _text(_view(tester).terminal);
+      await unmount(tester);
+      await mount(tester);
+      await _until(
+        tester,
+        () => find.text('Reading history').evaluate().isNotEmpty,
+        'intra-chunk endpoint restored',
+      );
+      expect(content.state['codeUnits'], accepted);
+      expect(content.projection.snapshot['acceptedCodeUnits'], accepted);
+      expect(_text(_view(tester).terminal), frozen);
+      await unmount(tester);
+    },
+  );
 
   testWidgets(
     'explicit historical window stays chosen at its local end and on remount',
@@ -1039,6 +1323,7 @@ final class _Output implements CommandOutputService {
     identity(sessionId, runId, toolInvocationId);
     expectSync((maxChunks, maxCodeUnits), (4, 16384));
     cursors.add(afterCursor);
+    final failOnce = readMode == 'error-once' && cursors.length == 1;
     activeReads++;
     maximumReads = math.max(maximumReads, activeReads);
     final snapshot = captureState(
@@ -1052,7 +1337,9 @@ final class _Output implements CommandOutputService {
     );
     try {
       await readGate?.future;
-      if (readMode == 'error') throw StateError('SECRET storage path');
+      if (readMode == 'error' || failOnce) {
+        throw StateError('SECRET storage path');
+      }
       return CommandOutputPage(
         state: snapshot,
         chunks: switch (readMode) {
@@ -1119,6 +1406,9 @@ final class _Channel implements AdeleStreamChannel {
   final methods = <String>[];
   int nextId = 0;
   int items = 0;
+  int cancellations = 0;
+  Future<void> Function()? cancelCleanup;
+  final cancelledControllers = <StreamController<Object?>>[];
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
@@ -1186,10 +1476,13 @@ final class _Channel implements AdeleStreamChannel {
       },
       onCancel: () async {
         closed = true;
+        cancellations++;
+        cancelledControllers.add(controller);
         await dispatcher.handle({
           'kind': 'streamCancel',
           'requestId': id,
         }, send);
+        await cancelCleanup?.call();
       },
     );
     return controller.stream;

@@ -45,6 +45,13 @@ void main() {
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
+  Runtime bind(TerminalProjectionBridge bridge) {
+    addTearDown(bridge.invalidate);
+    return Runtime.ofProgram(program)
+      ..addPlugin(flutterEvalPlugin)
+      ..addPlugin(bridge);
+  }
+
   test('native public stubs confer no projection or feed authority', () {
     expect(
       () => public_bridge.requestTerminalProjection(6, false),
@@ -71,6 +78,10 @@ void main() {
       throwsUnsupportedError,
     );
     expect(
+      public_bridge.readRetainedTerminalProjection,
+      throwsUnsupportedError,
+    );
+    expect(
       () => public_bridge.setTerminalProjectionFollow('fake', true, true),
       throwsUnsupportedError,
     );
@@ -87,6 +98,342 @@ void main() {
       throwsUnsupportedError,
     );
   });
+
+  test('retained read without an owner is empty and authority fenced', () {
+    var active = true;
+    final runtime = bind(TerminalProjectionBridge(isActive: () => active));
+    expect(_invoke(runtime, 'readRetained', []), isEmpty);
+    active = false;
+    expect(() => _invoke(runtime, 'readRetained', []), throwsA(anything));
+  });
+
+  testWidgets('native prefix checkpoints precede interpreted accounting', (
+    tester,
+  ) async {
+    final retention = TerminalProjectionRetention();
+    final first = bind(
+      TerminalProjectionBridge(isActive: () => true, retention: retention),
+    );
+    final handle = _invoke(first, 'requestRows', [$int(6)]) as String;
+    var notifications = 0;
+    _invoke(first, 'observeHandle', [
+      $String(handle),
+      $Closure((_, _, _) {
+        notifications++;
+        return null;
+      }),
+    ]);
+    final accepted = _invoke(first, 'feedHandle', [
+      $String(handle),
+      $String('x' * 5000),
+      $int(2),
+    ]);
+    expect(accepted, 161);
+    expect(notifications, 0);
+    expect(retention.snapshot['acceptedCodeUnits'], accepted);
+    expect(
+      () => retention.snapshot['acceptedCodeUnits'] = -1,
+      throwsUnsupportedError,
+    );
+    final second = bind(
+      TerminalProjectionBridge(isActive: () => true, retention: retention),
+    );
+    final initial = _invoke(second, 'readRetained', []) as Map;
+    expect(initial['acceptedCodeUnits'], accepted);
+    expect(initial['lineAdvances'], 2);
+    expect(initial['following'], isTrue);
+    expect(initial['resumeAtEnd'], isTrue);
+    expect(
+      initial.values.every((value) => value is num || value is bool),
+      isTrue,
+    );
+    final next = _invoke(second, 'requestRows', [$int(6)]) as String;
+    _invoke(second, 'feedHandle', [$String(next), $String('new'), $int(6)]);
+    expect(_invoke(second, 'readRetained', []), initial);
+    expect(() => _invoke(first, 'readRetained', []), throwsA(anything));
+    expect(
+      () => _invoke(first, 'feedHandle', [
+        $String(handle),
+        $String('obsolete'),
+        $int(6),
+      ]),
+      throwsA(anything),
+    );
+    await tester.pump();
+    expect(notifications, 0);
+  });
+
+  for (final transition in ['scroll', 'selection', 'return', 'prefix']) {
+    testWidgets('immediate $transition survives without an EVC callback', (
+      tester,
+    ) async {
+      final retention = TerminalProjectionRetention();
+      var active = true;
+      final bridge = TerminalProjectionBridge(
+        isActive: () => active,
+        retention: retention,
+        maxLines: 40,
+      );
+      final runtime = bind(bridge);
+      final handle = _invoke(runtime, 'requestRows', [$int(20)]) as String;
+      final args = [$String(handle)];
+      for (var i = 0; i < 60; i++) {
+        _invoke(runtime, 'feedHandle', [...args, $String('row\n'), $int(20)]);
+      }
+      await tester.pumpWidget(
+        _host(_invoke(runtime, 'buildHandle', args) as Widget),
+      );
+      await tester.pump();
+      final view = tester.widget<TerminalView>(find.byType(TerminalView));
+      final position = view.scrollController!.position;
+      if (transition == 'return') {
+        position.pointerScroll(-60);
+        await tester.pump();
+      }
+      var notifications = 0;
+      _invoke(runtime, 'observeHandle', [
+        ...args,
+        $Closure((_, _, _) {
+          notifications++;
+          return null;
+        }),
+      ]);
+      switch (transition) {
+        case 'scroll':
+          position.pointerScroll(-60);
+        case 'selection':
+          final buffer = view.terminal.buffer;
+          view.controller!.setSelection(
+            buffer.createAnchor(0, 0),
+            buffer.createAnchor(3, 0),
+          );
+        case 'return':
+          position.pointerScroll(5000);
+        case 'prefix':
+          _invoke(runtime, 'followPolicy', [
+            ...args,
+            $bool(true),
+            $bool(false),
+          ]);
+      }
+      final native = _invoke(runtime, 'readHandle', args) as Map;
+      expect(native['scrollOffset'], greaterThan(0));
+      expect(notifications, 0);
+      expect(retention.snapshot, native);
+      // Revoke before the notification microtask/frame or interpreted dispose.
+      active = false;
+      bridge.invalidate();
+      final replacement = bind(
+        TerminalProjectionBridge(isActive: () => true, retention: retention),
+      );
+      final restored = _invoke(replacement, 'readRetained', []) as Map;
+      expect(restored, native);
+      expect(
+        restored['following'],
+        transition == 'return' || transition == 'prefix',
+      );
+      expect(restored['resumeAtEnd'], transition != 'prefix');
+      expect(restored['acceptedCodeUnits'], 240);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(notifications, 0);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('retired authority still permits a local-only final checkpoint', (
+    tester,
+  ) async {
+    final retention = TerminalProjectionRetention();
+    var active = true;
+    final bridge = TerminalProjectionBridge(
+      isActive: () => active,
+      retention: retention,
+      maxLines: 40,
+    );
+    final runtime = bind(bridge);
+    final handle = _invoke(runtime, 'requestRows', [$int(20)]) as String;
+    final args = [$String(handle)];
+    for (var i = 0; i < 60; i++) {
+      _invoke(runtime, 'feedHandle', [...args, $String('row\n'), $int(20)]);
+    }
+    await tester.pumpWidget(
+      _host(_invoke(runtime, 'buildHandle', args) as Widget),
+    );
+    await tester.pump();
+    _invoke(runtime, 'followHandle', [...args, $bool(false)]);
+    final scroll = tester
+        .widget<TerminalView>(find.byType(TerminalView))
+        .scrollController!;
+    active = false;
+    scroll.jumpTo(120);
+    final replacement = bind(
+      TerminalProjectionBridge(isActive: () => true, retention: retention),
+    );
+    expect(
+      _invoke(replacement, 'readRetained', []),
+      containsPair('scrollOffset', 120.0),
+    );
+    expect(() => _invoke(runtime, 'readRetained', []), throwsA(anything));
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('replacement lease ignores old local changes and disposal', (
+    tester,
+  ) async {
+    final retention = TerminalProjectionRetention();
+    final oldBridge = TerminalProjectionBridge(
+      isActive: () => true,
+      retention: retention,
+      maxLines: 40,
+    );
+    final old = bind(oldBridge);
+    final handle = _invoke(old, 'requestRows', [$int(20)]) as String;
+    for (var i = 0; i < 60; i++) {
+      _invoke(old, 'feedHandle', [$String(handle), $String('old\n'), $int(20)]);
+    }
+    await tester.pumpWidget(
+      _host(_invoke(old, 'buildHandle', [$String(handle)]) as Widget),
+    );
+    await tester.pump();
+    final scroll = tester
+        .widget<TerminalView>(find.byType(TerminalView))
+        .scrollController!;
+    final currentBridge = TerminalProjectionBridge(
+      isActive: () => true,
+      retention: retention,
+    );
+    final current = bind(currentBridge);
+    final currentHandle = _invoke(current, 'requestRows', [$int(20)]) as String;
+    _invoke(current, 'feedHandle', [
+      $String(currentHandle),
+      $String('new'),
+      $int(20),
+    ]);
+    final expected = _invoke(current, 'readHandle', [$String(currentHandle)]);
+    scroll.jumpTo(120);
+    oldBridge.invalidate();
+    await tester.pumpWidget(const SizedBox.shrink());
+    currentBridge.invalidate();
+    final next = bind(
+      TerminalProjectionBridge(isActive: () => true, retention: retention),
+    );
+    expect(_invoke(next, 'readRetained', []), expected);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('cleared owner cannot resurrect or affect independent owners', (
+    tester,
+  ) async {
+    final retention = TerminalProjectionRetention();
+    final bridge = TerminalProjectionBridge(
+      isActive: () => true,
+      retention: retention,
+    );
+    final runtime = bind(bridge);
+    final handle = _invoke(runtime, 'requestRows', [$int(6)]) as String;
+    var notifications = 0;
+    _invoke(runtime, 'observeHandle', [
+      $String(handle),
+      $Closure((_, _, _) {
+        notifications++;
+        return null;
+      }),
+    ]);
+    _invoke(runtime, 'feedHandle', [$String(handle), $String('old'), $int(6)]);
+    final siblingRetention = TerminalProjectionRetention();
+    final sibling = bind(
+      TerminalProjectionBridge(
+        isActive: () => true,
+        retention: siblingRetention,
+      ),
+    );
+    expect(_invoke(sibling, 'readRetained', []), isEmpty);
+    final other = _invoke(sibling, 'requestRows', [$int(6)]) as String;
+    _invoke(sibling, 'feedHandle', [
+      $String(other),
+      $String('sibling'),
+      $int(6),
+    ]);
+    retention.clear();
+    retention.clear();
+    expect(retention.snapshot, isEmpty);
+    expect(() => _invoke(runtime, 'readRetained', []), throwsA(anything));
+    expect(
+      () => _invoke(runtime, 'feedHandle', [
+        $String(handle),
+        $String('late'),
+        $int(6),
+      ]),
+      throwsA(anything),
+    );
+    bridge.invalidate();
+    await tester.pump();
+    expect(notifications, 0);
+    expect(retention.snapshot, isEmpty);
+    expect(
+      () =>
+          TerminalProjectionBridge(isActive: () => true, retention: retention),
+      throwsStateError,
+    );
+    final restored = bind(
+      TerminalProjectionBridge(
+        isActive: () => true,
+        retention: siblingRetention,
+      ),
+    );
+    expect(
+      _invoke(restored, 'readRetained', []),
+      containsPair('acceptedCodeUnits', 7),
+    );
+  });
+
+  for (final retirement in ['failure', 'invalidate', 'retain']) {
+    testWidgets('$retirement retains only bounded acknowledged native data', (
+      tester,
+    ) async {
+      final retention = TerminalProjectionRetention();
+      final bridge = TerminalProjectionBridge(
+        isActive: () => true,
+        retention: retention,
+      );
+      final runtime = bind(bridge);
+      final handle = _invoke(runtime, 'requestRows', [$int(6)]) as String;
+      _invoke(runtime, 'feedHandle', [
+        $String(handle),
+        $String('prior'),
+        $int(6),
+      ]);
+      final expected = _invoke(runtime, 'readHandle', [$String(handle)]) as Map;
+      switch (retirement) {
+        case 'failure':
+          expect(
+            _invoke(runtime, 'feedHandle', [
+              $String(handle),
+              $String('x\x1b[999999999b'),
+              $int(6),
+            ]),
+            -1,
+          );
+        case 'invalidate':
+          bridge.invalidate();
+        case 'retain':
+          bridge.retainPresentation();
+      }
+      bridge.invalidate();
+      final next = bind(
+        TerminalProjectionBridge(isActive: () => true, retention: retention),
+      );
+      final restored = _invoke(next, 'readRetained', []) as Map;
+      expect(restored, expected);
+      expect(restored.length, lessThanOrEqualTo(16));
+      expect(
+        restored.values.every((value) => value is num || value is bool),
+        isTrue,
+      );
+      await tester.pump();
+    });
+  }
 
   test('replay yields fence exact presentation before resumption', () async {
     final bridge = TerminalProjectionBridge(isActive: () => true);
@@ -288,8 +635,10 @@ void main() {
   testWidgets(
     'actual EVC explicitly chooses always-follow independent of rows',
     (tester) async {
+      final retention = TerminalProjectionRetention();
       final bridge = TerminalProjectionBridge(
         isActive: () => true,
+        retention: retention,
         maxLines: 40,
       );
       addTearDown(bridge.invalidate);
@@ -356,6 +705,8 @@ void main() {
       );
       await tester.pump();
       expect(_text(tester), endsWith('LIVE'));
+      expect(retention.snapshot['following'], isTrue);
+      expect(retention.snapshot['alwaysFollow'], isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );

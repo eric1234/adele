@@ -279,13 +279,31 @@ so the preview continues advancing while the expanded reader inspects history.
 ### Presentation lifetime and failures
 
 Hiding/unmounting a console releases its evaluator, watch, page, and native
-projection. The tab retains only logical follow/live-tail mode, consumed text extent,
-known rendered extent, and local scroll offset. Remount reconstructs the prefix
-into an empty emulator before restoring a frozen position or catching up live;
+projection. The tab retains bounded logical reading intent plus a native scalar
+projection checkpoint: follow/policy flags, accepted text extent, rendered extent,
+and viewport offset. Native changes checkpoint synchronously without calling
+eval; a final native copy also precedes bridge disposal. Detachment preserves the
+last known offset. Neither callback delivery nor plugin `dispose` is required to
+save an immediate scroll/selection freeze, a newer frozen offset, or a manual
+live-end return before the tab hides.
+
+The plugin reads that exact retained checkpoint on remount. Native accepted text
+extent is authoritative even inside a chunk or while a page read/replay was in
+flight; logical live-tail versus explicit-history intent remains plugin-owned.
+Following during programmatic prefix replay is not interpreted as new live-tail
+intent. A fresh projection reconstructs the accepted prefix before restoring a
+frozen position or catching up live;
 it never resumes an old cursor against an empty surface. Prefix reconstruction
 is incremental and cancellable, but costs O(prefix length) on historical seeks
 and remounts. This deliberately basic history UI has no search, export,
 virtualized transcript scrollbar, or durable emulator checkpoints.
+
+The native checkpoint belongs to the exact retained content owner, not its key
+string. Each mounted view acquires a new lease; stale view checkpoints cannot
+overwrite a replacement, and removing content permanently clears the record.
+No transcript, evaluator, widget, controller, or callback is retained in that
+record. Revocation remains immediate: copying already-owned native state does
+not permit plugin effects, backend reads, or deferred eval saves after revocation.
 
 Closing a card or output tab detaches only that presentation. Admitted tabs
 survive card closure; closing them requires no process confirmation, cannot
@@ -301,6 +319,13 @@ opening again may acquire fresh permitted access. Stored history needs only the
 compatible Command backend and Project storage, not Git activation or Environment
 materialization. Generic safe Future settlement is supplied by the own-backend
 bridge, not Session execution authority.
+
+Generated EVC subscriptions already contain cancellation cleanup rejection and
+timeout at the interpreted subscription adapter. Reader failure/disposal can
+detach observation without turning cleanup failure into an entire-presentation
+error; native callers retain their native cancellation error semantics. Focused
+tests cover rejecting and timed-out cleanup through both the generated stock
+reader and the own-backend EVC fixture, including unaffected sibling readers.
 
 ### Preparation and evidence
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/console_bridge.dart';
@@ -21,9 +22,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:xterm2/xterm.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/terminal_frontend_compiler.dart';
+import '../tool/tool_inspection_frontend_compiler.dart';
 
 const _plugin = 'dev.adele.plugin.terminal';
 const _contentLibrary = 'package:console_content_probe/main.dart';
@@ -33,6 +36,7 @@ void main() {
   late Directory temporary;
   late PreparedPluginCatalog catalog;
   late File contentArtifact;
+  late Directory commandInstallation;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('prepared-console-');
@@ -80,6 +84,36 @@ void main() {
     contentArtifact = await File(
       '${temporary.path}/content.evc',
     ).writeAsBytes(program.write());
+    commandInstallation = await Directory(
+      '${temporary.path}/command-installation',
+    ).create();
+    final command = await Directory(
+      '${commandInstallation.path}/command',
+    ).create();
+    await compileToolInspectionFrontend(
+      repositoryRoot: Directory.current.parent,
+      artifact: File('${command.path}/frontend.evc'),
+      frontend: ToolInspectionFrontend.command,
+    );
+    await File('${command.path}/backend.aot').writeAsString('fixture');
+    await File('${command.path}/adele_plugin.installation.json').writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': 'dev.adele.plugin.command-tools',
+          'version': 'test',
+          'displayName': 'Command Tools',
+        },
+        'components': {
+          'backend': {'artifact': 'backend.aot'},
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations':
+                stockFrontendDescriptors['dev.adele.plugin.command-tools'],
+          },
+        },
+      }),
+    );
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
@@ -296,6 +330,179 @@ void main() {
       expect(fixture.provider.requests, isEmpty);
     },
   );
+
+  for (final departure in ['hide', 'switch tab', 'leave Session']) {
+    testWidgets(
+      'stock Command retains immediate native scroll before $departure',
+      (tester) => tester.runAsync(() async {
+        final backends = ApplicationPluginBootstrap(
+          fixture.capabilities,
+          fixture.extensions,
+        );
+        final host = PreparedConsoleHost(
+          store: fixture.store,
+          terminals: fixture.terminals,
+          extensions: fixture.extensions,
+          controller: fixture.controller,
+          backends: backends,
+        );
+        final frontends = ApplicationFrontendBootstrap(
+          extensions: fixture.extensions,
+          consoleHost: host,
+          backends: backends,
+        );
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await frontends.close();
+          await host.close();
+          await backends.close();
+        });
+        await backends.start(
+          installationRoot: commandInstallation.path,
+          dartaotruntimeExecutable:
+              '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+          hostArtifactPath: File(
+            'test/fixtures/command_output_host.dart',
+          ).absolute.path,
+        );
+        await frontends.start(backends.catalog!);
+        expect(
+          frontends.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        final connection = backends.backends.single.connection!;
+        Future<Object?> control(String method, [String? text]) =>
+            connection.request(method, {'text': ?text});
+        Map<Object?, Object?> backendState = {};
+        Future<void> until(bool Function() ready, String reason) async {
+          for (var turn = 0; turn < 200; turn++) {
+            // A backend acknowledgement advances real I/O without sleeps.
+            backendState = (await control('barrier'))! as Map;
+            await tester.pump();
+            expect(tester.takeException(), isNull, reason: reason);
+            if (ready()) return;
+          }
+          fail(
+            'Did not reach $reason; visible text: '
+            '${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).join(' | ')}',
+          );
+        }
+
+        await control(
+          'append',
+          List.generate(260, (i) => 'original-$i\r\n').join(),
+        );
+        fixture.controller.setSession(fixture.sessionA);
+        final owner = fixture.extensions
+            .discover(consoleContributions)
+            .singleWhere(
+              (binding) =>
+                  binding.id ==
+                  ExtensionId('dev.adele.plugin.command-tools.output'),
+            );
+        Future<void> open(String key) => fixture.controller.openOrFocus(
+          owner: owner,
+          session: fixture.sessionA,
+          descriptor: ConsoleContentDescriptor(
+            key: key,
+            metadata: ConsoleMetadata(title: key),
+            data: const {
+              'sessionId': 'a',
+              'runId': 'run',
+              'toolInvocationId': 'invocation',
+              'title': 'Command output',
+            },
+          ),
+        );
+        await open('other output');
+        final other = fixture.controller.selectedTab!;
+        await open('reading output');
+        final tab = fixture.controller.selectedTab!;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: WorkbenchConsole(controller: fixture.controller),
+            ),
+          ),
+        );
+        TerminalView view() =>
+            tester.widget<TerminalView>(find.byType(TerminalView));
+        await until(
+          () =>
+              find.text('Following output').evaluate().isNotEmpty &&
+              find.byType(TerminalView).evaluate().isNotEmpty &&
+              _terminalText(view().terminal).contains('original-259'),
+          'initial stock reader catch-up',
+        );
+        await tester.pump();
+        final previous = view();
+        final frozen = _terminalText(previous.terminal);
+        final oldPresentation = fixture.controller.selectedPresentation;
+        final scroll = previous.scrollController!;
+        final liveOffset = scroll.offset;
+        expect(liveOffset, greaterThan(120));
+
+        // This is the actual native wheel path, not jumpTo or a plugin callback.
+        // Revoke in the same synchronous turn: no await, microtask, or frame may
+        // let the stock reader save the newly frozen mode/offset before departure.
+        scroll.position.pointerScroll(-100);
+        final frozenOffset = scroll.offset;
+        expect(frozenOffset, closeTo(liveOffset - 100, 0.01));
+        expect(find.text('Following output'), findsOneWidget);
+        switch (departure) {
+          case 'hide':
+            fixture.controller.setVisible(false);
+          case 'switch tab':
+            fixture.controller.select(other);
+          case 'leave Session':
+            fixture.controller.setSession(fixture.sessionB);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await control('append', 'while-away\r\n');
+        fixture.controller.setSession(fixture.sessionA);
+        fixture.controller.setVisible(true);
+        fixture.controller.select(tab);
+        expect(fixture.controller.selectedTab, same(tab));
+        expect(
+          fixture.controller.selectedPresentation,
+          isNot(same(oldPresentation)),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: WorkbenchConsole(controller: fixture.controller),
+            ),
+          ),
+        );
+        await until(
+          () => find.text('Reading history').evaluate().isNotEmpty,
+          'frozen mode after immediate $departure',
+        );
+        await tester.pump();
+        expect(view().terminal, isNot(same(previous.terminal)));
+        expect(_terminalText(view().terminal), frozen);
+        expect(view().terminal.buffer.height, lessThanOrEqualTo(200));
+        expect(view().scrollController!.offset, closeTo(frozenOffset, 0.01));
+        await control('append', 'after-remount\r\n');
+        await until(
+          () => backendState['deliveredVersion'] == 3,
+          'post-remount append delivered through generated watch',
+        );
+        expect(find.text('Reading history'), findsOneWidget);
+        expect(_terminalText(view().terminal), frozen);
+        expect(view().scrollController!.offset, closeTo(frozenOffset, 0.01));
+        view().scrollController!.position.pointerScroll(20000);
+        await until(
+          () =>
+              find.text('Following output').evaluate().isNotEmpty &&
+              _terminalText(view().terminal).contains('after-remount'),
+          'retained live-tail policy resumes on real user return',
+        );
+        expect(fixture.provider.requests, isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }),
+    );
+  }
 
   test(
     'corrupt stock artifact exposes no action or native replacement',
@@ -625,6 +832,11 @@ void main() {
 }
 
 Future<void> _turn() => Future<void>.delayed(Duration.zero);
+
+String _terminalText(Terminal terminal) => [
+  for (var i = 0; i < terminal.buffer.lines.length; i++)
+    terminal.buffer.lines[i].getText().trimRight(),
+].join('\n');
 
 final class _Fixture {
   _Fixture() {

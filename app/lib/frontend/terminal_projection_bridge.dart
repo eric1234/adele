@@ -11,6 +11,32 @@ import 'structured_bridge_data.dart';
 
 const _library = 'package:adele_ui/terminal_projection_bridge.dart';
 
+/// Bounded native projection data for one retained content owner. No emulator,
+/// view, evaluator, or callback survives here between presentations.
+final class TerminalProjectionRetention {
+  int _epoch = 0;
+  bool _closed = false;
+  Map<String, Object> _snapshot = const {};
+
+  /// Last native checkpoint, independent of delayed interpreted observation.
+  Map<String, Object> get snapshot => _snapshot;
+
+  int _acquire() {
+    if (_closed) throw StateError('Terminal projection retention is closed.');
+    return ++_epoch;
+  }
+
+  bool _isCurrent(int? lease) => !_closed && lease == _epoch;
+
+  /// Permanently revokes all leases and discards removed content's snapshot.
+  void clear() {
+    if (_closed) return;
+    _closed = true;
+    _epoch++;
+    _snapshot = const {};
+  }
+}
+
 class TerminalProjectionDeclarations implements EvalPlugin {
   const TerminalProjectionDeclarations();
 
@@ -73,6 +99,16 @@ class TerminalProjectionDeclarations implements EvalPlugin {
         const [handle],
       ),
       (
+        'readRetainedTerminalProjection',
+        const BridgeTypeAnnotation(
+          BridgeTypeRef(CoreTypes.map, [
+            string,
+            BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.dynamic)),
+          ]),
+        ),
+        const <BridgeParameter>[],
+      ),
+      (
         'setTerminalProjectionFollow',
         voidType,
         const [
@@ -122,11 +158,18 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
   TerminalProjectionBridge({
     required bool Function() isActive,
     int maxLines = 200,
+    TerminalProjectionRetention? retention,
   }) : _isActive = isActive,
-       _maxLines = maxLines;
+       _maxLines = maxLines,
+       _retention = retention,
+       _lease = retention?._acquire(),
+       _initialProjection = Map.of(retention?.snapshot ?? const {});
 
   final bool Function() _isActive;
   final int _maxLines;
+  final TerminalProjectionRetention? _retention;
+  final int? _lease;
+  final Map<String, Object> _initialProjection;
   final Map<EvalCallable, VoidCallback> _listeners = Map.identity();
   NativeTerminalSurface? _surface;
   VoidCallback? _detach;
@@ -141,6 +184,10 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
 
   bool get _available {
     if (!_active) return false;
+    if (_retention != null && !_retention._isCurrent(_lease)) {
+      invalidate();
+      return false;
+    }
     try {
       if (_isActive()) return true;
     } on Object {
@@ -240,6 +287,14 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
           _resolve(args.single!.$value).readProjection(),
         );
       })
+      ..registerBridgeFunc(_library, 'readRetainedTerminalProjection', (
+        _,
+        _,
+        _,
+      ) {
+        _validate();
+        return wrapStructuredBridgeData(_initialProjection);
+      })
       ..registerBridgeFunc(_library, 'setTerminalProjectionFollow', (
         _,
         _,
@@ -283,7 +338,23 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
       });
   }
 
+  void _checkpoint() {
+    final retention = _retention;
+    final surface = _surface;
+    if (!_active ||
+        retention == null ||
+        !retention._isCurrent(_lease) ||
+        surface == null ||
+        surface.isDisposed) {
+      return;
+    }
+    // Only already-owned native scalars are copied. External view authority may
+    // have retired before interpreted observation or widget teardown can run.
+    retention._snapshot = surface.readProjection();
+  }
+
   void _changed() {
+    _checkpoint();
     if (!_available || _scheduled || _listeners.isEmpty) return;
     _scheduled = true;
     final queued = Map.of(_listeners);
@@ -307,6 +378,7 @@ final class TerminalProjectionBridge extends TerminalProjectionDeclarations
 
   @override
   void retainPresentation() {
+    _checkpoint();
     _active = false;
     _listeners.clear();
     _detach?.call();

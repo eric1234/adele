@@ -21,6 +21,7 @@ class StreamProbeState extends State<StreamProbe> {
     OwningBackendRequestChannel(streamServiceId),
   );
   String text = 'idle';
+  String cancelState = '';
   dynamic subscription;
   bool disposed = false;
 
@@ -66,6 +67,13 @@ class StreamProbeState extends State<StreamProbe> {
     }
   }
 
+  void cancel() async {
+    setState(() { cancelState = 'cancel:pending'; });
+    await subscription.cancel();
+    if (disposed) return;
+    setState(() { cancelState = 'cancel:settled'; });
+  }
+
   void startNullData() {
     // The pin's SDK declaration rejects literal Null for nullable callbacks.
     // Dynamic values exercise actual eval nulls without replacing that library.
@@ -109,6 +117,7 @@ class StreamProbeState extends State<StreamProbe> {
   Widget build(BuildContext context) => Column(
     children: [
       Text(text),
+      Text(cancelState),
       TextButton(onPressed: start, child: Text('Listen')),
       TextButton(onPressed: read, child: Text('Read')),
       TextButton(onPressed: readSettled, child: Text('Read settled')),
@@ -130,9 +139,7 @@ class StreamProbeState extends State<StreamProbe> {
         child: Text('Resume'),
       ),
       TextButton(
-        onPressed: () {
-          subscription.cancel();
-        },
+        onPressed: cancel,
         child: Text('Cancel'),
       ),
     ],

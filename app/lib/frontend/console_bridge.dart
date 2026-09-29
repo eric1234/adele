@@ -6,6 +6,7 @@ import 'package:dart_eval/stdlib/core.dart';
 
 import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
+import 'terminal_projection_bridge.dart';
 
 const _library = 'package:adele_ui/console_bridge.dart';
 const _map = BridgeTypeAnnotation(
@@ -79,12 +80,16 @@ final class ConsoleContentState {
   ConsoleContentState(this.descriptor);
 
   final ConsoleContentDescriptor descriptor;
+  final projection = TerminalProjectionRetention();
   Map<String, Object?> _state = const {};
   Map<String, Object?> get state => _state;
 
   void write(Map<String, Object?> state) =>
       _state = copyConsoleContentData(state);
-  void clear() => _state = const {};
+  void clear() {
+    _state = const {};
+    projection.clear();
+  }
 }
 
 final class ConsoleBridge extends ConsoleDeclarations

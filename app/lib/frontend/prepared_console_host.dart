@@ -120,7 +120,10 @@ final class PreparedConsoleHost {
                       key: ObjectKey(presentation),
                       createBridge: () => PreparedFrontendBridges([
                         ConsoleBridge(isActive: available, content: state),
-                        TerminalProjectionBridge(isActive: available),
+                        TerminalProjectionBridge(
+                          isActive: available,
+                          retention: state.projection,
+                        ),
                         if (backend case final channel?)
                           OwningBackendBridge.channel(
                             channel,

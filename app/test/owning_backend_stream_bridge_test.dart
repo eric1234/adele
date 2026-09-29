@@ -219,6 +219,175 @@ void main() {
     expect(find.text('1:paused'), findsOneWidget);
   });
 
+  for (final hangs in [false, true]) {
+    testWidgets(
+      'native cancel still reports ${hangs ? 'timed out' : 'rejected'} cleanup',
+      (tester) async {
+        final cancellation = Completer<void>();
+        final channel = _Channel(onCancel: () => cancellation.future);
+        final bridge = OwningBackendBridge(
+          channels: {'fixture.stream': channel},
+          validateBinding: () {},
+        );
+        addTearDown(bridge.invalidate);
+        final subscription = bridge
+            .stream('fixture.stream', 'fixture.stream.watch', {
+              'scope': 'captured',
+            })
+            .listen((_) {});
+        final failure = StateError('SECRET cleanup diagnostic');
+        final check = expectLater(
+          subscription.cancel(),
+          throwsA(hangs ? isA<TimeoutException>() : same(failure)),
+        );
+        expect(channel.cancels, 1);
+        expect(channel.events.hasListener, isFalse);
+        if (!hangs) cancellation.completeError(failure);
+        await tester.pump(const Duration(seconds: 3));
+        await check;
+        if (hangs) cancellation.completeError(failure);
+        unawaited(channel.events.close());
+        await tester.pump();
+        expect(channel.cancels, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    for (final revoke in ['consumer cancel', 'disposal', 'retirement']) {
+      testWidgets(
+        'generated EVC $revoke contains ${hangs ? 'hung' : 'rejected'} producer cancellation',
+        (tester) async {
+          final cancellation = Completer<void>();
+          final channel = _Channel(onCancel: () => cancellation.future);
+          final unrelated = _Channel();
+          final independent = (await tester.runAsync(
+            () => PreparedFrontend.load(artifact),
+          ))!;
+          addTearDown(independent.invalidate);
+          final subject = frontend.createPresentation(
+            library: _library,
+            entrypoint: 'buildView',
+            createBridge: () => OwningBackendBridge(
+              channels: {'fixture.stream': channel},
+              validateBinding: () {},
+            ),
+          );
+          final sibling = independent.createPresentation(
+            library: _library,
+            entrypoint: 'buildView',
+            createBridge: () => OwningBackendBridge(
+              channels: {'fixture.stream': unrelated},
+              validateBinding: () {},
+            ),
+          );
+          const subjectKey = ValueKey('subject');
+          const siblingKey = ValueKey('sibling');
+          Widget views({bool showSubject = true}) => MaterialApp(
+            home: Scaffold(
+              body: Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      key: subjectKey,
+                      child: showSubject ? subject : const SizedBox.shrink(),
+                    ),
+                  ),
+                  Expanded(
+                    child: SizedBox(key: siblingKey, child: sibling),
+                  ),
+                ],
+              ),
+            ),
+          );
+          Finder subjectText(String text) => find.descendant(
+            of: find.byKey(subjectKey),
+            matching: find.text(text),
+          );
+          Finder siblingText(String text) => find.descendant(
+            of: find.byKey(siblingKey),
+            matching: find.text(text),
+          );
+
+          await tester.pumpWidget(views());
+          await tester.tap(subjectText('Listen'));
+          await tester.tap(siblingText('Listen'));
+          channel.events.add({'sequence': 1, 'text': 'before'});
+          unrelated.events.add({'sequence': 1, 'text': 'independent'});
+          await tester.pump();
+          expect(subjectText('1:before'), findsOneWidget);
+          expect(siblingText('1:independent'), findsOneWidget);
+
+          switch (revoke) {
+            case 'consumer cancel':
+              await tester.tap(subjectText('Cancel'));
+              // Repeated consumer cancellation must reuse the same cleanup.
+              await tester.tap(subjectText('Cancel'));
+            case 'disposal':
+              await tester.pumpWidget(views(showSubject: false));
+            case 'retirement':
+              frontend.retainPresentations();
+          }
+          expect(channel.cancels, 1);
+          expect(channel.opens, 1);
+          expect(channel.events.hasListener, isFalse);
+          expect(unrelated.events.hasListener, isTrue);
+          expect(cancellation.isCompleted, isFalse);
+          channel.events.add({'sequence': 2, 'text': 'late-before-cleanup'});
+          unrelated.events.add({'sequence': 2, 'text': 'still-live'});
+          await tester.pump();
+          expect(find.textContaining('late-before-cleanup'), findsNothing);
+          expect(siblingText('2:still-live'), findsOneWidget);
+          if (revoke != 'disposal') {
+            expect(subjectText('1:before'), findsOneWidget);
+          }
+          if (revoke == 'consumer cancel') {
+            expect(subjectText('cancel:pending'), findsOneWidget);
+          }
+
+          if (!hangs) {
+            cancellation.completeError(StateError('SECRET cleanup diagnostic'));
+          }
+          // Advance Flutter's fake clock beyond the unchanged native 2s bound.
+          await tester.pump(const Duration(seconds: 3));
+          await tester.pump();
+          if (revoke == 'consumer cancel') {
+            expect(subjectText('cancel:settled'), findsOneWidget);
+          }
+          if (hangs) {
+            expect(cancellation.isCompleted, isFalse);
+            // A rejection after the timeout must also remain observed.
+            cancellation.completeError(StateError('SECRET late cleanup'));
+          }
+          channel.events.add({'sequence': 3, 'text': 'late-after-cleanup'});
+          unrelated.events.add({'sequence': 3, 'text': 'unaffected'});
+          await tester.pump();
+          await tester.pump();
+          expect(siblingText('3:unaffected'), findsOneWidget);
+          expect(find.textContaining('late-after-cleanup'), findsNothing);
+          expect(find.textContaining('SECRET'), findsNothing);
+          expect(find.text('Frontend unavailable.'), findsNothing);
+          expect(tester.takeException(), isNull);
+          expect(channel.opens, 1);
+          expect(channel.cancels, 1);
+          expect(unrelated.opens, 1);
+          expect(unrelated.cancels, 0);
+          if (revoke != 'disposal') {
+            expect(subjectText('1:before'), findsOneWidget);
+          }
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          expect(channel.cancels, 1);
+          expect(unrelated.cancels, 1);
+          unawaited(channel.events.close());
+          unawaited(unrelated.events.close());
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   for (final malformed in [false, true]) {
     testWidgets(
       '${malformed ? 'malformed generated DTO' : 'native error'} affects only observation',
@@ -334,11 +503,12 @@ void main() {
 }
 
 class _Channel implements AdeleStreamChannel {
-  _Channel({bool failCancel = false}) {
+  _Channel({bool failCancel = false, Future<void> Function()? onCancel}) {
     events = StreamController<Object?>(
       onCancel: () {
         cancels++;
         if (failCancel) throw StateError('SECRET cleanup diagnostic');
+        return onCancel?.call();
       },
     );
   }

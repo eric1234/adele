@@ -9,6 +9,7 @@ int feedHandle(String handle, String text, int budget) =>
     feedTerminalProjection(handle, text, budget);
 Map<String, dynamic> readHandle(String handle) =>
     readTerminalProjection(handle);
+Map<String, dynamic> readRetained() => readRetainedTerminalProjection();
 void resetHandle(String handle) => resetTerminalProjection(handle);
 Future<bool> yieldHandle(String handle) => yieldTerminalProjection(handle);
 void followHandle(String handle, bool following) =>

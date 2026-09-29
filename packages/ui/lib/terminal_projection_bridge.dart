@@ -68,6 +68,18 @@ Map<String, dynamic> readTerminalProjection(String handle) =>
       'Terminal projection access is available only to interpreted frontends.',
     );
 
+/// Copied native snapshot captured when this presentation acquired its retained
+/// content lease, or an empty map when no snapshot/retained owner exists. Uses
+/// the scalar shape of [readTerminalProjection], not an emulator or transcript.
+/// The initial snapshot does not change as this presentation replays output.
+/// Native acceptedCodeUnits includes accepted prefixes before delayed plugin
+/// accounting. For a pausable projection, following true with resumeAtEnd false
+/// can be programmatic prefix replay, not live-tail intent. The reader owns that
+/// distinction and its logical history mode. Retired access is rejected.
+Map<String, dynamic> readRetainedTerminalProjection() => throw UnsupportedError(
+  'Terminal projection access is available only to interpreted frontends.',
+);
+
 /// For a non-always-follow projection, false freezes feed as well as follow.
 /// User scroll-away or selection freezes synchronously before queued feeds.
 /// [resumeAtEnd] allows actual user scrolling back to the rendered cursor end

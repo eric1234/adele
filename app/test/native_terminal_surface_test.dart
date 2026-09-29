@@ -32,6 +32,55 @@ void _expectProjectionRowVisible(WidgetTester tester, int row) {
 }
 
 void main() {
+  testWidgets('projection retains its last offset after native detach', (
+    tester,
+  ) async {
+    final surface = NativeTerminalSurface.projection(rows: 20, maxLines: 40);
+    addTearDown(surface.dispose);
+    var active = true;
+    _feedProjection(surface, 'row\n' * 60);
+    await tester.pumpWidget(
+      _host(surface.buildView(isActive: () => active), height: 130),
+    );
+    await tester.pump();
+    surface.scrollProjection(120);
+    final before = surface.readProjection();
+    expect(before['scrollOffset'], 120.0);
+    expect(before['maxScrollOffset'], greaterThan(120));
+    active = false;
+    await tester.pumpWidget(const SizedBox.shrink());
+    final detached = surface.readProjection();
+    expect(detached['scrollOffset'], before['scrollOffset']);
+    expect(detached['maxScrollOffset'], before['maxScrollOffset']);
+    expect(detached['following'], isFalse);
+    expect(detached['acceptedCodeUnits'], before['acceptedCodeUnits']);
+    expect(tester.takeException(), isNull);
+  });
+
+  test(
+    'native projection checkpoints synchronously record accepted prefixes',
+    () {
+      final surface = NativeTerminalSurface.projection(rows: 6, maxLines: 24);
+      addTearDown(surface.dispose);
+      final snapshots = <Map<String, Object>>[];
+      final detach = surface.observeProjection(
+        () => snapshots.add(surface.readProjection()),
+      );
+      final accepted = surface.feedProjection('x' * 5000, 2);
+      expect(accepted, 161);
+      expect(snapshots, hasLength(1));
+      expect(snapshots.single['acceptedCodeUnits'], accepted);
+      expect(snapshots.single['lineAdvances'], 2);
+      surface.setProjectionFollow(false, resumeAtEnd: false);
+      expect(snapshots.last['following'], isFalse);
+      expect(snapshots.last['resumeAtEnd'], isFalse);
+      detach();
+      final count = snapshots.length;
+      surface.resetProjection();
+      expect(snapshots, hasLength(count));
+    },
+  );
+
   for (final rows in [6, 20]) {
     testWidgets(
       'always-follow policy with $rows rows bubbles scroll and keeps copy local',
