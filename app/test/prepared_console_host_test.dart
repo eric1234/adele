@@ -470,6 +470,184 @@ void main() {
   }
 
   testWidgets(
+    'stock Session teardown denies reentrant resident admission and restores fresh history',
+    (tester) => tester.runAsync(() async {
+      final eligibility = {
+        for (final key in ['a', 'b']) key: _MutableEligibility(),
+      };
+      final host = await commandHost(tester, eligibility: eligibility);
+      try {
+        await fixture.create();
+        final terminalTab = fixture.controller.selectedTab!;
+        final terminal = fixture.owners.single;
+        await host.control(
+          'append',
+          text: List.generate(260, (i) => 'checkpoint-$i\r\n').join(),
+        );
+        final a = await host.open('a');
+        await host.mount();
+        await host.until(() => host.hasText(a, 'Following output'), 'A ready');
+        final b = await host.open('b');
+        await host.until(() => host.hasText(b, 'Following output'), 'B ready');
+        await tester.tap(find.widgetWithText(TextButton, 'Output a'));
+        await tester.pump();
+        await tester.pump();
+        final residents = fixture.controller.residentPresentations;
+        final accessA = residents.singleWhere((r) => r.tab == a).access;
+        final accessB = residents.singleWhere((r) => r.tab == b).access;
+        final interactionA = accessA.interaction!;
+        final engineA = host.view(a).terminal.buffer.terminal as Terminal;
+        final engineB = host.view(b).terminal.buffer.terminal as Terminal;
+        final frozenA = _terminalText(engineA);
+        final frozenB = _terminalText(engineB);
+        final workbench = tester.state(find.byType(WorkbenchConsole));
+        final navigator = tester.state(find.byType(Navigator));
+        final materialApp = tester.state(find.byType(MaterialApp));
+        final initialReadsB = host.cursors('b');
+        final highWater = host.stats['highWater']! as int;
+        final revocations = <ConsolePresentationAccess, int>{
+          accessA: 0,
+          accessB: 0,
+        };
+        final attempts =
+            <(Widget?, List<ConsoleResidentPresentation>, List<int>)>[];
+        for (final access in [accessA, accessB]) {
+          access.changes.addListener(() {
+            if (!access.isActive) {
+              revocations[access] = revocations[access]! + 1;
+            }
+            // Query from the real synchronous teardown callback, not from an
+            // assertion after the admission fence has legitimately reopened.
+            attempts.add((
+              fixture.controller.selectedPresentation,
+              fixture.controller.residentPresentations,
+              [for (final value in eligibility.values) value.presentations],
+            ));
+          });
+        }
+        await host.control('hold', invocation: 'a');
+        await host.control('append', text: 'held-at-departure\r\n');
+        await host.until(
+          () =>
+              host.activeReads('a') == 1 &&
+              host.hasText(b, 'Following output (catching up)'),
+          'A held with B admitted behind the serial generated dispatcher',
+        );
+        expect(host.activeReads('b'), 0);
+        expect(host.cursors('b'), initialReadsB);
+        final readsA = host.cursors('a');
+        final queued = host.control('append', text: 'queued-at-departure\r\n');
+        final scroll = host.view(a).scrollController!;
+        expect(scroll.offset, greaterThan(120));
+        scroll.position.pointerScroll(-100);
+        final frozenOffset = scroll.offset;
+        // No frame/eval turn may save the native checkpoint before departure.
+        fixture.controller.setSession(fixture.sessionB);
+        expect(attempts, isNotEmpty);
+        for (final (selected, admitted, factories) in attempts) {
+          expect(selected, isNull);
+          expect(admitted, isEmpty);
+          expect(factories, [1, 1]);
+        }
+        expect(revocations.values, [1, 1]);
+        expect(accessA.isActive, isFalse);
+        expect(accessB.isActive, isFalse);
+        expect(interactionA.isActive, isFalse);
+        expect(eligibility.values.map((value) => value.releases), [0, 0]);
+        expect(fixture.provider.closes, isEmpty);
+        await queued;
+        await host.control('release', invocation: 'a');
+        await host.until(
+          () =>
+              host.activeReads('a') == 0 &&
+              host.activeReads('b') == 0 &&
+              host.cursors('b').length == initialReadsB.length + 1 &&
+              (host.stats['observers']! as List).isEmpty,
+          'both watches detach and admitted held/queued reads settle inertly',
+        );
+        expect(host.cursors('a'), readsA);
+        expect(host.cursors('b'), [...initialReadsB, highWater]);
+        final readsB = host.cursors('b');
+        expect(_terminalText(engineA), frozenA);
+        expect(_terminalText(engineB), frozenB);
+        expect([host.watches('a'), host.watches('b')], [1, 1]);
+        expect(eligibility.values.map((value) => value.presentations), [1, 1]);
+        expect(find.byType(TerminalView, skipOffstage: false), findsOneWidget);
+        expect(fixture.controller.selectedTab, same(terminalTab));
+        expect(terminal.state, EnvironmentTerminalState.running);
+        expect(tester.state(find.byType(WorkbenchConsole)), same(workbench));
+        expect(tester.state(find.byType(Navigator)), same(navigator));
+        expect(tester.state(find.byType(MaterialApp)), same(materialApp));
+        fixture.provider.output('resource-1', 'unrelated-terminal-still-live');
+        await host.control('append', text: 'capture-after-departure\r\n');
+        await host.until(
+          () => _terminalText(
+            tester.widget<TerminalView>(find.byType(TerminalView)).terminal,
+          ).contains('unrelated-terminal-still-live'),
+          'unrelated Terminal remains live while output capture advances',
+        );
+        expect(host.stats['highWater'], greaterThan(highWater));
+        expect(host.stats['observers'], isEmpty);
+        expect(host.cursors('a'), readsA);
+        expect(host.cursors('b'), readsB);
+        expect(_terminalText(engineA), frozenA);
+        expect(_terminalText(engineB), frozenB);
+        expect(revocations.values, [1, 1]);
+
+        fixture.controller.setSession(fixture.sessionA);
+        await tester.pump();
+        await host.until(
+          () => host.hasText(a, 'Reading history') && host.painted(a),
+          'normal return reconstructs the retained same-turn checkpoint',
+        );
+        final fresh = fixture.controller.residentPresentations.single;
+        expect(fresh.tab, same(a));
+        expect(fresh.access, isNot(same(accessA)));
+        expect(fresh.access.isActive, isTrue);
+        expect(fresh.access.interaction!.isActive, isTrue);
+        expect(accessA.isActive, isFalse);
+        expect(accessB.isActive, isFalse);
+        expect(interactionA.isActive, isFalse);
+        expect(host.view(a).terminal.buffer.terminal, isNot(same(engineA)));
+        expect(_terminalText(host.view(a).terminal), frozenA);
+        expect(
+          host.view(a).scrollController!.offset,
+          closeTo(frozenOffset, .01),
+        );
+        expect(eligibility.values.map((value) => value.presentations), [2, 1]);
+        expect([host.watches('a'), host.watches('b')], [2, 1]);
+        expect(host.cursors('a').where((cursor) => cursor == 0), hasLength(2));
+        expect(host.cursors('b'), readsB);
+        await tester.tap(find.byTooltip('Follow output'));
+        await host.until(
+          () =>
+              host.hasText(a, 'Following output') &&
+              _terminalText(
+                host.view(a).terminal,
+              ).contains('capture-after-departure'),
+          'fresh reader follows history captured without a presentation',
+        );
+        expect(host.stats['observers'], ['a']);
+        expect(revocations.values, [1, 1]);
+        expect(eligibility.values.map((value) => value.releases), [0, 0]);
+        expect(
+          eligibility.values.every((value) => value.registration.isActive),
+          isTrue,
+        );
+        expect(fixture.owners.single, same(terminal));
+        expect(terminal.state, EnvironmentTerminalState.running);
+        expect(fixture.provider.requests, hasLength(1));
+        expect(fixture.provider.closes, isEmpty);
+        expect(tester.state(find.byType(WorkbenchConsole)), same(workbench));
+        expect(tester.state(find.byType(Navigator)), same(navigator));
+      } finally {
+        await host.control('release', invocation: 'a');
+        await host.unmount();
+      }
+    }),
+  );
+
+  testWidgets(
     'generic eligibility prunes false and throwing hidden prepared readers only',
     (tester) => tester.runAsync(() async {
       final eligibility = {
@@ -1910,6 +2088,7 @@ final class _ObservedPresentation extends ChangeNotifier
 final class _MutableEligibility {
   bool eligible = true;
   bool throwEligibility = false;
+  int presentations = 0;
   int releases = 0;
   late ConsoleTabRegistration registration;
 }
@@ -1937,7 +2116,10 @@ final class _EligibleCreation implements ConsoleCreationAccess {
           return eligibility.eligible && content.isEligible(session);
         },
         keepAlive: content.keepAlive,
-        createPresentation: content.createPresentation,
+        createPresentation: (access) {
+          eligibility.presentations++;
+          return content.createPresentation(access);
+        },
         closeAdvice: content.closeAdvice,
         release: () {
           eligibility.releases++;

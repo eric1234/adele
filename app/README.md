@@ -363,6 +363,11 @@ fresh selected epoch, and earlier epochs remain invalid after reselection.
 Collapse, canonical Session identity change or null, console unmount, and host
 close revoke the entire set. Content close, retirement, or eviction revokes its
 exact resident. Revocation and native bridge/resource invalidation are synchronous.
+Whole-set revocation fences lazy presentation admission before firing callbacks,
+and nested teardown cannot reopen that fence. Construction captures a working-set
+identity so an attempt interrupted by teardown cannot publish afterward, even if
+the Session and selection are unchanged. A later host render may admit fresh cold
+content normally; ordinary selective eviction does not close admission for siblings.
 Current content eligibility is part of that lifetime even while hidden. Access
 use and controller collection/notification reconciliation evaluate eligibility for
 the exact Session, permanently evicting only residents whose predicate returns

@@ -115,6 +115,7 @@ final class ConsoleController extends ChangeNotifier {
   bool _disposed = false;
   Object _context = Object();
   Object _view = Object();
+  Object? _presentationAdmission = Object();
   final Map<ConsoleTab, ConsoleResidentPresentation> _residents = {};
   int _selectionSequence = 0;
   bool _checkingEligibility = false;
@@ -483,10 +484,16 @@ final class ConsoleController extends ChangeNotifier {
   /// Constructs only selected content, sharing the same resident used by the
   /// workbench collection. Reading tab metadata never calls a factory.
   Widget? get selectedPresentation {
+    final admission = _presentationAdmission;
+    if (admission == null) return null;
     final tab = selectedTab;
     final session = _session;
     final context = _context;
-    if (_closed || !_visible || tab == null || session == null) {
+    if (_closed ||
+        !_visible ||
+        tab == null ||
+        session == null ||
+        !identical(admission, _presentationAdmission)) {
       return null;
     }
     final existing = _residents[tab];
@@ -497,7 +504,9 @@ final class ConsoleController extends ChangeNotifier {
         (a, b) => a._lastSelected < b._lastSelected ? a : b,
       );
       _evict(oldest);
-      if (!identical(context, _context) || !identical(_selected, tab)) {
+      if (!identical(admission, _presentationAdmission) ||
+          !identical(context, _context) ||
+          !identical(_selected, tab)) {
         return null;
       }
       if (_residents[tab] case final replacement?) return replacement._widget;
@@ -516,7 +525,10 @@ final class ConsoleController extends ChangeNotifier {
         child: Text('Console presentation is unavailable.'),
       );
     }
-    if (!identical(_residents[tab], resident)) return null;
+    if (!identical(admission, _presentationAdmission) ||
+        !identical(_residents[tab], resident)) {
+      return null;
+    }
     resident._widget = KeyedSubtree(
       key: ObjectKey(access),
       child: presentation,
@@ -525,8 +537,12 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   List<ConsoleResidentPresentation> get residentPresentations {
+    final admission = _presentationAdmission;
+    if (admission == null) return const [];
     selectedPresentation;
+    if (!identical(admission, _presentationAdmission)) return const [];
     _reconcileResidents();
+    if (!identical(admission, _presentationAdmission)) return const [];
     // A contributed factory can reenter the host before returning its widget.
     // Its reserved slot counts toward the budget but is not mountable yet.
     return List.unmodifiable(_residents.values.where((r) => r._widget != null));
@@ -535,9 +551,19 @@ final class ConsoleController extends ChangeNotifier {
   void unmountPresentation() => _revokePresentation();
 
   void _revokePresentation() {
-    _endSelection();
-    for (final tab in _residents.keys.toList()) {
-      _evict(tab);
+    if (_presentationAdmission == null) return;
+    // Fence the entire batch before any listener runs. Nested teardown belongs
+    // to this same batch; only its outer owner can reopen admission afterward.
+    _presentationAdmission = null;
+    try {
+      _endSelection();
+      for (final tab in _residents.keys.toList()) {
+        _evict(tab);
+      }
+    } finally {
+      // Also invalidates construction suspended across a direct unmount, where
+      // the Session, selection, and ordinary context identity may be unchanged.
+      _presentationAdmission = Object();
     }
   }
 
@@ -548,7 +574,8 @@ final class ConsoleController extends ChangeNotifier {
 
   void _endSelection() {
     final tab = _selected;
-    if (tab != null) {
+    // A whole-set departure ends both grants together in the eviction pass.
+    if (tab != null && _presentationAdmission != null) {
       _residents[tab]?._access._deselect();
       if (!tab._content.keepAlive) _evict(tab);
     }
@@ -614,7 +641,11 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   void _reconcileResidents() {
-    if (_reconciling || _checkingEligibility) return;
+    if (_presentationAdmission == null ||
+        _reconciling ||
+        _checkingEligibility) {
+      return;
+    }
     _reconciling = true;
     try {
       for (final resident in _residents.values.toList()) {
@@ -649,6 +680,7 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   void _restoreSelection() {
+    if (_presentationAdmission == null) return;
     final session = _session;
     final context = _context;
     final remembered = session == null ? null : _selections[session.id];
@@ -844,6 +876,7 @@ final class _PresentationAccess extends ChangeNotifier
 
   bool get _retained =>
       _active &&
+      _controller._presentationAdmission != null &&
       _tab.isActive &&
       _controller._visible &&
       identical(_controller._session, _session) &&

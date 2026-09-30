@@ -1147,6 +1147,41 @@ void main() {
     expect(b.releases, 0);
   });
 
+  for (final keepAlive in [false, true]) {
+    test(
+      'batch unmount cannot refill from listeners (keepAlive: $keepAlive)',
+      () async {
+        final content = _Content('A', keepAlive: keepAlive);
+        await register((access) async => content.open(access));
+        await controller.invoke(controller.actions.single);
+        final resident = controller.residentPresentations.single;
+        final interaction = resident.access.interaction!;
+        final widgets = <Widget?>[];
+        final collections = <List<ConsoleResidentPresentation>>[];
+        resident.access.changes.addListener(() {
+          if (resident.access.isActive) return;
+          widgets.add(controller.selectedPresentation);
+          collections.add(controller.residentPresentations);
+        });
+        controller.unmountPresentation();
+        expect(content.mounts, hasLength(1));
+        expect(widgets, [null]);
+        expect(collections, [isEmpty]);
+        expect(resident.access.isActive, isFalse);
+        expect(interaction.isActive, isFalse);
+        expect(content.releases, 0);
+        // Only this later host render may admit a replacement, not the listeners.
+        final fresh = controller.residentPresentations.single;
+        expect(content.mounts, hasLength(2));
+        expect(fresh, isNot(same(resident)));
+        expect(fresh.access.isActive, isTrue);
+        expect(resident.access.isActive, isFalse);
+        expect(interaction.isActive, isFalse);
+        expect(content.releases, 0);
+      },
+    );
+  }
+
   for (final departure in ['collapse', 'session', 'null', 'unmount', 'close']) {
     test('working-set $departure retires every exact resident', () async {
       final a = _Content('A', keepAlive: true);
@@ -1159,6 +1194,18 @@ void main() {
       controller.selectedPresentation;
       final selected = controller.selectedTab;
       final accesses = [a.mounts.single, b.mounts.single];
+      final interaction = accesses.last.interaction!;
+      final callbacks = <Widget?>[];
+      final collections = <List<ConsoleResidentPresentation>>[];
+      for (final access in accesses) {
+        access.changes.addListener(() {
+          if (access.isActive) return;
+          expect(accesses.every((entry) => !entry.isActive), isTrue);
+          expect(interaction.isActive, isFalse);
+          callbacks.add(controller.selectedPresentation);
+          collections.add(controller.residentPresentations);
+        });
+      }
       switch (departure) {
         case 'collapse':
           controller.setVisible(false);
@@ -1172,6 +1219,10 @@ void main() {
         case 'close':
           await controller.close();
       }
+      expect(callbacks, [null, null]);
+      expect(collections, [isEmpty, isEmpty]);
+      expect(a.mounts, hasLength(1));
+      expect(b.mounts, hasLength(1));
       expect(accesses.every((access) => !access.isActive), isTrue);
       expect(a.releases, departure == 'close' ? 1 : 0);
       expect(b.releases, departure == 'close' ? 1 : 0);
@@ -1186,6 +1237,160 @@ void main() {
       }
     });
   }
+
+  test(
+    'nested batch teardown and listener failure cannot reopen admission',
+    () async {
+      final a = _Content('A', keepAlive: true);
+      final b = _Content('B', keepAlive: true);
+      var next = 0;
+      await register((access) async => (next++ == 0 ? a : b).open(access));
+      await controller.invoke(controller.actions.single);
+      controller.selectedPresentation;
+      await controller.invoke(controller.actions.single);
+      controller.selectedPresentation;
+      final selected = controller.selectedTab!;
+      final answer = Completer<bool>();
+      late ConsoleCloseRequest request;
+      final closing = controller.closeTab(selected, (value) {
+        request = value;
+        return answer.future;
+      });
+      final errors = <FlutterErrorDetails>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = errors.add;
+      addTearDown(() => FlutterError.onError = previous);
+      a.mounts.single.changes.addListener(
+        () => throw StateError('listener failure'),
+      );
+      var callbacks = 0;
+      for (final access in [a.mounts.single, b.mounts.single]) {
+        access.changes.addListener(() {
+          callbacks++;
+          expect(access.isActive, isFalse);
+          expect(request.isPending, isFalse);
+          controller.unmountPresentation();
+          controller.select(selected);
+          expect(controller.selectedPresentation, isNull);
+          expect(controller.residentPresentations, isEmpty);
+          controller.unmountPresentation();
+          expect(controller.selectedPresentation, isNull);
+        });
+      }
+      controller.unmountPresentation();
+      await closing;
+      expect(callbacks, 2);
+      expect(errors, hasLength(1));
+      expect(errors.single.exception, isA<StateError>());
+      expect(a.mounts, hasLength(1));
+      expect(b.mounts, hasLength(1));
+      final fresh = controller.residentPresentations.single;
+      answer.complete(true);
+      await Future<void>.value();
+      expect(fresh.access.isActive, isTrue);
+      expect(b.mounts, hasLength(2));
+      expect(a.releases, 0);
+      expect(b.releases, 0);
+    },
+  );
+
+  test(
+    'LRU admission interrupted by direct unmount must start afresh',
+    () async {
+      await controller.close();
+      controller.dispose();
+      controller = ConsoleController(registry, presentationLimit: 1)
+        ..setSession(first);
+      final a = _Content('A', keepAlive: true);
+      final b = _Content('B', keepAlive: true);
+      var next = 0;
+      await register((access) async => (next++ == 0 ? a : b).open(access));
+      await controller.invoke(controller.actions.single);
+      final old = controller.residentPresentations.single;
+      old.access.changes.addListener(() {
+        if (!old.access.isActive) controller.unmountPresentation();
+      });
+      await controller.invoke(controller.actions.single);
+      final selected = controller.selectedTab;
+      expect(controller.selectedPresentation, isNull);
+      expect(b.mounts, isEmpty);
+      expect(controller.session, same(first));
+      expect(controller.selectedTab, same(selected));
+      expect(old.access.isActive, isFalse);
+      final fresh = controller.residentPresentations.single;
+      expect(fresh.tab, same(selected));
+      expect(fresh.access.isActive, isTrue);
+      expect(b.mounts, hasLength(1));
+      expect(a.releases, 0);
+      expect(b.releases, 0);
+    },
+  );
+
+  for (final throws in [false, true]) {
+    test(
+      'factory crossing teardown cannot publish its result (throws: $throws)',
+      () async {
+        var calls = 0;
+        final callbacks = <Widget?>[];
+        final content = _Content(
+          'A',
+          keepAlive: true,
+          onCreate: (access) {
+            if (++calls == 1) {
+              access.changes.addListener(() {
+                callbacks.add(controller.selectedPresentation);
+                expect(controller.residentPresentations, isEmpty);
+              });
+              controller.unmountPresentation();
+              expect(access.isActive, isFalse);
+              if (throws) throw StateError('factory failed after teardown');
+              return const Text('Stale factory result');
+            }
+            return const Text('Fresh factory result');
+          },
+        );
+        await register((access) async => content.open(access));
+        await controller.invoke(controller.actions.single);
+        expect(controller.selectedPresentation, isNull);
+        expect(calls, 1);
+        expect(callbacks, [null]);
+        expect(content.mounts.single.isActive, isFalse);
+        final fresh = controller.residentPresentations.single;
+        expect(calls, 2);
+        expect(fresh.access.isActive, isTrue);
+        final child = (fresh.widget as KeyedSubtree).child as Text;
+        expect(child.data, 'Fresh factory result');
+        expect(content.mounts.first.isActive, isFalse);
+        expect(content.releases, 0);
+      },
+    );
+  }
+
+  test(
+    'admission interrupted while reconciling cannot construct afterward',
+    () async {
+      var unmount = false;
+      final content = _Content(
+        'A',
+        keepAlive: true,
+        eligible: (_) {
+          if (unmount) {
+            unmount = false;
+            controller.unmountPresentation();
+          }
+          return true;
+        },
+      );
+      await register((access) async => content.open(access));
+      await controller.invoke(controller.actions.single);
+      unmount = true;
+      expect(controller.selectedPresentation, isNull);
+      expect(content.mounts, isEmpty);
+      expect(controller.residentPresentations.single.access.isActive, isTrue);
+      expect(content.mounts, hasLength(1));
+      expect(content.releases, 0);
+    },
+  );
 
   test('hidden resident close retires it without affecting siblings', () async {
     final a = _Content('A', keepAlive: true);
