@@ -108,11 +108,17 @@ and validate that exact grant, including after asynchronous work, rather than
 querying a newer grant to revive old callbacks. Resident-authorized observation
 and programmatic rendering may continue while hidden. Default selected-only
 content loses its resident on deselection. Collapse, canonical Session change or
-null, console unmount, and host close end the whole working set; eviction, content
-removal, and retirement permanently revoke the affected access. A cold view gets
-fresh access. None of this stops a content owner's independent execution/resource
-observation. Prepared read-only projection hosting can copy
-already-owned scalar native state into its exact retained content record without
+null, console unmount, and host close end the whole working set; eviction, observed
+eligibility loss, content removal, and retirement permanently revoke the affected
+access. Access validation and host reconciliation check current content eligibility
+for the exact presented Session, including hidden residents. False or a throwing
+predicate fails closed. Changing callback-captured state is not itself observable:
+there is no polling, and revocation is synchronous once a host check observes loss.
+Eligibility recovery requires fresh access through normal selection and cold
+restoration; it cannot revive old epochs or eagerly mount hidden tabs. Eligibility
+eviction does not release content or ask close advice. None of this stops a content
+owner's independent execution/resource observation. Prepared read-only projection
+hosting can copy already-owned scalar native state into its exact retained content record without
 invoking a revoked presenter. The record contains no view objects or transcript;
 new-view leases fence stale checkpoints and content removal clears it permanently.
 The current [application host](../../app/README.md#session-console)

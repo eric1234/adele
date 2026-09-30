@@ -397,7 +397,10 @@ void main() {
     );
   }
 
-  Future<_CommandHost> commandHost(WidgetTester tester) async {
+  Future<_CommandHost> commandHost(
+    WidgetTester tester, {
+    Map<String, _MutableEligibility>? eligibility,
+  }) async {
     final backends = ApplicationPluginBootstrap(
       fixture.capabilities,
       fixture.extensions,
@@ -431,20 +434,283 @@ void main() {
     await frontends.start(backends.catalog!);
     expect(frontends.generations.single.state, InstalledFrontendState.active);
     fixture.controller.setSession(fixture.sessionA);
+    var owner = fixture.extensions
+        .discover(consoleContributions)
+        .singleWhere(
+          (binding) =>
+              binding.id ==
+              ExtensionId('dev.adele.plugin.command-tools.output'),
+        );
+    if (eligibility != null) {
+      final original = owner.value;
+      fixture.extensions.register(
+        point: consoleContributions,
+        id: ExtensionId('test.command-eligibility'),
+        value: ConsoleContribution(
+          actions: original.actions,
+          openPrepared: (access, descriptor) => original.openPrepared!(
+            _EligibleCreation(access, eligibility[descriptor.key]!),
+            descriptor,
+          ),
+        ),
+      );
+      owner = fixture.extensions
+          .discover(consoleContributions)
+          .singleWhere(
+            (binding) => binding.id == ExtensionId('test.command-eligibility'),
+          );
+    }
     return _CommandHost(
       tester,
       fixture,
       backends,
       backends.backends.single.connection!,
-      fixture.extensions
-          .discover(consoleContributions)
-          .singleWhere(
-            (binding) =>
-                binding.id ==
-                ExtensionId('dev.adele.plugin.command-tools.output'),
-          ),
+      owner,
     );
   }
+
+  testWidgets(
+    'generic eligibility prunes false and throwing hidden prepared readers only',
+    (tester) => tester.runAsync(() async {
+      final eligibility = {
+        for (final key in ['a', 'b', 'c']) key: _MutableEligibility(),
+      };
+      final host = await commandHost(tester, eligibility: eligibility);
+      try {
+        await host.control('append', text: 'before-loss\r\n');
+        final a = await host.open('a');
+        await host.mount();
+        await host.until(() => host.hasText(a, 'Following output'), 'A ready');
+        final accessA = fixture.controller.residentPresentations.single.access;
+        final interactionA = accessA.interaction!;
+        final engineA = host.view(a).terminal.buffer.terminal as Terminal;
+        final b = await host.open('b');
+        await host.until(() => host.hasText(b, 'Following output'), 'B ready');
+        final accessB = fixture.controller.residentPresentations.last.access;
+        final interactionB = accessB.interaction!;
+        final engineB = host.view(b).terminal.buffer.terminal as Terminal;
+        final c = await host.open('c');
+        await host.until(() => host.hasText(c, 'Following output'), 'C ready');
+        final residentC = fixture.controller.residentPresentations.last;
+        final interactionC = residentC.access.interaction!;
+        final engineC = host.view(c).terminal.buffer.terminal as Terminal;
+        final stateC = tester.state(host.findView(c));
+        final workbench = tester.state(find.byType(WorkbenchConsole));
+        var revocationsA = 0;
+        var revocationsB = 0;
+        accessA.changes.addListener(() {
+          if (!accessA.isActive) revocationsA++;
+        });
+        accessB.changes.addListener(() {
+          if (!accessB.isActive) revocationsB++;
+        });
+        // The fixture's generated dispatcher serializes ordinary requests:
+        // holding A queues B/C reads rather than allowing three active reads.
+        await host.control('hold', invocation: 'a');
+        await host.control('append', text: 'held-before-loss\r\n');
+        await host.until(
+          () =>
+              host.activeReads('a') == 1 &&
+              host.hasText(b, 'Following output (catching up)') &&
+              host.hasText(c, 'Following output (catching up)'),
+          'A read held with B and C reads queued behind it',
+        );
+        expect(host.activeReads('b'), 0);
+        expect(host.activeReads('c'), 0);
+        expect(host.cursors('b'), [0]);
+        final frozenA = _terminalText(engineA);
+        final frozenB = _terminalText(engineB);
+        final readsA = host.cursors('a');
+        final readsC = host.cursors('c');
+        // Queue real backend delivery, then revoke in this same synchronous
+        // turn. Its notification and A/B's admitted pages must remain inert.
+        final queued = host.control('append', text: 'queued-at-loss\r\n');
+        eligibility['a']!.eligible = false;
+        eligibility['b']!.throwEligibility = true;
+        expect(fixture.controller.residentPresentations, [residentC]);
+        expect(fixture.controller.selectedTab, same(c));
+        expect(accessA.isActive, isFalse);
+        expect(accessB.isActive, isFalse);
+        expect(interactionA.isActive, isFalse);
+        expect(interactionB.isActive, isFalse);
+        expect(residentC.access.interaction, same(interactionC));
+        expect(interactionC.isActive, isTrue);
+        expect(revocationsA, 1);
+        expect(revocationsB, 1);
+        expect(
+          eligibility.values.every((value) => value.releases == 0),
+          isTrue,
+        );
+        await queued;
+        await host.control('release', invocation: 'a');
+        await host.until(
+          () =>
+              host.activeReads('a') == 0 &&
+              host.activeReads('b') == 0 &&
+              (host.stats['observers']! as List).length == 1 &&
+              _terminalText(engineC).contains('queued-at-loss'),
+          'revoked watches detach and late pages settle without delivery',
+        );
+        expect(host.stats['observers'], ['c']);
+        expect(_terminalText(engineA), frozenA);
+        expect(_terminalText(engineB), frozenB);
+        expect(host.cursors('a'), readsA);
+        // B's already-admitted queued request may execute after revocation;
+        // its reply cannot feed the old projection or admit another read.
+        final readsB = host.cursors('b');
+        expect(readsB, [0, 1]);
+        expect(host.cursors('c').take(readsC.length), readsC);
+        expect(host.cursors('c').where((cursor) => cursor == 0), [0]);
+        expect(find.byType(TerminalView, skipOffstage: false), findsOneWidget);
+        expect(host.view(c).terminal.buffer.terminal, same(engineC));
+        expect(tester.state(host.findView(c)), same(stateC));
+        expect(tester.state(find.byType(WorkbenchConsole)), same(workbench));
+        expect(host.painted(c), isTrue);
+        for (var turn = 0; turn < 3; turn++) {
+          expect(fixture.controller.eligibleTabs, [c]);
+          expect(fixture.controller.residentPresentations, [residentC]);
+          eligibility['a']!.registration.updateMetadata(a.metadata);
+          await tester.pump();
+        }
+        await host.control('append', text: 'capture-survives-loss\r\n');
+        await host.until(
+          () => _terminalText(engineC).contains('capture-survives-loss'),
+          'capture and healthy reader remain live after repeated reconciliation',
+        );
+        expect(host.stats['observers'], ['c']);
+        expect(host.cursors('a'), readsA);
+        expect(host.cursors('b'), readsB);
+        expect(
+          [host.watches('a'), host.watches('b'), host.watches('c')],
+          [1, 1, 1],
+        );
+        expect(revocationsA, 1);
+        expect(revocationsB, 1);
+        eligibility['a']!.eligible = true;
+        eligibility['b']!.throwEligibility = false;
+        expect(fixture.controller.eligibleTabs, [a, b, c]);
+        expect(fixture.controller.residentPresentations, [residentC]);
+        expect(accessA.isActive, isFalse);
+        expect(accessB.isActive, isFalse);
+        expect(
+          eligibility.values.every((value) => value.releases == 0),
+          isTrue,
+        );
+        expect(fixture.provider.closes, isEmpty);
+      } finally {
+        await host.unmount();
+      }
+    }),
+  );
+
+  testWidgets(
+    'generic selected eligibility loss retains same-turn checkpoint for cold return',
+    (tester) => tester.runAsync(() async {
+      final eligibility = {
+        for (final key in ['a', 'b']) key: _MutableEligibility(),
+      };
+      final host = await commandHost(tester, eligibility: eligibility);
+      try {
+        await host.control(
+          'append',
+          text: List.generate(260, (i) => 'checkpoint-$i\r\n').join(),
+        );
+        final a = await host.open('a');
+        await host.mount();
+        await host.until(() => host.hasText(a, 'Following output'), 'A ready');
+        final b = await host.open('b');
+        await host.until(() => host.hasText(b, 'Following output'), 'B ready');
+        final residentB = fixture.controller.residentPresentations.last;
+        final engineB = host.view(b).terminal.buffer.terminal as Terminal;
+        final stateB = tester.state(host.findView(b));
+        await tester.tap(find.widgetWithText(TextButton, 'Output a'));
+        await tester.pump();
+        await tester.pump();
+        final residentA = fixture.controller.residentPresentations.first;
+        final interactionA = residentA.access.interaction!;
+        final oldBeginning = tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Beginning'))
+            .onPressed!;
+        final oldFollow = tester
+            .widget<IconButton>(
+              find.widgetWithIcon(IconButton, Icons.arrow_downward),
+            )
+            .onPressed!;
+        final engineA = host.view(a).terminal.buffer.terminal as Terminal;
+        final frozen = _terminalText(engineA);
+        final scroll = host.view(a).scrollController!;
+        expect(scroll.offset, greaterThan(120));
+        scroll.position.pointerScroll(-100);
+        final frozenOffset = scroll.offset;
+        // Do not let eval or a frame save the native freeze before revocation.
+        eligibility['a']!.eligible = false;
+        expect(fixture.controller.selectedTab, same(b));
+        expect(residentA.access.isActive, isFalse);
+        expect(interactionA.isActive, isFalse);
+        expect(fixture.controller.residentPresentations, [residentB]);
+        expect(residentB.access.isActive, isTrue);
+        expect(eligibility['a']!.registration.isActive, isTrue);
+        expect(eligibility['a']!.releases, 0);
+        await tester.pump();
+        expect(host.view(b).terminal.buffer.terminal, same(engineB));
+        expect(tester.state(host.findView(b)), same(stateB));
+        expect(host.painted(b), isTrue);
+        await host.until(
+          () => !(host.stats['observers']! as List).contains('a'),
+          'lost selected watch detached',
+        );
+        final readsA = host.cursors('a');
+        await host.control('append', text: 'while-ineligible\r\n');
+        await host.until(
+          () => _terminalText(engineB).contains('while-ineligible'),
+          'healthy sibling captures output during eligibility loss',
+        );
+        expect(host.cursors('a'), readsA);
+        expect(_terminalText(engineA), frozen);
+        eligibility['a']!.eligible = true;
+        eligibility['a']!.registration.updateMetadata(a.metadata);
+        await tester.pump();
+        expect(fixture.controller.selectedTab, same(b));
+        expect(fixture.controller.residentPresentations, [residentB]);
+        expect(host.watches('a'), 1);
+        await tester.tap(find.widgetWithText(TextButton, 'Output a'));
+        await tester.pump();
+        await host.until(
+          () => host.hasText(a, 'Reading history') && host.painted(a),
+          'cold selected reader restores the same-turn native checkpoint',
+        );
+        expect(host.view(a).terminal.buffer.terminal, isNot(same(engineA)));
+        expect(_terminalText(host.view(a).terminal), frozen);
+        expect(
+          host.view(a).scrollController!.offset,
+          closeTo(frozenOffset, .01),
+        );
+        expect(host.watches('a'), 2);
+        expect(host.cursors('a').where((cursor) => cursor == 0), hasLength(2));
+        expect(host.watches('b'), 1);
+        expect(host.view(b).terminal.buffer.terminal, same(engineB));
+        expect(tester.state(host.findView(b)), same(stateB));
+        expect(residentA.access.isActive, isFalse);
+        expect(interactionA.isActive, isFalse);
+        final restoredEngine = host.view(a).terminal.buffer.terminal;
+        final restoredReads = host.cursors('a');
+        oldBeginning();
+        oldFollow();
+        await host.control('barrier');
+        await tester.pump();
+        expect(host.view(a).terminal.buffer.terminal, same(restoredEngine));
+        expect(host.cursors('a'), restoredReads);
+        expect(host.hasText(a, 'Reading history'), isTrue);
+        expect(
+          eligibility.values.every((value) => value.releases == 0),
+          isTrue,
+        );
+        expect(fixture.provider.closes, isEmpty);
+      } finally {
+        await host.unmount();
+      }
+    }),
+  );
 
   testWidgets(
     'stock warm tabs keep native parser, watch and forward cursors while hidden',
@@ -1638,6 +1904,47 @@ final class _ObservedPresentation extends ChangeNotifier
   void retire() {
     isActive = false;
     notifyListeners();
+  }
+}
+
+final class _MutableEligibility {
+  bool eligible = true;
+  bool throwEligibility = false;
+  int releases = 0;
+  late ConsoleTabRegistration registration;
+}
+
+final class _EligibleCreation implements ConsoleCreationAccess {
+  _EligibleCreation(this.original, this.eligibility);
+
+  final ConsoleCreationAccess original;
+  final _MutableEligibility eligibility;
+
+  @override
+  Session get session => original.session;
+  @override
+  bool get isActive => original.isActive;
+
+  @override
+  ConsoleTabRegistration open(ConsoleContent content) {
+    return eligibility.registration = original.open(
+      ConsoleContent(
+        metadata: content.metadata,
+        isEligible: (session) {
+          if (eligibility.throwEligibility) {
+            throw StateError('Eligibility unavailable.');
+          }
+          return eligibility.eligible && content.isEligible(session);
+        },
+        keepAlive: content.keepAlive,
+        createPresentation: content.createPresentation,
+        closeAdvice: content.closeAdvice,
+        release: () {
+          eligibility.releases++;
+          return content.release();
+        },
+      ),
+    );
   }
 }
 

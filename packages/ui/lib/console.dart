@@ -159,6 +159,11 @@ final class ConsoleContent {
   });
 
   final ConsoleMetadata metadata;
+
+  /// Current Session eligibility is checked at admission, resident access use,
+  /// and host reconciliation. After admission, false or failure permanently
+  /// revokes that resident, not the logical tab or its resources. Captured state
+  /// is not polled.
   final bool Function(Session) isEligible;
   final Widget Function(ConsolePresentationAccess) createPresentation;
 
@@ -186,8 +191,9 @@ abstract interface class ConsoleTabRegistration {
 }
 
 abstract interface class ConsolePresentationAccess {
-  /// Resident observation/projection lifetime. Eviction, collapse, Session
-  /// departure, unmount, or retirement permanently ends this exact access.
+  /// Resident observation/projection lifetime, including current eligibility in
+  /// the exact presented Session. Observed eligibility loss, eviction, collapse,
+  /// Session departure, unmount, or retirement permanently ends this access.
   bool get isActive;
 
   /// Synchronous notification when interaction or resident authority changes.

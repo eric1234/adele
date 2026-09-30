@@ -770,6 +770,383 @@ void main() {
     },
   );
 
+  for (final keepAlive in [false, true]) {
+    for (final throws in [false, true]) {
+      test(
+        'selected eligibility loss is permanent (resident: $keepAlive, throws: $throws)',
+        () async {
+          var eligible = true;
+          final content = _Content(
+            'Mutable',
+            keepAlive: keepAlive,
+            eligible: (_) {
+              if (!eligible && throws) throw StateError('private predicate');
+              return eligible;
+            },
+          );
+          await register((access) async => content.open(access));
+          await controller.invoke(controller.actions.single);
+          final tab = controller.selectedTab!;
+          final resident = controller.residentPresentations.single;
+          final access = resident.access;
+          final interaction = access.interaction!;
+          var revocations = 0;
+          access.changes.addListener(() {
+            if (!access.isActive) revocations++;
+          });
+          eligible = false;
+          // Neither a frame nor a controller notification is needed to fence use.
+          expect(interaction.isActive, isFalse);
+          expect(access.isActive, isFalse);
+          expect(access.interaction, isNull);
+          expect(revocations, 1);
+          expect(controller.residentPresentations, isEmpty);
+          expect(controller.selectedTab, isNull);
+          expect(controller.selectedPresentation, isNull);
+          expect(controller.residentPresentations, isEmpty);
+          expect(revocations, 1);
+          expect(content.releases, 0);
+          expect(content.registration.isActive, isTrue);
+          eligible = true;
+          expect(access.isActive, isFalse);
+          expect(interaction.isActive, isFalse);
+          controller.select(tab);
+          final fresh = controller.residentPresentations.single;
+          expect(fresh, isNot(same(resident)));
+          expect(fresh.access, isNot(same(access)));
+          expect(fresh.access.isActive, isTrue);
+          expect(fresh.access.interaction!.isActive, isTrue);
+          expect(content.mounts, hasLength(2));
+          expect(content.releases, 0);
+        },
+      );
+    }
+  }
+
+  for (final throws in [false, true]) {
+    test(
+      'hidden eligibility loss preserves warm sibling (throws: $throws)',
+      () async {
+        var eligible = true;
+        final a = _Content(
+          'A',
+          keepAlive: true,
+          eligible: (_) {
+            if (!eligible && throws) throw StateError('private predicate');
+            return eligible;
+          },
+        );
+        final b = _Content('B', keepAlive: true);
+        var next = 0;
+        await register((access) async => (next++ == 0 ? a : b).open(access));
+        await controller.invoke(controller.actions.single);
+        final residentA = controller.residentPresentations.single;
+        await controller.invoke(controller.actions.single);
+        final widgetB = controller.selectedPresentation;
+        final residentB = controller.residentPresentations.last;
+        final interactionB = residentB.access.interaction!;
+        eligible = false;
+        // Collection reconciliation must inspect hidden members, not only selection.
+        expect(controller.residentPresentations, [same(residentB)]);
+        expect(residentA.access.isActive, isFalse);
+        expect(controller.selectedTab, same(residentB.tab));
+        expect(controller.selectedPresentation, same(widgetB));
+        expect(residentB.access.interaction, same(interactionB));
+        expect(interactionB.isActive, isTrue);
+        expect(b.mounts, hasLength(1));
+        expect(a.releases, 0);
+        expect(b.releases, 0);
+        eligible = true;
+        expect(controller.residentPresentations, [same(residentB)]);
+        expect(residentA.access.isActive, isFalse);
+        expect(a.mounts, hasLength(1));
+        controller.select(residentA.tab);
+        expect(controller.residentPresentations, hasLength(2));
+        expect(a.mounts, hasLength(2));
+        expect(a.mounts.last.isActive, isTrue);
+        expect(b.mounts, hasLength(1));
+      },
+    );
+  }
+
+  test(
+    'eligibility reconciliation isolates failing and reentrant listeners',
+    () async {
+      var valid = true;
+      var inspecting = false;
+      ConsolePresentationAccess? accessA;
+      final a = _Content(
+        'A',
+        keepAlive: true,
+        eligible: (_) {
+          if (inspecting) {
+            // Contributed eligibility cannot recursively evaluate another predicate
+            // or construct the currently selected presentation through these getters.
+            expect(accessA!.isActive, isFalse);
+            expect(controller.selectedPresentation, isNull);
+            controller.eligibleTabs;
+          }
+          return valid;
+        },
+      );
+      final b = _Content(
+        'B',
+        keepAlive: true,
+        eligible: (_) {
+          if (!valid) throw StateError('predicate failure');
+          return true;
+        },
+      );
+      final c = _Content('C', keepAlive: true);
+      final contents = [a, b, c];
+      var next = 0;
+      await register((access) async => contents[next++].open(access));
+      for (final _ in contents) {
+        await controller.invoke(controller.actions.single);
+        controller.selectedPresentation;
+      }
+      accessA = a.mounts.single;
+      final survivor = controller.residentPresentations.last;
+      final interaction = survivor.access.interaction;
+      final errors = <FlutterErrorDetails>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = errors.add;
+      addTearDown(() => FlutterError.onError = previous);
+      var notifications = 0;
+      accessA.changes.addListener(() => throw StateError('listener failure'));
+      accessA.changes.addListener(() {
+        notifications++;
+        expect(accessA!.isActive, isFalse);
+        controller.residentPresentations;
+        expect(b.mounts.single.isActive, isFalse);
+      });
+      valid = false;
+      inspecting = true;
+      expect(controller.residentPresentations, [same(survivor)]);
+      inspecting = false;
+      expect(controller.residentPresentations, [same(survivor)]);
+      expect(survivor.access.interaction, same(interaction));
+      expect(errors, hasLength(1));
+      expect(errors.single.exception, isA<StateError>());
+      expect(notifications, 1);
+      expect(contents.every((content) => content.releases == 0), isTrue);
+      expect(c.mounts, hasLength(1));
+    },
+  );
+
+  test(
+    'eligibility revocation cannot remove a listener-created replacement',
+    () async {
+      var valid = true;
+      final content = _Content('A', keepAlive: true, eligible: (_) => valid);
+      await register((access) async => content.open(access));
+      await controller.invoke(controller.actions.single);
+      final old = controller.residentPresentations.single;
+      var notifications = 0;
+      old.access.changes.addListener(() {
+        notifications++;
+        expect(old.access.isActive, isFalse);
+        valid = true;
+        controller.select(old.tab);
+        controller.selectedPresentation;
+      });
+      valid = false;
+      expect(old.access.isActive, isFalse);
+      final replacement = controller.residentPresentations.single;
+      expect(replacement, isNot(same(old)));
+      expect(replacement.access.isActive, isTrue);
+      expect(old.access.isActive, isFalse);
+      expect(notifications, 1);
+      expect(content.mounts, hasLength(2));
+      expect(content.releases, 0);
+    },
+  );
+
+  test(
+    'eligibility checking does not expose a half-constructed resident',
+    () async {
+      var valid = true;
+      var revokeInFactory = true;
+      final content = _Content(
+        'A',
+        keepAlive: true,
+        eligible: (_) => valid,
+        onCreate: (access) {
+          expect(access.isActive, isTrue);
+          expect(controller.selectedPresentation, isNull);
+          expect(controller.residentPresentations, isEmpty);
+          if (revokeInFactory) valid = false;
+          return const Text('Prepared');
+        },
+      );
+      await register((access) async => content.open(access));
+      await controller.invoke(controller.actions.single);
+      final tab = controller.selectedTab!;
+      expect(controller.selectedPresentation, isNull);
+      expect(controller.residentPresentations, isEmpty);
+      expect(content.mounts.single.isActive, isFalse);
+      valid = true;
+      revokeInFactory = false;
+      controller.select(tab);
+      expect(controller.residentPresentations, hasLength(1));
+      expect(content.mounts, hasLength(2));
+      expect(content.mounts.first.isActive, isFalse);
+      expect(content.mounts.last.isActive, isTrue);
+      expect(content.releases, 0);
+    },
+  );
+
+  test('eligibility pruning does not change healthy LRU recency', () async {
+    await controller.close();
+    controller.dispose();
+    controller = ConsoleController(registry, presentationLimit: 3)
+      ..setSession(first);
+    var valid = true;
+    final contents = [
+      _Content('A', keepAlive: true, eligible: (_) => valid),
+      for (final label in ['B', 'C', 'D', 'E'])
+        _Content(label, keepAlive: true),
+    ];
+    var next = 0;
+    await register((access) async => contents[next++].open(access));
+    for (final _ in contents) {
+      await controller.invoke(controller.actions.single);
+    }
+    final tabs = controller.eligibleTabs;
+    for (final tab in tabs.take(3)) {
+      controller.select(tab);
+      controller.selectedPresentation;
+    }
+    final c = controller.residentPresentations.last;
+    final interaction = c.access.interaction;
+    valid = false;
+    contents[1].complete('notification, not selection');
+    expect(contents.first.mounts.single.isActive, isFalse);
+    expect(controller.residentPresentations, hasLength(2));
+    expect(c.access.interaction, same(interaction));
+    valid = true;
+    expect(controller.residentPresentations, hasLength(2));
+    for (final tab in tabs.skip(3)) {
+      controller.select(tab);
+      controller.selectedPresentation;
+    }
+    expect(contents[1].mounts.single.isActive, isFalse);
+    expect(c.access.isActive, isTrue);
+    expect(controller.residentPresentations.first, same(c));
+    expect(contents.first.mounts, hasLength(1));
+    expect(contents.every((content) => content.releases == 0), isTrue);
+  });
+
+  test(
+    'eligibility loss withdraws a hidden unvisited close question',
+    () async {
+      var valid = true;
+      final a = _Content('A', eligible: (_) => valid);
+      final b = _Content('B', keepAlive: true);
+      var next = 0;
+      await register((access) async => (next++ == 0 ? a : b).open(access));
+      await controller.invoke(controller.actions.single);
+      final tab = controller.selectedTab!;
+      await controller.invoke(controller.actions.single);
+      final survivor = controller.residentPresentations.single;
+      final answer = Completer<bool>();
+      late ConsoleCloseRequest request;
+      final closing = controller.closeTab(tab, (value) {
+        request = value;
+        return answer.future;
+      });
+      valid = false;
+      b.complete('notification');
+      expect(request.isPending, isFalse);
+      await closing;
+      valid = true;
+      controller.select(tab);
+      controller.selectedPresentation;
+      answer.complete(true);
+      await Future<void>.value();
+      expect(a.releases, 0);
+      expect(a.mounts, hasLength(1));
+      expect(survivor.access.isActive, isTrue);
+    },
+  );
+
+  test(
+    'eligibility callback cannot carry selection into a different context',
+    () async {
+      var navigate = false;
+      final content = _Content(
+        'A',
+        keepAlive: true,
+        eligible: (_) {
+          if (navigate) {
+            navigate = false;
+            controller.setSession(null);
+          }
+          return true;
+        },
+      );
+      await register((access) async => content.open(access));
+      await controller.invoke(controller.actions.single);
+      final resident = controller.residentPresentations.single;
+      navigate = true;
+      controller.select(resident.tab);
+      expect(controller.session, isNull);
+      expect(controller.selectedTab, isNull);
+      expect(controller.residentPresentations, isEmpty);
+      expect(resident.access.isActive, isFalse);
+      expect(content.releases, 0);
+    },
+  );
+
+  test('eviction listener cannot construct in a departed context', () async {
+    await controller.close();
+    controller.dispose();
+    controller = ConsoleController(registry, presentationLimit: 1)
+      ..setSession(first);
+    final a = _Content('A', keepAlive: true);
+    final b = _Content('B', keepAlive: true);
+    var next = 0;
+    await register((access) async => (next++ == 0 ? a : b).open(access));
+    await controller.invoke(controller.actions.single);
+    final resident = controller.residentPresentations.single;
+    resident.access.changes.addListener(() {
+      if (!resident.access.isActive) controller.setSession(null);
+    });
+    await controller.invoke(controller.actions.single);
+    expect(controller.selectedPresentation, isNull);
+    expect(controller.session, isNull);
+    expect(controller.residentPresentations, isEmpty);
+    expect(resident.access.isActive, isFalse);
+    expect(b.mounts, isEmpty);
+    expect(a.releases, 0);
+    expect(b.releases, 0);
+  });
+
+  test('reentrant eviction constructs requested resident only once', () async {
+    await controller.close();
+    controller.dispose();
+    controller = ConsoleController(registry, presentationLimit: 1)
+      ..setSession(first);
+    final a = _Content('A', keepAlive: true);
+    final b = _Content('B', keepAlive: true);
+    var next = 0;
+    await register((access) async => (next++ == 0 ? a : b).open(access));
+    await controller.invoke(controller.actions.single);
+    final resident = controller.residentPresentations.single;
+    resident.access.changes.addListener(() {
+      if (!resident.access.isActive) controller.selectedPresentation;
+    });
+    await controller.invoke(controller.actions.single);
+    final selected = controller.selectedPresentation;
+    expect(selected, isNotNull);
+    expect(controller.residentPresentations.single.widget, same(selected));
+    expect(b.mounts, hasLength(1));
+    expect(b.mounts.single.isActive, isTrue);
+    expect(a.mounts.single.isActive, isFalse);
+    expect(a.releases, 0);
+    expect(b.releases, 0);
+  });
+
   for (final departure in ['collapse', 'session', 'null', 'unmount', 'close']) {
     test('working-set $departure retires every exact resident', () async {
       final a = _Content('A', keepAlive: true);
@@ -1320,10 +1697,12 @@ class _Content {
     this.advice,
     this.release,
     this.keepAlive = false,
+    this.onCreate,
   });
 
   final String title;
   final bool keepAlive;
+  final Widget Function(ConsolePresentationAccess)? onCreate;
   final bool Function(Session)? eligible;
   final ConsoleCloseAdvice? Function()? advice;
   final Future<ConsoleCleanupResult> Function()? release;
@@ -1340,7 +1719,7 @@ class _Content {
         keepAlive: keepAlive,
         createPresentation: (access) {
           mounts.add(access);
-          return Text(evidence.join('\n'));
+          return onCreate?.call(access) ?? Text(evidence.join('\n'));
         },
         closeAdvice: advice,
         release: () {

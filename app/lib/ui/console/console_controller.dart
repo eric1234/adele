@@ -52,7 +52,8 @@ final class ConsoleResidentPresentation {
   final ConsoleTab tab;
   final _PresentationAccess _access;
   ConsolePresentationAccess get access => _access;
-  late final Widget widget;
+  Widget? _widget;
+  Widget get widget => _widget!;
 }
 
 /// App-private identity for one confirmation, not permission to close content.
@@ -116,6 +117,10 @@ final class ConsoleController extends ChangeNotifier {
   Object _view = Object();
   final Map<ConsoleTab, ConsoleResidentPresentation> _residents = {};
   int _selectionSequence = 0;
+  bool _checkingEligibility = false;
+  bool _reconciling = false;
+  bool _restoreNeeded = false;
+  bool _notificationScheduled = false;
   String? _warning;
   Future<void>? _closing;
 
@@ -127,11 +132,17 @@ final class ConsoleController extends ChangeNotifier {
   List<ConsoleActionBinding> get actions =>
       List.unmodifiable(_actions.where((action) => action.isActive));
 
-  List<ConsoleTab> get eligibleTabs =>
-      List.unmodifiable(_tabs.where((tab) => _eligible(tab, _session)));
+  List<ConsoleTab> get eligibleTabs {
+    _reconcileResidents();
+    return List.unmodifiable(
+      _tabs.toList().where((tab) => _eligible(tab, _session)),
+    );
+  }
 
-  ConsoleTab? get selectedTab =>
-      _selected != null && _eligible(_selected!, _session) ? _selected : null;
+  ConsoleTab? get selectedTab {
+    _reconcileResidents();
+    return _checkingEligibility ? null : _selected;
+  }
 
   void setSession(Session? session) {
     if (_closed || identical(_session, session)) return;
@@ -159,10 +170,12 @@ final class ConsoleController extends ChangeNotifier {
   void toggleVisibility() => setVisible(!_visible);
 
   void select(ConsoleTab tab) {
+    final context = _context;
     if (_closed ||
         !_visible ||
         !_tabs.contains(tab) ||
-        !_eligible(tab, _session)) {
+        !_eligible(tab, _session) ||
+        !identical(context, _context)) {
       return;
     }
     if (identical(_selected, tab)) {
@@ -170,6 +183,7 @@ final class ConsoleController extends ChangeNotifier {
       return;
     }
     _endSelection();
+    if (!identical(context, _context) || !tab.isActive) return;
     _selected = tab;
     _activateSelection();
     _selections[_session!.id] = tab;
@@ -340,10 +354,12 @@ final class ConsoleController extends ChangeNotifier {
   ) {
     if (!identical(tab._controller, this)) return Future.value();
     if (tab._removal case final removal?) return removal;
+    final context = _context;
     if (_closed ||
         !_visible ||
         !_tabs.contains(tab) ||
-        !_eligible(tab, _session)) {
+        !_eligible(tab, _session) ||
+        !identical(context, _context)) {
       return Future.value();
     }
     if (tab._confirmation case final pending?) {
@@ -468,39 +484,52 @@ final class ConsoleController extends ChangeNotifier {
   /// workbench collection. Reading tab metadata never calls a factory.
   Widget? get selectedPresentation {
     final tab = selectedTab;
-    if (_closed || !_visible || tab == null) {
+    final session = _session;
+    final context = _context;
+    if (_closed || !_visible || tab == null || session == null) {
       return null;
     }
     final existing = _residents[tab];
-    if (existing != null) return existing.widget;
+    if (existing != null) return existing._widget;
     while (_residents.length >= presentationLimit) {
       final hidden = _residents.keys.where((other) => !identical(other, tab));
       final oldest = hidden.reduce(
         (a, b) => a._lastSelected < b._lastSelected ? a : b,
       );
       _evict(oldest);
+      if (!identical(context, _context) || !identical(_selected, tab)) {
+        return null;
+      }
+      if (_residents[tab] case final replacement?) return replacement._widget;
     }
-    final access = _PresentationAccess(this, tab);
+    final access = _PresentationAccess(this, tab, session);
     final resident = ConsoleResidentPresentation._(tab, access);
     _residents[tab] = resident;
     access._select();
     Widget presentation;
     try {
       presentation = tab._content.createPresentation(access);
-      if (!identical(_residents[tab], resident)) return null;
+      if (!access.isActive) return null;
     } on Object {
       access._revoke();
       presentation = const Center(
         child: Text('Console presentation is unavailable.'),
       );
     }
-    resident.widget = KeyedSubtree(key: ObjectKey(access), child: presentation);
+    if (!identical(_residents[tab], resident)) return null;
+    resident._widget = KeyedSubtree(
+      key: ObjectKey(access),
+      child: presentation,
+    );
     return resident.widget;
   }
 
   List<ConsoleResidentPresentation> get residentPresentations {
     selectedPresentation;
-    return List.unmodifiable(_residents.values);
+    _reconcileResidents();
+    // A contributed factory can reenter the host before returning its widget.
+    // Its reserved slot counts toward the budget but is not mountable yet.
+    return List.unmodifiable(_residents.values.where((r) => r._widget != null));
   }
 
   void unmountPresentation() => _revokePresentation();
@@ -530,6 +559,7 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   void _activateSelection() {
+    _restoreNeeded = false;
     final tab = _selected;
     if (tab == null) return;
     tab._lastSelected = ++_selectionSequence;
@@ -537,22 +567,93 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   bool _eligible(ConsoleTab tab, Session? session) {
-    if (session == null || !tab.isActive) return false;
-    if (tab._prepared case final prepared?
-        when !identical(prepared.session, session)) {
-      return false;
-    }
+    // Contributed predicates may call back into getters/access. Nested use is
+    // denied, not another predicate evaluation or a partial reconciliation.
+    if (_checkingEligibility) return false;
+    final context = _context;
+    final resident = _residents[tab];
+    final confirmation = tab._confirmation;
+    var eligible = false;
+    _checkingEligibility = true;
     try {
-      return tab._content.isEligible(session) && tab.isActive;
+      eligible =
+          session != null &&
+          tab.isActive &&
+          (tab._prepared == null ||
+              identical(tab._prepared!.session, session)) &&
+          tab._content.isEligible(session) &&
+          tab.isActive;
     } on Object {
-      return false;
+      // Predicate failure has the same fail-closed lifetime as false.
+    } finally {
+      _checkingEligibility = false;
     }
+    if (!eligible &&
+        identical(session, _session) &&
+        identical(context, _context)) {
+      var changed = false;
+      if (identical(_selected, tab)) {
+        _selected = null;
+        _restoreNeeded = true;
+        _selections.remove(_session?.id);
+        _endSelection();
+        changed = true;
+      }
+      if (confirmation != null && identical(tab._confirmation, confirmation)) {
+        _settle(confirmation);
+        changed = true;
+      }
+      if (resident != null && identical(_residents[tab], resident)) {
+        // Eviction removes the exact entry before notifying bridge listeners.
+        _evict(tab);
+        changed = true;
+      }
+      if (changed) _scheduleNotification();
+    }
+    return eligible;
+  }
+
+  void _reconcileResidents() {
+    if (_reconciling || _checkingEligibility) return;
+    _reconciling = true;
+    try {
+      for (final resident in _residents.values.toList()) {
+        if (identical(_residents[resident.tab], resident)) {
+          _eligible(resident.tab, _session);
+        }
+      }
+      final selected = _selected;
+      if (selected != null && !_residents.containsKey(selected)) {
+        _eligible(selected, _session);
+      }
+      for (final tab in _tabs.toList()) {
+        if (tab._confirmation != null && !_residents.containsKey(tab)) {
+          _eligible(tab, _session);
+        }
+      }
+      if (_restoreNeeded) _restoreSelection();
+    } finally {
+      _reconciling = false;
+    }
+  }
+
+  void _scheduleNotification() {
+    if (_disposed || _notificationScheduled) return;
+    _notificationScheduled = true;
+    // Validation can happen in a native/eval build. Access and bridges retire
+    // synchronously; only the ordinary host rebuild waits until that stack ends.
+    scheduleMicrotask(() {
+      _notificationScheduled = false;
+      if (!_disposed) _notify();
+    });
   }
 
   void _restoreSelection() {
     final session = _session;
+    final context = _context;
     final remembered = session == null ? null : _selections[session.id];
     final eligible = eligibleTabs;
+    if (!identical(context, _context)) return;
     _selected = remembered != null && eligible.contains(remembered)
         ? remembered
         : eligible.contains(_selected)
@@ -627,6 +728,11 @@ final class ConsoleController extends ChangeNotifier {
   }
 
   void _notify() {
+    if (_checkingEligibility || _reconciling) {
+      _scheduleNotification();
+      return;
+    }
+    _reconcileResidents();
     if (!_disposed) notifyListeners();
   }
 
@@ -702,10 +808,11 @@ final class _TabRegistration implements ConsoleTabRegistration {
 
 final class _PresentationAccess extends ChangeNotifier
     implements ConsolePresentationAccess {
-  _PresentationAccess(this._controller, this._tab);
+  _PresentationAccess(this._controller, this._tab, this._session);
 
   final ConsoleController _controller;
   final ConsoleTab _tab;
+  final Session _session;
   bool _active = true;
   _InteractionAccess? _interaction;
 
@@ -735,12 +842,16 @@ final class _PresentationAccess extends ChangeNotifier
     notifyListeners();
   }
 
-  @override
-  bool get isActive =>
+  bool get _retained =>
       _active &&
       _tab.isActive &&
       _controller._visible &&
+      identical(_controller._session, _session) &&
       identical(_controller._residents[_tab]?._access, this);
+
+  @override
+  bool get isActive =>
+      _retained && _controller._eligible(_tab, _session) && _retained;
 }
 
 final class _InteractionAccess implements ConsoleInteractionAccess {
@@ -752,7 +863,7 @@ final class _InteractionAccess implements ConsoleInteractionAccess {
   bool get isActive =>
       _presentation.isActive &&
       identical(_presentation._interaction, this) &&
-      identical(_presentation._controller.selectedTab, _presentation._tab);
+      identical(_presentation._controller._selected, _presentation._tab);
 }
 
 bool _isLive(ExtensionBinding<ConsoleContribution> binding) {

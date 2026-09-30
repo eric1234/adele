@@ -303,6 +303,106 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final keepAlive in [false, true]) {
+    for (final failure in ['false', 'throw']) {
+      testWidgets(
+        'eligibility $failure withdraws selected keepAlive=$keepAlive dialog without cooling sibling',
+        (tester) async {
+          final one = _Evidence(
+            'One',
+            keepAlive: true,
+            body: () => const TextField(key: ValueKey('healthy-input')),
+          );
+          final two = _Evidence('Two', keepAlive: keepAlive);
+          contribute([one, two]);
+          await tester.pumpWidget(host(width: 800));
+          await tester.pump();
+          await controller.invoke(controller.actions.single);
+          await tester.pump();
+          final healthyTab = controller.selectedTab!;
+          final healthyAccess = one.mounts.single;
+          final input = find.byKey(const ValueKey('healthy-input'));
+          final healthyState = tester.state(input);
+          await tester.enterText(input, 'retained draft');
+          await controller.invoke(controller.actions.single);
+          await tester.pump();
+          final lostTab = controller.selectedTab!;
+          final lostAccess = two.mounts.single;
+          final lostInteraction = lostAccess.interaction!;
+          final workbench = tester.state(find.byType(WorkbenchConsole));
+          final navigator = tester.state<NavigatorState>(
+            find.byType(Navigator),
+          );
+          await tester.tap(find.byTooltip('Close Two'));
+          await tester.pumpAndSettle();
+          final lateAccept = tester
+              .widget<FilledButton>(find.widgetWithText(FilledButton, 'Close'))
+              .onPressed!;
+          var settled = false;
+          unawaited(
+            controller
+                .closeTab(lostTab, (_) async {
+                  fail('The exact close request must coalesce.');
+                })
+                .then((_) => settled = true),
+          );
+
+          two.eligible = false;
+          two.throwEligibility = failure == 'throw';
+          two.registration.updateMetadata(ConsoleMetadata(title: 'Two'));
+          // Mutable predicates are reconciled when evaluated, not by observing
+          // arbitrary captured fields. No frame may precede exact revocation.
+          expect(controller.selectedTab, same(healthyTab));
+          expect(lostAccess.isActive, isFalse);
+          expect(lostInteraction.isActive, isFalse);
+          expect(healthyAccess.isActive, isTrue);
+          expect(two.registration.isActive, isTrue);
+          expect(two.releases, 0);
+          await tester.pumpAndSettle();
+          expect(tester.state(find.byType(WorkbenchConsole)), same(workbench));
+          expect(tester.state(find.byType(Navigator)), same(navigator));
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(_dialogBarriers(), findsNothing);
+          expect(settled, isTrue);
+          expect(
+            find.text('Evidence for Two', skipOffstage: false),
+            findsNothing,
+          );
+          expect(tester.state(input), same(healthyState));
+          expect(find.text('retained draft'), findsOneWidget);
+          expect(one.mounts, hasLength(1));
+
+          two.eligible = true;
+          two.throwEligibility = false;
+          two.registration.updateMetadata(ConsoleMetadata(title: 'Two'));
+          await tester.pump();
+          expect(controller.eligibleTabs, [healthyTab, lostTab]);
+          expect(controller.selectedTab, same(healthyTab));
+          expect(two.mounts, hasLength(1));
+          lateAccept();
+          await tester.pump();
+          expect(two.releases, 0);
+          await tester.tap(find.widgetWithText(TextButton, 'Two'));
+          await tester.pump();
+          expect(two.mounts, hasLength(2));
+          expect(two.mounts.last.isActive, isTrue);
+          expect(lostAccess.isActive, isFalse);
+          expect(lostInteraction.isActive, isFalse);
+          await tester.tap(find.byTooltip('Close Two'));
+          await tester.pumpAndSettle();
+          lateAccept();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(two.releases, 0);
+          expect(one.releases, 0);
+          await tester.tap(find.text('Cancel'));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   testWidgets(
     'close cancellation is inert and confirmation leaves warning outside tab',
     (tester) async {
@@ -670,12 +770,17 @@ class _Evidence {
   final List<ConsolePresentationAccess> mounts = [];
   late ConsoleTabRegistration registration;
   var releases = 0;
+  var eligible = true;
+  var throwEligibility = false;
 
   void open(ConsoleCreationAccess access) {
     registration = access.open(
       ConsoleContent(
         metadata: ConsoleMetadata(title: title, status: ConsoleStatus.running),
-        isEligible: (_) => true,
+        isEligible: (_) {
+          if (throwEligibility) throw StateError('Eligibility unavailable.');
+          return eligible;
+        },
         keepAlive: keepAlive,
         createPresentation: (access) {
           mounts.add(access);

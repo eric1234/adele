@@ -362,8 +362,19 @@ has no paint, semantics, pointer, focus, keyboard, or selected action authority.
 fresh selected epoch, and earlier epochs remain invalid after reselection.
 Collapse, canonical Session identity change or null, console unmount, and host
 close revoke the entire set. Content close, retirement, or eviction revokes its
-exact resident. Revocation and native bridge/resource invalidation are synchronous;
-removed Flutter subtrees from the previous mounted set can briefly overlap the
+exact resident. Revocation and native bridge/resource invalidation are synchronous.
+Current content eligibility is part of that lifetime even while hidden. Access
+use and controller collection/notification reconciliation evaluate eligibility for
+the exact Session, permanently evicting only residents whose predicate returns
+false or throws. There is no watcher for arbitrary callback-captured state: loss
+ends access as soon as a host check observes it. Reconciliation keeps healthy
+siblings warm and restores eligible selection if necessary, without changing
+unaffected selection epochs or LRU recency. Pending questions for ineligible
+targets withdraw; logical content and resource ownership remain intact. Eligibility
+recovery permits a fresh, lazily selected cold presentation, never revival of old
+access. Predicate/reconciliation guards and snapshot iteration contain reentrant
+checks; eviction removes the exact entry before notifying teardown listeners.
+Removed Flutter subtrees from the previous mounted set can briefly overlap the
 replacement set until frame disposal. Normal reconciliation therefore has at most
 one previous set plus the new set, rather than a deferred resident cleanup queue.
 Already admitted transport work and cancellation cleanup may settle later without
