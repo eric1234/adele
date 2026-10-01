@@ -1,0 +1,48 @@
+import 'package:adele_codeforge_probe/interactive.dart';
+import 'package:code_forge/code_forge.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  setUpAll(() async => RustLib.init());
+
+  testWidgets('manual probe resets synthetic samples with fresh undo state', (
+    tester,
+  ) async {
+    runInteractiveProbe();
+    await tester.pump();
+    final first = tester.widget<CodeForge>(find.byType(CodeForge));
+    expect(first.controller!.text, 'abc');
+    expect(first.undoController!.groupEdits, isTrue);
+    first.controller!.replaceRange(0, 0, 'X');
+    expect(first.undoController!.canUndo, isTrue);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Reset'));
+    await tester.pump();
+    final reset = tester.widget<CodeForge>(find.byType(CodeForge));
+    expect(reset.controller, isNot(same(first.controller)));
+    expect(reset.controller!.text, 'abc');
+    expect(reset.undoController!.canUndo, isFalse);
+
+    final samples = tester.widget<DropdownButton<String>>(
+      find.byType(DropdownButton<String>),
+    );
+    samples.onChanged!('CRLF join');
+    await tester.pump();
+    final crlf = tester.widget<CodeForge>(find.byType(CodeForge));
+    expect(crlf.controller!.text, 'a\r\nb');
+    expect(crlf.undoController!.canUndo, isFalse);
+    crlf.focusNode!.requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.f8);
+    await tester.pump();
+    expect(find.textContaining('"text":"a\\r\\nb"'), findsOneWidget);
+    samples.onChanged!('Unicode snapshot');
+    await tester.pump();
+    final unicode = tester.widget<CodeForge>(find.byType(CodeForge));
+    expect(unicode.controller!.text, '\u{1f600}\nab');
+    expect(unicode.undoController!.canUndo, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+}

@@ -70,6 +70,7 @@ void main() {
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
+      'tools/code_editor_probe.dart',
       'tools/contract_artifacts.dart',
       'tools/frontend_artifacts.dart',
       'tools/git_pty_artifact.dart',

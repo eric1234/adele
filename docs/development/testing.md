@@ -540,50 +540,134 @@ generation, and artifact-preparation details.
 
 ### Native editor candidate probe
 
-The [CodeForge compatibility gate](toolchain.md#native-editor-compatibility-gate)
-is deliberately isolated from normal workspace dependency resolution and app
-compilation. It does **not** establish E1 completion or prepared-EVC editor support.
-Use the integrated Flutter/Dart pin on Linux x64, normal Linux desktop build
-dependencies, `curl`, Git, `tar`, `sha256sum`, `readelf`, `timeout`, and Xvfb.
-Preparation downloads the exact pub archive and locked pub/Cargo dependencies;
-runtime does not need Cargo or the source checkout.
+The [CodeForge investigation](../experiments/codeforge-correctness.md) is separate
+from workspace dependency resolution and application compilation. Its evidence
+table owns empirical findings and qualifications; passing a probe is not E1 or
+prepared-EVC editor acceptance. Only Linux x64 is supported by these commands.
+Prerequisites: the integrated SDK, ordinary Linux Flutter desktop dependencies,
+`curl`, Git, `tar`, `diff`, `sha256sum`, `readelf`, `timeout`, Xvfb, and Rust 1.93.0:
 
 ```sh
 rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
-dart tools/adele.dart probe-code-editor --output /tmp/adele-code-editor-gate
 ```
 
-The output directory must not exist. The driver verifies the full toolchain
-identity against `toolchain.json`, captures an absolute Flutter path before leaving
-the checkout, applies only the retained patch, enforces both isolated Dart locks
-and the upstream Cargo lock, analyzes the fixtures, and serially builds/runs the
-profile bundle and native tests. It retains stage logs and `logs/result.json`
-under that output directory. **Default gate mode exits nonzero on the known
-editing failures**, asserting the correct behavior instead of declaring an
-unsuitable dependency successful. Do not include this expected-failing candidate
-as an ordinary app test target.
-
-For stable regression evidence of the *rejection*, not acceptance:
+Use absolute SDK paths and a **new** output directory per configuration. Set
+`FLUTTER_ROOT` for the command as well: an inherited value can make a pinned Dart
+executable resolve against an unrelated Flutter SDK. Do not change global SDK
+selection or ADELE's workspace lock. From the checked-out repository:
 
 ```sh
-dart tools/adele.dart probe-code-editor --output /tmp/adele-code-editor-reproduction --verify-known-defects
-dart test test/tools/code_editor_probe_test.dart test/tools/app_plugin_boundary_test.dart test/tools/self_hosting_cli_test.dart
+ADELE_FLUTTER=/absolute/path/to/flutter-3.38.10
+PROBE=/tmp/adele-codeforge-manual
+env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart probe-code-editor --flutter "$ADELE_FLUTTER/bin/flutter" --output "$PROBE" --prepare-only
+env -C /tmp -u LD_LIBRARY_PATH -u LD_PRELOAD -u FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR "$PROBE/probe/build/linux/x64/profile/bundle/adele_codeforge_probe" --interactive
 ```
 
-The explicit `--verify-known-defects` mode asserts the recorded broken outputs
-only for the named defect cases; baseline initialization/input/text roundtrips and
-bundled-path/missing-library checks must still succeed. A successful command means
-the rejected-candidate evidence reproduced, not that editing is safe. The existing
-runtime-smoke workflow runs this mode in a separate Linux job and uploads logs only.
-Its concurrency policy is unchanged; all Flutter work within one probe is serial
-and uses a fresh build directory. Driver tests are discovered by `adele_tools`.
+`--prepare-only` verifies source/SDK/native identities, formats/analyzes fixtures,
+builds a profile bundle, runs the corrected native input/render/unmount smoke and
+missing-library subprocess, and checks the interactive reset/snapshot UI. It does
+not run editor-correctness assertions. The second command launches the same binary
+without auto-exit on the user's desktop; add `xvfb-run -a` before the binary only
+for an automated headless launch. No Cargo or source checkout is needed at runtime.
 
-The templates use real Rust APIs. Platform clipboard responses are deterministically
-gated with a Completer and debounce checks advance the widget-test clock, not wall
-time sleeps. The packaged profile fixture dispatches platform text input and waits
-for rendered frame completion. Neither native test route compiles an EVC; the
-public buffer/view/access adapter and decisive prepared frontend tests remain
-blocked on the component fidelity/lifecycle decision.
+The interactive view shows configuration/SDK identities and uses supplied synthetic
+documents with fresh controller/undo state on Reset or sample change. It does not
+open/save files or configure LSP, AI, or network services. It logs only startup and
+explicit snapshots of probe content; there is no continuous document/clipboard or
+global-key recording. Use synthetic content only. "Copy synthetic U+1F600" replaces
+the current display's clipboard with that glyph without reading its old content.
+
+Short Linux manual checklist (grouping on, widget read-only off):
+
+1. **ASCII delete:** Reset `ASCII delete`, focus the editor, Ctrl+Home, Delete twice
+   at a natural pace, then Ctrl+Z until the edit history is restored. Expected
+   `abc`; one undo may suffice with grouping. Press F8 and return the one
+   `CODEFORGE_MANUAL_SNAPSHOT` line. This checks ordinary desktop reachability;
+   do not try to win the 100ms race. The automated 20ms case covers that trigger,
+   and a slower successful manual result does not invalidate it.
+2. **Unicode undo:** Choose `Unicode paste`, use "Copy synthetic U+1F600", Ctrl+Home,
+   Ctrl+V, then Ctrl+Z. Expected `ab`; F8 exposes escaped text, scalar selection,
+   UTF-16 code units and recorded history. This checks actual desktop clipboard
+   delivery rather than the test's mocked response. No IME is required.
+3. **CRLF join:** Choose `CRLF join`, focus the editor, Ctrl+End, Home, Backspace.
+   Expected `ab`. F8 distinguishes `\r`, `\n` and code units even if rendering
+   looks similar; Ctrl+Z should restore `a\r\nb`. This checks desktop navigation
+   and joining at the actual caret position.
+
+F8 is an explicit observation, not an immediate-input timing test. The snapshot
+button can also observe after focus/flush changes; no immediate-snapshot proof is
+based on clicking it. Actual human keyboard/clipboard checks are prepared for Eric,
+not claimed as performed by automated Xvfb/widget tests. Return only synthetic
+snapshot lines and the displayed configuration identity, not unrelated clipboard
+contents or files. Human IME tests are deferred until a specific uncertainty needs
+one and the tester has that input method.
+
+For correct-behavior automated comparisons, use the same command with fresh output
+paths and these options instead of `--prepare-only`:
+
+- `--investigate`: mounted/default-configuration cases, with correct assertions.
+- `--correctness-patch --investigate`: the separate bounded causal patch on the
+  ADELE pin. Success covers the targeted tests, not production adoption.
+- `--verify-known-defects`: only the original versioned 10.14.0 baseline observations.
+  It cannot be combined with the causal patch or investigation suite. Compile,
+  crash, timeout, or unexpected behavior still fails; success is not acceptance.
+
+Default mode without those options retains the original correct-behavior tests.
+Unpatched correctness runs are expected to fail the specifically documented
+assertions; inspect per-case JSON and failure reasons, not exit status alone.
+Stage logs, effective dependency locks, source/native hashes, SDK identity and
+`logs/result.json` distinguish preparation failures, skipped correctness work,
+test failures, and completed native smoke. Keep different configurations' artifacts
+separate. Reusing unchanged artifacts within one configuration requires checking
+their retained identities; do not share one configuration's library with another.
+
+For an unmodified published control, obtain an isolated official supported SDK.
+The [evidence record](../experiments/codeforge-correctness.md#controlled-comparison)
+contains the tested Flutter 3.47.5 archive URL, checksum and machine identities.
+Extract it outside the repository without changing the default SDK, then run:
+
+```sh
+CONTROL_FLUTTER=/absolute/path/to/isolated/flutter-3.47.5
+env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart probe-code-editor --flutter "$CONTROL_FLUTTER/bin/flutter" --upstream-control --output /tmp/adele-codeforge-upstream --investigate
+```
+
+This uses hosted CodeForge, a private pub cache and isolated exact Rust selection,
+with **no** SDK/component source patch. The driver checks the Dart admission
+constraint but only an actual successful build establishes API compatibility.
+Ordinary upstream dependency resolution and Cargokit behavior are retained and
+their locks recorded; source equality and Cargo-lock stability are checked. A
+control preparation failure is not an editing result.
+
+For a minimal upstream-ready case after preparing a control bundle, the retained
+`investigation_test.dart.template` is self-contained and imports only CodeForge,
+Flutter, Flutter test and Dart SDK APIs. Run one named case from that prepared
+application without rebuilding or changing its library identity:
+
+```sh
+CONTROL_PROBE=/tmp/adele-codeforge-upstream
+env -C "$CONTROL_PROBE/probe" FLUTTER_ROOT="$CONTROL_FLUTTER" PUB_CACHE="$CONTROL_PROBE/pub-cache" FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR="$CONTROL_PROBE/probe/build/linux/x64/profile/bundle/lib" "$CONTROL_FLUTTER/bin/flutter" test --no-pub --concurrency 1 --reporter expanded test/investigation_test.dart --plain-name 'A delete group=true gap=20ms'
+```
+
+Other focused selectors are `B scalar paste insert`,
+`C scalar plain-controller snapshot control`, `D mounted-CRLF join`, and
+`E widget readOnly rebuild current-client input delta`. The one JSON diagnostic
+line identifies the operation payload, ranges, relevant pending/rope state and
+desired versus actual result. Source-level causes and expected outcomes are in
+the single experiment evidence table. The separate `correctness.patch` is ready
+for review with those cases; it is not an upstream submission or production fix.
+
+The narrow `code-editor-probe` workflow runs only the explicit baseline reproduction
+and uploads logs, never redistribution-unready binaries/fonts. It does not impose
+the full matrix on ordinary CI. Existing workflow concurrency policy is retained;
+Flutter work within one build directory is serial. SDK-only driver/settlement and
+launcher tests are discovered by the maintained target, without Rust/network:
+
+```sh
+env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart test --target adele_tools --ci
+```
+
+Neither route compiles an EVC. The production native owner/access bridge and later
+Main Content/Source Editor work remain outside this investigation.
 
 ## Live tests
 

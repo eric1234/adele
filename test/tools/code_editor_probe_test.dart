@@ -33,6 +33,52 @@ void main() {
   });
 
   test(
+    'upstream control admits only SDKs satisfying declared stable constraint',
+    () {
+      for (final version in ['3.13.2', '3.13.4', '3.14.0']) {
+        validateCodeEditorUpstreamSdk({'dartSdkVersion': version});
+      }
+      for (final version in [
+        '3.10.9',
+        '3.13.1',
+        '3.13.2-dev',
+        '4.0.0',
+        'unknown',
+      ]) {
+        expect(
+          () => validateCodeEditorUpstreamSdk({'dartSdkVersion': version}),
+          throwsStateError,
+        );
+      }
+      expect(() => validateCodeEditorUpstreamSdk({}), throwsStateError);
+    },
+  );
+
+  test(
+    'upstream is unmodified and versioned reproduction cannot mask a patch',
+    () async {
+      for (final options in [
+        (upstream: true, patch: false, verify: false, investigate: false),
+        (upstream: true, patch: true, verify: false, investigate: false),
+        (upstream: false, patch: true, verify: true, investigate: false),
+        (upstream: false, patch: false, verify: true, investigate: true),
+      ]) {
+        await expectLater(
+          runCodeEditorProbe(
+            repository: Directory.current,
+            output: Directory('/unused-invalid-configuration'),
+            verifyKnownDefects: options.verify,
+            upstreamControl: options.upstream,
+            correctnessPatch: options.patch,
+            investigate: options.investigate,
+          ),
+          throwsArgumentError,
+        );
+      }
+    },
+  );
+
+  test(
     'packaged launch cannot use development loader overrides or Cargo PATH',
     () {
       final original = {
@@ -80,31 +126,141 @@ void main() {
     },
   );
 
-  test(
-    'missing-library proof rejects timeout and post-load mapping failure',
-    () {
-      validateCodeEditorProbeMissingLibrary(
-        ProcessResult(1, 1, 'CODEFORGE_INIT_FAILED', ''),
+  test('profile success requires clean completion and zero exit', () {
+    validateCodeEditorProbeSmoke(
+      ProcessResult(1, 0, 'CODEFORGE_PROBE_COMPLETE\n', 'platform chatter'),
+    );
+    expect(
+      () => validateCodeEditorProbeSmoke(ProcessResult(1, 0, '', '')),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('missing completion'),
+        ),
+      ),
+    );
+    expect(
+      () => validateCodeEditorProbeSmoke(
+        ProcessResult(1, 23, 'CODEFORGE_PROBE_COMPLETE', ''),
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('exited 23'),
+        ),
+      ),
+    );
+  });
+
+  for (final stream in ['stdout', 'stderr']) {
+    for (final marker in [
+      'CODEFORGE_INIT_FAILED',
+      'CODEFORGE_BUNDLE_FAILED',
+      'CODEFORGE_SMOKE_FAILED',
+      'CODEFORGE_OTHER_FAILED',
+    ]) {
+      test(
+        'profile rejects $marker on $stream despite exit 0 and completion',
+        () {
+          final failure = '$marker: first diagnostic\n';
+          final result = ProcessResult(
+            1,
+            0,
+            'CODEFORGE_PROBE_COMPLETE\n${stream == 'stdout' ? failure : ''}',
+            stream == 'stderr' ? failure : '',
+          );
+          expect(
+            () => validateCodeEditorProbeSmoke(result),
+            throwsA(
+              isA<StateError>().having(
+                (error) => error.message,
+                'message',
+                contains('explicit failure: $marker'),
+              ),
+            ),
+          );
+        },
       );
-      for (final result in [
-        ProcessResult(1, 0, 'CODEFORGE_INIT_FAILED', ''),
-        ProcessResult(1, 124, 'CODEFORGE_INIT_FAILED', ''),
-        ProcessResult(1, -9, 'CODEFORGE_INIT_FAILED', ''),
-        ProcessResult(1, 1, 'CODEFORGE_BUNDLE_FAILED', ''),
+    }
+
+    test('missing-library proof accepts only init failure on $stream', () {
+      validateCodeEditorProbeMissingLibrary(
         ProcessResult(
           1,
           1,
-          'CODEFORGE_FRB_INIT_RETURNED\nCODEFORGE_INIT_FAILED',
-          '',
+          stream == 'stdout' ? 'CODEFORGE_INIT_FAILED' : '',
+          stream == 'stderr' ? 'CODEFORGE_INIT_FAILED' : '',
         ),
+      );
+      for (final marker in [
+        'CODEFORGE_FRB_INIT_RETURNED',
+        'CODEFORGE_NATIVE_INITIALIZED',
+        'CODEFORGE_PROBE_COMPLETE',
+        'CODEFORGE_BUNDLE_FAILED',
+        'CODEFORGE_SMOKE_FAILED',
       ]) {
+        final result = ProcessResult(
+          1,
+          1,
+          'CODEFORGE_INIT_FAILED\n${stream == 'stdout' ? marker : ''}',
+          stream == 'stderr' ? marker : '',
+        );
         expect(
           () => validateCodeEditorProbeMissingLibrary(result),
           throwsStateError,
+          reason: marker,
         );
       }
-    },
-  );
+    });
+  }
+
+  test('missing-library proof rejects unexplained or wrong exit status', () {
+    for (final result in [
+      ProcessResult(1, 0, 'CODEFORGE_INIT_FAILED', ''),
+      ProcessResult(1, 23, 'CODEFORGE_INIT_FAILED', ''),
+      ProcessResult(1, 1, '', ''),
+      ProcessResult(1, 1, 'CODEFORGE_BUNDLE_FAILED', ''),
+    ]) {
+      expect(
+        () => validateCodeEditorProbeMissingLibrary(result),
+        throwsStateError,
+      );
+    }
+  });
+
+  for (final validator in {
+    'profile': validateCodeEditorProbeSmoke,
+    'missing library': validateCodeEditorProbeMissingLibrary,
+  }.entries) {
+    test('${validator.key} distinguishes timeout and signal termination', () {
+      for (final status in {
+        124: 'timed out',
+        -9: 'signal 9',
+        137: 'signal 9',
+        143: 'signal 15',
+      }.entries) {
+        expect(
+          () => validator.value(
+            ProcessResult(
+              1,
+              status.key,
+              'CODEFORGE_PROBE_COMPLETE\nCODEFORGE_INIT_FAILED',
+              '',
+            ),
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              contains(status.value),
+            ),
+          ),
+        );
+      }
+    });
+  }
 
   test(
     'CLI rejects incomplete options before downloading or building',

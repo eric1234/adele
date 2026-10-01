@@ -19,6 +19,10 @@ A useful retained experiment should normally capture:
 
 ## Current contents
 
+[CodeForge correctness and harness investigation](codeforge-correctness.md)
+retains versioned native-editor comparisons, harness qualifications, and bounded
+causal-patch evidence. It does not select an editor or establish E1 completion.
+
 [Phase I runtime findings](phase-1-runtime-findings.md) retain evidence about
 external AOT loading and the shared backend-host approach, with original
 experiment branches and revisions. The historical filename and document remain
