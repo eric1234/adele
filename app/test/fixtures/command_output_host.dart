@@ -30,6 +30,7 @@ Future<void> main() async {
             ...route,
           });
         case 'stopPlugin':
+          output.releaseReads();
           await dispatcher.close();
           send({
             'kind': 'pluginStopped',
@@ -41,35 +42,62 @@ Future<void> main() async {
           await stdout.flush();
           return;
         case 'request' when frame['serviceId'] != commandOutputServiceId:
-          if (frame['method'] == 'append') {
-            output.append((frame['payload']! as Map)['text']! as String);
+          final payload = frame['payload']! as Map;
+          final invocation = payload['invocation'] as String? ?? 'invocation';
+          switch (frame['method']) {
+            case 'append':
+              output.append(payload['text']! as String);
+            case 'hold':
+              output.gates[invocation] = Completer<void>();
+            case 'release':
+              output.releaseReads(invocation);
+            case 'releaseAndHoldNext':
+              final previous = output.gates[invocation]!;
+              output.gates[invocation] = Completer<void>();
+              previous.complete();
+            case 'failNextRead':
+              output.failNext.add(invocation);
           }
           send({
             'kind': 'response',
             'requestId': frame['requestId'],
             ...route,
             'ok': true,
-            'payload': {'deliveredVersion': deliveredVersion},
+            'payload': {
+              'deliveredVersion': deliveredVersion,
+              'watches': output.watches,
+              'observers': output.observers.values.toList(),
+              'cursors': output.cursors,
+              'activeReads': output.activeReads,
+              'maximumReads': output.maximumReads,
+              'maximumPageChunks': output.maximumPageChunks,
+              'maximumPageUnits': output.maximumPageUnits,
+              'units': output.units,
+              'highWater': output.chunks.length,
+            },
           });
         default:
-          await dispatcher.handle(
-            {
-              for (final key in [
-                'kind',
-                'requestId',
-                'method',
-                'payload',
-                'credit',
-              ])
-                if (frame.containsKey(key)) key: frame[key],
-            },
-            (reply) {
-              if (reply['kind'] == 'streamItem') {
-                deliveredVersion =
-                    (reply['payload']! as Map)['version']! as int;
-              }
-              send({...reply, ...route});
-            },
+          // A held generated read must not block control/barrier requests.
+          unawaited(
+            dispatcher.handle(
+              {
+                for (final key in [
+                  'kind',
+                  'requestId',
+                  'method',
+                  'payload',
+                  'credit',
+                ])
+                  if (frame.containsKey(key)) key: frame[key],
+              },
+              (reply) {
+                if (reply['kind'] == 'streamItem') {
+                  deliveredVersion =
+                      (reply['payload']! as Map)['version']! as int;
+                }
+                send({...reply, ...route});
+              },
+            ),
           );
       }
     }
@@ -78,30 +106,53 @@ Future<void> main() async {
 
 final class _Output implements CommandOutputService {
   final chunks = <CommandOutputChunk>[];
-  final observers = <StreamController<CommandCaptureState>>{};
+  final observers = <StreamController<CommandCaptureState>, String>{};
+  final watches = <String, int>{};
+  final cursors = <String, List<int>>{};
+  final activeReads = <String, int>{};
+  final maximumReads = <String, int>{};
+  final gates = <String, Completer<void>>{};
+  final failNext = <String>{};
   int units = 0;
+  int maximumPageChunks = 0;
+  int maximumPageUnits = 0;
 
-  void append(String text) {
-    if (text.length > commandOutputChunkCodeUnits) {
-      throw ArgumentError('Fixture append must fit one stored chunk.');
-    }
-    chunks.add(
-      CommandOutputChunk(
-        cursor: chunks.length + 1,
-        stream: 'stdout',
-        text: text,
-      ),
-    );
-    units += text.length;
-    for (final observer in observers) {
-      observer.add(state);
+  void releaseReads([String? invocation]) {
+    for (final id in gates.keys.toList()) {
+      if (invocation == null || id == invocation) {
+        gates.remove(id)!.complete();
+      }
     }
   }
 
-  CommandCaptureState get state => CommandCaptureState(
+  void append(String text) {
+    for (var offset = 0; offset < text.length;) {
+      var end = offset + commandOutputChunkCodeUnits;
+      if (end > text.length) end = text.length;
+      if (end < text.length &&
+          text.codeUnitAt(end - 1) >= 0xd800 &&
+          text.codeUnitAt(end - 1) <= 0xdbff) {
+        end--;
+      }
+      chunks.add(
+        CommandOutputChunk(
+          cursor: chunks.length + 1,
+          stream: 'stdout',
+          text: text.substring(offset, end),
+        ),
+      );
+      offset = end;
+    }
+    units += text.length;
+    for (final entry in observers.entries) {
+      entry.key.add(state(entry.value));
+    }
+  }
+
+  CommandCaptureState state(String invocation) => CommandCaptureState(
     sessionId: 'a',
     runId: 'run',
-    toolInvocationId: 'invocation',
+    toolInvocationId: invocation,
     state: 'capturing',
     version: chunks.length,
     highWater: chunks.length,
@@ -121,7 +172,7 @@ final class _Output implements CommandOutputService {
     String sessionId,
     String runId,
     String toolInvocationId,
-  ) async => state;
+  ) async => state(toolInvocationId);
 
   @override
   Future<CommandOutputPage> readAfter(
@@ -131,10 +182,41 @@ final class _Output implements CommandOutputService {
     int afterCursor,
     int maxChunks,
     int maxCodeUnits,
-  ) async => CommandOutputPage(
-    state: state,
-    chunks: chunks.skip(afterCursor).take(maxChunks).toList(),
-  );
+  ) async {
+    if (maxChunks != 4 || maxCodeUnits != 16384) {
+      throw StateError('Stock reader exceeded its bounded page request.');
+    }
+    (cursors[toolInvocationId] ??= []).add(afterCursor);
+    final active = activeReads.update(
+      toolInvocationId,
+      (value) => value + 1,
+      ifAbsent: () => 1,
+    );
+    if (active > (maximumReads[toolInvocationId] ?? 0)) {
+      maximumReads[toolInvocationId] = active;
+    }
+    final page = CommandOutputPage(
+      state: state(toolInvocationId),
+      chunks: chunks.skip(afterCursor).take(maxChunks).toList(),
+    );
+    if (page.chunks.length > maximumPageChunks) {
+      maximumPageChunks = page.chunks.length;
+    }
+    final pageUnits = page.chunks.fold<int>(
+      0,
+      (sum, chunk) => sum + chunk.text.length,
+    );
+    if (pageUnits > maximumPageUnits) maximumPageUnits = pageUnits;
+    try {
+      await gates[toolInvocationId]?.future;
+      if (failNext.remove(toolInvocationId)) {
+        throw StateError('SECRET fixture storage failure');
+      }
+      return page;
+    } finally {
+      activeReads[toolInvocationId] = activeReads[toolInvocationId]! - 1;
+    }
+  }
 
   @override
   Future<CommandOutputPage> readBefore(
@@ -155,8 +237,13 @@ final class _Output implements CommandOutputService {
     late final StreamController<CommandCaptureState> observer;
     observer = StreamController<CommandCaptureState>(
       onListen: () {
-        observers.add(observer);
-        observer.add(state);
+        watches.update(
+          toolInvocationId,
+          (value) => value + 1,
+          ifAbsent: () => 1,
+        );
+        observers[observer] = toolInvocationId;
+        observer.add(state(toolInvocationId));
       },
       onCancel: () => observers.remove(observer),
     );

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
+import 'package:flutter/widgets.dart';
 
 import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
@@ -67,6 +68,32 @@ class ConsoleDeclarations implements EvalPlugin {
         ),
       ),
     );
+    const integer = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.int));
+    const boolean = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool));
+    const voidType = BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.voidType));
+    const listener = BridgeParameter(
+      'listener',
+      BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.function)),
+      false,
+    );
+    for (final (name, returns, params) in [
+      ('readConsoleInteraction', integer, const <BridgeParameter>[]),
+      (
+        'isConsoleInteractionActive',
+        boolean,
+        const [BridgeParameter('epoch', integer, false)],
+      ),
+      ('subscribeConsoleInteraction', voidType, const [listener]),
+      ('unsubscribeConsoleInteraction', voidType, const [listener]),
+    ]) {
+      registry.defineBridgeTopLevelFunction(
+        BridgeFunctionDeclaration(
+          _library,
+          name,
+          BridgeFunctionDef(returns: returns, params: params),
+        ),
+      );
+    }
   }
 
   @override
@@ -93,25 +120,36 @@ final class ConsoleContentState {
 }
 
 final class ConsoleBridge extends ConsoleDeclarations
-    implements PreparedFrontendBridge {
+    implements PreparedFrontendBridge, PreparedFrontendFailureSource {
   ConsoleBridge({
     required bool Function() isActive,
     Future<void> Function(String extensionId, ConsoleContentDescriptor)? open,
     ConsoleContentState? content,
+    ConsolePresentationAccess? presentation,
   }) : _isActive = isActive,
        _open = open,
-       _content = content;
+       _content = content,
+       _presentation = presentation;
 
   final bool Function() _isActive;
   final Future<void> Function(String, ConsoleContentDescriptor)? _open;
   final ConsoleContentState? _content;
+  final ConsolePresentationAccess? _presentation;
   final Zone _nativeZone = Zone.current;
+  final Map<EvalCallable, VoidCallback> _listeners = Map.identity();
+  ConsoleInteractionAccess? _interaction;
+  int _epoch = 0;
+  int _nextEpoch = 0;
   bool _active = true;
   bool _configured = false;
+  bool _scheduled = false;
+
+  @override
+  VoidCallback? onFailure;
 
   bool get isActive {
     try {
-      return _active && _isActive();
+      return _active && _isActive() && (_presentation?.isActive ?? true);
     } on Object {
       return false;
     }
@@ -149,10 +187,57 @@ final class ConsoleBridge extends ConsoleDeclarations
     }
   }
 
+  int readInteraction() {
+    if (!isActive) return 0;
+    final presentation = _presentation;
+    if (presentation == null) return 0;
+    final interaction = presentation.interaction;
+    if (interaction == null || !interaction.isActive) {
+      _interaction = null;
+      _epoch = 0;
+      return 0;
+    }
+    if (!identical(interaction, _interaction)) {
+      _interaction = interaction;
+      _epoch = ++_nextEpoch;
+    }
+    return _epoch;
+  }
+
+  bool isInteractionActive(int epoch) =>
+      epoch > 0 && epoch == readInteraction();
+
+  void _interactionChanged() {
+    if (!isActive) {
+      invalidate();
+      return;
+    }
+    readInteraction();
+    if (_scheduled || _listeners.isEmpty) return;
+    _scheduled = true;
+    final queued = Map.of(_listeners);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduled = false;
+      for (final entry in queued.entries) {
+        if (!isActive) return;
+        if (!identical(_listeners[entry.key], entry.value)) continue;
+        try {
+          entry.value();
+        } on Object {
+          invalidate();
+          onFailure?.call();
+          return;
+        }
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   @override
   void configureForRuntime(Runtime runtime) {
     if (_configured) throw StateError('Console bridge is already bound.');
     _configured = true;
+    if (_active) _presentation?.changes.addListener(_interactionChanged);
     runtime.registerBridgeFunc(_library, 'openPreparedConsole', (_, _, args) {
       final completion = Completer<$Value>();
       _nativeZone.run(() async {
@@ -202,8 +287,47 @@ final class ConsoleBridge extends ConsoleDeclarations
         return $bool(false);
       }
     });
+    runtime.registerBridgeFunc(
+      _library,
+      'readConsoleInteraction',
+      (_, _, _) => $int(readInteraction()),
+    );
+    runtime.registerBridgeFunc(
+      _library,
+      'isConsoleInteractionActive',
+      (_, _, args) => $bool(isInteractionActive(args.single!.$value as int)),
+    );
+    runtime.registerBridgeFunc(_library, 'subscribeConsoleInteraction', (
+      _,
+      _,
+      args,
+    ) {
+      if (!isActive) return null;
+      final listener = args.single! as EvalCallable;
+      _listeners.putIfAbsent(
+        listener,
+        () =>
+            () => listener.call(runtime, null, const []),
+      );
+      return null;
+    });
+    runtime.registerBridgeFunc(_library, 'unsubscribeConsoleInteraction', (
+      _,
+      _,
+      args,
+    ) {
+      _listeners.remove(args.single! as EvalCallable);
+      return null;
+    });
   }
 
   @override
-  void invalidate() => _active = false;
+  void invalidate() {
+    if (!_active) return;
+    _active = false;
+    _presentation?.changes.removeListener(_interactionChanged);
+    _interaction = null;
+    _epoch = 0;
+    _listeners.clear();
+  }
 }

@@ -155,6 +155,254 @@ void main() {
     },
   );
 
+  testWidgets('opted-in hidden content keeps stable state and finite layout', (
+    tester,
+  ) async {
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
+    final one = _Evidence(
+      'One',
+      keepAlive: true,
+      body: () =>
+          TextField(key: const ValueKey('resident-input'), focusNode: focus),
+    );
+    final two = _Evidence('Two', keepAlive: true);
+    contribute([one, two]);
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    final input = find.byKey(const ValueKey('resident-input'));
+    final inputState = tester.state(input);
+    final inputSize = tester.getSize(input);
+    await tester.tap(input);
+    await tester.pump();
+    expect(focus.hasFocus, isTrue);
+    final epoch = one.mounts.single.interaction!;
+    await controller.invoke(controller.actions.single);
+    expect(epoch.isActive, isFalse);
+    expect(one.mounts.single.isActive, isTrue);
+    expect(focus.canRequestFocus, isFalse);
+    await tester.pump();
+    expect(focus.hasFocus, isFalse);
+    expect(input, findsNothing);
+    final hidden = find.byKey(
+      const ValueKey('resident-input'),
+      skipOffstage: false,
+    );
+    expect(tester.state(hidden), same(inputState));
+    expect(tester.getSize(hidden), inputSize);
+    expect(TickerMode.of(tester.element(hidden)), isFalse);
+    await tester.tap(find.widgetWithText(TextButton, 'One'));
+    await tester.pump();
+    expect(tester.state(input), same(inputState));
+    expect(one.mounts, hasLength(1));
+    expect(two.mounts, hasLength(1));
+    expect(epoch.isActive, isFalse);
+    expect(one.mounts.single.interaction!.isActive, isTrue);
+    expect(TickerMode.of(tester.element(input)), isTrue);
+    expect(focus.hasFocus, isFalse);
+    await tester.tap(find.byTooltip('Hide console'));
+    expect(one.mounts.single.isActive, isFalse);
+    expect(two.mounts.single.isActive, isFalse);
+    await tester.pump();
+    expect(hidden, findsNothing);
+    expect(one.releases, 0);
+    expect(two.releases, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('two-slot churn disposes only LRU views and preserves tabs', (
+    tester,
+  ) async {
+    await controller.close();
+    controller.dispose();
+    controller = ConsoleController(registry, presentationLimit: 2)
+      ..setSession(
+        Session(
+          id: SessionId('session'),
+          taskId: TaskId('task'),
+          strategyId: OrchestrationStrategyId('test.strategy'),
+        ),
+      );
+    final contents = List.generate(
+      4,
+      (index) => _Evidence('Tab $index', keepAlive: true),
+    );
+    contribute(contents);
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    final tabs = controller.eligibleTabs;
+    final first = contents[0].mounts.single;
+    controller.select(tabs[0]);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    expect(contents[1].mounts.single.isActive, isFalse);
+    expect(first.isActive, isTrue);
+    expect(controller.eligibleTabs, hasLength(3));
+    expect(
+      find.byKey(const ValueKey('evidence-body'), skipOffstage: false),
+      findsNWidgets(2),
+    );
+    expect(find.text('Evidence for Tab 2'), findsOneWidget);
+    // Several synchronous changes before Flutter disposes removed children must
+    // not resurrect an old grant or create an unvisited fourth presentation.
+    controller.select(tabs[1]);
+    controller.selectedPresentation;
+    controller.select(tabs[0]);
+    controller.selectedPresentation;
+    controller.select(tabs[1]);
+    await tester.pump();
+    expect(first.isActive, isFalse);
+    expect(contents[1].mounts, hasLength(2));
+    expect(contents[1].mounts.first.isActive, isFalse);
+    expect(contents[3].mounts, isEmpty);
+    expect(controller.residentPresentations, hasLength(2));
+    expect(contents.every((content) => content.releases == 0), isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(
+      contents
+          .expand((content) => content.mounts)
+          .every((access) => !access.isActive),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('warm selection withdraws exact close dialog', (tester) async {
+    final one = _Evidence('One', keepAlive: true);
+    final two = _Evidence('Two', keepAlive: true);
+    contribute([one, two]);
+    await tester.pumpWidget(host(width: 800));
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    await tester.tap(find.byTooltip('Close Two'));
+    await tester.pumpAndSettle();
+    final lateAccept = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Close'))
+        .onPressed!;
+    controller.select(controller.eligibleTabs.first);
+    expect(two.mounts.single.isActive, isTrue);
+    expect(two.mounts.single.interaction, isNull);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(_dialogBarriers(), findsNothing);
+    lateAccept();
+    await tester.pump();
+    expect(two.releases, 0);
+    expect(controller.eligibleTabs, hasLength(2));
+    expect(one.mounts, hasLength(1));
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final keepAlive in [false, true]) {
+    for (final failure in ['false', 'throw']) {
+      testWidgets(
+        'eligibility $failure withdraws selected keepAlive=$keepAlive dialog without cooling sibling',
+        (tester) async {
+          final one = _Evidence(
+            'One',
+            keepAlive: true,
+            body: () => const TextField(key: ValueKey('healthy-input')),
+          );
+          final two = _Evidence('Two', keepAlive: keepAlive);
+          contribute([one, two]);
+          await tester.pumpWidget(host(width: 800));
+          await tester.pump();
+          await controller.invoke(controller.actions.single);
+          await tester.pump();
+          final healthyTab = controller.selectedTab!;
+          final healthyAccess = one.mounts.single;
+          final input = find.byKey(const ValueKey('healthy-input'));
+          final healthyState = tester.state(input);
+          await tester.enterText(input, 'retained draft');
+          await controller.invoke(controller.actions.single);
+          await tester.pump();
+          final lostTab = controller.selectedTab!;
+          final lostAccess = two.mounts.single;
+          final lostInteraction = lostAccess.interaction!;
+          final workbench = tester.state(find.byType(WorkbenchConsole));
+          final navigator = tester.state<NavigatorState>(
+            find.byType(Navigator),
+          );
+          await tester.tap(find.byTooltip('Close Two'));
+          await tester.pumpAndSettle();
+          final lateAccept = tester
+              .widget<FilledButton>(find.widgetWithText(FilledButton, 'Close'))
+              .onPressed!;
+          var settled = false;
+          unawaited(
+            controller
+                .closeTab(lostTab, (_) async {
+                  fail('The exact close request must coalesce.');
+                })
+                .then((_) => settled = true),
+          );
+
+          two.eligible = false;
+          two.throwEligibility = failure == 'throw';
+          two.registration.updateMetadata(ConsoleMetadata(title: 'Two'));
+          // Mutable predicates are reconciled when evaluated, not by observing
+          // arbitrary captured fields. No frame may precede exact revocation.
+          expect(controller.selectedTab, same(healthyTab));
+          expect(lostAccess.isActive, isFalse);
+          expect(lostInteraction.isActive, isFalse);
+          expect(healthyAccess.isActive, isTrue);
+          expect(two.registration.isActive, isTrue);
+          expect(two.releases, 0);
+          await tester.pumpAndSettle();
+          expect(tester.state(find.byType(WorkbenchConsole)), same(workbench));
+          expect(tester.state(find.byType(Navigator)), same(navigator));
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(_dialogBarriers(), findsNothing);
+          expect(settled, isTrue);
+          expect(
+            find.text('Evidence for Two', skipOffstage: false),
+            findsNothing,
+          );
+          expect(tester.state(input), same(healthyState));
+          expect(find.text('retained draft'), findsOneWidget);
+          expect(one.mounts, hasLength(1));
+
+          two.eligible = true;
+          two.throwEligibility = false;
+          two.registration.updateMetadata(ConsoleMetadata(title: 'Two'));
+          await tester.pump();
+          expect(controller.eligibleTabs, [healthyTab, lostTab]);
+          expect(controller.selectedTab, same(healthyTab));
+          expect(two.mounts, hasLength(1));
+          lateAccept();
+          await tester.pump();
+          expect(two.releases, 0);
+          await tester.tap(find.widgetWithText(TextButton, 'Two'));
+          await tester.pump();
+          expect(two.mounts, hasLength(2));
+          expect(two.mounts.last.isActive, isTrue);
+          expect(lostAccess.isActive, isFalse);
+          expect(lostInteraction.isActive, isFalse);
+          await tester.tap(find.byTooltip('Close Two'));
+          await tester.pumpAndSettle();
+          lateAccept();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(two.releases, 0);
+          expect(one.releases, 0);
+          await tester.tap(find.text('Cancel'));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   testWidgets(
     'close cancellation is inert and confirmation leaves warning outside tab',
     (tester) async {
@@ -506,25 +754,39 @@ Finder _dialogBarriers() => find.byWidgetPredicate(
 );
 
 class _Evidence {
-  _Evidence(this.title, {this.warning, this.noConfirmation = false});
+  _Evidence(
+    this.title, {
+    this.warning,
+    this.noConfirmation = false,
+    this.keepAlive = false,
+    this.body,
+  });
 
   final String title;
   final String? warning;
   final bool noConfirmation;
+  final bool keepAlive;
+  final Widget Function()? body;
   final List<ConsolePresentationAccess> mounts = [];
   late ConsoleTabRegistration registration;
   var releases = 0;
+  var eligible = true;
+  var throwEligibility = false;
 
   void open(ConsoleCreationAccess access) {
     registration = access.open(
       ConsoleContent(
         metadata: ConsoleMetadata(title: title, status: ConsoleStatus.running),
-        isEligible: (_) => true,
+        isEligible: (_) {
+          if (throwEligibility) throw StateError('Eligibility unavailable.');
+          return eligible;
+        },
+        keepAlive: keepAlive,
         createPresentation: (access) {
           mounts.add(access);
           return SizedBox.expand(
             key: const ValueKey('evidence-body'),
-            child: Text('Evidence for $title'),
+            child: body?.call() ?? Text('Evidence for $title'),
           );
         },
         closeAdvice: () =>

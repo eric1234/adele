@@ -240,6 +240,20 @@ fallback. Safe interpreted Future settlement preserves success values or reports
 failure without native diagnostics; it neither widens access nor changes the
 producer's domain outcome.
 
+For explicitly resident console content, the owning-backend channel and
+subscriptions follow the resident lifetime, not the selected-tab interaction
+epoch. A hidden resident may keep observing through its existing descriptor
+allowlist and exact backend route. Deselection immediately revokes user
+interaction, but does not cancel those resident reads. Eviction, working-set
+departure, content removal, host close, or owner retirement revokes the resident
+and its observation; neither reselecting a tab nor registering the same IDs revives
+old grants. Queued actions and asynchronous user-interaction completions validate
+the exact epoch captured when initiated, separately from resident liveness.
+This split grants no new execution or capture authority and does not change
+transport backpressure or independent backend work. See
+[console lifecycle](plugin-system.md#shared-console) and the
+[UI bridge map](../../packages/ui/README.md#interpreted-bridges).
+
 Chat's `ChatSessionService` is a generated plugin-internal service reached through
 direct/owning-backend routing; it is not an advertised Chat Session Capability.
 Chat installs its Session dispatcher on the backend router but advertises only its

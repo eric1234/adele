@@ -143,7 +143,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
-| Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, retained content, selection/visibility, revoked actions/views, advisory confirmation, retirement, and bounded cleanup) |
+| Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, selected-only default, lazy bounded LRU residency including the selected slot, exact interaction epochs, working-set departure, advisory confirmation, retirement, and bounded cleanup) |
 | Prepared console/Session Environment authority | [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (actual EVC action/content paths, canonical Session association rather than Task primary, captured creation scope, fresh view access, title/exit policy, and failure cleanup) |
 | Native terminal lifecycle/title observation | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart), [`test/environment_terminal_owner_test.dart`](../../app/test/environment_terminal_owner_test.dart) (normalized title changes, hidden observation, lifecycle/cleanup evidence separate from output, and conservative pre-resource failure) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
@@ -163,7 +163,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; concurrent Session commands in separate Task worktrees through shared AOT hosting, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
+| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
 
 Application dependency-boundary checks belong to
@@ -237,7 +237,10 @@ generated own-backend reads/watch and generic console/projection declarations.
 `command_output_frontend_eval_test.dart` tests that actual client and stock UI with
 small native retention, including prefix reconstruction, long unbroken lines,
 state-only updates, frozen history, bounded read admission, safe failures, and
-scalar-only remount state. `terminal_projection_bridge_test.dart` separately
+scalar-only cold-remount state. Prepared console coverage additionally checks
+resident readers and generated-service accounting across warm tab switches;
+native/bridge cases enforce the separate selected interaction epoch.
+`terminal_projection_bridge_test.dart` separately
 exercises scoped handles and revocation; existing interactive surface regressions
 remain selected alongside it.
 Readiness assertions observe native paint gating and settled viewport position at
@@ -251,9 +254,16 @@ and Git AOT backends, SQLite, and deterministic local model responses. Its opt-i
 mode in the existing socket-gated process fixture supplies ANSI, CR repainting,
 partial lines, and known beginning/middle/late output. It checks both views before
 completion, deduplication, identical-command independence, native scroll/follow,
-history beyond configured retention, interactive Terminal coexistence, closing
-readers without stopping capture, nonzero completion, and fresh compatible backend
-history after Project reopen without installing Git. These are debug
+and history beyond configured retention. Two warm output tabs retain tab,
+resident, mounted view, and emulator identity across selection and repeated Show
+more. A socket-gated later partial line is committed and consumed by the hidden
+reader with Inspection closed; output also advances while interactive Terminal
+is selected. Session departure revokes both residents and disposes their views,
+while lightweight tabs survive for lazy cold historical reconstruction. It retains
+the closing-readers-without-stopping-capture, nonzero completion, and fresh
+compatible-backend history checks after Project reopen without installing Git.
+The separate concurrent Session case continues to verify independent execution,
+capture, approval, and history across navigation. These are debug
 widget/evaluator/Linux-AOT checks, not paid-model or desktop/profile evidence.
 
 Memory checks are accounting assertions, not absolute RSS claims: provider pending
@@ -261,8 +271,15 @@ decoded units/admitted reads and pause/resume, plugin pending batch row/text lim
 page limits, active writer/observer counts, coalesced paused notifications, and
 absence of raw transcript events in generic progress/journal/activity. Test-owned
 buffers used to compare expected whole transcripts do not represent production
-retention. The native process fixture is local and deterministic; these checks use
-no paid/live model, self-hosting workflow, PTY execution, or desktop/profile run.
+retention. Resident count bounds are checked independently from Flutter subtree
+disposal timing and do not claim absolute instantaneous object counts or RSS; see
+the [host accounting policy](../../app/README.md#session-console). The normal
+integration uses identity/lifetime evidence rather than adding production Command
+read counters; deterministic stock EVC fixtures cover precise read/watch accounting.
+The native process fixture is local and deterministic; these checks use
+no paid/live model, self-hosting workflow, or desktop/profile run. Command capture
+uses foreground pipes, not a PTY; the normal application's separate interactive
+Terminal coexistence check does run the stock PTY path.
 New app tests participate in the unrestricted maintained `adele_desktop` target;
 the new contract package has explicit workspace/analysis/test discovery.
 

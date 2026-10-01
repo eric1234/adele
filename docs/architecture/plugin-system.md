@@ -318,8 +318,25 @@ access ends on action settlement, owner retirement, or host close; late content 
 released rather than published. Retirement also removes exact owned content.
 Replacement requires fresh access, never migration of old bindings.
 Content registration is independent of mounted presentation: metadata and lifecycle
-observation may continue while hidden, but hiding, selection/context change,
-unmount, or retirement permanently revokes view-originated access.
+observation may continue while hidden. Presentation is selected-only by default;
+content may explicitly opt into the host's bounded resident working set. Residents
+are created lazily on selection, never merely because a tab exists. The selected
+presentation counts toward the bound, and least-recently-selected hidden residents
+are evicted when needed. The host neither eagerly mounts all tabs nor keeps one
+working set per background Session.
+
+Resident lifetime and selected interaction are separate grants. An opted-in hidden
+resident may retain its evaluator, bounded renderer, allowlisted reads/watch, and
+local state, but cannot accept pointer, focus, keyboard, selection/copy, or other
+user interaction. Each selection issues a fresh interaction epoch; callbacks
+captured under an earlier epoch remain revoked even after reselecting the same tab.
+Resident callbacks still validate their exact resident and owner generation.
+Collapsing the console, changing canonical Session identity (including null),
+unmounting the console, or closing its host ends the entire working set. Eviction,
+content removal, and owner retirement end the affected resident. Lightweight tabs,
+selection, and bounded logical/checkpoint state can survive working-set departure,
+not revoked executable grants. Application accounting and disposal timing belong
+to the [console host map](../../app/README.md#session-console).
 
 Read-only content can also be opened through an explicitly declared console target
 from a rich Inspection. The host captures the target's exact registration within
@@ -328,8 +345,9 @@ letting transported IDs choose authority. An opaque content key deduplicates onl
 within that owner and Session; equal keys cannot replace an existing descriptor or
 its logical state. Admission transfers bounded structured plugin data to a
 host-owned declared factory, never a callback or evaluator runtime from the
-originating view. The content can outlive that view; its new presentations receive
-fresh access while retaining only bounded logical state and exact owned bindings.
+originating view. The content can outlive that view; a warm selection reuses its
+resident, while a cold presentation receives fresh access and reconstructs from
+bounded logical/checkpoint state through its exact owned bindings.
 
 Close advice is synchronous and advisory only, with no veto or asynchronous
 settlement hook. Missing/failed advice triggers host confirmation. Confirmed close,
@@ -371,8 +389,10 @@ from interactive terminal resources. Each view owns a bounded parser/buffer and
 viewport with revocable access. Local feed/reset, scroll, selection, and explicit
 copy confer no input, paste, terminal-reply, resize, signal, process, or backend
 authority. Plugin readers retain history semantics; renderer lifetime, hiding, or
-closing cannot cancel independently owned capture. Public API and bounds belong
-to [UI](../../packages/ui/README.md#interpreted-bridges), not a Command-specific
+closing cannot cancel independently owned capture. Warm resident observation and
+programmatic reconstruction do not require a selected interaction grant; native
+user gestures and asynchronous interaction completions do. Public API and bounds
+belong to [UI](../../packages/ui/README.md#interpreted-bridges), not a Command-specific
 contract in the app.
 
 ### Session presentation settlement

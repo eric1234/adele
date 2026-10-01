@@ -52,6 +52,12 @@ final class InstalledBackendActivation {
     _activation!.validate();
   }
 
+  /// Observes retirement of this exact captured backend generation.
+  void Function() onRetire(void Function() observer) {
+    validate();
+    return _activation!.onRetire(observer);
+  }
+
   RemoteExtensionContext? strategyOrigin(
     ExtensionBinding<OrchestrationStrategyContribution> binding,
   ) {

@@ -264,7 +264,9 @@ padding. Generic projection hide/reveal readiness suppresses paint while retaini
 native layout, then reveals only after the intended scroll position has settled.
 Command Tools chooses a finite restoration target and keeps the terminal concealed
 during cancellable prefix reconstruction; normal live pages do not toggle readiness.
-Restoration remains O(prefix length), not an instant seek or retained-emulator cache.
+Cold restoration remains O(prefix length), not an instant seek. Warm console
+selection instead preserves the resident's emulator/parser and reader position
+within the bounded working set described below.
 Native and actual-EVC coverage lives in
 `test/native_terminal_surface_test.dart` and `test/terminal_projection_bridge_test.dart`.
 
@@ -344,9 +346,49 @@ only after accepted navigation in `_showBrowser`, and supplies the shell's bound
 console area only while a Session is presented. Task Browser has no panel, toggle,
 or console creation actions, even with a selected Task. The console is outside the
 Session/Inspection scroll views; navigation settlement blocks its input/focus too.
-Changing selection, hiding the panel, or returning to Task Browser unmounts/revokes
-the view, not the retained content. Selection is remembered per Session among its
-eligible tabs; removing the selected tab prefers an eligible neighbor.
+Presentation defaults to selected-only. `ConsoleContent.keepAlive` explicitly
+opts into a lazy, least-recently-selected working set while this console is
+expanded for one canonical Session object. `ConsoleController.presentationLimit`
+defaults to four constructed presentation slots, including initializing, failed,
+and selected presentations even when selected-only. Unvisited tabs never construct
+views; eviction chooses an unselected resident, not the selected tab. `residentPresentations`
+provides the host's admitted resident identities; it is not a history or resource
+registry.
+
+Within that set, tab switches preserve opted-in evaluator/widget state, native
+projection/parser/viewport, readers, and bounded in-flight work. Hidden content
+has no paint, semantics, pointer, focus, keyboard, or selected action authority.
+`ConsolePresentationAccess.isActive` follows residency; its `interaction` is a
+fresh selected epoch, and earlier epochs remain invalid after reselection.
+Collapse, canonical Session identity change or null, console unmount, and host
+close revoke the entire set. Content close, retirement, or eviction revokes its
+exact resident. Revocation and native bridge/resource invalidation are synchronous.
+Whole-set revocation fences lazy presentation admission before firing callbacks,
+and nested teardown cannot reopen that fence. Construction captures a working-set
+identity so an attempt interrupted by teardown cannot publish afterward, even if
+the Session and selection are unchanged. A later host render may admit fresh cold
+content normally; ordinary selective eviction does not close admission for siblings.
+Current content eligibility is part of that lifetime even while hidden. Access
+use and controller collection/notification reconciliation evaluate eligibility for
+the exact Session, permanently evicting only residents whose predicate returns
+false or throws. There is no watcher for arbitrary callback-captured state: loss
+ends access as soon as a host check observes it. Reconciliation keeps healthy
+siblings warm and restores eligible selection if necessary, without changing
+unaffected selection epochs or LRU recency. Pending questions for ineligible
+targets withdraw; logical content and resource ownership remain intact. Eligibility
+recovery permits a fresh, lazily selected cold presentation, never revival of old
+access. Predicate/reconciliation guards and snapshot iteration contain reentrant
+checks; eviction removes the exact entry before notifying teardown listeners.
+Removed Flutter subtrees from the previous mounted set can briefly overlap the
+replacement set until frame disposal. Normal reconciliation therefore has at most
+one previous set plus the new set, rather than a deferred resident cleanup queue.
+Already admitted transport work and cancellation cleanup may settle later without
+regaining presentation authority.
+The four-slot bound is on authorized residents, not an absolute instantaneous
+Dart-object or RSS bound. Lightweight content, bounded checkpoints, and selection
+remain independent of those resident lifetimes. Selection is remembered per
+Session among its eligible tabs; removing the selected tab prefers an eligible
+neighbor.
 
 [`PreparedConsoleHost.environmentForSession`](lib/frontend/prepared_console_host.dart)
 checks canonical Session identity and its published Project/Task graph, then uses
@@ -363,7 +405,9 @@ copies validated `TerminalContentPolicy` from one short-lived EVC action into
 native policy handles hidden title/lifecycle changes, close advice, and cleanup;
 it never calls back into a disposed operation evaluator. Every selected view uses
 fresh `ConsolePresentationAccess` and `TerminalSurfaceBridge` access to the same
-owner. The stock frontend's [policy map](../plugins/terminal/README.md#terminal-policy)
+owner. Interactive Terminal is not opted into resident presentation: deselection
+still releases its view while the separately owned shell/emulator survives. The
+stock frontend's [policy map](../plugins/terminal/README.md#terminal-policy)
 describes conservative confirmation, actual-exit-only automatic removal, and
 failure retention. Shell selection/startup remains with the
 [Environment contract](../packages/environment/README.md#interactive-terminals)
@@ -374,8 +418,10 @@ Prepared read-only console descriptors use `PreparedConsoleHost` and
 authorized presentation may open only its explicit `consoleExtensions` from the
 same prepared installation/generation. `ConsoleController.openOrFocus` deduplicates
 the opaque key within the exact contribution and canonical Session. It admits
-bounded plugin data plus metadata, never originating evaluator callbacks. Each
-remount receives fresh view-scoped backend/projection bridges; retained logical
+bounded plugin data plus metadata, never originating evaluator callbacks. Stock
+Command Output explicitly opts into residency through its prepared descriptor;
+other contributions keep the selected-only default unless they opt in. Each cold
+remount receives fresh resident-scoped backend/projection bridges; retained logical
 state is bounded opaque data, not a rendered transcript. `ConsoleContentState`
 also owns one scalar `TerminalProjectionRetention` record. Native progress and
 viewport changes checkpoint synchronously without entering eval; final bridge
@@ -384,8 +430,10 @@ authority has already been revoked. Detachment retains the known viewport offset
 Each new view takes an exact-owner lease, fencing stale snapshots; content release
 clears and permanently retires that record. The plugin combines this accepted
 native prefix/viewport with its logical reading mode when reconstructing a fresh
-emulator. No evaluator/widget/controller or hidden observer is retained, and no
-global `PreparedFrontend` lifecycle or post-revocation plugin authority is added.
+emulator. After a resident ends, no evaluator/widget/controller or hidden observer
+is retained in that record. Warm resident observation remains separate from
+selected interaction; this adds no global `PreparedFrontend` cache or
+post-revocation plugin authority.
 Missing optional console
 hosting does not disable factual Inspection. Read-only content closes without
 confirmation and releases no process resource. Command-specific reads, status,
@@ -396,8 +444,10 @@ waiting for plugin advice or a confirmation dialog. After accepted Task/Run work
 drains, the app joins bounded console cleanup before `NativeAdeleRuntime.close`;
 runtime teardown still runs on cleanup failure and owns remaining terminal cleanup.
 Frontend retirement also removes its exact content. Cleanup warnings do not claim
-that a process stopped. Session navigation itself performs none of this resource
-release. No tabs, titles, selection, or terminal transcripts are persisted.
+that a process stopped. Session navigation releases resident presentation/readers,
+not independent execution, capture, terminal resources, or retained lightweight
+tabs. No tabs, titles, selection, or terminal transcripts are persisted by the
+console host.
 
 Focused host/bridge/widget tests and the real stock EVC/Git AOT case in
 [`normal_chatgpt_run_integration_test.dart`](test/core/normal_chatgpt_run_integration_test.dart)

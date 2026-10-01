@@ -376,6 +376,7 @@ void main() {
     expect(console.extensionId, ExtensionId('org.example.console'));
     expect(console.library, 'package:example_frontend/console.dart');
     expect(console.entrypoint, 'buildConsole');
+    expect(console.keepAlive, isFalse);
     expect(console.actions.map((action) => action.id), [
       'new-console',
       'another-action',
@@ -394,11 +395,15 @@ void main() {
       required List<PreparedConsoleAction> actions,
       String library = 'package:example/console.dart',
       String entrypoint = 'buildConsole',
+      bool keepAlive = false,
+      bool readOnly = false,
     }) => PreparedConsolePresentation(
       extensionId: ExtensionId('org.example.console'),
       library: library,
       entrypoint: entrypoint,
       actions: actions,
+      keepAlive: keepAlive,
+      readOnly: readOnly,
     );
     final action = PreparedConsoleAction(
       id: 'new-console',
@@ -407,6 +412,15 @@ void main() {
     );
     final actions = [action];
     final console = descriptor(actions: actions);
+    expect(console.keepAlive, isFalse);
+    expect(
+      () => descriptor(actions: [], keepAlive: true),
+      throwsFormatException,
+    );
+    expect(
+      descriptor(actions: [], readOnly: true, keepAlive: true).keepAlive,
+      isTrue,
+    );
     actions.clear();
     expect(console.actions, [action]);
     expect(() => console.actions.add(action), throwsUnsupportedError);
@@ -461,16 +475,49 @@ void main() {
           catalog.installations.single.frontend!.presentations.single
               as PreparedConsolePresentation;
       expect(descriptor.readOnly, isTrue);
+      expect(descriptor.keepAlive, isFalse);
       expect(descriptor.actions, isEmpty);
       expect(descriptor.backendServices, ['example.read']);
       expect(() => descriptor.backendServices.clear(), throwsUnsupportedError);
     },
   );
 
+  test('read-only console may opt into keepAlive explicitly', () async {
+    await install(
+      'resident-console',
+      _manifest(
+        components: {
+          'frontend': _frontend(
+            presentations: [
+              {
+                ..._console,
+                'readOnly': true,
+                'keepAlive': true,
+                'actions': <Object?>[],
+              },
+            ],
+          ),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final descriptor =
+        catalog.installations.single.frontend!.presentations.single
+            as PreparedConsolePresentation;
+    expect(descriptor.keepAlive, isTrue);
+    expect(descriptor.readOnly, isTrue);
+    expect(descriptor.backendServices, isEmpty);
+  });
+
   for (final fields in <Map<String, Object?>>[
     {'readOnly': true},
     {'readOnly': null},
     {'readOnly': 'true'},
+    {'keepAlive': true},
+    {'keepAlive': true, 'actions': []},
+    for (final value in <Object?>[null, 1, 'true', [], {}])
+      {'readOnly': true, 'actions': [], 'keepAlive': value},
     {
       'backendServices': ['example.read'],
     },

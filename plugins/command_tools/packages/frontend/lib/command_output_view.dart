@@ -60,6 +60,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
   // The pin misdeclares Stream.listen's result; retain it dynamically.
   dynamic subscription;
   void Function() projectionListener = () {};
+  void Function() interactionListener = () {};
   // Explicit nullable initializer is required by the pinned evaluator.
   // ignore: avoid_init_to_null
   CommandCaptureState? capture = null;
@@ -95,6 +96,10 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     super.initState();
     projectionListener = () => projectionChanged();
     if (expanded) {
+      interactionListener = () {
+        if (!disposed) setState(() {});
+      };
+      subscribeConsoleInteraction(interactionListener);
       final retained = readConsoleContentState();
       final native = readRetainedTerminalProjection();
       liveTail = retained['liveTail'] != false;
@@ -505,6 +510,7 @@ class _CommandOutputViewState extends State<CommandOutputView> {
     disposed = true;
     revision++;
     subscription?.cancel();
+    if (expanded) unsubscribeConsoleInteraction(interactionListener);
     if (projection.isNotEmpty) {
       unsubscribeTerminalProjection(projection, projectionListener);
     }
@@ -513,6 +519,11 @@ class _CommandOutputViewState extends State<CommandOutputView> {
 
   @override
   Widget build(BuildContext context) {
+    // Capture this selection, not a mutable latest grant. Cached callbacks must
+    // stay revoked after a resident tab is selected again. Autonomous draining
+    // and native projection observation do not require selected interaction.
+    // A typed list avoids the pinned evaluator's primitive closure boxing bug.
+    final interaction = <int>[expanded ? readConsoleInteraction() : 0];
     final state = capture;
     String status = 'Connecting to output...';
     if (failure.isNotEmpty) status = 'Output state unavailable.';
@@ -550,24 +561,41 @@ class _CommandOutputViewState extends State<CommandOutputView> {
             scrollDirection: Axis.horizontal,
             children: <Widget>[
               TextButton(
-                onPressed: () => history(windowRows),
+                onPressed: () {
+                  if (isConsoleInteractionActive(interaction[0])) {
+                    history(windowRows);
+                  }
+                },
                 child: Text('Beginning'),
               ),
               TextButton(
-                onPressed: () => history(lines - windowRows),
+                onPressed: () {
+                  if (isConsoleInteractionActive(interaction[0])) {
+                    history(lines - windowRows);
+                  }
+                },
                 child: Text('Earlier'),
               ),
               TextButton(
-                onPressed: () => history(knownLines ~/ 2),
+                onPressed: () {
+                  if (isConsoleInteractionActive(interaction[0])) {
+                    history(knownLines ~/ 2);
+                  }
+                },
                 child: Text('Middle'),
               ),
               TextButton(
-                onPressed: () => history(lines + windowRows),
+                onPressed: () {
+                  if (isConsoleInteractionActive(interaction[0])) {
+                    history(lines + windowRows);
+                  }
+                },
                 child: Text('Later'),
               ),
               IconButton(
                 tooltip: 'Follow output',
                 onPressed: () {
+                  if (!isConsoleInteractionActive(interaction[0])) return;
                   if (!following || replaying) follow();
                 },
                 icon: Icon(Icons.arrow_downward),

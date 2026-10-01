@@ -720,7 +720,14 @@ void main() {
       expect(inspection['consoleExtensions'], [output['extensionId']]);
       expect(output['backendServices'], ['command.output']);
       expect(output['readOnly'], isTrue);
+      expect(output['keepAlive'], isTrue);
       expect(output['actions'], isEmpty);
+      expect(
+        stockFrontendDescriptors.values
+            .expand((descriptors) => descriptors)
+            .where((descriptor) => descriptor['keepAlive'] == true),
+        [output],
+      );
     },
   );
 

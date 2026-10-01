@@ -96,7 +96,10 @@ identifiers. Strategy/backend-affinity fields and role-level `displayName` are
 not part of this role. Optional `readOnly` defaults to false. With `readOnly: true`,
 `actions` must be empty and optional `backendServices` declares a duplicate-free
 service-ID allowlist; a nonempty backend allowlist is rejected for action-based
-console descriptors. Read-only content is admitted through declared presentation
+console descriptors. Optional `keepAlive` defaults to false and is accepted only
+for the read-only prepared path when true. It opts visited content into the host's
+bounded current-Session presentation working set, not continuing foreground
+interaction authority. Read-only content is admitted through declared presentation
 targets, not a creation action or implicit execution grant.
 
 A frontend-only installation can contribute independently to the shared host

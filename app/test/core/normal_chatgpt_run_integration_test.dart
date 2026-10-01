@@ -16,6 +16,7 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -730,7 +731,7 @@ void main() {
   );
 
   testWidgets(
-    'T3b normal Chat opens live stock Command Inspection and retained read-only output',
+    'T3b normal Chat keeps stock output tabs warm and restores cold Session history',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1600, 1200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -877,7 +878,19 @@ void main() {
       );
       final captures = <_PresentedCapture>[];
       final completed = <CommandCaptureState>[];
+      final outputTabs = <ConsoleTab>[];
+      final outputEngines = <Terminal>[];
+      final outputMounts = <TerminalViewState>[];
+      late ConsoleTab shellTab;
       Object? previousApproval;
+
+      Future<void> selectTab(ConsoleTab tab) => _terminalTap(
+        tester,
+        find.descendant(
+          of: find.byKey(ObjectKey(tab)),
+          matching: find.byType(TextButton),
+        ),
+      );
 
       for (var index = 0; index < 2; index++) {
         await _terminalUntil(
@@ -987,6 +1000,10 @@ void main() {
         final consoleHost = find.byType(WorkbenchConsole);
         await _projectionText(tester, consoleHost, 'T3B_PART');
         final tab = console.selectedTab!;
+        final initialEngine = _projectionEngine(tester, consoleHost);
+        final initialMount = tester.state<TerminalViewState>(
+          _projectionView(consoleHost),
+        );
         expect(console.eligibleTabs, hasLength(index == 0 ? 1 : 3));
         expect(_projectionEngine(tester, consoleHost), isNot(same(preview)));
         for (final parent in [inspection, consoleHost]) {
@@ -1001,6 +1018,11 @@ void main() {
           find.descendant(of: inspection, matching: find.text('Show more')),
         );
         expect(console.selectedTab, same(tab));
+        expect(_projectionEngine(tester, consoleHost), same(initialEngine));
+        expect(
+          tester.state<TerminalViewState>(_projectionView(consoleHost)),
+          same(initialMount),
+        );
         expect(console.eligibleTabs, hasLength(index == 0 ? 1 : 3));
         expect(children, hasLength(index + 1));
         expect(fixture.runIds.values, hasLength(1));
@@ -1081,13 +1103,25 @@ void main() {
           final historicalBuffer = _terminalBuffer(
             _projectionEngine(tester, consoleHost),
           );
+          final collapsedEngine = _projectionEngine(tester, consoleHost);
+          final collapsedMount = tester.state<TerminalViewState>(
+            _projectionView(consoleHost),
+          );
+          final collapsedResident = console.residentPresentations.single;
           await _terminalTap(tester, find.byTooltip('Hide console'));
           expect(_projectionView(consoleHost), findsNothing);
+          expect(console.residentPresentations, isEmpty);
+          expect(collapsedResident.access.isActive, isFalse);
+          expect(collapsedMount.mounted, isFalse);
           child.release('hidden');
           await child.stage('hidden');
           await _projectionText(tester, inspection, 'T3B_HIDDEN');
           await _terminalTap(tester, find.byTooltip('Show console'));
           await _projectionText(tester, consoleHost, 'T3B_MIDDLE');
+          expect(
+            _projectionEngine(tester, consoleHost),
+            isNot(same(collapsedEngine)),
+          );
           expect(
             _terminalBuffer(_projectionEngine(tester, consoleHost)),
             historicalBuffer,
@@ -1107,6 +1141,7 @@ void main() {
             ),
           );
           await _projectionText(tester, consoleHost, 'T3B_HIDDEN');
+          final beforeTerminal = _projectionEngine(tester, consoleHost);
 
           // The interactive stock Terminal remains a different resource and mode.
           await _newTerminal(tester);
@@ -1118,6 +1153,7 @@ void main() {
             'interactive Terminal coexists',
           );
           final shell = runtime.terminals.forEnvironment(environment.id).single;
+          shellTab = console.selectedTab!;
           expect(
             tester.widget<TerminalView>(_projectionView(consoleHost)).readOnly,
             isFalse,
@@ -1137,6 +1173,7 @@ void main() {
             ),
           );
           await _projectionText(tester, consoleHost, 'T3B_HIDDEN');
+          expect(_projectionEngine(tester, consoleHost), same(beforeTerminal));
           expect(shell.state, EnvironmentTerminalState.running);
           await _terminalTap(
             tester,
@@ -1178,20 +1215,143 @@ void main() {
             same(shell),
           ]);
         } else {
+          final firstTab = outputTabs.single;
+          final firstEngine = outputEngines.single;
+          final firstMount = outputMounts.single;
+          final secondEngine = _projectionEngine(tester, consoleHost);
+          final secondMount = tester.state<TerminalViewState>(
+            _projectionView(consoleHost),
+          );
+          final secondResident = console.residentPresentations.singleWhere(
+            (resident) => identical(resident.tab, tab),
+          );
+          final selectedEpoch = secondResident.access.interaction!;
+          expect(console.residentPresentations, hasLength(2));
+          expect(firstMount.mounted, isTrue);
+          expect(secondEngine, isNot(same(firstEngine)));
+          expect(
+            _terminalBuffer(secondEngine),
+            isNot(contains('T3B_LATE_PART')),
+          );
+          final firstBuffer = _terminalBuffer(firstEngine);
           await _terminalTap(
             tester,
             find.byTooltip('Dismiss Inspection').first,
           );
           expect(find.byType(ToolActivityInspectionHost), findsNothing);
           expect((await capture.state()).state, 'capturing');
-          for (final (release, stage) in [
-            ('late', 'late'),
-            ('hidden', 'hidden'),
-            ('closed', 'closed'),
-          ]) {
-            child.release(release);
-            await child.stage(stage);
+          await selectTab(firstTab);
+          expect(_projectionEngine(tester, consoleHost), same(firstEngine));
+          expect(
+            tester.state<TerminalViewState>(_projectionView(consoleHost)),
+            same(firstMount),
+          );
+          expect(secondMount.mounted, isTrue);
+          expect(secondResident.access.isActive, isTrue);
+          expect(secondResident.access.interaction, isNull);
+          expect(selectedEpoch.isActive, isFalse);
+
+          // Only the hidden console reader can advance this exact emulator: the
+          // Inspection is gone and the real process is still waiting for exit.
+          child.release('late');
+          await child.stage('late');
+          await _terminalUntil(
+            tester,
+            () async =>
+                (await capture.tail()).contains('T3B_LATE_PART') &&
+                _terminalBuffer(secondEngine).contains('T3B_LATE_PART'),
+            'hidden resident consumes a later committed partial line',
+          );
+          expect(console.selectedTab, same(firstTab));
+          expect(_terminalBuffer(firstEngine), firstBuffer);
+          expect(await child.isAlive(), isTrue);
+          await _terminalTap(tester, compact);
+          await _projectionText(tester, inspection, 'T3B_LATE_PART');
+          for (var opening = 0; opening < 2; opening++) {
+            await _terminalTap(
+              tester,
+              find.descendant(of: inspection, matching: find.text('Show more')),
+            );
+            expect(console.selectedTab, same(tab));
+            expect(console.eligibleTabs, hasLength(3));
+            expect(console.residentPresentations, hasLength(2));
+            expect(
+              console.residentPresentations.singleWhere(
+                (resident) => identical(resident.tab, tab),
+              ),
+              same(secondResident),
+            );
+            expect(_projectionEngine(tester, consoleHost), same(secondEngine));
+            expect(
+              tester.state<TerminalViewState>(_projectionView(consoleHost)),
+              same(secondMount),
+            );
+            expect(
+              find.descendant(
+                of: consoleHost,
+                matching: find.text('Replaying output...'),
+              ),
+              findsNothing,
+            );
+            _expectOutputPainted(tester, consoleHost, 'T3B_LATE_PART');
           }
+          expect(selectedEpoch.isActive, isFalse);
+          expect(secondResident.access.interaction!.isActive, isTrue);
+
+          // A selected-only interactive Terminal consumes a slot too, without
+          // evicting either of the two opted-in output residents at this bound.
+          await selectTab(shellTab);
+          await _projectionText(tester, consoleHost, 'T3B_SHELL_READY');
+          final shellMount = tester.state<TerminalViewState>(
+            _projectionView(consoleHost),
+          );
+          expect(console.residentPresentations, hasLength(3));
+          expect(
+            tester.widget<TerminalView>(_projectionView(consoleHost)).readOnly,
+            isFalse,
+          );
+          expect(firstMount.mounted, isTrue);
+          expect(secondMount.mounted, isTrue);
+          secondMount.widget.terminal.textInput(
+            "printf '\\nT3B_FORBIDDEN_HIDDEN_INPUT\\n'\n",
+          );
+          await _terminalCommandIn(
+            tester,
+            consoleHost,
+            r'''printf '\nT3B_SELECTED_INPUT\n' ''',
+          );
+          await _projectionText(tester, consoleHost, 'T3B_SELECTED_INPUT');
+          expect(
+            _terminalBuffer(_projectionEngine(tester, consoleHost)),
+            isNot(contains('T3B_FORBIDDEN_HIDDEN_INPUT')),
+          );
+          expect(
+            _terminalBuffer(secondEngine),
+            isNot(contains('T3B_SELECTED_INPUT')),
+          );
+          child.release('hidden');
+          await child.stage('hidden');
+          await _terminalUntil(
+            tester,
+            () async =>
+                (await capture.tail()).contains('T3B_HIDDEN') &&
+                _terminalBuffer(secondEngine).contains('T3B_HIDDEN'),
+            'output reader advances while interactive Terminal is selected',
+          );
+          expect(console.selectedTab, same(shellTab));
+          await _terminalTap(
+            tester,
+            find.descendant(of: inspection, matching: find.text('Show more')),
+          );
+          expect(shellMount.mounted, isFalse);
+          expect(console.residentPresentations, hasLength(2));
+          expect(_projectionEngine(tester, consoleHost), same(secondEngine));
+          expect(
+            tester.state<TerminalViewState>(_projectionView(consoleHost)),
+            same(secondMount),
+          );
+          child.release('closed');
+          await child.stage('closed');
           await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
           expect(console.selectedTab, same(tab));
           expect((await capture.state()).state, 'capturing');
@@ -1238,6 +1398,11 @@ void main() {
         expect(console.eligibleTabs, contains(same(retainedTab)));
         expect(console.selectedTab, same(retainedTab));
         await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
+        outputTabs.add(retainedTab!);
+        outputEngines.add(_projectionEngine(tester, consoleHost));
+        outputMounts.add(
+          tester.state<TerminalViewState>(_projectionView(consoleHost)),
+        );
         expect(children, hasLength(index + 1));
         await _terminalTap(tester, find.byTooltip('Dismiss Inspection').first);
       }
@@ -1275,6 +1440,56 @@ void main() {
         expect(tool.outcome!.hostData['stdoutTruncated'], isTrue);
         expect(tool.outcome!.hostData['stdout'], isNot(contains('T3B_MIDDLE')));
       }
+      final consoleHost = find.byType(WorkbenchConsole);
+      await _terminalTap(
+        tester,
+        find.descendant(of: consoleHost, matching: find.text('Middle')),
+      );
+      await _projectionText(tester, consoleHost, 'T3B_MIDDLE');
+      final historicalEngine = _projectionEngine(tester, consoleHost);
+      final historicalBuffer = _terminalBuffer(historicalEngine);
+      final residents = console.residentPresentations;
+      expect(residents, hasLength(2));
+      await _breadcrumb(tester, 'project-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        'Session departure releases the entire resident working set',
+      );
+      expect(consoleHost, findsNothing);
+      expect(console.residentPresentations, isEmpty);
+      expect(residents.every((resident) => !resident.access.isActive), isTrue);
+      expect(outputMounts.every((mount) => !mount.mounted), isTrue);
+      expect(outputTabs.every((tab) => tab.isActive), isTrue);
+      expect(
+        runtime.terminals.forEnvironment(environment.id).single.state,
+        EnvironmentTerminalState.running,
+      );
+      await _terminalTap(tester, find.text(task.title));
+      await _terminalTap(tester, _sessionRow(session.id));
+      await _projectionText(tester, consoleHost, 'T3B_MIDDLE');
+      expect(_session(tester), same(session));
+      expect(console.selectedTab, same(outputTabs.last));
+      expect(console.eligibleTabs, hasLength(3));
+      expect(console.residentPresentations, hasLength(1));
+      expect(
+        _projectionEngine(tester, consoleHost),
+        isNot(same(historicalEngine)),
+      );
+      expect(
+        _terminalBuffer(_projectionEngine(tester, consoleHost)),
+        historicalBuffer,
+      );
+      await selectTab(outputTabs.first);
+      await _projectionText(tester, consoleHost, 'T3B_AFTER_CLOSE');
+      expect(console.residentPresentations, hasLength(2));
+      expect(
+        _projectionEngine(tester, consoleHost),
+        isNot(same(outputEngines.first)),
+      );
+      expect(residents.every((resident) => !resident.access.isActive), isTrue);
+      expect(fixture.runIds.values, [runId]);
+      expect(children, hasLength(2));
       final inventory = await _git(fixture.source, [
         'worktree',
         'list',
@@ -1282,6 +1497,7 @@ void main() {
       ]);
       final marker = await File('$worktree/.git').readAsBytes();
       expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      expect(console.residentPresentations, isEmpty);
       expect(commandBackend.connection!.isClosed, isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
 

@@ -76,12 +76,18 @@ nesting depth 16, and 8192 UTF-16 string units. They may contain ordinary struct
 values, not transcripts, executable objects, or retained evaluator callbacks.
 The native host retains these values independently of the requesting Inspection
 runtime and mounted console views. Closing the Inspection does not close admitted
-content. Hiding/remounting creates fresh view access, not a replacement backend
+content. A cold remount creates fresh resident access, not a replacement backend
 binding; closing a read-only tab releases its presentation data and observation,
 not the independently owned execution or durable history.
 
 `ConsoleContent` supplies `metadata`, `isEligible(Session)`, `createPresentation`,
-optional synchronous `closeAdvice`, and `release`. Eligibility is content-owned;
+optional synchronous `closeAdvice`, `keepAlive` (default false), and `release`.
+`keepAlive` opts into host-bounded residency after first selection, not eager
+construction or guaranteed retention. A selected-only presentation consumes a slot
+while selected too; hidden opted-in residents are least-recently-selected eviction
+candidates. Prepared console metadata exposes the same explicit opt-in. The
+[application host](../../app/README.md#session-console) owns the current count bound
+and disposal accounting. Eligibility is content-owned;
 the generic contract does not assume every console is a terminal or Environment
 resource. `ConsoleTabRegistration` can update only its content's metadata and
 request its removal, including while hidden. `ConsoleMetadata` keeps title,
@@ -94,12 +100,25 @@ release without needing a mounted view. `ConsoleCleanupResult.warning` is safe
 user-facing text, not an exception dump; cleanup failure or timeout cannot restore
 a removed tab or indefinitely prevent host cleanup.
 
-`ConsolePresentationAccess` is distinct from content registration. Hiding,
-selection/context changes, unmount, or retirement permanently revoke that access;
-a fresh view receives fresh access. View-originated effects must check it,
-including after asynchronous work. This does not stop a hidden content owner's
-independent resource observation. Prepared read-only projection hosting can copy
-already-owned scalar native state into its exact retained content record without
+`ConsolePresentationAccess` is distinct from content registration. `isActive`
+describes the exact resident lifetime; `interaction` supplies a selected-only
+`ConsoleInteractionAccess`, or null while hidden, and `changes` reports transitions
+synchronously. Each selection creates a new interaction grant. User actions retain
+and validate that exact grant, including after asynchronous work, rather than
+querying a newer grant to revive old callbacks. Resident-authorized observation
+and programmatic rendering may continue while hidden. Default selected-only
+content loses its resident on deselection. Collapse, canonical Session change or
+null, console unmount, and host close end the whole working set; eviction, observed
+eligibility loss, content removal, and retirement permanently revoke the affected
+access. Access validation and host reconciliation check current content eligibility
+for the exact presented Session, including hidden residents. False or a throwing
+predicate fails closed. Changing callback-captured state is not itself observable:
+there is no polling, and revocation is synchronous once a host check observes loss.
+Eligibility recovery requires fresh access through normal selection and cold
+restoration; it cannot revive old epochs or eagerly mount hidden tabs. Eligibility
+eviction does not release content or ask close advice. None of this stops a content
+owner's independent execution/resource observation. Prepared read-only projection
+hosting can copy already-owned scalar native state into its exact retained content record without
 invoking a revoked presenter. The record contains no view objects or transcript;
 new-view leases fence stale checkpoints and content removal clears it permanently.
 The current [application host](../../app/README.md#session-console)
@@ -173,14 +192,16 @@ native implementations supply their behavior; calling a stub natively throws
 - `terminal_projection_bridge.dart` is a separate, presentation-owned read-only
   projection API: request/build, bounded feed/reset, revocable replay yields, immutable observation,
   follow/local scroll, and change subscriptions. Each rich Inspection or read-only
-  console view has its own revocable handle, parser, buffer, and viewport; none
+  console resident has its own revocable handle, parser, buffer, and viewport; none
   reuses an interactive terminal or another view's projection. The public contract
   fixes 80 columns, 6 or 20 viewport rows, and 200 retained lines, with bounded
   accepted-prefix feeding and no queued remainder. The plugin explicitly chooses
   always-follow or interactive-follow policy, independent of geometry. Interactive
   scroll-away/selection freezes feeding; user return to the rendered end may resume
   a live-tail view but not a plugin-selected historical window. Programmatic
-  scrolling never grants that intent. Always-follow leaves vertical scrolling to
+  scrolling never grants that intent. Resident-authorized feeds and observation
+  survive warm deselection, while local user interaction requires its exact
+  selected epoch. Always-follow leaves vertical scrolling to
   its parent and never persistently pauses for selection. Local scroll, selection,
   and explicit copy do not grant input,
   paste, terminal replies, resize, process, signal, or backend authority. Plugin
@@ -200,8 +221,13 @@ native implementations supply their behavior; calling a stub natively throws
   strings and structured data cannot choose an arbitrary installation, generation,
   or Session. An admitted console view receives `readConsoleContentData()`,
   `readConsoleContentState()`, and `writeConsoleContentState(Map)`. State writes
-  are bounded and return false after view revocation; readers save logical changes
-  while active rather than relying on disposal-time writes. No originating eval
+  are bounded and return false after resident revocation; readers save logical
+  changes while active rather than relying on disposal-time writes.
+  `readConsoleInteraction()` captures a positive selected epoch, or zero while
+  hidden. User callbacks retain it and check `isConsoleInteractionActive(epoch)`
+  before effects and after awaits. `subscribeConsoleInteraction` and its matching
+  unsubscribe provide coalesced deferred invalidation for rebuilding controls;
+  delayed notification never extends the native grant. No originating eval
   callback is retained as a content factory. Missing host/target access is explicitly
   unavailable, not another contribution or a native content substitute.
 - `environment_terminal_bridge.dart` supplies

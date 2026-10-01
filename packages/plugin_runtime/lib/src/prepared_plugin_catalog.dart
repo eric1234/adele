@@ -106,6 +106,7 @@ final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
     required this.entrypoint,
     required Iterable<PreparedConsoleAction> actions,
     this.readOnly = false,
+    this.keepAlive = false,
     Iterable<String> backendServices = const [],
   }) : actions = List.unmodifiable(actions),
        backendServices = List.unmodifiable(backendServices) {
@@ -125,6 +126,9 @@ final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
     if (!readOnly && this.backendServices.isNotEmpty) {
       throw const FormatException('Console backendServices require readOnly.');
     }
+    if (keepAlive && !readOnly) {
+      throw const FormatException('Console keepAlive requires readOnly.');
+    }
     final services = <String>{};
     for (final service in this.backendServices) {
       adeleValidateServiceId(service);
@@ -140,6 +144,7 @@ final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
   final String entrypoint;
   final List<PreparedConsoleAction> actions;
   final bool readOnly;
+  final bool keepAlive;
   final List<String> backendServices;
 }
 
@@ -536,12 +541,18 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'entrypoint',
         'actions',
         'readOnly',
+        'keepAlive',
         'backendServices',
       });
       final readOnly = value['readOnly'] ?? false;
       if (readOnly is! bool ||
           (value.containsKey('readOnly') && value['readOnly'] == null)) {
         throw FormatException('$label.readOnly must be a boolean.');
+      }
+      final keepAlive = value['keepAlive'] ?? false;
+      if (keepAlive is! bool ||
+          (value.containsKey('keepAlive') && value['keepAlive'] == null)) {
+        throw FormatException('$label.keepAlive must be a boolean.');
       }
       final services = value.containsKey('backendServices')
           ? value['backendServices']
@@ -579,6 +590,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         actions: descriptors,
         readOnly: readOnly,
+        keepAlive: keepAlive,
         backendServices: services.cast<String>(),
       );
     case 'taskBrowser':

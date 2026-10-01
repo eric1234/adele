@@ -153,13 +153,24 @@ final class ConsoleContent {
     required this.metadata,
     required this.isEligible,
     required this.createPresentation,
+    this.keepAlive = false,
     this.closeAdvice,
     required this.release,
   });
 
   final ConsoleMetadata metadata;
+
+  /// Current Session eligibility is checked at admission, resident access use,
+  /// and host reconciliation. After admission, false or failure permanently
+  /// revokes that resident, not the logical tab or its resources. Captured state
+  /// is not polled.
   final bool Function(Session) isEligible;
   final Widget Function(ConsolePresentationAccess) createPresentation;
+
+  /// Opts into the host's bounded, current-Session presentation working set.
+  /// This retains a visited presentation, not its foreground interaction grant.
+  /// Default content is disposed on deselection; resources have their own owner.
+  final bool keepAlive;
 
   /// Synchronous and advisory only. Missing, unknown, or failed advice requires
   /// generic confirmation. There is no veto and no asynchronous settlement hook.
@@ -180,9 +191,21 @@ abstract interface class ConsoleTabRegistration {
 }
 
 abstract interface class ConsolePresentationAccess {
-  /// Check at every view-originated effect, including after asynchronous work.
-  /// Hide, selection/context change, unmount, or retirement permanently revokes
-  /// this access; a new mount receives a different access object.
+  /// Resident observation/projection lifetime, including current eligibility in
+  /// the exact presented Session. Observed eligibility loss, eviction, collapse,
+  /// Session departure, unmount, or retirement permanently ends this access.
+  bool get isActive;
+
+  /// Synchronous notification when interaction or resident authority changes.
+  Listenable get changes;
+
+  /// The current selected-visible activation, or null while dormant. Capture it
+  /// when building a user callback and recheck it after asynchronous work. A
+  /// later selection cannot revive a previously captured activation.
+  ConsoleInteractionAccess? get interaction;
+}
+
+abstract interface class ConsoleInteractionAccess {
   bool get isActive;
 }
 

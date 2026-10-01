@@ -67,6 +67,7 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'library': 'package:command_tools_frontend/command_output_view.dart',
       'entrypoint': 'buildRunCommandOutput',
       'readOnly': true,
+      'keepAlive': true,
       'backendServices': ['command.output'],
       'actions': [],
     },
