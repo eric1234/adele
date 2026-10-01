@@ -99,10 +99,10 @@ and unrelated assertion reasons are not accepted as reproductions.
 
 | Case | Valid use / qualification | Control result | Pin result | Mounted / manual evidence | First inconsistency | Classification / confidence | Correction / uncertainty |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| A: ASCII Delete and undo | Default grouping and ungrouped; two Delete keys at 0ms and 20ms; undo actual recorded history, not an assumed count | Restores `aac`, or `xxz` for `xyz`; 120ms and navigation-flush controls pass | Same | Mounted widget keyboard. Backspace contrast passes. No human OS execution | Second Delete edits pending `bc` but records `a` from old rope `abc`; default merged payload is `aa` | Confirmed upstream defect under valid single-view use; high | Read removal payload from current buffered line. Zero fake time is not required; 20ms also fails. Waiting for flush only identifies trigger, not an acceptable editing policy |
-| B: supplementary insertion/replacement undo | Offset zero avoids caller conversion; direct API and mounted Ctrl+V with synthetic clipboard; ASCII/BMP controls | Insertion undo loses adjacent `a`; supplementary replacement undo/redo loses suffixes | Same | Mounted paste and direct controls, not OS clipboard/IME | Inverse deletion/replacement endpoint uses UTF-16 `.length` for a scalar-indexed rope; payload itself is correct | Confirmed upstream defect; high | Scalar replay spans fix these cases. Grouped supplementary merging remains a separate, unmodified path |
+| A: ASCII Delete and undo | Default grouping and ungrouped; two Delete keys at 0ms and 20ms; undo actual recorded history, not an assumed count | Restores `aac`, or `xxz` for `xyz`; 120ms and navigation-flush controls pass | Same | Mounted widget keyboard; backspace contrast passes. Eric reports both deleted letters restored in one undo: normal grouping, not a manual reproduction of corruption; timing unrecorded | Second Delete edits pending `bc` but records `a` from old rope `abc`; default merged payload is `aa` | Confirmed upstream defect under valid single-view use; high | Read removal payload from current buffered line. Zero fake time is not required; 20ms also fails. Waiting for flush only identifies trigger, not an acceptable editing policy |
+| B: supplementary insertion/replacement undo | Offset zero avoids caller conversion; direct API and mounted Ctrl+V with synthetic clipboard; ASCII/BMP controls | Insertion undo loses adjacent `a`; supplementary replacement undo/redo loses suffixes | Same | Mounted paste and direct controls. Eric independently reports undo removing the pasted emoji and following `a`; manual configuration identity not supplied | Inverse deletion/replacement endpoint uses UTF-16 `.length` for a scalar-indexed rope; payload itself is correct | Confirmed upstream defect; high | Scalar replay spans fix these cases. Grouped supplementary merging remains a separate, unmodified path |
 | C: buffered current-text snapshot | Ctrl+End validates scalar caret, then Backspace; immediate and first explicit read after flush | Getter returns `\u{1f600}ab`, while pending/render-line text and flushed rope contain `\u{1f600}\na` | Same; also reproduced with plain controller, without getter-count subclass | Mounted navigation; line accessor is renderer data, not pixel/OCR evidence | Getter passes scalar line boundaries to Dart substring; `_recordDeletion` implicitly calls it even without LSP, caching the wrong value before the explicit observer | Confirmed snapshot/cache defect, **not demonstrated rope data loss**; high | Scalar rope slices fix reconstruction without a forced flush, duplicate document, or cache polling |
-| D: CRLF Backspace join | Initial CRLF is accepted and roundtrips; Ctrl+End then Home places caret at scalar 3; LF control | `a\r\nb` becomes `a\rb`; undo restores CRLF, redo repeats stray CR | Same | Mounted keys and direct prior vector agree; escaped strings/code units inspected | LF-special-case removes only LF, not preceding CR | Confirmed upstream line-join behavior defect for admitted CRLF; high observation confidence; explicit upstream newline policy is undocumented | Remove and record the full CRLF pair. Forward Delete, generated newline policy and CRLF IME projection are not repaired |
+| D: CRLF Backspace join | Initial CRLF is accepted and roundtrips; Ctrl+End then Home places caret at scalar 3; LF control | `a\r\nb` becomes `a\rb`; undo restores CRLF, redo repeats stray CR | Same | Mounted keys/direct vector agree with inspected code units. Eric reports `a` and `b` remaining on separate lines after Backspace; consistent with residual CR, but no manual snapshot distinguishes it from unchanged CRLF | LF-special-case removes only LF, not preceding CR | Confirmed upstream line-join behavior defect for admitted CRLF; high observation confidence; explicit upstream newline policy is undocumented | Remove and record the full CRLF pair. Forward Delete, generated newline policy and CRLF IME projection are not repaired |
 | E1: widget read-only propagation | Supported rebuild of same mounted CodeForge; fresh operations distinguished from pending paste | Widget true/controller false; fresh public paste and valid current-client delta still edit | Same | Mounted keyboard, controller command, and bounded advertised ASCII delta; no human IME test | `didUpdateWidget` updates local flag but not controller input guard | Confirmed upstream propagation inconsistency; high. Programmatic owner updates alone would not establish a user-input bypass | Propagate flag to controller. General composition, read-only context menus and accessibility are not certified |
 | E2: clipboard admitted before transition | Hold only synthetic `Clipboard.getData` using a Completer; change controller flag or rebuild widget before completion | Already-admitted paste completes | Same | Native paste shortcut with injected latency, not an OS clipboard timing test | Permission is checked before await, not after | Reproduced async semantics; cancellation policy is undocumented. Exact ADELE revocation is an additional requirement, not proof every editor must cancel admitted work | Experimental post-await read-only/disposal guard implements cancellation. No generation token, focus revocation, or replacement-owner authority is proven |
 | Post-disposal calls | Deliberately call a retired controller | Not a supported-use control | Prior observation: still mutates | Not included in the correctness matrix | Caller used disposed owner | Unsupported use / future ADELE fail-closed requirement | Retract its use as evidence of valid editing corruption; no production lifetime repair here |
@@ -166,11 +166,32 @@ production adoption is made here.
 - Automated desktop launch: the unmodified supported-SDK `--interactive` profile
   binary reached its first rendered frame under Xvfb, stayed alive, and was stopped
   deliberately. This is not a human editing or real OS clipboard/IME result.
-- Human manual execution by this investigation: **none**. The Linux checklist and
-  clean-checkout preparation/launch commands are ready for Eric in the testing
-  guide. No observations from Eric have been incorporated yet.
+- Human manual execution by the agent: **none**. Eric's separately reported
+  checklist observations are incorporated in the table with the qualifications
+  below; they are not substituted for the identified automated configurations.
 - No macOS/Windows execution, paid/live-model calls, upstream issues/comments/PRs,
   production editor integration, or EVC frontend acceptance was performed.
+
+### Eric's manual report
+
+On 2026-10-01, Eric reported following the three manual checklist cases. The
+observations are recorded in rows A, B and D above. No displayed configuration
+identity, launch command, F8 snapshot, or measured timing accompanied this report;
+do not infer a specific SDK or patch mode from it.
+
+Restoring both ASCII letters in one undo is expected default grouping. The
+approximately 100ms line-buffer flush and 500ms undo-group window are distinct:
+edits can flush between keystrokes and still form one undo operation. The manual
+result therefore does not reproduce the narrow pending-buffer defect, but does
+not invalidate its automated 20ms reproduction. It does not establish the actual
+timing or flush cause in Eric's run.
+
+The supplementary-character report independently corroborates the observed undo
+symptom. For CRLF, the visual failure to join lines is consistent with the
+automated residual-CR result, but the remaining text is not yet established by
+manual evidence. An explicit F8 snapshot would distinguish `a\rb` (code units
+`[97,13,98]`) from unchanged `a\r\nb` (`[97,13,10,98]`). No additional timing race
+or broad IME testing is required to interpret the existing report.
 
 ## Harness corrections
 
