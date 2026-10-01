@@ -6,6 +6,7 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
+import 'code_editor_probe.dart';
 import 'contract_artifacts.dart';
 import 'test_runner.dart';
 
@@ -615,6 +616,21 @@ Future<void> main(List<String> arguments) async {
           const <String>[],
         );
         return;
+      case 'probe-code-editor':
+        final options = arguments.skip(1).toList();
+        final verify = options.remove('--verify-known-defects');
+        if (options.length != 2 || options.first != '--output') {
+          throw const TestUsageException(
+            'probe-code-editor requires --output NEW_DIRECTORY '
+            '[--verify-known-defects].',
+          );
+        }
+        exitCode = await runCodeEditorProbe(
+          repository: Directory.current.absolute,
+          output: Directory(options[1]).absolute,
+          verifyKnownDefects: verify,
+        );
+        return;
       default:
         _usage();
         exitCode = 64;
@@ -893,6 +909,8 @@ Commands:
                      Build the desktop app in an explicit mode.
   smoke linux [--profile|--release]
                      Build and run the internal development runtime smoke path.
+  probe-code-editor --output NEW_DIRECTORY [--verify-known-defects]
+                     Reproduce the rejected native CodeForge candidate in isolation.
 ''');
 }
 

@@ -20,6 +20,9 @@ on:
       - "plugins/workspace_demo/**"
       - "plugins/resource_inspector/**"
       - "tools/adele.dart"
+      - "tools/code_editor_probe.dart"
+      - "tools/code_editor_probe/**"
+      - "test/tools/code_editor_probe_test.dart"
       - "tools/contract_artifacts.dart"
       - "contract_codegen.yaml"
       - "pubspec.yaml"
@@ -33,6 +36,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  code-editor-candidate:
+    name: Reproduce rejected CodeForge candidate (not E1 acceptance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop and probe dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb curl binutils
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.10
+          cache: true
+      - name: Prepare exact experiment Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+      - name: Reproduce native profile proof and known editing defects
+        run: >-
+          dart tools/adele.dart probe-code-editor
+          --output "${{ runner.temp }}/code-editor-probe" --verify-known-defects
+      - name: Retain diagnostic logs only, not redistribution-unready binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rejected-codeforge-candidate-logs
+          path: ${{ runner.temp }}/code-editor-probe/logs/
+          if-no-files-found: ignore
   smoke:
     runs-on: ubuntu-latest
     steps:

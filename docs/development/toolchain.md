@@ -25,6 +25,144 @@ frontends use this pin; they neither modernize eval
 nor establish a broad third-party
 Flutter compatibility surface.
 
+## Native editor compatibility gate
+
+**CodeForge is not an application dependency. E1 remains incomplete.** The
+retained `tools/code_editor_probe.dart` experiment distinguishes buildability
+under the integrated pin from safe editable-document behavior. It adds no public
+editor contract, prepared-EVC editor bridge, production editor, or fallback widget.
+The normal workspace manifests and `pubspec.lock` are unchanged.
+
+The investigated published source is **`code_forge 10.14.0`**, archive SHA-256
+`bddb3fe2001e4dd1653b32fc2752b9d4f60c7cb78f2a02165ea45ee60a867b61`.
+Its manifest declares Dart `^3.13.2`. Its generated Dart/Rust bridge is
+`flutter_rust_bridge 2.13.0`, content hash **434014572**, and its Rust crate is
+`code_forge 0.1.0`. The supplied Cargo lock resolves `ropey 1.6.1`,
+`zed-sum-tree 0.2.0`, and `unicode-bidi 0.3.18`. The sum-tree crate uses edition
+2024; the root crate's edition 2021 is not a graph-wide compiler requirement.
+
+Published manifests/source were rechecked on 2026-10-01; 10.14.0 remained latest,
+and upstream main remained `0d75fa298b368bc6f47b0daa82aa6bee2b900815`.
+A bounded comparison found no preferable earlier Rust-backed baseline:
+
+| Release | Verified archive SHA-256 | Relevant tradeoff (source inspection, not runtime validation) |
+| --- | --- | --- |
+| 10.13.0 | `8b30559d2b7a15fda71bd01fb358bcd553a91c93bcfba1159a0da30b775ec1ab` | Same controller/rope/undo/Rust sources; loses later scrolling/highlighting and Shift-click fixes. |
+| 10.12.0 | `930c8c1ddd873dc39beb575ca01e15ad12e32f4f63545bec9f8dff2c9d4bbee6` | Same relevant editing logic; also loses drag-selection changes and uses FRB 2.12.0. |
+| 10.0.0 | `4eddf43e57f0eed2d379383c29b64403993b692647ef238854508fcf9f2c29cf` | First Rust release; avoids the specific stale ASCII-delete payload but retains other defects and uses UTF-8 byte length for inserted cursor movement. Loses later Unicode/IME/undo fixes. |
+
+All three still need the twelve constructor-parameter rewrites and an SDK
+constraint adaptation. No pre-Rust release or replacement editor was selected.
+
+The reviewable `tools/code_editor_probe/fixtures/compatibility.patch`:
+
+- Lowers the experiment's Dart constraint to `^3.10.9` and pins Dart FRB to
+  **2.13.0**, matching the upstream generated and Rust sides.
+- Expands twelve private named initializing parameters in `_CodeFieldRenderer`
+  into ordinary typed parameters and initializer assignments, preserving behavior.
+- Pins the included Cargokit builder to **Rust/Cargo 1.93.0**, target
+  `x86_64-unknown-linux-gnu`, recognizes that installed version, and adds
+  `cargo --locked`.
+- Makes the Linux Cargokit runner use the retained effective runner lock with
+  `pub get --enforce-lockfile`. Upstream's helper-package lock does not lock its
+  generated runner; upstream otherwise selects floating `stable`.
+
+The driver sets `RUST_MIN_STACK=16777216` during compilation. A local rustc
+SIGSEGV in `proc-macro2 1.0.106` was followed by a successful build with this
+compiler-recommended stack setting; the crash's root cause was not established.
+No compiler or crate version was changed. Verbose Flutter/native build diagnostics
+are retained in the probe's stage log.
+
+No rope/editing logic, generated bindings/codecs, rendering architecture, feature
+set, or app/evaluator dependency is changed. The isolated application's pub lock
+and Cargokit runner lock are fixture inputs, not workspace lockfile changes.
+Only the runner's source-directory placeholder is materialized locally. Downloaded
+source, the generated Flutter shell, Cargo output, EVCs, and native libraries are
+not committed. Upstream-distributed FRB generated source is consumed from the
+checksum-pinned archive unchanged; it is not ADELE contract-generated output.
+
+### Rejected behavior
+
+Real Rust-backed tests under the pin demonstrate these defects after the
+compile-only adaptation. These are not inferred from the SDK constraint:
+
+| Operation | Required result | Observed result |
+| --- | --- | --- |
+| Native keyboard Delete twice in `abc`, then undo twice before the line flush | `abc` | `aac` |
+| Insert U+1F600 before `ab`, then undo | `ab` | `b` |
+| Backspace at scalar offset 4 in `\u{1f600}\nab`, then immediate snapshot | `\u{1f600}\na` | `\u{1f600}ab` |
+| Backspace at start of second line in `a\r\nb` | `ab` | `a\rb` |
+| Complete pending clipboard paste after setting read-only | unchanged `ab` | `lateab` |
+
+CodeForge's rope positions are Unicode scalar indices, while Dart strings and
+Flutter platform text offsets are UTF-16 code units; UTF-8 bytes and visual
+columns are different again. The component has some conversion helpers but mixes
+these units inside pending-line reconstruction, undo spans, copy/search, and IME
+composition. CRLF projection additionally strips CR without preserving a position
+map. An ADELE-facing range converter cannot repair those internal paths. No ADELE
+offset contract or lossless-editing support is advertised by this experiment.
+
+The ASCII defect reads deleted characters from the unflushed old rope instead of
+the pending line buffer. The immediate Unicode snapshot can stay incorrectly
+cached even after the rope flushes. `text=` also leaves pending line/history state
+in place. These affect the authoritative text, not cosmetic syntax presentation.
+Fixing only the reproduced examples would leave other editing/composition paths
+with the same coordinate inconsistency; undertaking that broader engine repair
+requires a separate scope decision rather than silently growing a compatibility
+shim or weakening admission to ASCII/LF-only content.
+
+### Lifetime and packaging limits
+
+A supplied controller and undo controller can outlive a widget, but one controller
+contains selection, composition, focus/input connection, folds, callbacks, and
+renderer-consumed dirty flags. Two widgets sharing it do **not** establish two
+independent views. An eventual adapter must explicitly reject a competing
+attachment until the component has a real shared-document/per-view boundary.
+Widget startup can attach input even without focus; stale callbacks and native
+disposal need further work. Controller disposal does not reject later mutation
+or explicitly release all native handles/notifiers. A read-only boolean alone
+does not fence asynchronous clipboard completion or undo/programmatic mutation.
+An eventual ADELE grant must be presentation-scoped and permanently revocable;
+that grant has deliberately not been implemented over the rejected component.
+
+The probe supplies text only and leaves `filePath`, `openedFile`, LSP, AI, and
+network integrations unconfigured. It does not exercise or grant file save/open,
+process, URL-launch, or workspace-edit authority. Default optional component
+shortcuts are not being certified as a safe production interaction surface.
+
+The Linux profile build uses upstream Flutter CMake/Cargokit bundling of
+`libcode_forge.so`, not a checked-in or manually copied development library.
+The process runs from a separate empty working directory without loader override
+variables or Cargo on its configured PATH. It initializes FRB, verifies the actual
+mapping in `/proc/self/maps` points to the bundle's `lib/libcode_forge.so`, renders
+the widget, dispatches native platform input, checks ASCII undo/redo and complete
+view unmount, then disposes the owner. A second subprocess with the bundled library
+removed must fail explicitly. This is a **native component experiment**, not the
+required compiled-interpreted frontend proof or a distributable ADELE editor.
+
+Upstream Windows CMake DLL bundling and macOS CocoaPods static-library/framework
+paths remain untouched and were inspected only, not executed. The macOS podspec
+still reports 10.12.0. Runtime must load prebuilt artifacts; compilation/downloads
+occur only during probe preparation.
+
+The archive's MIT notice (Athul A S, 2025) is truncated upstream, and the eight
+bundled icon fonts have no separate provenance statement. Patch-source notices
+are retained in `fixtures/upstream-notices.txt`. Native distribution still needs
+a target-specific transitive Rust/standard-library notice inventory, including
+Apache-2.0 `zed-sum-tree`; Flutter's Dart `NOTICES.Z` alone is insufficient. CI
+uploads diagnostic logs only, **not** the redistribution-unready bundle.
+
+The fixture's roundtrips include a 32 Ki-code-unit line and a 2,048-line document.
+These are reproducible samples, not production admission/performance guarantees.
+The mutable rope and undo payloads use content-proportional memory; upstream's
+1,000-operation default history is not a byte bound. No constant-memory,
+allocation-accounting, retained-resource, or per-keystroke EVC-copy claim is made.
+The safe alternatives are an upstream fidelity/lifecycle fix followed by the same
+gate, or an explicitly reviewed expanded patch scope. A different editor or
+integrated SDK/evaluator upgrade is not selected by this experiment.
+
+See [reproduction commands and result modes](testing.md#native-editor-candidate-probe).
+
 ## Native terminal dependency
 
 The app pins the published `xterm2 5.2.0` archive, with checksum

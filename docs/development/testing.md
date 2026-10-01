@@ -538,6 +538,53 @@ The smoke needs existing directories configured through
 fixture and display setup. Follow [toolchain policy](toolchain.md) for SDK,
 generation, and artifact-preparation details.
 
+### Native editor candidate probe
+
+The [CodeForge compatibility gate](toolchain.md#native-editor-compatibility-gate)
+is deliberately isolated from normal workspace dependency resolution and app
+compilation. It does **not** establish E1 completion or prepared-EVC editor support.
+Use the integrated Flutter/Dart pin on Linux x64, normal Linux desktop build
+dependencies, `curl`, Git, `tar`, `sha256sum`, `readelf`, `timeout`, and Xvfb.
+Preparation downloads the exact pub archive and locked pub/Cargo dependencies;
+runtime does not need Cargo or the source checkout.
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+dart tools/adele.dart probe-code-editor --output /tmp/adele-code-editor-gate
+```
+
+The output directory must not exist. The driver verifies the full toolchain
+identity against `toolchain.json`, captures an absolute Flutter path before leaving
+the checkout, applies only the retained patch, enforces both isolated Dart locks
+and the upstream Cargo lock, analyzes the fixtures, and serially builds/runs the
+profile bundle and native tests. It retains stage logs and `logs/result.json`
+under that output directory. **Default gate mode exits nonzero on the known
+editing failures**, asserting the correct behavior instead of declaring an
+unsuitable dependency successful. Do not include this expected-failing candidate
+as an ordinary app test target.
+
+For stable regression evidence of the *rejection*, not acceptance:
+
+```sh
+dart tools/adele.dart probe-code-editor --output /tmp/adele-code-editor-reproduction --verify-known-defects
+dart test test/tools/code_editor_probe_test.dart test/tools/app_plugin_boundary_test.dart test/tools/self_hosting_cli_test.dart
+```
+
+The explicit `--verify-known-defects` mode asserts the recorded broken outputs
+only for the named defect cases; baseline initialization/input/text roundtrips and
+bundled-path/missing-library checks must still succeed. A successful command means
+the rejected-candidate evidence reproduced, not that editing is safe. The existing
+runtime-smoke workflow runs this mode in a separate Linux job and uploads logs only.
+Its concurrency policy is unchanged; all Flutter work within one probe is serial
+and uses a fresh build directory. Driver tests are discovered by `adele_tools`.
+
+The templates use real Rust APIs. Platform clipboard responses are deterministically
+gated with a Completer and debounce checks advance the widget-test clock, not wall
+time sleeps. The packaged profile fixture dispatches platform text input and waits
+for rendered frame completion. Neither native test route compiles an EVC; the
+public buffer/view/access adapter and decisive prepared frontend tests remain
+blocked on the component fidelity/lifecycle decision.
+
 ## Live tests
 
 Live tests are explicitly opt-in and may incur API charges or consume subscription
