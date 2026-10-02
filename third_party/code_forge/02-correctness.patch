@@ -1,0 +1,102 @@
+diff --git a/lib/code_forge/controller.dart b/lib/code_forge/controller.dart
+--- a/lib/code_forge/controller.dart
++++ b/lib/code_forge/controller.dart
+@@ -2081,6 +2081,7 @@
+   Future<void> paste() async {
+     if (readOnly) return;
+     final data = await Clipboard.getData(Clipboard.kTextPlain);
++    if (_isDisposed || readOnly) return;
+     if (data?.text == null || data!.text!.isEmpty) return;
+     final sel = selection;
+     replaceRange(sel.start, sel.end, data.text!);
+@@ -2099,8 +2100,7 @@
+     if (_cachedText == null || _cachedTextVersion != _currentVersion) {
+       if (_bufferLineIndex != null && _bufferDirty) {
+-        final ropeText = _rope.getText();
+-        final before = ropeText.substring(0, _bufferLineRopeStart);
+-        final after = ropeText.substring(
++        final before = _rope.substring(0, _bufferLineRopeStart);
++        final after = _rope.substring(
+           _bufferLineRopeStart + _bufferLineOriginalLength,
+         );
+         _cachedText = before + _bufferLineText! + after;
+@@ -3394,5 +3394,5 @@
+     if (sel.start <= 0) return;
+-
++
+-    final deleteOffset = sel.start - 1;
++    var deleteOffset = sel.start - 1;
+-
++
+     String charToDelete;
+@@ -3410,6 +3410,10 @@
+     if (charToDelete == '\n') {
+       _flushBuffer();
++      if (deleteOffset > 0 && _rope.charAt(deleteOffset - 1) == '\r') {
++        deleteOffset--;
++      }
++      deletedText = _rope.substring(deleteOffset, sel.start);
+       _rope.delete(deleteOffset, sel.start);
+       _currentVersion++;
+       _selection = TextSelection.collapsed(offset: deleteOffset);
+       dirtyLine = _rope.getLineAtOffset(deleteOffset);
+@@ -3419,3 +3423,3 @@
+-      _recordDeletion(deleteOffset, '\n', selectionBefore, _selection);
++      _recordDeletion(deleteOffset, deletedText, selectionBefore, _selection);
+       _imeSelectionNeedsResync = true;
+       _invalidateImeSnapshotAndScheduleSync();
+@@ -3430,8 +3434,7 @@
+         final localOffset = deleteOffset - _bufferLineRopeStart;
+         final utf16Local = scalarToStringIndex(_bufferLineText!, localOffset);
+-        final charToDelete = _rope.charAt(deleteOffset);
+-        final utf16End = utf16Local + charToDelete.length;
+-        deletedText = charToDelete;
++        final utf16End = scalarToStringIndex(_bufferLineText!, localOffset + 1);
++        deletedText = _bufferLineText!.substring(utf16Local, utf16End);
+         _bufferLineText =
+             _bufferLineText!.substring(0, utf16Local) +
+             _bufferLineText!.substring(utf16End);
+@@ -3617,8 +3620,7 @@
+         final localOffset = deleteOffset - _bufferLineRopeStart;
+         final utf16Local = scalarToStringIndex(_bufferLineText!, localOffset);
+-        final charToDelete = _rope.charAt(deleteOffset);
+-        final utf16End = utf16Local + charToDelete.length;
+-        deletedText = charToDelete;
++        final utf16End = scalarToStringIndex(_bufferLineText!, localOffset + 1);
++        deletedText = _bufferLineText!.substring(utf16Local, utf16End);
+         _bufferLineText =
+             _bufferLineText!.substring(0, utf16Local) +
+             _bufferLineText!.substring(utf16End);
+@@ -5005,4 +5007,4 @@
+         dirtyRegion = TextRange(
+           start: safeOffset,
+-          end: safeOffset + text.length,
++          end: safeOffset + text.runes.length,
+         );
+@@ -5011,4 +5013,4 @@
+       case DeleteOperation(:final offset, :final text, :final selectionAfter):
+         final safeStart = offset.clamp(0, _rope.length);
+-        final safeEnd = (offset + text.length).clamp(safeStart, _rope.length);
++        final safeEnd = (offset + text.runes.length).clamp(safeStart, _rope.length);
+         if (safeStart < safeEnd) {
+@@ -5032,5 +5034,5 @@
+         final safeStart = offset.clamp(0, _rope.length);
+         if (deletedText.isNotEmpty) {
+-          final deleteEnd = (safeStart + deletedText.length).clamp(
++          final deleteEnd = (safeStart + deletedText.runes.length).clamp(
+             safeStart,
+             _rope.length,
+@@ -5049,4 +5051,4 @@
+         dirtyRegion = TextRange(
+           start: safeStart,
+-          end: safeStart + insertedText.length,
++          end: safeStart + insertedText.runes.length,
+         );
+diff --git a/lib/code_forge/code_area.dart b/lib/code_forge/code_area.dart
+--- a/lib/code_forge/code_area.dart
++++ b/lib/code_forge/code_area.dart
+@@ -1048,3 +1048,4 @@
+     if (widget.readOnly != oldWidget.readOnly) {
+       _readOnly = widget.readOnly;
++      _controller.readOnly = widget.readOnly;
+     }

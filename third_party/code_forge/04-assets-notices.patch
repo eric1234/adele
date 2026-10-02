@@ -1,0 +1,49 @@
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -37,28 +37,5 @@ flutter:
+         ffiPlugin: true
+       windows:
+         ffiPlugin: true
+-  fonts:
+-    - family: Method
+-      fonts:
+-        - asset: assets/icons/method.ttf
+-    - family: Variable
+-      fonts:
+-        - asset: assets/icons/variable.ttf
+-    - family: Class
+-      fonts:
+-        - asset: assets/icons/class.ttf
+-    - family: Struct
+-      fonts:
+-        - asset: assets/icons/struct.ttf
+-    - family: Event
+-      fonts:
+-        - asset: assets/icons/event.ttf
+-    - family: Operator
+-      fonts:
+-        - asset: assets/icons/operator.ttf
+-    - family: Interface
+-      fonts:
+-        - asset: assets/icons/interface.ttf
+-    - family: Field
+-      fonts:
+-        - asset: assets/icons/field.ttf
++  # ADELE omits optional completion icon fonts with unverified provenance.
++  # Prepared text-only native notices use standard package-asset bundling.
++  assets:
++    - assets/adele/NOTICES.txt
++    - assets/adele/inventory.json
+diff --git a/lib/code_forge/code_area.dart b/lib/code_forge/code_area.dart
+--- a/lib/code_forge/code_area.dart
++++ b/lib/code_forge/code_area.dart
+@@ -599,7 +599,7 @@
+ 
+     _controller.requestImeReset = _resetImeConnection;
+ 
+-    Future.microtask(CustomIcons.loadAllCustomFonts);
++    // ADELE does not ship or load optional completion icon fonts.
+ 
+     if (_filePath == null && _controller.lspConfig != null) {
+       throw ArgumentError(

@@ -1,0 +1,331 @@
+diff --git a/lib/code_forge/controller.dart b/lib/code_forge/controller.dart
+--- a/lib/code_forge/controller.dart
++++ b/lib/code_forge/controller.dart
+@@ -2927,9 +2927,37 @@
++  // Read a scalar window from the rope plus its one pending line. IME reads
++  // must not force the debounce to commit accepted buffered edits.
++  String _currentTextSlice(int start, int end) {
++    if (!_bufferDirty || _bufferLineText == null) {
++      return _rope.substring(start, end);
++    }
++    final line = _bufferLineText!;
++    final lineStart = _bufferLineRopeStart;
++    final lineLength = line.runes.length;
++    final lineEnd = lineStart + lineLength;
++    final result = StringBuffer();
++    if (start < lineStart) {
++      result.write(_rope.substring(start, end < lineStart ? end : lineStart));
++    }
++    if (start < lineEnd && end > lineStart) {
++      final from = start > lineStart ? start - lineStart : 0;
++      final to = end < lineEnd ? end - lineStart : lineLength;
++      result.write(line.substring(
++        scalarToUtf16Offset(line, from), scalarToUtf16Offset(line, to)));
++    }
++    if (end > lineEnd) {
++      final shift = _bufferLineOriginalLength - lineLength;
++      result.write(_rope.substring(
++        (start > lineEnd ? start : lineEnd) + shift, end + shift));
++    }
++    return result.toString();
++  }
++
+   void _ensureImeProjection() {
+     if (!_imeProjectionDirty) return;
+-
+-    _flushBuffer();
+ 
+     final selection = _selection;
+-    final documentLength = _rope.length;
++    final documentLength = length;
+     if (documentLength == 0) {
+@@ -2961,9 +2989,7 @@
+-    final projectionEndOffset = lineEnd + 1 < lineCount
++    var projectionEndOffset = lineEnd + 1 < lineCount
+         ? getLineStartOffset(lineEnd + 1)
+         : documentLength;
+-    var projectionText = _rope.substring(
+-      projectionStartOffset,
+-      projectionEndOffset,
+-    );
+ 
+-    if (projectionText.length > _imeProjectionMaxChars) {
++    if (projectionEndOffset - projectionStartOffset > _imeProjectionMaxChars) {
+       final halfWindow = _imeProjectionMaxChars ~/ 2;
+@@ -2977,8 +3003,8 @@
+-      final projectionEndOffset =
++      final boundedEndOffset =
+           (projectionStartOffset + _imeProjectionMaxChars).clamp(
+             0,
+             documentLength,
+           );
+-      if (selectionTail > projectionEndOffset) {
++      if (selectionTail > boundedEndOffset) {
+         projectionStartOffset = (selectionTail - _imeProjectionMaxChars).clamp(
+@@ -2988,6 +3014,15 @@
+       final projectionEnd = (projectionStartOffset + _imeProjectionMaxChars)
+           .clamp(0, documentLength);
+-      projectionText = _rope.substring(projectionStartOffset, projectionEnd);
++      projectionEndOffset = projectionEnd;
+     }
++    // Keep an explicit selection representable, even when it exceeds the
++    // ordinary context window. Otherwise typing over Select All edits a suffix.
++    if (selectionStart < projectionStartOffset) {
++      projectionStartOffset = selectionStart;
++    }
++    if (selectionEnd > projectionEndOffset) {
++      projectionEndOffset = selectionEnd;
++    }
++    final projectionText = _currentTextSlice(projectionStartOffset, projectionEndOffset);
+ 
+     final localBase = (selection.baseOffset - projectionStartOffset).clamp(
+@@ -3897,6 +3897,13 @@
+       _buildCurrentImeEditingValue();
+ 
+   TextEditingValue _buildCurrentImeEditingValue() {
++    if (_imeComposition != null) {
++      return TextEditingValue(
++        text: _imeMirrorText,
++        selection: _imeMirrorSelection,
++        composing: _imeMirrorComposing,
++      );
++    }
+     _ensureImeProjection();
+     final projText = _imeProjectionText;
+     final scalarSel = _imeProjectionSelection;
+@@ -4455,37 +4462,50 @@
+   /// Indent the current selection or insert an indent at the caret.
+   ///
+   /// If a range is selected, each line in the selected block is prefixed
+-  /// with three spaces. The selection is adjusted to account for the added
+-  /// characters. If there is no selection (collapsed caret), three spaces
+-  /// are inserted at the caret position.
++  /// with [tabSpace]. The selection is adjusted to account for the added
++  /// characters. If there is no selection (collapsed caret), [tabSpace] is
++  /// inserted at the caret position.
+   ///
+-  /// The method uses `replaceRange` and `setSelectionSilently` to update the
+-  /// document and selection without triggering external selection side
+-  /// effects.
++  /// Text and the resulting scalar selection are recorded as one undo edit.
+   void indent() {
+-    if (selection.baseOffset != selection.extentOffset) {
+-      final selStart = selection.start;
+-      final selEnd = selection.end;
+-
+-      final lineStart = text.lastIndexOf('\n', selStart - 1) + 1;
+-      int lineEnd = text.indexOf('\n', selEnd);
+-      if (lineEnd == -1) lineEnd = text.length;
++    if (!_canMutate) return;
++    final selected = selection;
++    if (!selected.isCollapsed) {
++      final current = text;
++      final selStart = scalarToUtf16Offset(current, selected.start);
++      final selEnd = scalarToUtf16Offset(current, selected.end);
+ 
+-      final selectedBlock = text.substring(lineStart, lineEnd);
++      final lineStart = selStart == 0
++          ? 0
++          : current.lastIndexOf('\n', selStart - 1) + 1;
++      int lineEnd = current.indexOf('\n', selEnd);
++      if (lineEnd == -1) lineEnd = current.length;
++
++      final selectedBlock = current.substring(lineStart, lineEnd);
+       final indentedBlock = selectedBlock
+           .split('\n')
+           .map((line) => '$tabSpace$line')
+           .join('\n');
+ 
+       final lines = selectedBlock.split('\n');
+-      final addedChars = tabSize * lines.length;
+-      final newSelection = TextSelection(
+-        baseOffset: selection.baseOffset + tabSize,
+-        extentOffset: selection.extentOffset + addedChars,
++      final indentLength = tabSpace.runes.length;
++      final newStart = selected.start + indentLength;
++      final newEnd = selected.end + indentLength * lines.length;
++      final forward = selected.baseOffset <= selected.extentOffset;
++      final newSelection = selected.copyWith(
++        baseOffset: forward ? newStart : newEnd,
++        extentOffset: forward ? newEnd : newStart,
+       );
+ 
+-      replaceRange(lineStart, lineEnd, indentedBlock);
+-      setSelectionSilently(newSelection);
++      _handleReplacement(
++        TextRange(
++          start: utf16ToScalarOffset(current, lineStart),
++          end: utf16ToScalarOffset(current, lineEnd),
++        ),
++        indentedBlock,
++        newSelection,
++      );
++      notifyListeners();
+     } else {
+       insertAtCurrentCursor(tabSpace);
+     }
+@@ -4493,76 +4513,57 @@
+ 
+   /// Remove indentation from the current selection or the current line.
+   ///
+-  /// If a range is selected, the method attempts to remove up to three
+-  /// leading spaces from each line in the selection (or removes the leading
+-  /// contiguous spaces if fewer than three). The selection is adjusted to
++  /// If a range is selected, the method removes [tabSpace] or the remaining
++  /// leading spaces from each line in the selection. The selection is adjusted to
+   /// reflect the removed characters. If there is no selection, the current
+   /// line is unindented and the caret is moved appropriately.
+   ///
+-  /// Uses `replaceRange` and `setSelectionSilently` to update the document
+-  /// and selection without causing external selection side effects.
++  /// Text and the resulting scalar selection are recorded as one undo edit.
+   void unindent() {
+-    if (selection.baseOffset != selection.extentOffset) {
+-      final selStart = selection.start;
+-      final selEnd = selection.end;
+-
+-      final lineStart = text.lastIndexOf('\n', selStart - 1) + 1;
+-      int lineEnd = text.indexOf('\n', selEnd);
+-      if (lineEnd == -1) lineEnd = text.length;
+-
+-      final selectedBlock = text.substring(lineStart, lineEnd);
+-      final lines = selectedBlock.split('\n');
+-      final unindentedBlock = lines
+-          .map(
+-            (line) => line.startsWith(tabSpace)
+-                ? line.substring(tabSize)
+-                : line.replaceFirst(RegExp(r'^ +'), ''),
+-          )
+-          .join('\n');
+-
+-      int removedChars = 0;
+-      for (final line in lines) {
+-        if (line.startsWith(tabSpace)) {
+-          removedChars += tabSize;
+-        } else {
+-          removedChars += RegExp(r'^ +').stringMatch(line)?.length ?? 0;
++    if (!_canMutate) return;
++    final selected = selection;
++    final current = text;
++    final selStart = scalarToUtf16Offset(current, selected.start);
++    final selEnd = scalarToUtf16Offset(current, selected.end);
++    final lineStart = selStart == 0
++        ? 0
++        : current.lastIndexOf('\n', selStart - 1) + 1;
++    final nextNewline = current.indexOf('\n', selEnd);
++    final lineEnd = nextNewline == -1 ? current.length : nextNewline;
++    final lines = current.substring(lineStart, lineEnd).split('\n');
++    final unindentedLines = lines
++        .map(
++          (line) => line.startsWith(tabSpace)
++              ? line.substring(tabSpace.length)
++              : line.replaceFirst(RegExp(r'^ +'), ''),
++        )
++        .toList();
++    final scalarStart = utf16ToScalarOffset(current, lineStart);
++
++    int mapOffset(int offset) {
++      var lineOffset = scalarStart;
++      var removed = 0;
++      for (var i = 0; i < lines.length; i++) {
++        final lineLength = lines[i].runes.length;
++        final count = lineLength - unindentedLines[i].runes.length;
++        if (offset <= lineOffset + lineLength) {
++          return offset - removed - (offset - lineOffset).clamp(0, count);
+         }
++        removed += count;
++        lineOffset += lineLength + 1;
+       }
+-
+-      final newSelection = TextSelection(
+-        baseOffset:
+-            selection.baseOffset -
+-            (lines.first.startsWith(tabSpace)
+-                ? tabSize
+-                : (RegExp(r'^ +').stringMatch(lines.first)?.length ?? 0)),
+-        extentOffset: selection.extentOffset - removedChars,
+-      );
+-
+-      replaceRange(lineStart, lineEnd, unindentedBlock);
+-      setSelectionSilently(newSelection);
+-    } else {
+-      final caret = selection.start;
+-      final prevNewline = text.lastIndexOf('\n', caret - 1);
+-      final lineStart = prevNewline == -1 ? 0 : prevNewline + 1;
+-      final nextNewline = text.indexOf('\n', caret);
+-      final lineEnd = nextNewline == -1 ? text.length : nextNewline;
+-      final line = text.substring(lineStart, lineEnd);
+-
+-      int removeCount = 0;
+-      if (line.startsWith(tabSpace)) {
+-        removeCount = tabSize;
+-      } else {
+-        removeCount = RegExp(r'^ +').stringMatch(line)?.length ?? 0;
+-      }
+-
+-      final newLine = line.substring(removeCount);
+-      final newOffset = caret - removeCount > lineStart
+-          ? caret - removeCount
+-          : lineStart;
+-
+-      replaceRange(lineStart, lineEnd, newLine);
+-      setSelectionSilently(TextSelection.collapsed(offset: newOffset));
++      return offset - removed;
+     }
++
++    _handleReplacement(
++      TextRange(start: scalarStart, end: utf16ToScalarOffset(current, lineEnd)),
++      unindentedLines.join('\n'),
++      selected.copyWith(
++        baseOffset: mapOffset(selected.baseOffset),
++        extentOffset: mapOffset(selected.extentOffset),
++      ),
++    );
++    notifyListeners();
+   }
+ 
+   /// Clear all search highlights
+@@ -4812,3 +4869,6 @@
+     _cachedBufferLines = null;
+     _cachedText = null;
++    _imeProjectionText = '';
++    _imeMirrorText = '';
++    _imeWindowCommitted = '';
++    _imeMirrorDeletedText = '';
++    _rawTypedComposingText = '';
++    _lastComposingText = '';
++    _previousValue = '';
+     _rope.dispose();
+diff --git a/lib/code_forge/code_area.dart b/lib/code_forge/code_area.dart
+--- a/lib/code_forge/code_area.dart
++++ b/lib/code_forge/code_area.dart
+@@ -1076,7 +1076,6 @@
+   void dispose() {
+     _focusNode.removeListener(_focusListener);
+-    _controller.cancelCompositionAndDetach();
+     _controller.requestImeReset = null;
+     _controller.userCodeAction = null;
+@@ -1093,5 +1092,6 @@
+     _controller.removeListener(_snippetSuggestionsListener);
+     _suggestionNotifier.removeListener(_snippetNotifierListener);
++    _controller.cancelCompositionAndDetach();
+     _connection?.close();
+     _lspResponsesSubscription?.cancel();
+@@ -11903,5 +11903,6 @@
+ 
+     final text = controller.text;
+-    int start = offset, end = offset;
++    final utf16Offset = CodeForgeController.scalarToUtf16Offset(text, offset);
++    int start = utf16Offset, end = utf16Offset;
+ 
+     while (start > 0 && !_isWordBoundary(text[start - 1])) {
+@@ -11912,5 +11913,8 @@
+     }
+ 
+-    controller.selection = TextSelection(baseOffset: start, extentOffset: end);
++    controller.selection = TextSelection(
++      baseOffset: CodeForgeController.utf16ToScalarOffset(text, start),
++      extentOffset: CodeForgeController.utf16ToScalarOffset(text, end),
++    );
+     markNeedsPaint();
+   }

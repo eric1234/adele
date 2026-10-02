@@ -25,6 +25,8 @@ coverage/
 *.dill
 *.snapshot
 .adele/
+# Prepared third-party source and native test artifacts live under this root.
+/.adele/dependencies/
 plugins/**/.adele-build/
 
 # Local credentials and environment configuration
