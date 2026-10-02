@@ -9,6 +9,7 @@ export 'package:adele_orchestration/adele_orchestration.dart'
     show ModelNativePresentation;
 
 export 'console.dart';
+export 'main_content.dart';
 export 'model_native_activity_compact_presentation.dart';
 export 'model_native_activity_presentation.dart';
 export 'tool_activity_compact_presentation.dart';
