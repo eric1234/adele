@@ -48,7 +48,7 @@ Stock project/task/environment plugins
 └── Git
 
 Stock agent interaction plugins
-├── Agent Interaction
+├── Agent Interaction (possible future arrangement)
 ├── Chat Strategy
 ├── Session Forking
 ├── Agent Configuration / Policy
@@ -95,8 +95,8 @@ order, collapse/dismiss chrome, and view lifetime, not plugin field interpretati
 Run/core owns evidence identity, order, and lifecycle. Read-only presentation does
 not grant execution or approval authority, and unavailable rich UI must not
 invalidate execution or erase safe
-activity. Concrete Session/tool/native presentation contracts live in
-[`adele_ui`](../../packages/ui/README.md),
+activity. Concrete Main Content, Session-service, tool, and native presentation
+contracts live in [`adele_ui`](../../packages/ui/README.md),
 separately from the broader workbench hypotheses below.
 
 ```text
@@ -132,13 +132,14 @@ Physical placement is not part of the semantic interface. The stock layout may e
 
 Main Content uses the accepted [grouped contribution contract](../architecture/plugin-system.md#grouped-main-content),
 not a fixed list of Chat/Diff/Source/Artifact kinds. The stock product sequence is
-layered over extensible numeric contribution ordering: the strategy adapter uses
+layered over extensible integer contribution ordering: Chat directly contributes at
 100; Diff 200, Source 300, and Artifact 400 illustrate possible stock defaults,
 not reserved values or a core enum. Each exact registration owns a contiguous
 ordered collection, so all Source items stay together while participating in
-individual pane sizing. The strategy remains ordinary Session presentation inside
-its host adapter, not a second Chat registration. Future manual resizing,
-hide/maximize, or docking does not follow merely from this grouping contract;
+individual pane sizing. Chat uses the same registration and ownership path as
+other contributors, not a host-injected strategy adapter. A valid workspace may
+have no panes. Future manual resizing, hide/maximize, or docking does not follow
+merely from this grouping contract;
 current geometry and limits belong to the [application map](../../app/README.md#grouped-main-content).
 
 ## 2.2 Commands and input
@@ -361,7 +362,12 @@ Filesystem Tools, Search, Command Tool, and Internal Source Editor should contin
 
 **Role:** primary agent-interaction selection/hosting/presentation experience over core-owned Session and orchestration facilities.
 
-Likely provides/defines:
+This is an optional future arrangement, not a current architectural prerequisite
+or a required intermediary for Chat. Direct Chat Main Content participation is the
+current composition; core Session navigation and creation remain independent of
+whether any frontend contributes a pane.
+
+Such a plugin could provide:
 
 - an agent-interaction surface within Main Content hosting;
 - strategy-selection UX when a user creates a Session;
@@ -403,13 +409,18 @@ Chat Frontend owns asynchronous composer acceptance, history refresh, grouping,
 and stable accepted-entry-to-opaque-Run association. It uses its generated client
 over a generic own-backend bridge, allowlisted to the exact sibling connection and
 configuration context, never selecting or retargeting by PluginId. Owning-backend
-affinity uses host-verified exact strategy registration origin; Session creation
-validates before publication and execution stays on that same binding. Generic
-core owns model/tools/policy, approvals, activity evidence, and Inspection, not
+affinity uses host-verified exact strategy registration origin when binding the
+actual pane's explicitly requested services, including validation against any
+retained controller. Core Session creation uses executable orchestration
+registrations independently of that UI, and execution retains its exact binding.
+Generic core owns model/tools/policy, approvals, activity evidence, and Inspection, not
 canonical Chat history. Normal app code has no Chat imports or static activation;
 backend and frontend startup remain independent with no fallback. General
 provider/model configuration is still deferred; temporary app selection remains.
 
+Chat directly contributes its Main Content pane and chooses placement of the
+publicly bridged native execution controls without owning their policy or approval
+authority. A separate Agent Interaction plugin is not needed for this boundary.
 Chat Frontend owns compact activity placement; Backend supplies narration guidance.
 Related operations should
 remain lightweight between messages, with drill-down into common Inspection.
@@ -702,6 +713,15 @@ Likely provides:
 
 `DisplaySourceFile` may focus an existing editor rather than create a duplicate view, and may later accept a line/range/selection to reveal.
 
+Within the current window/runtime, future Source Documents should be identified by
+Environment plus resource path, independently of a Session's presentation lifetime.
+The selected Session determines the relevant Environment; Sessions sharing it can
+present the same retained Document. Changing Session presentation must not become
+a universal document-close rule. Pane/view access may end while its domain owner
+retains text, dirty state, and document lifetime. See the
+[Document/view direction](../product/development-workflow/README.md#39-document-versus-editor-view),
+not the synthetic in-memory editor fixture, for that ownership model.
+
 An External Editor plugin can implement the same narrow source-display capability by launching/focusing VS Code or another editor. Default selection remains host-owned.
 
 ---
@@ -842,19 +862,21 @@ There may be no active Environment while merely browsing.
 
 ## 12.4 Create a Chat Session
 
-Session creation and presentation are separate: missing, ambiguous, or failed
-presentation must not undo a valid canonical Session. The expected flow is:
+Session creation and presentation are separate: missing or failed presentation
+must not undo a valid canonical Session or prevent opening it. The expected flow is:
 
 ```text
-user chooses Chat strategy through Agent Interaction or another caller
+user chooses Chat strategy through Task Browser or another caller
     -> core resolves/validates Chat in the core orchestration registry
     -> core creates Session permanently bound to Chat strategy identity
     -> Session references Task primary Environment by default
-    -> Chat initializes strategy-owned state through public strategy APIs
-    -> Agent Interaction hosts Chat surface when that UI is active
+    -> core publishes the active workbench context
+    -> Chat's Main Content initializer opens its pane for a matching Session
 ```
 
-Programmatic child Session creation can use the same registry/binding path without Agent Interaction participating.
+Programmatic child Session creation can use the same registry/binding path without
+any frontend. A future Agent Interaction plugin could provide additional
+selection/presentation composition, but is not required by this flow.
 
 ## 12.5 Submit a Chat turn
 
@@ -963,7 +985,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Interface / extension family | Likely owner | Reason |
 | --- | --- | --- |
 | Semantic workbench surfaces | Core | Host composes global UI while placement evolves |
-| `MainContentContribution` | `adele_ui` | Exact registrations own ordered contiguous pane groups; the host composes groups and adapts existing Session presentation |
+| `MainContentContribution` | `adele_ui` | Exact registrations own ordered contiguous pane groups, including direct Chat; the host injects no strategy pane |
 | Commands / Command Palette / keybindings | Core | Cross-cutting controller/input infrastructure |
 | Settings | Core | Cross-cutting configuration infrastructure |
 | `ProjectSelectorContribution` | `adele_core_extensions` | Core-owned URI selection contract with no natural existing public domain package; lifecycle stays in core |
@@ -974,8 +996,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Console contributions/content | `adele_ui` | Host owns shared tabs/actions/selection; independent content owners retain their resource and invocation semantics |
 | Task creation | Core | Task identity/lifecycle is core-owned |
 | Session creation | Core | Session identity/lifecycle is core-owned |
-| OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |
-| `SessionPresentationContribution` | `adele_ui` | Generic host presents an existing Session through exact strategy matching without owning strategy-specific UI |
+| OrchestrationStrategy registration/binding | Core/public | Creation validates an exact executable registration; retained Sessions preserve their strategy identity without requiring a live backend to open |
 | `ToolActivityInspectionContribution` | `adele_ui` | Exact Tool ID selects read-only individual invocation presentation; group composition stays host-owned and field interpretation stays plugin-owned |
 | `ModelNativeActivityPresentationContribution` | `adele_ui` | Exact safe presentation kind selects rich read-only Inspection; Backend owns raw interpretation, safe activity survives frontend absence, and replay remains separate |
 | Public orchestration/execution API | Core/public, backed internally by `agent_kernel` | Strategy plugins need Run/model/tool execution without depending on internal implementation packages |
@@ -996,8 +1017,8 @@ The stock installation should be coherent and useful, but ADELE should tolerate 
 
 - Chat with no tools;
 - zero Project selectors (unavailable), or multiple independent selector actions;
-- strategy registered with no Agent Interaction UI consumer;
-- Session with no matching presentation contribution, reported as unavailable without invalidating execution;
+- strategy registered with no frontend or Agent Interaction consumer;
+- canonical Session with no Main Content panes, still openable as an empty workspace without invalidating execution;
 - tool invocation with no matching Inspection contribution, reported as unavailable without invalidating execution;
 - raw native output without safe presentation, retained opaquely without invalidating execution;
 - safe native activity with no matching rich presentation contribution, retaining compact activity while rich Inspection is unavailable;

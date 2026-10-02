@@ -26,17 +26,21 @@ presentation values, not durable Project data.
 Task rows show host-supplied preparing/running/waiting/terminal Session counts,
 including the failed subset of terminal outcomes. The detail shows primary
 Environment ID and provider ID without interpreting provider state. Session rows
-show their presentation name, secondary Session and strategy identities, and the
-generic execution status from the public snapshot; unavailable rows are disabled
-without hiding their retained status. Waiting is an attention label only: approval
-requires opening the exact Session's host-owned surface. No Command-specific status
+show the contributed strategy `displayName` with strategy-ID fallback, secondary
+Session and strategy identities, and the generic execution status. `canOpen`
+controls navigation separately from `executionAvailable`: a canonical Session can
+open without a strategy backend, frontend, or Main Content contribution. Missing
+execution support does not hide retained status or disable an otherwise openable
+row. Waiting is an attention label only: approval requires opening the exact
+Session's host-owned controls. No Command-specific status
 or execution authority is exposed here. Exactly one creation
 option gets a direct `New <displayName> Session` action; multiple options get a
 small choice list headed `New Session: choose a strategy`. Only the host-issued
 opaque handle is sent back, never a strategy ID
-constructed by the frontend. Zero choices show a non-actionable `New Session`
-label and the no-strategy message without hiding existing Sessions. Zero Sessions
-also has an explicit empty state.
+constructed by the frontend. Choices come from exact orchestration registrations,
+not frontend availability or dummy UI registrations. Zero choices show a
+non-actionable `New Session` label and the no-strategy message without hiding
+existing Sessions. Zero Sessions also has an explicit empty state.
 
 The public bridge owns product snapshots, subscriptions, and asynchronous actions.
 Actions settle as `[true, null]` or `[false, safeErrorString]`; the view shows the

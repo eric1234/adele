@@ -27,23 +27,6 @@ The public resolver checks live in
 prepared-view, and navigation checks are mapped in
 [application validation](../../docs/development/testing.md#application-validation-map).
 
-## Session Presentation
-
-`SessionPresentationContribution(strategyId, displayName, createPresentation)`
-registers at `sessionPresentationContributions`. Its factory is
-`Widget Function(Session)`. `SessionPresentationResolver` matches the canonical
-Session's strategy exactly: zero is unavailable, one supplies an exact binding,
-and multiple matches are ambiguous. There is no default, priority, or fallback.
-The host retains views across updates and removes them when their registration
-retires; replacement requires fresh resolution. Presentation failure does not
-invalidate canonical product state or independently hosted backend execution.
-
-Prepared Session descriptors use generic hosting, not stock adapter names. They
-supply `displayName`, `strategyId`, `extensionId`, `library`, and `entrypoint`, with
-optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
-`hostAdapter` is no longer supported. See the exact
-[installed schema](../plugin_runtime/README.md#prepared-catalog).
-
 ## Grouped Main Content
 
 [`main_content.dart`](lib/main_content.dart) defines the additive
@@ -51,7 +34,7 @@ optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
 ordered collection for one exact registration and canonical Session attachment,
 not one collection per PluginId. Its `attach(MainContentAccess)` may be synchronous
 or asynchronous; successful completion does not revoke native access. Groups sort
-by ascending numeric `order`, then lexical ExtensionId, preserving each owner's
+by ascending integer `order`, then lexical ExtensionId, preserving each owner's
 contiguous local pane sequence before layout. Broader composition and retirement
 rules belong to the
 [Main Content architecture](../../docs/architecture/plugin-system.md#grouped-main-content).
@@ -75,11 +58,21 @@ Native owners defer physical resource teardown until mounted descendants detach
 where necessary. Focus reveals the pane in Main Content; keyboard focus is separately
 opt-in, using `requestFocus` or ordinary content traversal.
 
-The existing Session presentation is adapted into the group layout, not registered
-again. Its resolver, backend affinity, and deactivation hook are unchanged.
+Every pane comes from a real contribution registration. The host injects no strategy
+pane and reserves no order value; zero panes produce a generic empty workspace.
+Stock Chat directly contributes at ordinary order 100 and decides whether to open
+its pane from the captured Session context. No matching-renderer resolver gates
+canonical Session navigation or independently hosted execution.
+
+Prepared panes may explicitly request Session execution and allowlisted
+owning-backend services. The defaults grant neither; descriptor policy is not
+authority without host validation of exact registration, requested backend and
+installation ownership, and any captured controller. The initializer receives no
+such services. See the
+[installed schema](../plugin_runtime/README.md#prepared-catalog) and
+[service binding](../../app/README.md#grouped-main-content).
 [Application hosting](../../app/README.md#grouped-main-content) owns geometry and
-native bindings; the [prepared catalog](../plugin_runtime/README.md#prepared-catalog)
-owns descriptor fields. Focused checks are mapped in
+native bindings. Focused checks are mapped in
 [Main Content validation](../../docs/development/testing.md#focused-main-content-checks).
 
 ## Shared Console
@@ -185,7 +178,7 @@ native implementations supply their behavior; calling a stub natively throws
   codec or SDK/dependency patch. Runtime null callbacks are supported, but the pin's
   SDK declarations still reject literal null callback arguments at compilation;
   omit unused callbacks or use the tested dynamic-null shape. `PreparedFrontend` can host this bridge independently
-  of Session/strategy presentation. `settleOwningBackendOperation(Future<dynamic>)`
+  of Session execution services. `settleOwningBackendOperation(Future<dynamic>)`
   returns `[true, value]` or `[false, null]`, preserving generated interpreted
   success values while containing native Future rejection. It grants no authority;
   originating operations still enforce their captured lifetime. Rich Inspection
@@ -212,8 +205,12 @@ native implementations supply their behavior; calling a stub natively throws
   Tool output handles retain immutable proposal arguments, rejection evidence,
   prepared identity/arguments, ordered lifecycle/policy/approval/progress evidence,
   and public outcome data, never executable objects or diagnostic exceptions.
-  Model/tools/policy,
-  approval authority, Run evidence, and Inspection remain host-owned. Canonical
+  `buildSessionExecutionStatus()` places the existing native Run status and approval
+  controls inside the requesting pane. The plugin chooses placement; the host
+  retains the controller, exact approval identity, and decision validation. Removing
+  that presentation revokes its actions, not its Run.
+  Model/tools/policy, approval authority, Run evidence, and Inspection remain
+  host-owned. Canonical
   strategy history and composer semantics are not part of this bridge.
 - `directory_picker_bridge.dart` supplies only `Future<String?> pickDirectory()`.
   A selector operation gets one asynchronous native call through a revocable
@@ -245,13 +242,16 @@ native implementations supply their behavior; calling a stub natively throws
   [application owner](../../app/README.md#native-code-editor), and
   [prepared-EVC tests](../../app/test/code_editor_bridge_test.dart). This bridge
   registers no Main Content/editor role and supplies no file/save, diff, or LSP API.
-- `main_content_bridge.dart` supplies `readMainContentPanes()` and
+- `main_content_bridge.dart` supplies `readMainContentContext()` with only the
+  captured `{sessionId, strategyId, taskId}`, `readMainContentPanes()`, and
   `readMainContentPaneId()`, plus boolean-returning `openMainContentPane(id, title,
   canClose)`, `setMainContentPaneTitle(id, title)`, `setMainContentPaneOrder(ids)`,
   `removeMainContentPane(id)`, and `focusMainContentPane(id, keyboardFocus)`.
   Requests affect only the originating contribution's collection. Rejected requests
-  return false; retired reads return an empty snapshot or ID. The current pane ID
-  is also empty during initialization. A short-lived initializer opens initial
+  return false; retired reads return an empty context, snapshot, or ID. Context
+  identities are data, not execution or backend authority. The current pane ID
+  is also empty during initialization. A short-lived initializer can inspect the
+  context and open no panes without acquiring services, or open initial
   panes, then loses bridge access; each pane has an independent presentation runtime
   with its own scoped bridge. Closing every pane leaves no autonomous evaluator
   updating the collection. A fresh Session attachment may initialize again.
@@ -323,9 +323,11 @@ native implementations supply their behavior; calling a stub natively throws
 - `session_presentation_lifecycle_bridge.dart` supplies
   `registerSessionPrepareToDeactivate(Future<bool> Function() callback)` and
   matching `unregisterSessionPrepareToDeactivate`. A presentation retains and
-  unregisters the same callback object; only one hook may be registered. For
-  host-requested navigation, the host awaits `true` before leaving, blocks input
-  while settling, and keeps the live view on rejection or failure. No hook means
+  unregisters the same callback object; only one hook may be registered per pane
+  presentation. For actual host-requested Session departure, the host aggregates
+  the contributed panes' hooks and awaits acceptance before leaving, blocks input
+  while settling, and keeps live panes on rejection or failure. Changing pane focus,
+  title, order, or width is not Session departure. No hook means
   no local state to flush. Registration grants no navigation authority; retirement
   revokes the exact hook and rejects late success. This is not a general shutdown,
   cancellation, or persistence service.
@@ -343,10 +345,14 @@ native implementations supply their behavior; calling a stub natively throws
 | `tasks[].executionCounts` | `{preparing, running, waiting, terminal, completed, cancelled, failed}` integer Session counts |
 | `selectedTask` | Null, or `{id, title, primaryEnvironment, sessions, sessionCreationOptions}` |
 | `selectedTask.primaryEnvironment` | Null, or `{id, providerId}` |
-| `selectedTask.sessions` | List of `{id, strategyId, presentationName, available, executionStatus}` |
+| `selectedTask.sessions` | List of `{id, strategyId, displayName, canOpen, executionAvailable, executionStatus}` |
 | `selectedTask.sessionCreationOptions` | List of `{opaqueHandle, displayName}` |
 
-IDs and labels are strings, counts are integers, and availability is boolean.
+IDs and labels are strings, counts are integers, and `canOpen` and
+`executionAvailable` are booleans. `displayName` uses the orchestration
+contribution's optional label with the stored strategy ID as fallback, not a
+frontend registration. Creation options come from exact uniquely resolved
+`orchestrationStrategyContributions`, including backend-only strategies.
 `executionStatus` is `idle`, `preparing`, `running`, `waitingForApproval`,
 `completed`, `cancelled`, or `failed`. These values project the latest retained
 execution owner's state, independently of presentation availability; no owner is
@@ -359,10 +365,12 @@ existing frame-coalesced browser subscription rather than packet-level workbench
 rebuilds. Waiting is read-only attention; approval remains on the exact Session's
 host-owned surface, never in this bridge.
 
-Unavailable Sessions remain in the snapshot. Availability describes current
-presentation/strategy resolution and required affinity, not a promise that a view
-will render or a Run can execute. The host revalidates exact creation choices and
-Project/Task membership on action; the frontend cannot select authority through
+Canonical Sessions remain openable through `canOpen` even with no strategy backend,
+frontend, or Main Content contribution. `executionAvailable` describes current
+unique live strategy resolution, not model readiness or a promise that a Run can
+execute. It does not gate navigation or erase retained `executionStatus`.
+The host revalidates exact strategy creation choices and Project/Task membership
+on action; the frontend cannot select authority through
 IDs. Snapshots expose no provider state, Environment facets, Chat history, database
 handles, or backend channels. Browsing and opening retained Sessions do not
 materialize Environments or start Runs. See the

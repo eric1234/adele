@@ -665,30 +665,34 @@ the runtime's canonical live graph through the app-owned `TaskBrowserSource` and
 [`TaskBrowserBridge`](lib/frontend/task_browser_bridge.dart). It does not query SQL
 or maintain a second Task/Session store. `tasksFor` and immutable `sessionsForTask`
 queries supply Task rows, Session counts, and the selected Task's Sessions;
-Environment details expose identity/provider only. Unavailable Sessions remain
-visible. The public [UI README](../packages/ui/README.md#task-browser-snapshot)
+Environment details expose identity/provider only. Canonical Sessions remain
+visible and openable when execution or frontend support is absent. The public
+[UI README](../packages/ui/README.md#task-browser-snapshot)
 owns the snapshot/action shape and safe asynchronous result contract.
 
 Read-only execution status comes from window-owned `SessionExecutionOwners`,
 without creating controllers during enumeration or querying tool transcripts.
 Task rows aggregate preparing/running/approval/terminal Session counts; Session
-rows identify the affected work independently of presentation availability.
+rows separate `canOpen`, `executionAvailable`, and retained `executionStatus`.
 Status invalidations are coalesced and exclude ordinary evidence-only updates.
 
 The source validates current Project/Task membership and the exact browser
-registration. Opaque creation choices retain exact Session presentation/strategy
-bindings and required affinity; submission revalidates them rather than resolving
-a replacement for a stale handle. Overlapping actions are rejected. Task
-establishment still uses lifecycle; browser retirement cannot undo publication, but rejects late
-selection/navigation. Leaving the browser revokes its presentation-local source,
+registration. Opaque creation choices retain exact uniquely resolved orchestration
+strategy bindings, with optional contributed `displayName` and strategy-ID fallback.
+They require no frontend or dummy UI registration; submission revalidates them
+rather than resolving a replacement for a stale handle. Overlapping actions are
+rejected. Task establishment still uses lifecycle; browser retirement cannot undo
+publication, but rejects late selection/navigation. Leaving the browser revokes its presentation-local source,
 subscriptions, and choices.
 
 New and retained Sessions enter the same `AdeleApplication._activateSession` path
-for canonical membership checks, lazy controller creation/reuse, exact presentation
-binding, and Inspection setup. Opening an existing Session preserves its identity and
-Environment association; browsing/opening does not materialize an Environment or
-start a Run. Missing model configuration does not prevent browsing or opening an
-otherwise available Session.
+for canonical membership checks and Inspection/console context. Navigation passively
+reuses a retained controller when present; an opted-in pane's service capture can
+request one through the existing core owner collection. Opening an existing Session
+preserves its identity and Environment association; browsing/opening does not
+materialize an Environment or start a Run. Missing model configuration, strategy
+backend, frontend, or Main Content contributions does not prevent opening that
+canonical Session.
 
 The stock [Task Browser](../plugins/task_browser/README.md) owns local title search,
 responsive list/detail presentation, and the inline new-Task Card required by the
@@ -739,35 +743,36 @@ and [fresh-runtime Git restart/move integration](test/core/durable_task_git_inte
 
 ### Session lifecycle
 
-Host Session creation is strategy-neutral: it resolves usable contributed
-presentation names and exact strategy bindings, not a compiled Chat choice. The
-browser submits an opaque host-issued choice. `PreparedSessionHost`
-validates presentation/strategy selection and required owning-backend affinity;
+Host Session creation is strategy-neutral: its options come from executable
+`orchestrationStrategyContributions`, not a compiled Chat choice or renderer.
+The browser submits an opaque host-issued exact strategy choice;
 lifecycle validates the semantic strategy and same-Task Environment relationship
 before ID allocation, revalidates the exact strategy, and checks identity conflicts.
 For a durable Project, Session and authority commit in one SQL transaction before
 live publication. Failure publishes neither; volatile `createProject` fixtures
 remain explicit rather than becoming a database-failure fallback.
 
-[`SessionPresentationHost`](lib/ui/session/session_presentation_host.dart) resolves
-the canonical Session through public [UI](../packages/ui/README.md) contracts.
-Missing, ambiguous, retired, or failed presentation does not redefine Session
-identity. Model availability is not a Session-creation requirement. Where required,
-the host validates the strategy's exact owning-backend origin and retains that
-selection; a later Run does not silently refresh a stale pinned selection.
+Session navigation selects a canonical identity, not a renderer. Missing,
+ambiguous, retired, or failed presentation does not redefine it or prevent opening
+its workspace. Model availability is not a Session-creation requirement. Execution
+and owning-backend affinity are validated separately when contributed panes request
+services, as described [below](#grouped-main-content).
 
 Reopen restores semantic Session/Environment associations, not presentations, live
-facets, or executable bindings. Missing strategy resolution fails explicitly while
-the restored identity remains. See [durable Session lifecycle tests](test/core/durable_session_lifecycle_test.dart).
+facets, or executable bindings. Missing strategy resolution leaves execution
+unavailable while the restored identity remains openable. See
+[durable Session lifecycle tests](test/core/durable_session_lifecycle_test.dart).
 
 The window presents one Session at a time, with independently active Sessions
 retained by [`SessionExecutionOwners`](lib/ui/execution/session_execution_owners.dart)
 outside the pure-Dart runtime graph. Its Task breadcrumb returns to the browser
 with that Task selected; its Project breadcrumb clears the Task selection.
 Both use `AdeleApplication._showBrowser`, which blocks input and awaits
-`PreparedSessionHost.prepareToDeactivate`, backed by the public asynchronous
+`ApplicationFrontendBootstrap.prepareToDeactivate`, which delegates to the actual
+contributed panes in `PreparedMainContentHost`, backed by the public asynchronous
 [presentation lifecycle hook](../packages/ui/README.md#interpreted-bridges).
-Failed draft saves or in-flight message acceptance retain the view for retry,
+The host aggregates per-pane hooks for actual departure, not one selected renderer.
+Failed draft saves or in-flight message acceptance retain live panes for retry,
 but preparation, inference, tools, approvals, and history settlement do not block
 navigation for the duration of a Run.
 
@@ -779,8 +784,8 @@ and interpreted handles remain inert even when that Session is opened again.
 Only the selected owner updates workbench UI; background work never selects a
 Session or replaces Inspection. Owners remain until shutdown, while settled
 backend executions are released through the existing terminal path.
-`PreparedSessionHost` checks a retained controller's exact captured strategy
-against the new presentation's owning-backend affinity. A compatible frontend
+`PreparedSessionServices` checks a retained controller's exact captured strategy
+against a requesting pane's owning-backend affinity. A compatible frontend
 remount does not replace execution; unavailable or retired backends remain
 unavailable rather than migrating work. This is navigation settlement, not Run
 cancellation, restart recovery, or a promise to flush on arbitrary widget
@@ -796,19 +801,28 @@ for the respective owners.
 current-Session collection and common pane chrome. They consume the public
 [`adele_ui` contract](../packages/ui/README.md#grouped-main-content), preserving
 [exact registration/group lifetimes](../docs/architecture/plugin-system.md#grouped-main-content).
-`AdeleApplication` supplies the existing `SessionPresentationHost` and execution
-status as the stable order-100 strategy adapter. Chat is not re-registered, and
-pane changes do not replace its Session binding, backend, or deactivation hook.
+Every pane belongs to a real registration. There is no injected strategy renderer
+or reserved order-100 slot. Stock Chat directly registers an ordinary Main Content
+contribution; its initializer decides applicability. Zero panes display
+`No Main Content is available for this Session.` without phantom widths or a
+fallback strategy pane. Pane changes do not replace another pane's captured
+binding, backend, or deactivation hook.
 `AdeleShell.sessionPresented` selects Session versus Browser layout independently
 of whether strategy content is available.
 
-The controller orders whole groups and flattens their panes before the widget
-calculates widths. Every pane, not every group, receives an equal share with a
-320-logical-pixel minimum. Simple padding and dividers frame a bounded horizontal
+The controller sorts whole groups by ascending integer order, then lexical
+ExtensionId, preserving each group's contiguous local sequence. It flattens their
+panes before the widget calculates widths. Every pane, not every group, receives
+an equal share with a 320-logical-pixel minimum. Simple padding and dividers frame a bounded horizontal
 scroller; overflow keeps panes mounted rather than turning them into hidden tabs.
-Editors receive bounded height, while strategy content retains its own vertical
-scroll view. Reveal/focus targets only the Main Content scroll position, not
-Inspection or console scrolling. Title/order updates preserve pane identity;
+Editors receive bounded height; plugins choose their own vertical content layout.
+Chat chooses `SingleChildScrollView` with local padding. The pinned evaluator
+lacks that constructor, so [`ScrollViewBridge`](lib/frontend/scroll_view_bridge.dart)
+supplies only its vertical child/padding form at the application bridge boundary;
+it adds no product authority and does not implement Chat layout in native code.
+Reveal/focus targets only the Main Content scroll position, not Inspection or
+console scrolling. Those surfaces remain outside the pane row. Focus and width
+changes are not Session navigation. Title/order updates preserve pane identity;
 factories, including failures, are not retried on unrelated rebuilds. Manual
 resizing, hide/maximize controls, and docking are not implemented by this host.
 
@@ -818,8 +832,11 @@ It invokes `initialize` in a short-lived operation runtime, then uses a fresh
 `PreparedFrontend` presentation runtime per pane. The app-native
 [`MainContentBridge`](lib/frontend/main_content_bridge.dart) limits collection
 operations to that exact attachment and originating pane lifetime; it is not a
-global pane/editor lookup. Initialization retains no evaluator; later collection
-updates come from pane runtimes, with no autonomous updater after all panes close.
+global pane/editor lookup. `readMainContentContext()` exposes only captured
+`sessionId`, `strategyId`, and `taskId`. The initializer receives no execution or
+backend services and can choose no panes without acquiring them.
+Initialization retains no evaluator; later collection updates come from pane
+runtimes, with no autonomous updater after all panes close.
 
 The optional `createBinding` factory returns `PreparedMainContentPaneBinding`
 with a native bridge factory, optional readiness Future, focus callback, and
@@ -828,10 +845,46 @@ observes readiness failure and waits before creating that pane's EVC presentatio
 Retirement cannot retarget the captured owner. Native resources remain private;
 the generic host knows no stock editor kind or plugin implementation.
 
+[`PreparedSessionServices`](lib/frontend/prepared_session_services.dart) extracts
+existing generic execution/backend service binding, not a new privileged UI role.
+`ApplicationFrontendBootstrap` passes it to prepared Main Content hosting. Only
+explicit descriptor requests acquire these services, and only for an actual pane.
+The binder validates exact contribution registration and metadata, canonical
+Session identity, and any retained controller's captured strategy. Requested backend
+access must belong to the exact prepared installation; owning-backend affinity
+additionally checks actual strategy registration origin. Missing services or a mismatched
+origin fail that pane locally; semantic IDs cannot select a replacement. Service
+defaults and metadata belong to the [catalog](../packages/plugin_runtime/README.md#prepared-catalog).
+
+Navigation only looks up an existing execution owner. An explicit execution-service
+request reaches `SessionExecutionOwners.getOrCreate` after affinity capture:
+owning-backend affinity supplies an exact pin, while independent presentation does
+not acquire a universal navigation-time pin. An owning view can also share a
+compatible existing unpinned owner: its captured expectation is checked against
+core's normally resolved strategy before allocating each Run, without replacing
+or repinning that owner. Active captured work still cannot migrate to a replacement
+registration, regardless of which contribution mounted first.
+
+Core `SessionExecutionOwners` retains controllers independently of frontend
+lifetimes. `buildSessionExecutionStatus()` exposes the existing native
+`RunExecutionStatus` through the public execution bridge, letting the plugin choose
+placement without taking over policy or approval decisions. Pane retirement
+revokes callbacks and observation, not the Run. The generic lifecycle bridge is
+attached per contributed pane; `prepareToDeactivate` aggregates hooks before
+departure and `unbind` revokes them afterward. Input/approval actions are disabled
+during settlement without revoking services needed to finish a draft write.
+New presentations admitted during settlement require a fresh departure attempt.
+Orderly exit freezes service display before revoking collection authority, keeping
+inert status/activity visible while core-owned accepted work drains.
+
 The development-only [`main_content_fixture.dart`](tool/main_content_fixture.dart)
 supplies independent in-memory native editors to the interpreted
 [`main_content_frontend.dart`](test/fixtures/main_content_frontend.dart), which
-owns collection actions. Compilation stays in
+owns collection actions. Its simple owner-release-on-departure policy is only a
+synthetic fixture lifetime, not a rule that Session navigation closes domain
+Documents. Future Source Document ownership belongs to
+[product direction](../docs/product/development-workflow/README.md#39-document-versus-editor-view).
+Compilation stays in
 [`main_content_frontend_compiler.dart`](tool/main_content_frontend_compiler.dart),
 outside production startup. See [focused checks](../docs/development/testing.md#focused-main-content-checks)
 and the [normal-workspace manual route](../docs/development/testing.md#manual-grouped-workspace).
@@ -860,7 +913,9 @@ The Chat backend owns conversation state/history, Draft Request, configuration,
 and strategy sequencing; its interpreted frontend owns history/composer
 presentation and activity grouping.
 The app owns generic scheduling, Run hosting, provider/tool/context composition,
-execution status, policy, and approvals, not a second Chat implementation.
+execution status, policy, and approvals, not a second Chat implementation. Chat's
+contributed pane places the native status controls through the public bridge;
+the application does not wrap Chat in a privileged strategy surface.
 
 The backend lazily loads initialized durable Chat history/configuration/draft
 through the shared storage service; Project opening does not hydrate Chat. The host
@@ -986,8 +1041,10 @@ target allowlists. `ApplicationFrontendBootstrap` captures those exact counterpa
 once per view, without strategy affinity or Session execution controls. Compact
 presentation receives only facts and never opens output observation or rendering.
 
-Common execution/approval UI remains host-owned. Plugins interpret and render
-tool/provider-specific fields; generic app hosts must not do so. Follow
+Common execution/approval UI implementation and authority remain host-owned;
+contributing plugins choose its placement through the public bridge. Plugins
+interpret and render tool/provider-specific fields; generic app hosts must not do
+so. Follow
 [UI](../packages/ui/README.md), [execution activity](../packages/orchestration/README.md#live-run-activity),
 [Chat grouping](../plugins/chat_strategy/README.md), and
 [Filesystem](../plugins/filesystem_tools/README.md) / [Command](../plugins/command_tools/README.md)
@@ -1098,8 +1155,9 @@ repository-wide deferred-feature ledger here.
 | Terminal activity retention and restore | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `runActivity`, `runActivitiesForSession`; [`lib/core/project_database.dart`](lib/core/project_database.dart): `loadExecutionHistory`, `insertTerminalRun` |
 | Execution evidence validation/schema | [`lib/core/execution_evidence.dart`](lib/core/execution_evidence.dart), [`lib/core/execution_evidence_schema.dart`](lib/core/execution_evidence_schema.dart) |
 | Plugin relational storage mediation | [`lib/core/project_storage_host.dart`](lib/core/project_storage_host.dart): `projectStorageServices`, `ProjectStorageHost` |
-| Session selection/presentation | [`lib/frontend/prepared_session_host.dart`](lib/frontend/prepared_session_host.dart), [`lib/ui/session/session_presentation_host.dart`](lib/ui/session/session_presentation_host.dart) |
-| Session navigation/settlement | [`lib/application.dart`](lib/application.dart): `_activateSession`, `_showBrowser`; [`lib/frontend/session_presentation_lifecycle_bridge.dart`](lib/frontend/session_presentation_lifecycle_bridge.dart); `PreparedSessionHost.prepareToDeactivate`, `unbind` |
+| Main Content registration/hosting | [`lib/frontend/prepared_main_content_host.dart`](lib/frontend/prepared_main_content_host.dart), [`lib/ui/main_content/main_content_controller.dart`](lib/ui/main_content/main_content_controller.dart), [`lib/ui/main_content/main_content_host.dart`](lib/ui/main_content/main_content_host.dart) |
+| Opt-in pane execution/backend services | [`lib/frontend/prepared_session_services.dart`](lib/frontend/prepared_session_services.dart): `PreparedSessionServices`; [`lib/frontend/session_execution_source.dart`](lib/frontend/session_execution_source.dart), [`lib/frontend/session_execution_bridge.dart`](lib/frontend/session_execution_bridge.dart) |
+| Session navigation/settlement | [`lib/application.dart`](lib/application.dart): `_activateSession`, `_showBrowser`; [`lib/frontend/session_presentation_lifecycle_bridge.dart`](lib/frontend/session_presentation_lifecycle_bridge.dart); `ApplicationFrontendBootstrap.prepareToDeactivate`, `unbind` |
 | Session execution/orchestration | [`lib/ui/execution/session_execution_controller.dart`](lib/ui/execution/session_execution_controller.dart), [`lib/core/orchestration_host.dart`](lib/core/orchestration_host.dart) |
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |
 | Model-tool hosting | [`lib/core/model_tool_host.dart`](lib/core/model_tool_host.dart): `buildModelToolCatalogForSession`, `SessionModelToolHostContext` |

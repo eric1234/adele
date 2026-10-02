@@ -38,11 +38,14 @@ and propagates the failure; it does not pretend the already-completed Run was
 rolled back. No static production activation is needed.
 Backend availability is independent of the frontend and model credentials.
 
-Create a canonical Session using the strategy selected by its presentation.
-For Chat's `owningBackend` affinity, generic hosting validates and retains the
-exact strategy binding from its sibling backend before Session publication.
-Application core looks up that Session by `SessionId` and materializes the pinned
-contribution with
+Create a canonical Session from an exact executable strategy registration in
+`orchestrationStrategyContributions`, independently of frontend availability.
+Creation choices use the strategy's optional `displayName` with strategy-ID
+fallback, not a presentation registration. Opening an existing canonical Session
+remains available without its frontend, backend, or any Main Content panes; it
+does not materialize an Environment or start a Run.
+For execution, application core looks up that Session by `SessionId` and
+materializes the resolved or explicitly pinned contribution with
 `OrchestrationStrategyHostContext(session: ..., host: ...)`. Callers do not
 select another strategy ID after Session creation.
 The product `Session` retains its canonical identity and selected strategy;
@@ -196,15 +199,36 @@ composition; an optional failure omits that source with diagnostics. Safely
 captured data survives later source retirement, unlike the unchanged exact-binding
 requirements on executable strategies and tools.
 
-## Session Presentation
+## Main Content Presentation
 
-Public Flutter `adele_ui` owns `SessionPresentationContribution` with an
-`OrchestrationStrategyId` and `Widget Function(Session)` factory, registered at
-typed `sessionPresentationContributions` on the existing extension registry.
-The generic app host matches the canonical Session's stored strategy ID exactly:
-zero matches is unavailable, one supplies presentation, and multiple matches is
-explicit ambiguity. Presentation is optional for Session validity and headless
-execution. Retired bindings cannot silently become replacement presentations.
+Chat directly contributes to public `adele_ui`'s `mainContentContributions` through
+its prepared `mainContent` descriptor. Its registration is
+`dev.adele.plugin.chat-strategy.presentation`, with ordinary order 100, initializer
+`initializeChatMainContent`, and pane entrypoint `buildChat`. Core injects no
+strategy renderer and reserves no order value. Chat participates in the same
+[grouped composition](../../docs/architecture/plugin-system.md#grouped-main-content)
+as other contributors; zero panes leave a generic empty workspace.
+
+The initializer reads only `readMainContentContext()`'s captured
+`{sessionId, strategyId, taskId}` and opens local pane `chat` only when the strategy
+matches the public `chatStrategyId`. A mismatch opens nothing and acquires no
+execution or backend services. Chat needs no separate Agent Interaction plugin
+or exclusive renderer resolver to participate.
+
+The descriptor explicitly requests `sessionExecution: true`, allowlists
+`chat.session`, and declares `strategyAffinity: 'owningBackend'`. For the actual
+pane, core `PreparedSessionServices` validates exact contribution/installation
+ownership, the sibling backend's actual strategy registration origin, and any
+retained controller's captured strategy before granting services. Missing or
+mismatched services fail that pane locally without blocking independent groups or
+canonical navigation; neither IDs nor affinity metadata alone grant authority.
+
+Navigation only looks up an existing core execution owner. An explicit request for
+execution services acquires one lazily through `SessionExecutionOwners.getOrCreate`
+after affinity capture. Chat's owning-backend request pins that exact strategy;
+independent presentations do not gain a universal navigation-time pin. Controllers
+and Runs remain core-owned, not resources of the pane or service binder. See the
+[application service map](../../app/README.md#grouped-main-content).
 
 The frontend package owns mixed message/activity rendering and the prompt/Send composer. It uses
 Flutter without importing the headless Chat implementation, application code, or
@@ -222,6 +246,13 @@ if scheduling fails, Send retries the already-accepted entry even with an empty
 composer, without another submission. History refresh cannot overwrite a newer
 local draft. See the [frontend map](packages/frontend/README.md) for save/retry
 and presentation-lifetime details.
+
+Chat registers the existing generic prepare-to-deactivate hook on its contributed
+pane. Actual Session departure aggregates pane hooks while settlement services
+remain live; a failed draft write keeps the pane and local text retryable. Changing
+pane focus, title, order, or width is not departure. Accepted navigation or frontend
+retirement revokes pane access without closing an independently owned Run.
+
 The accepted entry ID anchors view-local activity to that exact occurrence. On
 hydration, a persisted user entry's `runId` can reopen retained live/waiting or terminal activity
 through `openSessionRunActivity` where no live handle is already present. The host
@@ -254,7 +285,8 @@ text, never adding an activity variant to `ChatEntry`.
 
 The interpreted timeline places activity between the initiating user message and
 the final assistant response: one direct compact body or a clickable
-`ACTIVITY: ...` group summary, never rich tool bodies or execution controls.
+`ACTIVITY: ...` group summary. These activity entries contain neither rich tool
+bodies nor execution controls.
 Terminal activity and its structured evidence are retained by the host separately
 from Chat history and can be reopened through the same compact/Inspection paths.
 The durable association supplies placement; open cards and handles remain
@@ -273,10 +305,12 @@ See [model-native activity presentation](../../docs/architecture/overview.md#mod
 Subscriptions detach on close and reject late updates after disposal.
 
 Common Run status, `PendingToolApproval`, approval cards, and display safety belong
-to `app/lib/ui/execution`, outside the evaluated widget. No execution or approval
-objects or approval decisions cross the generic Session bridge. Host policy and exact
-invocation authorization remain the security authority. Missing or failed
-presentation does not invalidate the Session or backend execution.
+to `app/lib/ui/execution`. Chat's `buildChat` owns its scroll/layout and places the
+existing native `RunExecutionStatus` through public `buildSessionExecutionStatus()`.
+The plugin chooses placement, not execution policy or approval authority. No
+execution or approval objects or approval decisions cross into evaluated code;
+native callbacks validate the exact pane lifetime, controller, and pending approval.
+Missing or failed presentation does not invalidate the Session or backend execution.
 
 ## Deferred Work
 

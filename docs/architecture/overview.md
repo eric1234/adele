@@ -107,17 +107,29 @@ The host retains common execution, authority, approval, and lifecycle duties.
 
 Task Browser is replaceable Project-scoped presentation over the canonical product
 graph and host lifecycle operations, not a second product store. Browser selection
-and breadcrumbs are transient window state; browsing and opening retained Sessions
-do not materialize Environments or start Runs. See
+and breadcrumbs are transient window state. Opening an existing canonical Session
+does not require a strategy backend, frontend, or Main Content contribution, and
+does not materialize Environments or start Runs. New Session choices instead use
+exact executable orchestration registrations, with optional strategy labels and
+ID fallback, independently of UI contributions. See
 [Task Browser ownership](plugin-system.md#task-browser-presentation).
 
 <a id="session-presentation"></a>
 
+All Main Content panes, including stock Chat, come from ordinary contribution
+registrations. The host composes ordered groups without an injected strategy
+renderer or reserved slot; zero panes are a valid empty workspace. Pane-scoped
+execution/backend services are explicit validated grants, not a special UI role.
+Core retains controllers, policy, and approvals, while plugins choose UI placement,
+including where to build common native execution controls.
+
 Session presentation is optional and does not own Session identity or strategy
-state. Host navigation awaits presentation-local settlement, but changing the
+state. Actual departure awaits the contributed panes' presentation-local settlement,
+not one selected renderer; failure keeps panes retryable. Changing the
 presented Session does not close its execution. Multiple Sessions may advance
 independently in one Project/window, with at most one active Run per Session,
-including approval waits. Navigation does not cancel work or resolve approvals.
+including approval waits. Navigation and frontend retirement do not cancel work
+or resolve approvals. Pane focus and layout changes are not Session navigation.
 Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
 semantic contracts; the [UI extension architecture](plugin-system.md#ui-and-presentation)
 sets the broader boundary. [Product direction](../product/README.md) and the
@@ -178,6 +190,7 @@ and [infrastructure access](contracts-and-capabilities.md#generation-scoped-infr
 | Backend runtime | [`packages/plugin_runtime/`](../../packages/plugin_runtime/), [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
 | Desktop composition | [`app/lib/core/adele_runtime.dart`](../../app/lib/core/adele_runtime.dart), `AdeleRuntime` |
 | UI semantic contracts and frontend hosting | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |
+| Main Content composition and opt-in Session services | [`app/lib/ui/main_content/`](../../app/lib/ui/main_content/), [`app/lib/frontend/prepared_main_content_host.dart`](../../app/lib/frontend/prepared_main_content_host.dart), [`app/lib/frontend/prepared_session_services.dart`](../../app/lib/frontend/prepared_session_services.dart) |
 | Task Browser projection and window navigation | [`app/lib/frontend/window_task_browser_source.dart`](../../app/lib/frontend/window_task_browser_source.dart), [`app/lib/application.dart`](../../app/lib/application.dart); [local hosting map](../../app/README.md#task-browser) |
 | Source preparation and generation | [`tools/adele.dart`](../../tools/adele.dart), [`packages/plugin_builder/`](../../packages/plugin_builder/), [`packages/contract_codegen/`](../../packages/contract_codegen/) |
 | Stock and reference implementations | [`plugins/`](../../plugins/) |

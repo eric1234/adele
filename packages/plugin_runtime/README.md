@@ -78,30 +78,35 @@ EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedMainContentPresentation`,
-`PreparedConsolePresentation`,
-`PreparedTaskBrowserPresentation`, `PreparedSessionPresentation`,
-`PreparedToolActivityPresentation`, and
-`PreparedModelNativeActivityPresentation`.
+`PreparedConsolePresentation`, `PreparedTaskBrowserPresentation`,
+`PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` currently has
 `PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
 `extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
-required, possibly empty `presentations` list; existing presentation roles and
-manifest version 1 are unchanged.
+required, possibly empty `presentations` list. Manifest version remains 1.
 
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
-integer `order`, `library`, `initialize`, and `entrypoint`. These are the role's
-only fields: no strategy/backend affinity, service allowlist, or stock pane-kind
-enum. `library` is a canonical `package:` Dart URI; `initialize` and `entrypoint`
-are top-level identifiers. `PreparedMainContentPresentation` is data-only and
-remains Flutter/eval-independent. The initializer opens the initial collection;
-the content entrypoint renders each admitted pane in its own runtime.
+integer `order`, `library`, `initialize`, and `entrypoint`. Optional
+`sessionExecution` defaults to false, `backendServices` is a duplicate-free
+service-ID allowlist defaulting to empty, and `strategyAffinity` is `independent`
+by default or `owningBackend`. There is no strategy selector, role-level `displayName`, or
+stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
+and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
+data-only and remains Flutter/eval-independent. The initializer reads captured Session identity
+data and may open an initial collection; it receives no execution or backend
+services, including when the descriptor requests them. The content entrypoint
+renders each admitted pane in its own runtime.
 
 Normal frontend bootstrap validates both entrypoints, then registers through the
 existing catalog/extension-registry path. Discovery and registration do not open
-panes or acquire native editors. This frontend-only role requires no backend
-process; optional native bindings and short-lived initialization belong to the
-[application host](../../app/README.md#grouped-main-content), while the public
+panes or acquire native editors. The role requires no backend process by default.
+Requested services are pane-scoped and require an actual host binder, exact live
+registration/installation ownership, and validation of any captured execution
+controller and owning-backend strategy origin. Metadata alone grants no authority.
+Missing required services fail that pane without blocking independent groups or
+canonical navigation. Optional native bindings and short-lived initialization
+belong to the [application host](../../app/README.md#grouped-main-content), while the public
 [UI contract](../ui/README.md#grouped-main-content) owns collection operations.
 
 Console descriptors use `role: 'console'` with required `extensionId`, `library`,
@@ -133,12 +138,10 @@ are rejected for this role. A frontend-only installation needs no backend or sha
 host process to register the contribution. Project-scoped browser actions are
 mediated by the app's public-UI bridge implementation, not runtime backend routing.
 
-Session descriptors require `displayName`, `strategyId`, `extensionId`, `library`,
-and `entrypoint`. Optional `backendServices` is a duplicate-free service-ID
-allowlist (default empty); optional `strategyAffinity` is `independent` (default)
-or `owningBackend`. The retired `hostAdapter` field is rejected. Stock Chat
-allowlists generated `chatSessionServiceId` and declares `owningBackend`; runtime does not know those stock
-identities or service semantics.
+Stock Chat uses `mainContent`, ordinary order 100, explicit `sessionExecution: true`,
+an allowlisted Chat service, and `owningBackend` affinity. Its initializer decides
+applicability; runtime does not know Chat identities or service semantics. There is
+no separate Session presentation descriptor or reserved strategy slot.
 
 Tool activity descriptors use `role: 'toolActivity'` with `toolId`, `library`,
 `inspectionExtensionId`, `compactExtensionId`, `inspectionEntrypoint`, and
@@ -274,8 +277,11 @@ fails explicitly; this is not capability-provider selection or general symmetric
 `PluginBackendActivation.extensionOrigin` obtains a remote contribution's origin
 from exact registration ownership, not extension IDs, contribution value identity,
 or discovery-wrapper identity. The host uses that internal provenance to enforce
-`strategyAffinity: 'owningBackend'`: Session creation validates the selected
-strategy before publication, and Run materialization retains that same binding.
+`strategyAffinity: 'owningBackend'` when binding services for a contributed pane.
+The service binder validates the Session strategy and any retained controller's
+captured binding against the installation's actual backend registration; Run
+materialization retains the selected exact binding. Core Session creation instead
+uses the orchestration registry independently of frontend metadata.
 Matching semantic IDs alone cannot join one backend's Session state to another
 backend's execution. Origins and connection objects are not plugin-facing metadata.
 
@@ -287,7 +293,7 @@ in-process fallback.
 
 Generic Inspection and read-only console composition captures the exact
 installation's backend and its default configuration context without resolving a
-strategy. Only Session hosting with explicit owning-backend affinity supplies the
+strategy. A Main Content pane with explicit owning-backend affinity supplies the
 validated strategy origin described above. Neither route creates host-invocation
 authority. A rich Inspection retains canonical facts when backend observation is
 unavailable. A retained read-only console keeps its captured channel across view

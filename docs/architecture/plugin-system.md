@@ -280,17 +280,19 @@ Application Commands are distinct from model tools that execute external program
 
 Main Content composes independent pane groups for the presented canonical Session.
 One group belongs to one exact contribution registration, not to a PluginId: a
-plugin can supply multiple independent groups. Groups sort by ascending numeric
+plugin can supply multiple independent groups. Groups sort by ascending integer
 `order`, then lexical ExtensionId. Each owner controls its local pane sequence;
 the host flattens whole groups before layout so another group cannot interleave
 their items. Ordering is composition, not authority or a reserved stock-kind enum.
 
-The host adapts the existing strategy presentation as a stable group at order 100.
-It does not register Chat again or change Session presentation resolution, owning
-backend affinity, execution ownership, or navigation settlement. Whether a Session
-is presented is explicit window state, separate from strategy-view availability;
-missing strategy presentation does not turn that workbench into Task Browser or
-remove independent Main Content contributions.
+All Main Content comes through real registrations. There is no injected strategy
+renderer, reserved order-100 slot, or mandatory strategy pane. Stock Chat directly
+registers an ordinary contribution at order 100 and decides its own applicability;
+another plugin or arrangement can use the same composition contract. Zero panes
+produce a generic empty workspace, not a native strategy substitute. Whether a
+Session is presented is explicit canonical window state, independent of frontend
+or backend availability. Missing strategy presentation does not turn that workspace
+into Task Browser or remove independent Main Content contributions.
 
 A contribution attaches to one exact registration and current Session object.
 Its access can add, retitle, reorder, reveal/focus, and remove only its own panes.
@@ -300,16 +302,35 @@ closure; removal releases that pane independently of siblings. Departure,
 registration retirement, and host shutdown end captured access. Fresh attachment
 may discover a replacement, but old handles and callbacks never migrate to it or
 to a newly opened pane reusing the same ID. Group/pane failures remain local, not
-reasons to replace a strategy or another contribution.
+reasons to change canonical Session/strategy identity or retire healthy contributions.
+Focus/reveal and geometry changes are not Session navigation. Revoking a presentation does not close its
+independently hosted Run or universally dispose underlying domain resources.
 
 Prepared contributions initialize through a short-lived operation runtime that
-opens initial panes and is disposed on settlement. Each pane then has an
+reads captured Session/strategy/Task identities through the collection bridge,
+may open initial panes, and is disposed on settlement. It obtains no execution or
+backend services, including when declared for later panes. Each pane then has an
 independent presentation runtime whose bridge can manage that same owned group.
 No initializer callback is retained as a factory, and there is no hidden evaluator
 or background residency to update a collection after all its panes close. A fresh
 Session attachment can initialize again. Optional native bindings capture resources
 for the exact registration, Session attachment, and pane lifetime; readiness does
 not grant a stale presentation access to a replacement resource.
+
+Execution and owning-backend services are explicit pane-scoped requests, not a
+privileged presentation role. Neither is granted by default. The binder validates
+the exact contribution, canonical Session, and any controller's captured strategy
+binding. Requested backend access must belong to the exact prepared installation;
+owning-backend affinity additionally requires the actual strategy registration's
+origin, not matching IDs. Declared affinity alone is insufficient; missing or
+incompatible services fail the requesting pane rather than selecting a substitute.
+`PreparedSessionServices` binds these existing services; it is not a renderer
+resolver or execution owner.
+
+Core retains Session execution controllers, Run lifecycle, policy, and approval
+authority. Plugins choose where to place controls, including the existing native
+Run status/approval UI exposed through `buildSessionExecutionStatus()`. Removing a
+pane or retiring its frontend revokes its actions without closing the Run.
 
 The public [UI map](../../packages/ui/README.md#grouped-main-content) owns API details,
 the [prepared catalog](../../packages/plugin_runtime/README.md#prepared-catalog)
@@ -346,14 +367,17 @@ dependency or authority grant.
 The host projects canonical Project/Task/Environment/Session facts and mediates
 selection, Task creation, Session creation, and opening an existing Session. Task
 and Session IDs are lookup data, never authority to navigate another Project or
-Task. Session creation uses an opaque handle retaining exact presentation/strategy
-bindings and any required backend affinity. The host revalidates membership,
-uniqueness, liveness, and affinity before publication rather than silently replacing
-a stale choice. Browser retirement revokes its reads, actions, and subscriptions;
-late Task establishment may still publish canonical state, but cannot navigate a
+Task. Session creation uses an opaque handle retaining an exact executable strategy
+binding from the orchestration registry, independent of UI registrations. Labels
+come from the strategy's optional `displayName`, with its ID as fallback. The host
+revalidates membership, uniqueness, and liveness before publication rather than
+silently replacing a stale choice. Browser retirement revokes its reads, actions,
+and subscriptions; late Task establishment may still publish canonical state, but cannot navigate a
 retired view. Revocation is not rollback.
 
-Unavailable Sessions remain visible canonical identities. Browsing and opening a
+Canonical Sessions remain openable even without a frontend, backend, or Main
+Content contribution. Navigation availability is separate from current strategy
+execution availability and retained execution status. Browsing and opening a
 retained Session neither materialize an Environment nor start a Run. The browser
 does not receive provider state, plugin-owned Session content, database access, or
 execution authority. Selection and presentation state are transient host/window or
@@ -456,15 +480,16 @@ contract in the app.
 
 ### Session presentation settlement
 
-Host-requested navigation may need a presentation to settle pending local state
-before its view is disposed. The public interpreted lifecycle bridge permits one
-asynchronous prepare-to-deactivate callback scoped to the exact presentation.
-The host blocks input while awaiting acceptance; rejection or failure leaves the
-live presentation available for correction or retry. A missing hook means nothing
-to flush. This does not transfer navigation ownership, plugin state semantics, or
-storage codecs into the host, and is not a general plugin lifecycle hook system.
+Actual Session departure may need contributed panes to settle pending local state
+before their views are disposed. The existing public interpreted lifecycle bridge
+permits one asynchronous prepare-to-deactivate callback per exact pane presentation;
+the host aggregates the affected hooks, rather than consulting one selected renderer.
+The host blocks input while awaiting acceptance but keeps settlement services live;
+rejection or failure leaves live panes available for correction or retry. A missing
+hook means nothing to flush. This does not transfer navigation ownership, plugin
+state semantics, or storage codecs into the host, and is not a general plugin lifecycle hook system.
 
-Accepted navigation revokes the exact presentation binding and its actions, and
+Accepted navigation revokes the departing panes' captured access and actions, and
 clears Session-local Inspection and console context before changing selection.
 It does not close the Session's execution owner: preparation, advancement,
 approval waits, and terminal persistence may continue without a mounted view.

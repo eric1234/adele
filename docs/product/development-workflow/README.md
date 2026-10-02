@@ -15,7 +15,7 @@ The mockups should be read as one concrete composition approximately involving s
 - Local Directory Project;
 - Task Browser;
 - Git-backed Environment provider;
-- Agent Interaction + Chat strategy;
+- Chat strategy, with a separate Agent Interaction plugin only as a possible future arrangement;
 - Agent and Model configuration/policy plugins;
 - Context Monitoring and Accounting;
 - Filesystem/Search/Command/TODO/Plan tooling;
@@ -25,6 +25,10 @@ The mockups should be read as one concrete composition approximately involving s
 - OpenAI provider.
 
 Other plugin/configuration sets may provide different Project selection, orchestration strategies, Environment implementations, source editors, review systems, status summaries, or presentation details while preserving ADELE's broader architecture.
+
+Chat can contribute directly to Main Content; a separate Agent Interaction owner
+is not required for this UX. Core retains Session navigation and execution
+authority while plugins choose their presentation and control placement.
 
 The current physical layout shown here is also product direction rather than plugin API identity. A Session status contribution may currently appear on the right, for example, while a future layout could move it or make placement configurable without changing the semantic extension contract.
 
@@ -449,7 +453,9 @@ These are UX choices layered over extensible contribution ordering, not fixed co
 slots or a Chat/Diff/Source/Artifact enum. Other contributions may choose their own
 order; each group retains its owner's contiguous item sequence. These defaults do
 not require every orchestration strategy to render Chat, and plugin APIs do not
-expose `center` coordinates.
+expose `center` coordinates. Chat is an ordinary registration, not a host-injected
+pane or a reserved order-100 slot. A canonical Session with no contributed panes
+still has a valid, generically empty workspace.
 See [grouped Main Content](../../architecture/plugin-system.md#grouped-main-content)
 for the accepted composition boundary.
 
@@ -461,7 +467,9 @@ available space across flattened panes down to a practical minimum for each.
 
 If visible panels cannot fit, the Main Content workspace becomes horizontally scrollable while title/status/stream areas remain fixed in the current layout.
 
-Focusing an offscreen pane automatically scrolls enough to reveal it.
+Focusing an offscreen pane automatically scrolls enough to reveal it. Pane focus
+and resizing are workbench operations, not Session navigation; Inspection and
+Console remain outside the Main Content pane row.
 
 ADELE should not automatically hide panels merely because space becomes tight. The visible set represents explicit user state.
 
@@ -1256,7 +1264,17 @@ Editor View
     folds
 ```
 
-Multiple Source views can share one Document.
+Multiple Source views can share one Document. Within the current window/runtime,
+Source Document identity is Environment plus resource path, not the Session that
+happened to open a view. The selected Session chooses the relevant Environment;
+two Sessions sharing it can present the same retained Document.
+
+Changing Session presentation may detach or replace view access, but must not
+universally close Source Documents or discard their dirty state. Document close,
+save/conflict handling, and resource release belong to the Source/domain owner.
+This does not imply cross-window singleton Documents or implemented workbench
+persistence. The synthetic in-memory editor fixture may deliberately release its
+owner on departure; that fixture lifetime is not the Source domain rule.
 
 ---
 
@@ -1377,6 +1395,11 @@ The stock pane lists top-level/user Sessions and `+ New Session`, plus Task summ
 
 Clicking a Session asks core to navigate the current window into/resume presentation of that Session. There is no separate ambiguous Resume button.
 
+Opening an existing canonical Session is independent of strategy backend or
+frontend availability. Missing execution support and retained execution status
+should remain visible without preventing navigation to other contributed content
+or an empty workspace.
+
 Agent-created child Sessions are not normal peers in this list. They are primarily inspected from the parent Session/orchestration surface that created them.
 
 ---
@@ -1399,7 +1422,11 @@ Use **Session**, not `Chat`, consistently at the product level. Chat is one orch
 
 A normal stock path can create a Session bound to the configured/default Chat strategy, associate it with the Task's primary Environment, initialize Chat state, select configured Agent defaults, and focus Draft Request.
 
-If multiple orchestration strategies are installed/applicable, Agent Interaction may expose strategy choice. A Session is permanently bound to the selected strategy; changing strategy means creating another Session.
+Strategy choices come from core's executable orchestration registrations, with an
+optional contributed display name and strategy-ID fallback; no UI registration is
+needed just to offer creation. Task Browser or a possible future Agent Interaction
+plugin may present those choices. A Session is permanently bound to the selected
+strategy; changing strategy means creating another Session.
 
 ---
 
@@ -1462,6 +1489,8 @@ The current stock conceptual ownership model is:
 | Agent selection / model overrides | Agent/Model plugins, Session/workflow scoped as defined by each plugin |
 | Plan state/content | Plan plugin, associated with Session as appropriate |
 | Main Content/inspection live layout | core window/workbench state, possibly seeded from remembered state |
+| Source Document identity/content/dirty state | Source domain owner, keyed by Environment and resource path within the current window/runtime |
+| Source view cursor/selection/scroll/folds | Window/view state, independent of Document lifetime |
 | Shell/process resources | Environment/runtime-resource provider |
 | Shared Console tabs/actions/selection | Core window/workbench host |
 | Console content and resource policy | Independent contributing plugin; Terminal uses Session-authorized Environment context |

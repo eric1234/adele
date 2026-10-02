@@ -17,8 +17,9 @@ Project opening, Task/Environment establishment, strategy resolution, Session
 identity, storage, or workbench navigation. Those remain host operations exposed
 through the public interpreted `adele_ui/task_browser_bridge.dart` boundary.
 
-This plugin has no backend or own-backend RPC dependency. Missing strategy or
-Session presentation support remains visibly unavailable; there is no native
+This plugin has no backend or own-backend RPC dependency. Canonical retained
+Sessions remain openable without their strategy backend or frontend; executable
+strategy availability separately controls new-Session choices. There is no native
 Task Browser substitute in this package. Loading the frontend does not create a
 Task, Environment, Session, or Run.
 
@@ -27,9 +28,10 @@ Environment identity, and Session list/create/open. Project/Task breadcrumbs are
 host-owned navigation into this presentation. The UI deliberately shows only
 available facts: titles, Session counts, generic preparing/running/waiting/terminal
 counts with failed outcomes visible, Environment/provider identities, Session
-identities and presentation names, and host-issued creation choices. Each Session
-also shows its host-projected execution status independently of whether its
-presentation can currently open. This is passive background observation, not a
+identities and contributed strategy names (or stable strategy identifiers), and
+host-issued executable-strategy creation choices. Each Session also shows its
+host-projected execution availability and status separately from navigation.
+This is passive background observation, not a
 durable Task status store, Command-specific progress, or an approval surface.
 
 Categories/archive, summaries, progress, usage, SCM status, meaningful Session
