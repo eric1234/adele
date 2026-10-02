@@ -112,6 +112,10 @@ jobs:
         if: ${{ matrix.name == 'git_environment_backend' || matrix.name == 'adele_desktop' }}
         run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
 
+      - name: Install pinned native editor compiler
+        if: ${{ matrix.name == 'adele_desktop' }}
+        run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+
       - name: Install pinned Flutter toolchain
         uses: subosito/flutter-action@v2
         with:
@@ -154,6 +158,9 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y
           clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev gcc libc6-dev
+
+      - name: Install pinned native editor compiler
+        run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
 
       - name: Install pinned Flutter toolchain
         uses: subosito/flutter-action@v2

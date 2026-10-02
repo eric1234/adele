@@ -172,6 +172,72 @@ do not provision this normal stock deployment. See the
 [toolchain](../docs/development/toolchain.md) and [plugin builder](../packages/plugin_builder/README.md)
 for the broader preparation model, not portable release packaging.
 
+### Native code editor
+
+[`native_code_editor.dart`](lib/editor/native_code_editor.dart) is the app-private
+adapter over CodeForge for supplied in-memory text. It is not a Main Content
+contribution, file/save model, diff editor, or LSP integration. No Project, Task,
+Session, Environment, filesystem, AI, or network authority is configured. The host
+chooses `plain`, `dart`, `json`, or `python` highlighting without a file path.
+Dependency preparation belongs to the
+[toolchain policy](../docs/development/toolchain.md#native-editor-preparation).
+
+`NativeCodeEditor(text:, readOnly:, language:)` is a `ChangeNotifier` owning an
+ordinary `CodeForgeController` and `UndoRedoController`. Read-only and language
+settings are fixed for that owner. `initialize()` awaits memoized native-library
+initialization before constructing the controller. The owner retains text and
+undo independently of widget lifetime; callers close it explicitly with `dispose()`.
+Use one mounted view per editor, and separate owners for independent panes.
+Focus and scroll resources belong to the widget; remounting does not promise
+cursor or viewport restoration.
+
+Native editing, focus, clipboard, and composition follow the component's ordinary
+behavior. There are no ADELE focus epochs or custom composition-cancel policy.
+An already admitted clipboard operation may complete on its original editor after
+focus changes; it does not resolve a different current document.
+
+[`CodeEditorBridge`](lib/frontend/code_editor_bridge.dart) implements the
+[interpreted public UI stubs](../packages/ui/lib/code_editor_bridge.dart).
+Compile-only `CodeEditorDeclarations` neither initializes Rust nor acquires an
+editor. One runtime bridge captures one host-selected owner. Guessed, foreign,
+and retired handles fail closed; there is no global current-document lookup.
+`PreparedFrontend` retirement, failure, and disposal end interpreted access and
+observation, not the independently owned editor. Native component operations
+already admitted are not a new cancellation boundary. CodeForge types, controllers,
+construction, mutation, and disposal are not exported through the public API.
+
+`readCodeEditorState` returns cheap `ready`, `readOnly`, `language`, and `revision`
+metadata, without text or selection. Revision counts component notifications,
+including selection/layout changes; it is not a content version or dirty flag.
+Subscriptions coalesce these invalidations without reading or transporting the
+whole document. `snapshotCodeEditor` deliberately returns a synchronous
+`Map<String, dynamic>` containing only `text` and `revision`. It is a text
+observation, not a save transaction or selection-range API.
+
+#### Known limitations
+
+The small retained fixes address specific buffered-text, deletion, scalar undo,
+and CRLF Backspace cases, not lossless file-saving or general IME correctness.
+Snapshots do not promise uncommitted composition text. The
+[deferred native reproduction](../docs/development/testing.md#deferred-selected-composition-reproduction)
+observed selected-range composition losing its pending replacement after either
+blur/refocus of the same widget or full unmount/remount: replacing `a` in `ab`
+with composing `x` ultimately left `b`, not `xb`; undo restored `ab`. Finish
+composition before leaving or closing the editor. This is an upstream departure
+edge, not an ADELE cancellation policy or a human OS/IME result.
+Supplementary-character Tab/Shift-Tab and double-click word selection still have
+documented upstream offset edge cases; their expanded patches were not retained.
+Avoid those combinations during early development and use explicit selection or
+space insertion instead. Revisit them, grouped Unicode edits and broader
+clipboard/IME behavior before file saving. Other retained evidence lives in the
+[retained correctness findings](../docs/experiments/codeforge-correctness.md).
+There is no ADELE-specific fixed text cap or memory bound.
+
+See [focused owner/EVC checks](../docs/development/testing.md#focused-editor-checks)
+and the [Linux profile/manual entrypoint](../docs/development/testing.md#integrated-editor-smoke).
+Those procedures are not pass claims; earlier investigation results do not
+establish human checks of this integrated path or macOS/Windows execution.
+
 ### Native terminal surface
 
 [`NativeTerminalSurface`](lib/terminal/native_terminal_surface.dart) is an

@@ -38,6 +38,11 @@ dart tools/adele.dart bootstrap
 dart tools/adele.dart run linux
 ```
 
+Bootstrap prepares the pinned native editor source before workspace resolution;
+run it before direct IDE/Flutter consumers. Source preparation needs `curl`, Git,
+GNU `tar`, and `sha256sum` on the maintained Linux path, but not Rust. App native
+builds/tests additionally need the [pinned Rust toolchain](docs/development/toolchain.md#native-editor-preparation).
+
 The maintained entrypoint is [`tools/adele.dart`](tools/adele.dart).
 See [toolchain and generation](docs/development/toolchain.md),
 [testing and validation](docs/development/testing.md), and

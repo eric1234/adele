@@ -19,6 +19,11 @@ A useful retained experiment should normally capture:
 
 ## Current contents
 
+[CodeForge correctness findings](codeforge-correctness.md) explain the retained
+compatibility and small correctness patches, supported-SDK defect evidence, and
+known limitations. Current regression links are separate from deferred composition
+reproduction; the full investigation remains in linked PR history.
+
 [Phase I runtime findings](phase-1-runtime-findings.md) retain evidence about
 external AOT loading and the shared backend-host approach, with original
 experiment branches and revisions. The historical filename and document remain

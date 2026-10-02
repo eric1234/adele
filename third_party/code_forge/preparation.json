@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "package": "code_forge",
+  "version": "10.14.0",
+  "archiveUrl": "https://pub.dev/api/archives/code_forge-10.14.0.tar.gz",
+  "archiveSha256": "bddb3fe2001e4dd1653b32fc2752b9d4f60c7cb78f2a02165ea45ee60a867b61",
+  "flutterRustBridge": "2.13.0",
+  "generatedBindingHash": 434014572,
+  "rust": "1.93.0",
+  "preparedTreeSha256": "2c623cd1c5ac1857d69156bc8e04cdb8bfc0531186179898a051539b83bb2c67",
+  "patches": [
+    "01-compatibility-build.patch",
+    "02-correctness.patch"
+  ],
+  "runnerLock": "cargokit_runner.lock.template"
+}

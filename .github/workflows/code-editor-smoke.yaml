@@ -1,0 +1,61 @@
+name: Prepared native editor smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/lib/editor/**"
+      - "app/lib/frontend/code_editor_bridge.dart"
+      - "app/lib/frontend/interpreted_widget.dart"
+      - "app/lib/frontend/prepared_frontend.dart"
+      - "app/linux/**"
+      - "app/test/code_editor_bridge_test.dart"
+      - "app/test/native_code_editor_test.dart"
+      - "app/test/fixtures/code_editor_frontend.dart"
+      - "app/tool/code_editor_smoke/**"
+      - "app/pubspec.yaml"
+      - "packages/ui/lib/code_editor_bridge.dart"
+      - "third_party/code_forge/**"
+      - "tools/adele.dart"
+      - "tools/code_editor_dependency.dart"
+      - "tools/code_editor_smoke.dart"
+      - "tools/code_editor_smoke_support.dart"
+      - "test/tools/code_editor_dependency_test.dart"
+      - "test/tools/code_editor_smoke_test.dart"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "toolchain.json"
+      - ".tool-versions"
+      - ".github/workflows/code-editor-smoke.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  editor-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop and smoke dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb curl
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.10
+          cache: true
+      - name: Install pinned native editor compiler
+        run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+      - name: Bootstrap prepared dependency and workspace
+        run: dart tools/adele.dart bootstrap
+      - name: Run packaged prepared-EVC editor smoke
+        run: dart tools/adele.dart editor-smoke linux
+      - name: Retain smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-editor-smoke-logs
+          path: app/build/code_editor_smoke/logs/
+          if-no-files-found: ignore

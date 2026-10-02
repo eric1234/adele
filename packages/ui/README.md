@@ -189,6 +189,24 @@ native implementations supply their behavior; calling a stub natively throws
   fresh presentations require fresh access. Public contracts expose no terminal
   library types. The [application adapter](../../app/README.md#native-terminal-surface)
   owns interactive/read-only policy, bounds, attachment, and native callbacks.
+- `code_editor_bridge.dart` supplies request/build, immutable metadata reads,
+  deliberate `{text, revision}` snapshots, and coalesced invalidation subscriptions
+  for one host-selected native editor. Every call checks the presentation's handle
+  against that same owner; retired or foreign handles cannot select another editor.
+  Metadata is `ready`, `readOnly`, `language`, and `revision`, without text or
+  selection offsets. Revision counts component notifications, including possible
+  selection/layout changes, not content edits or a filesystem version. Snapshots
+  are synchronous text observations, not save transactions or a promise about
+  uncommitted composition; notifications carry no text payload.
+  Native input supplies ordinary editing, selection, clipboard, and undo. Retiring
+  interpreted access is not cancellation of already admitted native work on the
+  same editor. Presentation disposal releases access and observation, not the
+  independently owned text/undo. There is no controller, mutator, mode upgrade,
+  selection-range API, global document lookup, or raw CodeForge export.
+  See the [public contract](lib/code_editor_bridge.dart),
+  [application owner](../../app/README.md#native-code-editor), and
+  [prepared-EVC tests](../../app/test/code_editor_bridge_test.dart). This bridge
+  registers no Main Content/editor role and supplies no file/save, diff, or LSP API.
 - `terminal_projection_bridge.dart` is a separate, presentation-owned read-only
   projection API: request/build, bounded feed/reset, revocable replay yields, immutable observation,
   follow/local scroll, and change subscriptions. Each rich Inspection or read-only

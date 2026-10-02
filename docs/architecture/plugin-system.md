@@ -275,6 +275,22 @@ should invoke the same domain/Command behavior as other surfaces, not create
 UI-only semantics. Broader Command infrastructure is not yet implemented.
 Application Commands are distinct from model tools that execute external programs.
 
+### Native editor primitive
+
+The application owns the native editor implementation and its text/undo resources.
+An interpreted frontend uses public [UI bridge contracts](../../packages/ui/README.md#interpreted-bridges)
+with handles scoped to one presentation and one host-selected owner. Retired
+handles cannot acquire a replacement editor. It receives no CodeForge types,
+controllers, Rust handles, filesystem authority, or local-keystroke backend service.
+The text/undo owner outlives its widget; native focus, clipboard, and composition
+follow ordinary component behavior rather than a separate interaction protocol.
+Bridge retirement ends interpreted access and observation, not already admitted
+native work on that owner. Notification revisions and deliberate text snapshots
+are not content versions, Environment revisions, or save acknowledgements.
+Main Content hosting, file/save policy, diff, and LSP remain outside this primitive.
+The [application map](../../app/README.md#native-code-editor) owns its current
+single-view lifecycle and limitations.
+
 ### Task Browser presentation
 
 Task Browser is a replaceable, frontend-only semantic role over one presented
