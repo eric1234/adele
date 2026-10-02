@@ -7,18 +7,10 @@
   "flutterRustBridge": "2.13.0",
   "generatedBindingHash": 434014572,
   "rust": "1.93.0",
-  "preparedTreeSha256": "2c891d53afb7153adbfbadfe1a753887cc043458e6c4c368af2b9324b7c30d9b",
+  "preparedTreeSha256": "2c623cd1c5ac1857d69156bc8e04cdb8bfc0531186179898a051539b83bb2c67",
   "patches": [
     "01-compatibility-build.patch",
-    "02-correctness.patch",
-    "03-embedding.patch",
-    "04-assets-notices.patch",
-    "05-interaction-fences.patch",
-    "06-ordinary-input.patch"
+    "02-correctness.patch"
   ],
-  "runnerLock": "cargokit_runner.lock.template",
-  "materializedAssets": [
-    {"source": "third_party/code_forge/NOTICES.txt", "target": "assets/adele/NOTICES.txt"},
-    {"source": "third_party/code_forge/inventory.json", "target": "assets/adele/inventory.json"}
-  ]
+  "runnerLock": "cargokit_runner.lock.template"
 }

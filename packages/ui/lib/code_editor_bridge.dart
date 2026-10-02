@@ -7,37 +7,31 @@ String requestCodeEditor() => throw UnsupportedError(
   'Code editor access is available only to interpreted frontends.',
 );
 
-/// Builds a native editor body. Cached widgets remain revocable, including while
-/// retained for exit. Only one mounted editor may attach to a buffer at a time.
+/// Builds the host-selected native editor. One presentation may display it at a
+/// time. Native input follows normal component behavior; retiring a plugin handle
+/// does not close the independently owned editor.
 Widget buildCodeEditor(String handle) => throw UnsupportedError(
   'Code editor access is available only to interpreted frontends.',
 );
 
 /// Reads cheap immutable metadata, never document text or selection offsets.
-/// Fields are `ready`, `readOnly`, `version`, `language`, `focused`,
-/// `horizontalOffset`, and `verticalOffset`. Before native initialization,
-/// `ready` is false and `version` is zero.
-/// Native input owns editing, selection, clipboard actions, and undo; reading
-/// metadata grants none of those operations.
+/// Fields are `ready`, `readOnly`, `revision`, and `language`. Revision counts
+/// component notifications, including possible selection/layout changes. It is
+/// not a content version, dirty flag, or filesystem revision.
 Map<String, dynamic> readCodeEditorState(String handle) =>
     throw UnsupportedError(
       'Code editor access is available only to interpreted frontends.',
     );
 
-/// Deliberately copies immutable text, version, and selection in one snapshot.
-/// Fields are `text` (String), `version` (int), `selectionBase` (int),
-/// `selectionExtent` (int), and `selectionUnit` (`utf16`). Selection offsets use
-/// UTF-16 code units in that same captured text, not a later document version.
-/// This bounded synchronous read requires initialized native state. It is not a
-/// per-keystroke transport and queues no snapshot futures. Retired access fails;
-/// fresh presentations require fresh handles.
+/// Deliberately reads `text` and the current notification `revision`. This is not
+/// a save transaction or a promise about uncommitted composition. No text is sent
+/// automatically with notifications. Retired handles fail closed.
 Map<String, dynamic> snapshotCodeEditor(String handle) =>
     throw UnsupportedError(
       'Code editor access is available only to interpreted frontends.',
     );
 
-/// Observes coalesced content/initial-readiness invalidation with no text payload.
-/// Selection, scrolling and painting alone do not advance content version. Retain the same
+/// Observes coalesced component invalidation with no text payload. Retain the same
 /// listener object for unsubscription. Duplicate subscription is idempotent.
 void subscribeCodeEditor(String handle, void Function() listener) =>
     throw UnsupportedError(

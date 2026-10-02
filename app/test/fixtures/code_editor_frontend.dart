@@ -32,9 +32,7 @@ class CodeEditorFixtureState extends State<CodeEditorFixture> {
   Map<String, dynamic> state = <String, dynamic>{};
   String snapshotText = '(not requested)';
   String snapshotEscaped = '(not requested)';
-  int snapshotVersion = -1;
-  int snapshotSelectionBase = -1;
-  int snapshotSelectionExtent = -1;
+  int snapshotRevision = -1;
   int notifications = 0;
   int rebuilds = 0;
   bool subscribed = true;
@@ -44,7 +42,7 @@ class CodeEditorFixtureState extends State<CodeEditorFixture> {
   @override
   void initState() {
     super.initState();
-    // Deliberately cache the native body: retirement must revoke this widget.
+    // Rebuilds reuse the native editor; this evaluator does not own its text.
     editor = buildCodeEditor(handle);
     listener = () {
       if (!alive) return;
@@ -74,9 +72,7 @@ class CodeEditorFixtureState extends State<CodeEditorFixture> {
           .replaceAll('\r', '\\r')
           .replaceAll('\n', '\\n')
           .replaceAll('\t', '\\t');
-      snapshotVersion = snapshot['version'] as int;
-      snapshotSelectionBase = snapshot['selectionBase'] as int;
-      snapshotSelectionExtent = snapshot['selectionExtent'] as int;
+      snapshotRevision = snapshot['revision'] as int;
       state = readCodeEditorState(handle);
       setState(() {});
     } catch (error) {
@@ -97,7 +93,7 @@ class CodeEditorFixtureState extends State<CodeEditorFixture> {
   @override
   Widget build(BuildContext context) {
     if (failed) throw StateError('deterministic editor fixture failure');
-    final version = state['version'];
+    final revision = state['revision'];
     final ready = state['ready'];
     final readOnly = state['readOnly'];
     return Column(
@@ -137,13 +133,10 @@ class CodeEditorFixtureState extends State<CodeEditorFixture> {
             ),
           ],
         ),
-        Text('State: $version ready=$ready readOnly=$readOnly'),
+        Text('State: $revision ready=$ready readOnly=$readOnly'),
         Text('Notifications: $notifications'),
         Text('Rebuilds: $rebuilds'),
-        Text('Snapshot version: $snapshotVersion'),
-        Text(
-          'Snapshot selection: $snapshotSelectionBase:$snapshotSelectionExtent',
-        ),
+        Text('Snapshot revision: $snapshotRevision'),
         Text('Snapshot text: $snapshotText'),
         Text('Snapshot escaped: $snapshotEscaped'),
         SizedBox(height: 240, child: editor),

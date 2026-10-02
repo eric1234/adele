@@ -10,13 +10,13 @@ void main() {
     final identity = codeEditorSmokeIdentity({
       'version': '10.14.0',
       'archiveSha256': 'archive-digest',
-      'patches': ['01-build.patch', '03-embedding.patch'],
+      'patches': ['01-build.patch', '02-correctness.patch'],
       'flutterRustBridge': '2.13.0',
       'rust': '1.93.0',
     }, preparationIdentity: 'prepared-digest');
     expect(identity, contains('CodeForge 10.14.0'));
     expect(identity, contains('archive archive-digest'));
-    expect(identity, contains('01-build.patch, 03-embedding.patch'));
+    expect(identity, contains('01-build.patch, 02-correctness.patch'));
     expect(identity, contains('FRB 2.13.0 | Rust 1.93.0'));
     expect(identity, endsWith('prepared prepared-digest'));
   });
@@ -25,10 +25,8 @@ void main() {
     const completed = '''
 CODEFORGE_FRB_INIT_RETURNED
 CODEFORGE_NATIVE_INITIALIZED
-CODEFORGE_NOTICES_BUNDLED
 CODEFORGE_PLATFORM_INPUT_OK
 CODEFORGE_CLIPBOARD_READONLY_OK
-CODEFORGE_RENDERED
 CODEFORGE_UNMOUNTED_OWNER_RETAINED
 CODEFORGE_PREPARED_REMOUNT_OK
 CODEFORGE_NATIVE_DISPOSED

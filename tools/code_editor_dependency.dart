@@ -49,23 +49,11 @@ Future<Directory> _prepareCodeEditorSource(
     throw StateError('Unsupported CodeForge preparation manifest.');
   }
   final patches = (config['patches'] as List).cast<String>();
-  final assets = (config['materializedAssets'] as List? ?? const [])
-      .map((value) => Map<String, dynamic>.from(value as Map))
-      .toList();
-  for (final asset in assets) {
-    _validateRelativePath(asset['target'] as String);
-    if (!(asset['target'] as String).startsWith('assets/adele/')) {
-      throw StateError(
-        'CodeForge notice assets must stay under assets/adele/.',
-      );
-    }
-  }
   final inputs = <String>[
     _metadataPath,
     'tools/code_editor_dependency.dart',
     'third_party/code_forge/${config['runnerLock']}',
     for (final path in patches) 'third_party/code_forge/$path',
-    for (final asset in assets) asset['source'] as String,
   ];
   for (final path in inputs) {
     _validateRelativePath(path);
@@ -165,16 +153,6 @@ Future<Directory> _prepareCodeEditorSource(
         },
         includeParentEnvironment: false,
       );
-    }
-    for (final asset in assets) {
-      final target = File('${unpacked.path}/${asset['target']}');
-      if (await target.exists()) {
-        throw StateError(
-          'Notice materialization would overwrite upstream source.',
-        );
-      }
-      await target.parent.create(recursive: true);
-      await File('${repository.path}/${asset['source']}').copy(target.path);
     }
     final runner = File('${unpacked.path}/cargokit/build_tool/runner.lock');
     runner.parent.createSync(recursive: true);

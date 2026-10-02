@@ -22,12 +22,10 @@ diff --git a/lib/code_forge/controller.dart b/lib/code_forge/controller.dart
          _cachedText = before + _bufferLineText! + after;
 @@ -3394,5 +3394,5 @@
      if (sel.start <= 0) return;
--
-+
+ 
 -    final deleteOffset = sel.start - 1;
 +    var deleteOffset = sel.start - 1;
--
-+
+ 
      String charToDelete;
 @@ -3410,6 +3410,10 @@
      if (charToDelete == '\n') {
@@ -92,11 +90,3 @@ diff --git a/lib/code_forge/controller.dart b/lib/code_forge/controller.dart
 -          end: safeStart + insertedText.length,
 +          end: safeStart + insertedText.runes.length,
          );
-diff --git a/lib/code_forge/code_area.dart b/lib/code_forge/code_area.dart
---- a/lib/code_forge/code_area.dart
-+++ b/lib/code_forge/code_area.dart
-@@ -1048,3 +1048,4 @@
-     if (widget.readOnly != oldWidget.readOnly) {
-       _readOnly = widget.readOnly;
-+      _controller.readOnly = widget.readOnly;
-     }

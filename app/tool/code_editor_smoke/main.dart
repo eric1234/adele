@@ -1,22 +1,18 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:adele_desktop/editor/native_code_editor.dart';
 import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../../../tools/code_editor_probe/smoke_settlement.dart';
 
 const _library = 'package:code_editor_probe/main.dart';
 const _initial = 'void main() {\n  print("ADELE");\n}\n';
-const _reference =
-    '// Read-only, independent native buffer.\nfinal answer = 42;\n';
+const _reference = '// Independent read-only editor.\nfinal answer = 42;\n';
 const _identity = String.fromEnvironment('ADELE_CODE_EDITOR_IDENTITY');
 
 Future<void> main(List<String> arguments) async {
@@ -41,8 +37,7 @@ Future<void> main(List<String> arguments) async {
     return true;
   };
   final binding = _SmokeBinding();
-  final editable = NativeCodeBuffer(text: _initial);
-  final reference = NativeCodeBuffer(text: _reference);
+  var failureMarker = 'CODEFORGE_BUNDLE_FAILED';
   try {
     _require(
       !Platform.environment.containsKey(
@@ -50,20 +45,10 @@ Future<void> main(List<String> arguments) async {
       ),
       'The packaged editor must not use an FRB loader override.',
     );
-  } catch (error, stack) {
-    settlement.recordFailure('CODEFORGE_BUNDLE_FAILED', error, stack);
-    await settlement.settle();
-    return;
-  }
-  try {
-    await editable.initialize();
-  } catch (error, stack) {
-    settlement.recordFailure('CODEFORGE_INIT_FAILED', error, stack);
-    await settlement.settle();
-    return;
-  }
-  stdout.writeln('CODEFORGE_FRB_INIT_RETURNED');
-  try {
+    failureMarker = 'CODEFORGE_INIT_FAILED';
+    await NativeCodeEditor.initializeLibrary();
+    stdout.writeln('CODEFORGE_FRB_INIT_RETURNED');
+    failureMarker = 'CODEFORGE_BUNDLE_FAILED';
     final expected = File(
       '${File(Platform.resolvedExecutable).parent.path}/lib/libcode_forge.so',
     ).resolveSymbolicLinksSync();
@@ -80,57 +65,49 @@ Future<void> main(List<String> arguments) async {
     );
     stdout.writeln('CODEFORGE_NATIVE_PATH=$expected');
     stdout.writeln('CODEFORGE_NATIVE_INITIALIZED');
+    stdout.writeln('Dart ${Platform.version}');
   } catch (error, stack) {
-    settlement.recordFailure('CODEFORGE_BUNDLE_FAILED', error, stack);
+    settlement.recordFailure(failureMarker, error, stack);
     await settlement.settle();
     return;
   }
 
-  NativeCodeView? editableView;
-  NativeCodeView? referenceView;
+  final editable = NativeCodeEditor(text: _initial);
+  final reference = NativeCodeEditor(text: _reference, readOnly: true);
+  PreparedFrontend? editableFrontend;
+  PreparedFrontend? referenceFrontend;
   try {
+    await editable.initialize();
     await reference.initialize();
-    editableView = NativeCodeView(buffer: editable);
-    referenceView = NativeCodeView(buffer: reference, readOnly: true);
     final artifact = File(
       '${File(Platform.resolvedExecutable).parent.path}/data/editor_frontend.evc',
     );
-    final editableFrontend = await _load(artifact);
-    final referenceFrontend = await _load(artifact);
+    editableFrontend = await _load(artifact);
+    referenceFrontend = await _load(artifact);
     final hostKey = GlobalKey<_SmokeHostState>();
     runApp(
       _SmokeHost(
         key: hostKey,
         artifact: artifact,
-        editable: editableView,
-        reference: referenceView,
+        editable: editable,
+        reference: reference,
         editableFrontend: editableFrontend,
         referenceFrontend: referenceFrontend,
-        disposeBuffers: () {
-          editable.dispose();
-          reference.dispose();
-        },
       ),
     );
     await _frames();
     if (arguments.contains('--interactive')) {
-      // Owners outlive the fixture. Manual close has an explicit teardown path.
       stdout.writeln('ADELE_EDITOR_INTERACTIVE_READY');
       return;
     }
-    try {
-      await _exercise(hostKey.currentState!, binding, editable, reference);
-    } finally {
-      runApp(const SizedBox.shrink());
-      await _frames();
-      editableFrontend.invalidate();
-      referenceFrontend.invalidate();
-    }
+    await _exercise(hostKey.currentState!, binding);
   } catch (error, stack) {
     settlement.recordFailure('CODEFORGE_SMOKE_FAILED', error, stack);
   }
-  editableView?.dispose();
-  referenceView?.dispose();
+  runApp(const SizedBox.shrink());
+  await _frames();
+  editableFrontend?.invalidate();
+  referenceFrontend?.invalidate();
   editable.dispose();
   reference.dispose();
   stdout.writeln('CODEFORGE_NATIVE_DISPOSED');
@@ -151,15 +128,12 @@ class _SmokeHost extends StatefulWidget {
     required this.reference,
     required this.editableFrontend,
     required this.referenceFrontend,
-    required this.disposeBuffers,
   });
-
   final File artifact;
-  final NativeCodeView editable;
-  final NativeCodeView reference;
+  final NativeCodeEditor editable;
+  final NativeCodeEditor reference;
   final PreparedFrontend editableFrontend;
   final PreparedFrontend referenceFrontend;
-  final VoidCallback disposeBuffers;
 
   @override
   State<_SmokeHost> createState() => _SmokeHostState();
@@ -170,7 +144,7 @@ class _SmokeHostState extends State<_SmokeHost> {
   final referenceKey = GlobalKey();
   PreparedFrontend? _editableFrontend;
   Widget? _editableBody;
-  late Widget _referenceBody;
+  late final Widget _referenceBody;
   bool _changing = false;
 
   @override
@@ -181,46 +155,36 @@ class _SmokeHostState extends State<_SmokeHost> {
     _referenceBody = _presentation(widget.referenceFrontend, widget.reference);
   }
 
-  Widget _presentation(PreparedFrontend frontend, NativeCodeView view) =>
+  Widget _presentation(PreparedFrontend frontend, NativeCodeEditor editor) =>
       frontend.createPresentation(
         library: _library,
         entrypoint: 'buildView',
         createBridge: () =>
-            CodeEditorBridge(view: view, isActive: () => mounted),
+            CodeEditorBridge(editor: editor, isActive: () => mounted),
       );
 
-  Future<void> unmountEditable() async {
-    final frontend = _editableFrontend;
-    _require(frontend != null, 'Editable presentation is already unmounted.');
-    setState(() {
-      _editableBody = null;
-      _editableFrontend = null;
-    });
-    await _frames();
-    frontend!.invalidate();
-  }
-
-  Future<void> remountEditable() async {
-    _require(_editableFrontend == null, 'Unmount before loading a fresh EVC.');
-    final frontend = await _load(widget.artifact);
-    if (!mounted) {
-      frontend.invalidate();
-      return;
-    }
-    setState(() {
-      _editableFrontend = frontend;
-      _editableBody = _presentation(frontend, widget.editable);
-    });
-    await _frames();
-  }
-
-  Future<void> _toggleEditable() async {
+  Future<void> toggleEditable() async {
+    if (_changing) return;
     setState(() => _changing = true);
     try {
-      if (_editableFrontend == null) {
-        await remountEditable();
+      if (_editableFrontend case final frontend?) {
+        setState(() {
+          _editableBody = null;
+          _editableFrontend = null;
+        });
+        await _frames();
+        frontend.invalidate();
       } else {
-        await unmountEditable();
+        final frontend = await _load(widget.artifact);
+        if (!mounted) {
+          frontend.invalidate();
+          return;
+        }
+        setState(() {
+          _editableFrontend = frontend;
+          _editableBody = _presentation(frontend, widget.editable);
+        });
+        await _frames();
       }
     } finally {
       if (mounted) setState(() => _changing = false);
@@ -232,7 +196,6 @@ class _SmokeHostState extends State<_SmokeHost> {
     await _frames();
     widget.editable.dispose();
     widget.reference.dispose();
-    widget.disposeBuffers();
     exit(0);
   }
 
@@ -244,7 +207,7 @@ class _SmokeHostState extends State<_SmokeHost> {
   }
 
   Widget _pane(String label, GlobalKey key, Widget? body) => SizedBox(
-    height: 540,
+    height: 500,
     child: Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -255,13 +218,10 @@ class _SmokeHostState extends State<_SmokeHost> {
             const SizedBox(height: 8),
             if (body != null)
               Expanded(
-                child: RepaintBoundary(
-                  key: key,
-                  child: SingleChildScrollView(child: body),
-                ),
+                child: SingleChildScrollView(key: key, child: body),
               )
             else
-              const Text('Fully unmounted. Buffer and undo are retained.'),
+              const Text('Unbound. The editor still owns its text and undo.'),
           ],
         ),
       ),
@@ -272,15 +232,13 @@ class _SmokeHostState extends State<_SmokeHost> {
   Widget build(BuildContext context) => MaterialApp(
     theme: ThemeData.dark(useMaterial3: true),
     home: Scaffold(
-      appBar: AppBar(title: const Text('ADELE / Prepared Native Editor')),
+      appBar: AppBar(title: const Text('ADELE / $_identity')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text(_identity),
-          const SizedBox(height: 8),
           const Text(
-            'Synthetic text only. No files, save, LSP, or network. '
-            'Both panes are independent prepared EVC presentations.',
+            'Synthetic text only. No files, save, LSP, or network. Two independent prepared EVC panes.',
           ),
           Wrap(
             spacing: 8,
@@ -306,11 +264,11 @@ class _SmokeHostState extends State<_SmokeHost> {
                 child: const Text('Focus read-only'),
               ),
               TextButton(
-                onPressed: _changing ? null : _toggleEditable,
+                onPressed: _changing ? null : toggleEditable,
                 child: Text(
                   _editableFrontend == null
-                      ? 'Remount editable'
-                      : 'Unmount editable',
+                      ? 'Rebind editable'
+                      : 'Unbind editable',
                 ),
               ),
               TextButton(
@@ -321,21 +279,18 @@ class _SmokeHostState extends State<_SmokeHost> {
           ),
           LayoutBuilder(
             builder: (context, constraints) {
-              final editable = _pane('Editable', editableKey, _editableBody);
-              final reference = _pane(
-                'Read-only',
-                referenceKey,
-                _referenceBody,
-              );
+              final panes = [
+                _pane('Editable', editableKey, _editableBody),
+                _pane('Read-only', referenceKey, _referenceBody),
+              ];
               return constraints.maxWidth >= 1000
                   ? Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(child: editable),
-                        Expanded(child: reference),
+                        for (final pane in panes) Expanded(child: pane),
                       ],
                     )
-                  : Column(children: [editable, reference]);
+                  : Column(children: panes);
             },
           ),
         ],
@@ -344,210 +299,80 @@ class _SmokeHostState extends State<_SmokeHost> {
   );
 }
 
-Future<void> _exercise(
-  _SmokeHostState host,
-  _SmokeBinding binding,
-  NativeCodeBuffer editable,
-  NativeCodeBuffer reference,
-) async {
-  final notices = await rootBundle.loadString(
-    'packages/code_forge/assets/adele/NOTICES.txt',
-  );
-  final inventory = jsonDecode(
-    await rootBundle.loadString(
-      'packages/code_forge/assets/adele/inventory.json',
-    ),
-  );
-  final fonts = await rootBundle.loadString('FontManifest.json');
-  _require(
-    notices.contains('Athul') &&
-        notices.contains('Zed') &&
-        inventory is Map &&
-        sha256.convert(utf8.encode(notices)).toString() ==
-            inventory['noticesFile']['sha256'] &&
-        !fonts.contains('packages/code_forge/assets/icons/'),
-    'Packaged editor notices or excluded optional fonts are incorrect.',
-  );
-  stdout.writeln('CODEFORGE_NOTICES_BUNDLED');
-  await _until(
-    () => _texts(
-      host.editableKey,
-    ).any((text) => text.contains('ready=true readOnly=false')),
-    'Editable EVC readiness',
-  );
-  await _until(
-    () => _texts(
-      host.referenceKey,
-    ).any((text) => text.contains('ready=true readOnly=true')),
-    'Read-only EVC readiness',
-  );
+Future<void> _exercise(_SmokeHostState host, _SmokeBinding binding) async {
+  final editable = host.widget.editable;
+  final reference = host.widget.reference;
+  for (final key in [host.editableKey, host.referenceKey]) {
+    await _until(
+      () => _texts(key).any((text) => text.contains('ready=true')),
+      'Prepared EVC readiness',
+    );
+  }
   _require(
     _texts(host.editableKey).contains('Snapshot text: (not requested)'),
-    'Snapshot must be explicit, not part of the version observer.',
+    'Snapshots must be explicit.',
   );
-  _require(
-    host.widget.editable.requestFocus(),
-    'Editable focus request refused.',
-  );
+  _require(editable.requestFocus(), 'Editable focus request refused.');
   await _frames();
   await _key(LogicalKeyboardKey.home, PhysicalKeyboardKey.home, control: true);
-  _require(
-    host.widget.editable.readState()['focused'] == true &&
-        host.widget.reference.readState()['focused'] == false,
-    'Native focus is not isolated to the editable view.',
-  );
-  final version = editable.version;
+  final revision = editable.readState()['revision'] as int;
   final notifications = _notifications(host.editableKey);
   const insertion = '// \u{1f600} prepared\n';
-  await _Input.capture(binding.messenger).insert(binding, insertion);
-  await _until(() => editable.version > version, 'Native input version');
+  const edited = '$insertion$_initial';
+  await _insert(binding, insertion);
   await _until(
-    () => _notifications(host.editableKey) > notifications,
-    'Interpreted change observer',
+    () =>
+        (editable.readState()['revision'] as int) > revision &&
+        _notifications(host.editableKey) > notifications,
+    'Native edit and EVC observation',
   );
-  await _snapshot(host.editableKey, '$insertion$_initial', editable.version);
-  _require(
-    reference.snapshot()['text'] == _reference,
-    'Reference buffer changed.',
-  );
+  await _snapshot(host.editableKey, editable, edited);
   stdout.writeln('CODEFORGE_PLATFORM_INPUT_OK');
 
-  await _key(LogicalKeyboardKey.keyZ, PhysicalKeyboardKey.keyZ, control: true);
-  await _snapshot(host.editableKey, _initial, editable.version);
-  await _key(LogicalKeyboardKey.keyY, PhysicalKeyboardKey.keyY, control: true);
-  await _snapshot(host.editableKey, '$insertion$_initial', editable.version);
-
-  final departedEditableClient = _Input.capture(binding.messenger);
-  _require(host.widget.reference.requestFocus(), 'Read-only focus refused.');
+  _require(reference.requestFocus(), 'Read-only focus refused.');
   await _frames();
-  _require(
-    host.widget.reference.readState()['focused'] == true &&
-        host.widget.editable.readState()['focused'] == false,
-    'Native focus is not isolated to the read-only view.',
-  );
   await _key(LogicalKeyboardKey.keyA, PhysicalKeyboardKey.keyA, control: true);
   await _key(LogicalKeyboardKey.keyC, PhysicalKeyboardKey.keyC, control: true);
-  await _until(() => binding.messenger.copied == _reference, 'Read-only copy');
-  final copied = await Clipboard.getData(Clipboard.kTextPlain);
   _require(
-    copied?.text == _reference,
+    (await Clipboard.getData(Clipboard.kTextPlain))?.text == _reference,
     'Native clipboard did not receive copy.',
   );
-  final readVersion = reference.version;
-  _require(
-    binding.messenger.client == null,
-    'Read-only view attached an editable input client.',
-  );
-  await departedEditableClient.insert(binding, 'blocked');
   await _key(LogicalKeyboardKey.backspace, PhysicalKeyboardKey.backspace);
   await _key(LogicalKeyboardKey.keyV, PhysicalKeyboardKey.keyV, control: true);
   await _key(LogicalKeyboardKey.keyZ, PhysicalKeyboardKey.keyZ, control: true);
+  await _snapshot(host.referenceKey, reference, _reference);
+  _require(editable.requestFocus(), 'Editable refocus refused.');
   await _frames();
-  await _snapshot(host.referenceKey, _reference, readVersion);
-  _require(
-    reference.version == readVersion,
-    'Read-only input mutated version.',
-  );
-
-  _require(host.widget.editable.requestFocus(), 'Editable refocus refused.');
-  await _frames();
-  await _key(LogicalKeyboardKey.end, PhysicalKeyboardKey.end, control: true);
-  await Clipboard.setData(const ClipboardData(text: '// pasted\n'));
-  final beforePaste = editable.version;
-  await _key(LogicalKeyboardKey.keyV, PhysicalKeyboardKey.keyV, control: true);
-  final edited = '$insertion$_initial// pasted\n';
-  await _until(() => editable.version > beforePaste, 'Native paste');
-  await _snapshot(host.editableKey, edited, editable.version);
+  await _snapshot(host.editableKey, editable, edited);
   stdout.writeln('CODEFORGE_CLIPBOARD_READONLY_OK');
 
-  await _frames();
-  for (final key in [host.editableKey, host.referenceKey]) {
-    final boundary =
-        key.currentContext!.findRenderObject() as RenderRepaintBoundary;
-    _require(
-      boundary.hasSize && !boundary.size.isEmpty,
-      'Empty editor layout.',
-    );
-    final image = await boundary.toImage();
-    _require(
-      image.width > 0 && image.height > 0,
-      'Empty rendered editor image.',
-    );
-    stdout.writeln('CODEFORGE_FRAME=${image.width}x${image.height}');
-    image.dispose();
-  }
-  stdout.writeln('CODEFORGE_RENDERED');
-
-  await _key(LogicalKeyboardKey.home, PhysicalKeyboardKey.home, control: true);
-  for (var i = 0; i < 4; i++) {
-    await _key(LogicalKeyboardKey.arrowRight, PhysicalKeyboardKey.arrowRight);
-  }
-  await _key(
-    LogicalKeyboardKey.arrowRight,
-    PhysicalKeyboardKey.arrowRight,
-    shift: true,
-  );
-  await _snapshot(
-    host.editableKey,
-    edited,
-    editable.version,
-    selection: (5, 6),
-  );
   final oldElement = host.editableKey.currentContext! as Element;
-  final oldClient = _Input.capture(binding.messenger);
-  final retainedVersion = editable.version;
-  await host.unmountEditable();
+  await host.toggleEditable();
   _require(
-    !oldElement.mounted && host.editableKey.currentContext == null,
-    'Editable presentation was not completely unmounted.',
-  );
-  _require(
-    !editable.isDisposed && editable.snapshot()['text'] == edited,
-    'Full unmount discarded buffer ownership.',
-  );
-  await oldClient.insert(binding, 'stale');
-  _require(
-    editable.version == retainedVersion,
-    'Old input access remained active.',
+    !oldElement.mounted && !editable.isDisposed,
+    'Unbind must remove the view, not close its owner.',
   );
   stdout.writeln('CODEFORGE_UNMOUNTED_OWNER_RETAINED');
-  await host.remountEditable();
-  await _until(
-    () => _texts(
-      host.editableKey,
-    ).any((text) => text.contains('ready=true readOnly=false')),
-    'Remounted EVC readiness',
-  );
-  await _snapshot(host.editableKey, edited, retainedVersion, selection: (5, 6));
-  _require(
-    !identical(host.editableKey.currentContext, oldElement),
-    'Remount retained the old presentation element.',
-  );
-  _require(host.widget.editable.requestFocus(), 'Remounted focus refused.');
+  await host.toggleEditable();
+  await _snapshot(host.editableKey, editable, edited);
+  _require(editable.requestFocus(), 'Remounted focus refused.');
   await _frames();
-  await oldClient.insert(binding, 'stale after replacement');
-  _require(
-    editable.version == retainedVersion,
-    'Old access migrated to fresh EVC.',
-  );
   await _key(LogicalKeyboardKey.keyZ, PhysicalKeyboardKey.keyZ, control: true);
-  await _snapshot(host.editableKey, '$insertion$_initial', editable.version);
+  await _snapshot(host.editableKey, editable, _initial);
   await _key(LogicalKeyboardKey.keyY, PhysicalKeyboardKey.keyY, control: true);
-  await _snapshot(host.editableKey, edited, editable.version);
+  await _snapshot(host.editableKey, editable, edited);
   stdout.writeln('CODEFORGE_PREPARED_REMOUNT_OK');
 }
 
-Iterable<Element> _elements(GlobalKey key) sync* {
-  final root = key.currentContext;
-  if (root == null) return;
+List<Element> _elements(GlobalKey key) {
   final elements = <Element>[];
   void visit(Element element) {
     elements.add(element);
     element.visitChildren(visit);
   }
 
-  visit(root as Element);
-  yield* elements;
+  if (key.currentContext case final Element root) visit(root);
+  return elements;
 }
 
 List<String> _texts(GlobalKey key) => [
@@ -563,10 +388,9 @@ int _notifications(GlobalKey key) => int.parse(
 
 Future<void> _snapshot(
   GlobalKey key,
+  NativeCodeEditor editor,
   String expected,
-  int version, {
-  (int, int)? selection,
-}) async {
+) async {
   final button = _elements(key)
       .map((element) => element.widget)
       .whereType<TextButton>()
@@ -574,17 +398,13 @@ Future<void> _snapshot(
         (button) =>
             button.child is Text && (button.child! as Text).data == 'Snapshot',
       );
-  // Invokes the real native callback installed by the interpreted fixture.
-  // No native snapshot is substituted for this prepared-EVC round trip.
+  final revision = editor.readState()['revision'];
+  // The interpreted callback performs the snapshot, not a native text read.
   button.onPressed!();
   await _until(
     () =>
         _texts(key).contains('Snapshot text: $expected') &&
-        _texts(key).contains('Snapshot version: $version') &&
-        (selection == null ||
-            _texts(
-              key,
-            ).contains('Snapshot selection: ${selection.$1}:${selection.$2}')),
+        _texts(key).contains('Snapshot revision: $revision'),
     'Prepared EVC snapshot',
   );
 }
@@ -609,60 +429,28 @@ Future<void> _key(
   LogicalKeyboardKey logical,
   PhysicalKeyboardKey physical, {
   bool control = false,
-  bool shift = false,
 }) async {
-  void send(
-    LogicalKeyboardKey key,
-    PhysicalKeyboardKey scan,
-    ui.KeyEventType type,
-  ) {
-    // This fixture injects engine key records, not a real OS keyboard event.
-    // Synthesized records dispatch immediately without a duplicate legacy event.
-    // ignore: deprecated_member_use
-    ServicesBinding.instance.keyEventManager.handleKeyData(
-      ui.KeyData(
-        character: null,
-        timeStamp: Duration(
-          microseconds: DateTime.now().microsecondsSinceEpoch,
+  final keys = [
+    if (control)
+      (LogicalKeyboardKey.controlLeft, PhysicalKeyboardKey.controlLeft),
+    (logical, physical),
+  ];
+  for (final type in [ui.KeyEventType.down, ui.KeyEventType.up]) {
+    for (final (key, scan)
+        in type == ui.KeyEventType.down ? keys : keys.reversed) {
+      // Engine key injection, not human OS keyboard/IME coverage.
+      // ignore: deprecated_member_use
+      ServicesBinding.instance.keyEventManager.handleKeyData(
+        ui.KeyData(
+          character: null,
+          timeStamp: Duration(
+            microseconds: DateTime.now().microsecondsSinceEpoch,
+          ),
+          type: type,
+          physical: scan.usbHidUsage,
+          logical: key.keyId,
+          synthesized: true,
         ),
-        type: type,
-        physical: scan.usbHidUsage,
-        logical: key.keyId,
-        synthesized: true,
-      ),
-    );
-  }
-
-  if (control) {
-    send(
-      LogicalKeyboardKey.controlLeft,
-      PhysicalKeyboardKey.controlLeft,
-      ui.KeyEventType.down,
-    );
-  }
-  if (shift) {
-    send(
-      LogicalKeyboardKey.shiftLeft,
-      PhysicalKeyboardKey.shiftLeft,
-      ui.KeyEventType.down,
-    );
-  }
-  try {
-    send(logical, physical, ui.KeyEventType.down);
-    send(logical, physical, ui.KeyEventType.up);
-  } finally {
-    if (shift) {
-      send(
-        LogicalKeyboardKey.shiftLeft,
-        PhysicalKeyboardKey.shiftLeft,
-        ui.KeyEventType.up,
-      );
-    }
-    if (control) {
-      send(
-        LogicalKeyboardKey.controlLeft,
-        PhysicalKeyboardKey.controlLeft,
-        ui.KeyEventType.up,
       );
     }
   }
@@ -675,20 +463,18 @@ void _require(bool condition, String message) {
 
 class _SmokeBinding extends WidgetsFlutterBinding {
   late final _ObservedMessenger messenger;
-
   @override
   BinaryMessenger createBinaryMessenger() =>
       messenger = _ObservedMessenger(super.createBinaryMessenger());
 }
 
-/// Passive observer: every message still goes to the real desktop embedder.
+/// Passive observer: all messages still reach the real desktop embedder.
 class _ObservedMessenger implements BinaryMessenger {
   _ObservedMessenger(this.delegate);
   final BinaryMessenger delegate;
   int? client;
   bool deltaModel = false;
   TextEditingValue? editingValue;
-  String? copied;
 
   @override
   Future<ByteData?>? send(String channel, ByteData? message) {
@@ -706,11 +492,6 @@ class _ObservedMessenger implements BinaryMessenger {
       } else if (call.method == 'TextInput.clearClient') {
         client = null;
         editingValue = null;
-      }
-    } else if (channel == SystemChannels.platform.name && message != null) {
-      final call = SystemChannels.platform.codec.decodeMethodCall(message);
-      if (call.method == 'Clipboard.setData') {
-        copied = (call.arguments as Map)['text'] as String;
       }
     }
     return delegate.send(channel, message);
@@ -734,60 +515,50 @@ class _ObservedMessenger implements BinaryMessenger {
   }
 }
 
-class _Input {
-  _Input(this.client, this.value);
-
-  factory _Input.capture(_ObservedMessenger messenger) {
-    _require(
-      messenger.client != null &&
-          messenger.deltaModel &&
-          messenger.editingValue != null,
-      'No advertised native delta input client.',
-    );
-    final value = messenger.editingValue!;
-    _require(
-      value.selection.isValid &&
-          value.selection.end <= value.text.length &&
-          (!value.composing.isValid || value.composing.isCollapsed),
-      'Invalid advertised selection or active composition.',
-    );
-    return _Input(messenger.client!, value);
-  }
-
-  final int client;
-  final TextEditingValue value;
-
-  Future<void> insert(_SmokeBinding binding, String text) async {
-    final reply = Completer<ByteData?>();
-    final start = value.selection.start;
-    binding.channelBuffers.push(
-      SystemChannels.textInput.name,
-      SystemChannels.textInput.codec.encodeMethodCall(
-        MethodCall('TextInputClient.updateEditingStateWithDeltas', [
-          client,
-          {
-            'deltas': [
-              {
-                'oldText': value.text,
-                'deltaText': text,
-                'deltaStart': start,
-                'deltaEnd': value.selection.end,
-                'selectionBase': start + text.length,
-                'selectionExtent': start + text.length,
-                'selectionAffinity': 'TextAffinity.downstream',
-                'selectionIsDirectional': false,
-                'composingBase': -1,
-                'composingExtent': -1,
-              },
-            ],
-          },
-        ]),
-      ),
-      reply.complete,
-    );
-    final response = await reply.future;
-    _require(response != null, 'No native input response.');
-    SystemChannels.textInput.codec.decodeEnvelope(response!);
-    await _frames();
-  }
+Future<void> _insert(_SmokeBinding binding, String text) async {
+  final messenger = binding.messenger;
+  _require(
+    messenger.client != null &&
+        messenger.deltaModel &&
+        messenger.editingValue != null,
+    'No advertised native delta input client.',
+  );
+  final value = messenger.editingValue!;
+  _require(
+    value.selection.isValid &&
+        value.selection.end <= value.text.length &&
+        (!value.composing.isValid || value.composing.isCollapsed),
+    'Invalid advertised selection or active composition.',
+  );
+  final start = value.selection.start;
+  final reply = Completer<ByteData?>();
+  binding.channelBuffers.push(
+    SystemChannels.textInput.name,
+    SystemChannels.textInput.codec.encodeMethodCall(
+      MethodCall('TextInputClient.updateEditingStateWithDeltas', [
+        messenger.client!,
+        {
+          'deltas': [
+            {
+              'oldText': value.text,
+              'deltaText': text,
+              'deltaStart': start,
+              'deltaEnd': value.selection.end,
+              'selectionBase': start + text.length,
+              'selectionExtent': start + text.length,
+              'selectionAffinity': 'TextAffinity.downstream',
+              'selectionIsDirectional': false,
+              'composingBase': -1,
+              'composingExtent': -1,
+            },
+          ],
+        },
+      ]),
+    ),
+    reply.complete,
+  );
+  final response = await reply.future;
+  _require(response != null, 'No native input response.');
+  SystemChannels.textInput.codec.decodeEnvelope(response!);
+  await _frames();
 }

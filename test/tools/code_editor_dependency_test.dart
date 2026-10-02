@@ -13,7 +13,6 @@ import '../../tools/code_editor_dependency.dart';
 Future<File> createCodeEditorDependencyFixture(
   Directory root, {
   bool additionalPatch = false,
-  bool noticeAssets = false,
   bool executableInput = false,
 }) async {
   final metadata = Directory('${root.path}/third_party/code_forge')
@@ -81,13 +80,7 @@ diff --git a/lib/code.dart b/lib/code.dart
     ...originalFiles,
     'lib/code.dart': additionalPatch ? 'four\n' : 'three\n',
     'cargokit/build_tool/runner.lock': runnerTemplate,
-    if (noticeAssets) 'assets/adele/NOTICES.txt': 'fixture native notice\n',
   };
-  if (noticeAssets) {
-    File(
-      '${metadata.path}/NOTICES.txt',
-    ).writeAsStringSync('fixture native notice\n');
-  }
   final expectedHashes = <String, String>{};
   for (final path in expectedFiles.keys.toList()..sort()) {
     expectedHashes[path] =
@@ -106,13 +99,6 @@ diff --git a/lib/code.dart b/lib/code.dart
       'archiveSha256': (hash.stdout as String).split(' ').first,
       'patches': ['01.patch', '02.patch', if (additionalPatch) '03.patch'],
       'runnerLock': 'runner.lock.template',
-      if (noticeAssets)
-        'materializedAssets': [
-          {
-            'source': 'third_party/code_forge/NOTICES.txt',
-            'target': 'assets/adele/NOTICES.txt',
-          },
-        ],
     }),
   );
   return archive;
@@ -392,37 +378,6 @@ void main() {
       archive.deleteSync();
       expect((await prepare()).path, source.path);
       expect(state.lastModifiedSync(), modified);
-    },
-  );
-
-  test(
-    'native notice assets are immutable prepared source, not external app paths',
-    () async {
-      archive = await createCodeEditorDependencyFixture(
-        root,
-        noticeAssets: true,
-      );
-      await prepare();
-      final notice = File('${source.path}/assets/adele/NOTICES.txt');
-      expect(notice.readAsStringSync(), 'fixture native notice\n');
-      await prepare();
-      notice.writeAsStringSync('altered notice');
-      await expectLater(prepare(), throwsStateError);
-    },
-  );
-
-  test(
-    'tracked native notice changes invalidate the source identity',
-    () async {
-      archive = await createCodeEditorDependencyFixture(
-        root,
-        noticeAssets: true,
-      );
-      await prepare();
-      File(
-        '${root.path}/third_party/code_forge/NOTICES.txt',
-      ).writeAsStringSync('new source notice');
-      await expectLater(prepare(), throwsStateError);
     },
   );
 
@@ -1145,14 +1100,9 @@ Future<void> main() async {
       expect(config['patches'], [
         '01-compatibility-build.patch',
         '02-correctness.patch',
-        '03-embedding.patch',
-        '04-assets-notices.patch',
-        '05-interaction-fences.patch',
-        '06-ordinary-input.patch',
       ]);
       for (final (original, copy) in [
         ('compatibility.patch', '01-compatibility-build.patch'),
-        ('correctness.patch', '02-correctness.patch'),
         ('cargokit_runner.lock.template', 'cargokit_runner.lock.template'),
       ]) {
         expect(

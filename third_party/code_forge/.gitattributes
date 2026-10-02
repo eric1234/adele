@@ -1,4 +1,2 @@
-# Notice byte ranges/checksums require original upstream line endings and spaces.
-NOTICES.txt -text -whitespace
 # Unified-diff context represents an empty source line with a single space.
 *.patch whitespace=-blank-at-eol

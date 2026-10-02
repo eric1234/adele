@@ -62,26 +62,24 @@ class CodeEditorDeclarations implements EvalPlugin {
       throw UnsupportedError('Use a presentation-scoped CodeEditorBridge.');
 }
 
-/// Exactly one host-selected native view and one runtime. Native access, rather
-/// than the evaluator or a cached widget, fences every interaction sink.
+/// One host-selected editor and one runtime. Revocation applies to interpreted
+/// access; native input remains CodeForge's ordinary controller behavior.
 final class CodeEditorBridge extends CodeEditorDeclarations
     implements PreparedFrontendBridge, PreparedFrontendFailureSource {
   CodeEditorBridge({
-    required NativeCodeView view,
+    required NativeCodeEditor editor,
     required bool Function() isActive,
-  }) : _owner = view,
+  }) : _owner = editor,
        _isActive = isActive;
 
-  final NativeCodeView _owner;
+  final NativeCodeEditor _owner;
   final bool Function() _isActive;
-  final Map<EvalCallable, VoidCallback> _listeners = Map.identity();
-  final Map<EvalCallable, VoidCallback> _pending = Map.identity();
-  NativeCodeAccess? _access;
+  final Set<EvalCallable> _listeners = Set.identity();
+  Runtime? _runtime;
   VoidCallback? _detach;
   Widget? _widget;
   String? _handle;
   bool _active = true;
-  bool _configured = false;
   bool _scheduled = false;
 
   @override
@@ -104,30 +102,25 @@ final class CodeEditorBridge extends CodeEditorDeclarations
     if (!_available) throw StateError('Code editor presentation is retired.');
   }
 
-  NativeCodeAccess _resolve(Object? handle) {
+  NativeCodeEditor _resolve(Object? handle) {
     _validate();
     if (_handle == null || handle != _handle) {
       throw StateError('Editor handle was not issued to this presentation.');
     }
-    return _access!;
+    return _owner;
   }
 
   @override
   void configureForRuntime(Runtime runtime) {
-    if (_configured) throw StateError('Code editor bridge is already bound.');
-    _configured = true;
+    if (_runtime != null) {
+      throw StateError('Code editor bridge is already bound.');
+    }
+    _runtime = runtime;
     runtime
       ..registerBridgeFunc(_library, 'requestCodeEditor', (_, _, _) {
         _validate();
         if (_handle == null) {
           final random = Random.secure();
-          _access = _owner.createAccess(
-            isActive: () => _available,
-            onUnavailable: () {
-              invalidate();
-              onFailure?.call();
-            },
-          );
           _handle = List.generate(
             24,
             (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
@@ -137,7 +130,14 @@ final class CodeEditorBridge extends CodeEditorDeclarations
       })
       ..registerBridgeFunc(_library, 'buildCodeEditor', (_, _, args) {
         final access = _resolve(args.single!.$value);
-        return $Widget.wrap(_widget ??= access.buildView());
+        return $Widget.wrap(
+          _widget ??= access.buildView(
+            onUnavailable: () {
+              invalidate();
+              onFailure?.call();
+            },
+          ),
+        );
       })
       ..registerBridgeFunc(_library, 'readCodeEditorState', (_, _, args) {
         final state = _resolve(args.single!.$value).readState();
@@ -153,12 +153,11 @@ final class CodeEditorBridge extends CodeEditorDeclarations
       ..registerBridgeFunc(_library, 'subscribeCodeEditor', (_, _, args) {
         final access = _resolve(args[0]!.$value);
         final listener = args[1]! as EvalCallable;
-        _listeners.putIfAbsent(
-          listener,
-          () =>
-              () => listener.call(runtime, null, const []),
-        );
-        _detach ??= access.observeChanges(_changed);
+        _listeners.add(listener);
+        if (_detach == null) {
+          access.addListener(_changed);
+          _detach = () => access.removeListener(_changed);
+        }
         return null;
       })
       ..registerBridgeFunc(_library, 'unsubscribeCodeEditor', (_, _, args) {
@@ -166,7 +165,6 @@ final class CodeEditorBridge extends CodeEditorDeclarations
         _resolve(args[0]!.$value);
         final listener = args[1]! as EvalCallable;
         _listeners.remove(listener);
-        _pending.remove(listener);
         if (_listeners.isEmpty) {
           _detach?.call();
           _detach = null;
@@ -176,20 +174,22 @@ final class CodeEditorBridge extends CodeEditorDeclarations
   }
 
   void _changed() {
+    if (_owner.isDisposed) {
+      invalidate();
+      onFailure?.call();
+      return;
+    }
     if (!_available || _listeners.isEmpty) return;
-    _pending.addAll(_listeners);
     if (_scheduled) return;
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
       if (!_available) return;
-      final pending = Map.of(_pending);
-      _pending.clear();
-      for (final entry in pending.entries) {
+      for (final listener in _listeners.toList()) {
         if (!_available) return;
-        if (!identical(_listeners[entry.key], entry.value)) continue;
+        if (!_listeners.contains(listener)) continue;
         try {
-          entry.value();
+          listener.call(_runtime!, null, const []);
         } on Object {
           invalidate();
           onFailure?.call();
@@ -205,11 +205,8 @@ final class CodeEditorBridge extends CodeEditorDeclarations
     if (!_active) return;
     _active = false;
     _listeners.clear();
-    _pending.clear();
     _detach?.call();
     _detach = null;
-    _access?.revoke();
-    _access = null;
     _widget = null;
   }
 }
