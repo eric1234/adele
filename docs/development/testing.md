@@ -206,9 +206,7 @@ library/environment automatically. Tooling coverage includes
 for source verification, explicit reprepare, and source leases, plus
 [`code_editor_smoke_test.dart`](../../test/tools/code_editor_smoke_test.dart),
 shared settlement and launcher/discovery checks using local fixtures rather than
-real Rust compilation or a live provider. The retained historical 37-case
-investigation under `tools/code_editor_probe/fixtures/` is not an app acceptance
-gate; do not copy its older policy assumptions into current owner tests.
+real Rust compilation or a live provider.
 
 For narrow app iteration, first run `dart tools/adele.dart build-code-editor-tests`
 from the repository root. Set `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the
@@ -254,6 +252,31 @@ suite for every edit. Widget/evaluator coverage is not a packaged library-loadin
 check or human keyboard/IME proof; use the separate
 [integrated smoke](#integrated-editor-smoke) for Linux profile packaging. No
 macOS/Windows acceptance is implied.
+
+#### Deferred selected composition reproduction
+
+[`selected_composition_repro.dart`](../../app/tool/code_editor_smoke/selected_composition_repro.dart)
+is an explicit investigation, outside normal `*_test.dart` discovery and editor
+acceptance. After bootstrap with the pinned SDK, prepare the native library from
+the repository root:
+
+```sh
+dart tools/adele.dart build-code-editor-tests
+```
+
+From `app/`, use the absolute library directory printed by that command:
+
+```sh
+env FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR=/absolute/path/printed/by/build-code-editor-tests \
+  flutter test --no-pub --concurrency 1 tool/code_editor_smoke/selected_composition_repro.dart
+```
+
+Replacing selected `a` in `ab` with composing `x` must finish as `xb`. The normal
+completion control preserves that result; the two departure cases, blur/refocus
+and unmount/remount, are known to fail with `b`, while undo restores `ab`. Keep the
+correct `xb` assertions: these failures are deferred evidence, not accepted
+behavior or a normal acceptance gate. No composition repair or cancel-on-blur
+policy is implied. See the [retained findings](../experiments/codeforge-correctness.md).
 
 ### Focused command output checks
 
@@ -624,8 +647,7 @@ generation, and artifact-preparation details.
 as its development entrypoint. It first compiles the public-UI fixture into EVC,
 then packages `data/editor_frontend.evc` beside the app's native library. Runtime
 loads those prepared bytes; it never compiles source or substitutes another editor.
-This is separate from normal product startup and from the generated historical
-probe application below.
+This is a single development target, separate from normal product startup.
 
 Use Linux x64, the pinned Flutter/Dart and Rust toolchains, ordinary Linux Flutter
 desktop dependencies, `timeout`, `sha256sum`, and Xvfb (`xvfb-run`). After bootstrap,
@@ -653,7 +675,7 @@ failure and rejects failure markers even if a completion marker was already
 written. Logs, the native artifact hash, and `result.json` remain under
 `app/build/code_editor_smoke/logs/`. The
 [editor smoke workflow](../../.github/workflows/code-editor-smoke.yaml) invokes this
-path and retains diagnostics, separately from historical defect reproduction.
+path and retains diagnostics.
 These are expected checks, not a claim that the current profile run has passed.
 
 #### Manual entrypoint
@@ -667,180 +689,34 @@ env -C /tmp -u LD_LIBRARY_PATH -u LD_PRELOAD -u FRB_DART_LOAD_EXTERNAL_LIBRARY_N
 ```
 
 `--prepare-only` builds the app and precompiles/packages EVC. This is a
-source-checkout development target, not portable release packaging. It shows
-independent editable/read-only EVC panes, Snapshot/state revision, theme, focus,
-and unbind/remount controls. Undo/redo use ordinary editor keyboard shortcuts.
+source-checkout development target, not portable release packaging. The same
+fixed-dark UI shows independent editable/read-only EVC panes, Snapshot/state
+revision, synthetic clipboard, focus, unbind/rebind, and close controls; there is
+no theme selector. Undo/redo use ordinary editor keyboard shortcuts.
 Only synthetic in-memory content is used: no file opening/saving, diff, LSP, AI,
 or network.
 Do not run this preparation concurrently with other Flutter work sharing app build
 output or with explicit dependency replacement.
 
-1. Focus Editable, type and delete a short ASCII sequence at a natural pace, then
-   use Ctrl+Z/Ctrl+Y to check grouped undo/redo. Inspect Snapshot and state revision;
-   selection/layout changes may also advance revision. Switch themes and continue
-   editing with the keyboard.
-2. Use Copy synthetic emoji or Copy synthetic CRLF, then focus Editable and paste.
-   These replace the clipboard with U+1F600 or `a\r\nb` (actual CRLF). Inspect the
-   escaped snapshot after edits and undo; distinguish `\r\n`, `\n`, and a stray
-   `\r` rather than inferring text fidelity from rendering alone.
-3. Switch to Read-only, select/copy text, and attempt typing, paste, and undo.
+1. Use **Focus editable**, type and delete a short ASCII sequence at a natural
+   pace, then use Ctrl+Z/Ctrl+Y to check grouped undo/redo. Use **Snapshot** and
+   inspect state revision; selection/layout changes may also advance revision.
+2. Use **Copy synthetic emoji** or **Copy synthetic CRLF**, then **Focus editable**
+   and paste. These replace the clipboard with U+1F600 or `a\r\nb` (actual CRLF).
+   Use **Snapshot** after edits and undo to inspect the escaped text; distinguish
+   `\r\n`, `\n`, and a stray `\r` rather than relying on rendering alone.
+3. Use **Focus read-only**, select/copy text, and attempt typing, paste, and undo.
    Its text must remain unchanged. Switch panes and away from/back to the window;
    new typing should follow focus. Already admitted clipboard work may finish on
    its original editor.
-4. Finish composition before leaving the editor, unbind it, then remount a fresh
-   presentation. Check retained text and undo, without expecting cursor or scroll
-   restoration, then dispose/close. Consult the
+4. Finish composition, use **Unbind editable**, then **Rebind editable** for a
+   fresh presentation. Check retained text and undo, without expecting cursor or
+   scroll restoration, then use **Dispose and close**. Consult the
    [known composition limitation](../../app/README.md#known-limitations) rather
    than treating departure during composition as a passed check.
 
-Human validation of this integrated path has **not** been performed. Earlier
-Eric/unpatched manual reports remain historical findings, not adoption evidence.
-An automated smoke result or `--prepare-only` build must not be reported as those
-human checks.
-
-### Historical investigation
-
-#### Native editor candidate probe
-
-The following reproduction procedure is retained for the historical investigation,
-not current acceptance. Its `--verify-known-defects` option deliberately recognizes
-versioned broken outcomes and must never be used as editor acceptance CI. Historical
-manual findings in `docs/experiments/` remain unchanged.
-
-`--investigate` also runs the separate selected-range composition reproduction in
-`tools/code_editor_probe/fixtures/selected_composition_test.dart.template`.
-It keeps correct `xb` expectations: normal completion passes, while blur/refocus
-and unmount/remount currently fail with `b`. These are deferred upstream cases,
-not ordinary editor acceptance or a request to restore cancel-on-blur.
-
-The [CodeForge investigation](../experiments/codeforge-correctness.md) is separate
-from workspace dependency resolution and application compilation. Its evidence
-table owns empirical findings and qualifications; passing a probe is not E1 or
-prepared-EVC editor acceptance. Only Linux x64 is supported by these commands.
-Prerequisites: the integrated SDK, ordinary Linux Flutter desktop dependencies,
-`curl`, Git, `tar`, `diff`, `sha256sum`, `readelf`, `timeout`, Xvfb, and Rust 1.93.0:
-
-```sh
-rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
-```
-
-Use absolute SDK paths and a **new** output directory per configuration. Set
-`FLUTTER_ROOT` for the command as well: an inherited value can make a pinned Dart
-executable resolve against an unrelated Flutter SDK. Do not change global SDK
-selection or ADELE's workspace lock. From the checked-out repository:
-
-```sh
-ADELE_FLUTTER=/absolute/path/to/flutter-3.38.10
-PROBE=/tmp/adele-codeforge-manual
-env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart probe-code-editor --flutter "$ADELE_FLUTTER/bin/flutter" --output "$PROBE" --prepare-only
-env -C /tmp -u LD_LIBRARY_PATH -u LD_PRELOAD -u FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR "$PROBE/probe/build/linux/x64/profile/bundle/adele_codeforge_probe" --interactive
-```
-
-`--prepare-only` verifies source/SDK/native identities, formats/analyzes fixtures,
-builds a profile bundle, runs the corrected native input/render/unmount smoke and
-missing-library subprocess, and checks the interactive reset/snapshot UI. It does
-not run editor-correctness assertions. The second command launches the same binary
-without auto-exit on the user's desktop; add `xvfb-run -a` before the binary only
-for an automated headless launch. No Cargo or source checkout is needed at runtime.
-
-The interactive view shows configuration/SDK identities and uses supplied synthetic
-documents with fresh controller/undo state on Reset or sample change. It does not
-open/save files or configure LSP, AI, or network services. It logs only startup and
-explicit snapshots of probe content; there is no continuous document/clipboard or
-global-key recording. Use synthetic content only. "Copy synthetic U+1F600" replaces
-the current display's clipboard with that glyph without reading its old content.
-
-Short Linux manual checklist (grouping on, widget read-only off):
-
-1. **ASCII delete:** Reset `ASCII delete`, focus the editor, Ctrl+Home, Delete twice
-   at a natural pace, then Ctrl+Z until the edit history is restored. Expected
-   `abc`; one undo may suffice with grouping. Press F8 and return the one
-   `CODEFORGE_MANUAL_SNAPSHOT` line. This checks ordinary desktop reachability;
-   do not try to win the 100ms race. The automated 20ms case covers that trigger,
-   and a slower successful manual result does not invalidate it.
-2. **Unicode undo:** Choose `Unicode paste`, use "Copy synthetic U+1F600", Ctrl+Home,
-   Ctrl+V, then Ctrl+Z. Expected `ab`; F8 exposes escaped text, scalar selection,
-   UTF-16 code units and recorded history. This checks actual desktop clipboard
-   delivery rather than the test's mocked response. No IME is required.
-3. **CRLF join:** Choose `CRLF join`, focus the editor, Ctrl+End, Home, Backspace.
-   Expected `ab`. F8 distinguishes `\r`, `\n` and code units even if rendering
-   looks similar; Ctrl+Z should restore `a\r\nb`. This checks desktop navigation
-   and joining at the actual caret position.
-
-F8 is an explicit observation, not an immediate-input timing test. The snapshot
-button can also observe after focus/flush changes; no immediate-snapshot proof is
-based on clicking it. Actual human keyboard/clipboard checks are prepared for Eric,
-not claimed as performed by automated Xvfb/widget tests. Return only synthetic
-snapshot lines and the displayed configuration identity, not unrelated clipboard
-contents or files. Human IME tests are deferred until a specific uncertainty needs
-one and the tester has that input method.
-
-For correct-behavior automated comparisons, use the same command with fresh output
-paths and these options instead of `--prepare-only`:
-
-- `--investigate`: mounted/default-configuration cases, with correct assertions.
-- `--correctness-patch --investigate`: the separate bounded causal patch on the
-  ADELE pin. Success covers the targeted tests, not production adoption.
-- `--verify-known-defects`: only the original versioned 10.14.0 baseline observations.
-  It cannot be combined with the causal patch or investigation suite. Compile,
-  crash, timeout, or unexpected behavior still fails; success is not acceptance.
-
-Default mode without those options retains the original correct-behavior tests.
-Unpatched correctness runs are expected to fail the specifically documented
-assertions; inspect per-case JSON and failure reasons, not exit status alone.
-Stage logs, effective dependency locks, source/native hashes, SDK identity and
-`logs/result.json` distinguish preparation failures, skipped correctness work,
-test failures, and completed native smoke. Keep different configurations' artifacts
-separate. Reusing unchanged artifacts within one configuration requires checking
-their retained identities; do not share one configuration's library with another.
-
-For an unmodified published control, obtain an isolated official supported SDK.
-The [evidence record](../experiments/codeforge-correctness.md#controlled-comparison)
-contains the tested Flutter 3.47.5 archive URL, checksum and machine identities.
-Extract it outside the repository without changing the default SDK, then run:
-
-```sh
-CONTROL_FLUTTER=/absolute/path/to/isolated/flutter-3.47.5
-env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart probe-code-editor --flutter "$CONTROL_FLUTTER/bin/flutter" --upstream-control --output /tmp/adele-codeforge-upstream --investigate
-```
-
-This uses hosted CodeForge, a private pub cache and isolated exact Rust selection,
-with **no** SDK/component source patch. The driver checks the Dart admission
-constraint but only an actual successful build establishes API compatibility.
-Ordinary upstream dependency resolution and Cargokit behavior are retained and
-their locks recorded; source equality and Cargo-lock stability are checked. A
-control preparation failure is not an editing result.
-
-For a minimal upstream-ready case after preparing a control bundle, the retained
-`investigation_test.dart.template` is self-contained and imports only CodeForge,
-Flutter, Flutter test and Dart SDK APIs. Run one named case from that prepared
-application without rebuilding or changing its library identity:
-
-```sh
-CONTROL_PROBE=/tmp/adele-codeforge-upstream
-env -C "$CONTROL_PROBE/probe" FLUTTER_ROOT="$CONTROL_FLUTTER" PUB_CACHE="$CONTROL_PROBE/pub-cache" FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR="$CONTROL_PROBE/probe/build/linux/x64/profile/bundle/lib" "$CONTROL_FLUTTER/bin/flutter" test --no-pub --concurrency 1 --reporter expanded test/investigation_test.dart --plain-name 'A delete group=true gap=20ms'
-```
-
-Other focused selectors are `B scalar paste insert`,
-`C scalar plain-controller snapshot control`, `D mounted-CRLF join`, and
-`E widget readOnly rebuild current-client input delta`. The one JSON diagnostic
-line identifies the operation payload, ranges, relevant pending/rope state and
-desired versus actual result. Source-level causes and expected outcomes are in
-the single experiment evidence table. The separate `correctness.patch` is ready
-for review with those cases; it is not an upstream submission or production fix.
-
-The narrow `code-editor-probe` workflow runs only the explicit baseline reproduction
-and uploads logs, never redistribution-unready binaries/fonts. It does not impose
-the full matrix on ordinary CI. Existing workflow concurrency policy is retained;
-Flutter work within one build directory is serial. SDK-only driver/settlement and
-launcher tests are discovered by the maintained target, without Rust/network:
-
-```sh
-env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart test --target adele_tools --ci
-```
-
-Neither route compiles an EVC. The production native owner/access bridge and later
-Main Content/Source Editor work remain outside this investigation.
+Human validation of this integrated path is not established here. An automated
+smoke result or `--prepare-only` build must not be reported as those human checks.
 
 ## Live tests
 

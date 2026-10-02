@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'code_editor_dependency.dart';
-import 'code_editor_probe.dart';
+import 'code_editor_smoke_support.dart';
 
 /// Builds the application package, not a generated probe or a substitute editor.
 /// Preparation is serial with the profile build; runtime needs only the bundle.
@@ -30,7 +30,7 @@ Future<void> runCodeEditorSmoke(
   );
   if (version.exitCode != 0) throw StateError('${version.stderr}');
   final sdk = jsonDecode(version.stdout as String) as Map<String, dynamic>;
-  validateCodeEditorProbeToolchain(pin, sdk);
+  validateCodeEditorSmokeToolchain(pin, sdk);
   if (Platform.version.split(' ').first != pin['dart']) {
     throw StateError('Run editor-smoke with the pinned bundled Dart SDK.');
   }
@@ -139,7 +139,7 @@ Future<void> runCodeEditorSmoke(
       final runtime = await Directory.systemTemp.createTemp(
         'adele-editor-smoke-',
       );
-      final runtimeEnvironment = codeEditorProbeRuntimeEnvironment(environment);
+      final runtimeEnvironment = codeEditorSmokeRuntimeEnvironment(environment);
       try {
         final launch = ['-a', '-s', '-screen 0 1440x1000x24', executable.path];
         final smoke = await run(
@@ -151,7 +151,7 @@ Future<void> runCodeEditorSmoke(
           seconds: 90,
           allowFailure: true,
         );
-        validateCodeEditorProbeSmoke(smoke);
+        validateCodeEditorSmoke(smoke);
         final unavailable = '${library.path}.unavailable';
         await library.rename(unavailable);
         try {
@@ -164,7 +164,7 @@ Future<void> runCodeEditorSmoke(
             seconds: 45,
             allowFailure: true,
           );
-          validateCodeEditorProbeMissingLibrary(missing);
+          validateCodeEditorMissingLibrary(missing);
         } finally {
           await File(unavailable).rename(library.path);
         }

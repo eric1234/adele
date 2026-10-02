@@ -13,7 +13,19 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  setUpAll(() async => RustLib.init());
+  setUpAll(() async {
+    final libraryDirectory =
+        Platform.environment['FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR'];
+    if (libraryDirectory == null ||
+        libraryDirectory.isEmpty ||
+        !File('$libraryDirectory/libcode_forge.so').existsSync()) {
+      throw StateError(
+        'Run dart tools/adele.dart build-code-editor-tests and set '
+        'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR to its printed directory.',
+      );
+    }
+    await RustLib.init();
+  });
   const selected = TextSelection(baseOffset: 0, extentOffset: 1);
   for (final departure in ['control', 'blur/refocus', 'unmount/remount']) {
     testWidgets('selected composition: $departure', (tester) async {

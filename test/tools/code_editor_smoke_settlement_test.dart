@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:test/test.dart';
 
-import '../../tools/code_editor_probe/smoke_settlement.dart';
+import '../../tools/code_editor_smoke_support.dart';
 
 void main() {
   late SmokeSettlement settlement;

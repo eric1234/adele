@@ -7,7 +7,6 @@ import 'dart:math' as math;
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
 import 'code_editor_dependency.dart';
-import 'code_editor_probe.dart';
 import 'code_editor_smoke.dart';
 import 'contract_artifacts.dart';
 import 'test_runner.dart';
@@ -693,42 +692,6 @@ Future<void> main(List<String> arguments) async {
           );
         });
         return;
-      case 'probe-code-editor':
-        final options = arguments.skip(1).toList();
-        final verify = options.remove('--verify-known-defects');
-        final upstream = options.remove('--upstream-control');
-        final correctness = options.remove('--correctness-patch');
-        final investigate = options.remove('--investigate');
-        final prepareOnly = options.remove('--prepare-only');
-        String? probeFlutter;
-        final flutterOption = options.indexOf('--flutter');
-        if (flutterOption != -1) {
-          if (flutterOption + 1 >= options.length) {
-            throw const TestUsageException(
-              '--flutter requires an explicit executable path.',
-            );
-          }
-          options.removeAt(flutterOption);
-          probeFlutter = options.removeAt(flutterOption);
-        }
-        if (options.length != 2 || options.first != '--output') {
-          throw const TestUsageException(
-            'probe-code-editor requires --output NEW_DIRECTORY '
-            '[--flutter EXECUTABLE] [--upstream-control] [--correctness-patch] '
-            '[--investigate | --verify-known-defects | --prepare-only].',
-          );
-        }
-        exitCode = await runCodeEditorProbe(
-          repository: Directory.current.absolute,
-          output: Directory(options[1]).absolute,
-          verifyKnownDefects: verify,
-          flutterExecutable: probeFlutter,
-          upstreamControl: upstream,
-          correctnessPatch: correctness,
-          investigate: investigate,
-          prepareOnly: prepareOnly,
-        );
-        return;
       default:
         _usage();
         exitCode = 64;
@@ -1065,13 +1028,6 @@ Commands:
                      Build and run the internal development runtime smoke path.
   editor-smoke linux [--prepare-only]
                      Package the prepared-EVC editor smoke; optionally skip execution.
-  probe-code-editor --output NEW_DIRECTORY [--verify-known-defects]
-                     Investigate the isolated native CodeForge 10.14.0 baseline.
-                     --flutter EXECUTABLE selects an explicit SDK, never the global pin.
-                     --upstream-control uses unmodified published source on Dart ^3.13.2.
-                     --investigate runs mounted causal cases with correct expectations.
-                     --correctness-patch selects a separate experimental patch (ADELE pin).
-                     --prepare-only builds and smoke-checks a bundle for --interactive use.
 ''');
 }
 

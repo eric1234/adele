@@ -34,6 +34,8 @@ owns the archive URL/checksum, ordered patches, prepared-tree digest, Rust
 Preparation applies `01-compatibility-build.patch` and the small
 `02-correctness.patch`; ordinary CodeForge widget/font behavior is retained.
 Change these tracked inputs, not materialized source or the pub cache.
+The [retained investigation](../experiments/codeforge-correctness.md) explains this
+small, unpublished patch set and its evidence limits.
 
 The root `pubspec.yaml` has a stable path override to the Git-ignored
 `.adele/dependencies/code_forge`; `app/pubspec.yaml` declares the exact package and
@@ -124,23 +126,6 @@ source attribution; preparation does not materialize a separate notice inventory
 or override upstream font assets. Publishing prebuilt binaries needs appropriate
 license review for the shipped target and contents; this checkout makes no
 redistribution-clearance claim.
-
-<a id="isolated-native-editor-probe"></a>
-
-## Historical investigation
-
-The isolated `tools/code_editor_probe.dart` remains a Linux x64 investigation with
-its own fixture locks and source copies, separate from the adopted app dependency.
-Its compatibility and causal patches are historical investigation inputs, not the
-current ordered preparation manifest. It preserves the integrated SDK/evaluator
-pin and initializes no editor on SDK-only execution paths. Upstream controls use
-an explicit separate SDK without changing workspace manifests, the root lockfile,
-or global SDK selection.
-
-See [historical reproduction procedures](testing.md#native-editor-candidate-probe)
-and the [versioned correctness investigation](../experiments/codeforge-correctness.md).
-Those findings, including human checks of older unpatched configurations, do not
-validate adoption. Known-defect reproduction is not current editor acceptance.
 
 ## Native terminal dependency
 

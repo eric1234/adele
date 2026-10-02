@@ -72,9 +72,9 @@ void main() {
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
-      'tools/code_editor_probe.dart',
       'tools/code_editor_dependency.dart',
       'tools/code_editor_smoke.dart',
+      'tools/code_editor_smoke_support.dart',
       'tools/contract_artifacts.dart',
       'tools/frontend_artifacts.dart',
       'tools/git_pty_artifact.dart',
@@ -407,6 +407,24 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     expect(commands.existsSync(), isFalse);
     expect(generatedContract.existsSync(), isFalse);
     expect(result.stdout, isNot(contains('START test:')));
+  });
+
+  test('unknown commands remain SDK-only', () async {
+    // Unknown commands must not prepare dependencies or invoke external tools.
+    environment['PATH'] = '${root.path}/no-external-tools';
+    final unknown = await invoke(['not-a-command']);
+    expect(unknown.exitCode, 64);
+    expect(unknown.stderr, isEmpty);
+    final retired = await invoke(['probe-code-editor']);
+    expect(retired.exitCode, unknown.exitCode);
+    expect(retired.stdout, unknown.stdout);
+    expect(retired.stderr, unknown.stderr);
+    expect(retired.stdout, isNot(contains('probe-code-editor')));
+    expect(commands.existsSync(), isFalse);
+    expect(generatedContract.existsSync(), isFalse);
+    expect(Directory('${root.path}/.adele').existsSync(), isFalse);
+    expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
+    expect(File('${root.path}/pubspec.yaml').existsSync(), isFalse);
   });
 
   for (final arguments in [

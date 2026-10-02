@@ -4,7 +4,7 @@ import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 
-const codeEditorFrontendLibrary = 'package:code_editor_probe/main.dart';
+const codeEditorFrontendLibrary = 'package:code_editor_smoke/main.dart';
 
 /// Compiles only public UI and Flutter source. No editor owner is initialized
 /// during preparation; the native body is supplied by the eventual host.
@@ -20,7 +20,7 @@ Future<Program> compileCodeEditorFrontend({
             ..addPlugin(const CodeEditorDeclarations())
             ..entrypoints.add(codeEditorFrontendLibrary))
           .compile({
-            'code_editor_probe': {
+            'code_editor_smoke': {
               'main.dart':
                   await (fixture ??
                           File(

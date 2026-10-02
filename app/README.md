@@ -218,7 +218,8 @@ observation, not a save transaction or selection-range API.
 
 The small retained fixes address specific buffered-text, deletion, scalar undo,
 and CRLF Backspace cases, not lossless file-saving or general IME correctness.
-Snapshots do not promise uncommitted composition text. An isolated native test
+Snapshots do not promise uncommitted composition text. The
+[deferred native reproduction](../docs/development/testing.md#deferred-selected-composition-reproduction)
 observed selected-range composition losing its pending replacement after either
 blur/refocus of the same widget or full unmount/remount: replacing `a` in `ab`
 with composing `x` ultimately left `b`, not `xb`; undo restored `ab`. Finish
@@ -229,13 +230,13 @@ documented upstream offset edge cases; their expanded patches were not retained.
 Avoid those combinations during early development and use explicit selection or
 space insertion instead. Revisit them, grouped Unicode edits and broader
 clipboard/IME behavior before file saving. Other retained evidence lives in the
-[historical reproductions](../docs/experiments/codeforge-correctness.md).
+[retained correctness findings](../docs/experiments/codeforge-correctness.md).
 There is no ADELE-specific fixed text cap or memory bound.
 
 See [focused owner/EVC checks](../docs/development/testing.md#focused-editor-checks)
 and the [Linux profile/manual entrypoint](../docs/development/testing.md#integrated-editor-smoke).
-Those procedures are not pass claims; human checks of this integrated path and
-macOS/Windows execution are not established by the historical probe results.
+Those procedures are not pass claims; earlier investigation results do not
+establish human checks of this integrated path or macOS/Windows execution.
 
 ### Native terminal surface
 

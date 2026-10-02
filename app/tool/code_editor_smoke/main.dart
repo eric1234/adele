@@ -8,9 +8,9 @@ import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../tools/code_editor_probe/smoke_settlement.dart';
+import '../../../tools/code_editor_smoke_support.dart';
 
-const _library = 'package:code_editor_probe/main.dart';
+const _library = 'package:code_editor_smoke/main.dart';
 const _initial = 'void main() {\n  print("ADELE");\n}\n';
 const _reference = '// Independent read-only editor.\nfinal answer = 42;\n';
 const _identity = String.fromEnvironment('ADELE_CODE_EDITOR_IDENTITY');

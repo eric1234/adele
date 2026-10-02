@@ -1101,15 +1101,10 @@ Future<void> main() async {
         '01-compatibility-build.patch',
         '02-correctness.patch',
       ]);
-      for (final (original, copy) in [
-        ('compatibility.patch', '01-compatibility-build.patch'),
-        ('cargokit_runner.lock.template', 'cargokit_runner.lock.template'),
-      ]) {
-        expect(
-          File('third_party/code_forge/$copy').readAsBytesSync(),
-          File('tools/code_editor_probe/fixtures/$original').readAsBytesSync(),
-        );
-      }
+      expect(
+        File('third_party/code_forge/${config['runnerLock']}').existsSync(),
+        isTrue,
+      );
       for (final patch in config['patches'] as List) {
         expect(File('third_party/code_forge/$patch').existsSync(), isTrue);
       }
