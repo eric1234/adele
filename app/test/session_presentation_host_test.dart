@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -9,6 +10,97 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('unavailable strategy stays local to the workbench pane', (
+    tester,
+  ) async {
+    final extensions = ExtensionRegistry();
+    final session = Session(
+      id: SessionId('session'),
+      taskId: TaskId('task'),
+      strategyId: OrchestrationStrategyId('test.strategy'),
+    );
+    late MainContentAccess source;
+    var editorFactories = 0;
+    var strategyFailures = 0;
+    extensions.register(
+      point: mainContentContributions,
+      id: ExtensionId('test.source'),
+      value: MainContentContribution(
+        order: 300,
+        attach: (access) {
+          source = access;
+          access.open(
+            MainContentPane(
+              id: 'editor',
+              title: 'Editor',
+              createPresentation: () {
+                editorFactories++;
+                return const TextField();
+              },
+            ),
+          );
+        },
+      ),
+    );
+    final registration = extensions.register(
+      point: sessionPresentationContributions,
+      id: ExtensionId('test.presentation'),
+      value: SessionPresentationContribution(
+        strategyId: session.strategyId,
+        displayName: 'Strategy',
+        createPresentation: (_) => const Text('Strategy body'),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MainContentHost(
+            session: session,
+            extensions: extensions,
+            strategyTitle: 'Strategy',
+            strategyContent: SessionPresentationHost(
+              session: session,
+              extensions: extensions,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final editor = tester.element(find.byType(TextField));
+    await registration.close();
+    await tester.pumpAndSettle();
+    expect(find.text('Session presentation is unavailable.'), findsOneWidget);
+    expect(tester.element(find.byType(TextField)), same(editor));
+
+    extensions.register(
+      point: sessionPresentationContributions,
+      id: ExtensionId('test.presentation'),
+      value: SessionPresentationContribution(
+        strategyId: session.strategyId,
+        displayName: 'Strategy',
+        createPresentation: (_) {
+          strategyFailures++;
+          throw StateError('unavailable view');
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    source.setTitle('editor', 'Still healthy');
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'Session presentation is unavailable: the presentation could not be created.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Still healthy'), findsOneWidget);
+    expect(tester.element(find.byType(TextField)), same(editor));
+    expect(editorFactories, 1);
+    expect(strategyFailures, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   final OrchestrationStrategyId strategyId = OrchestrationStrategyId(
     'dev.adele.test.strategy',
   );

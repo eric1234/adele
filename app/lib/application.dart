@@ -9,6 +9,7 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
@@ -21,6 +22,7 @@ import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/task_browser/task_browser_presentation_host.dart';
@@ -38,6 +40,7 @@ final class AdeleApplication extends StatefulWidget {
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
+    this.mainContentHost,
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -46,6 +49,11 @@ final class AdeleApplication extends StatefulWidget {
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
+
+  /// Optional native bindings for declared prepared Main Content panes.
+  /// Catalog discovery and registration still use the ordinary frontend path.
+  /// Selected once at mount; this application closes the host on shutdown.
+  final PreparedMainContentHost? mainContentHost;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -122,6 +130,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       backends: _runtime.plugins,
       sessionHost: _sessionHost,
       consoleHost: _consoleHost,
+      mainContentHost: widget.mainContentHost,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -620,6 +629,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           task: _task,
           environment: _environment,
           sessionLabel: _sessionLabel,
+          sessionPresented: session != null,
           onProject: () => _showBrowser(keepTask: false),
           onTask: () => _showBrowser(keepTask: true),
           navigating: _navigating,
@@ -658,41 +668,51 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                   ignoring: _navigating,
                   child: ExcludeFocus(
                     excluding: _navigating,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SessionPresentationHost(
-                          session: session,
-                          extensions: _runtime.extensions,
+                    child: MainContentHost(
+                      session: session,
+                      extensions: _runtime.extensions,
+                      isCurrent: () =>
+                          _closing == null && identical(_session, session),
+                      strategyTitle: _sessionLabel ?? 'Session',
+                      strategyContent: SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SessionPresentationHost(
+                              session: session,
+                              extensions: _runtime.extensions,
+                            ),
+                            if (_execution case final controller?)
+                              RunExecutionStatus(
+                                pendingApproval: controller.pendingApproval,
+                                enabled:
+                                    !controller.isAdvancing &&
+                                    !controller.isClosed &&
+                                    controller.unavailableReason == null &&
+                                    _hasPresentationAuthority(
+                                      session,
+                                      presentation,
+                                    ),
+                                isAdvancing: controller.isAdvancing,
+                                failureMessage: controller.failureMessage,
+                                unavailableReason: controller.unavailableReason,
+                                onDecision: (approval, approved) {
+                                  if (_hasPresentationAuthority(
+                                        session,
+                                        presentation,
+                                      ) &&
+                                      controller.unavailableReason == null) {
+                                    controller.resolveApproval(
+                                      approval,
+                                      approved: approved,
+                                    );
+                                  }
+                                },
+                              ),
+                          ],
                         ),
-                        if (_execution case final controller?)
-                          RunExecutionStatus(
-                            pendingApproval: controller.pendingApproval,
-                            enabled:
-                                !controller.isAdvancing &&
-                                !controller.isClosed &&
-                                controller.unavailableReason == null &&
-                                _hasPresentationAuthority(
-                                  session,
-                                  presentation,
-                                ),
-                            isAdvancing: controller.isAdvancing,
-                            failureMessage: controller.failureMessage,
-                            unavailableReason: controller.unavailableReason,
-                            onDecision: (approval, approved) {
-                              if (_hasPresentationAuthority(
-                                    session,
-                                    presentation,
-                                  ) &&
-                                  controller.unavailableReason == null) {
-                                controller.resolveApproval(
-                                  approval,
-                                  approved: approved,
-                                );
-                              }
-                            },
-                          ),
-                      ],
+                      ),
                     ),
                   ),
                 ),

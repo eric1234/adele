@@ -283,6 +283,7 @@ void main() {
               ),
               selectors: const [],
               onSelectProject: (_) {},
+              sessionPresented: true,
               sessionContent: const TextField(),
               inspection: window.cards.isEmpty
                   ? null
@@ -410,8 +411,9 @@ void main() {
           ),
           selectors: const [],
           onSelectProject: (_) {},
-          sessionContent: const Column(
-            children: [Text('Main Session'), TextField()],
+          sessionPresented: true,
+          sessionContent: const SingleChildScrollView(
+            child: Column(children: [Text('Main Session'), TextField()]),
           ),
           inspectionScrollController: scroll,
           inspection: InspectionStackHost(
