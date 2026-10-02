@@ -77,7 +77,8 @@ EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
-`PreparedPresentationDescriptor` variants are `PreparedConsolePresentation`,
+`PreparedPresentationDescriptor` variants are `PreparedMainContentPresentation`,
+`PreparedConsolePresentation`,
 `PreparedTaskBrowserPresentation`, `PreparedSessionPresentation`,
 `PreparedToolActivityPresentation`, and
 `PreparedModelNativeActivityPresentation`.
@@ -87,6 +88,21 @@ The separate sealed `PreparedFrontendExtension` currently has
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list; existing presentation roles and
 manifest version 1 are unchanged.
+
+Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
+integer `order`, `library`, `initialize`, and `entrypoint`. These are the role's
+only fields: no strategy/backend affinity, service allowlist, or stock pane-kind
+enum. `library` is a canonical `package:` Dart URI; `initialize` and `entrypoint`
+are top-level identifiers. `PreparedMainContentPresentation` is data-only and
+remains Flutter/eval-independent. The initializer opens the initial collection;
+the content entrypoint renders each admitted pane in its own runtime.
+
+Normal frontend bootstrap validates both entrypoints, then registers through the
+existing catalog/extension-registry path. Discovery and registration do not open
+panes or acquire native editors. This frontend-only role requires no backend
+process; optional native bindings and short-lived initialization belong to the
+[application host](../../app/README.md#grouped-main-content), while the public
+[UI contract](../ui/README.md#grouped-main-content) owns collection operations.
 
 Console descriptors use `role: 'console'` with required `extensionId`, `library`,
 `entrypoint` (content presentation), and `actions`. Each action has `id`, `label`,
@@ -153,8 +169,8 @@ Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation.
 The Flutter bootstrap then validates behavioral bytecode and descriptor entrypoint
 presence before registration, intercepting runtime execution before initializers
 or plugin code run and installing no native picker authority. Invalid behavioral
-code fails only that frontend attempt. Console descriptors also receive the
-entrypoint validation described above. For other presentation-only roles,
+code fails only that frontend attempt. Console and Main Content descriptors also
+receive the entrypoint validation described above. For other presentation-only roles,
 decoding/entrypoint failures, including readable corrupt bytecode, stay per-view.
 The pure-Dart catalog neither decodes nor links frontend code.
 

@@ -275,6 +275,7 @@ CODEFORGE_PROBE_COMPLETE
     expect(imports, [
       'dart:convert',
       'dart:io',
+      'backend_artifacts.dart',
       'code_editor_dependency.dart',
       'code_editor_smoke_support.dart',
     ]);
@@ -289,5 +290,64 @@ CODEFORGE_PROBE_COMPLETE
       source,
       contains(r"artifact.copy('${bundle.path}/data/editor_frontend.evc')"),
     );
+  });
+
+  test(
+    'workspace preparation extends the existing stock catalog and target',
+    () {
+      final runner = File('tools/code_editor_smoke.dart').readAsStringSync();
+      final prepare = File(
+        'app/tool/code_editor_smoke/prepare_test.dart',
+      ).readAsStringSync();
+      expect(runner, contains('bool workspace = false'));
+      expect(runner, contains('await prepareDesktopPluginDefines('));
+      expect(
+        runner,
+        contains('flutterExecutable: \'\$flutterRoot/bin/flutter\''),
+      );
+      expect(runner, isNot(contains('dev.adele.plugin.chat-strategy')));
+      expect(runner, contains('--target=tool/code_editor_smoke/main.dart'));
+      expect(
+        runner.indexOf('await prepareDesktopPluginDefines('),
+        lessThan(runner.indexOf("run('prepare-evc'")),
+      );
+      expect(
+        runner.indexOf('validateCodeEditorMissingLibrary(missing)'),
+        lessThan(runner.indexOf("'workspace-run'")),
+      );
+      expect(runner, contains("[...launch, '--workspace-smoke']"));
+      expect(prepare, contains('ADELE_CODE_EDITOR_WORKSPACE'));
+      expect(prepare, contains('ADELE_PLUGIN_INSTALLATION_ROOT'));
+      expect(
+        prepare.indexOf('await prepareMainContentFixture('),
+        lessThan(prepare.indexOf('await installMainContentFixture(')),
+      );
+      expect(prepare, contains('await compileCodeEditorFrontend('));
+    },
+  );
+
+  test('workspace runtime uses the real app and no preparation compiler', () {
+    final source = File(
+      'app/tool/code_editor_smoke/main.dart',
+    ).readAsStringSync();
+    final resources = File(
+      'app/tool/main_content_fixture.dart',
+    ).readAsStringSync();
+    expect(source, contains("arguments.contains('--workspace')"));
+    expect(source, contains("arguments.contains('--workspace-smoke')"));
+    expect(source, contains('AdeleApplication('));
+    expect(source, contains('mainContentHost: resources.host'));
+    expect(source, contains('readChatGptConfiguration: () => null'));
+    expect(source, contains('ADELE_EDITOR_WORKSPACE_READY'));
+    expect(
+      source,
+      contains('runtime.plugins.state == ApplicationPluginState.ready'),
+    );
+    expect(source, contains('ADELE_EDITOR_WORKSPACE_COMPLETE'));
+    expect(source, contains("await _press(root, 'New Chat Session')"));
+    expect(source, contains('Session departure discards synthetic owners'));
+    expect(source, isNot(contains('main_content_frontend_compiler.dart')));
+    expect(resources, isNot(contains('package:dart_eval/')));
+    expect(resources, isNot(contains('main_content_frontend_compiler.dart')));
   });
 }

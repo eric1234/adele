@@ -24,7 +24,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
-| Generic shell, Task Browser/Session/Inspection hosting, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
+| Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -175,10 +175,10 @@ for the broader preparation model, not portable release packaging.
 ### Native code editor
 
 [`native_code_editor.dart`](lib/editor/native_code_editor.dart) is the app-private
-adapter over CodeForge for supplied in-memory text. It is not a Main Content
-contribution, file/save model, diff editor, or LSP integration. No Project, Task,
-Session, Environment, filesystem, AI, or network authority is configured. The host
-chooses `plain`, `dart`, `json`, or `python` highlighting without a file path.
+adapter over CodeForge for supplied in-memory text. The primitive itself is not a
+Main Content contribution, file/save model, diff editor, or LSP integration. No
+Project, Task, Session, Environment, filesystem, AI, or network authority is
+configured. The host chooses `plain`, `dart`, `json`, or `python` highlighting without a file path.
 Dependency preparation belongs to the
 [toolchain policy](../docs/development/toolchain.md#native-editor-preparation).
 
@@ -772,9 +772,9 @@ but preparation, inference, tools, approvals, and history settlement do not bloc
 navigation for the duration of a Run.
 
 After acceptance, the app unbinds/revokes exact presentation actions, detaches
-selected-view listeners, and clears Inspection/console context. Changing the
-presented Session does not close its execution. Reentry reuses the same owner
-and live Run with a fresh presentation binding; cached native approval callbacks
+selected-view listeners and Main Content groups, and clears Inspection/console
+context. Changing the presented Session does not close its execution. Reentry
+reuses the same owner and live Run with a fresh presentation binding; cached native approval callbacks
 and interpreted handles remain inert even when that Session is opened again.
 Only the selected owner updates workbench UI; background work never selects a
 Session or replaces Inspection. Owners remain until shutdown, while settled
@@ -788,6 +788,53 @@ disposal/application exit. Follow
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
+
+### Grouped Main Content
+
+[`MainContentHost`](lib/ui/main_content/main_content_host.dart) and
+[`MainContentController`](lib/ui/main_content/main_content_controller.dart) own the
+current-Session collection and common pane chrome. They consume the public
+[`adele_ui` contract](../packages/ui/README.md#grouped-main-content), preserving
+[exact registration/group lifetimes](../docs/architecture/plugin-system.md#grouped-main-content).
+`AdeleApplication` supplies the existing `SessionPresentationHost` and execution
+status as the stable order-100 strategy adapter. Chat is not re-registered, and
+pane changes do not replace its Session binding, backend, or deactivation hook.
+`AdeleShell.sessionPresented` selects Session versus Browser layout independently
+of whether strategy content is available.
+
+The controller orders whole groups and flattens their panes before the widget
+calculates widths. Every pane, not every group, receives an equal share with a
+320-logical-pixel minimum. Simple padding and dividers frame a bounded horizontal
+scroller; overflow keeps panes mounted rather than turning them into hidden tabs.
+Editors receive bounded height, while strategy content retains its own vertical
+scroll view. Reveal/focus targets only the Main Content scroll position, not
+Inspection or console scrolling. Title/order updates preserve pane identity;
+factories, including failures, are not retried on unrelated rebuilds. Manual
+resizing, hide/maximize controls, and docking are not implemented by this host.
+
+[`PreparedMainContentHost`](lib/frontend/prepared_main_content_host.dart) registers
+through `ApplicationFrontendBootstrap` using the normal catalog and registry.
+It invokes `initialize` in a short-lived operation runtime, then uses a fresh
+`PreparedFrontend` presentation runtime per pane. The app-native
+[`MainContentBridge`](lib/frontend/main_content_bridge.dart) limits collection
+operations to that exact attachment and originating pane lifetime; it is not a
+global pane/editor lookup. Initialization retains no evaluator; later collection
+updates come from pane runtimes, with no autonomous updater after all panes close.
+
+The optional `createBinding` factory returns `PreparedMainContentPaneBinding`
+with a native bridge factory, optional readiness Future, focus callback, and
+release callback. It captures native resources once per admitted pane; the host
+observes readiness failure and waits before creating that pane's EVC presentation.
+Retirement cannot retarget the captured owner. Native resources remain private;
+the generic host knows no stock editor kind or plugin implementation.
+
+The development-only [`main_content_fixture.dart`](tool/main_content_fixture.dart)
+supplies independent in-memory native editors to the interpreted
+[`main_content_frontend.dart`](test/fixtures/main_content_frontend.dart), which
+owns collection actions. Compilation stays in
+[`main_content_frontend_compiler.dart`](tool/main_content_frontend_compiler.dart),
+outside production startup. See [focused checks](../docs/development/testing.md#focused-main-content-checks)
+and the [normal-workspace manual route](../docs/development/testing.md#manual-grouped-workspace).
 
 ### Plugin storage hosting
 

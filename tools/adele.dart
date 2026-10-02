@@ -516,16 +516,23 @@ Future<void> main(List<String> arguments) async {
         return;
       case 'editor-smoke':
         if (arguments.length < 2 ||
-            arguments.length > 3 ||
+            arguments.length > 4 ||
             arguments[1] != 'linux' ||
-            (arguments.length == 3 && arguments[2] != '--prepare-only')) {
+            arguments.skip(2).toSet().length != arguments.length - 2 ||
+            arguments
+                .skip(2)
+                .any(
+                  (option) =>
+                      option != '--prepare-only' && option != '--workspace',
+                )) {
           throw const TestUsageException(
-            'editor-smoke requires linux [--prepare-only].',
+            'editor-smoke requires linux [--workspace] [--prepare-only].',
           );
         }
         await runCodeEditorSmoke(
           Directory.current,
-          prepareOnly: arguments.length == 3,
+          prepareOnly: arguments.contains('--prepare-only'),
+          workspace: arguments.contains('--workspace'),
         );
         return;
       case 'bootstrap':
@@ -1026,8 +1033,8 @@ Commands:
                      Build the desktop app in an explicit mode.
   smoke linux [--profile|--release]
                      Build and run the internal development runtime smoke path.
-  editor-smoke linux [--prepare-only]
-                     Package the prepared-EVC editor smoke; optionally skip execution.
+  editor-smoke linux [--workspace] [--prepare-only]
+                     Package editor smoke; optionally include the real app workspace or skip execution.
 ''');
 }
 

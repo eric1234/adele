@@ -100,8 +100,8 @@ activity. Concrete Session/tool/native presentation contracts live in
 separately from the broader workbench hypotheses below.
 
 ```text
-MainContentView
-    substantial active work content
+MainContentContribution
+    ordered group of substantial active-work panes
     stock placement: center work area
 
 NavigationView
@@ -129,6 +129,17 @@ Settings contributions
 ```
 
 Physical placement is not part of the semantic interface. The stock layout may evolve or become user-configurable.
+
+Main Content uses the accepted [grouped contribution contract](../architecture/plugin-system.md#grouped-main-content),
+not a fixed list of Chat/Diff/Source/Artifact kinds. The stock product sequence is
+layered over extensible numeric contribution ordering: the strategy adapter uses
+100; Diff 200, Source 300, and Artifact 400 illustrate possible stock defaults,
+not reserved values or a core enum. Each exact registration owns a contiguous
+ordered collection, so all Source items stay together while participating in
+individual pane sizing. The strategy remains ordinary Session presentation inside
+its host adapter, not a second Chat registration. Future manual resizing,
+hide/maximize, or docking does not follow merely from this grouping contract;
+current geometry and limits belong to the [application map](../../app/README.md#grouped-main-content).
 
 ## 2.2 Commands and input
 
@@ -254,7 +265,7 @@ an explicitly known source URI directly.
 
 **Role:** Project/Task/Session selection and management experience represented by the stock mockups.
 
-The Task Browser is not assumed to be a `MainContentView`. Before a Task/Session is selected there may be no normal active-session workbench. The plugin may own a dedicated Project-level screen/window/shell, similar to a selector launching an OS-native picker. A future UI could embed the same experience in the normal workbench without changing semantic contracts.
+The Task Browser is not assumed to be a Main Content contribution. Before a Task/Session is selected there may be no normal active-session workbench. The plugin may own a dedicated Project-level screen/window/shell, similar to a selector launching an OS-native picker. A future UI could embed the same experience in the normal workbench without changing semantic contracts.
 
 Likely provides/defines:
 
@@ -352,7 +363,7 @@ Filesystem Tools, Search, Command Tool, and Internal Source Editor should contin
 
 Likely provides/defines:
 
-- an agent-interaction `MainContentView` or equivalent hosting surface;
+- an agent-interaction surface within Main Content hosting;
 - strategy-selection UX when a user creates a Session;
 - common strategy-hosting/presentation framing;
 - navigation/commands for entering or switching among user-facing Sessions where useful.
@@ -645,7 +656,7 @@ Expected functionality includes plan read/write/update tools, Session-associated
 
 **Role:** rich review experience without embedding Git or editor assumptions.
 
-Likely provides a Diff/Review `MainContentView`, review scope controls, hunk rendering, comments, and plugin-defined interfaces for reviewable changes and review operations. The word "Review" here names the Diff plugin's workflow; it is not a separate core Review domain identity.
+Likely provides a Diff/Review Main Content contribution, review scope controls, hunk rendering, comments, and plugin-defined interfaces for reviewable changes and review operations. The word "Review" here names the Diff plugin's workflow; it is not a separate core Review domain identity.
 
 Possible provisional contracts:
 
@@ -952,6 +963,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Interface / extension family | Likely owner | Reason |
 | --- | --- | --- |
 | Semantic workbench surfaces | Core | Host composes global UI while placement evolves |
+| `MainContentContribution` | `adele_ui` | Exact registrations own ordered contiguous pane groups; the host composes groups and adapts existing Session presentation |
 | Commands / Command Palette / keybindings | Core | Cross-cutting controller/input infrastructure |
 | Settings | Core | Cross-cutting configuration infrastructure |
 | `ProjectSelectorContribution` | `adele_core_extensions` | Core-owned URI selection contract with no natural existing public domain package; lifecycle stays in core |

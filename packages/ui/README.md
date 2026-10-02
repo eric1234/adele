@@ -1,9 +1,9 @@
 # ADELE UI
 
 `adele_ui` is the experimental public Flutter package for semantic Task Browser,
-Session, shared console, and read-only activity presentation. It depends only on
-Flutter and public ADELE contracts, never application code, internal host
-implementations, or stock plugins.
+Session, grouped Main Content, shared console, and read-only activity presentation.
+It depends only on Flutter and public ADELE contracts, never application code,
+internal host implementations, or stock plugins.
 Product, orchestration, model tools, and the extension registry remain pure Dart.
 
 ## Task Browser
@@ -43,6 +43,44 @@ supply `displayName`, `strategyId`, `extensionId`, `library`, and `entrypoint`, 
 optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
 `hostAdapter` is no longer supported. See the exact
 [installed schema](../plugin_runtime/README.md#prepared-catalog).
+
+## Grouped Main Content
+
+[`main_content.dart`](lib/main_content.dart) defines the additive
+`mainContentContributions` point. `MainContentContribution(order, attach)` owns an
+ordered collection for one exact registration and canonical Session attachment,
+not one collection per PluginId. Its `attach(MainContentAccess)` may be synchronous
+or asynchronous; successful completion does not revoke native access. Groups sort
+by ascending numeric `order`, then lexical ExtensionId, preserving each owner's
+contiguous local pane sequence before layout. Broader composition and retirement
+rules belong to the
+[Main Content architecture](../../docs/architecture/plugin-system.md#grouped-main-content).
+
+`MainContentAccess` exposes the captured `session`, `isActive`, and immutable local
+`panes` snapshots, plus `open(MainContentPane)`, `setTitle(id, title)`,
+`setOrder(ids)`, `remove(id)`, and `focus(id, keyboardFocus: false)`. Reordering must
+be an exact permutation of that group's current pane IDs. Opening an existing ID
+throws `ArgumentError` without replacing, focusing, or transferring ownership of
+the supplied pane; removing a missing ID is a no-op. Unknown title/focus targets
+are errors. After revocation,
+only `isActive` remains usable; old access never retargets a replacement.
+
+`MainContentPane` supplies a local `id`, `title`, `createPresentation` factory, and
+optional `requestFocus`, `onClose`, and `release` callbacks. Presentation is retained
+across title/order updates; the factory is attempted at most once, including
+failure. Common close chrome calls `onClose`; the owner decides when to remove the
+pane. Removal does not call `onClose` again. `release` runs synchronously once on
+logical removal or attachment retirement, immediately revoking old pane access.
+Native owners defer physical resource teardown until mounted descendants detach
+where necessary. Focus reveals the pane in Main Content; keyboard focus is separately
+opt-in, using `requestFocus` or ordinary content traversal.
+
+The existing Session presentation is adapted into the group layout, not registered
+again. Its resolver, backend affinity, and deactivation hook are unchanged.
+[Application hosting](../../app/README.md#grouped-main-content) owns geometry and
+native bindings; the [prepared catalog](../plugin_runtime/README.md#prepared-catalog)
+owns descriptor fields. Focused checks are mapped in
+[Main Content validation](../../docs/development/testing.md#focused-main-content-checks).
 
 ## Shared Console
 
@@ -207,6 +245,18 @@ native implementations supply their behavior; calling a stub natively throws
   [application owner](../../app/README.md#native-code-editor), and
   [prepared-EVC tests](../../app/test/code_editor_bridge_test.dart). This bridge
   registers no Main Content/editor role and supplies no file/save, diff, or LSP API.
+- `main_content_bridge.dart` supplies `readMainContentPanes()` and
+  `readMainContentPaneId()`, plus boolean-returning `openMainContentPane(id, title,
+  canClose)`, `setMainContentPaneTitle(id, title)`, `setMainContentPaneOrder(ids)`,
+  `removeMainContentPane(id)`, and `focusMainContentPane(id, keyboardFocus)`.
+  Requests affect only the originating contribution's collection. Rejected requests
+  return false; retired reads return an empty snapshot or ID. The current pane ID
+  is also empty during initialization. A short-lived initializer opens initial
+  panes, then loses bridge access; each pane has an independent presentation runtime
+  with its own scoped bridge. Closing every pane leaves no autonomous evaluator
+  updating the collection. A fresh Session attachment may initialize again.
+  Native editor access, when supplied, is a separate per-pane binding, not an
+  editor lookup through these local IDs.
 - `terminal_projection_bridge.dart` is a separate, presentation-owned read-only
   projection API: request/build, bounded feed/reset, revocable replay yields, immutable observation,
   follow/local scroll, and change subscriptions. Each rich Inspection or read-only

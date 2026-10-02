@@ -152,6 +152,7 @@ Examples illustrate different contracts, not a universal rule:
 | Project selectors | [Core extension contracts](../../packages/core_extensions/README.md) expose independent actions, not interchangeable default providers. |
 | Project providers | The same public package defines backing preparation through an explicitly selected capability provider, without default substitution. |
 | Task Browser | [UI](../../packages/ui/README.md#task-browser) requires exactly one active browser contribution; zero is unavailable and multiple are ambiguous, without fallback. |
+| Main Content | [UI](../../packages/ui/README.md#grouped-main-content) composes independent ordered groups; each exact registration controls only its own contiguous panes. |
 
 Prefer structured typed contributions when an extension influences an operation,
 not opaque mutation of host objects through universal `beforeX`/`afterX` hooks.
@@ -274,6 +275,48 @@ infrastructure; plugins contribute Commands and suggested bindings. UI affordanc
 should invoke the same domain/Command behavior as other surfaces, not create
 UI-only semantics. Broader Command infrastructure is not yet implemented.
 Application Commands are distinct from model tools that execute external programs.
+
+### Grouped Main Content
+
+Main Content composes independent pane groups for the presented canonical Session.
+One group belongs to one exact contribution registration, not to a PluginId: a
+plugin can supply multiple independent groups. Groups sort by ascending numeric
+`order`, then lexical ExtensionId. Each owner controls its local pane sequence;
+the host flattens whole groups before layout so another group cannot interleave
+their items. Ordering is composition, not authority or a reserved stock-kind enum.
+
+The host adapts the existing strategy presentation as a stable group at order 100.
+It does not register Chat again or change Session presentation resolution, owning
+backend affinity, execution ownership, or navigation settlement. Whether a Session
+is presented is explicit window state, separate from strategy-view availability;
+missing strategy presentation does not turn that workbench into Task Browser or
+remove independent Main Content contributions.
+
+A contribution attaches to one exact registration and current Session object.
+Its access can add, retitle, reorder, reveal/focus, and remove only its own panes.
+Pane IDs are local data, not cross-group or global editor handles. Metadata/order
+updates retain pane presentation identity. Common close chrome requests owner
+closure; removal releases that pane independently of siblings. Departure,
+registration retirement, and host shutdown end captured access. Fresh attachment
+may discover a replacement, but old handles and callbacks never migrate to it or
+to a newly opened pane reusing the same ID. Group/pane failures remain local, not
+reasons to replace a strategy or another contribution.
+
+Prepared contributions initialize through a short-lived operation runtime that
+opens initial panes and is disposed on settlement. Each pane then has an
+independent presentation runtime whose bridge can manage that same owned group.
+No initializer callback is retained as a factory, and there is no hidden evaluator
+or background residency to update a collection after all its panes close. A fresh
+Session attachment can initialize again. Optional native bindings capture resources
+for the exact registration, Session attachment, and pane lifetime; readiness does
+not grant a stale presentation access to a replacement resource.
+
+The public [UI map](../../packages/ui/README.md#grouped-main-content) owns API details,
+the [prepared catalog](../../packages/plugin_runtime/README.md#prepared-catalog)
+owns the data-only ABI, and the [application map](../../app/README.md#grouped-main-content)
+owns layout and native binding mechanics. Stock ordering is
+[product direction](../product/development-workflow/README.md#6-center-workspace--main-content-stock-layout)
+layered over this extensible contract, not fixed core slots.
 
 ### Native editor primitive
 

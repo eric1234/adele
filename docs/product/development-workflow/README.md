@@ -418,7 +418,7 @@ Generic branch browsers, interactive rebases, stash managers, Git graphs, etc. a
 
 The stock active-session Main Content layout is intentionally **one-dimensional and horizontally ordered**, rather than an arbitrary recursive tiling system.
 
-The current semantic order is:
+The intended fixed order for the stock defaults is:
 
 ```text
 Chat
@@ -435,21 +435,29 @@ Visually:
 
 Not every region is visible at all times.
 
-Current stock layout rules:
+Stock layout direction:
 
 - Chat is singleton for the Chat strategy.
 - Diff is singleton.
-- Source Group contains zero or more visible editor views.
+- Source Group contains zero or more contiguous visible editor views.
 - Artifact is a singleton presentation slot for plugin-owned rich content.
-- ordering is fixed;
+- group ordering follows the fixed stock defaults;
 - only vertical pane boundaries are supported initially;
 - top-level panels are not arbitrarily reordered.
 
-These are UX choices for the stock composition, not requirements that every orchestration strategy render Chat or that plugin extension APIs expose `center` coordinates.
+These are UX choices layered over extensible contribution ordering, not fixed core
+slots or a Chat/Diff/Source/Artifact enum. Other contributions may choose their own
+order; each group retains its owner's contiguous item sequence. These defaults do
+not require every orchestration strategy to render Chat, and plugin APIs do not
+expose `center` coordinates.
+See [grouped Main Content](../../architecture/plugin-system.md#grouped-main-content)
+for the accepted composition boundary.
 
 ## 6.1 Width and horizontal overflow
 
-Each surface has a practical minimum useful width. Available space is divided/shrunk until minima are reached.
+Widths apply to individual panes, not groups: Source 1 and Source 2 each share
+space on the same basis as Chat or Diff. The initial equal-width allocation divides
+available space across flattened panes down to a practical minimum for each.
 
 If visible panels cannot fit, the Main Content workspace becomes horizontally scrollable while title/status/stream areas remain fixed in the current layout.
 
@@ -459,13 +467,18 @@ ADELE should not automatically hide panels merely because space becomes tight. T
 
 ## 6.2 Resizing
 
-Pane boundaries are draggable. Manual resizing redistributes space while respecting practical minima.
+Directionally, pane boundaries should be draggable. Manual resizing redistributes
+space while respecting practical minima. Current geometry and implementation
+limits belong to the [application map](../../../app/README.md#grouped-main-content).
 
 Pane widths are live window/workbench state rather than Session or strategy state.
 
 ## 6.3 Focus/maximize
 
 A temporary `Focus Current View` or equivalent Command may hide other Main Content surfaces while preserving the underlying arrangement. Restoring returns to the previous layout.
+
+Hide/show, maximize, and any later docking remain future workbench direction, not
+capabilities implied by grouped hosting or its reveal/keyboard-focus operation.
 
 ---
 
@@ -1176,6 +1189,10 @@ There are no hidden source tabs in this direction. A source file is visible or n
 
 Source views are side-by-side initially. Horizontal splits are postponed. Simple ordering enables strong keyboard focus/move operations and drag/drop reordering.
 
+The Source owner orders its items within one contiguous contribution group; the
+group is flattened with other Main Content before widths are assigned. It is not
+a single narrow panel internally dividing one group's width among all editors.
+
 ---
 
 # 35. Opening/displaying files
@@ -1295,7 +1312,7 @@ The stock Plan plugin owns Plan semantics/state and may provide model tools plus
 
 After a Project is selected, the stock **Task Browser plugin** provides the Project/Task/Session selection and management experience shown by the mockups.
 
-The Task Browser is not assumed to be a `MainContentView` inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
+The Task Browser is not assumed to be a Main Content contribution inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
 
 The Task Browser also serves as the top-level/user Session selector; there is no separate dedicated Session-selection page in the stock design. It **triggers** core navigation/selection operations; it does not own the window's current Project/Task/Session identity or the general workbench layout.
 
@@ -1526,7 +1543,7 @@ The mockups should be implemented through **semantic extension roles**, not plug
 Likely broad core-facing semantics include concepts such as:
 
 ```text
-MainContentView
+MainContentContribution / ordered pane group
 NavigationView
 SessionStatusContribution
 InspectionPresentation
