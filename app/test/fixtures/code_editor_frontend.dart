@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 
 Widget buildView() => CodeEditorFixture();
 
+Widget buildWithoutSubscription() => buildCodeEditor(requestCodeEditor());
+
 Widget buildFabricatedView() => buildCodeEditor('fabricated');
 
 String requestHandle() => requestCodeEditor();

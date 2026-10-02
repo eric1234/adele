@@ -330,6 +330,46 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final subscription in ['none', 'removed', 'active']) {
+    testWidgets(
+      'owner close reports unavailable once with $subscription subscription',
+      (tester) async {
+        final editor = await _editor(tester, 'owned');
+        final bridge = CodeEditorBridge(editor: editor, isActive: () => true);
+        final widget = generation.createPresentation(
+          library: codeEditorFrontendLibrary,
+          entrypoint: subscription == 'none'
+              ? 'buildWithoutSubscription'
+              : 'buildView',
+          createBridge: () => bridge,
+        );
+        await tester.pumpWidget(_host(widget));
+        await _frames(tester);
+        expect(find.byType(CodeForge), findsOneWidget);
+        if (subscription == 'removed') {
+          _press(tester, 'Unsubscribe');
+          await _frames(tester);
+        }
+        var failures = 0;
+        final reportFailure = bridge.onFailure!;
+        bridge.onFailure = () {
+          failures++;
+          reportFailure();
+        };
+        editor.dispose();
+        await _frames(tester);
+        expect(find.text('Frontend unavailable.'), findsOneWidget);
+        expect(find.byType(CodeForge), findsNothing);
+        expect(failures, 1);
+        editor.dispose();
+        await _frames(tester);
+        expect(failures, 1);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'owner close rejects old EVC access without retargeting a replacement',
     (tester) async {

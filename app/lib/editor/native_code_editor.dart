@@ -170,6 +170,7 @@ class _EditorViewState extends State<_EditorView> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => widget.editor._release(),
     );
+    widget.onUnavailable?.call();
   }
 
   @override

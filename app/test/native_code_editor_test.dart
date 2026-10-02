@@ -161,6 +161,59 @@ void main() {
       null,
     );
   });
+  testWidgets('CRLF Backspace removes the pair and undo restores it', (
+    tester,
+  ) async {
+    final editor = NativeCodeEditor(text: 'a\r\nb');
+    await tester.runAsync(editor.initialize);
+    await _mount(tester, editor);
+    editor.requestFocus();
+    await tester.pump();
+    await _key(tester, LogicalKeyboardKey.end, control: true);
+    await _key(tester, LogicalKeyboardKey.home);
+    await _key(tester, LogicalKeyboardKey.backspace);
+    expect(editor.snapshot()['text'], 'ab');
+    await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+    expect(editor.snapshot()['text'], 'a\r\nb');
+    await tester.pumpWidget(const SizedBox.shrink());
+    editor.dispose();
+  });
+
+  testWidgets('pending paste does not edit after final owner disposal', (
+    tester,
+  ) async {
+    final editor = NativeCodeEditor(text: 'ab');
+    await tester.runAsync(editor.initialize);
+    await _mount(tester, editor);
+    editor.requestFocus();
+    await tester.pump();
+    final controller = tester
+        .widget<CodeForge>(find.byType(CodeForge))
+        .controller!;
+    final held = Completer<Map<String, String>>();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.getData') return held.future;
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final paste = controller.paste();
+    editor.dispose();
+    await tester.pumpWidget(const SizedBox.shrink());
+    held.complete({'text': 'late'});
+    await paste;
+    expect(controller.text, 'ab');
+    expect(editor.snapshot, throwsStateError);
+    editor.dispose();
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<void> _mount(WidgetTester tester, NativeCodeEditor editor) async {

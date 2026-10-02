@@ -131,12 +131,7 @@ final class CodeEditorBridge extends CodeEditorDeclarations
       ..registerBridgeFunc(_library, 'buildCodeEditor', (_, _, args) {
         final access = _resolve(args.single!.$value);
         return $Widget.wrap(
-          _widget ??= access.buildView(
-            onUnavailable: () {
-              invalidate();
-              onFailure?.call();
-            },
-          ),
+          _widget ??= access.buildView(onUnavailable: _unavailable),
         );
       })
       ..registerBridgeFunc(_library, 'readCodeEditorState', (_, _, args) {
@@ -175,8 +170,7 @@ final class CodeEditorBridge extends CodeEditorDeclarations
 
   void _changed() {
     if (_owner.isDisposed) {
-      invalidate();
-      onFailure?.call();
+      _unavailable();
       return;
     }
     if (!_available || _listeners.isEmpty) return;
@@ -191,13 +185,18 @@ final class CodeEditorBridge extends CodeEditorDeclarations
         try {
           listener.call(_runtime!, null, const []);
         } on Object {
-          invalidate();
-          onFailure?.call();
+          _unavailable();
           return;
         }
       }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _unavailable() {
+    if (!_active) return;
+    invalidate();
+    onFailure?.call();
   }
 
   @override
