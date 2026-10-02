@@ -59,6 +59,20 @@ void main() {
       taskId: TaskId('task'),
       strategyId: OrchestrationStrategyId('test.strategy'),
     );
+    extensions.register(
+      point: mainContentContributions,
+      id: ExtensionId('test.independent'),
+      value: MainContentContribution(
+        order: 100,
+        attach: (access) => access.open(
+          MainContentPane(
+            id: 'independent',
+            title: 'Independent',
+            createPresentation: () => const Text('Independent content'),
+          ),
+        ),
+      ),
+    );
   });
 
   Future<ApplicationFrontendBootstrap> activate({
@@ -114,8 +128,6 @@ void main() {
       body: MainContentHost(
         session: current ?? session,
         extensions: extensions,
-        strategyContent: const Text('Strategy content'),
-        strategyTitle: 'Strategy',
         isCurrent: isCurrent,
       ),
     ),
@@ -123,6 +135,7 @@ void main() {
 
   test('public stubs and declarations do not provide native access', () {
     expect(public_bridge.readMainContentPanes, throwsUnsupportedError);
+    expect(public_bridge.readMainContentContext, throwsUnsupportedError);
     expect(public_bridge.readMainContentPaneId, throwsUnsupportedError);
     expect(
       () => public_bridge.openMainContentPane('a', 'A', true),
@@ -177,7 +190,7 @@ void main() {
           bootstrap.generations.single.state,
           InstalledFrontendState.failed,
         );
-        expect(extensions.discover(mainContentContributions), isEmpty);
+        expect(extensions.discover(mainContentContributions), hasLength(1));
         expect(acquisitions, 0);
       },
     );
@@ -201,7 +214,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Renamed a'), findsOneWidget);
       expect(tester.element(find.text('body a')), same(element));
-      expect(find.text('Strategy content'), findsOneWidget);
+      expect(find.text('Independent content'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
     },
@@ -230,6 +243,11 @@ void main() {
       await tester.pumpAndSettle();
       final a = records.single;
       expect(a.session, same(session));
+      expect(a.call('context'), {
+        'sessionId': session.id.value,
+        'strategyId': session.strategyId.value,
+        'taskId': session.taskId.value,
+      });
       expect(a.call('paneId'), 'a');
       expect(a.call('panes'), [
         {'id': 'a', 'title': 'A', 'canClose': true},
@@ -377,7 +395,7 @@ void main() {
     ready.completeError(StateError('private native diagnostic'));
     await tester.pumpAndSettle();
     expect(find.text('Frontend unavailable.'), findsOneWidget);
-    expect(find.text('Strategy content'), findsOneWidget);
+    expect(find.text('Independent content'), findsOneWidget);
     expect(records.single.runtimes, isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(records.single.releases, 1);
@@ -413,7 +431,7 @@ void main() {
     expect(active, isNotNull);
     expect(active!(), isFalse);
     expect(find.text('Frontend unavailable.'), findsOneWidget);
-    expect(find.text('Strategy content'), findsOneWidget);
+    expect(find.text('Independent content'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(releases, 1);
     expect(tester.takeException(), isNull);
@@ -445,6 +463,7 @@ void main() {
       await tester.pumpAndSettle();
       final old = records.single;
       current = false;
+      expect(old.call('context'), isEmpty);
       expect(old.call('remove', [$String('a')]), isFalse);
       current = true;
       expect(old.call('remove', [$String('a')]), isFalse);
@@ -513,6 +532,7 @@ import 'package:adele_ui/main_content_bridge.dart';
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
 List<Map<String, dynamic>> panes() => readMainContentPanes();
+Map<String, dynamic> context() => readMainContentContext();
 String paneId() => readMainContentPaneId();
 bool open(String id, String title, bool close) => openMainContentPane(id, title, close);
 bool rename(String id, String title) => setMainContentPaneTitle(id, title);

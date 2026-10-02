@@ -16,8 +16,11 @@ bool isTaskBrowserActive() =>
 ///
 /// Selected Task Session rows include `executionStatus`: `idle`, `preparing`,
 /// `running`, `waitingForApproval`, `completed`, `cancelled`, or `failed`.
-/// Status is independent of presentation `available`. Waiting grants no approval
-/// authority; open the exact Session to use its host-owned approval surface.
+/// `canOpen` describes canonical navigation, independently of `executionAvailable`
+/// (a unique live strategy registration) and status. Opening requires neither a
+/// renderer nor an executable strategy. `displayName` uses strategy metadata when
+/// available and otherwise the stored strategy identity. Waiting grants no
+/// approval authority; open the exact Session to use its host-owned surface.
 Map<String, dynamic> readTaskBrowser() =>
     throw UnsupportedError('Task Browser access requires a prepared frontend.');
 

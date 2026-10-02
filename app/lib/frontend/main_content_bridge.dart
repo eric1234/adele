@@ -37,6 +37,11 @@ class MainContentDeclarations implements EvalPlugin {
     const title = BridgeParameter('title', string, false);
     for (final (name, returns, params) in [
       ('readMainContentPanes', panes, const <BridgeParameter>[]),
+      (
+        'readMainContentContext',
+        structuredBridgeMapType,
+        const <BridgeParameter>[],
+      ),
       ('readMainContentPaneId', string, const <BridgeParameter>[]),
       (
         'openMainContentPane',
@@ -124,6 +129,16 @@ final class MainContentBridge extends MainContentDeclarations
 
   String readPaneId() => isActive ? _paneId : '';
 
+  Map<String, Object?> readContext() {
+    if (!isActive) return const {};
+    final session = _access.session;
+    return Map<String, Object?>.unmodifiable({
+      'sessionId': session.id.value,
+      'strategyId': session.strategyId.value,
+      'taskId': session.taskId.value,
+    });
+  }
+
   bool _request(void Function() action) {
     try {
       return _nativeZone.run(() {
@@ -142,6 +157,11 @@ final class MainContentBridge extends MainContentDeclarations
     if (_configured) throw StateError('Main Content bridge is already bound.');
     _configured = true;
     runtime
+      ..registerBridgeFunc(
+        _library,
+        'readMainContentContext',
+        (_, _, _) => wrapStructuredBridgeData(readContext()),
+      )
       ..registerBridgeFunc(_library, 'readMainContentPanes', (_, _, _) {
         try {
           return wrapStructuredBridgeData(readPanes());

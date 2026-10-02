@@ -75,28 +75,26 @@ final class InstalledBackendActivation {
   /// Binds this presentation to the owning installation's exact ready backend.
   /// Owning affinity also captures the strategy's advertised configuration route.
   OwningBackendChannel openChannel({
-    required PreparedSessionPresentation presentation,
-    required ExtensionBinding<OrchestrationStrategyContribution>
-    strategyBinding,
+    required Iterable<String> backendServices,
+    required PreparedStrategyAffinity strategyAffinity,
+    ExtensionBinding<OrchestrationStrategyContribution>? strategyBinding,
     required void Function() validatePresentation,
   }) {
     validate();
-    strategyBinding.validate();
-    if (strategyBinding.value.strategyId != presentation.strategyId) {
-      throw ArgumentError('Presentation and strategy identities must match.');
-    }
-    final origin = strategyOrigin(strategyBinding);
-    if (presentation.strategyAffinity ==
-            PreparedStrategyAffinity.owningBackend &&
+    strategyBinding?.validate();
+    final origin = strategyBinding == null
+        ? null
+        : strategyOrigin(strategyBinding);
+    if (strategyAffinity == PreparedStrategyAffinity.owningBackend &&
         (origin == null || !identical(origin.connection, _connection))) {
       throw StateError('The strategy does not belong to the owning backend.');
     }
     final affinityOrigin =
-        presentation.strategyAffinity == PreparedStrategyAffinity.owningBackend
+        strategyAffinity == PreparedStrategyAffinity.owningBackend
         ? origin
         : null;
     return openPresentationChannel(
-      backendServices: presentation.backendServices,
+      backendServices: backendServices,
       configurationOrigin: affinityOrigin,
       validatePresentation: validatePresentation,
     );

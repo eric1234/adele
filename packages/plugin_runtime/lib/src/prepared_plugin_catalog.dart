@@ -5,7 +5,6 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_product/adele_product.dart';
 
 /// One prepared installation, without activation, configuration, or source data.
 final class PreparedPluginInstallation {
@@ -90,16 +89,31 @@ final class PreparedMainContentPresentation
     required super.library,
     required this.initialize,
     required this.entrypoint,
-  }) {
+    this.sessionExecution = false,
+    Iterable<String> backendServices = const [],
+    this.strategyAffinity = PreparedStrategyAffinity.independent,
+  }) : backendServices = List.unmodifiable(backendServices) {
     _library(library, 'library');
     _entrypoint(initialize, 'initialize');
     _entrypoint(entrypoint, 'entrypoint');
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
   }
 
   final ExtensionId extensionId;
   final int order;
   final String initialize;
   final String entrypoint;
+  final bool sessionExecution;
+  final List<String> backendServices;
+  final PreparedStrategyAffinity strategyAffinity;
 }
 
 final class PreparedConsoleAction {
@@ -182,36 +196,6 @@ final class PreparedTaskBrowserPresentation
   final ExtensionId extensionId;
   final String displayName;
   final String entrypoint;
-}
-
-final class PreparedSessionPresentation extends PreparedPresentationDescriptor {
-  PreparedSessionPresentation({
-    required this.extensionId,
-    required this.strategyId,
-    required this.displayName,
-    required this.entrypoint,
-    required super.library,
-    Iterable<String> backendServices = const [],
-    this.strategyAffinity = PreparedStrategyAffinity.independent,
-  }) : backendServices = List.unmodifiable(backendServices) {
-    _text(displayName, 'displayName');
-    final seen = <String>{};
-    for (final service in this.backendServices) {
-      adeleValidateServiceId(service);
-      if (!seen.add(service)) {
-        throw const FormatException(
-          'backendServices must not contain duplicates.',
-        );
-      }
-    }
-  }
-
-  final ExtensionId extensionId;
-  final OrchestrationStrategyId strategyId;
-  final String displayName;
-  final String entrypoint;
-  final List<String> backendServices;
-  final PreparedStrategyAffinity strategyAffinity;
 }
 
 final class PreparedToolActivityPresentation
@@ -563,17 +547,45 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'library',
         'initialize',
         'entrypoint',
+        'sessionExecution',
+        'backendServices',
+        'strategyAffinity',
       });
       final order = value['order'];
       if (order is! int) {
         throw FormatException('$label.order must be an integer.');
       }
+      final execution = value.containsKey('sessionExecution')
+          ? value['sessionExecution']
+          : false;
+      if (execution is! bool) {
+        throw FormatException('$label.sessionExecution must be a boolean.');
+      }
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      final affinity = value.containsKey('strategyAffinity')
+          ? switch (value['strategyAffinity']) {
+              'independent' => PreparedStrategyAffinity.independent,
+              'owningBackend' => PreparedStrategyAffinity.owningBackend,
+              _ => throw FormatException(
+                '$label.strategyAffinity is unsupported.',
+              ),
+            }
+          : PreparedStrategyAffinity.independent;
       return PreparedMainContentPresentation(
         extensionId: ExtensionId(text('extensionId')),
         order: order,
         library: _library(value['library'], '$label.library'),
         initialize: _entrypoint(value['initialize'], '$label.initialize'),
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+        sessionExecution: execution,
+        backendServices: services.cast<String>(),
+        strategyAffinity: affinity,
       );
     case 'console':
       _object(value, label, {
@@ -648,42 +660,6 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         displayName: text('displayName'),
         library: text('library'),
         entrypoint: text('entrypoint'),
-      );
-    case 'session':
-      _object(value, label, {
-        'role',
-        'library',
-        'extensionId',
-        'strategyId',
-        'displayName',
-        'entrypoint',
-        'backendServices',
-        'strategyAffinity',
-      });
-      final services = value.containsKey('backendServices')
-          ? value['backendServices']
-          : const <String>[];
-      if (services is! List<Object?> ||
-          services.any((item) => item is! String)) {
-        throw FormatException('$label.backendServices must be a string array.');
-      }
-      final affinity = value.containsKey('strategyAffinity')
-          ? switch (value['strategyAffinity']) {
-              'independent' => PreparedStrategyAffinity.independent,
-              'owningBackend' => PreparedStrategyAffinity.owningBackend,
-              _ => throw FormatException(
-                '$label.strategyAffinity is unsupported.',
-              ),
-            }
-          : PreparedStrategyAffinity.independent;
-      return PreparedSessionPresentation(
-        extensionId: ExtensionId(text('extensionId')),
-        strategyId: OrchestrationStrategyId(text('strategyId')),
-        displayName: text('displayName'),
-        entrypoint: text('entrypoint'),
-        library: text('library'),
-        backendServices: services.cast<String>(),
-        strategyAffinity: affinity,
       );
     case 'toolActivity':
       _object(value, label, {

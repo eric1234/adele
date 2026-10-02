@@ -42,9 +42,14 @@ final class OrchestrationStrategyContribution {
   const OrchestrationStrategyContribution({
     required this.strategyId,
     required this.materialize,
+    this.displayName,
   });
 
   final OrchestrationStrategyId strategyId;
+
+  /// Optional human-readable label, independent of frontend availability.
+  /// Consumers use [strategyId] when no label is supplied.
+  final String? displayName;
 
   /// Constructs an execution without starting Run or model/tool work. The host
   /// keeps execution disabled until the application enters the returned execution.

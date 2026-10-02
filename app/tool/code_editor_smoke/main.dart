@@ -9,11 +9,11 @@ import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
-import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 
 import '../../../tools/code_editor_smoke_support.dart';
 import '../main_content_fixture.dart';
@@ -223,10 +223,56 @@ Future<void> _workspace(
           _texts(root).contains('Synthetic pane: editor-a'),
       'Prepared Chat and initial editor A',
     );
-    final chat = _elements(
+    final host = _elements(
       root,
-    ).singleWhere((element) => element.widget is SessionPresentationHost);
-    final session = (chat.widget as SessionPresentationHost).session;
+    ).singleWhere((element) => element.widget is MainContentHost);
+    final session = (host.widget as MainContentHost).session;
+    final prompt = _elements(root).singleWhere(
+      (element) =>
+          element.widget is Text &&
+          (element.widget as Text).data == 'Ask ADELE...',
+    );
+    Element? contributedChat;
+    prompt.visitAncestorElements((element) {
+      if (element.widget is $StatefulWidget$bridge) {
+        contributedChat = element;
+        return false;
+      }
+      return !identical(element, host);
+    });
+    _require(
+      contributedChat != null,
+      'Chat is not an interpreted contributed pane.',
+    );
+    final chat = contributedChat! as StatefulElement;
+    final chatWidget = chat.widget as $StatefulWidget$bridge;
+    final chatState = chat.state;
+    final chatRuntime = chatWidget.$runtime;
+    Element? composerElement;
+    void findComposer(Element element) {
+      if (element.widget is TextField) composerElement = element;
+      element.visitChildren(findComposer);
+    }
+
+    chat.visitChildren(findComposer);
+    _require(composerElement != null, 'Contributed Chat has no composer.');
+    final composer = composerElement!;
+    final composerController = (composer.widget as TextField).controller;
+    bool chatRetained() =>
+        host.mounted &&
+        identical((host.widget as MainContentHost).session, session) &&
+        chat.mounted &&
+        identical(chat.widget, chatWidget) &&
+        identical(chat.state, chatState) &&
+        identical(
+          (chat.widget as $StatefulWidget$bridge).$runtime,
+          chatRuntime,
+        ) &&
+        composer.mounted &&
+        identical(
+          (composer.widget as TextField).controller,
+          composerController,
+        );
     final a = resources.editor(session.id, 'editor-a')!;
     _require(
       resources.editor(session.id, 'editor-b') == null,
@@ -248,11 +294,7 @@ Future<void> _workspace(
                 )
                 .findRenderObject()!
             as RenderBox;
-    final hostBox =
-        _elements(root)
-                .singleWhere((element) => element.widget is MainContentHost)
-                .findRenderObject()!
-            as RenderBox;
+    final hostBox = host.findRenderObject()! as RenderBox;
     for (final editor in [a, b]) {
       final size = editorBox(editor).size;
       _require(
@@ -282,7 +324,7 @@ Future<void> _workspace(
     _require(
       identical(resources.editor(session.id, 'editor-a'), a) &&
           identical(resources.editor(session.id, 'editor-b'), b) &&
-          chat.mounted &&
+          chatRetained() &&
           _elements(root).contains(chat),
       'Title/order/focus replaced a native owner or Chat presentation.',
     );
@@ -291,7 +333,10 @@ Future<void> _workspace(
       () => b.isDisposed && resources.editors.length == 1,
       'Remove B',
     );
-    _require(!a.isDisposed && chat.mounted, 'Removing B disturbed A or Chat.');
+    _require(
+      !a.isDisposed && chatRetained(),
+      'Removing B disturbed A or Chat.',
+    );
     final departure = _elements(root)
         .map((element) => element.widget)
         .whereType<TextButton>()

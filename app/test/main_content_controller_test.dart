@@ -22,8 +22,6 @@ void main() {
     controller = MainContentController(
       session: session,
       extensions: extensions,
-      strategyContent: const SizedBox.shrink(),
-      strategyTitle: 'Strategy',
     );
   });
   tearDown(() => controller.dispose());
@@ -45,9 +43,30 @@ void main() {
     release: release,
   );
 
+  ExtensionRegistration registerChat({int order = 100}) => register(
+    'test.chat',
+    (access) => access.open(pane('chat')),
+    order: order,
+  );
+
+  test('no contributions or empty groups produce no entries', () {
+    expect(controller.entries, isEmpty);
+    controller.reconcile();
+    expect(controller.entries, isEmpty);
+    late MainContentAccess access;
+    register('test.empty', (value) => access = value);
+    controller.reconcile();
+    expect(controller.entries, isEmpty);
+    access.open(pane('only'));
+    expect(controller.entries.single.info.id, 'only');
+    access.remove('only');
+    expect(controller.entries, isEmpty);
+  });
+
   test(
     'independent groups sort by order then exact ExtensionId, not plugin',
     () {
+      registerChat();
       register('test.plugin.z', (access) => access.open(pane('z')));
       register('test.plugin.a', (access) {
         access.open(pane('a2'));
@@ -62,13 +81,29 @@ void main() {
         'a2',
         'a1',
         'z',
-        'strategy',
+        'chat',
         'last',
       ]);
     },
   );
 
+  for (final chatOrder in [100, 400]) {
+    test('Chat order $chatOrder follows the ordinary group policy', () {
+      registerChat(order: chatOrder);
+      register('test.source', (access) {
+        access.open(pane('a'));
+        access.open(pane('b'));
+      }, order: 300);
+      controller.reconcile();
+      expect(
+        controller.entries.map((entry) => entry.info.id),
+        chatOrder == 100 ? ['chat', 'a', 'b'] : ['a', 'b', 'chat'],
+      );
+    });
+  }
+
   test('snapshots, duplicate open, title and complete local permutations', () {
+    registerChat();
     late MainContentAccess access;
     var attachments = 0;
     var releases = 0;
@@ -122,6 +157,7 @@ void main() {
   test(
     'retirement fences synchronously and same-ID replacement is fresh',
     () async {
+      registerChat();
       final accesses = <MainContentAccess>[];
       var releases = 0;
       final contribution = MainContentContribution(
@@ -162,6 +198,7 @@ void main() {
   test(
     'failed attachment releases its panes without retrying or losing siblings',
     () async {
+      registerChat();
       var attempts = 0;
       var releases = 0;
       late MainContentAccess failed;
@@ -180,7 +217,7 @@ void main() {
       expect(releases, 1);
       expect(controller.entries.map((entry) => entry.info.id), [
         'healthy',
-        'strategy',
+        'chat',
       ]);
     },
   );
@@ -193,10 +230,9 @@ void main() {
       controller = MainContentController(
         session: session,
         extensions: extensions,
-        strategyContent: const SizedBox.shrink(),
-        strategyTitle: 'Strategy',
         isCurrent: () => current,
       );
+      registerChat();
       late MainContentAccess access;
       register('test.group', (value) => access = value);
       controller.reconcile();
@@ -211,6 +247,7 @@ void main() {
   test(
     'pending attachment cannot write after its controller departs',
     () async {
+      registerChat();
       final ready = Completer<void>();
       late MainContentAccess access;
       var rejected = false;

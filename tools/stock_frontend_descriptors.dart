@@ -27,12 +27,13 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
   ],
   'dev.adele.plugin.chat-strategy': [
     {
-      'role': 'session',
+      'role': 'mainContent',
       'library': 'package:chat_strategy_frontend/chat_strategy_frontend.dart',
       'extensionId': 'dev.adele.plugin.chat-strategy.presentation',
-      'strategyId': 'dev.adele.strategy.chat',
-      'displayName': 'Chat',
+      'order': 100,
+      'initialize': 'initializeChatMainContent',
       'entrypoint': 'buildChat',
+      'sessionExecution': true,
       'backendServices': ['chat.session'],
       'strategyAffinity': 'owningBackend',
     },

@@ -2,6 +2,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/material.dart';
 
+import '../ui/execution/run_execution_status.dart';
 import '../ui/execution/session_execution_controller.dart';
 import '../ui/inspection/activity_inspection_selection.dart';
 import '../ui/inspection/activity_output_presentation.dart';
@@ -17,6 +18,7 @@ abstract interface class SessionExecutionSource implements Listenable {
   Map<String, Object?> readRunActivity(String handle);
   bool inspectActivity(String handle);
   Widget buildActivity(String handle);
+  Widget buildStatus();
   void invalidate();
 }
 
@@ -27,12 +29,17 @@ final class SessionExecutionPresentationSource
     required this.extensions,
     required bool Function() isActive,
     required bool Function(Session, InspectionTarget) inspect,
+    bool Function()? isInteractive,
+    this.expectedStrategy,
   }) : _isActive = isActive,
+       _isInteractive = isInteractive ?? isActive,
        _inspect = inspect;
 
   final SessionExecutionController controller;
   final ExtensionRegistry extensions;
+  final ResolvedOrchestrationStrategy? expectedStrategy;
   final bool Function() _isActive;
+  final bool Function() _isInteractive;
   final bool Function(Session, InspectionTarget) _inspect;
   static int _nextPresentation = 0;
   final int _presentation = _nextPresentation++;
@@ -42,6 +49,7 @@ final class SessionExecutionPresentationSource
   final Map<String, InspectionTarget> _emitted = {};
   final Map<(RunId, ModelInvocationId, int?), String> _handles = {};
   Map<RunId, RunActivitySnapshot>? _retainedActivity;
+  RunExecutionStatus? _retainedStatus;
 
   RunActivitySnapshot? _activityForRun(RunId runId) => _retainedActivity == null
       ? controller.activityForRun(runId)
@@ -87,7 +95,10 @@ final class SessionExecutionPresentationSource
   @override
   Future<String> startRun() async {
     _validate();
-    final runId = await controller.startRun();
+    if (!_isInteractive()) {
+      throw StateError('Session interaction is unavailable.');
+    }
+    final runId = await controller.startRun(expectedStrategy: expectedStrategy);
     _validate();
     final handle = _newHandle();
     _runs[handle] = runId;
@@ -297,6 +308,9 @@ final class SessionExecutionPresentationSource
   }
 
   @override
+  Widget buildStatus() => _SessionExecutionStatus(source: this);
+
+  @override
   void addListener(VoidCallback listener) => controller.addListener(listener);
   @override
   void removeListener(VoidCallback listener) =>
@@ -309,16 +323,68 @@ final class SessionExecutionPresentationSource
     _emitted.clear();
     _handles.clear();
     _retainedActivity = null;
+    _retainedStatus = null;
   }
 
   @override
   void retainPresentation() {
     if (_retainedActivity != null || !_active) return;
+    _retainedStatus = RunExecutionStatus(
+      pendingApproval: controller.pendingApproval,
+      enabled: false,
+      isAdvancing: controller.isAdvancing,
+      failureMessage: controller.failureMessage,
+      unavailableReason: controller.unavailableReason,
+      onDecision: (_, _) {},
+    );
     _retainedActivity = {
       for (final activity in controller.activitySnapshots)
         activity.runId: activity,
     };
     _active = false;
+  }
+}
+
+final class _SessionExecutionStatus extends StatelessWidget {
+  const _SessionExecutionStatus({required this.source});
+
+  final SessionExecutionPresentationSource source;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!source._available) {
+      return source._retainedStatus ?? const SizedBox.shrink();
+    }
+    return ListenableBuilder(
+      listenable: source.controller,
+      builder: (context, _) {
+        final controller = source.controller;
+        final available = source._available;
+        if (!available) {
+          return source._retainedStatus ?? const SizedBox.shrink();
+        }
+        return RunExecutionStatus(
+          pendingApproval: controller.pendingApproval,
+          enabled:
+              available &&
+              source._isInteractive() &&
+              controller.unavailableReason == null &&
+              controller.isRunning &&
+              !controller.isAdvancing,
+          isAdvancing: controller.isAdvancing,
+          failureMessage: controller.failureMessage,
+          unavailableReason: controller.unavailableReason,
+          onDecision: (approval, approved) {
+            if (context.mounted &&
+                source._available &&
+                source._isInteractive() &&
+                controller.unavailableReason == null) {
+              controller.resolveApproval(approval, approved: approved);
+            }
+          },
+        );
+      },
+    );
   }
 }
 

@@ -8,9 +8,10 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
+import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
-import 'package:adele_desktop/frontend/prepared_session_host.dart';
+import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -46,6 +47,7 @@ void main() {
       ..addPlugin(const ModelNativeActivityDeclarations())
       ..addPlugin(const DirectoryPickerDeclarations())
       ..addPlugin(const OwningBackendDeclarations())
+      ..addPlugin(const MainContentDeclarations())
       ..entrypoints.add(_library);
     final program = compiler.compile({
       'installed_probe': {
@@ -55,6 +57,9 @@ import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:adele_ui/model_native_activity_bridge.dart';
 import 'package:adele_ui/directory_picker_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+void initializePanes() { readMainContentContext(); }
+Widget customPane() => Text('Prepared pane');
 Widget toolRich() => Text('rich ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget toolCompact() => Text('compact ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget nativeRich() => Text('rich ' + readModelNativeActivityData()['label']);
@@ -113,6 +118,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
           'model_native_activity_bridge.dart',
           'directory_picker_bridge.dart',
           'owning_backend_bridge.dart',
+          'main_content_bridge.dart',
         ])
           file: File(
             '${Directory.current.parent.path}/packages/ui/lib/$file',
@@ -193,7 +199,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
 
   for (final affinity in ['independent', 'owningBackend']) {
     test(
-      'Session $affinity metadata activates independently of its backend',
+      'Main Content $affinity metadata initializes without execution or backend',
       () async {
         await owner.close();
         final backends = ApplicationPluginBootstrap(
@@ -201,16 +207,17 @@ Future<String?> nativeSelector() async => await pickDirectory();
           extensions,
         );
         addTearDown(backends.close);
-        final host = PreparedSessionHost(
+        final services = PreparedSessionServices(
           extensions: extensions,
           backends: backends,
-          controllerForSession: (_) =>
+          controllerForSession: (_, _) =>
               throw StateError('Activation cannot obtain execution.'),
           inspectActivity: (_, _) => false,
+          isCurrent: (_) => true,
         );
         owner = ApplicationFrontendBootstrap(
           extensions: extensions,
-          sessionHost: host,
+          sessionServices: services,
         );
         final strategy = extensions.register(
           point: orchestrationStrategyContributions,
@@ -223,21 +230,20 @@ Future<String?> nativeSelector() async => await pickDirectory();
         );
         addTearDown(strategy.close);
         await install('session', [
-          {..._sessionDescriptor('session'), 'strategyAffinity': affinity},
+          {
+            ..._sessionDescriptor('session'),
+            'strategyAffinity': affinity,
+            'sessionExecution': true,
+            'backendServices': ['required.backend'],
+          },
         ]);
         await owner.start(await discover());
         expect(owner.generations.single.state, InstalledFrontendState.active);
         final presentation = extensions
-            .discover(sessionPresentationContributions)
+            .discover(mainContentContributions)
             .single;
-        if (affinity == 'independent') {
-          final choice = host.resolve(presentation);
-          expect(choice.pinStrategy, isFalse);
-          expect(choice.backend, isNull);
-          expect(choice.strategy.strategyId, _strategyId);
-        } else {
-          expect(() => host.resolve(presentation), throwsStateError);
-        }
+        await presentation.value.attach(_Access());
+        expect(backends.state, ApplicationPluginState.unconfigured);
         presentation.validate();
       },
     );
@@ -353,14 +359,13 @@ Future<String?> nativeSelector() async => await pickDirectory();
       expect(generation.registrations, hasLength(8));
       expect(() => owner.generations.clear(), throwsUnsupportedError);
       expect(() => generation.registrations.clear(), throwsUnsupportedError);
-      final sessions = extensions.discover(sessionPresentationContributions);
+      final sessions = extensions.discover(mainContentContributions);
       expect(sessions.map((binding) => binding.id.value), [
         'dev.example.one.session',
         'dev.example.two.session',
       ]);
       for (final binding in sessions) {
-        expect(binding.value.strategyId, _strategyId);
-        expect(binding.value.displayName, 'Prepared Session');
+        expect(binding.value.order, 100);
       }
       expect(
         extensions.discover(toolActivityInspectionContributions),
@@ -403,10 +408,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
       expect(owner.generations[0].failure, isA<FileSystemException>());
       expect(owner.generations[1].failure, isNull);
       expect(extensions.discover(toolActivityInspectionContributions), isEmpty);
-      expect(
-        extensions.discover(sessionPresentationContributions),
-        hasLength(1),
-      );
+      expect(extensions.discover(mainContentContributions), hasLength(1));
       expect(
         extensions.discover(modelNativeActivityPresentationContributions),
         hasLength(1),
@@ -443,10 +445,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
         await binding.value.selectProject(),
         Uri.parse('catalog://example/project'),
       );
-      expect(
-        extensions.discover(sessionPresentationContributions),
-        hasLength(1),
-      );
+      expect(extensions.discover(mainContentContributions), hasLength(1));
     },
   );
 
@@ -512,7 +511,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
         InstalledFrontendState.active,
       ]);
       expect(extensions.discover(projectSelectorContributions), isEmpty);
-      expect(extensions.discover(sessionPresentationContributions), isEmpty);
+      expect(extensions.discover(mainContentContributions), isEmpty);
       expect(
         extensions.discover(modelNativeActivityPresentationContributions),
         hasLength(1),
@@ -611,14 +610,14 @@ Future<String?> nativeSelector() async => await pickDirectory();
         isEmpty,
       );
       expect(
-        extensions.discover(sessionPresentationContributions).single.id.value,
+        extensions.discover(mainContentContributions).single.id.value,
         'dev.example.healthy.session',
       );
     },
   );
 
   test(
-    'retired Session factories cannot migrate to replacement bindings',
+    'retired Main Content attachments cannot migrate to replacement bindings',
     () async {
       await install('sessions', [
         _sessionDescriptor('one'),
@@ -626,30 +625,29 @@ Future<String?> nativeSelector() async => await pickDirectory();
       ]);
       await owner.start(await discover());
       final generation = owner.generations.single;
-      final bindings = extensions.discover(sessionPresentationContributions);
-      final factory = bindings.first.value.createPresentation;
-      await generation.retire(
-        sessionPresentationContributions,
-        bindings.first.id,
+      final bindings = extensions.discover(mainContentContributions);
+      final factory = bindings.first.value.attach;
+      await generation.retire(mainContentContributions, bindings.first.id);
+      await expectLater(
+        Future.sync(() => factory(_Access())),
+        throwsStateError,
       );
-      expect(() => factory(_session), throwsStateError);
       expect(bindings.first.validate, throwsA(isA<StaleExtensionBinding>()));
       bindings.last.validate();
       final replacement = extensions.register(
-        point: sessionPresentationContributions,
+        point: mainContentContributions,
         id: bindings.first.id,
-        value: SessionPresentationContribution(
-          displayName: 'Replacement',
-          strategyId: _strategyId,
-          createPresentation: (_) => const Text('replacement'),
-        ),
+        value: MainContentContribution(order: 100, attach: (_) {}),
       );
       addTearDown(replacement.close);
       final closing = generation.close();
       expect(generation.close(), same(closing));
       await closing;
       expect(replacement.isClosed, isFalse);
-      expect(() => factory(_session), throwsStateError);
+      await expectLater(
+        Future.sync(() => factory(_Access())),
+        throwsStateError,
+      );
     },
   );
 
@@ -678,7 +676,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
         ),
         isTrue,
       );
-      expect(extensions.discover(sessionPresentationContributions), isEmpty);
+      expect(extensions.discover(mainContentContributions), isEmpty);
       expect(extensions.discover(toolActivityInspectionContributions), isEmpty);
     },
   );
@@ -743,9 +741,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
       addTearDown(subscription.cancel);
       await owner.start(await discover());
       expect(owner.state, ApplicationFrontendState.closing);
-      final binding = extensions
-          .discover(sessionPresentationContributions)
-          .single;
+      final binding = extensions.discover(mainContentContributions).single;
       expect(binding.validate, returnsNormally);
       expect(
         extensions.discover(modelNativeActivityPresentationContributions),
@@ -884,13 +880,34 @@ Future<String?> nativeSelector() async => await pickDirectory();
 }
 
 Map<String, Object?> _sessionDescriptor(String name) => {
-  'role': 'session',
+  'role': 'mainContent',
   'library': _library,
   'extensionId': 'dev.example.$name.session',
-  'strategyId': _strategyId.value,
-  'entrypoint': 'customSession',
-  'displayName': 'Prepared Session',
+  'order': 100,
+  'initialize': 'initializePanes',
+  'entrypoint': 'customPane',
 };
+
+final class _Access implements MainContentAccess {
+  @override
+  Session get session => _session;
+  @override
+  bool get isActive => true;
+  @override
+  List<MainContentPaneInfo> get panes => const [];
+  @override
+  void open(MainContentPane pane) =>
+      throw StateError('Initializer opens no panes.');
+  @override
+  void setTitle(String id, String title) => throw StateError('No panes.');
+  @override
+  void setOrder(List<String> ids) => throw StateError('No panes.');
+  @override
+  void remove(String id) => throw StateError('No panes.');
+  @override
+  void focus(String id, {bool keyboardFocus = false}) =>
+      throw StateError('No panes.');
+}
 
 Map<String, Object?> _selectorDescriptor(String name, String entrypoint) => {
   'kind': 'projectSelector',

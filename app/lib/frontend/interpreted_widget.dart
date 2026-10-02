@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart';
 
+import 'scroll_view_bridge.dart';
+
 typedef InterpretedWidget = ({Runtime runtime, Widget widget});
 
 /// Retains the runtime alongside its widget, preserving synchronous entrypoints.
@@ -20,6 +22,7 @@ FutureOr<InterpretedWidget> loadInterpretedWidget({
 }) {
   final Runtime runtime = Runtime(ByteData.sublistView(bytes))
     ..addPlugin(flutterEvalPlugin)
+    ..addPlugin(const ScrollViewBridge())
     ..addPlugin(bridge);
   if (onFailure != null) runtime.addPlugin(_WidgetFailureGuards(onFailure));
 

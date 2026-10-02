@@ -59,6 +59,21 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(1400, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final extensions = ExtensionRegistry();
+      final chatRegistration = extensions.register(
+        point: mainContentContributions,
+        id: ExtensionId('dev.adele.test.chat'),
+        value: MainContentContribution(
+          order: 100,
+          attach: (access) => access.open(
+            MainContentPane(
+              id: 'chat',
+              title: 'Chat',
+              createPresentation: () => const Center(child: Text('Chat body')),
+            ),
+          ),
+        ),
+      );
+      addTearDown(chatRegistration.close);
       late MainContentAccess access;
       final registration = extensions.register(
         point: mainContentContributions,
@@ -90,8 +105,6 @@ void main() {
               strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
             ),
             extensions: extensions,
-            strategyTitle: 'Strategy',
-            strategyContent: const Center(child: Text('Strategy body')),
           ),
           inspection: const SizedBox(
             key: ValueKey('inspection'),
@@ -110,13 +123,10 @@ void main() {
         find.byKey(const ValueKey('inspection')),
       );
       final console = tester.getRect(find.byKey(const ValueKey('console')));
-      final strategyX = tester.getTopLeft(find.text('Strategy body')).dx;
+      final chatX = tester.getTopLeft(find.text('Chat body')).dx;
       access.focus('b');
       await tester.pumpAndSettle();
-      expect(
-        tester.getTopLeft(find.text('Strategy body')).dx,
-        lessThan(strategyX),
-      );
+      expect(tester.getTopLeft(find.text('Chat body')).dx, lessThan(chatX));
       expect(
         tester.getRect(find.byKey(const ValueKey('inspection'))),
         inspection,

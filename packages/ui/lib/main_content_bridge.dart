@@ -4,6 +4,12 @@
 List<Map<String, dynamic>> readMainContentPanes() =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
 
+/// Immutable captured context: sessionId, strategyId and taskId. Available during
+/// initialization without acquiring execution or backend services. Empty when
+/// retired; these identities are data, not authority to select another Session.
+Map<String, dynamic> readMainContentContext() =>
+    throw UnsupportedError('Main Content requires a prepared contribution.');
+
 /// The current pane's local ID, or an empty string during initialization or after
 /// retirement. IDs are data, not authority to access another contribution.
 String readMainContentPaneId() =>

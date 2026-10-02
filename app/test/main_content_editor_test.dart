@@ -54,6 +54,21 @@ void main() {
       expect(frontends.generations.single.state, InstalledFrontendState.active);
       expect(extensions.discover(mainContentContributions), hasLength(1));
       expect(resources.editors, isEmpty);
+      final chat = extensions.register(
+        point: mainContentContributions,
+        id: ExtensionId('test.main-content.chat'),
+        value: MainContentContribution(
+          order: 100,
+          attach: (access) => access.open(
+            MainContentPane(
+              id: 'chat',
+              title: 'Chat',
+              createPresentation: () => const Text('Unchanged Chat fixture'),
+            ),
+          ),
+        ),
+      );
+      addTearDown(chat.close);
       final session = Session(
         id: SessionId('main-content-session'),
         taskId: TaskId('task'),
@@ -62,12 +77,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MainContentHost(
-              session: session,
-              extensions: extensions,
-              strategyTitle: 'Strategy',
-              strategyContent: const Text('Unchanged strategy'),
-            ),
+            body: MainContentHost(session: session, extensions: extensions),
           ),
         ),
       );
@@ -109,6 +119,8 @@ void main() {
       await until(() => editors.evaluate().length == 1);
       await action('Open B');
       await until(() => editors.evaluate().length == 2);
+      expect(extensions.discover(mainContentContributions), hasLength(2));
+      final chatElement = tester.element(find.text('Unchanged Chat fixture'));
       final a = resources.editor(session.id, 'editor-a')!;
       final b = resources.editor(session.id, 'editor-b')!;
       final elements = editors.evaluate().toList();
@@ -133,6 +145,10 @@ void main() {
       expect(a.snapshot()['text'], mainContentFixtureTextA.substring(1));
       await action('Rename B');
       await action('Reverse editors');
+      expect(
+        tester.element(find.text('Unchanged Chat fixture')),
+        same(chatElement),
+      );
       expect(editors.evaluate().toList(), [
         same(elements[1]),
         same(elements[0]),
@@ -164,6 +180,10 @@ void main() {
       await action('Remove B');
       expect(b.isDisposed, isTrue);
       expect(a.isDisposed, isFalse);
+      expect(
+        tester.element(find.text('Unchanged Chat fixture')),
+        same(chatElement),
+      );
       expect(editors.evaluate().single, same(elements[0]));
       await tester.pumpWidget(const SizedBox.shrink());
       expect(a.isDisposed, isTrue);

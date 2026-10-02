@@ -415,5 +415,7 @@ final class _Source extends ChangeNotifier implements SessionExecutionSource {
   @override
   Widget buildActivity(String handle) => const SizedBox.shrink();
   @override
+  Widget buildStatus() => const SizedBox.shrink();
+  @override
   void invalidate() => active = false;
 }

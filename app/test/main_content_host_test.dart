@@ -32,8 +32,6 @@ void main() {
   Widget host({
     double width = 1200,
     Session? current,
-    Widget? strategy,
-    String strategyTitle = 'Strategy',
     bool Function()? isCurrent,
   }) => MaterialApp(
     home: Scaffold(
@@ -45,8 +43,6 @@ void main() {
           child: MainContentHost(
             session: current ?? session,
             extensions: extensions,
-            strategyContent: strategy ?? _Probe('strategy'),
-            strategyTitle: strategyTitle,
             isCurrent: isCurrent,
           ),
         ),
@@ -69,6 +65,12 @@ void main() {
     requestFocus: requestFocus,
   );
 
+  ExtensionRegistration registerChat({int order = 100}) => register(
+    'test.chat',
+    (access) => access.open(pane('chat')),
+    order: order,
+  );
+
   Finder probe(String id) => find.byKey(ValueKey(id));
 
   Future<void> wide(WidgetTester tester) async {
@@ -76,39 +78,75 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
   }
 
-  testWidgets(
-    'strategy and two panes each get one third, empty groups no width',
-    (tester) async {
-      await wide(tester);
-      register('test.two', (access) {
-        access.open(pane('a'));
-        access.open(pane('b'));
-      });
-      register('test.empty', (_) {}, order: -1);
-      await tester.pumpWidget(host());
-      final expected = (1200 - 16 - 2) / 3;
-      for (final id in ['a', 'b', 'strategy']) {
-        expect(tester.getSize(probe(id)).width, closeTo(expected, 0.001));
-        expect(tester.getSize(probe(id)).height, 400 - 16 - 32);
-      }
-      expect(
-        tester.getTopLeft(probe('a')).dx,
-        lessThan(tester.getTopLeft(probe('b')).dx),
-      );
-      expect(
-        tester.getTopLeft(probe('b')).dx,
-        lessThan(tester.getTopLeft(probe('strategy')).dx),
-      );
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('zero panes show generic empty content with no reserved width', (
+    tester,
+  ) async {
+    await tester.pumpWidget(host(width: 700));
+    final empty = find.text('No Main Content is available for this Session.');
+    expect(empty, findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsNothing);
+    expect(find.byType(_Probe), findsNothing);
+    late MainContentAccess access;
+    register('test.empty', (value) => access = value, order: 100);
+    await tester.pumpAndSettle();
+    expect(empty, findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsNothing);
+    access.open(pane('a'));
+    access.open(pane('b'));
+    await tester.pump();
+    expect(empty, findsNothing);
+    expect(find.byType(_Probe), findsNWidgets(2));
+    expect(tester.getTopLeft(probe('a')).dx, 8);
+    for (final id in ['a', 'b']) {
+      expect(tester.getSize(probe(id)).width, (700 - 16 - 1) / 2);
+    }
+    access.remove('a');
+    access.remove('b');
+    await tester.pumpWidget(host(width: 300));
+    expect(empty, findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsNothing);
+    expect(find.byType(_Probe), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final chatOrder in [100, 400]) {
+    testWidgets(
+      'Chat order $chatOrder and two Source panes get thirds in declared order',
+      (tester) async {
+        await wide(tester);
+        registerChat(order: chatOrder);
+        register('test.source', (access) {
+          access.open(pane('a'));
+          access.open(pane('b'));
+        }, order: 300);
+        register('test.empty', (_) {}, order: -1);
+        await tester.pumpWidget(host());
+        final expected = (1200 - 16 - 2) / 3;
+        final ids = chatOrder == 100 ? ['chat', 'a', 'b'] : ['a', 'b', 'chat'];
+        for (var i = 0; i < ids.length; i++) {
+          expect(tester.getSize(probe(ids[i])).width, closeTo(expected, 0.001));
+          expect(tester.getSize(probe(ids[i])).height, 400 - 16 - 32);
+          expect(
+            tester.getTopLeft(probe(ids[i])).dx,
+            closeTo(8 + i * (expected + 1), 0.001),
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'stable instances survive title, local order, width and registry changes',
     (tester) async {
       await wide(tester);
       late MainContentAccess access;
+      late MainContentAccess chatAccess;
       var factories = 0;
+      register('test.chat', (value) {
+        chatAccess = value;
+        value.open(pane('chat'));
+      }, order: 100);
       register('test.group', (value) {
         access = value;
         for (final id in ['a', 'b']) {
@@ -126,27 +164,23 @@ void main() {
       await tester.pumpWidget(host());
       final a = tester.state<_ProbeState>(probe('a'));
       final aWidget = tester.widget(probe('a'));
-      final strategy = tester.state<_ProbeState>(probe('strategy'));
+      final chat = tester.state<_ProbeState>(probe('chat'));
+      final chatWidget = tester.widget(probe('chat'));
       await tester.enterText(
         find.descendant(of: probe('a'), matching: find.byType(TextField)),
         'kept text',
       );
       access.setTitle('a', 'New title');
       access.setOrder(['b', 'a']);
-      await tester.pumpWidget(
-        host(
-          width: 1050,
-          strategy: _Probe('strategy', revision: 'updated'),
-          strategyTitle: 'New strategy title',
-        ),
-      );
+      chatAccess.setTitle('chat', 'New Chat title');
+      await tester.pumpWidget(host(width: 1050));
       register('test.before', (value) => value.open(pane('before')), order: -1);
       await tester.pumpAndSettle();
       expect(tester.state(probe('a')), same(a));
       expect(tester.widget(probe('a')), same(aWidget));
-      expect(tester.state(probe('strategy')), same(strategy));
-      expect(find.text('updated'), findsOneWidget);
-      expect(find.text('New strategy title'), findsOneWidget);
+      expect(tester.state(probe('chat')), same(chat));
+      expect(tester.widget(probe('chat')), same(chatWidget));
+      expect(find.text('New Chat title'), findsOneWidget);
       expect(a.text.text, 'kept text');
       expect(factories, 2);
       expect(find.text('New title'), findsOneWidget);
@@ -163,27 +197,9 @@ void main() {
   );
 
   testWidgets(
-    'legacy strategy display names cannot tear down independent panes',
-    (tester) async {
-      register('test.group', (access) => access.open(pane('healthy')));
-      await tester.pumpWidget(
-        host(width: 700, strategyTitle: 'Legacy\n${'x' * 200}'),
-      );
-      final healthy = tester.state(probe('healthy'));
-      final strategy = tester.state(probe('strategy'));
-      expect(find.textContaining(r'Legacy\n'), findsOneWidget);
-      await tester.pumpWidget(
-        host(width: 700, strategyTitle: '\u{1f680}' * 200),
-      );
-      expect(tester.state(probe('healthy')), same(healthy));
-      expect(tester.state(probe('strategy')), same(strategy));
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
     'minimum widths keep all panes mounted; focus reveals only local scroller',
     (tester) async {
+      registerChat();
       late MainContentAccess access;
       var nativeFocus = 0;
       register('test.group', (value) {
@@ -207,8 +223,6 @@ void main() {
                     child: MainContentHost(
                       session: session,
                       extensions: extensions,
-                      strategyContent: _Probe('strategy'),
-                      strategyTitle: 'Strategy',
                     ),
                   ),
                   const SizedBox(height: 600),
@@ -218,7 +232,7 @@ void main() {
           ),
         ),
       );
-      for (final id in ['a', 'b', 'strategy']) {
+      for (final id in ['a', 'b', 'chat']) {
         expect(tester.getSize(probe(id)).width, 320);
       }
       final scroll = tester
@@ -253,6 +267,7 @@ void main() {
   testWidgets(
     'failed pane factory is cached locally across unrelated rebuilds',
     (tester) async {
+      registerChat();
       var attempts = 0;
       late MainContentAccess access;
       register('test.failed', (value) {
@@ -288,6 +303,7 @@ void main() {
   testWidgets(
     'close is owner-driven; removal releases synchronously with siblings healthy',
     (tester) async {
+      registerChat();
       await wide(tester);
       late MainContentAccess access;
       var closeRequests = 0;
@@ -330,6 +346,7 @@ void main() {
   testWidgets(
     'same-ID replacement retires old access and preserves sibling state',
     (tester) async {
+      registerChat();
       final accesses = <MainContentAccess>[];
       var releases = 0;
       void attach(MainContentAccess access) {
@@ -359,6 +376,7 @@ void main() {
   testWidgets(
     'canonical Session departure never retargets old access, even same ID',
     (tester) async {
+      registerChat();
       final accesses = <MainContentAccess>[];
       final sessions = <Session>[];
       var releases = 0;
@@ -390,6 +408,7 @@ void main() {
   testWidgets('shutdown retention preserves views without reviving access', (
     tester,
   ) async {
+    registerChat();
     final retaining = ValueNotifier(false);
     addTearDown(retaining.dispose);
     late MainContentAccess access;
@@ -419,10 +438,9 @@ void main() {
 }
 
 class _Probe extends StatefulWidget {
-  _Probe(this.id, {this.revision = ''}) : super(key: ValueKey(id));
+  _Probe(this.id) : super(key: ValueKey(id));
 
   final String id;
-  final String revision;
 
   @override
   State<_Probe> createState() => _ProbeState();
@@ -436,10 +454,7 @@ class _ProbeState extends State<_Probe> {
   @override
   Widget build(BuildContext context) => SizedBox.expand(
     child: Column(
-      children: [
-        Text(widget.revision),
-        TextField(controller: text, focusNode: focus),
-      ],
+      children: [TextField(controller: text, focusNode: focus)],
     ),
   );
 

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
-import 'package:adele_ui/inspection_display.dart';
 import 'package:flutter/widgets.dart';
 
 /// Current-Session ownership. The widget host reconciles before rendering, so
@@ -12,15 +11,8 @@ final class MainContentController extends ChangeNotifier {
   MainContentController({
     required this.session,
     required this.extensions,
-    required Widget strategyContent,
-    required String strategyTitle,
     this.isCurrent,
   }) {
-    _strategy = MainContentEntry._strategy(
-      this,
-      strategyContent,
-      strategyTitle,
-    );
     _changes = extensions.changes.listen((_) => _notify());
   }
 
@@ -28,7 +20,6 @@ final class MainContentController extends ChangeNotifier {
   final ExtensionRegistry extensions;
   final bool Function()? isCurrent;
   late final StreamSubscription<void> _changes;
-  late final MainContentEntry _strategy;
   final List<_MainContentAccess> _groups = [];
   bool _closed = false;
   bool _retaining = false;
@@ -48,40 +39,17 @@ final class MainContentController extends ChangeNotifier {
 
   void Function(MainContentEntry entry, bool keyboardFocus)? onFocus;
 
-  /// The strategy is an adapter, not a second plugin registration. Its unique
-  /// entry stays parented across title/widget updates and ordinary registry edits.
-  /// Its ordering identity sorts lexically with contributions at order 100.
+  /// Each exact registration owns one contiguous group in declared order.
   List<MainContentEntry> get entries {
     if (_closed) return const [];
-    final groups =
-        [
-          (
-            order: 100,
-            id: 'dev.adele.main-content.strategy',
-            strategy: true,
-            entries: [_strategy],
-          ),
-          for (final group in _groups)
-            (
-              order: group.order,
-              id: group.binding.id.value,
-              strategy: false,
-              entries: group._entries,
-            ),
-        ]..sort((a, b) {
-          final order = a.order.compareTo(b.order);
-          if (order != 0) return order;
-          final id = a.id.compareTo(b.id);
-          if (id != 0) return id;
-          return a.strategy == b.strategy ? 0 : (a.strategy ? -1 : 1);
-        });
-    return List.unmodifiable(groups.expand((group) => group.entries));
-  }
-
-  void updateStrategy({required Widget content, required String title}) {
-    if (_closed || _retaining) return;
-    _strategy._info = _strategyInfo(title);
-    _strategy._presentation = content;
+    final groups = _groups.toList()
+      ..sort((a, b) {
+        final order = a.order.compareTo(b.order);
+        return order != 0
+            ? order
+            : a.binding.id.value.compareTo(b.binding.id.value);
+      });
+    return List.unmodifiable(groups.expand((group) => group._entries));
   }
 
   void reconcile() {
@@ -156,7 +124,6 @@ final class MainContentController extends ChangeNotifier {
       group._retire();
     }
     _groups.clear();
-    _strategy._remove();
     super.dispose();
   }
 }
@@ -171,15 +138,9 @@ final class MainContentEntry {
         canClose: pane.onClose != null,
       );
 
-  MainContentEntry._strategy(this._controller, Widget content, String title)
-    : _owner = null,
-      _pane = null,
-      _presentation = content,
-      _info = _strategyInfo(title);
-
   final MainContentController _controller;
-  final _MainContentAccess? _owner;
-  final MainContentPane? _pane;
+  final _MainContentAccess _owner;
+  final MainContentPane _pane;
   MainContentPaneInfo _info;
   Widget? _presentation;
   bool _removed = false;
@@ -190,13 +151,13 @@ final class MainContentEntry {
       !_controller._closed &&
       !_controller._retaining &&
       _controller._hasContext &&
-      (_owner?.isActive ?? true);
+      _owner.isActive;
 
   Widget get presentation {
     if (_presentation case final retained?) return retained;
     try {
       if (!isActive) throw StateError('Main Content pane is retired.');
-      final created = _pane!.createPresentation();
+      final created = _pane.createPresentation();
       if (!isActive) throw StateError('Main Content pane is retired.');
       return _presentation = created;
     } on Object {
@@ -209,7 +170,7 @@ final class MainContentEntry {
   void requestClose() {
     if (!isActive) return;
     try {
-      _pane?.onClose?.call();
+      _pane.onClose?.call();
     } on Object {
       // Owner failure does not close the pane or affect its siblings.
     }
@@ -218,7 +179,7 @@ final class MainContentEntry {
   void requestKeyboardFocus(VoidCallback ordinaryFocus) {
     if (!isActive) return;
     try {
-      (_pane?.requestFocus ?? ordinaryFocus)();
+      (_pane.requestFocus ?? ordinaryFocus)();
     } on Object {
       // Native focus failure must not affect other mounted panes.
     }
@@ -228,7 +189,7 @@ final class MainContentEntry {
     if (_removed) return;
     _removed = true;
     try {
-      _pane?.release?.call();
+      _pane.release?.call();
     } on Object {
       // Removal is final even if cleanup fails; other owners still release.
     }
@@ -344,15 +305,4 @@ final class _MainContentAccess implements MainContentAccess {
       entry._remove();
     }
   }
-}
-
-MainContentPaneInfo _strategyInfo(String title) {
-  // Existing strategy display names have no pane-admission bounds. Adapt only
-  // their chrome, using the same bounded display policy as other host labels.
-  final display = compactDisplayText(title, maximumCharacters: 80);
-  return MainContentPaneInfo(
-    id: 'strategy',
-    title: display.trim().isEmpty ? 'Session' : display,
-    canClose: false,
-  );
 }

@@ -109,18 +109,6 @@ void main() {
         ),
         same(originA),
       );
-      PreparedSessionPresentation presentation(
-        OrchestrationStrategyId id,
-        PreparedStrategyAffinity affinity,
-      ) => PreparedSessionPresentation(
-        extensionId: ExtensionId('dev.adele.test.presentation'),
-        strategyId: id,
-        displayName: 'Example',
-        library: 'package:example/session.dart',
-        entrypoint: 'buildSession',
-        backendServices: ['history'],
-        strategyAffinity: affinity,
-      );
       var live = true;
       final inspection = backend.openPresentationChannel(
         backendServices: ['inspection.read'],
@@ -137,10 +125,8 @@ void main() {
         throwsStateError,
       );
       final channel = backend.openChannel(
-        presentation: presentation(
-          strategyA.value.strategyId,
-          PreparedStrategyAffinity.owningBackend,
-        ),
+        backendServices: ['history'],
+        strategyAffinity: PreparedStrategyAffinity.owningBackend,
         strategyBinding: strategyA,
         validatePresentation: () {
           if (!live) throw StateError('View retired.');
@@ -151,10 +137,8 @@ void main() {
         'serviceId': 'history',
       });
       final channelB = backend.openChannel(
-        presentation: presentation(
-          bindings.last.value.strategyId,
-          PreparedStrategyAffinity.owningBackend,
-        ),
+        backendServices: ['history'],
+        strategyAffinity: PreparedStrategyAffinity.owningBackend,
         strategyBinding: bindings.last,
         validatePresentation: () {},
       );
@@ -174,10 +158,8 @@ void main() {
       expect(backend.strategyOrigin(foreignBinding), isNull);
       expect(
         () => backend.openChannel(
-          presentation: presentation(
-            strategyA.value.strategyId,
-            PreparedStrategyAffinity.owningBackend,
-          ),
+          backendServices: ['history'],
+          strategyAffinity: PreparedStrategyAffinity.owningBackend,
           strategyBinding: foreignBinding,
           validatePresentation: () {},
         ),
@@ -185,20 +167,15 @@ void main() {
       );
       expect(
         () => backend.openChannel(
-          presentation: presentation(
-            bindings.last.value.strategyId,
-            PreparedStrategyAffinity.owningBackend,
-          ),
-          strategyBinding: strategyA,
+          backendServices: ['history'],
+          strategyAffinity: PreparedStrategyAffinity.owningBackend,
           validatePresentation: () {},
         ),
-        throwsArgumentError,
+        throwsStateError,
       );
       final independent = backend.openChannel(
-        presentation: presentation(
-          strategyA.value.strategyId,
-          PreparedStrategyAffinity.independent,
-        ),
+        backendServices: ['history'],
+        strategyAffinity: PreparedStrategyAffinity.independent,
         strategyBinding: foreignBinding,
         validatePresentation: () {},
       );

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -21,11 +20,10 @@ void main() {
   late Session retained;
   late Task? selected;
   late Session? activated;
-  late PreparedSessionHost host;
+  late ResolvedOrchestrationStrategy? activatedStrategy;
   late WindowTaskBrowserSource source;
   late ExtensionRegistration browserRegistration;
   late ExtensionRegistration strategyRegistration;
-  late ExtensionRegistration presentationRegistration;
   late Completer<TaskCreationResult> establishment;
   late bool windowBusy;
   late _ExecutionChanges executionChanges;
@@ -33,15 +31,17 @@ void main() {
   late List<Session> statusReads;
   final strategyId = OrchestrationStrategyId('test.strategy');
 
-  ExtensionRegistration registerStrategy() => runtime.extensions.register(
-    point: orchestrationStrategyContributions,
-    id: ExtensionId('test.strategy.extension'),
-    value: OrchestrationStrategyContribution(
-      strategyId: strategyId,
-      materialize: (_) =>
-          throw StateError('Browsing must not materialize a strategy.'),
-    ),
-  );
+  ExtensionRegistration registerStrategy({String? displayName = 'Example'}) =>
+      runtime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('test.strategy.extension'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          displayName: displayName,
+          materialize: (_) =>
+              throw StateError('Browsing must not materialize a strategy.'),
+        ),
+      );
 
   ExtensionRegistration registerBrowser() => runtime.extensions.register(
     point: taskBrowserContributions,
@@ -84,25 +84,10 @@ void main() {
       strategyId: strategyId,
     );
     runtime.lifecycle.createSession(taskId: second.id, strategyId: strategyId);
-    presentationRegistration = runtime.extensions.register(
-      point: sessionPresentationContributions,
-      id: ExtensionId('test.presentation'),
-      value: SessionPresentationContribution(
-        strategyId: strategyId,
-        displayName: 'Example',
-        createPresentation: (_) => const SizedBox(),
-      ),
-    );
     browserRegistration = registerBrowser();
-    host = PreparedSessionHost(
-      extensions: runtime.extensions,
-      backends: runtime.plugins,
-      controllerForSession: (_) =>
-          throw StateError('No presentation requested.'),
-      inspectActivity: (_, _) => false,
-    );
     selected = null;
     activated = null;
+    activatedStrategy = null;
     establishment = Completer<TaskCreationResult>();
     windowBusy = false;
     executionChanges = _ExecutionChanges();
@@ -112,7 +97,6 @@ void main() {
       project: project,
       lifecycle: runtime.lifecycle,
       extensions: runtime.extensions,
-      sessionHost: host,
       browser: TaskBrowserResolver(runtime.extensions).resolve(),
       isCurrent: () => activated == null,
       isBusy: () => windowBusy,
@@ -120,7 +104,8 @@ void main() {
       onSelectTask: (task) => selected = task,
       establishTask: (_) => establishment.future,
       activateSession: (session, selection) {
-        selection.validate();
+        selection?.validateBinding();
+        activatedStrategy = selection;
         activated = session;
       },
       onDispose: () {},
@@ -133,7 +118,6 @@ void main() {
     addTearDown(() async {
       source.dispose();
       executionChanges.dispose();
-      await host.close();
       await runtime.close();
     });
   });
@@ -164,8 +148,9 @@ void main() {
       expect((details['sessions'] as List).single, {
         'id': retained.id.value,
         'strategyId': strategyId.value,
-        'presentationName': 'Example',
-        'available': true,
+        'displayName': 'Example',
+        'canOpen': true,
+        'executionAvailable': true,
         'executionStatus': 'idle',
       });
       expect(
@@ -280,12 +265,35 @@ void main() {
   });
 
   test('IDs cannot navigate across the selected Project or Task', () async {
+    await expectLater(source.selectTask('missing'), throwsStateError);
     await expectLater(source.selectTask(foreign.id.value), throwsStateError);
     await expectLater(source.openSession(retained.id.value), throwsStateError);
     await source.selectTask(second.id.value);
     await expectLater(source.openSession(retained.id.value), throwsStateError);
+    await expectLater(source.openSession('missing'), throwsStateError);
     expect(activated, isNull);
   });
+
+  test(
+    'matching Task IDs cannot substitute for the canonical object',
+    () async {
+      await source.selectTask(first.id.value);
+      final offered = option();
+      selected = Task(
+        id: first.id,
+        projectId: first.projectId,
+        title: first.title,
+      );
+      expect(source.read, throwsStateError);
+      await expectLater(
+        source.openSession(retained.id.value),
+        throwsStateError,
+      );
+      await expectLater(source.createSession(offered), throwsStateError);
+      expect(activated, isNull);
+      expect(runtime.store.sessionsForTask(first.id), [retained]);
+    },
+  );
 
   test(
     'retained Session opens canonical object without replacement or Environment access',
@@ -293,6 +301,8 @@ void main() {
       await source.selectTask(first.id.value);
       await source.openSession(retained.id.value);
       expect(activated, same(retained));
+      expect(activatedStrategy, isNull);
+      expect(runtime.extensions.discover(mainContentContributions), isEmpty);
       expect(runtime.store.sessionsForTask(first.id).single, same(retained));
       expect(
         runtime.store.requireSessionAuthority(retained.id).environmentId,
@@ -309,29 +319,43 @@ void main() {
   );
 
   test(
-    'missing strategy leaves retained Session visible but unavailable',
+    'missing backend and frontend leave canonical retained Session navigable',
     () async {
       await strategyRegistration.close();
       await source.selectTask(first.id.value);
       final details = source.read()['selectedTask']! as Map;
-      expect((details['sessions'] as List).single['available'], false);
-      expect(
-        (details['sessions'] as List).single['presentationName'],
-        'Example',
-      );
+      expect((details['sessions'] as List).single, {
+        'id': retained.id.value,
+        'strategyId': strategyId.value,
+        'displayName': strategyId.value,
+        'canOpen': true,
+        'executionAvailable': false,
+        'executionStatus': 'idle',
+      });
       expect(details['sessionCreationOptions'], isEmpty);
-      await expectLater(
-        source.openSession(retained.id.value),
-        throwsA(isA<OrchestrationStrategyUnavailable>()),
-      );
+      await expectLater(source.createSession('invented'), throwsStateError);
+      await source.openSession(retained.id.value);
+      expect(activated, same(retained));
+      expect(activatedStrategy, isNull);
+      expect(runtime.store.sessionsForTask(first.id), [retained]);
       expect(runtime.store.session(retained.id), same(retained));
+      expect(runtime.store.runsForSession(retained.id), isEmpty);
+      expect(
+        runtime.lifecycle.environmentRuntime.currentMaterialization(
+          EnvironmentId('env-first'),
+        ),
+        isNull,
+      );
     },
   );
 
   test(
-    'opaque creation choice creates one Session with existing authority',
+    'headless creation retains the exact executable strategy and authority',
     () async {
       await source.selectTask(first.id.value);
+      final expected = OrchestrationStrategyResolver(
+        runtime.extensions,
+      ).resolve(strategyId);
       await source.createSession(option());
       expect(runtime.store.sessionsForTask(first.id), hasLength(2));
       expect(activated!.id, isNot(retained.id));
@@ -340,24 +364,40 @@ void main() {
         EnvironmentId('env-first'),
       );
       expect(runtime.store.runsForSession(activated!.id), isEmpty);
+      expect(
+        activatedStrategy!.binding.isSameRegistration(expected.binding),
+        isTrue,
+      );
+      expect(runtime.extensions.discover(mainContentContributions), isEmpty);
+      expect(
+        runtime.lifecycle.environmentRuntime.currentMaterialization(
+          EnvironmentId('env-first'),
+        ),
+        isNull,
+      );
     },
   );
 
   test(
-    'missing presentation retains stored strategy identity in the list',
+    'unnamed strategy uses its identity without needing renderer metadata',
     () async {
-      await presentationRegistration.close();
+      await strategyRegistration.close();
+      strategyRegistration = registerStrategy(displayName: null);
       executionStatuses[retained.id] = 'waitingForApproval';
       await source.selectTask(first.id.value);
       final details = source.read()['selectedTask']! as Map;
       expect((details['sessions'] as List).single, {
         'id': retained.id.value,
         'strategyId': strategyId.value,
-        'presentationName': strategyId.value,
-        'available': false,
+        'displayName': strategyId.value,
+        'canOpen': true,
+        'executionAvailable': true,
         'executionStatus': 'waitingForApproval',
       });
-      expect(details['sessionCreationOptions'], isEmpty);
+      expect(
+        (details['sessionCreationOptions'] as List).single['displayName'],
+        strategyId.value,
+      );
       expect(runtime.store.session(retained.id), same(retained));
     },
   );
@@ -381,7 +421,11 @@ void main() {
     expect(runtime.store.sessionsForTask(first.id), hasLength(1));
     final details = source.read()['selectedTask']! as Map;
     expect(details['sessionCreationOptions'], isEmpty);
-    expect((details['sessions'] as List).single['available'], false);
+    expect((details['sessions'] as List).single['executionAvailable'], false);
+    expect((details['sessions'] as List).single['canOpen'], true);
+    await source.openSession(retained.id.value);
+    expect(activated, same(retained));
+    expect(activatedStrategy, isNull);
   });
 
   test(
@@ -454,14 +498,49 @@ void main() {
   });
 
   test(
-    'retired presentation and foreign Task options fail before publication',
+    'strategy replacement during pending work fences the retained option',
+    () async {
+      await source.selectTask(first.id.value);
+      final old = option();
+      final creating = source.createTask('pending');
+      await strategyRegistration.close();
+      strategyRegistration = registerStrategy();
+      establishment.complete(
+        TaskCreationResult(
+          task: first,
+          environment: runtime.store.primaryEnvironmentFor(first.id)!,
+        ),
+      );
+      await creating;
+      await expectLater(
+        source.createSession(old),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(activated, isNull);
+      expect(runtime.store.sessionsForTask(first.id), [retained]);
+      final fresh = option();
+      expect(fresh, isNot(old));
+      await source.createSession(fresh);
+      expect(
+        activatedStrategy!.binding.isSameRegistration(
+          OrchestrationStrategyResolver(
+            runtime.extensions,
+          ).resolve(strategyId).binding,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'retired strategy and foreign Task options fail before publication',
     () async {
       await source.selectTask(first.id.value);
       final old = option();
       await source.selectTask(second.id.value);
       await expectLater(source.createSession(old), throwsStateError);
       await source.selectTask(first.id.value);
-      await presentationRegistration.close();
+      await strategyRegistration.close();
       await expectLater(
         source.createSession(old),
         throwsA(isA<StaleExtensionBinding>()),
@@ -493,6 +572,7 @@ void main() {
         throwsA(isA<StaleExtensionBinding>()),
       );
       await browserRegistration.close();
+      browserRegistration = registerBrowser();
       establishment.complete(
         TaskCreationResult(
           task: first,
@@ -501,6 +581,24 @@ void main() {
       );
       await failure;
       expect(selected, isNull);
+      expect(runtime.store.task(first.id), same(first));
+    },
+  );
+
+  test(
+    'window departure during Task establishment rejects late navigation',
+    () async {
+      final creating = source.createTask('new title');
+      activated = retained;
+      establishment.complete(
+        TaskCreationResult(
+          task: first,
+          environment: runtime.store.primaryEnvironmentFor(first.id)!,
+        ),
+      );
+      await expectLater(creating, throwsStateError);
+      expect(selected, isNull);
+      expect(activated, same(retained));
       expect(runtime.store.task(first.id), same(first));
     },
   );

@@ -9,22 +9,18 @@ import 'package:flutter/scheduler.dart';
 import '../../frontend/prepared_frontend.dart';
 import 'main_content_controller.dart';
 
-/// One bounded row of equally sized panes, including the existing strategy view.
+/// One bounded row of equally sized panes from registered contributions.
 /// All panes remain mounted, even outside the horizontal viewport.
 class MainContentHost extends StatefulWidget {
   const MainContentHost({
     super.key,
     required this.session,
     required this.extensions,
-    required this.strategyContent,
-    required this.strategyTitle,
     this.isCurrent,
   });
 
   final Session session;
   final ExtensionRegistry extensions;
-  final Widget strategyContent;
-  final String strategyTitle;
 
   /// Optional composition-root guard for departure before the next widget frame.
   /// Once observed false, that attachment cannot become active again.
@@ -52,8 +48,6 @@ class _MainContentHostState extends State<MainContentHost> {
         MainContentController(
             session: widget.session,
             extensions: widget.extensions,
-            strategyContent: widget.strategyContent,
-            strategyTitle: widget.strategyTitle,
             isCurrent: () => widget.isCurrent?.call() ?? true,
           )
           ..onFocus = _focus
@@ -67,11 +61,6 @@ class _MainContentHostState extends State<MainContentHost> {
         !identical(oldWidget.extensions, widget.extensions)) {
       _controller.dispose();
       _createController();
-    } else {
-      _controller.updateStrategy(
-        content: widget.strategyContent,
-        title: widget.strategyTitle,
-      );
     }
   }
 
@@ -131,6 +120,11 @@ class _MainContentHostState extends State<MainContentHost> {
             if (!constraints.hasBoundedHeight || !constraints.hasBoundedWidth) {
               throw FlutterError(
                 'MainContentHost requires bounded constraints.',
+              );
+            }
+            if (entries.isEmpty) {
+              return const Center(
+                child: Text('No Main Content is available for this Session.'),
               );
             }
             final width = math.max(

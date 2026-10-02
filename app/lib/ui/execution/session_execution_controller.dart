@@ -179,12 +179,29 @@ final class SessionExecutionController extends ChangeNotifier {
   };
 
   /// Acceptance locks synchronously. Completion reports scheduling, not Run end.
-  Future<RunId> startRun() async {
+  /// An expected service binding constrains, but never selects, the core choice.
+  Future<RunId> startRun({
+    ResolvedOrchestrationStrategy? expectedStrategy,
+  }) async {
     if (!canStart) {
       throw StateError(unavailableReason ?? 'A Run is already active.');
     }
-    _capturedStrategy =
+    final selectedStrategy =
         strategy ?? _runtime.lifecycle.resolveSessionStrategy(session.id);
+    if (expectedStrategy != null) {
+      _runtime.lifecycle.validateResolvedStrategy(
+        session.strategyId,
+        expectedStrategy,
+      );
+      if (!selectedStrategy.binding.isSameRegistration(
+        expectedStrategy.binding,
+      )) {
+        throw StateError(
+          'The Run strategy differs from the captured service binding.',
+        );
+      }
+    }
+    _capturedStrategy = selectedStrategy;
     _capturedProvider = _runtime.registry.resolve(
       modelProviderCapability,
       providerId: providerId,

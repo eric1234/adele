@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -7,7 +8,6 @@ import 'package:flutter/foundation.dart';
 
 import '../core/product_lifecycle.dart';
 import '../ui/project_display_name.dart';
-import 'prepared_session_host.dart';
 import 'task_browser_bridge.dart';
 
 /// One presented browser's authority over the current window's Project.
@@ -19,7 +19,6 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     required this.project,
     required this.lifecycle,
     required this.extensions,
-    required this.sessionHost,
     required this.browser,
     required this.isCurrent,
     required this.isBusy,
@@ -38,14 +37,14 @@ final class WindowTaskBrowserSource extends ChangeNotifier
   final ProductLifecycleCoordinator lifecycle;
   InMemoryProductStore get store => lifecycle.store;
   final ExtensionRegistry extensions;
-  final PreparedSessionHost sessionHost;
   final ExtensionBinding<TaskBrowserContribution> browser;
   final bool Function() isCurrent;
   final bool Function() isBusy;
   final Task? Function() selectedTask;
   final void Function(Task?) onSelectTask;
   final Future<TaskCreationResult> Function(String) establishTask;
-  final void Function(Session, SessionPresentationSelection) activateSession;
+  final void Function(Session session, ResolvedOrchestrationStrategy? strategy)
+  activateSession;
   final VoidCallback onDispose;
 
   /// Passive retained-owner lookup, never an execution-owner factory.
@@ -54,7 +53,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
 
   /// Generic status changes only, not per-packet execution activity.
   final Listenable? executionChanges;
-  final Map<String, SessionPresentationSelection> _options = {};
+  final Map<String, ResolvedOrchestrationStrategy> _options = {};
   Task? _optionsTask;
   int _nextOption = 0;
   bool _busy = false;
@@ -107,21 +106,18 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     final usable = <String>{};
     if (task != null) {
       for (final candidate in extensions.discover(
-        sessionPresentationContributions,
+        orchestrationStrategyContributions,
       )) {
         try {
-          final selection = sessionHost.resolve(candidate);
+          final selection = OrchestrationStrategyResolver(
+            extensions,
+          ).resolve(candidate.value.strategyId)..validateBinding();
           String? handle;
           for (final entry in _options.entries) {
             final retained = entry.value;
             try {
-              retained.validate();
-              if (retained.presentation.isSameRegistration(
-                    selection.presentation,
-                  ) &&
-                  retained.strategy.binding.isSameRegistration(
-                    selection.strategy.binding,
-                  )) {
+              retained.validateBinding();
+              if (retained.binding.isSameRegistration(selection.binding)) {
                 handle = entry.key;
                 break;
               }
@@ -133,7 +129,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
           _options.putIfAbsent(handle, () => selection);
           usable.add(handle);
         } on Object {
-          // Missing/ambiguous strategy or affinity is not a creation choice.
+          // Missing or ambiguous strategies are not creation choices.
         }
       }
     }
@@ -167,7 +163,9 @@ final class WindowTaskBrowserSource extends ChangeNotifier
                 for (final entry in _options.entries)
                   {
                     'opaqueHandle': entry.key,
-                    'displayName': entry.value.presentation.value.displayName,
+                    'displayName':
+                        entry.value.contribution.displayName ??
+                        entry.value.strategyId.value,
                   },
               ],
             },
@@ -220,22 +218,22 @@ final class WindowTaskBrowserSource extends ChangeNotifier
 
   Map<String, Object?> _sessionRow(Session session) {
     var label = session.strategyId.value;
-    var available = false;
+    var executionAvailable = false;
     try {
-      final presentation = SessionPresentationResolver(
+      final strategy = OrchestrationStrategyResolver(
         extensions,
-      ).resolve(session.strategyId);
-      label = presentation.value.displayName;
-      sessionHost.resolve(presentation, session: session).validate();
-      available = true;
+      ).resolve(session.strategyId)..validateBinding();
+      label = strategy.contribution.displayName ?? label;
+      executionAvailable = true;
     } on Object {
-      // Persisted Sessions remain visible even when their execution is absent.
+      // Execution availability never determines canonical navigation.
     }
     return {
       'id': session.id.value,
       'strategyId': session.strategyId.value,
-      'presentationName': label,
-      'available': available,
+      'displayName': label,
+      'canOpen': true,
+      'executionAvailable': executionAvailable,
       'executionStatus': _executionStatus(session),
     };
   }
@@ -287,18 +285,18 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     if (!identical(task, _optionsTask) || selection == null) {
       throw StateError('Session creation option is no longer available.');
     }
-    selection.validate();
-    // Revalidate uniqueness and affinity without replacing the retained choice.
-    final current = sessionHost.resolve(selection.presentation);
-    if (!current.strategy.binding.isSameRegistration(
-      selection.strategy.binding,
-    )) {
+    selection.validateBinding();
+    // Revalidate uniqueness without replacing the retained registration.
+    final current = OrchestrationStrategyResolver(
+      extensions,
+    ).resolve(selection.strategyId);
+    if (!current.binding.isSameRegistration(selection.binding)) {
       throw StateError('Session creation option is no longer current.');
     }
     final session = lifecycle.createSession(
       taskId: task.id,
-      strategyId: selection.strategy.strategyId,
-      resolvedStrategy: selection.strategy,
+      strategyId: selection.strategyId,
+      resolvedStrategy: selection,
     );
     activateSession(session, selection);
   });
@@ -310,12 +308,7 @@ final class WindowTaskBrowserSource extends ChangeNotifier
     if (session == null || session.taskId != task.id) {
       throw StateError('Session does not belong to the selected Task.');
     }
-    final presentation = SessionPresentationResolver(
-      extensions,
-    ).resolve(session.strategyId);
-    final selection = sessionHost.resolve(presentation, session: session)
-      ..validate();
-    activateSession(session, selection);
+    activateSession(session, null);
   });
 
   @override
