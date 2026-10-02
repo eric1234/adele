@@ -866,7 +866,7 @@ void main() {
   test('compact composition preserves plugin parsing and authority boundaries', () {
     final files = <File>[
       for (final path in [
-        'app/lib/ui/session',
+        'app/lib/ui/main_content',
         'app/lib/ui/execution',
         'app/lib/ui/activity',
         'app/lib/ui/inspection',
