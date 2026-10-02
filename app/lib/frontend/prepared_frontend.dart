@@ -51,6 +51,7 @@ final class PreparedFrontendBridges
     : _bridges = List.unmodifiable(bridges);
 
   final List<PreparedFrontendBridge> _bridges;
+  bool _invalidated = false;
 
   @override
   String get identifier => 'dev.adele.prepared-frontend-bridges';
@@ -80,13 +81,26 @@ final class PreparedFrontendBridges
 
   @override
   void invalidate() {
+    if (_invalidated) return;
+    _invalidated = true;
+    Object? firstError;
+    StackTrace? firstStackTrace;
     for (final bridge in _bridges) {
-      bridge.invalidate();
+      try {
+        bridge.invalidate();
+      } on Object catch (error, stackTrace) {
+        firstError ??= error;
+        firstStackTrace ??= stackTrace;
+      }
+    }
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStackTrace!);
     }
   }
 
   @override
   void retainPresentation() {
+    if (_invalidated) return;
     for (final bridge in _bridges) {
       if (bridge is PreparedFrontendRetainable) {
         (bridge as PreparedFrontendRetainable).retainPresentation();

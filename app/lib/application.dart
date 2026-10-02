@@ -470,29 +470,60 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     });
     _execution?.refresh();
     try {
-      await _frontends.prepareToDeactivate(session);
+      try {
+        await _frontends.prepareToDeactivate(session);
+      } on Object {
+        if (mounted && _closing == null && identical(_session, session)) {
+          setState(
+            () => _navigationError =
+                'Could not leave this Session. Save pending changes and try again.',
+          );
+        }
+        return;
+      }
       if (!mounted || _closing != null || !identical(_session, session)) return;
+
+      // Settlement accepted departure. Cleanup failure cannot restore authority
+      // to a workspace whose presentation teardown has already begun.
       _workbench = null;
-      _frontends.unbind(session);
-      _execution?.removeListener(_executionChanged);
-      _execution?.activityChanges.removeListener(_activityChanged);
-      _console.setSession(null);
-      _inspection.presentSession(null);
+      Object? cleanupError;
+      StackTrace? cleanupStack;
+      for (final cleanup in <VoidCallback>[
+        () => _frontends.unbind(session),
+        () => _execution?.removeListener(_executionChanged),
+        () => _execution?.activityChanges.removeListener(_activityChanged),
+        () => _console.setSession(null),
+        () => _inspection.presentSession(null),
+      ]) {
+        try {
+          cleanup();
+        } on Object catch (error, stackTrace) {
+          cleanupError ??= error;
+          cleanupStack ??= stackTrace;
+        }
+      }
       setState(() {
         _execution = null;
         _session = null;
         _sessionLabel = null;
-        _navigationError = null;
+        _navigationError = cleanupError == null
+            ? null
+            : 'Left the Session, but some presentation resources could not be released.';
         _task = task;
         _environment = task == null
             ? null
             : _runtime.store.primaryEnvironmentFor(task.id);
       });
-    } on Object {
-      if (mounted && _closing == null) {
-        setState(
-          () => _navigationError =
-              'Could not leave this Session. Save pending changes and try again.',
+      if (cleanupError != null) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: cleanupError,
+            stack: cleanupStack,
+            library: 'ADELE application',
+            context: ErrorDescription(
+              'while releasing presentations after leaving a Session',
+            ),
+          ),
         );
       }
     } finally {

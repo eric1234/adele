@@ -873,6 +873,13 @@ revokes callbacks and observation, not the Run. The generic lifecycle bridge is
 attached per contributed pane; `prepareToDeactivate` aggregates hooks before
 departure and `unbind` revokes them afterward. Input/approval actions are disabled
 during settlement without revoking services needed to finish a draft write.
+Settlement failure leaves the current workspace intact for repair and retry.
+After settlement accepts departure, teardown attempts every pane and native
+release, preserving the first error and stack. A cleanup failure still completes
+navigation to Task Browser, shows a cleanup warning, and reports the diagnostic
+through `FlutterError.reportError`; it does not imply that the revoked workspace
+can be retried in place. Returning deliberately creates fresh presentation access
+without replacing or cancelling the core-owned Run.
 New presentations admitted during settlement require a fresh departure attempt.
 Orderly exit freezes service display before revoking collection authority, keeping
 inert status/activity visible while core-owned accepted work drains.

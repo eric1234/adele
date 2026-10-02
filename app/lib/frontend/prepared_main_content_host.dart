@@ -89,8 +89,7 @@ final class PreparedMainContentHost {
             if (released) return;
             released = true;
             _releases.remove(release);
-            bridges?.invalidate();
-            binding?.release?.call();
+            _releaseAll([?bridges?.invalidate, ?binding?.release]);
           }
 
           try {
@@ -187,8 +186,13 @@ final class PreparedMainContentHost {
                       );
                       return bridges = PreparedFrontendBridges(acquired);
                     } on Object {
-                      for (final bridge in acquired.reversed) {
-                        bridge.invalidate();
+                      try {
+                        _releaseAll([
+                          for (final bridge in acquired.reversed)
+                            bridge.invalidate,
+                        ]);
+                      } on Object {
+                        // Preserve the construction failure after rollback.
                       }
                       rethrow;
                     }
@@ -221,7 +225,11 @@ final class PreparedMainContentHost {
             _releases[release] = access.session;
             access.open(pane);
           } on Object {
-            release();
+            try {
+              release();
+            } on Object {
+              // Preserve the admission failure after releasing its resources.
+            }
             rethrow;
           }
         }
@@ -279,9 +287,10 @@ final class PreparedMainContentHost {
   }
 
   void unbind(Session session) {
-    for (final entry in _releases.entries.toList()) {
-      if (identical(entry.value, session)) entry.key();
-    }
+    _releaseAll([
+      for (final entry in _releases.entries.toList())
+        if (identical(entry.value, session)) entry.key,
+    ]);
   }
 
   Future<void> close() {
@@ -290,5 +299,21 @@ final class PreparedMainContentHost {
     return _closing = closeResources([
       for (final release in _releases.keys.toList()) () async => release(),
     ]);
+  }
+}
+
+void _releaseAll(Iterable<VoidCallback> releases) {
+  Object? firstError;
+  StackTrace? firstStackTrace;
+  for (final release in releases) {
+    try {
+      release();
+    } on Object catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+  }
+  if (firstError != null) {
+    Error.throwWithStackTrace(firstError, firstStackTrace!);
   }
 }

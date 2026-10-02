@@ -18,6 +18,45 @@ import 'package:flutter_test/flutter_test.dart';
 const _library = 'package:bridge_probe/main.dart';
 
 void main() {
+  test(
+    'composite invalidation attempts every child once and preserves first error',
+    () {
+      final firstError = StateError('first bridge failure');
+      final firstStack = StackTrace.fromString('first bridge stack');
+      final attempts = <String>[];
+      late final PreparedFrontendBridges bridge;
+      bridge = PreparedFrontendBridges([
+        _CleanupBridge(() {
+          attempts.add('first');
+          Error.throwWithStackTrace(firstError, firstStack);
+        }),
+        _CleanupBridge(() {
+          attempts.add('second');
+          bridge.invalidate();
+          Error.throwWithStackTrace(
+            StateError('later bridge failure'),
+            StackTrace.fromString('later bridge stack'),
+          );
+        }),
+        _CleanupBridge(() => attempts.add('last')),
+      ]);
+      Object? caught;
+      StackTrace? caughtStack;
+      try {
+        bridge.invalidate();
+      } on Object catch (error, stack) {
+        caught = error;
+        caughtStack = stack;
+      }
+      expect(caught, same(firstError));
+      expect(caughtStack.toString(), firstStack.toString());
+      expect(attempts, ['first', 'second', 'last']);
+      bridge.invalidate();
+      bridge.retainPresentation();
+      expect(attempts, ['first', 'second', 'last']);
+    },
+  );
+
   test('settlement stub grants no native access', () {
     expect(
       () => public_bridge.settleSessionOperation(Future<Object?>.value(null)),
@@ -363,6 +402,20 @@ Future<List<dynamic>> settleBadDecode() => settleSessionOperation(badDecode());
       source.dispose();
     },
   );
+}
+
+final class _CleanupBridge implements PreparedFrontendBridge {
+  _CleanupBridge(this.cleanup);
+  final VoidCallback cleanup;
+
+  @override
+  String get identifier => 'test.cleanup';
+  @override
+  void configureForCompile(BridgeDeclarationRegistry registry) {}
+  @override
+  void configureForRuntime(Runtime runtime) {}
+  @override
+  void invalidate() => cleanup();
 }
 
 final class _Channel implements AdeleRequestChannel {

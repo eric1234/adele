@@ -437,6 +437,156 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final bridgeFailure in [true, false]) {
+    testWidgets('Session cleanup attempts every pane once with '
+        '${bridgeFailure ? 'bridge' : 'native release'} failure', (
+      tester,
+    ) async {
+      final firstError = StateError('first cleanup failure');
+      final firstStack = StackTrace.fromString('first cleanup stack');
+      final laterError = StateError('later cleanup failure');
+      final laterStack = StackTrace.fromString('later cleanup stack');
+      final otherSession = Session(
+        id: SessionId('other-session'),
+        taskId: session.taskId,
+        strategyId: session.strategyId,
+      );
+      final records = <_Binding>[];
+      final prepared = PreparedMainContentHost(
+        createBinding:
+            ({
+              required installation,
+              required descriptor,
+              required session,
+              required paneId,
+            }) {
+              final record = _Binding(
+                session,
+                paneId,
+                invalidateFailure: bridgeFailure && paneId == 'a'
+                    ? (firstError, firstStack)
+                    : null,
+                releaseFailure: !bridgeFailure && paneId == 'a'
+                    ? (firstError, firstStack)
+                    : (laterError, laterStack),
+              );
+              records.add(record);
+              return record.binding;
+            },
+      );
+      final generation = (await tester.runAsync(
+        () => PreparedFrontend.load(artifact),
+      ))!;
+      final descriptor = PreparedMainContentPresentation(
+        extensionId: _extensionId,
+        order: 200,
+        library: _library,
+        initialize: 'initializePanes',
+        entrypoint: 'buildPane',
+      );
+      final registration = extensions.register(
+        point: mainContentContributions,
+        id: _extensionId,
+        value: prepared.createContribution(
+          extensions: extensions,
+          installation: PreparedPluginInstallation(
+            metadata: PluginMetadata(
+              id: PluginId('test.prepared'),
+              version: '1',
+              displayName: 'Panes',
+            ),
+            installationDirectory: temporary,
+            backendArtifactUri: null,
+          ),
+          generation: generation,
+          descriptor: descriptor,
+          isActive: () => true,
+        ),
+      );
+      addTearDown(registration.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                for (final current in [session, otherSession])
+                  Expanded(
+                    child: MainContentHost(
+                      session: current,
+                      extensions: extensions,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final record in records.toList()) {
+        expect(
+          record.call('open', [$String('b'), $String('B'), $bool(true)]),
+          isTrue,
+        );
+      }
+      await tester.pumpAndSettle();
+      final departing = records.where((r) => identical(r.session, session));
+      final other = records.where((r) => identical(r.session, otherSession));
+      expect(departing.map((r) => r.paneId), ['a', 'b']);
+      expect(other.map((r) => r.paneId), ['a', 'b']);
+      Object? caught;
+      StackTrace? caughtStack;
+      try {
+        prepared.unbind(session);
+      } on Object catch (error, stack) {
+        caught = error;
+        caughtStack = stack;
+      }
+      expect(caught, same(firstError));
+      expect(caughtStack.toString(), firstStack.toString());
+      expect(departing.map((r) => r.releases), everyElement(1));
+      expect(departing.map((r) => r.invalidations), everyElement(1));
+      expect(departing.map((r) => r.siblingInvalidations), everyElement(1));
+      for (final record in departing) {
+        expect(record.active!(), isFalse);
+        expect(record.call('context'), isEmpty);
+        expect(record.call('rename', [$String('a'), $String('Late')]), isFalse);
+      }
+      expect(other.map((r) => r.releases), everyElement(0));
+      expect(other.map((r) => r.invalidations), everyElement(0));
+      expect(other.map((r) => r.active!()), everyElement(isTrue));
+      expect(
+        other.first.call('rename', [$String('b'), $String('Still live')]),
+        isTrue,
+      );
+      prepared.unbind(session);
+
+      final closing = prepared.close();
+      expect(prepared.close(), same(closing));
+      caught = null;
+      caughtStack = null;
+      try {
+        await closing;
+      } on Object catch (error, stack) {
+        caught = error;
+        caughtStack = stack;
+      }
+      expect(caught, same(firstError));
+      expect(caughtStack.toString(), firstStack.toString());
+      await expectLater(prepared.close(), throwsA(same(firstError)));
+      prepared.unbind(otherSession);
+      expect(records.map((r) => r.active!()), everyElement(isFalse));
+      // Ordinary removal and generation retirement revisit the same lifetimes.
+      generation.retainPresentations();
+      generation.releasePresentations();
+      await tester.pumpWidget(const SizedBox.shrink());
+      generation.invalidate();
+      expect(records.map((r) => r.releases), everyElement(1));
+      expect(records.map((r) => r.invalidations), everyElement(1));
+      expect(records.map((r) => r.siblingInvalidations), everyElement(1));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'Session departure fences old runtimes and reattach initializes fresh panes',
     (tester) async {
@@ -484,23 +634,49 @@ void _press(WidgetTester tester, String label) => tester
     .onPressed!();
 
 final class _Binding {
-  _Binding(this.session, this.paneId, {this.ready});
+  _Binding(
+    this.session,
+    this.paneId, {
+    this.ready,
+    this.invalidateFailure,
+    this.releaseFailure,
+  });
   final Session session;
   final String paneId;
   final Future<void>? ready;
+  final (Object, StackTrace)? invalidateFailure;
+  final (Object, StackTrace)? releaseFailure;
   final List<Runtime> runtimes = [];
   bool Function()? active;
   var releases = 0;
   var focuses = 0;
+  var invalidations = 0;
+  var siblingInvalidations = 0;
 
   PreparedMainContentPaneBinding get binding => PreparedMainContentPaneBinding(
     ready: ready,
     createBridge: (isActive) {
       active = isActive;
-      return _RecordingBridge(runtimes.add);
+      return PreparedFrontendBridges([
+        _RecordingBridge(
+          runtimes.add,
+          onInvalidate: () {
+            invalidations++;
+            if (invalidateFailure case final failure?) {
+              Error.throwWithStackTrace(failure.$1, failure.$2);
+            }
+          },
+        ),
+        _RecordingBridge((_) {}, onInvalidate: () => siblingInvalidations++),
+      ]);
     },
     requestFocus: () => focuses++,
-    release: () => releases++,
+    release: () {
+      releases++;
+      if (releaseFailure case final failure?) {
+        Error.throwWithStackTrace(failure.$1, failure.$2);
+      }
+    },
   );
 
   Object? call(String name, [List<$Value> arguments = const []]) {
@@ -513,8 +689,9 @@ final class _Binding {
 }
 
 final class _RecordingBridge implements PreparedFrontendBridge {
-  _RecordingBridge(this.record);
+  _RecordingBridge(this.record, {this.onInvalidate});
   final void Function(Runtime) record;
+  final VoidCallback? onInvalidate;
 
   @override
   String get identifier => 'test.main-content-binding';
@@ -523,7 +700,7 @@ final class _RecordingBridge implements PreparedFrontendBridge {
   @override
   void configureForRuntime(Runtime runtime) => record(runtime);
   @override
-  void invalidate() {}
+  void invalidate() => onInvalidate?.call();
 }
 
 const _source = '''
