@@ -10,6 +10,8 @@ import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
 import '../../tools/adele.dart' as tooling;
 import '../../tools/contract_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
+import 'code_editor_dependency_test.dart'
+    show createCodeEditorDependencyFixture;
 
 const String _codegenEntrypoint =
     'packages/contract_codegen/bin/contract_codegen.dart';
@@ -64,13 +66,15 @@ void main() {
   late File frontendEnvironment;
   late Map<String, String> environment;
 
-  setUp(() {
+  setUp(() async {
     root = Directory.systemTemp.createTempSync('adele launcher ');
     // Copy only the SDK-only launcher graph, with no pubspec/package config.
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
       'tools/code_editor_probe.dart',
+      'tools/code_editor_dependency.dart',
+      'tools/code_editor_smoke.dart',
       'tools/contract_artifacts.dart',
       'tools/frontend_artifacts.dart',
       'tools/git_pty_artifact.dart',
@@ -84,6 +88,7 @@ void main() {
       destination.parent.createSync(recursive: true);
       File(path).copySync(destination.path);
     }
+    await createCodeEditorDependencyFixture(root);
     Directory('${root.path}/app').createSync();
     final File harness = File('${root.path}/app/$_frontendHarness');
     harness.parent.createSync();
@@ -176,11 +181,15 @@ if [ "\$1" = "--version" ]; then
   printf '%s\n' '${jsonEncode(<String, String>{'flutterRoot': flutterRoot.path})}'
 elif [ "\$1" = pub ]; then
   test "\$PWD" = '${root.path}' || exit 98
+  test -f '${root.path}/.adele/dependencies/code_forge/lib/code.dart' || exit 94
   test "\$#" = 2 && test "\$2" = get || exit 97
   printf 'pub-get\n' >> '${commands.path}'
   if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = pub-get ]; then exit 19; fi
 elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
   test -f '${generatedContract.path}' || exit 95
+  if [ "\$1" = test ] && [ "\$PWD" = '${root.path}/app' ]; then
+    test -f "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR/libcode_forge.so" || exit 94
+  fi
   printf '%s|flutter|%s\n' "\$1" "\$PWD" >> '${commands.path}'
 elif [ "\$1" = test ]; then
   test -f '${generatedContract.path}' || exit 95
@@ -261,6 +270,15 @@ elif [ "\$1" = analyze ] || [ "\$1" = test ]; then
 else
   exit 99
 fi
+''');
+    _script(File('${bin.path}/rustup'), '''
+test "\$1" = run && test "\$2" = 1.93.0 && test "\$3" = cargo || exit 98
+test "\$4" = build && test "\$5" = --locked && test "\$6" = --release || exit 97
+test "\$7" = --manifest-path && test "\$9" = --target-dir || exit 96
+test "\${11}" = --target && test "\${12}" = x86_64-unknown-linux-gnu || exit 96
+if [ "\$ADELE_TEST_FAIL_CODEFORGE_NATIVE" = 1 ]; then exit 35; fi
+mkdir -p "\${10}/\${12}/release"
+printf 'native fixture' > "\${10}/\${12}/release/libcode_forge.so"
 ''');
     _script(File('${sdkBin.path}/dartaotruntime'), 'exit 99');
     _script(File('${bin.path}/cc'), '''
@@ -390,6 +408,64 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     expect(generatedContract.existsSync(), isFalse);
     expect(result.stdout, isNot(contains('START test:')));
   });
+
+  for (final arguments in [
+    ['help'],
+    ['--help'],
+    ['prepare-code-editor', '--invalid'],
+    ['build-code-editor-tests', '--invalid'],
+    ['editor-smoke'],
+    ['editor-smoke', 'linux', '--invalid'],
+    ['bootstrap', '--invalid'],
+    ['analyze', '--invalid'],
+    ['build', 'linux', '--invalid'],
+    ['test', '--jobs', '0'],
+  ]) {
+    test(
+      '${arguments.join(' ')} never prepares source or invokes tools',
+      () async {
+        final result = await invoke(arguments);
+        expect(result.exitCode, arguments.first.contains('help') ? 0 : 64);
+        expect(commands.existsSync(), isFalse);
+        expect(Directory('${root.path}/.adele').existsSync(), isFalse);
+      },
+    );
+  }
+
+  for (final arguments in [
+    ['bootstrap'],
+    ['analyze'],
+    ['test', '--target', 'adele_tools'],
+    ['build', 'linux'],
+    ['run', 'linux'],
+  ]) {
+    test(
+      '${arguments.join(' ')} refuses altered source before consumers',
+      () async {
+        final prepared = await invoke(['prepare-code-editor']);
+        expect(prepared.exitCode, 0, reason: '${prepared.stderr}');
+        File(
+          '${root.path}/.adele/dependencies/code_forge/lib/code.dart',
+        ).writeAsStringSync('tampered');
+        final result = await invoke(arguments);
+        expect(result.exitCode, 1);
+        expect(result.stderr, contains('Stale or altered'));
+        expect(commands.existsSync(), isFalse);
+      },
+    );
+  }
+
+  test(
+    'failed native build prevents desktop test workers and any fallback',
+    () async {
+      environment['ADELE_TEST_FAIL_CODEFORGE_NATIVE'] = '1';
+      final result = await invoke(['test', '--target', 'adele_desktop']);
+      expect(result.exitCode, 1);
+      expect(result.stderr, contains('CodeForge rustup failed (35)'));
+      expect(commands.readAsLinesSync(), ['generate|path']);
+      expect(result.stdout, isNot(contains('START test:')));
+    },
+  );
 
   test('bootstrap generates once after both dependency commands', () async {
     final result = await invoke(['bootstrap']);

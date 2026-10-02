@@ -49,6 +49,10 @@ workspace:
   - plugins/terminal/packages/frontend
   - plugins/git_environment
 
+dependency_overrides:
+  code_forge:
+    path: .adele/dependencies/code_forge
+
 dev_dependencies:
   analyzer: 8.4.1
   lints: ^6.0.0

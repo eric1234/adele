@@ -1,0 +1,725 @@
+// Original 37 correct-behavior cases from
+// tools/code_editor_probe/fixtures/investigation_test.dart.template
+// at baseline commit 8aaf9d58c849b668cc655402f5db160b172cd529.
+// This adopted suite uses the production package:code_forge path override and
+// the managed real Rust library through RustLib.init().
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:code_forge/code_forge.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+// A bounded widget-test investigation, not manual OS/IME evidence. Mounted
+// insertion uses paste, except the explicit current-client delta readOnly case.
+// Each case owns one live controller/view and fresh undo history. Deliberate
+// post-dispose use and two-controller/view observations are NOT single-view
+// correctness evidence and are intentionally absent from this suite.
+void main() {
+  setUpAll(() async {
+    final directory =
+        Platform.environment['FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR'];
+    if (directory == null ||
+        directory.isEmpty ||
+        !File('$directory/libcode_forge.so').existsSync()) {
+      throw StateError('A prepared real CodeForge native library is required');
+    }
+    await RustLib.init();
+  });
+
+  for (final grouped in [true, false]) {
+    for (final gap in [0, 20, 120]) {
+      _deletionCase(
+        'A delete group=$grouped gap=${gap}ms',
+        grouped: grouped,
+        gap: gap,
+      );
+    }
+  }
+  _deletionCase('A xyz nearby input', initial: 'xyz');
+  _deletionCase('A backspace control', backward: true);
+  _deletionCase('A navigation interleaved flush control', interleaved: true);
+
+  for (final sample in {
+    'ASCII': 'X',
+    'BMP': '\u4e2d',
+    'scalar': '\u{1f600}',
+  }.entries) {
+    for (final mounted in [false, true]) {
+      for (final replacing in [false, true]) {
+        final id =
+            'B ${sample.key} ${mounted ? 'paste' : 'direct'} '
+            '${replacing ? 'replace' : 'insert'}';
+        testWidgets(id, (tester) async {
+          final editor = _Editor('ab', grouped: false);
+          final trace = <String, Object?>{};
+          try {
+            if (mounted) {
+              await editor.mount(tester);
+              await _key(tester, LogicalKeyboardKey.home, control: true);
+              if (replacing) {
+                await _key(tester, LogicalKeyboardKey.arrowRight, shift: true);
+              }
+              trace['selectionBefore'] = _selection(editor.controller);
+              await _paste(tester, sample.value);
+            } else {
+              editor.controller.replaceRange(
+                0,
+                replacing ? 1 : 0,
+                sample.value,
+              );
+            }
+            final edited = editor.controller.text;
+            trace['edit'] = editor.snapshot();
+            trace['operation'] = _operation(editor.undo.undoStack.single);
+            trace['inverse'] = _operation(
+              editor.undo.undoStack.single.inverse(),
+            );
+            editor.undo.undo();
+            final undone = editor.controller.text;
+            trace['undo'] = editor.snapshot();
+            editor.undo.redo();
+            final redone = editor.controller.text;
+            final target = '${sample.value}${replacing ? 'b' : 'ab'}';
+            _check(
+              id,
+              trace,
+              {'edit': edited, 'undo': undone, 'redo': redone},
+              {'edit': target, 'undo': 'ab', 'redo': target},
+            );
+          } finally {
+            await editor.close(tester);
+          }
+        });
+      }
+    }
+  }
+
+  testWidgets('B replace existing supplementary scalar inverse and redo', (
+    tester,
+  ) async {
+    final editor = _Editor('\u{1f600}b', grouped: false);
+    try {
+      editor.controller.replaceRange(0, 1, 'X');
+      final trace = <String, Object?>{
+        'operation': _operation(editor.undo.undoStack.single),
+        'inverse': _operation(editor.undo.undoStack.single.inverse()),
+      };
+      final edited = editor.controller.text;
+      editor.undo.undo();
+      final undone = editor.controller.text;
+      editor.undo.redo();
+      _check(
+        'B replace existing supplementary scalar inverse and redo',
+        trace,
+        {'edit': edited, 'undo': undone, 'redo': editor.controller.text},
+        {'edit': 'Xb', 'undo': '\u{1f600}b', 'redo': 'Xb'},
+      );
+    } finally {
+      await editor.close(tester);
+    }
+  });
+
+  for (final prefix in {
+    'ASCII': 'x',
+    'BMP': '\u4e2d',
+    'scalar': '\u{1f600}',
+  }.entries) {
+    for (final readImmediately in [true, false]) {
+      final id =
+          'C ${prefix.key} first-explicit-read='
+          '${readImmediately ? 'immediate' : 'after-flush'}';
+      testWidgets(id, (tester) async {
+        final initial = '${prefix.value}\nab';
+        final editor = _Editor(initial, grouped: false);
+        try {
+          await editor.mount(tester);
+          await _key(tester, LogicalKeyboardKey.end, control: true);
+          expect(
+            editor.controller.selection.extentOffset,
+            initial.runes.length,
+          );
+          final readsBefore = editor.textReads!;
+          await _key(tester, LogicalKeyboardKey.backspace);
+          final trace = <String, Object?>{
+            'navigation': 'Ctrl+End, Backspace',
+            'implicitGetterReadsDuringEdit': editor.textReads! - readsBefore,
+            'pending': editor.snapshot(),
+            'operation': _operation(editor.undo.undoStack.single),
+          };
+          String? immediate;
+          if (readImmediately) immediate = editor.controller.text;
+          await tester.pump(const Duration(milliseconds: 120));
+          trace['flushed'] = editor.snapshot();
+          final delayed = editor.controller.text;
+          final target = '${prefix.value}\na';
+          _check(
+            id,
+            trace,
+            {
+              if (readImmediately) 'immediate': immediate,
+              'delayed': delayed,
+              'rope': editor.controller.rope.getText(),
+              'rendererLine': editor.controller.getLineText(1),
+            },
+            {
+              if (readImmediately) 'immediate': target,
+              'delayed': target,
+              'rope': target,
+              'rendererLine': 'a',
+            },
+          );
+        } finally {
+          await editor.close(tester);
+        }
+      });
+    }
+  }
+
+  testWidgets('C scalar plain-controller snapshot control', (tester) async {
+    final editor = _Editor(
+      '\u{1f600}\nab',
+      grouped: false,
+      controller: CodeForgeController(),
+    );
+    try {
+      await editor.mount(tester);
+      await _key(tester, LogicalKeyboardKey.end, control: true);
+      expect(editor.controller.selection.extentOffset, 4);
+      await _key(tester, LogicalKeyboardKey.backspace);
+      final trace = <String, Object?>{'pending': editor.snapshot()};
+      final immediate = editor.controller.text;
+      await tester.pump(const Duration(milliseconds: 120));
+      trace['flushed'] = editor.snapshot();
+      _check(
+        'C scalar plain-controller snapshot control',
+        trace,
+        {
+          'immediate': immediate,
+          'delayed': editor.controller.text,
+          'rope': editor.controller.rope.getText(),
+          'rendererLine': editor.controller.getLineText(1),
+        },
+        {
+          'immediate': '\u{1f600}\na',
+          'delayed': '\u{1f600}\na',
+          'rope': '\u{1f600}\na',
+          'rendererLine': 'a',
+        },
+      );
+    } finally {
+      await editor.close(tester);
+    }
+  });
+
+  for (final route in ['direct-CRLF', 'mounted-CRLF', 'mounted-LF']) {
+    final id = 'D $route join';
+    testWidgets(id, (tester) async {
+      final crlf = route != 'mounted-LF';
+      final initial = crlf ? 'a\r\nb' : 'a\nb';
+      final editor = _Editor(initial, grouped: false);
+      try {
+        if (route == 'direct-CRLF') {
+          // Prior controller-only vector, explicitly distinguished from keys.
+          editor.controller.setSelectionImmediately(
+            const TextSelection.collapsed(offset: 3),
+          );
+        } else {
+          await editor.mount(tester);
+          await _key(tester, LogicalKeyboardKey.end, control: true);
+          await _key(tester, LogicalKeyboardKey.home);
+        }
+        final trace = <String, Object?>{'before': editor.snapshot()};
+        expect(editor.controller.selection.extentOffset, crlf ? 3 : 2);
+        if (route == 'direct-CRLF') {
+          editor.controller.backspace();
+        } else {
+          await _key(tester, LogicalKeyboardKey.backspace);
+        }
+        final joined = editor.controller.text;
+        trace['operation'] = _operation(editor.undo.undoStack.single);
+        trace['joined'] = editor.snapshot();
+        editor.undo.undo();
+        final undone = editor.controller.text;
+        editor.undo.redo();
+        _check(
+          id,
+          trace,
+          {'join': joined, 'undo': undone, 'redo': editor.controller.text},
+          {'join': 'ab', 'undo': initial, 'redo': 'ab'},
+        );
+      } finally {
+        await editor.close(tester);
+      }
+    });
+  }
+
+  for (final revokeVia in ['controller-flag', 'widget-rebuild']) {
+    final id = 'E held clipboard $revokeVia';
+    testWidgets(id, (tester) async {
+      final editor = _Editor('ab', grouped: false);
+      final requested = Completer<void>();
+      final reply = Completer<Object?>();
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') {
+          requested.complete();
+          return reply.future;
+        }
+        return null;
+      });
+      try {
+        await editor.mount(tester);
+        await _key(tester, LogicalKeyboardKey.home, control: true);
+        await _key(tester, LogicalKeyboardKey.keyV, control: true);
+        expect(requested.isCompleted, isTrue);
+        if (revokeVia == 'controller-flag') {
+          editor.controller.readOnly = true;
+        } else {
+          await editor.mount(tester, readOnly: true);
+        }
+        final flagBeforeReply = editor.controller.readOnly;
+        reply.complete({'text': 'late'});
+        await tester.pump();
+        _check(
+          id,
+          {
+            'classification':
+                'already-admitted async paste; cancellation is the experimental policy',
+            'revocation': revokeVia,
+            'widgetReadOnly': tester
+                .widget<CodeForge>(find.byType(CodeForge))
+                .readOnly,
+            'controllerFlagBeforeReply': flagBeforeReply,
+            'state': editor.snapshot(),
+          },
+          {
+            'text': editor.controller.text,
+            'controllerReadOnly': editor.controller.readOnly,
+          },
+          {'text': 'ab', 'controllerReadOnly': true},
+        );
+      } finally {
+        if (!reply.isCompleted) reply.complete(null);
+        await tester.pump();
+        messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+        await editor.close(tester);
+      }
+    });
+  }
+
+  testWidgets('E widget readOnly rebuild fresh admission and toggle', (
+    tester,
+  ) async {
+    final editor = _Editor('ab', grouped: false);
+    try {
+      await editor.mount(tester);
+      await _key(tester, LogicalKeyboardKey.home, control: true);
+      await editor.mount(tester, readOnly: true);
+      final readOnlyFlag = editor.controller.readOnly;
+      await _key(tester, LogicalKeyboardKey.delete);
+      final afterKey = editor.controller.text;
+      // A fresh public paste after rebuild isolates propagation from an already
+      // admitted async call. This is not a fabricated platform-delta sequence.
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async =>
+            call.method == 'Clipboard.getData' ? {'text': 'new'} : null,
+      );
+      await editor.controller.paste();
+      final afterFreshPaste = editor.controller.text;
+      await editor.mount(tester, readOnly: false);
+      final editableFlag = editor.controller.readOnly;
+      _check(
+        'E widget readOnly rebuild fresh admission and toggle',
+        {
+          'classification':
+              'supported widget update versus public controller state',
+          'state': editor.snapshot(),
+        },
+        {
+          'readOnlyFlag': readOnlyFlag,
+          'afterKey': afterKey,
+          'afterFreshPaste': afterFreshPaste,
+          'editableFlag': editableFlag,
+        },
+        {
+          'readOnlyFlag': true,
+          'afterKey': 'ab',
+          'afterFreshPaste': 'ab',
+          'editableFlag': false,
+        },
+      );
+    } finally {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+      await editor.close(tester);
+    }
+  });
+
+  testWidgets('E widget readOnly rebuild current-client input delta', (
+    tester,
+  ) async {
+    final editor = _Editor('ab', grouped: false);
+    try {
+      await editor.mount(tester);
+      await _key(tester, LogicalKeyboardKey.home, control: true);
+      expect(tester.testTextInput.hasAnyClients, isTrue);
+      expect(tester.testTextInput.setClientArgs!['enableDeltaModel'], isTrue);
+      expect(editor.controller.connection!.attached, isTrue);
+      final advertised = TextEditingValue.fromJSON(
+        Map<String, dynamic>.from(tester.testTextInput.editingState!),
+      );
+      expect(advertised.text, 'ab');
+      expect(advertised.selection.isValid, isTrue);
+      expect(advertised.selection.isCollapsed, isTrue);
+      expect(advertised.composing, TextRange.empty);
+      final offset = advertised.selection.extentOffset;
+      expect(offset, inInclusiveRange(0, advertised.text.length));
+      final attach = tester.testTextInput.log.lastWhere(
+        (call) => call.method == 'TextInput.setClient',
+      );
+      final client = (attach.arguments as List<dynamic>)[0] as int;
+      await editor.mount(tester, readOnly: true);
+      // Adoption closes the platform connection on a read-only transition.
+      // Replay the previously advertised client, not an invented new client.
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(editor.controller.connection?.attached ?? false, isFalse);
+      final flagBefore = editor.controller.readOnly;
+      final reply = Completer<void>();
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.textInput.name,
+        SystemChannels.textInput.codec.encodeMethodCall(
+          MethodCall('TextInputClient.updateEditingStateWithDeltas', [
+            client,
+            {
+              'deltas': [
+                {
+                  'oldText': advertised.text,
+                  'deltaText': 'X',
+                  'deltaStart': offset,
+                  'deltaEnd': offset,
+                  'selectionBase': offset + 1,
+                  'selectionExtent': offset + 1,
+                  'selectionAffinity': 'TextAffinity.downstream',
+                  'selectionIsDirectional': false,
+                  'composingBase': advertised.composing.start,
+                  'composingExtent': advertised.composing.end,
+                },
+              ],
+            },
+          ]),
+        ),
+        (data) {
+          try {
+            if (data == null) throw StateError('Missing input reply envelope');
+            SystemChannels.textInput.codec.decodeEnvelope(data);
+            reply.complete();
+          } catch (error, stack) {
+            reply.completeError(error, stack);
+          }
+        },
+      );
+      await reply.future;
+      await tester.pump();
+      _check(
+        'E widget readOnly rebuild current-client input delta',
+        {
+          'classification':
+              'retired advertised client after read-only closes input',
+          'client': client,
+          'advertised': advertised.toJSON(),
+          'controllerFlagBeforeInput': flagBefore,
+          'widgetReadOnly': tester
+              .widget<CodeForge>(find.byType(CodeForge))
+              .readOnly,
+          'state': editor.snapshot(),
+        },
+        {
+          'text': editor.controller.text,
+          'controllerReadOnly': editor.controller.readOnly,
+        },
+        {'text': 'ab', 'controllerReadOnly': true},
+      );
+    } finally {
+      await editor.close(tester);
+    }
+  });
+
+  testWidgets('E initially readOnly mounted control', (tester) async {
+    final editor = _Editor('ab', grouped: false);
+    try {
+      await editor.mount(tester, readOnly: true);
+      await _key(tester, LogicalKeyboardKey.home, control: true);
+      await _key(tester, LogicalKeyboardKey.delete);
+      _check(
+        'E initially readOnly mounted control',
+        editor.snapshot(),
+        {
+          'text': editor.controller.text,
+          'readOnly': editor.controller.readOnly,
+        },
+        {'text': 'ab', 'readOnly': true},
+      );
+    } finally {
+      await editor.close(tester);
+    }
+  });
+}
+
+void _deletionCase(
+  String id, {
+  String initial = 'abc',
+  bool grouped = true,
+  int gap = 0,
+  bool backward = false,
+  bool interleaved = false,
+}) {
+  testWidgets(id, (tester) async {
+    final editor = _Editor(initial, grouped: grouped);
+    try {
+      await editor.mount(tester);
+      await _key(
+        tester,
+        backward ? LogicalKeyboardKey.end : LogicalKeyboardKey.home,
+        control: true,
+      );
+      final trace = <String, Object?>{'initial': editor.snapshot()};
+      await _key(
+        tester,
+        backward ? LogicalKeyboardKey.backspace : LogicalKeyboardKey.delete,
+      );
+      trace['afterFirst'] = editor.snapshot();
+      if (gap > 0) await tester.pump(Duration(milliseconds: gap));
+      trace['beforeSecond'] = editor.snapshot();
+      if (interleaved) await _key(tester, LogicalKeyboardKey.arrowRight);
+      await _key(
+        tester,
+        backward || interleaved
+            ? LogicalKeyboardKey.backspace
+            : LogicalKeyboardKey.delete,
+      );
+      trace['afterSecond'] = editor.snapshot();
+      trace['operations'] = editor.undo.undoStack.map(_operation).toList();
+      final editedLine = editor.controller.getLineText(0);
+      final stackSize = editor.undo.undoStackSize;
+      trace['groupEdits'] = grouped;
+      trace['undoStackSize'] = stackSize;
+      // Buffer deadlines use tester time; upstream grouping uses DateTime.now.
+      // A slow host may split the default group without changing correctness.
+      expect(stackSize, inInclusiveRange(1, 2));
+      for (var i = 0; i < stackSize; i++) {
+        await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+      }
+      final undone = editor.controller.text;
+      for (var i = 0; i < stackSize; i++) {
+        await _key(tester, LogicalKeyboardKey.keyY, control: true);
+      }
+      final remaining = backward ? initial[0] : initial[2];
+      _check(
+        id,
+        trace,
+        {
+          'editedLine': editedLine,
+          'undo': undone,
+          'redo': editor.controller.text,
+          if (!grouped) 'undoStackSize': stackSize,
+        },
+        {
+          'editedLine': remaining,
+          'undo': initial,
+          'redo': remaining,
+          if (!grouped) 'undoStackSize': 2,
+        },
+      );
+    } finally {
+      await editor.close(tester);
+    }
+  });
+}
+
+void _check(
+  String id,
+  Map<String, Object?> trace,
+  Map<String, Object?> actual,
+  Map<String, Object?> expected,
+) {
+  stdout.writeln(
+    'CODEFORGE_INVESTIGATION ${jsonEncode({'case': id, 'trace': trace, 'actual': actual, 'expectedCorrect': expected})}',
+  );
+  expect(actual, expected, reason: id);
+}
+
+List<int> _selection(CodeForgeController controller) => [
+  controller.selection.baseOffset,
+  controller.selection.extentOffset,
+];
+
+Map<String, Object?> _operation(EditOperation operation) {
+  final result = <String, Object?>{
+    'kind': operation.runtimeType.toString(),
+    'before': [
+      operation.selectionBefore.baseOffset,
+      operation.selectionBefore.extentOffset,
+    ],
+    'after': [
+      operation.selectionAfter.baseOffset,
+      operation.selectionAfter.extentOffset,
+    ],
+  };
+  switch (operation) {
+    case InsertOperation(:final offset, :final text):
+      result.addAll({
+        'offset': offset,
+        'text': text,
+        'utf16Length': text.length,
+        'scalarLength': text.runes.length,
+      });
+    case DeleteOperation(:final offset, :final text):
+      result.addAll({
+        'offset': offset,
+        'text': text,
+        'utf16End': offset + text.length,
+        'scalarEnd': offset + text.runes.length,
+      });
+    case ReplaceOperation(
+      :final offset,
+      :final deletedText,
+      :final insertedText,
+    ):
+      result.addAll({
+        'offset': offset,
+        'deleted': deletedText,
+        'inserted': insertedText,
+        'utf16DeleteEnd': offset + deletedText.length,
+        'scalarDeleteEnd': offset + deletedText.runes.length,
+      });
+    case CompoundOperation(:final operations):
+      result['operations'] = operations.map(_operation).toList();
+  }
+  return result;
+}
+
+Future<void> _key(
+  WidgetTester tester,
+  LogicalKeyboardKey key, {
+  bool control = false,
+  bool shift = false,
+}) async {
+  if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+  if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+  await tester.sendKeyEvent(key);
+  if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+  if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+}
+
+Future<void> _paste(WidgetTester tester, String text) async {
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    SystemChannels.platform,
+    (call) async => call.method == 'Clipboard.getData' ? {'text': text} : null,
+  );
+  try {
+    await _key(tester, LogicalKeyboardKey.keyV, control: true);
+    await tester.pump();
+  } finally {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      null,
+    );
+  }
+}
+
+// Count existing internal getter calls without adding a full-document observer.
+class _ReadCountController extends CodeForgeController {
+  int textReads = 0;
+
+  @override
+  String get text {
+    textReads++;
+    return super.text;
+  }
+
+  @override
+  set text(String value) => super.text = value;
+}
+
+class _Editor {
+  _Editor(
+    String initial, {
+    required bool grouped,
+    CodeForgeController? controller,
+  }) : controller = controller ?? _ReadCountController(),
+       undo = grouped
+           ? UndoRedoController()
+           : UndoRedoController(groupEdits: false) {
+    this.controller.text = initial;
+    // The text setter positions by UTF-16. Start with documented navigation,
+    // not a guessed offset; each mounted scenario then navigates through keys.
+    this.controller.pressDocumentHomeKey();
+    this.controller.setUndoController(undo);
+    finder = FindController(this.controller);
+  }
+
+  final CodeForgeController controller;
+  final UndoRedoController undo;
+  late final FindController finder;
+  final focus = FocusNode();
+  final horizontal = ScrollController();
+  final vertical = ScrollController();
+
+  int? get textReads => switch (controller) {
+    _ReadCountController(:final textReads) => textReads,
+    _ => null,
+  };
+
+  Future<void> mount(WidgetTester tester, {bool readOnly = false}) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CodeForge(
+            key: const ValueKey('single-investigation-view'),
+            controller: controller,
+            undoController: undo,
+            findController: finder,
+            focusNode: focus,
+            horizontalScrollController: horizontal,
+            verticalScrollController: vertical,
+            readOnly: readOnly,
+            autoFocus: false,
+          ),
+        ),
+      ),
+    );
+    focus.requestFocus();
+    await tester.pump();
+    expect(focus.hasFocus, isTrue);
+    expect(find.byType(CodeForge), findsOneWidget);
+  }
+
+  Map<String, Object?> snapshot() => {
+    'selection': _selection(controller),
+    'rope': controller.rope.getText(),
+    // This is the public line accessor used by the renderer, not a pixel/OCR
+    // assertion and not controller.text (which can populate a separate cache).
+    'rendererLines': [
+      for (var i = 0; i < controller.lineCount; i++) controller.getLineText(i),
+    ],
+    'bufferLine': controller.bufferLineText,
+    'textGetterReads': textReads,
+  };
+
+  Future<void> close(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    undo.dispose();
+    finder.dispose();
+    horizontal.dispose();
+    vertical.dispose();
+    focus.dispose();
+  }
+}

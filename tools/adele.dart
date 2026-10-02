@@ -6,7 +6,9 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
+import 'code_editor_dependency.dart';
 import 'code_editor_probe.dart';
+import 'code_editor_smoke.dart';
 import 'contract_artifacts.dart';
 import 'test_runner.dart';
 
@@ -475,17 +477,74 @@ Future<void> main(List<String> arguments) async {
 
   try {
     switch (arguments.first) {
+      case 'help':
+      case '--help':
+        _usage();
+        return;
+      case 'prepare-code-editor':
+        var reprepare = false;
+        File? archive;
+        for (var index = 1; index < arguments.length; index++) {
+          final option = arguments[index];
+          if (option == '--reprepare' && !reprepare) {
+            reprepare = true;
+          } else if (option == '--archive' &&
+              archive == null &&
+              index + 1 < arguments.length &&
+              !arguments[index + 1].startsWith('--')) {
+            archive = File(arguments[++index]);
+          } else {
+            throw const TestUsageException(
+              'prepare-code-editor takes only [--reprepare] [--archive FILE].',
+            );
+          }
+        }
+        await prepareCodeEditorSource(
+          Directory.current,
+          archive: archive,
+          reprepare: reprepare,
+        );
+        return;
+      case 'build-code-editor-tests':
+        if (arguments.length != 1) {
+          throw const TestUsageException(
+            'build-code-editor-tests takes no options.',
+          );
+        }
+        stdout.writeln(
+          (await buildNativeCodeEditorForTests(Directory.current)).path,
+        );
+        return;
+      case 'editor-smoke':
+        if (arguments.length < 2 ||
+            arguments.length > 3 ||
+            arguments[1] != 'linux' ||
+            (arguments.length == 3 && arguments[2] != '--prepare-only')) {
+          throw const TestUsageException(
+            'editor-smoke requires linux [--prepare-only].',
+          );
+        }
+        await runCodeEditorSmoke(
+          Directory.current,
+          prepareOnly: arguments.length == 3,
+        );
+        return;
       case 'bootstrap':
-        await _run('workspace dependency resolution', 'flutter', <String>[
-          'pub',
-          'get',
-        ]);
-        await _run('workspace package listing', 'dart', <String>[
-          'pub',
-          'workspace',
-          'list',
-        ]);
-        await runContractCodegen(repositoryRoot: Directory.current);
+        if (arguments.length != 1) {
+          throw const TestUsageException('bootstrap takes no options.');
+        }
+        await withCodeEditorSource(Directory.current, (_) async {
+          await _run('workspace dependency resolution', 'flutter', <String>[
+            'pub',
+            'get',
+          ]);
+          await _run('workspace package listing', 'dart', <String>[
+            'pub',
+            'workspace',
+            'list',
+          ]);
+          await runContractCodegen(repositoryRoot: Directory.current);
+        });
         return;
       case 'format':
         final bool check = arguments.skip(1).contains('--check');
@@ -513,25 +572,30 @@ Future<void> main(List<String> arguments) async {
         );
         return;
       case 'analyze':
-        await runContractCodegen(repositoryRoot: Directory.current);
-        await _run('repository tools', 'dart', <String>[
-          'analyze',
-          '--fatal-infos',
-          'tools',
-        ]);
-        await _run('repository tool tests', 'dart', <String>[
-          'analyze',
-          '--fatal-infos',
-          'test/tools',
-        ]);
-        for (final package in analysisTargets) {
-          await _run(
-            package.name,
-            package.flutter ? 'flutter' : 'dart',
-            <String>['analyze', '--fatal-infos'],
-            workingDirectory: package.path,
-          );
+        if (arguments.length != 1) {
+          throw const TestUsageException('analyze takes no options.');
         }
+        await withCodeEditorSource(Directory.current, (_) async {
+          await runContractCodegen(repositoryRoot: Directory.current);
+          await _run('repository tools', 'dart', <String>[
+            'analyze',
+            '--fatal-infos',
+            'tools',
+          ]);
+          await _run('repository tool tests', 'dart', <String>[
+            'analyze',
+            '--fatal-infos',
+            'test/tools',
+          ]);
+          for (final package in analysisTargets) {
+            await _run(
+              package.name,
+              package.flutter ? 'flutter' : 'dart',
+              <String>['analyze', '--fatal-infos'],
+              workingDirectory: package.path,
+            );
+          }
+        });
         return;
       case 'test':
         exitCode = await _runTests(
@@ -555,36 +619,41 @@ Future<void> main(List<String> arguments) async {
         return;
       case 'run':
       case 'build':
+        _validateDesktopArguments(arguments);
         final String target = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
         final String mode = _mode(arguments);
-        final String flutter = target == 'linux'
-            ? _which('flutter')
-            : 'flutter';
-        if (target != 'linux') {
-          await runContractCodegen(repositoryRoot: Directory.current);
-        }
-        final List<String> defines = target == 'linux'
-            ? await prepareDesktopPluginDefines(
-                repositoryRoot: Directory.current,
-                flutterExecutable: flutter,
-              )
-            : const <String>[];
-        await _run(
-          'adele_desktop $target ${arguments.first}',
-          flutter,
-          <String>[
-            arguments.first,
-            if (arguments.first == 'run') '-d',
-            target,
-            '--$mode',
-            ...defines,
-          ],
-          workingDirectory: 'app',
-        );
+        await withCodeEditorSource(Directory.current, (_) async {
+          final String flutter = target == 'linux'
+              ? _which('flutter')
+              : 'flutter';
+          if (target != 'linux') {
+            await runContractCodegen(repositoryRoot: Directory.current);
+          }
+          final List<String> defines = target == 'linux'
+              ? await prepareDesktopPluginDefines(
+                  repositoryRoot: Directory.current,
+                  flutterExecutable: flutter,
+                )
+              : const <String>[];
+          await _run(
+            'adele_desktop $target ${arguments.first}',
+            flutter,
+            <String>[
+              arguments.first,
+              if (arguments.first == 'run') '-d',
+              target,
+              '--$mode',
+              ...defines,
+            ],
+            workingDirectory: 'app',
+            environment: {'RUST_MIN_STACK': '16777216'},
+          );
+        });
         return;
       case 'smoke':
+        _validateDesktopArguments(arguments);
         final String target = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
@@ -602,19 +671,27 @@ Future<void> main(List<String> arguments) async {
             'Development smoke requires repository, plugin, and development directories.',
           );
         }
-        await runContractCodegen(repositoryRoot: Directory.current);
-        await _run('adele_desktop $target $mode build', 'flutter', <String>[
-          'build',
-          target,
-          '--$mode',
-          '--target=tool/development_runtime_smoke/main.dart',
-          ...defines,
-        ], workingDirectory: 'app');
-        await _run(
-          'adele_desktop $target $mode runtime smoke',
-          'app/build/linux/x64/$mode/bundle/adele_desktop',
-          const <String>[],
-        );
+        await withCodeEditorSource(Directory.current, (_) async {
+          await runContractCodegen(repositoryRoot: Directory.current);
+          await _run(
+            'adele_desktop $target $mode build',
+            'flutter',
+            <String>[
+              'build',
+              target,
+              '--$mode',
+              '--target=tool/development_runtime_smoke/main.dart',
+              ...defines,
+            ],
+            workingDirectory: 'app',
+            environment: {'RUST_MIN_STACK': '16777216'},
+          );
+          await _run(
+            'adele_desktop $target $mode runtime smoke',
+            'app/build/linux/x64/$mode/bundle/adele_desktop',
+            const <String>[],
+          );
+        });
         return;
       case 'probe-code-editor':
         final options = arguments.skip(1).toList();
@@ -672,6 +749,9 @@ Future<void> main(List<String> arguments) async {
     exitCode = compilerExitCode != null && compilerExitCode != 0
         ? compilerExitCode
         : 1;
+  } on StateError catch (failure) {
+    stderr.writeln('FAILED: ${failure.message}');
+    exitCode = 1;
   }
 }
 
@@ -787,52 +867,82 @@ Future<int> _runTests(TestOptions options) async {
   final List<TestTarget> targets = options.target == null
       ? testTargets
       : <TestTarget>[lookupTestTarget(options.target!)];
+  await prepareCodeEditorSource(Directory.current);
   await runContractCodegen(repositoryRoot: Directory.current);
-  stdout.writeln(
-    'Running ${targets.length} test targets with up to ${options.jobs} jobs.',
-  );
-  final TestRunSummary summary = await runTestTargets(
-    targets: targets,
-    jobs: options.jobs,
-    execute: (TestTarget target) async {
-      final Process process = await Process.start(
-        target.executable,
-        target.argumentsFor(ci: options.ci),
-        mode: ProcessStartMode.inheritStdio,
-        runInShell: Platform.isWindows,
-        workingDirectory: target.path,
-      );
-      return process.exitCode;
-    },
-    onStart: (TestTarget target) {
-      stdout.writeln('==> START test: ${target.name}');
-    },
-    onComplete: (TestTargetResult result) {
-      final String elapsed = formatTestDuration(result.elapsed);
-      if (result.passed) {
-        stdout.writeln('==> PASS test: ${result.target.name} ($elapsed)');
-      } else {
-        stdout.writeln(
-          '==> FAIL test: ${result.target.name} '
-          '($elapsed, exit ${result.exitCode})',
+  final Directory? codeEditorLibrary =
+      targets.any((target) => target.name == 'adele_desktop')
+      ? await buildNativeCodeEditorForTests(Directory.current)
+      : null;
+  return withCodeEditorSource(Directory.current, (source) async {
+    if (codeEditorLibrary != null) {
+      final prepared =
+          jsonDecode(
+                await File(
+                  '${source.path}/.adele-preparation.json',
+                ).readAsString(),
+              )
+              as Map;
+      if (codeEditorLibrary.parent.parent.uri.pathSegments
+              .where((part) => part.isNotEmpty)
+              .last !=
+          prepared['identity']) {
+        throw StateError(
+          'Native editor inputs changed between compilation and test admission.',
         );
-        if (result.error case final Object error) stderr.writeln(error);
       }
-    },
-  );
-
-  if (summary.failures.isNotEmpty) {
-    stderr.writeln('FAILED TEST TARGETS:');
-    for (final TestTargetResult failure in summary.failures) {
-      stderr.writeln('  ${failure.target.name} (exit ${failure.exitCode})');
     }
-  }
-  stdout.writeln(
-    'TEST SUMMARY: total ${summary.results.length}, passed ${summary.passed}, '
-    'failed ${summary.failures.length}, '
-    'elapsed ${formatTestDuration(summary.elapsed)}',
-  );
-  return summary.succeeded ? 0 : summary.failures.first.exitCode;
+    stdout.writeln(
+      'Running ${targets.length} test targets with up to ${options.jobs} jobs.',
+    );
+    final TestRunSummary summary = await runTestTargets(
+      targets: targets,
+      jobs: options.jobs,
+      execute: (TestTarget target) async {
+        final Process process = await Process.start(
+          target.executable,
+          target.argumentsFor(ci: options.ci),
+          mode: ProcessStartMode.inheritStdio,
+          runInShell: Platform.isWindows,
+          workingDirectory: target.path,
+          environment: target.name == 'adele_desktop'
+              ? {
+                  'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR':
+                      codeEditorLibrary!.path,
+                }
+              : null,
+        );
+        return process.exitCode;
+      },
+      onStart: (TestTarget target) {
+        stdout.writeln('==> START test: ${target.name}');
+      },
+      onComplete: (TestTargetResult result) {
+        final String elapsed = formatTestDuration(result.elapsed);
+        if (result.passed) {
+          stdout.writeln('==> PASS test: ${result.target.name} ($elapsed)');
+        } else {
+          stdout.writeln(
+            '==> FAIL test: ${result.target.name} '
+            '($elapsed, exit ${result.exitCode})',
+          );
+          if (result.error case final Object error) stderr.writeln(error);
+        }
+      },
+    );
+
+    if (summary.failures.isNotEmpty) {
+      stderr.writeln('FAILED TEST TARGETS:');
+      for (final TestTargetResult failure in summary.failures) {
+        stderr.writeln('  ${failure.target.name} (exit ${failure.exitCode})');
+      }
+    }
+    stdout.writeln(
+      'TEST SUMMARY: total ${summary.results.length}, passed ${summary.passed}, '
+      'failed ${summary.failures.length}, '
+      'elapsed ${formatTestDuration(summary.elapsed)}',
+    );
+    return summary.succeeded ? 0 : summary.failures.first.exitCode;
+  });
 }
 
 Future<void> _run(
@@ -840,6 +950,7 @@ Future<void> _run(
   String executable,
   List<String> arguments, {
   String? workingDirectory,
+  Map<String, String>? environment,
 }) async {
   stdout.writeln('==> $label');
   final Process process = await Process.start(
@@ -848,6 +959,7 @@ Future<void> _run(
     mode: ProcessStartMode.inheritStdio,
     runInShell: Platform.isWindows,
     workingDirectory: workingDirectory,
+    environment: environment,
   );
   final int result = await process.exitCode;
   if (result != 0) {
@@ -867,6 +979,22 @@ String _mode(List<String> arguments) {
   if (arguments.contains('--profile')) return 'profile';
   if (arguments.contains('--debug')) return 'debug';
   return 'debug';
+}
+
+void _validateDesktopArguments(List<String> arguments) {
+  if (arguments.length > 3 ||
+      (arguments.length > 1 &&
+          !const ['linux', 'macos', 'windows'].contains(arguments[1])) ||
+      (arguments.length > 2 &&
+          !const [
+            '--debug',
+            '--profile',
+            '--release',
+          ].contains(arguments[2]))) {
+    throw const TestUsageException(
+      'Expected [linux|macos|windows] [--debug|--profile|--release].',
+    );
+  }
 }
 
 List<String> _developmentDefines() {
@@ -914,7 +1042,12 @@ void _usage() {
 Usage: dart tools/adele.dart <command>
 
 Commands:
-  bootstrap          Resolve the pub workspace and generate native contracts.
+  bootstrap          Prepare CodeForge source, resolve pub, and generate contracts.
+  prepare-code-editor [--reprepare] [--archive FILE]
+                     Verify or prepare pinned source without invoking Rust or pub.
+                     --reprepare explicitly replaces source under its exclusive lease.
+  build-code-editor-tests
+                     Build locked native test library and print its directory.
   format [--check]   Format or verify formatting for all Dart files.
   generate [--check] Materialize or verify local native contract transport.
   clean-contracts    Remove ADELE native contract outputs, including marked orphans.
@@ -930,6 +1063,8 @@ Commands:
                      Build the desktop app in an explicit mode.
   smoke linux [--profile|--release]
                      Build and run the internal development runtime smoke path.
+  editor-smoke linux [--prepare-only]
+                     Package the prepared-EVC editor smoke; optionally skip execution.
   probe-code-editor --output NEW_DIRECTORY [--verify-known-defects]
                      Investigate the isolated native CodeForge 10.14.0 baseline.
                      --flutter EXECUTABLE selects an explicit SDK, never the global pin.

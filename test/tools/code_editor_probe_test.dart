@@ -97,14 +97,23 @@ void main() {
   );
 
   test(
-    'candidate and locks stay isolated from normal workspace resolution',
+    'historical probe inputs remain separate from the adopted dependency',
     () {
       expect(codeForgeProbeVersion, '10.14.0');
       expect(codeForgeProbeSha256, hasLength(64));
       expect(codeForgeProbeRust, '1.93.0');
-      for (final path in ['pubspec.yaml', 'app/pubspec.yaml', 'pubspec.lock']) {
-        expect(File(path).readAsStringSync(), isNot(contains('code_forge')));
-      }
+      expect(
+        File('pubspec.yaml').readAsStringSync(),
+        contains('.adele/dependencies/code_forge'),
+      );
+      expect(
+        File('pubspec.yaml').readAsStringSync(),
+        isNot(contains('tools/code_editor_probe')),
+      );
+      expect(
+        File('packages/ui/pubspec.yaml').readAsStringSync(),
+        isNot(contains('code_forge')),
+      );
       final patch = File(
         'tools/code_editor_probe/fixtures/compatibility.patch',
       ).readAsStringSync();

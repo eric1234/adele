@@ -275,6 +275,19 @@ should invoke the same domain/Command behavior as other surfaces, not create
 UI-only semantics. Broader Command infrastructure is not yet implemented.
 Application Commands are distinct from model tools that execute external programs.
 
+### Native editor primitive
+
+The application owns the native editor implementation and its text/undo resources.
+An interpreted frontend uses public [UI bridge contracts](../../packages/ui/README.md#interpreted-bridges)
+with exact, revocable presentation grants; it receives no component controllers,
+Rust handles, filesystem authority, or local-keystroke backend service. Buffer,
+logical view, mounted presentation, and focused input lifetimes are distinct.
+Local content versions and snapshots are not Environment revisions or save
+acknowledgements. Resource association, saving policy, and Main Content hosting
+remain separate plugin/host responsibilities, not properties of the primitive.
+The [application map](../../app/README.md#native-code-editor) owns the current
+attachment policy, supported editing envelope, and native lifecycle details.
+
 ### Task Browser presentation
 
 Task Browser is a replaceable, frontend-only semantic role over one presented
