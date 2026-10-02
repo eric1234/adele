@@ -232,6 +232,9 @@ Future<int> runCodeEditorProbe({
           'test/interactive_probe_test.dart',
       if (investigate)
         'investigation_test.dart.template': 'test/investigation_test.dart',
+      if (investigate)
+        'selected_composition_test.dart.template':
+            'test/selected_composition_test.dart',
     }.entries) {
       if (upstreamControl && entry.key == 'pubspec.lock') continue;
       final target = File('$app/${entry.value}');
@@ -286,14 +289,7 @@ Future<int> runCodeEditorProbe({
     await run(
       'profile-build',
       flutter,
-      [
-        'build',
-        'linux',
-        '--profile',
-        '--no-pub',
-        '--verbose',
-        '--dart-define=ADELE_CODEFORGE_CONFIGURATION=$configuration',
-      ],
+      codeEditorProbeBuildArguments(sdk, configuration: configuration),
       cwd: app,
       quiet: true,
     );
@@ -384,6 +380,7 @@ Future<int> runCodeEditorProbe({
         investigate
             ? 'test/investigation_test.dart'
             : 'test/editor_gate_test.dart',
+        if (investigate) 'test/selected_composition_test.dart',
       ],
       cwd: app,
       processEnvironment: {
@@ -425,6 +422,19 @@ Future<int> runCodeEditorProbe({
     );
   }
 }
+
+List<String> codeEditorProbeBuildArguments(
+  Map<String, Object?> sdk, {
+  required String configuration,
+}) => [
+  'build',
+  'linux',
+  '--profile',
+  '--no-pub',
+  '--verbose',
+  '--dart-define=ADELE_CODEFORGE_CONFIGURATION=$configuration',
+  '--dart-define=FLUTTER_VERSION=${sdk['frameworkVersion'] as String}',
+];
 
 void validateCodeEditorProbeSmoke(ProcessResult result) =>
     _validateCodeEditorProbeResult(result, missingLibrary: false);

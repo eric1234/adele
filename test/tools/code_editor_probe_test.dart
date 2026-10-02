@@ -54,6 +54,47 @@ void main() {
     },
   );
 
+  test('profile build passes the selected SDK to the interactive label', () {
+    final controlSdk = <String, Object?>{
+      'frameworkVersion': '3.47.0',
+      'dartSdkVersion': '3.13.2',
+    };
+    validateCodeEditorProbeToolchain(pin, sdk);
+    validateCodeEditorUpstreamSdk(controlSdk);
+    for (final (selectedSdk, configuration, flutterVersion) in [
+      (sdk, 'adele-pin-compatibility-only', '3.38.10'),
+      (sdk, 'adele-pin-causal-patch', '3.38.10'),
+      (controlSdk, 'upstream-unmodified', '3.47.0'),
+    ]) {
+      expect(
+        codeEditorProbeBuildArguments(
+          selectedSdk,
+          configuration: configuration,
+        ),
+        [
+          'build',
+          'linux',
+          '--profile',
+          '--no-pub',
+          '--verbose',
+          '--dart-define=ADELE_CODEFORGE_CONFIGURATION=$configuration',
+          '--dart-define=FLUTTER_VERSION=$flutterVersion',
+        ],
+      );
+    }
+    final interactive = File(
+      'tools/code_editor_probe/fixtures/interactive.dart.template',
+    ).readAsStringSync();
+    expect(
+      interactive,
+      contains("const flutter = String.fromEnvironment('FLUTTER_VERSION');"),
+    );
+    expect(
+      interactive,
+      contains(r"'Flutter $flutter / Dart ${Platform.version}\n'"),
+    );
+  });
+
   test(
     'upstream is unmodified and versioned reproduction cannot mask a patch',
     () async {

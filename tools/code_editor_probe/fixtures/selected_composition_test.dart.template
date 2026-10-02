@@ -1,0 +1,194 @@
+// Deferred correctness investigation, not ordinary editor acceptance.
+// Reproduced on published CodeForge 10.14.0 + 01 + tiny controller-only 02,
+// without 03..06, on Flutter 3.38.10 with the real FRB 2.13.0 native library.
+// Replace selected "a" in "ab" with composing "x", then finish: require "xb".
+// No forced cancellation, controller subclass, or retained widget.
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:code_forge/code_forge.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async => RustLib.init());
+  const selected = TextSelection(baseOffset: 0, extentOffset: 1);
+  for (final departure in ['control', 'blur/refocus', 'unmount/remount']) {
+    testWidgets('selected composition: $departure', (tester) async {
+      final controller = CodeForgeController()..text = 'ab';
+      final undo = UndoRedoController();
+      final outside = FocusNode();
+      var view = _View(controller, undo);
+      final input = _PlatformMirror(tester);
+      void record(String step) {
+        input.read();
+        stdout.writeln(
+          'SELECTED_COMPOSITION ${jsonEncode({
+            'case': departure,
+            'step': step,
+            'text': controller.text,
+            'overlay': controller.imeComposition?.displayText,
+            'client': input.client,
+            'platform': input.client == null ? null : input.value.text,
+            'composing': [input.value.composing.start, input.value.composing.end],
+            'undo': undo.undoStack.map((op) => op.toString()).toList(),
+          })}',
+        );
+      }
+
+      try {
+        await view.mount(tester, outside);
+        controller.selection = selected;
+        await tester.pump();
+        record('selected');
+        expect(input.value.text, 'ab');
+        expect(input.value.selection, selected);
+        await input.send(composing: true);
+        await tester.pump();
+        expect(controller.imeComposition, isNotNull);
+        record('composing');
+        if (departure == 'blur/refocus') {
+          outside.requestFocus();
+          await tester.pump();
+          expect(view.focus.hasFocus, isFalse);
+          record('departed');
+          view.focus.requestFocus();
+          await tester.pump();
+        } else if (departure == 'unmount/remount') {
+          final previous = tester.state(find.byType(CodeForge));
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(previous.mounted, isFalse);
+          view.dispose();
+          record('departed');
+          view = _View(controller, undo);
+          await view.mount(tester, outside);
+          expect(tester.state(find.byType(CodeForge)), isNot(same(previous)));
+        }
+        record('returned');
+        await input.send(composing: false);
+        await tester.pump();
+        final committed = controller.text;
+        record('finished');
+        expect(undo.undo(), isTrue);
+        await tester.pump();
+        record('undo');
+        expect(committed, 'xb');
+        expect(controller.text, 'ab');
+        expect(controller.imeComposition, isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        view.dispose();
+        outside.dispose();
+        controller.dispose();
+        undo.dispose();
+        await tester.pump(const Duration(seconds: 1));
+      }
+    });
+  }
+}
+
+class _View {
+  _View(this.controller, this.undo) : finder = FindController(controller);
+  final CodeForgeController controller;
+  final UndoRedoController undo;
+  final FindController finder;
+  final focus = FocusNode();
+  final horizontal = ScrollController(), vertical = ScrollController();
+  bool disposed = false;
+
+  Future<void> mount(WidgetTester tester, FocusNode outside) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: Focus(
+            focusNode: outside,
+            child: CodeForge(
+              controller: controller,
+              undoController: undo,
+              findController: finder,
+              focusNode: focus,
+              horizontalScrollController: horizontal,
+              verticalScrollController: vertical,
+            ),
+          ),
+        ),
+      ),
+    );
+    focus.requestFocus();
+    await tester.pump();
+    expect(focus.hasFocus, isTrue);
+  }
+
+  void dispose() {
+    if (disposed) return;
+    disposed = true;
+    finder.dispose();
+    // Upstream FindController.dispose omits these public focus nodes.
+    finder.findInputFocusNode.dispose();
+    finder.replaceInputFocusNode.dispose();
+    focus.dispose();
+    horizontal.dispose();
+    vertical.dispose();
+    if (identical(controller.focusNode, focus)) controller.focusNode = null;
+  }
+}
+
+class _PlatformMirror {
+  _PlatformMirror(this.tester);
+  final WidgetTester tester;
+  int cursor = 0;
+  int? client;
+  TextEditingValue value = TextEditingValue.empty;
+
+  void read() {
+    final calls = tester.testTextInput.log;
+    while (cursor < calls.length) {
+      final call = calls[cursor++];
+      if (call.method == 'TextInput.setClient') {
+        client = (call.arguments as List).first as int;
+      } else if (call.method == 'TextInput.setEditingState') {
+        final state = call.arguments as Map<String, dynamic>;
+        value = TextEditingValue.fromJSON(state);
+      } else if (call.method == 'TextInput.clearClient') {
+        client = null;
+      }
+    }
+  }
+
+  Future<void> send({required bool composing}) async {
+    read();
+    expect(client, isNotNull);
+    final before = value, selection = value.selection;
+    final caret = selection.start + 1;
+    value = composing
+        ? TextEditingValue(
+            text: before.text.replaceRange(selection.start, selection.end, 'x'),
+            selection: TextSelection.collapsed(offset: caret),
+            composing: TextRange(start: selection.start, end: caret),
+          )
+        : before.copyWith(composing: TextRange.empty);
+    final delta = value.toJSON()..remove('text');
+    delta.addAll({
+      'oldText': before.text,
+      'deltaText': composing ? 'x' : '',
+      'deltaStart': composing ? selection.start : -1,
+      'deltaEnd': composing ? selection.end : -1,
+    });
+    final args = [
+      client,
+      {
+        'deltas': [delta],
+      },
+    ];
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/textinput',
+      const JSONMethodCodec().encodeMethodCall(
+        MethodCall('TextInputClient.updateEditingStateWithDeltas', args),
+      ),
+      null,
+    );
+    read();
+  }
+}
