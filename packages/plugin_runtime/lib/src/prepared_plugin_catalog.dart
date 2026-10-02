@@ -80,6 +80,28 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
+/// One contribution initializes its collection, then presents each admitted pane
+/// through the same content entrypoint in an independent runtime.
+final class PreparedMainContentPresentation
+    extends PreparedPresentationDescriptor {
+  PreparedMainContentPresentation({
+    required this.extensionId,
+    required this.order,
+    required super.library,
+    required this.initialize,
+    required this.entrypoint,
+  }) {
+    _library(library, 'library');
+    _entrypoint(initialize, 'initialize');
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final ExtensionId extensionId;
+  final int order;
+  final String initialize;
+  final String entrypoint;
+}
+
 final class PreparedConsoleAction {
   PreparedConsoleAction({
     required this.id,
@@ -533,6 +555,26 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
+    case 'mainContent':
+      _object(value, label, {
+        'role',
+        'extensionId',
+        'order',
+        'library',
+        'initialize',
+        'entrypoint',
+      });
+      final order = value['order'];
+      if (order is! int) {
+        throw FormatException('$label.order must be an integer.');
+      }
+      return PreparedMainContentPresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        order: order,
+        library: _library(value['library'], '$label.library'),
+        initialize: _entrypoint(value['initialize'], '$label.initialize'),
+        entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+      );
     case 'console':
       _object(value, label, {
         'role',

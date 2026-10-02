@@ -17,6 +17,7 @@ import 'model_native_activity_bridge.dart';
 import 'owning_backend_bridge.dart';
 import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
+import 'prepared_main_content_host.dart';
 import 'prepared_session_host.dart';
 import 'prepared_task_browser_host.dart';
 import 'terminal_projection_bridge.dart';
@@ -41,17 +42,20 @@ final class ApplicationFrontendBootstrap {
     PreparedSessionHost? sessionHost,
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
+    PreparedMainContentHost? mainContentHost,
   }) : _extensions = extensions,
        _backends = backends,
        _sessionHost = sessionHost,
        _taskBrowserHost = taskBrowserHost,
-       _consoleHost = consoleHost;
+       _consoleHost = consoleHost,
+       _mainContentHost = mainContentHost ?? PreparedMainContentHost();
 
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
+  final PreparedMainContentHost _mainContentHost;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -109,6 +113,7 @@ final class ApplicationFrontendBootstrap {
             _sessionHost,
             _taskBrowserHost,
             _consoleHost,
+            _mainContentHost,
           ),
     ]);
     _setState(ApplicationFrontendState.starting);
@@ -175,6 +180,7 @@ final class ApplicationFrontendBootstrap {
         if (_sessionHost case final host?) host.close,
         if (_taskBrowserHost case final host?) host.close,
         if (_consoleHost case final host?) host.close,
+        _mainContentHost.close,
       ]);
     } finally {
       _setState(ApplicationFrontendState.closed);
@@ -198,6 +204,7 @@ final class InstalledFrontendActivation {
     this._sessionHost,
     this._taskBrowserHost,
     this._consoleHost,
+    this._mainContentHost,
   );
 
   final PreparedPluginInstallation installation;
@@ -206,6 +213,7 @@ final class InstalledFrontendActivation {
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
+  final PreparedMainContentHost _mainContentHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -245,6 +253,26 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedMainContentPresentation():
+            for (final entrypoint in [
+              descriptor.initialize,
+              descriptor.entrypoint,
+            ]) {
+              generation.validateOperation(
+                library: descriptor.library,
+                entrypoint: entrypoint,
+              );
+            }
+            _register(
+              point: mainContentContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => _mainContentHost.createContribution(
+                installation: installation,
+                generation: generation,
+                descriptor: descriptor,
+                isActive: isActive,
+              ),
+            );
           case PreparedConsolePresentation():
             // Optional read-only hosting must not retire unrelated factual
             // presentation roles. No registration means opening is unavailable.

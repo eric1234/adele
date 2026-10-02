@@ -337,6 +337,119 @@ void main() {
     });
   }
 
+  test('Main Content is data-only, ordered and frontend-only', () async {
+    await install(
+      'panes',
+      _manifest(
+        components: {
+          'frontend': _frontend(presentations: [_mainContent]),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final descriptor =
+        installation.frontend!.presentations.single
+            as PreparedMainContentPresentation;
+    expect(descriptor.extensionId, ExtensionId('org.example.main-content'));
+    expect(descriptor.order, 200);
+    expect(descriptor.library, 'package:example_frontend/main_content.dart');
+    expect(descriptor.initialize, 'initializePanes');
+    expect(descriptor.entrypoint, 'buildPane');
+    for (final order in [-200, 0, 100, 200]) {
+      expect(
+        PreparedMainContentPresentation(
+          extensionId: descriptor.extensionId,
+          order: order,
+          library: descriptor.library,
+          initialize: descriptor.initialize,
+          entrypoint: descriptor.entrypoint,
+        ).order,
+        order,
+      );
+    }
+  });
+
+  test(
+    'Main Content constructor validates both callable names and library',
+    () {
+      for (final (library, initialize, entrypoint) in [
+        ('pane.dart', 'initializePanes', 'buildPane'),
+        ('package:example/../pane.dart', 'initializePanes', 'buildPane'),
+        ('package:example/pane.dart', 'Pane.initialize', 'buildPane'),
+        ('package:example/pane.dart', 'initializePanes', 'buildPane()'),
+      ]) {
+        expect(
+          () => PreparedMainContentPresentation(
+            extensionId: ExtensionId('org.example.main-content'),
+            order: 200,
+            library: library,
+            initialize: initialize,
+            entrypoint: entrypoint,
+          ),
+          throwsFormatException,
+        );
+      }
+    },
+  );
+
+  final invalidMainContent = <String, Object?>{
+    for (final field in _mainContent.keys)
+      'missing $field': {..._mainContent}..remove(field),
+    for (final field in ['extensionId', 'library', 'initialize', 'entrypoint'])
+      for (final value in <Object?>[null, 1, false, [], {}, '', '  '])
+        'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
+    for (final value in <Object?>[null, false, '200', 200.0, [], {}])
+      'invalid order ${jsonEncode(value)}': {..._mainContent, 'order': value},
+    for (final field in [
+      'hostAdapter',
+      'strategyId',
+      'strategyAffinity',
+      'backendServices',
+      'panes',
+      'displayName',
+      'unknown',
+    ])
+      'unsupported $field': {..._mainContent, field: 'unsupported'},
+    'invalid extension ID': {..._mainContent, 'extensionId': 'not namespaced'},
+    for (final library in [
+      'main_content.dart',
+      'file:///pane.dart',
+      'package:example/../pane.dart',
+      'package:example//pane.dart',
+      'package:example/pane.dart?query',
+    ])
+      'invalid library $library': {..._mainContent, 'library': library},
+    for (final field in ['initialize', 'entrypoint'])
+      for (final name in [
+        'Pane.build',
+        'build()',
+        '1build',
+        'build pane',
+        'build\n',
+      ])
+        'invalid $field ${jsonEncode(name)}': {..._mainContent, field: name},
+  };
+  for (final entry in invalidMainContent.entries) {
+    test('Main Content ${entry.key} invalidates only frontend', () async {
+      await install(
+        'invalid-panes',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': _frontend(presentations: [_session, entry.value]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
+
   test('Console is frontend-only with ordered immutable actions', () async {
     await install(
       'console',
@@ -1907,6 +2020,15 @@ const _consoleAction = {
   'id': 'new-console',
   'label': 'New Console',
   'entrypoint': 'newConsole',
+};
+
+const _mainContent = <String, Object?>{
+  'role': 'mainContent',
+  'extensionId': 'org.example.main-content',
+  'order': 200,
+  'library': 'package:example_frontend/main_content.dart',
+  'initialize': 'initializePanes',
+  'entrypoint': 'buildPane',
 };
 
 const _console = {
