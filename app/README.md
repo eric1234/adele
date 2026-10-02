@@ -175,85 +175,67 @@ for the broader preparation model, not portable release packaging.
 ### Native code editor
 
 [`native_code_editor.dart`](lib/editor/native_code_editor.dart) is the app-private
-adapter over the adopted, locally patched CodeForge dependency. It supplies a
-bounded in-memory editor, not a production Main Content contribution, Source Editor,
-file model, or save workflow. No Project, Task, Session, Environment, file, LSP, AI,
-or network authority is configured. The host chooses `plain`, `dart`, `json`, or
-`python` highlighting without supplying a file path. Dependency identity,
-preparation, and distribution notices belong to the
+adapter over CodeForge for supplied in-memory text. It is not a Main Content
+contribution, file/save model, diff editor, or LSP integration. No Project, Task,
+Session, Environment, filesystem, AI, or network authority is configured. The host
+chooses `plain`, `dart`, `json`, or `python` highlighting without a file path.
+Dependency preparation belongs to the
 [toolchain policy](../docs/development/toolchain.md#native-editor-preparation).
 
-`NativeCodeBuffer` owns the controller, native Rope, text, content version, and undo
-history independently of widget lifetime. Admission requires well-formed UTF-16
-and at most **262,144 Unicode scalars**, not UTF-16 code units or bytes. Edits that
-exceed the bound are rejected rather than truncated. Undo retention is limited to
-**128 operations**, with ordinary grouping; this is an operation-count limit, not
-a byte budget. Text, snapshots, and retained edit payloads consume memory
-proportional to their contents, not a fixed RSS allowance.
+`NativeCodeEditor(text:, readOnly:, language:)` is a `ChangeNotifier` owning an
+ordinary `CodeForgeController` and `UndoRedoController`. Read-only and language
+settings are fixed for that owner. `initialize()` awaits memoized native-library
+initialization before constructing the controller. The owner retains text and
+undo independently of widget lifetime; callers close it explicitly with `dispose()`.
+Use one mounted view per editor, and separate owners for independent panes.
+Focus and scroll resources belong to the widget; remounting does not promise
+cursor or viewport restoration.
 
-`NativeCodeView` separately retains logical selection and horizontal/vertical
-scroll state, plus its immutable read-only setting. Full presentation unmount does
-not discard the buffer or undo history; a fresh presentation can restore the same
-logical view before revealing the editor. Only one mounted view may consume a
-buffer, including a retired attachment awaiting actual disposal. A competing mount
-fails unavailable rather than sharing controller callbacks or stealing input.
-Independent simultaneous panes use independent buffers.
-
-Each presentation receives a fresh, permanently revocable `NativeCodeAccess`.
-Interactive editing and clipboard actions require live presentation access, an
-active window, and actual editor focus. Activation tokens and input-client
-generations prevent old keyboard, pointer, context-menu, or input callbacks from
-becoming valid after A-to-B-to-A focus changes. At most one clipboard request is
-pending per buffer; additional requests are not queued. Actions revalidate captured
-activation; cut/paste also recheck version and selection after awaiting the
-clipboard, and paste enforces the text bound. Read-only views allow local
-navigation, selection, scrolling, and explicit copy, not editing, cut/paste, or
-undo/redo. Focus loss, window deactivation, and unmount cancel uncommitted
-composition, detach input, and flush already accepted pending text without turning
-composition into a new accepted edit.
-
-IME projection reads splice only the requested scalar window across the rope and
-pending line; they do not force the typing debounce to flush. The ordinary context
-window is bounded, but an explicit selection remains fully representable so
-typing over a selection larger than that window replaces the whole range.
+Native editing, focus, clipboard, and composition follow the component's ordinary
+behavior. There are no ADELE focus epochs or custom composition-cancel policy.
+An already admitted clipboard operation may complete on its original editor after
+focus changes; it does not resolve a different current document.
 
 [`CodeEditorBridge`](lib/frontend/code_editor_bridge.dart) implements the
 [interpreted public UI stubs](../packages/ui/lib/code_editor_bridge.dart).
 Compile-only `CodeEditorDeclarations` neither initializes Rust nor acquires an
-editor. At runtime one bridge supplies one opaque handle for its host-selected
-view and one evaluator; guessed, foreign, and retired handles fail closed. Cached
-native widgets remain subject to native revocation. `PreparedFrontend` failure,
-retirement, and disposal revoke presentation access and observation, not buffer
-ownership; remount requires a fresh grant.
+editor. One runtime bridge captures one host-selected owner. Guessed, foreign,
+and retired handles fail closed; there is no global current-document lookup.
+`PreparedFrontend` retirement, failure, and disposal end interpreted access and
+observation, not the independently owned editor. Native component operations
+already admitted are not a new cancellation boundary. CodeForge types, controllers,
+construction, mutation, and disposal are not exported through the public API.
 
-`readCodeEditorState` is cheap metadata only: readiness, read-only state, version,
-language, focus, and scroll offsets. It contains neither text nor selection.
-`snapshotCodeEditor` deliberately returns a **synchronous `Map<String, dynamic>`**
-containing coherent `text`, `version`, `selectionBase`, `selectionExtent`, and
-`selectionUnit: 'utf16'`; no `Future` crosses EVC. Snapshots require initialized
-state and copy full text only on request. Content-change and initial readiness
-invalidations are coalesced; they are not text payloads or a caret/layout event
-stream. Only accepted content edits advance the content version, not selection,
-scrolling, layout, or a later flush
-of an already accepted edit.
+`readCodeEditorState` returns cheap `ready`, `readOnly`, `language`, and `revision`
+metadata, without text or selection. Revision counts component notifications,
+including selection/layout changes; it is not a content version or dirty flag.
+Subscriptions coalesce these invalidations without reading or transporting the
+whole document. `snapshotCodeEditor` deliberately returns a synchronous
+`Map<String, dynamic>` containing only `text` and `revision`. It is a text
+observation, not a save transaction or selection-range API.
 
-Trusted native `replaceText` is an explicit detached-buffer replacement that
-resets undo and retained view positions; remount never reloads through it.
-`replaceRangeUtf16` also requires a detached buffer and validates range ordering,
-bounds, and scalar boundaries before recording a normal logical undo edit. It
-resets retained view positions to that edit's caret and the top-left viewport.
-Neither operation is a file synchronization
-API, and neither is exposed to interpreted callers. `NativeCodeEngine` initializes
-Rust once on demand for the process; disposing a buffer does not shut down the
-global bridge. Owners explicitly release Rope handles and undo resources; views
-and grants release timers, listeners, input connections, and mount-local resources.
+#### Known limitations
 
-The [focused acceptance checks](../docs/development/testing.md#focused-editor-checks)
-cover the patched component, native owner, and actual prepared EVC separately.
-The [packaged smoke and manual entrypoint](../docs/development/testing.md#integrated-editor-smoke)
-exercise this application adapter on Linux x64, not a generated substitute app or
-a claim of macOS/Windows validation. Human checks of the adopted patched editor
-are not established by the historical unpatched probe findings.
+The small retained fixes address specific buffered-text, deletion, scalar undo,
+and CRLF Backspace cases, not lossless file-saving or general IME correctness.
+Snapshots do not promise uncommitted composition text. An isolated native test
+observed selected-range composition losing its pending replacement after either
+blur/refocus of the same widget or full unmount/remount: replacing `a` in `ab`
+with composing `x` ultimately left `b`, not `xb`; undo restored `ab`. Finish
+composition before leaving or closing the editor. This is an upstream departure
+edge, not an ADELE cancellation policy or a human OS/IME result.
+Supplementary-character Tab/Shift-Tab and double-click word selection still have
+documented upstream offset edge cases; their expanded patches were not retained.
+Avoid those combinations during early development and use explicit selection or
+space insertion instead. Revisit them, grouped Unicode edits and broader
+clipboard/IME behavior before file saving. Other retained evidence lives in the
+[historical reproductions](../docs/experiments/codeforge-correctness.md).
+There is no ADELE-specific fixed text cap or memory bound.
+
+See [focused owner/EVC checks](../docs/development/testing.md#focused-editor-checks)
+and the [Linux profile/manual entrypoint](../docs/development/testing.md#integrated-editor-smoke).
+Those procedures are not pass claims; human checks of this integrated path and
+macOS/Windows execution are not established by the historical probe results.
 
 ### Native terminal surface
 

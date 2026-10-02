@@ -279,14 +279,17 @@ Application Commands are distinct from model tools that execute external program
 
 The application owns the native editor implementation and its text/undo resources.
 An interpreted frontend uses public [UI bridge contracts](../../packages/ui/README.md#interpreted-bridges)
-with exact, revocable presentation grants; it receives no component controllers,
-Rust handles, filesystem authority, or local-keystroke backend service. Buffer,
-logical view, mounted presentation, and focused input lifetimes are distinct.
-Local content versions and snapshots are not Environment revisions or save
-acknowledgements. Resource association, saving policy, and Main Content hosting
-remain separate plugin/host responsibilities, not properties of the primitive.
-The [application map](../../app/README.md#native-code-editor) owns the current
-attachment policy, supported editing envelope, and native lifecycle details.
+with handles scoped to one presentation and one host-selected owner. Retired
+handles cannot acquire a replacement editor. It receives no CodeForge types,
+controllers, Rust handles, filesystem authority, or local-keystroke backend service.
+The text/undo owner outlives its widget; native focus, clipboard, and composition
+follow ordinary component behavior rather than a separate interaction protocol.
+Bridge retirement ends interpreted access and observation, not already admitted
+native work on that owner. Notification revisions and deliberate text snapshots
+are not content versions, Environment revisions, or save acknowledgements.
+Main Content hosting, file/save policy, diff, and LSP remain outside this primitive.
+The [application map](../../app/README.md#native-code-editor) owns its current
+single-view lifecycle and limitations.
 
 ### Task Browser presentation
 

@@ -149,10 +149,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Zero-plugin runtime/shell | [`test/core/adele_runtime_test.dart`](../../app/test/core/adele_runtime_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) |
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
-| Patched native editor component | [`test/code_forge_acceptance_test.dart`](../../app/test/code_forge_acceptance_test.dart) (correct-behavior assertions with real Rust for grouped Unicode edits, pending text/version coherence, LF/CRLF joins, input/composition, bounds, and cleanup; no known-defect inversion) |
-| Preserved editor baseline | [`test/code_forge_regression_test.dart`](../../app/test/code_forge_regression_test.dart) (all 37 original correct-behavior cases against the adopted package; the harness uses managed-library setup, ownership-aware cleanup, and retired-client replay when read-only now closes the connection) |
-| Scoped editor input | [`test/native_code_editor_input_test.dart`](../../app/test/native_code_editor_input_test.dart) (multi-update composition, indentation and word selection through a mounted scoped native client) |
-| Native editor ownership and presentation | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart), [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (buffer/view lifetime split, actual prepared EVC, synchronous snapshots, coalesced invalidations, scoped handles, focus/read-only/revocation, and full unmount/remount) |
+| Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
+| Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
 | Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, selected-only default, lazy bounded LRU residency including the selected slot, exact interaction epochs, working-set departure, advisory confirmation, retirement, and bounded cleanup) |
@@ -191,44 +189,46 @@ workflow's source/evidence owners and deterministic-versus-live distinction.
 
 ### Focused editor checks
 
-Current editor acceptance uses the authoritative adopted patch sequence, not the historical
-probe's expected broken values. These commands describe checks to run, not recorded
-pass results. Bootstrap first with the explicit pinned SDK environment and native
-prerequisites from [toolchain policy](toolchain.md#native-editor-preparation).
-For the maintained tooling and complete app target, run from the repository root:
+The current tests cover conventional CodeForge ownership and the thin EVC boundary,
+not a custom input/cancellation policy. These are commands to run, not recorded
+pass results. Bootstrap with the explicit pinned SDK and native prerequisites from
+[toolchain policy](toolchain.md#native-editor-preparation). For the maintained
+tooling and complete app target, run from the repository root:
 
 ```sh
 dart tools/adele.dart test --target adele_tools --ci
 dart tools/adele.dart test --target adele_desktop --ci
 ```
 
-The unrestricted app target discovers the three editor test files above and
-prepares their native library/environment automatically. Tooling coverage includes
+The unrestricted app target discovers the editor tests and prepares their native
+library/environment automatically. Tooling coverage includes
 [`code_editor_dependency_test.dart`](../../test/tools/code_editor_dependency_test.dart)
-for archive/patch/binding/tree verification, altered cache ledgers, explicit
-reprepare/rollback, and exclusive leases, plus
+for source verification, explicit reprepare, and source leases, plus
 [`code_editor_smoke_test.dart`](../../test/tools/code_editor_smoke_test.dart),
-shared settlement tests, and launcher/discovery checks. These tooling cases use
-local fixtures rather than compiling Rust or contacting a live provider.
+shared settlement and launcher/discovery checks using local fixtures rather than
+real Rust compilation or a live provider. The retained historical 37-case
+investigation under `tools/code_editor_probe/fixtures/` is not an app acceptance
+gate; do not copy its older policy assumptions into current owner tests.
 
 For narrow app iteration, first run `dart tools/adele.dart build-code-editor-tests`
 from the repository root. Set `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the
 absolute library directory it prints, then run from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/code_forge_regression_test.dart test/code_forge_acceptance_test.dart test/native_code_editor_input_test.dart test/native_code_editor_test.dart test/code_editor_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/native_code_editor_test.dart test/code_editor_bridge_test.dart
 ```
 
 The bridge fixture compiles only public UI and Flutter against compile-only editor
 declarations, writes EVC bytes, and mounts through
 `PreparedFrontend.load/createPresentation`. It exercises native input rather than
-exporting a controller or mutation API to EVC. Its deliberate snapshot returns a
-synchronous map of text/version/UTF-16 selection, never an interpreted `Future`.
-Assertions keep cheap version/readiness invalidations separate from full-text
-snapshot reads and from selection/layout changes. Owner and component checks cover
-grouped undo, supplementary scalars, CRLF, composition cancellation, bounds,
-read-only routes, stale callbacks/clipboard, independent buffers, and retained
-selection/scroll/history across full presentation disposal.
+exporting a controller or mutation API to EVC. Its explicit synchronous snapshot is
+`{text, revision}`; notifications carry no text. Revision includes component
+selection/layout invalidations and is not a content version. Retired handles fail
+against their captured owner; ordinary native operations already admitted to that
+editor are not cancelled by a new focus policy. Text/undo ownership is separate
+from widget lifetime, without a cursor/scroll restoration promise. See the
+[current limitations](../../app/README.md#known-limitations), especially composition
+at departure; a text snapshot is not lossless file-saving evidence.
 
 When shared presentation or dependency wiring changes, include the nearby terminal,
 prepared-host, public UI, analysis, and generation checks as appropriate. From
@@ -636,13 +636,13 @@ ADELE_FLUTTER=/absolute/path/to/flutter-3.38.10
 env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" tools/adele.dart editor-smoke linux
 ```
 
-The expected checks include exact bundled `lib/libcode_forge.so` mapping from
-`/proc/self/maps`, packaged notices and omitted icon fonts, native input into an
-editable EVC pane, coalesced observation and explicit EVC snapshots, undo/redo,
-read-only copy and mutation rejection, rendering, complete unmount, fresh EVC
-remount with retained buffer/history/selection, stale-client rejection, and explicit
-disposal. The automatic fixture injects current-client text-input messages and
-engine key records; it is not a human OS keyboard or IME test.
+The focused checks cover bundled `lib/libcode_forge.so` loading from
+`/proc/self/maps`, native editing in a prepared EVC pane, generic notifications and
+explicit snapshots, undo/redo, fixed read-only behavior, rendering, and text/undo
+retention across fresh presentation mounts. They do not test strict content
+versions, native callback cancellation, selection restoration, or distribution
+clearance. Injected text-input messages and engine key records are not human OS
+keyboard or IME tests.
 
 The runner launches from a fresh working directory without loader overrides, then
 temporarily removes the bundled library for a separate negative subprocess and
@@ -666,32 +666,34 @@ env FLUTTER_ROOT="$ADELE_FLUTTER" "$ADELE_FLUTTER/bin/cache/dart-sdk/bin/dart" t
 env -C /tmp -u LD_LIBRARY_PATH -u LD_PRELOAD -u FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR "$PWD/app/build/linux/x64/profile/bundle/adele_desktop" --interactive
 ```
 
-`--prepare-only` still builds the app and precompiles/packages EVC. The interactive
-binary needs neither a source checkout nor Cargo at runtime; keep the complete
-bundle together. It shows the preparation identity and two independent prepared
-EVC panes, editable and read-only, with Snapshot, focus, full unmount/remount, and
-Dispose and close controls. Undo/redo use the editor keyboard shortcuts. Only
-synthetic in-memory content is used: no file opening/saving, LSP, AI, or network.
+`--prepare-only` builds the app and precompiles/packages EVC. This is a
+source-checkout development target, not portable release packaging. It shows
+independent editable/read-only EVC panes, Snapshot/state revision, theme, focus,
+and unbind/remount controls. Undo/redo use ordinary editor keyboard shortcuts.
+Only synthetic in-memory content is used: no file opening/saving, diff, LSP, AI,
+or network.
 Do not run this preparation concurrently with other Flutter work sharing app build
 output or with explicit dependency replacement.
 
 1. Focus Editable, type and delete a short ASCII sequence at a natural pace, then
-   use Ctrl+Z/Ctrl+Y to check grouped undo/redo. Click Snapshot to inspect the
-   deliberate text/version result; do not try to win a timer race.
+   use Ctrl+Z/Ctrl+Y to check grouped undo/redo. Inspect Snapshot and state revision;
+   selection/layout changes may also advance revision. Switch themes and continue
+   editing with the keyboard.
 2. Use Copy synthetic emoji or Copy synthetic CRLF, then focus Editable and paste.
-   These replace the clipboard with U+1F600 or `a\r\nb` (actual CRLF) without reading
-   its prior contents. Check selection, join the lines,
-   and undo. Snapshot escaped distinguishes `\r\n`, `\n`, and a stray `\r`.
-   Exact CRLF preservation is also covered by automated assertions; ordinary
-   rendering alone is not byte-fidelity evidence.
+   These replace the clipboard with U+1F600 or `a\r\nb` (actual CRLF). Inspect the
+   escaped snapshot after edits and undo; distinguish `\r\n`, `\n`, and a stray
+   `\r` rather than inferring text fidelity from rendering alone.
 3. Switch to Read-only, select/copy text, and attempt typing, paste, and undo.
-   Its snapshot must remain unchanged. Switch panes and away from/back to the
-   window; input must affect only the currently focused editable pane.
-4. Select text and scroll Editable, click Unmount editable, then Remount editable.
-   Check retained text, selection, scroll, and undo with the fresh presentation,
-   then use Dispose and close.
+   Its text must remain unchanged. Switch panes and away from/back to the window;
+   new typing should follow focus. Already admitted clipboard work may finish on
+   its original editor.
+4. Finish composition before leaving the editor, unbind it, then remount a fresh
+   presentation. Check retained text and undo, without expecting cursor or scroll
+   restoration, then dispose/close. Consult the
+   [known composition limitation](../../app/README.md#known-limitations) rather
+   than treating departure during composition as a passed check.
 
-Human validation of this adopted patched path has **not** been performed. Earlier
+Human validation of this integrated path has **not** been performed. Earlier
 Eric/unpatched manual reports remain historical findings, not adoption evidence.
 An automated smoke result or `--prepare-only` build must not be reported as those
 human checks.
@@ -704,6 +706,12 @@ The following reproduction procedure is retained for the historical investigatio
 not current acceptance. Its `--verify-known-defects` option deliberately recognizes
 versioned broken outcomes and must never be used as editor acceptance CI. Historical
 manual findings in `docs/experiments/` remain unchanged.
+
+`--investigate` also runs the separate selected-range composition reproduction in
+`tools/code_editor_probe/fixtures/selected_composition_test.dart.template`.
+It keeps correct `xb` expectations: normal completion passes, while blur/refocus
+and unmount/remount currently fail with `b`. These are deferred upstream cases,
+not ordinary editor acceptance or a request to restore cancel-on-blur.
 
 The [CodeForge investigation](../experiments/codeforge-correctness.md) is separate
 from workspace dependency resolution and application compilation. Its evidence

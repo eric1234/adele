@@ -15,6 +15,18 @@ Procedures and prerequisites have one maintained home in
 [testing](../development/testing.md#native-editor-candidate-probe) and
 [toolchain policy](../development/toolchain.md#isolated-native-editor-probe).
 
+### Current use
+
+This investigation and its retained 37-case fixture are historical evidence, not
+the current editor's specification or acceptance gate. The application uses
+conventional CodeForge behind a thin EVC bridge, with a smaller preparation patch
+set; its [owner and limitations](../../app/README.md#native-code-editor) and
+[current checks](../development/testing.md#focused-editor-checks) have separate
+maintained homes. Historical cancellation experiments do not impose a custom
+composition or clipboard policy. Targeted getter/scalar undo fixes are not a
+lossless file-saving certification. Eric's report below retains its original
+qualifications and does not identify or validate the current integrated setup.
+
 ## Baseline identities
 
 - Published `code_forge 10.14.0`, archive SHA-256

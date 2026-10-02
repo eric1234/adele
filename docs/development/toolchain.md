@@ -27,72 +27,63 @@ Flutter compatibility surface.
 
 ## Native editor preparation
 
-The application adopts patched `code_forge 10.14.0` under the integrated SDK pin.
+The application uses `code_forge 10.14.0` under the integrated SDK pin.
 [`third_party/code_forge/preparation.json`](../../third_party/code_forge/preparation.json)
-is authoritative for the published archive URL/checksum, ordered patches, expected
-prepared-tree digest, Rust **1.93.0**, and matching FRB **2.13.0** generated bindings
-(content hash **434014572**). The current order is compatibility/build (01),
-correctness (02), embedding (03), assets/notices (04), then interaction fences (05).
-Change reviewed inputs there, not the materialized dependency or pub cache.
+owns the archive URL/checksum, ordered patches, prepared-tree digest, Rust
+**1.93.0**, and FRB **2.13.0** binding identity (content hash **434014572**).
+Preparation applies `01-compatibility-build.patch` and the small
+`02-correctness.patch`; ordinary CodeForge widget/font behavior is retained.
+Change these tracked inputs, not materialized source or the pub cache.
 
 The root `pubspec.yaml` has a stable path override to the Git-ignored
 `.adele/dependencies/code_forge`; `app/pubspec.yaml` declares the exact package and
-`re_highlight 0.0.3`. The root lockfile owns workspace resolution. Editor adoption
-requires only related additions, not upgrades of existing SDK/evaluator or other
-resolved dependencies; inspect the lockfile diff after resolution.
+`re_highlight 0.0.3`. The root lockfile owns workspace resolution; inspect its diff
+after resolution rather than upgrading unrelated dependencies.
 
 ### Source preparation
 
-From the repository root, `dart tools/adele.dart bootstrap` prepares this source
-**before** `flutter pub get`, workspace listing, and contract generation. A fresh
-checkout therefore needs bootstrap before direct IDE/Flutter resolution. The
+`dart tools/adele.dart bootstrap` prepares source **before** `flutter pub get`,
+workspace listing, and contract generation. Bootstrap a fresh checkout before
+direct IDE/Flutter resolution. The
 SDK-only helper in [`tools/code_editor_dependency.dart`](../../tools/code_editor_dependency.dart)
-uses `curl`, Git, GNU `tar`, and `sha256sum` on Linux. It does not invoke pub,
-Flutter, Rust, or Cargo to prepare source. Because pub resolves the whole workspace,
-even SDK-only workspace consumers need the prepared path dependency; that does
-not initialize or compile the editor engine.
+uses `curl`, Git, GNU `tar`, and `sha256sum` on Linux, without invoking pub, Flutter,
+Rust, or Cargo. Workspace-wide pub resolution needs this path even for SDK-only
+consumers; source preparation does not initialize or compile the editor.
 
 ```sh
 dart tools/adele.dart prepare-code-editor
 dart tools/adele.dart prepare-code-editor --archive /absolute/path/code_forge-10.14.0.tar.gz
 ```
 
-The optional local archive must match the same pinned checksum. Preparation stages
-a complete source tree, applies every patch in order, checks package/FRB identities,
-and publishes only after verification. The preparation identity includes the
-manifest, helper, all patch bytes, runner-lock template, and absolute source path.
-Both fresh and cached source must match the tracked full-tree digest, including
-file hashes and executable bits. Only the runner lock's checkout-specific path is
-normalized for that digest; its expanded contents are verified separately.
+The optional archive must match the pinned checksum. The helper stages source,
+applies the ordered patches and runner lock, verifies package/FRB identities and
+the tracked tree digest, then publishes to the same ignored directory. Cached
+source is verified too. Its local `.adele-preparation.json` ledger cannot override
+the tracked digest. The preparation identity includes tracked inputs and the
+absolute source path; stale or modified source fails instead of silently using a
+hosted package or editing the pub cache.
 
-The local `.adele-preparation.json` ledger is checked, not trusted as the source of
-truth: rewriting it together with modified source cannot satisfy the tracked tree
-anchor. Missing/extra/altered immutable files, symlinks, changed inputs, or a stale
-ledger fail explicitly. Only enumerated disposable build outputs are exempt;
-archive-supplied locks and source remain immutable. Normal preparation never
-repairs arbitrary existing content or falls back to hosted/unpatched source.
-
-For intentional replacement after input changes or corruption, stop **all**
-consumers first, including IDE analyzers and direct Flutter/Cargo processes:
+Run preparation serially. For changed inputs, a moved checkout, or deliberate
+replacement of stale source, stop **all** consumers, including IDE analyzers and
+direct Flutter/Cargo processes, before using:
 
 ```sh
 dart tools/adele.dart prepare-code-editor --reprepare
 dart tools/adele.dart prepare-code-editor --reprepare --archive /absolute/path/code_forge-10.14.0.tar.gz
 ```
 
-Explicit reprepare constructs and verifies fresh source before touching the old
-tree; it does not compile the native library. Publication uses staged renames and
-restores the previous tree if publication fails. A rollback failure retains the
-backup and reports its location rather than silently consuming it. Exclusive OS
-source leases reject competing preparation; `withCodeEditorSource` holds the same
-lease through a participating consumer callback. Those leases do not coordinate
-unleased IDE/direct commands or every compiler launched by repository tooling, so
-do not replace source while they run. A moved checkout changes the path identity
-and also requires deliberate reprepare, then bootstrap.
+Reprepare verifies fresh source before replacing the old tree, restoring the old
+tree if publication fails; it does not build Rust. The helper's exclusive source
+lease also covers `withCodeEditorSource` callbacks, not unleased IDE/direct
+consumers or every repository compiler. Keep those stopped until replacement
+finishes, then bootstrap again.
+If dependency asset declarations changed, clean the app's Flutter build output
+before bootstrap as well; an old test asset bundle can retain the prior font
+manifest. This does not remove the prepared source under `.adele/`.
 
 ### Native builds
 
-Current native preparation and acceptance target Linux x64. Install the exact
+Current native preparation and checks target Linux x64. Install the exact
 compiler before app tests or desktop builds:
 
 ```sh
@@ -100,12 +91,10 @@ rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-
 dart tools/adele.dart build-code-editor-tests
 ```
 
-`build-code-editor-tests` verifies source, invokes exact Rust/Cargo with
+`build-code-editor-tests` verifies source, builds with exact Rust/Cargo,
 `--locked --release` and `RUST_MIN_STACK=16777216`, and prints the library directory
 under `.adele/dependencies/code_forge-native/<preparation-identity>/x86_64-unknown-linux-gnu/release`.
-Native build admission has its own exclusive lease; output is separate from
-immutable prepared source. The maintained `adele_desktop` test target builds this
-library before starting workers and supplies
+The maintained `adele_desktop` test target builds it before workers and supplies
 `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the app test process. Other
 maintained test targets prepare/verify source without building Rust.
 
@@ -127,33 +116,14 @@ export FLUTTER_ROOT="$ADELE_FLUTTER"
 export PATH="$ADELE_FLUTTER/bin:$PATH"
 ```
 
-### Distribution notices
+### Licensing
 
-The app bundles [`NOTICES.txt`](../../third_party/code_forge/NOTICES.txt) and
-[`inventory.json`](../../third_party/code_forge/inventory.json) as text assets in
-addition to Flutter's generated package notices. Preparation verifies and copies
-these tracked inputs into the ignored dependency's `assets/adele/` directory;
-patch 04 declares them as standard package assets. Their runtime keys are
-`packages/code_forge/assets/adele/NOTICES.txt` and
-`packages/code_forge/assets/adele/inventory.json`. This avoids unsupported
-outside-project app asset paths; the immutable prepared-tree digest covers the
-materialized copies. The inventory owns exact source
-checksums, notice mappings, Linux native-graph selection, and Rust standard-library
-provenance. It retains 125 deduplicated texts with 300 source mappings, including
-the selected Cargo graph, Rust 1.93.0 standard/static runtime components, and the
-statically compiled Dart API C notice. Build/proc-macro entries and all-target
-standard-library notice supersets are labelled separately, not claimed as linked
-Linux runtime components. The upstream truncated CodeForge MIT notice is retained
-verbatim rather than silently completed.
-
-Patch 04 removes the eight optional completion-icon fonts from Flutter asset
-registration and removes their unconditional loader. Their provenance is unresolved;
-they are neither shipped nor enabled by ADELE. Names/path strings remaining in
-upstream source do not bundle font binaries. Recheck the actual target graph,
-toolchain, static/system-library inputs, and notices before a non-Linux distribution
-or a change to the archive, lock, Rust, features, or omitted assets. The Linux
-inventory is not a cross-platform redistribution claim or proof that the final
-application bundle was inspected.
+Keep upstream license files and Flutter's normal generated notices. The small
+[`upstream-notices.txt`](../../third_party/code_forge/upstream-notices.txt) retains
+source attribution; preparation does not materialize a separate notice inventory
+or override upstream font assets. Publishing prebuilt binaries needs appropriate
+license review for the shipped target and contents; this checkout makes no
+redistribution-clearance claim.
 
 <a id="isolated-native-editor-probe"></a>
 
