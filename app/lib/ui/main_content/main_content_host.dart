@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -34,6 +35,8 @@ class _MainContentHostState extends State<MainContentHost> {
   late MainContentController _controller;
   final _scroll = ScrollController();
   final Map<MainContentEntry, _PaneViewState> _views = {};
+  DialogRoute<void>? _inputRoute;
+  MainContentActionEntry? _inputAction;
   bool _building = false;
   bool _rebuildScheduled = false;
 
@@ -60,11 +63,13 @@ class _MainContentHostState extends State<MainContentHost> {
     if (!identical(oldWidget.session, widget.session) ||
         !identical(oldWidget.extensions, widget.extensions)) {
       _controller.dispose();
+      _dismissInput();
       _createController();
     }
   }
 
   void _changed() {
+    if (_inputAction?.isActive == false) _dismissInput();
     if (!mounted || _building) return;
     if (SchedulerBinding.instance.schedulerPhase !=
         SchedulerPhase.persistentCallbacks) {
@@ -77,6 +82,89 @@ class _MainContentHostState extends State<MainContentHost> {
       _rebuildScheduled = false;
       if (mounted) setState(() {});
     });
+  }
+
+  void _openInput(MainContentActionEntry action) {
+    if (!action.isActive || _inputRoute != null) return;
+    Widget presentation;
+    try {
+      presentation = action.createPresentation();
+    } on Object {
+      // A failed input factory must not disturb existing pane presentations.
+      presentation = const Center(
+        child: Text('Main Content input is unavailable.'),
+      );
+    }
+    if (!mounted || !action.isActive) return;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final route = DialogRoute<void>(
+      context: context,
+      themes: InheritedTheme.capture(from: context, to: navigator.context),
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(16),
+        constraints: const BoxConstraints(maxWidth: 480, maxHeight: 260),
+        child: SizedBox(
+          width: 480,
+          height: 260,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      action.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close input',
+                    onPressed: _dismissInput,
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Expanded(child: presentation),
+            ],
+          ),
+        ),
+      ),
+    );
+    _inputAction = action;
+    _inputRoute = route;
+    unawaited(
+      navigator.push(route).whenComplete(() {
+        if (identical(_inputRoute, route)) {
+          _inputRoute = null;
+          _inputAction = null;
+        }
+      }),
+    );
+  }
+
+  void _dismissInput() {
+    final route = _inputRoute;
+    if (route == null) return;
+    _inputRoute = null;
+    _inputAction = null;
+    // Departure may happen during build or teardown. Remove only the captured
+    // route after that frame, never whichever route happens to be current later.
+    void remove() {
+      final navigator = route.navigator;
+      if (navigator != null && navigator.mounted && route.isActive) {
+        navigator.removeRoute(route);
+      }
+    }
+
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => remove());
+      WidgetsBinding.instance.ensureVisualUpdate();
+    } else {
+      remove();
+    }
   }
 
   void _focus(MainContentEntry entry, bool keyboardFocus) {
@@ -113,6 +201,8 @@ class _MainContentHostState extends State<MainContentHost> {
         _controller.reconcile();
       }
       final entries = _controller.entries;
+      final actions = _controller.actions;
+      if (_inputAction?.isActive == false) _dismissInput();
       return Padding(
         padding: const EdgeInsets.all(8),
         child: LayoutBuilder(
@@ -122,42 +212,76 @@ class _MainContentHostState extends State<MainContentHost> {
                 'MainContentHost requires bounded constraints.',
               );
             }
-            if (entries.isEmpty) {
-              return const Center(
-                child: Text('No Main Content is available for this Session.'),
-              );
-            }
-            final width = math.max(
-              320.0,
-              (constraints.maxWidth - (entries.length - 1)) / entries.length,
-            );
-            return SingleChildScrollView(
-              controller: _scroll,
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                height: constraints.maxHeight,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    for (var i = 0; i < entries.length; i++) ...[
-                      if (i != 0)
-                        SizedBox(
-                          key: ValueKey<MainContentEntry>(entries[i]),
-                          width: 1,
-                          child: ColoredBox(
-                            color: Theme.of(context).colorScheme.outlineVariant,
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (actions.isNotEmpty)
+                  SizedBox(
+                    height: math.min(40, constraints.maxHeight),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final action in actions)
+                            TextButton(
+                              key: ObjectKey(action),
+                              onPressed: () => _openInput(action),
+                              child: Text(action.label),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                Expanded(
+                  key: const ValueKey('main-content-panes'),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      if (entries.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No Main Content is available for this Session.',
+                          ),
+                        );
+                      }
+                      final width = math.max(
+                        320.0,
+                        (constraints.maxWidth - (entries.length - 1)) /
+                            entries.length,
+                      );
+                      return SingleChildScrollView(
+                        controller: _scroll,
+                        scrollDirection: Axis.horizontal,
+                        child: SizedBox(
+                          height: constraints.maxHeight,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              for (var i = 0; i < entries.length; i++) ...[
+                                if (i != 0)
+                                  SizedBox(
+                                    key: ValueKey<MainContentEntry>(entries[i]),
+                                    width: 1,
+                                    child: ColoredBox(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outlineVariant,
+                                    ),
+                                  ),
+                                _PaneView(
+                                  key: ObjectKey(entries[i]),
+                                  entry: entries[i],
+                                  width: width,
+                                  views: _views,
+                                ),
+                              ],
+                            ],
                           ),
                         ),
-                      _PaneView(
-                        key: ObjectKey(entries[i]),
-                        entry: entries[i],
-                        width: width,
-                        views: _views,
-                      ),
-                    ],
-                  ],
+                      );
+                    },
+                  ),
                 ),
-              ),
+              ],
             );
           },
         ),
@@ -170,6 +294,7 @@ class _MainContentHostState extends State<MainContentHost> {
   @override
   void dispose() {
     _controller.dispose();
+    _dismissInput();
     _scroll.dispose();
     super.dispose();
   }

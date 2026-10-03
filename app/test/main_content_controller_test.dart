@@ -30,10 +30,17 @@ void main() {
     String id,
     FutureOr<void> Function(MainContentAccess) attach, {
     int order = 0,
+    List<MainContentAction> actions = const [],
+    void Function(MainContentAccess)? detach,
   }) => extensions.register(
     point: mainContentContributions,
     id: ExtensionId(id),
-    value: MainContentContribution(order: order, attach: attach),
+    value: MainContentContribution(
+      order: order,
+      attach: attach,
+      actions: actions,
+      detach: detach,
+    ),
   );
 
   MainContentPane pane(String id, {VoidCallback? release}) => MainContentPane(
@@ -62,6 +69,123 @@ void main() {
     access.remove('only');
     expect(controller.entries, isEmpty);
   });
+
+  test(
+    'ordered live actions exist independently of panes and create fresh input',
+    () {
+      final attached = <String, MainContentAccess>{};
+      final received = <MainContentAccess>[];
+      for (final (id, order, labels) in [
+        ('test.z', 0, ['z']),
+        ('test.a', 0, ['a2', 'a1']),
+        ('test.first', -1, ['first']),
+      ]) {
+        register(
+          id,
+          (access) => attached[id] = access,
+          order: order,
+          actions: [
+            for (final label in labels)
+              MainContentAction(
+                id: label,
+                label: label,
+                createPresentation: (access) {
+                  received.add(access);
+                  return SizedBox(key: UniqueKey());
+                },
+              ),
+          ],
+        );
+      }
+      controller.reconcile();
+      expect(controller.entries, isEmpty);
+      expect(received, isEmpty);
+      final actions = controller.actions;
+      expect(actions.map((action) => action.label), ['first', 'a2', 'a1', 'z']);
+      expect(() => actions.clear(), throwsUnsupportedError);
+      final action = actions.first;
+      expect(action.id, 'first');
+      final firstInput = action.createPresentation();
+      expect(action.createPresentation(), isNot(same(firstInput)));
+      expect(received, [
+        same(attached['test.first']),
+        same(attached['test.first']),
+      ]);
+      attached['test.first']!.open(pane('pane'));
+      attached['test.first']!.remove('pane');
+      expect(controller.entries, isEmpty);
+      expect(controller.actions.first, same(action));
+      controller.dispose();
+      expect(action.isActive, isFalse);
+      expect(action.createPresentation, throwsStateError);
+      expect(controller.actions, isEmpty);
+    },
+  );
+
+  test(
+    'action retirement is immediate and same-ID replacement cannot revive it',
+    () async {
+      final accesses = <MainContentAccess>[];
+      final action = MainContentAction(
+        id: 'input',
+        label: 'Choose resource',
+        createPresentation: (access) {
+          accesses.add(access);
+          return const SizedBox.shrink();
+        },
+      );
+      final registration = register('test.actions', (_) {}, actions: [action]);
+      controller.reconcile();
+      final old = controller.actions.single;
+      old.createPresentation();
+      final retirement = registration.close();
+      expect(old.isActive, isFalse);
+      expect(controller.actions, isEmpty);
+      expect(old.createPresentation, throwsStateError);
+      register('test.actions', (_) {}, actions: [action]);
+      controller.reconcile();
+      final replacement = controller.actions.single;
+      expect(replacement, isNot(same(old)));
+      replacement.createPresentation();
+      expect(accesses.first.isActive, isFalse);
+      expect(accesses.last.isActive, isTrue);
+      expect(accesses.first, isNot(same(accesses.last)));
+      await retirement;
+    },
+  );
+
+  test(
+    'detach runs once for empty and failed groups without blocking cleanup',
+    () async {
+      final detached = <MainContentAccess>[];
+      final attached = <MainContentAccess>[];
+      var releases = 0;
+      final empty = register(
+        'test.empty',
+        attached.add,
+        detach: (access) {
+          expect(access.isActive, isFalse);
+          detached.add(access);
+          throw StateError('fixture detach failure');
+        },
+      );
+      register('test.failed', (access) {
+        attached.add(access);
+        access.open(pane('pane', release: () => releases++));
+        throw StateError('fixture attachment failure');
+      }, detach: detached.add);
+      controller.reconcile();
+      await Future<void>.delayed(Duration.zero);
+      expect(detached, [same(attached.last)]);
+      expect(releases, 1);
+      await empty.close();
+      controller.reconcile();
+      expect(detached, [same(attached.last), same(attached.first)]);
+      controller.dispose();
+      expect(detached, hasLength(2));
+      expect(releases, 1);
+    },
+  );
 
   test(
     'independent groups sort by order then exact ExtensionId, not plugin',

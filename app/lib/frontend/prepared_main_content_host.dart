@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -5,11 +7,16 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../core/product_lifecycle.dart';
 import '../core/resource_cleanup.dart';
+import 'code_editor_bridge.dart';
+import 'contribution_bridge.dart';
+import 'environment_text_files.dart';
 import 'main_content_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_services.dart';
 import 'session_presentation_lifecycle_bridge.dart';
+import 'structured_bridge_data.dart';
 
 /// Optional native resources selected once for an admitted pane. Each mounted
 /// presentation receives a fresh bridge over that same captured owner.
@@ -27,11 +34,22 @@ final class PreparedMainContentPaneBinding {
   final VoidCallback? release;
 }
 
-/// Initializes through a short-lived operation, then permits collection requests
-/// only from mounted pane runtimes. With zero mounted panes there is no autonomous
-/// updater; a new attachment is required to run initialization again.
+/// Prepared contribution hosting. Opt-in opaque data and native owners outlive
+/// attachments; only ordinary views and admitted finite operations run eval.
 final class PreparedMainContentHost {
-  PreparedMainContentHost({this.createBinding});
+  PreparedMainContentHost({
+    this.createBinding,
+    this.environmentRuntime,
+    this.confirmDiscard,
+  });
+
+  final EnvironmentRuntime? environmentRuntime;
+  final Future<bool> Function(String message)? confirmDiscard;
+  final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
+      {};
+  final Set<Future<Map<String, Object?>>> _operations = {};
+  bool _accepting = true;
+  bool _preflighting = false;
 
   final PreparedMainContentPaneBinding? Function({
     required PreparedPluginInstallation installation,
@@ -58,9 +76,50 @@ final class PreparedMainContentHost {
     required bool Function() isActive,
     PreparedSessionServices? services,
   }) {
+    final retained =
+        descriptor.retainedData ||
+            descriptor.actions.isNotEmpty ||
+            descriptor.operations.isNotEmpty
+        ? _retained[descriptor] = _RetainedMainContent(
+            owner: RetainedContribution(),
+            generation: generation,
+            descriptor: descriptor,
+            isActive: () => !_closed && isActive(),
+          )
+        : null;
     late final MainContentContribution contribution;
     contribution = MainContentContribution(
       order: descriptor.order,
+      actions: [
+        for (final action in descriptor.actions)
+          MainContentAction(
+            id: action.id,
+            label: action.label,
+            createPresentation: (access) {
+              final attachment = retained?.attachment;
+              if (attachment == null ||
+                  !identical(attachment.access, access) ||
+                  !access.isActive) {
+                throw StateError('Contribution action is unavailable.');
+              }
+              return generation.createPresentation(
+                key: UniqueKey(),
+                library: descriptor.library,
+                entrypoint: action.entrypoint,
+                createBridge: () => _dataBridge(
+                  retained!,
+                  attachment,
+                  isActive: () => access.isActive && isActive(),
+                ),
+              );
+            },
+          ),
+      ],
+      detach: (access) {
+        if (identical(retained?.attachment?.access, access)) {
+          retained!.attachment = null;
+        }
+      },
       attach: (access) async {
         bool available() => !_closed && isActive() && access.isActive;
         void validate() {
@@ -68,6 +127,22 @@ final class PreparedMainContentHost {
             throw StateError('Main Content attachment is retired.');
           }
         }
+
+        CapturedEnvironmentTextFiles? files;
+        if (retained != null && descriptor.environmentTextFiles) {
+          final runtime = environmentRuntime;
+          if (runtime != null) {
+            final captured = CapturedEnvironmentTextFiles(
+              session: access.session,
+              environmentRuntime: runtime,
+            );
+            files = retained.environments.putIfAbsent(
+              captured.environmentKey,
+              () => captured,
+            );
+          }
+        }
+        late final _MainContentAttachment attachment;
 
         void open(String id, String title, bool canClose) {
           validate();
@@ -99,6 +174,19 @@ final class PreparedMainContentHost {
               session: access.session,
               paneId: id,
             );
+            if (descriptor.nativeCodeEditor && retained != null) {
+              if (binding != null) {
+                throw StateError(
+                  'A pane cannot have two native editor bindings.',
+                );
+              }
+              final editor = retained.owner.editor(id);
+              binding = PreparedMainContentPaneBinding(
+                createBridge: (isActive) =>
+                    CodeEditorBridge(editor: editor, isActive: isActive),
+                requestFocus: editor.requestFocus,
+              );
+            }
             // Observe failure at admission, including panes never mounted. Keep
             // only readiness, not a diagnostic error or an evaluator callback.
             ready = binding?.ready?.then(
@@ -145,6 +233,13 @@ final class PreparedMainContentHost {
                     final acquired = <PreparedFrontendBridge>[
                       collection,
                       lifecycle,
+                      if (retained != null)
+                        _dataBridge(
+                          retained,
+                          attachment,
+                          paneId: id,
+                          isActive: paneActive,
+                        ),
                     ];
                     try {
                       if (descriptor.sessionExecution ||
@@ -212,7 +307,15 @@ final class PreparedMainContentHost {
               },
               onClose: canClose
                   ? () {
-                      if (paneActive()) access.remove(id);
+                      if (!paneActive()) return;
+                      final close = descriptor.closeOperation;
+                      if (close != null && retained != null) {
+                        _invoke(retained, attachment, close, {
+                          'id': id,
+                        }).ignore();
+                      } else {
+                        access.remove(id);
+                      }
                     }
                   : null,
               requestFocus: binding?.requestFocus == null
@@ -234,28 +337,198 @@ final class PreparedMainContentHost {
           }
         }
 
-        validate();
-        await generation.invoke<void>(
-          library: descriptor.library,
-          entrypoint: descriptor.initialize,
-          createBridge: () => MainContentBridge(
-            access: access,
-            isActive: available,
-            open: open,
-          ),
-          decodeResult: (value) {
-            validate();
-            if (value != null && value is! $null) {
-              throw const FormatException(
-                'Main Content initialization returns void.',
-              );
-            }
-          },
+        Future<void> initialize() async {
+          if (!available()) return;
+          await generation.invoke<void>(
+            library: descriptor.library,
+            entrypoint: descriptor.initialize,
+            createBridge: () => PreparedFrontendBridges([
+              MainContentBridge(
+                access: access,
+                isActive: available,
+                open: open,
+              ),
+              if (retained != null)
+                _dataBridge(retained, attachment, isActive: available),
+            ]),
+            decodeResult: (value) {
+              validate();
+              if (value != null && value is! $null) {
+                throw const FormatException(
+                  'Main Content initialization returns void.',
+                );
+              }
+            },
+          );
+        }
+
+        attachment = _MainContentAttachment(
+          access: access,
+          files: files,
+          initialize: initialize,
         );
+        if (retained != null) retained.attachment = attachment;
+        validate();
+        await initialize();
       },
     );
     services?.registerMetadata(contribution, installation, descriptor);
     return contribution;
+  }
+
+  ContributionBridge _dataBridge(
+    _RetainedMainContent retained,
+    _MainContentAttachment attachment, {
+    String paneId = '',
+    required bool Function() isActive,
+  }) => ContributionBridge(
+    owner: retained.owner,
+    isActive: () => retained.isActive() && isActive(),
+    context: {
+      'environmentKey': attachment.files?.environmentKey ?? '',
+      'paneId': paneId,
+      'arguments': <String, Object?>{},
+    },
+    nativeCodeEditor: retained.descriptor.nativeCodeEditor,
+    retainedData: retained.descriptor.retainedData,
+    invoke: (operation, arguments) =>
+        _invoke(retained, attachment, operation, arguments),
+  );
+
+  /// Called by the public provider-neutral display registration, not a global
+  /// command service. Only the current host-approved attachment can admit work.
+  Future<Map<String, Object?>> displaySourceFile(
+    PreparedMainContentPresentation descriptor,
+    String relativePath,
+  ) {
+    final retained = _retained[descriptor];
+    final attachment = retained?.attachment;
+    final operation = descriptor.displaySourceFileOperation;
+    if (retained == null || attachment == null || operation == null) {
+      throw StateError('Source display is unavailable in the current context.');
+    }
+    return _invoke(retained, attachment, operation, {'path': relativePath});
+  }
+
+  Future<Map<String, Object?>> _invoke(
+    _RetainedMainContent retained,
+    _MainContentAttachment? attachment,
+    String operation,
+    Map<String, Object?> arguments, {
+    bool preflight = false,
+  }) {
+    if (!_accepting ||
+        (_preflighting && !preflight) ||
+        !retained.isActive() ||
+        (!preflight && (attachment == null || !attachment.access.isActive))) {
+      return Future.error(StateError('Contribution operation is unavailable.'));
+    }
+    final entrypoint = retained.descriptor.operations[operation];
+    if (entrypoint == null) {
+      return Future.error(StateError('Undeclared contribution operation.'));
+    }
+    // Everything below is captured before eval can suspend. Presentation
+    // departure does not revoke this finite operation's retained owner access.
+    final files = attachment?.files;
+    final context = <String, Object?>{
+      'environmentKey': files?.environmentKey ?? '',
+      'paneId': '',
+      'arguments': copyStructuredBridgeData(arguments),
+    };
+    late final Future<Map<String, Object?>> pending;
+    pending = retained.generation
+        .invoke<Map<String, Object?>>(
+          library: retained.descriptor.library,
+          entrypoint: entrypoint,
+          createBridge: () => ContributionBridge(
+            owner: retained.owner,
+            isActive: retained.isActive,
+            context: context,
+            nativeCodeEditor: retained.descriptor.nativeCodeEditor,
+            retainedData: retained.descriptor.retainedData,
+            files: retained.descriptor.environmentTextFiles ? files : null,
+            confirmDiscard: confirmDiscard,
+          ),
+          decodeResult: (value) {
+            if (!retained.isActive()) {
+              throw StateError(
+                'Contribution owner retired during the operation.',
+              );
+            }
+            return copyStructuredBridgeData(value) as Map<String, Object?>;
+          },
+        )
+        .then((result) async {
+          final current = retained.attachment;
+          if (current != null &&
+              current.access.isActive &&
+              retained.isActive()) {
+            try {
+              await current.refresh();
+            } on Object {
+              // View departure/failure cannot revoke the retained acknowledgement.
+            }
+            final focus = result['focus'];
+            if (focus is String &&
+                current.access.isActive &&
+                current.files?.environmentKey == files?.environmentKey &&
+                current.access.panes.any((pane) => pane.id == focus)) {
+              current.access.focus(focus, keyboardFocus: true);
+            }
+          }
+          return result;
+        })
+        .whenComplete(() => _operations.remove(pending));
+    _operations.add(pending);
+    return pending;
+  }
+
+  /// Reversible opt-in preflight, before frontend or execution shutdown. Hidden
+  /// collections are checked by fresh operations without mounting their views.
+  Future<bool> prepareToExit() async {
+    if (_preflighting || !_accepting) return false;
+    _preflighting = true;
+    try {
+      await drainOperations();
+      for (final retained in _retained.values) {
+        final operation = retained.descriptor.exitOperation;
+        if (operation == null || !retained.isActive()) continue;
+        final result = await _invoke(
+          retained,
+          null,
+          operation,
+          const {},
+          preflight: true,
+        );
+        if (result['accepted'] != true) return false;
+      }
+      return true;
+    } on Object {
+      return false;
+    } finally {
+      _preflighting = false;
+    }
+  }
+
+  Future<void> drainOperations() async {
+    while (_operations.isNotEmpty) {
+      await Future.wait([
+        for (final operation in _operations.toList())
+          operation.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      ]);
+    }
+  }
+
+  Future<void> stopOperations() {
+    _accepting = false;
+    return drainOperations();
+  }
+
+  void retire(PreparedMainContentPresentation descriptor) {
+    final retained = _retained.remove(descriptor);
+    if (retained == null) return;
+    retained.attachment = null;
+    retained.owner.dispose();
   }
 
   /// Settle only hooks belonging to currently mounted contributed panes. A
@@ -287,6 +560,13 @@ final class PreparedMainContentHost {
   }
 
   void unbind(Session session) {
+    for (final retained in _retained.values) {
+      final access = retained.attachment?.access;
+      if (access != null &&
+          (!access.isActive || identical(access.session, session))) {
+        retained.attachment = null;
+      }
+    }
     _releaseAll([
       for (final entry in _releases.entries.toList())
         if (identical(entry.value, session)) entry.key,
@@ -298,7 +578,54 @@ final class PreparedMainContentHost {
     _closed = true;
     return _closing = closeResources([
       for (final release in _releases.keys.toList()) () async => release(),
+      for (final retained in _retained.values)
+        () async {
+          retained.attachment = null;
+          retained.owner.dispose();
+        },
     ]);
+  }
+}
+
+final class _RetainedMainContent {
+  _RetainedMainContent({
+    required this.owner,
+    required this.generation,
+    required this.descriptor,
+    required this.isActive,
+  });
+  final RetainedContribution owner;
+  final PreparedFrontend generation;
+  final PreparedMainContentPresentation descriptor;
+  final bool Function() isActive;
+  final Map<String, CapturedEnvironmentTextFiles> environments = {};
+  _MainContentAttachment? attachment;
+}
+
+/// Transient host attachment only, never included in plugin retained records.
+final class _MainContentAttachment {
+  _MainContentAttachment({
+    required this.access,
+    required this.files,
+    required this.initialize,
+  });
+  final MainContentAccess access;
+  final CapturedEnvironmentTextFiles? files;
+  final Future<void> Function() initialize;
+  Future<void>? _refreshing;
+  bool _again = false;
+
+  Future<void> refresh() {
+    if (_refreshing case final pending?) {
+      _again = true;
+      return pending;
+    }
+    return _refreshing = () async {
+      do {
+        _again = false;
+        await initialize();
+      } while (_again && access.isActive);
+    }().whenComplete(() => _refreshing = null);
   }
 }
 

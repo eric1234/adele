@@ -42,6 +42,20 @@ final class MainContentController extends ChangeNotifier {
   /// Each exact registration owns one contiguous group in declared order.
   List<MainContentEntry> get entries {
     if (_closed) return const [];
+    return List.unmodifiable(_orderedGroups.expand((group) => group._entries));
+  }
+
+  /// Input actions are independent of whether their contribution has any panes.
+  List<MainContentActionEntry> get actions {
+    if (_closed) return const [];
+    return List.unmodifiable(
+      _orderedGroups
+          .where((group) => group.isActive)
+          .expand((group) => group.actions),
+    );
+  }
+
+  List<_MainContentAccess> get _orderedGroups {
     final groups = _groups.toList()
       ..sort((a, b) {
         final order = a.order.compareTo(b.order);
@@ -49,7 +63,7 @@ final class MainContentController extends ChangeNotifier {
             ? order
             : a.binding.id.value.compareTo(b.binding.id.value);
       });
-    return List.unmodifiable(groups.expand((group) => group._entries));
+    return groups;
   }
 
   void reconcile() {
@@ -80,7 +94,7 @@ final class MainContentController extends ChangeNotifier {
         } on StaleExtensionBinding {
           continue;
         }
-        final group = _MainContentAccess(this, binding, contribution.order);
+        final group = _MainContentAccess(this, binding, contribution);
         _groups.add(group);
         unawaited(
           Future<void>.sync(() {
@@ -125,6 +139,26 @@ final class MainContentController extends ChangeNotifier {
     }
     _groups.clear();
     super.dispose();
+  }
+}
+
+/// An action captured from one exact contribution and Session attachment.
+final class MainContentActionEntry {
+  MainContentActionEntry._(this._owner, this._action);
+
+  final _MainContentAccess _owner;
+  final MainContentAction _action;
+
+  String get id => _action.id;
+  String get label => _action.label;
+  bool get isActive => _owner.isActive;
+
+  /// Unlike pane content, each explicit opening receives a fresh presentation.
+  Widget createPresentation() {
+    _owner._validate();
+    final presentation = _action.createPresentation(_owner);
+    _owner._validate();
+    return presentation;
   }
 }
 
@@ -197,13 +231,26 @@ final class MainContentEntry {
 }
 
 final class _MainContentAccess implements MainContentAccess {
-  _MainContentAccess(this.controller, this.binding, this.order);
+  _MainContentAccess(
+    this.controller,
+    this.binding,
+    MainContentContribution contribution,
+  ) : order = contribution.order,
+      _detach = contribution.detach {
+    actions = List.unmodifiable([
+      for (final action in contribution.actions)
+        MainContentActionEntry._(this, action),
+    ]);
+  }
 
   final MainContentController controller;
   final ExtensionBinding<MainContentContribution> binding;
   final int order;
+  final void Function(MainContentAccess)? _detach;
+  late final List<MainContentActionEntry> actions;
   final List<MainContentEntry> _entries = [];
   bool _retired = false;
+  bool _detached = false;
 
   @override
   bool get isActive {
@@ -298,11 +345,18 @@ final class _MainContentAccess implements MainContentAccess {
   }
 
   void _retire() {
+    if (_detached) return;
     _retired = true;
+    _detached = true;
     final removed = _entries.toList();
     _entries.clear();
     for (final entry in removed) {
       entry._remove();
+    }
+    try {
+      _detach?.call(this);
+    } on Object {
+      // Failure to discard attachment state cannot retain access or other owners.
     }
   }
 }

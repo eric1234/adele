@@ -76,6 +76,10 @@ final class ApplicationFrontendBootstrap {
 
   void unbind(Session session) => _mainContentHost.unbind(session);
 
+  Future<bool> prepareToExit() => _mainContentHost.prepareToExit();
+
+  Future<void> stopMainContentOperations() => _mainContentHost.stopOperations();
+
   /// Prepared selectors require their exact installation's provider registration,
   /// not merely a matching PluginId declared by an unrelated endpoint.
   void validateProjectProvider(
@@ -262,6 +266,8 @@ final class InstalledFrontendActivation {
             for (final entrypoint in [
               descriptor.initialize,
               descriptor.entrypoint,
+              ...descriptor.actions.map((action) => action.entrypoint),
+              ...descriptor.operations.values,
             ]) {
               generation.validateOperation(
                 library: descriptor.library,
@@ -280,6 +286,18 @@ final class InstalledFrontendActivation {
                 services: _sessionServices,
               ),
             );
+            if (descriptor.displaySourceFileOperation != null) {
+              _register(
+                point: displaySourceFileContributions,
+                id: descriptor.extensionId,
+                contribution: (isActive) => DisplaySourceFileContribution(
+                  display: (path) {
+                    _requireActive(isActive);
+                    return _mainContentHost.displaySourceFile(descriptor, path);
+                  },
+                ),
+              );
+            }
           case PreparedConsolePresentation():
             // Optional read-only hosting must not retire unrelated factual
             // presentation roles. No registration means opening is unavailable.
@@ -557,17 +575,37 @@ final class InstalledFrontendActivation {
   }
 
   /// Retires the captured point/ID registration, never a replacement binding.
-  /// IDs are scoped to a point; equal IDs at sibling points remain independent.
+  /// IDs are scoped to a point. A descriptor-derived display adapter is owned
+  /// by its Main Content contribution; unrelated sibling points are independent.
   Future<void> retire<T extends Object>(
     ExtensionPoint<T> point,
     ExtensionId id,
   ) async {
+    final ownsDisplay =
+        point.value == mainContentContributions.value &&
+        installation.frontend!.presentations.any(
+          (descriptor) =>
+              descriptor is PreparedMainContentPresentation &&
+              descriptor.extensionId == id &&
+              descriptor.displaySourceFileOperation != null,
+        );
     await Future.wait([
       for (final (registeredPoint, registeredId, registration)
           in _registrations)
-        if (registeredPoint == point.value && registeredId == id)
+        if (registeredId == id &&
+            (registeredPoint == point.value ||
+                (ownsDisplay &&
+                    registeredPoint == displaySourceFileContributions.value)))
           registration.close(),
     ]);
+    if (point.value == mainContentContributions.value) {
+      for (final descriptor in installation.frontend!.presentations) {
+        if (descriptor is PreparedMainContentPresentation &&
+            descriptor.extensionId == id) {
+          _mainContentHost.retire(descriptor);
+        }
+      }
+    }
   }
 
   Future<void> close() {
@@ -595,7 +633,12 @@ final class InstalledFrontendActivation {
           registration.close(),
       ]);
     } finally {
-      _generation?.invalidate();
+      await closeResources([
+        () async => _generation?.invalidate(),
+        for (final descriptor in installation.frontend!.presentations)
+          if (descriptor is PreparedMainContentPresentation)
+            () async => _mainContentHost.retire(descriptor),
+      ]);
     }
   }
 }

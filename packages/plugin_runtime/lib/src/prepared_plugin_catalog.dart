@@ -79,6 +79,27 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
+final class PreparedMainContentAction {
+  PreparedMainContentAction({
+    required this.id,
+    required this.label,
+    required this.entrypoint,
+  }) {
+    _text(id, 'id');
+    _text(label, 'label');
+    if (label.length > 128) {
+      throw const FormatException('label must not exceed 128 characters.');
+    }
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final String id;
+  final String label;
+
+  /// Input presentation, not the finite operation it may request.
+  final String entrypoint;
+}
+
 /// One contribution initializes its collection, then presents each admitted pane
 /// through the same content entrypoint in an independent runtime.
 final class PreparedMainContentPresentation
@@ -92,7 +113,17 @@ final class PreparedMainContentPresentation
     this.sessionExecution = false,
     Iterable<String> backendServices = const [],
     this.strategyAffinity = PreparedStrategyAffinity.independent,
-  }) : backendServices = List.unmodifiable(backendServices) {
+    Iterable<PreparedMainContentAction> actions = const [],
+    Map<String, String> operations = const {},
+    this.closeOperation,
+    this.exitOperation,
+    this.displaySourceFileOperation,
+    this.retainedData = false,
+    this.nativeCodeEditor = false,
+    this.environmentTextFiles = false,
+  }) : backendServices = List.unmodifiable(backendServices),
+       actions = List.unmodifiable(actions),
+       operations = Map.unmodifiable(operations) {
     _library(library, 'library');
     _entrypoint(initialize, 'initialize');
     _entrypoint(entrypoint, 'entrypoint');
@@ -105,6 +136,33 @@ final class PreparedMainContentPresentation
         );
       }
     }
+    final actionIds = <String>{};
+    for (final action in this.actions) {
+      if (!actionIds.add(action.id)) {
+        throw const FormatException('actions must have unique ids.');
+      }
+    }
+    for (final operation in this.operations.entries) {
+      _text(operation.key, 'operations key');
+      _entrypoint(operation.value, 'operations.${operation.key}');
+    }
+    for (final hook in {
+      'closeOperation': closeOperation,
+      'exitOperation': exitOperation,
+      'displaySourceFileOperation': displaySourceFileOperation,
+    }.entries) {
+      if (hook.value == null) continue;
+      _text(hook.value, hook.key);
+      if (!this.operations.containsKey(hook.value)) {
+        throw FormatException('${hook.key} must name a declared operation.');
+      }
+    }
+    if (nativeCodeEditor && !retainedData) {
+      throw const FormatException('nativeCodeEditor requires retainedData.');
+    }
+    if (environmentTextFiles && this.operations.isEmpty) {
+      throw const FormatException('environmentTextFiles requires operations.');
+    }
   }
 
   final ExtensionId extensionId;
@@ -114,6 +172,16 @@ final class PreparedMainContentPresentation
   final bool sessionExecution;
   final List<String> backendServices;
   final PreparedStrategyAffinity strategyAffinity;
+  final List<PreparedMainContentAction> actions;
+
+  /// Finite operation keys mapped to top-level entrypoints in [library].
+  final Map<String, String> operations;
+  final String? closeOperation;
+  final String? exitOperation;
+  final String? displaySourceFileOperation;
+  final bool retainedData;
+  final bool nativeCodeEditor;
+  final bool environmentTextFiles;
 }
 
 final class PreparedConsoleAction {
@@ -550,6 +618,14 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'sessionExecution',
         'backendServices',
         'strategyAffinity',
+        'actions',
+        'operations',
+        'closeOperation',
+        'exitOperation',
+        'displaySourceFileOperation',
+        'retainedData',
+        'nativeCodeEditor',
+        'environmentTextFiles',
       });
       final order = value['order'];
       if (order is! int) {
@@ -577,6 +653,45 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
               ),
             }
           : PreparedStrategyAffinity.independent;
+      final actions = value.containsKey('actions')
+          ? value['actions']
+          : const <Object?>[];
+      if (actions is! List<Object?>) {
+        throw FormatException('$label.actions must be an array.');
+      }
+      final actionDescriptors = <PreparedMainContentAction>[];
+      for (var index = 0; index < actions.length; index++) {
+        final actionLabel = '$label.actions[$index]';
+        final action = _object(actions[index], actionLabel, {
+          'id',
+          'label',
+          'entrypoint',
+        });
+        actionDescriptors.add(
+          PreparedMainContentAction(
+            id: _text(action['id'], '$actionLabel.id'),
+            label: _text(action['label'], '$actionLabel.label'),
+            entrypoint: _entrypoint(
+              action['entrypoint'],
+              '$actionLabel.entrypoint',
+            ),
+          ),
+        );
+      }
+      final operations = value.containsKey('operations')
+          ? value['operations']
+          : const <String, Object?>{};
+      if (operations is! Map<String, Object?>) {
+        throw FormatException('$label.operations must be an object.');
+      }
+      bool permission(String field) {
+        final permission = value.containsKey(field) ? value[field] : false;
+        if (permission is! bool) {
+          throw FormatException('$label.$field must be a boolean.');
+        }
+        return permission;
+      }
+
       return PreparedMainContentPresentation(
         extensionId: ExtensionId(text('extensionId')),
         order: order,
@@ -586,6 +701,27 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         sessionExecution: execution,
         backendServices: services.cast<String>(),
         strategyAffinity: affinity,
+        actions: actionDescriptors,
+        operations: {
+          for (final operation in operations.entries)
+            _text(operation.key, '$label.operations key'): _entrypoint(
+              operation.value,
+              '$label.operations.${operation.key}',
+            ),
+        },
+        closeOperation: value.containsKey('closeOperation')
+            ? text('closeOperation')
+            : null,
+        exitOperation: value.containsKey('exitOperation')
+            ? text('exitOperation')
+            : null,
+        displaySourceFileOperation:
+            value.containsKey('displaySourceFileOperation')
+            ? text('displaySourceFileOperation')
+            : null,
+        retainedData: permission('retainedData'),
+        nativeCodeEditor: permission('nativeCodeEditor'),
+        environmentTextFiles: permission('environmentTextFiles'),
       );
     case 'console':
       _object(value, label, {
