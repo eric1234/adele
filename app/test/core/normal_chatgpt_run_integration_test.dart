@@ -13,6 +13,7 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/editor/native_code_editor.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
@@ -53,6 +54,7 @@ import '../../tool/main_content_fixture.dart';
 import '../../tool/main_content_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/self_hosting/development_self_hosting.dart';
+import '../../tool/source_editor_frontend_compiler.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
@@ -68,6 +70,7 @@ const _localDirectoryProjectPluginId =
     'dev.adele.plugin.local-directory-project';
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
+const _sourceEditorPluginId = 'dev.adele.source-editor';
 const _sourcePath = 'lib/task_answer.dart';
 const _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const _patchedText = 'const taskAnswer = "approved-task-value";\n';
@@ -106,6 +109,631 @@ void main() {
       );
     }
   });
+
+  testWidgets(
+    'normal Source Editor retains Environment documents without Chat, a model or a Run',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1800, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final root = await prepared.copyInstallations(fixture.directory);
+      await Directory('${root.path}/$_chatPluginId').delete(recursive: true);
+      final runtime = fixture.runtime;
+      try {
+        await fixture.launch(
+          tester,
+          prepared,
+          root: root,
+          configureModel: false,
+        );
+        expect(runtime.plugins.catalog!.issues, isEmpty);
+        final sourceInstallation = runtime.plugins.catalog!.installations
+            .singleWhere(
+              (entry) => entry.metadata.id.value == _sourceEditorPluginId,
+            );
+        expect(sourceInstallation.backendArtifactUri, isNull);
+        expect(
+          sourceInstallation.frontend!.artifactUri,
+          File('${root.path}/$_sourceEditorPluginId/frontend.evc').uri,
+        );
+        expect(
+          runtime.extensions.discover(orchestrationStrategyContributions),
+          isEmpty,
+        );
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(
+          runtime.extensions
+              .discover(mainContentContributions)
+              .map((entry) => entry.id),
+          [ExtensionId('$_sourceEditorPluginId.main-content')],
+        );
+
+        // Canonical Sessions need a strategy identity, not Chat or a materialized Run.
+        final strategyId = OrchestrationStrategyId(
+          'dev.adele.fixture.source-only',
+        );
+        final strategy = runtime.extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.adele.fixture.source-only'),
+          value: OrchestrationStrategyContribution(
+            strategyId: strategyId,
+            materialize: (_) =>
+                throw StateError('Source must not start execution.'),
+          ),
+        );
+        addTearDown(strategy.close);
+        await fixture.openTask(tester);
+        final project = fixture.shell(tester).project!;
+        final taskA = fixture.shell(tester).task!;
+        final environmentA = fixture.shell(tester).environment!;
+        final worktreeA = Directory(
+          developmentGitWorktreePath(project, environmentA),
+        );
+        const secondPath = 'lib/source_neighbor.dart';
+        const secondText = 'const neighbor = "Environment A";\n';
+        await File('${worktreeA.path}/$secondPath').writeAsString(secondText);
+        final sessionA = runtime.lifecycle.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        final siblingA = runtime.lifecycle.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        for (final session in [sessionA, siblingA]) {
+          expect(
+            runtime.store.requireSessionAuthority(session.id).environmentId,
+            environmentA.id,
+          );
+        }
+        // Direct lifecycle creation does not notify the already-mounted Browser.
+        // Re-enter through normal navigation to obtain its current snapshot.
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalTap(tester, find.text(taskA.title));
+        await _terminalTap(tester, _sessionRow(sessionA.id));
+        await _openSourceInput(tester, _sourcePath);
+        final ownerA = _sourceOwner(tester, _sourcePath);
+        final nativeA = _sourceNative(tester, _sourcePath);
+        expect(ownerA.snapshot()['text'], _taskText);
+        expect(_composer(), findsNothing);
+        expect(find.byType(RunExecutionStatus), findsNothing);
+
+        final display = DisplaySourceFileResolver(runtime.extensions);
+        Future<Map<String, Object?>> show(String path) => display.display(
+          path,
+          select: ExtensionId('$_sourceEditorPluginId.main-content'),
+        );
+        final second = await show(secondPath);
+        expect(second['ok'], isTrue, reason: '$second');
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 2,
+          'two native Source Documents',
+        );
+        final ownerSecond = _sourceOwner(tester, secondPath);
+        final nativeSecond = _sourceNative(tester, secondPath);
+        expect(ownerSecond, isNot(same(ownerA)));
+        expect(ownerSecond.snapshot()['text'], secondText);
+        await _sourceKey(
+          tester,
+          ownerA,
+          LogicalKeyboardKey.home,
+          control: true,
+        );
+        await _sourceKey(tester, ownerA, LogicalKeyboardKey.delete);
+        await _sourceKey(
+          tester,
+          ownerSecond,
+          LogicalKeyboardKey.home,
+          control: true,
+        );
+        await _sourceKey(tester, ownerSecond, LogicalKeyboardKey.delete);
+        await _sourceAction(tester, secondPath, 'Move left');
+
+        void retainedA() {
+          expect(_sourceOwner(tester, _sourcePath), same(ownerA));
+          expect(_sourceOwner(tester, secondPath), same(ownerSecond));
+          expect(ownerA.isDisposed, isFalse);
+          expect(ownerSecond.isDisposed, isFalse);
+          expect(ownerA.snapshot()['text'], _taskText.substring(1));
+          expect(ownerSecond.snapshot()['text'], secondText.substring(1));
+          final natives = tester
+              .widgetList<CodeForge>(find.byType(CodeForge))
+              .toList();
+          expect(natives.map((editor) => editor.controller), [
+            same(nativeSecond.controller),
+            same(nativeA.controller),
+          ]);
+          expect(natives.map((editor) => editor.undoController), [
+            same(nativeSecond.undoController),
+            same(nativeA.undoController),
+          ]);
+          expect(fixture.runIds.values, isEmpty);
+          expect(_composer(), findsNothing);
+          expect(find.byType(RunExecutionStatus), findsNothing);
+        }
+
+        retainedA();
+        final repeated = await show(_sourcePath);
+        expect(repeated['ok'], isTrue, reason: '$repeated');
+        await tester.pump();
+        retainedA();
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+          'Task Browser with hidden unsaved documents',
+        );
+        expect(ownerA.isDisposed, isFalse);
+        expect(ownerSecond.isDisposed, isFalse);
+        expect(find.byType(CodeForge), findsNothing);
+        expect(find.byType(AlertDialog), findsNothing);
+        await _terminalTap(tester, _sessionRow(siblingA.id));
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 2,
+          'same Environment documents in sibling Session',
+        );
+        expect(_session(tester), same(siblingA));
+        retainedA();
+        await _sourceKey(
+          tester,
+          ownerA,
+          LogicalKeyboardKey.keyZ,
+          control: true,
+        );
+        expect(ownerA.snapshot()['text'], _taskText);
+        expect(ownerSecond.snapshot()['text'], secondText.substring(1));
+        await _sourceKey(
+          tester,
+          ownerA,
+          LogicalKeyboardKey.keyY,
+          control: true,
+        );
+        retainedA();
+
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+          'Project Browser retains Environment A owners',
+        );
+        await fixture.createTask(tester, 'Source Environment B');
+        final taskB = fixture.shell(tester).task!;
+        final environmentB = fixture.shell(tester).environment!;
+        final worktreeB = Directory(
+          developmentGitWorktreePath(project, environmentB),
+        );
+        expect(environmentB.id, isNot(environmentA.id));
+        expect(worktreeB.path, isNot(worktreeA.path));
+        const textB = 'const taskAnswer = "Environment B only";\n';
+        await File('${worktreeB.path}/$_sourcePath').writeAsString(textB);
+        final sessionB = runtime.lifecycle.createSession(
+          taskId: taskB.id,
+          strategyId: strategyId,
+        );
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalTap(tester, find.text(taskB.title));
+        await _terminalTap(tester, _sessionRow(sessionB.id));
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isNotEmpty,
+          'Environment B workspace',
+        );
+        expect(find.byType(CodeForge), findsNothing);
+        final openedB = await show(_sourcePath);
+        expect(openedB['ok'], isTrue, reason: '$openedB');
+        expect(openedB['id'], isNot(repeated['id']));
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+          'independent same-path Environment B document',
+        );
+        final ownerB = _sourceOwner(tester, _sourcePath);
+        expect(ownerB, isNot(same(ownerA)));
+        expect(ownerB.snapshot()['text'], textB);
+        await _sourceKey(
+          tester,
+          ownerB,
+          LogicalKeyboardKey.home,
+          control: true,
+        );
+        await _sourceKey(tester, ownerB, LogicalKeyboardKey.delete);
+        expect(ownerB.snapshot()['text'], textB.substring(1));
+        expect(ownerA.snapshot()['text'], _taskText.substring(1));
+
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+          'Browser before returning to A',
+        );
+        await _terminalTap(tester, find.text(taskA.title));
+        await _terminalTap(tester, _sessionRow(sessionA.id));
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 2,
+          'Environment A documents after visiting B',
+        );
+        retainedA();
+        await _sourceKey(
+          tester,
+          ownerSecond,
+          LogicalKeyboardKey.keyZ,
+          control: true,
+        );
+        expect(ownerSecond.snapshot()['text'], secondText);
+        await _sourceKey(
+          tester,
+          ownerSecond,
+          LogicalKeyboardKey.keyY,
+          control: true,
+        );
+        retainedA();
+        await _sourceAction(tester, _sourcePath, 'Save');
+        await _terminalUntil(
+          tester,
+          () async =>
+              await File('${worktreeA.path}/$_sourcePath').readAsString() ==
+              _taskText.substring(1),
+          'Save updates original Environment A worktree',
+        );
+        expect(
+          await File('${fixture.source.path}/$_sourcePath').readAsString(),
+          _taskText,
+        );
+        expect(
+          await File('${worktreeB.path}/$_sourcePath').readAsString(),
+          textB,
+        );
+        expect(
+          await File('${worktreeA.path}/$secondPath').readAsString(),
+          secondText,
+        );
+        expect(ownerB.snapshot()['text'], textB.substring(1));
+
+        // A fresh local edit keeps the previous opaque provider revision. An
+        // external writer wins; Save must not silently overwrite or retry it.
+        await _sourceKey(
+          tester,
+          ownerA,
+          LogicalKeyboardKey.home,
+          control: true,
+        );
+        await _sourceKey(tester, ownerA, LogicalKeyboardKey.delete);
+        const external = 'const taskAnswer = "external writer wins";\n';
+        await File('${worktreeA.path}/$_sourcePath').writeAsString(external);
+        await _sourceAction(tester, _sourcePath, 'Save');
+        await _terminalUntil(
+          tester,
+          () => find.text('Save conflict').evaluate().isNotEmpty,
+          'stale revision conflict',
+        );
+        expect(find.textContaining('revision_conflict:'), findsOneWidget);
+        expect(ownerA.snapshot()['text'], _taskText.substring(2));
+        expect(
+          await File('${worktreeA.path}/$_sourcePath').readAsString(),
+          external,
+        );
+        expect(
+          await File('${worktreeB.path}/$_sourcePath').readAsString(),
+          textB,
+        );
+        expect(await _git(fixture.source, ['diff', '--binary', 'HEAD']), '');
+
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Cancel'));
+        expect(_sourceOwner(tester, _sourcePath), same(ownerA));
+        expect(ownerA.isDisposed, isFalse);
+        expect(ownerA.snapshot()['text'], _taskText.substring(2));
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Discard'));
+        await _terminalUntil(
+          tester,
+          () => ownerA.isDisposed,
+          'Discard releases only the closed Source owner',
+        );
+        expect(ownerSecond.isDisposed, isFalse);
+        expect(ownerB.isDisposed, isFalse);
+        expect(
+          await File('${worktreeA.path}/$_sourcePath').readAsString(),
+          external,
+        );
+        await _sourceAction(tester, secondPath, 'Close');
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Discard'));
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().isEmpty,
+          'all Environment A panes closed',
+        );
+        expect(ownerSecond.isDisposed, isTrue);
+        expect(
+          find.widgetWithText(TextButton, 'Open Source...'),
+          findsOneWidget,
+        );
+        await _openSourceInput(tester, _sourcePath);
+        final reopened = _sourceOwner(tester, _sourcePath);
+        expect(reopened, isNot(same(ownerA)));
+        expect(reopened.snapshot()['text'], external);
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalUntil(
+          tester,
+          () => reopened.isDisposed,
+          'clean close after explicit reopen',
+        );
+        expect(find.byType(AlertDialog), findsNothing);
+
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+          'Browser before closing B',
+        );
+        await _terminalTap(tester, find.text(taskB.title));
+        await _terminalTap(tester, _sessionRow(sessionB.id));
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+          'retained B document',
+        );
+        expect(_sourceOwner(tester, _sourcePath), same(ownerB));
+        expect(ownerB.snapshot()['text'], textB.substring(1));
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Discard'));
+        await _terminalUntil(
+          tester,
+          () => ownerB.isDisposed,
+          'B discarded independently',
+        );
+        // No document or pane runtime remains in either Environment. The
+        // contribution action must still be able to create a fresh document.
+        expect(find.byType(CodeForge), findsNothing);
+        await _openSourceInput(tester, _sourcePath);
+        final freshB = _sourceOwner(tester, _sourcePath);
+        expect(freshB, isNot(same(ownerB)));
+        expect(freshB.snapshot()['text'], textB);
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalUntil(
+          tester,
+          () => freshB.isDisposed,
+          'fresh document closes after all-closed action reuse',
+        );
+        for (final session in [sessionA, siblingA, sessionB]) {
+          expect(runtime.store.runsForSession(session.id), isEmpty);
+          expect(
+            runtime.lifecycle.runActivitiesForSession(session.id),
+            isEmpty,
+          );
+        }
+        expect(fixture.runIds.values, isEmpty);
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+      } finally {
+        // Failed assertions must not leave an unsaved-document dialog blocking
+        // the fixture's ordinary teardown. Forced disposal also drains backends.
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+  );
+
+  testWidgets(
+    'normal Source Editor exit Cancel retains hidden documents and the active Run',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1800, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final release = Completer<void>();
+      final outbound = <Map<String, Object?>>[];
+      final errors = <(Object, StackTrace)>[];
+      const prompt =
+          'Keep this Run alive while a hidden Source Document cancels exit.';
+      const answer = 'The original Run survived the cancelled exit.';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          expect(body['input'], [_userInput(prompt)]);
+          await release.future;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _output(request.response, _message('source-exit-answer', answer));
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {'id': 'source-exit-run', 'model': 'gpt-6-astra'},
+          });
+        } on Object catch (error, stack) {
+          errors.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+      final runtime = fixture.runtime;
+      try {
+        await fixture.launch(tester, prepared, endpoint: server);
+        await fixture.openTask(tester);
+        final environmentA = fixture.shell(tester).environment!;
+        final worktreeA = Directory(
+          developmentGitWorktreePath(
+            fixture.shell(tester).project!,
+            environmentA,
+          ),
+        );
+        await _tap(tester, 'New Chat Session');
+        await _send(tester, prompt);
+        await _terminalUntil(
+          tester,
+          () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
+          'gated local Run before Source editing',
+        );
+        final session = _session(tester);
+        final runId = fixture.runIds.values.single;
+        final connection = runtime.plugins.backends
+            .singleWhere(
+              (backend) =>
+                  backend.installation.metadata.id.value == _chatPluginId,
+            )
+            .connection!;
+        final chat = _chatClient(connection);
+        final opened = await DisplaySourceFileResolver(runtime.extensions)
+            .display(
+              _sourcePath,
+              select: ExtensionId('$_sourceEditorPluginId.main-content'),
+            );
+        expect(opened['ok'], isTrue, reason: '$opened');
+        await _terminalUntil(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+          'Source beside running Chat',
+        );
+        final owner = _sourceOwner(tester, _sourcePath);
+        final native = _sourceNative(tester, _sourcePath);
+        await _sourceKey(tester, owner, LogicalKeyboardKey.home, control: true);
+        await _sourceKey(tester, owner, LogicalKeyboardKey.delete);
+        expect(owner.snapshot()['text'], _taskText.substring(1));
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+          'Browser hides dirty Source and advancing Chat',
+        );
+        expect(find.byType(CodeForge), findsNothing);
+        expect(find.byType(RunExecutionStatus), findsNothing);
+        expect(owner.isDisposed, isFalse);
+
+        final exiting = tester.binding.handleRequestAppExit();
+        await _terminalUntil(
+          tester,
+          () => find.byType(AlertDialog).evaluate().isNotEmpty,
+          'exit inspects hidden unsaved Source',
+        );
+        expect(
+          find.textContaining('1 Source Document(s) and exit?'),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.textContaining(_sourcePath),
+          ),
+          findsOneWidget,
+        );
+        expect(connection.isClosed, isFalse);
+        expect(runtime.store.runRecord(runId), isNull);
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Cancel'));
+        expect(
+          await exiting.timeout(const Duration(seconds: 15)),
+          AppExitResponse.cancel,
+        );
+        expect(runtime.plugins.state, ApplicationPluginState.ready);
+        expect(connection.isClosed, isFalse);
+        expect(owner.isDisposed, isFalse);
+        expect(owner.snapshot()['text'], _taskText.substring(1));
+        expect(runtime.store.session(session.id), same(session));
+        expect(runtime.store.runRecord(runId), isNull);
+        expect(
+          (await chat.snapshot(session.id.value)).entries.single.runId,
+          runId.value,
+        );
+        expect(outbound, hasLength(1));
+        expect(fixture.runIds.values, [runId]);
+        expect(fixture.shell(tester).sessionPresented, isFalse);
+
+        await _terminalTap(tester, _sessionRow(session.id));
+        await _terminalUntil(
+          tester,
+          () =>
+              find.byType(CodeForge).evaluate().length == 1 &&
+              _composer().evaluate().isNotEmpty,
+          'usable app returns to original owners after cancelled exit',
+        );
+        expect(_session(tester), same(session));
+        expect(_sourceOwner(tester, _sourcePath), same(owner));
+        expect(
+          _sourceNative(tester, _sourcePath).controller,
+          same(native.controller),
+        );
+        expect(
+          _sourceNative(tester, _sourcePath).undoController,
+          same(native.undoController),
+        );
+        expect(fixture.status(tester).isAdvancing, isTrue);
+        await _sourceKey(tester, owner, LogicalKeyboardKey.keyZ, control: true);
+        expect(owner.snapshot()['text'], _taskText);
+        await _sourceKey(tester, owner, LogicalKeyboardKey.keyY, control: true);
+        expect(owner.snapshot()['text'], _taskText.substring(1));
+        release.complete();
+        await _terminalUntil(
+          tester,
+          () =>
+              find.text(answer).evaluate().isNotEmpty &&
+              !fixture.status(tester).isAdvancing,
+          'same accepted Run completes after cancelled exit',
+        );
+        _rethrowEndpointFailure(errors);
+        expect(
+          runtime.store.runRecord(runId)!.state,
+          RunTerminalState.completed,
+        );
+        expect(fixture.runIds.values, [runId]);
+        expect(outbound, hasLength(1));
+        const draft = 'Chat remains editable after cancelling exit.';
+        await tester.enterText(_composer(), draft);
+        await _terminalUntil(
+          tester,
+          () async =>
+              (await chat.snapshot(session.id.value)).draftRequest == draft,
+          'Chat draft service remains usable',
+        );
+        await _sourceAction(tester, _sourcePath, 'Save');
+        await _terminalUntil(
+          tester,
+          () async =>
+              await File('${worktreeA.path}/$_sourcePath').readAsString() ==
+              _taskText.substring(1),
+          'Source Save remains usable after cancelling exit',
+        );
+        expect(
+          await File('${fixture.source.path}/$_sourcePath').readAsString(),
+          _taskText,
+        );
+        await _sourceAction(tester, _sourcePath, 'Close');
+        await _terminalUntil(
+          tester,
+          () => owner.isDisposed,
+          'saved Source closes without confirmation',
+        );
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+        expect(connection.isClosed, isTrue);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+  );
 
   for (final cleanupFailure in [false, true]) {
     testWidgets(
@@ -239,6 +867,7 @@ void main() {
                 .map((entry) => entry.id),
             unorderedEquals([
               ExtensionId('$_chatPluginId.presentation'),
+              ExtensionId('$_sourceEditorPluginId.main-content'),
               mainContentFixtureDescriptor.extensionId,
             ]),
           );
@@ -2748,7 +3377,7 @@ void main() {
         final runtime = fixture.runtime;
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
-        expect(catalog.installations, hasLength(9));
+        expect(catalog.installations, hasLength(10));
         expect(
           catalog.installations.where(
             (entry) => entry.backendArtifactUri != null,
@@ -2757,7 +3386,7 @@ void main() {
         );
         expect(
           catalog.installations.where((entry) => entry.frontend != null),
-          hasLength(6),
+          hasLength(7),
         );
         expect(runtime.plugins.backends, hasLength(8));
         for (final backend in runtime.plugins.backends) {
@@ -2787,7 +3416,9 @@ void main() {
         expect(strategy.value.strategyId, chatStrategyId);
         final presentation = runtime.extensions
             .discover(mainContentContributions)
-            .single;
+            .singleWhere(
+              (entry) => entry.id.value == '$_chatPluginId.presentation',
+            );
         expect(presentation.id.value, '$_chatPluginId.presentation');
         // Pin the generated client to this installed backend, never capability
         // default routing or in-process state substituted by the test.
@@ -3874,7 +4505,7 @@ void main() {
           await fixture.launch(tester, prepared, root: root);
           final runtime = fixture.runtime;
           final catalog = runtime.plugins.catalog!;
-          expect(catalog.installations, hasLength(9));
+          expect(catalog.installations, hasLength(10));
           expect(catalog.issues, hasLength(corruption == 'missing' ? 1 : 0));
           expect(runtime.plugins.state, ApplicationPluginState.ready);
           expect(runtime.plugins.failure, isNull);
@@ -3927,7 +4558,7 @@ void main() {
             );
             expect(
               runtime.extensions.discover(mainContentContributions),
-              hasLength(1),
+              hasLength(2),
             );
             final backends = runtime.plugins.backends.where(
               (entry) => entry.installation.metadata.id.value == _chatPluginId,
@@ -3984,7 +4615,7 @@ void main() {
             // corruption leave no Chat registration, without a native fallback.
             expect(
               runtime.extensions.discover(mainContentContributions),
-              isEmpty,
+              hasLength(1),
             );
             expect(
               find.text('No Main Content is available for this Session.'),
@@ -4057,6 +4688,11 @@ void main() {
           final hasEditors =
               availability ==
               'Chat frontend absent with backend and editor contribution';
+          if (availability == 'no Main Content contributions') {
+            await Directory(
+              '${root.path}/$_sourceEditorPluginId',
+            ).delete(recursive: true);
+          }
           await File(
             '${root.path}/$_chatPluginId/${backendUnavailable ? 'backend.aot' : 'frontend.evc'}',
           ).delete();
@@ -4136,7 +4772,7 @@ void main() {
             expect(resources.editor(restored.id, 'editor-a'), isNotNull);
             expect(
               fresh.extensions.discover(mainContentContributions),
-              hasLength(1),
+              hasLength(2),
             );
           } else if (backendUnavailable) {
             await _pumpUntil(
@@ -4145,7 +4781,7 @@ void main() {
             );
             expect(
               fresh.extensions.discover(mainContentContributions),
-              hasLength(1),
+              hasLength(2),
             );
           } else {
             expect(
@@ -4414,7 +5050,11 @@ final class _PreparedProduct {
       _localDirectoryProjectPluginId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
     };
-    for (final id in [...entrypoints.keys, _taskBrowserPluginId]) {
+    for (final id in [
+      ...entrypoints.keys,
+      _taskBrowserPluginId,
+      _sourceEditorPluginId,
+    ]) {
       final installed = await Directory('${root.path}/$id').create();
       await File(
         '${installed.path}/adele_plugin.installation.json',
@@ -4442,6 +5082,9 @@ final class _PreparedProduct {
     );
     await File('${root.path}/$_taskBrowserPluginId/frontend.evc').writeAsBytes(
       await compileTaskBrowserFrontend(repositoryRoot: repository),
+    );
+    await File('${root.path}/$_sourceEditorPluginId/frontend.evc').writeAsBytes(
+      await compileSourceEditorFrontend(repositoryRoot: repository),
     );
     await File(
       '${root.path}/$_localDirectoryProjectPluginId/frontend.evc',
@@ -4611,6 +5254,7 @@ final class _ProductFixture {
     NativeAdeleRuntime? usingRuntime,
     RunIdSource? usingRunIds,
     PreparedMainContentHost? mainContentHost,
+    bool configureModel = true,
     Map<String, List<String>> startupArguments = const {},
   }) async {
     final runtime = usingRuntime ?? this.runtime;
@@ -4659,8 +5303,9 @@ final class _ProductFixture {
     await tester.pumpWidget(
       AdeleApplication(
         createRuntime: () => runtime,
-        readChatGptConfiguration: () =>
-            const StockChatGptConfiguration(model: 'gpt-6-astra'),
+        readChatGptConfiguration: () => configureModel
+            ? const StockChatGptConfiguration(model: 'gpt-6-astra')
+            : null,
         runIds: usingRunIds ?? runIds,
         mainContentHost: mainContentHost,
         bootstrapPlugins: (_) => starting = prepared.start(
@@ -4676,6 +5321,9 @@ final class _ProductFixture {
       await tester.pumpWidget(const SizedBox.shrink());
     });
     await starting;
+    final hasSource = runtime.plugins.catalog!.installations.any(
+      (entry) => entry.metadata.id.value == _sourceEditorPluginId,
+    );
     await _pumpUntil(
       tester,
       () =>
@@ -4690,7 +5338,11 @@ final class _ProductFixture {
           runtime.extensions
                   .discover(modelNativeActivityPresentationContributions)
                   .length ==
-              1,
+              1 &&
+          (!hasSource ||
+              runtime.extensions
+                  .discover(displaySourceFileContributions)
+                  .isNotEmpty),
     );
     expect(picker.calls, 0);
     if (usingRunIds == null) expect(runIds.values, isEmpty);
@@ -5027,6 +5679,97 @@ Future<void> _tap(WidgetTester tester, String label) async {
 
 Session _session(WidgetTester tester) =>
     tester.widget<MainContentHost>(find.byType(MainContentHost)).session;
+
+Finder _sourcePane(String path) => find.ancestor(
+  of: find.text(path),
+  matching: find.byWidgetPredicate(
+    (widget) => widget is $StatefulWidget$bridge,
+  ),
+);
+
+CodeForge _sourceNative(WidgetTester tester, String path) =>
+    tester.widget<CodeForge>(
+      find.descendant(of: _sourcePane(path), matching: find.byType(CodeForge)),
+    );
+
+NativeCodeEditor _sourceOwner(WidgetTester tester, String path) {
+  NativeCodeEditor? owner;
+  tester
+      .element(
+        find.descendant(
+          of: _sourcePane(path),
+          matching: find.byType(CodeForge),
+        ),
+      )
+      .visitAncestorElements((element) {
+        if (element.widget.key case ObjectKey(
+          value: final NativeCodeEditor editor,
+        )) {
+          owner = editor;
+          return false;
+        }
+        return true;
+      });
+  expect(
+    owner,
+    isNotNull,
+    reason: 'Source pane must use the native editor owner.',
+  );
+  return owner!;
+}
+
+Future<void> _sourceAction(WidgetTester tester, String path, String label) =>
+    _terminalTap(
+      tester,
+      find.descendant(
+        of: _sourcePane(path),
+        matching: find.widgetWithText(TextButton, label),
+      ),
+    );
+
+Future<void> _sourceKey(
+  WidgetTester tester,
+  NativeCodeEditor owner,
+  LogicalKeyboardKey key, {
+  bool control = false,
+}) async {
+  expect(owner.requestFocus(), isTrue);
+  await tester.pump();
+  if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+  await tester.sendKeyEvent(key);
+  if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+  await tester.pump();
+}
+
+Future<void> _openSourceInput(WidgetTester tester, String path) async {
+  await _terminalTap(tester, find.widgetWithText(TextButton, 'Open Source...'));
+  final dialog = find.byType(Dialog);
+  await tester.enterText(
+    find.descendant(of: dialog, matching: find.byType(TextField)),
+    path,
+  );
+  await _terminalTap(
+    tester,
+    find.descendant(
+      of: dialog,
+      matching: find.widgetWithText(TextButton, 'Open'),
+    ),
+  );
+  await _terminalUntil(
+    tester,
+    () => find.text('Source Document opened.').evaluate().isNotEmpty,
+    'prepared Open Source action completion',
+  );
+  await _terminalTap(tester, find.byTooltip('Close input'));
+  await _terminalUntil(
+    tester,
+    () => find
+        .descendant(of: _sourcePane(path), matching: find.byType(CodeForge))
+        .evaluate()
+        .isNotEmpty,
+    'native Source editor for $path',
+  );
+}
 
 Finder _composer() =>
     find.descendant(of: _chatView(), matching: find.byType(TextField));

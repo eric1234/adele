@@ -47,6 +47,7 @@ workspace:
   - plugins/local_directory_project/packages/frontend
   - plugins/task_browser/packages/frontend
   - plugins/terminal/packages/frontend
+  - plugins/source_editor/packages/frontend
   - plugins/git_environment
 
 dependency_overrides:

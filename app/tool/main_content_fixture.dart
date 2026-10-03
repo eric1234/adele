@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
 import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
@@ -60,10 +61,16 @@ Future<void> installMainContentFixture({
 /// Native resource policy shared by tests and the manual development route.
 /// Collection operations belong exclusively to the interpreted frontend.
 final class MainContentFixtureResources {
+  MainContentFixtureResources({this.environmentRuntime, this.confirmDiscard});
+
+  final EnvironmentRuntime? environmentRuntime;
+  final Future<bool> Function(String message)? confirmDiscard;
   final Map<(SessionId, String), NativeCodeEditor> _editors = {};
   bool _disposed = false;
 
   late final PreparedMainContentHost host = PreparedMainContentHost(
+    environmentRuntime: environmentRuntime,
+    confirmDiscard: confirmDiscard,
     createBinding:
         ({
           required installation,

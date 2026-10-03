@@ -54,6 +54,8 @@ const String _localDirectoryProjectFrontendHarness =
 const String _taskBrowserFrontendHarness =
     'tool/compile_task_browser_frontend.dart';
 const String _terminalFrontendHarness = 'tool/compile_terminal_frontend.dart';
+const String _sourceEditorFrontendHarness =
+    'tool/compile_source_editor_frontend.dart';
 
 void main() {
   late Directory root;
@@ -107,6 +109,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_terminalFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_sourceEditorFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _codegenEntrypoint,
@@ -219,6 +224,10 @@ elif [ "\$1" = test ]; then
     kind=terminal
     output="\$ADELE_TERMINAL_FRONTEND_OUTPUT"
     label='$_terminalFrontendHarness'
+  elif [ "\$5" = '$_sourceEditorFrontendHarness' ]; then
+    kind=source-editor
+    output="\$ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT"
+    label='$_sourceEditorFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -392,6 +401,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'local_directory_project_frontend',
           'task_browser_frontend',
           'terminal_frontend',
+          'source_editor_frontend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -784,7 +794,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare frontend-only browser and Terminal installations',
+    'Linux run and builds prepare frontend-only browser, Terminal and Source installations',
     () async {
       for (final path in [
         _localDirectoryProjectEntrypoint,
@@ -798,6 +808,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'app/$_terminalFrontendHarness',
         'app/tool/terminal_frontend_compiler.dart',
         'plugins/terminal/packages/frontend/lib/terminal_frontend.dart',
+        'app/$_sourceEditorFrontendHarness',
+        'app/tool/source_editor_frontend_compiler.dart',
+        'plugins/source_editor/packages/frontend/lib/main.dart',
       ]) {
         expect(File(path).existsSync(), isTrue, reason: path);
       }
@@ -808,6 +821,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
       environment['ADELE_TASK_BROWSER_FRONTEND_OUTPUT'] = '/wrong-task-browser';
       environment['ADELE_TERMINAL_FRONTEND_OUTPUT'] = '/wrong-terminal';
+      environment['ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT'] =
+          '/wrong-source-editor';
       environment['ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT'] =
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
@@ -857,6 +872,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_taskBrowserFrontendHarness',
           'compile|$_terminalFrontendHarness',
           'compiled|$_terminalFrontendHarness',
+          'compile|$_sourceEditorFrontendHarness',
+          'compiled|$_sourceEditorFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -977,6 +994,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'local-directory-project',
             'task-browser',
             'terminal',
+            'source-editor',
           ]),
         );
         final installedIds = <String>{};
@@ -1041,6 +1059,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             name: 'Terminal',
             backend: false,
           ),
+          (
+            directory: 'source-editor',
+            id: 'dev.adele.source-editor',
+            name: 'Source',
+            backend: false,
+          ),
         ]) {
           final directory = Directory.fromUri(
             installations.uri.resolve('${plugin.directory}/'),
@@ -1095,7 +1119,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(10));
+        expect(installedIds, hasLength(11));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -1116,7 +1140,52 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(7),
+          hasLength(8),
+        );
+        final source = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value == 'dev.adele.source-editor',
+        );
+        expect(source.backendArtifactUri, isNull);
+        expect(source.frontend!.extensions, isEmpty);
+        expect(
+          source.frontend!.artifactUri,
+          installations.uri.resolve('source-editor/frontend.evc'),
+        );
+        final sourceDescriptor =
+            source.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(
+          sourceDescriptor.extensionId.value,
+          'dev.adele.source-editor.main-content',
+        );
+        expect(
+          sourceDescriptor.library,
+          'package:source_editor_frontend/main.dart',
+        );
+        expect(sourceDescriptor.initialize, 'initializeSource');
+        expect(sourceDescriptor.entrypoint, 'sourcePane');
+        expect(sourceDescriptor.order, 300);
+        expect(sourceDescriptor.actions.single.id, 'open');
+        expect(sourceDescriptor.actions.single.label, 'Open Source...');
+        expect(sourceDescriptor.actions.single.entrypoint, 'openSourceInput');
+        expect(sourceDescriptor.operations, {
+          'display': 'displaySource',
+          'save': 'saveSource',
+          'close': 'closeSource',
+          'exit': 'closeSources',
+        });
+        expect(sourceDescriptor.closeOperation, 'close');
+        expect(sourceDescriptor.exitOperation, 'exit');
+        expect(sourceDescriptor.displaySourceFileOperation, 'display');
+        expect(sourceDescriptor.retainedData, isTrue);
+        expect(sourceDescriptor.nativeCodeEditor, isTrue);
+        expect(sourceDescriptor.environmentTextFiles, isTrue);
+        expect(sourceDescriptor.backendServices, isEmpty);
+        expect(sourceDescriptor.sessionExecution, isFalse);
+        expect(
+          sourceDescriptor.strategyAffinity,
+          PreparedStrategyAffinity.independent,
         );
         final terminal = catalog.installations.singleWhere(
           (installation) =>
@@ -1287,7 +1356,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(10));
+        expect(catalog.installations, hasLength(11));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -1312,7 +1381,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(missing == PreparedPluginComponent.frontend ? 6 : 7),
+          hasLength(missing == PreparedPluginComponent.frontend ? 7 : 8),
         );
       },
     );
@@ -1329,7 +1398,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(10));
+    expect(catalog.installations, hasLength(11));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -1342,7 +1411,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       catalog.installations.where(
         (installation) => installation.frontend != null,
       ),
-      hasLength(6),
+      hasLength(7),
     );
   });
 
@@ -1415,7 +1484,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(10));
+        expect(manifests, hasLength(11));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -1542,16 +1611,18 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     }
   }
 
+  const frontendCompilations = {
+    'chat': _frontendHarness,
+    'filesystem': '$_toolFrontendHarness|filesystem',
+    'command': '$_toolFrontendHarness|command',
+    'openai': _openaiFrontendHarness,
+    'local-directory-project': _localDirectoryProjectFrontendHarness,
+    'task-browser': _taskBrowserFrontendHarness,
+    'terminal': _terminalFrontendHarness,
+    'source-editor': _sourceEditorFrontendHarness,
+  };
   for (final String command in <String>['run', 'build']) {
-    for (final String kind in [
-      'chat',
-      'filesystem',
-      'command',
-      'openai',
-      'local-directory-project',
-      'task-browser',
-      'terminal',
-    ]) {
+    for (final kind in frontendCompilations.keys) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
           '$command never launches after $kind frontend $failure failure',
@@ -1601,55 +1672,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compile|$_localDirectoryProjectEntrypoint',
               'compiled|$_localDirectoryProjectEntrypoint',
               'compile|git-pty-helper',
-              'compile|$_frontendHarness',
-              if (kind != 'chat' || failure != 'exit')
-                'compiled|$_frontendHarness',
-              if (kind != 'chat') 'compile|$_toolFrontendHarness|filesystem',
-              if (kind == 'command' ||
-                  kind == 'openai' ||
-                  kind == 'local-directory-project' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal' ||
-                  (kind == 'filesystem' && failure != 'exit'))
-                'compiled|$_toolFrontendHarness|filesystem',
-              if (kind == 'command' ||
-                  kind == 'openai' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal' ||
-                  kind == 'local-directory-project')
-                'compile|$_toolFrontendHarness|command',
-              if (kind == 'openai' ||
-                  kind == 'local-directory-project' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal' ||
-                  (kind == 'command' && failure != 'exit'))
-                'compiled|$_toolFrontendHarness|command',
-              if (kind == 'openai' ||
-                  kind == 'local-directory-project' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal')
-                'compile|$_openaiFrontendHarness',
-              if (kind == 'local-directory-project' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal' ||
-                  (kind == 'openai' && failure != 'exit'))
-                'compiled|$_openaiFrontendHarness',
-              if (kind == 'local-directory-project' ||
-                  kind == 'task-browser' ||
-                  kind == 'terminal')
-                'compile|$_localDirectoryProjectFrontendHarness',
-              if (kind == 'task-browser' ||
-                  kind == 'terminal' ||
-                  (kind == 'local-directory-project' && failure != 'exit'))
-                'compiled|$_localDirectoryProjectFrontendHarness',
-              if (kind == 'task-browser' || kind == 'terminal')
-                'compile|$_taskBrowserFrontendHarness',
-              if (kind == 'terminal' ||
-                  (kind == 'task-browser' && failure != 'exit'))
-                'compiled|$_taskBrowserFrontendHarness',
-              if (kind == 'terminal') 'compile|$_terminalFrontendHarness',
-              if (kind == 'terminal' && failure != 'exit')
-                'compiled|$_terminalFrontendHarness',
+              for (final frontend in frontendCompilations.entries.take(
+                frontendCompilations.keys.toList().indexOf(kind) + 1,
+              )) ...[
+                'compile|${frontend.value}',
+                if (frontend.key != kind || failure != 'exit')
+                  'compiled|${frontend.value}',
+              ],
             ]);
             expect(launchArguments.existsSync(), isFalse);
             expectNoPublishedInstallations();

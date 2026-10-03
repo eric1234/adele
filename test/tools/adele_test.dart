@@ -610,6 +610,99 @@ void main() {
       );
     });
 
+    test(
+      'discovers frontend-only Source with explicit opt-in Main Content',
+      () {
+        const path = 'plugins/source_editor/packages/frontend';
+        final target = lookupTestTarget('source_editor_frontend');
+        expect(target.path, path);
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: true), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.ciTestConcurrency, isNull);
+        final analysis = analysisTargets.singleWhere(
+          (entry) => entry.name == target.name,
+        );
+        expect(analysis.path, path);
+        expect(analysis.flutter, isTrue);
+        expect(
+          File('pubspec.yaml').readAsStringSync(),
+          contains('  - $path\n'),
+        );
+        expect(
+          Directory('plugins/source_editor/packages/backend').existsSync(),
+          isFalse,
+        );
+        expect(
+          File('plugins/source_editor/pubspec.yaml').existsSync(),
+          isFalse,
+        );
+        final manifest =
+            loadYaml(File('$path/pubspec.yaml').readAsStringSync()) as YamlMap;
+        expect(manifest['name'], 'source_editor_frontend');
+        expect(manifest['resolution'], 'workspace');
+        expect(manifest['dependencies'], {
+          'adele_ui': '^0.1.0',
+          'flutter': {'sdk': 'flutter'},
+        });
+        expect(stockFrontendDescriptors['dev.adele.source-editor'], [
+          {
+            'role': 'mainContent',
+            'extensionId': 'dev.adele.source-editor.main-content',
+            'library': 'package:source_editor_frontend/main.dart',
+            'initialize': 'initializeSource',
+            'entrypoint': 'sourcePane',
+            'order': 300,
+            'actions': [
+              {
+                'id': 'open',
+                'label': 'Open Source...',
+                'entrypoint': 'openSourceInput',
+              },
+            ],
+            'operations': {
+              'display': 'displaySource',
+              'save': 'saveSource',
+              'close': 'closeSource',
+              'exit': 'closeSources',
+            },
+            'closeOperation': 'close',
+            'exitOperation': 'exit',
+            'displaySourceFileOperation': 'display',
+            'retainedData': true,
+            'nativeCodeEditor': true,
+            'environmentTextFiles': true,
+          },
+        ]);
+        expect(
+          stockFrontendExtensionDescriptors['dev.adele.source-editor'],
+          isNull,
+        );
+        final compiler = File(
+          'app/tool/source_editor_frontend_compiler.dart',
+        ).readAsStringSync();
+        for (final declaration in [
+          'MainContentDeclarations',
+          'CodeEditorDeclarations',
+          'ContributionDeclarations',
+        ]) {
+          expect(compiler, contains('..addPlugin(const $declaration())'));
+        }
+        for (final stub in [
+          'main_content_bridge.dart',
+          'code_editor_bridge.dart',
+          'contribution_bridge.dart',
+        ]) {
+          expect(compiler, contains("'$stub'"));
+        }
+        expect(
+          compiler,
+          contains('plugins/source_editor/packages/frontend/lib'),
+        );
+        expect(compiler, isNot(contains('package:code_forge/')));
+      },
+    );
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -649,6 +742,10 @@ void main() {
             name: 'terminal_frontend',
             path: 'plugins/terminal/packages/frontend',
           ),
+          (
+            name: 'source_editor_frontend',
+            path: 'plugins/source_editor/packages/frontend',
+          ),
         ]) {
       final target = analysisTargets.singleWhere(
         (package) => package.name == expected.name,
@@ -675,7 +772,7 @@ void main() {
   test(
     'stock descriptors name existing frontend libraries and entrypoints',
     () {
-      expect(stockFrontendDescriptors, hasLength(6));
+      expect(stockFrontendDescriptors, hasLength(7));
       expect(stockFrontendExtensionDescriptors, hasLength(1));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
@@ -713,6 +810,7 @@ void main() {
           ).readAsStringSync();
           for (final field in [
             'entrypoint',
+            'initialize',
             'inspectionEntrypoint',
             'compactEntrypoint',
           ]) {
@@ -723,6 +821,8 @@ void main() {
                   RegExp(
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
+                            : field == 'initialize'
+                            ? r'\b(?:void|Future<void>)\s+'
                             : r'\b(?:Widget|Future<Widget>)\s+') +
                         RegExp.escape(entrypoint) +
                         r'\s*\(',
@@ -739,7 +839,25 @@ void main() {
                 source,
                 matches(
                   RegExp(
-                    r'\bFuture<List<dynamic>>\s+' +
+                    (descriptor['role'] == 'mainContent'
+                            ? r'\b(?:Widget|Future<Widget>)\s+'
+                            : r'\bFuture<List<dynamic>>\s+') +
+                        RegExp.escape(entrypoint) +
+                        r'\s*\(',
+                  ),
+                ),
+                reason: '${descriptor['library']}::$entrypoint',
+              );
+            }
+          }
+          if (descriptor['operations']
+              case final Map<String, Object?> operations) {
+            for (final entrypoint in operations.values.cast<String>()) {
+              expect(
+                source,
+                matches(
+                  RegExp(
+                    r'\bFuture<Map<String,\s*dynamic>>\s+' +
                         RegExp.escape(entrypoint) +
                         r'\s*\(',
                   ),
@@ -950,6 +1068,7 @@ void main() {
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
         'terminal_frontend|flutter|plugins/terminal/packages/frontend|test',
+        'source_editor_frontend|dart|plugins/source_editor/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

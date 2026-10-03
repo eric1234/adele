@@ -1,6 +1,35 @@
 /// Build-time stock presentation metadata, keyed by owning PluginId.
 /// Keep this SDK-only so the launcher and prepared-installation fixtures share it.
 const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
+  'dev.adele.source-editor': [
+    {
+      'role': 'mainContent',
+      'extensionId': 'dev.adele.source-editor.main-content',
+      'library': 'package:source_editor_frontend/main.dart',
+      'initialize': 'initializeSource',
+      'entrypoint': 'sourcePane',
+      'order': 300,
+      'actions': [
+        {
+          'id': 'open',
+          'label': 'Open Source...',
+          'entrypoint': 'openSourceInput',
+        },
+      ],
+      'operations': {
+        'display': 'displaySource',
+        'save': 'saveSource',
+        'close': 'closeSource',
+        'exit': 'closeSources',
+      },
+      'closeOperation': 'close',
+      'exitOperation': 'exit',
+      'displaySourceFileOperation': 'display',
+      'retainedData': true,
+      'nativeCodeEditor': true,
+      'environmentTextFiles': true,
+    },
+  ],
   'dev.adele.plugin.terminal': [
     {
       'role': 'console',

@@ -44,6 +44,11 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
       directory: 'terminal',
       pluginId: 'dev.adele.plugin.terminal',
     ),
+    (
+      name: 'source-editor',
+      directory: 'source-editor',
+      pluginId: 'dev.adele.source-editor',
+    ),
   ]) {
     final File artifact = File.fromUri(
       installationRoot.absolute.uri.resolve(
@@ -56,6 +61,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final bool openai = frontend.name == 'openai';
     final bool taskBrowser = frontend.name == 'task-browser';
     final bool terminal = frontend.name == 'terminal';
+    final bool sourceEditor = frontend.name == 'source-editor';
     final bool localDirectoryProject =
         frontend.name == 'local-directory-project';
     final List<String> arguments = <String>[
@@ -73,6 +79,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_task_browser_frontend.dart'
           : terminal
           ? 'tool/compile_terminal_frontend.dart'
+          : sourceEditor
+          ? 'tool/compile_source_editor_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
     stdout.writeln('==> $stage');
@@ -88,13 +96,16 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           if (openai) 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
           if (taskBrowser) 'ADELE_TASK_BROWSER_FRONTEND_OUTPUT': artifact.path,
           if (terminal) 'ADELE_TERMINAL_FRONTEND_OUTPUT': artifact.path,
+          if (sourceEditor)
+            'ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT': artifact.path,
           if (localDirectoryProject)
             'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
           if (!chat &&
               !openai &&
               !localDirectoryProject &&
               !taskBrowser &&
-              !terminal) ...{
+              !terminal &&
+              !sourceEditor) ...{
             'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
             'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
           },
