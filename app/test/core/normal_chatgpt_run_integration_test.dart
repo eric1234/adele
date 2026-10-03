@@ -13,6 +13,8 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
@@ -21,7 +23,7 @@ import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
-import 'package:adele_desktop/ui/session/session_presentation_host.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -31,6 +33,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
+import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/gestures.dart';
@@ -46,6 +49,8 @@ import '../../../tools/git_pty_artifact.dart';
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
 import '../../tool/local_directory_project_frontend_compiler.dart';
+import '../../tool/main_content_fixture.dart';
+import '../../tool/main_content_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/self_hosting/development_self_hosting.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
@@ -101,6 +106,476 @@ void main() {
       );
     }
   });
+
+  for (final cleanupFailure in [false, true]) {
+    testWidgets(
+      cleanupFailure
+          ? 'normal navigation completes after a contributed pane cleanup failure'
+          : 'normal catalog editor panes preserve the stock Chat draft and active Run',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1800, 1100));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final fixture = await _ProductFixture.create();
+        final root = await prepared.copyInstallations(fixture.directory);
+        await installMainContentFixture(
+          installationRoot: root,
+          artifact: await prepared.mainContentFixture(),
+        );
+        final resources = MainContentFixtureResources();
+        addTearDown(resources.dispose);
+        final cleanupError = StateError('fixture editor A release failed');
+        final cleanupStack = StackTrace.fromString(
+          'fixture editor A release stack',
+        );
+        final released = <String>[];
+        final accesses = <bool Function()>[];
+        var failRelease = false;
+        final mainContentHost = cleanupFailure
+            ? PreparedMainContentHost(
+                createBinding:
+                    ({
+                      required installation,
+                      required descriptor,
+                      required session,
+                      required paneId,
+                    }) {
+                      final binding = resources.host.createBinding!(
+                        installation: installation,
+                        descriptor: descriptor,
+                        session: session,
+                        paneId: paneId,
+                      );
+                      if (binding == null) return null;
+                      return PreparedMainContentPaneBinding(
+                        ready: binding.ready,
+                        requestFocus: binding.requestFocus,
+                        createBridge: (isActive) {
+                          accesses.add(isActive);
+                          return binding.createBridge(isActive);
+                        },
+                        release: () {
+                          released.add(paneId);
+                          binding.release?.call();
+                          if (failRelease && paneId == 'editor-a') {
+                            failRelease = false;
+                            Error.throwWithStackTrace(
+                              cleanupError,
+                              cleanupStack,
+                            );
+                          }
+                        },
+                      );
+                    },
+              )
+            : resources.host;
+        final releaseResponse = Completer<void>();
+        final outbound = <Map<String, Object?>>[];
+        final endpointFailures = <(Object, StackTrace)>[];
+        const draft = '  Retain this exact draft\twhile editor panes change.  ';
+        const answer = 'The original Chat Run completed without replacement.';
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final subscription = server.listen((request) async {
+          try {
+            expect(request.method, 'POST');
+            expect(request.uri.path, '/backend-api/codex/responses');
+            final body =
+                jsonDecode(await utf8.decoder.bind(request).join())
+                    as Map<String, Object?>;
+            outbound.add(body);
+            expect(
+              (body['input']! as List).where((item) => item['role'] == 'user'),
+              [_userInput(draft)],
+            );
+            await releaseResponse.future;
+            request.response.headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            );
+            _output(request.response, _message('main-content-answer', answer));
+            _sse(request.response, {
+              'type': 'response.completed',
+              'response': {'id': 'main-content-run', 'model': 'gpt-6-astra'},
+            });
+          } on Object catch (error, stack) {
+            endpointFailures.add((error, stack));
+          } finally {
+            await request.response.close();
+          }
+        });
+        addTearDown(() async {
+          await server.close(force: true);
+          await subscription.cancel();
+        });
+        try {
+          await fixture.launch(
+            tester,
+            prepared,
+            root: root,
+            endpoint: server,
+            mainContentHost: mainContentHost,
+          );
+          final runtime = fixture.runtime;
+          expect(runtime.plugins.catalog!.issues, isEmpty);
+          final installation = runtime.plugins.catalog!.installations
+              .singleWhere(
+                (entry) =>
+                    entry.metadata.id.value == mainContentFixturePluginId,
+              );
+          expect(installation.backendArtifactUri, isNull);
+          await _terminalUntil(
+            tester,
+            () => runtime.extensions
+                .discover(mainContentContributions)
+                .any(
+                  (entry) =>
+                      entry.id == mainContentFixtureDescriptor.extensionId,
+                ),
+            'synthetic catalog contribution activation',
+          );
+          expect(
+            runtime.extensions
+                .discover(mainContentContributions)
+                .map((entry) => entry.id),
+            unorderedEquals([
+              ExtensionId('$_chatPluginId.presentation'),
+              mainContentFixtureDescriptor.extensionId,
+            ]),
+          );
+          expect(resources.editors, isEmpty);
+          await fixture.openTask(tester);
+          await _terminalTap(tester, find.text('New Chat Session'));
+          await _terminalUntil(
+            tester,
+            () =>
+                _composer().evaluate().isNotEmpty &&
+                find.byType(CodeForge).evaluate().length == 1,
+            'stock Chat and initialized prepared editor A',
+          );
+          final session = _session(tester);
+          final chat = _chatClient(
+            runtime.plugins.backends
+                .singleWhere(
+                  (backend) =>
+                      backend.installation.metadata.id.value == _chatPluginId,
+                )
+                .connection!,
+          );
+          final chatView = _chatView();
+          final chatElement = tester.element(chatView);
+          final chatWidget = tester.widget<$StatefulWidget$bridge>(chatView);
+          final chatState = tester.state(chatView);
+          final chatRuntime = chatWidget.$runtime;
+          final composerController = tester
+              .widget<TextField>(_composer())
+              .controller!;
+          final editorA = resources.editor(session.id, 'editor-a')!;
+          final nativeA = tester.widget<CodeForge>(find.byType(CodeForge));
+          final editorElementA = tester.element(find.byType(CodeForge));
+
+          void retainedChat() {
+            expect(_session(tester), same(session));
+            expect(runtime.store.session(session.id), same(session));
+            expect(tester.element(chatView), same(chatElement));
+            expect(tester.widget(chatView), same(chatWidget));
+            expect(tester.state(chatView), same(chatState));
+            expect(
+              tester.widget<$StatefulWidget$bridge>(chatView).$runtime,
+              same(chatRuntime),
+            );
+            expect(
+              tester.widget<TextField>(_composer()).controller,
+              same(composerController),
+            );
+            expect(resources.editor(session.id, 'editor-a'), same(editorA));
+            expect(editorA.isDisposed, isFalse);
+            final a = find.byWidgetPredicate(
+              (widget) =>
+                  widget is CodeForge &&
+                  identical(widget.controller, nativeA.controller),
+            );
+            expect(tester.element(a), same(editorElementA));
+          }
+
+          Future<void> action(String label) async {
+            await _terminalTap(tester, find.widgetWithText(TextButton, label));
+            retainedChat();
+          }
+
+          Future<void> edit(String label) async {
+            await action(label);
+            await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+            await tester.sendKeyEvent(LogicalKeyboardKey.home);
+            await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+            await tester.pump();
+            // Ordinary native editing, not an interpreted text-mutation backdoor.
+            await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+            await tester.pump();
+          }
+
+          await tester.enterText(_composer(), draft);
+          await _terminalUntil(
+            tester,
+            () async =>
+                (await chat.snapshot(session.id.value)).draftRequest == draft,
+            'exact backend draft save',
+          );
+          await action('Open B');
+          await _terminalUntil(
+            tester,
+            () => find.byType(CodeForge).evaluate().length == 2,
+            'prepared editor B',
+          );
+          final editorB = resources.editor(session.id, 'editor-b')!;
+          expect(editorB, isNot(same(editorA)));
+          final nativeB = tester
+              .widgetList<CodeForge>(find.byType(CodeForge))
+              .singleWhere(
+                (widget) => !identical(widget.controller, nativeA.controller),
+              );
+          final editorElementB = tester.element(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is CodeForge &&
+                  identical(widget.controller, nativeB.controller),
+            ),
+          );
+          await action('Rename B');
+          expect(find.text('Renamed B'), findsOneWidget);
+          await action('Reverse editors');
+          expect(
+            tester.getTopLeft(find.text('Renamed B')).dx,
+            lessThan(tester.getTopLeft(find.text('Editor A')).dx),
+          );
+          await edit('Focus A');
+          expect(editorB.snapshot()['text'], mainContentFixtureTextB);
+          await edit('Focus B');
+          expect(
+            editorA.snapshot()['text'],
+            mainContentFixtureTextA.substring(1),
+          );
+          expect(
+            editorB.snapshot()['text'],
+            mainContentFixtureTextB.substring(1),
+          );
+          expect(
+            tester.element(
+              find.byWidgetPredicate(
+                (widget) =>
+                    widget is CodeForge &&
+                    identical(widget.controller, nativeB.controller),
+              ),
+            ),
+            same(editorElementB),
+          );
+          // Existing B is focused, not replaced or retitled.
+          await action('Open B');
+          expect(resources.editor(session.id, 'editor-b'), same(editorB));
+          expect(find.text('Renamed B'), findsOneWidget);
+          await action('Focus A');
+          await action('Remove B');
+          expect(editorB.isDisposed, isTrue);
+          expect(resources.editor(session.id, 'editor-b'), isNull);
+          retainedChat();
+          expect(composerController.text, draft);
+          expect((await chat.snapshot(session.id.value)).draftRequest, draft);
+          expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+          expect(fixture.runIds.values, isEmpty);
+          expect(outbound, isEmpty);
+
+          await _terminalTap(tester, find.widgetWithText(TextButton, 'Send'));
+          await _terminalUntil(
+            tester,
+            () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
+            'original gated Responses invocation',
+          );
+          final runId = fixture.runIds.values.single;
+          final submitted = await chat.snapshot(session.id.value);
+          expect(submitted.entries.single.content, draft);
+          expect(submitted.entries.single.runId, runId.value);
+          expect(runtime.store.runRecord(runId), isNull);
+          await action('Open B');
+          await _terminalUntil(
+            tester,
+            () => find.byType(CodeForge).evaluate().length == 2,
+            'fresh B during active Run',
+          );
+          final reopenedB = resources.editor(session.id, 'editor-b')!;
+          expect(reopenedB, isNot(same(editorB)));
+          expect(reopenedB.snapshot()['text'], mainContentFixtureTextB);
+          await action('Rename B');
+          await action('Reverse editors');
+          await edit('Focus B');
+          await action('Focus A');
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          expect(editorA.snapshot()['text'], mainContentFixtureTextA);
+          expect(
+            reopenedB.snapshot()['text'],
+            mainContentFixtureTextB.substring(1),
+          );
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.sendKeyEvent(LogicalKeyboardKey.keyY);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await action('Remove B');
+          retainedChat();
+          final stillRunning = await chat.snapshot(session.id.value);
+          expect(stillRunning.entries.single.id, submitted.entries.single.id);
+          expect(stillRunning.entries.single.runId, runId.value);
+          expect(runtime.store.runRecord(runId), isNull);
+          expect(fixture.runIds.values, [runId]);
+          expect(fixture.status(tester).isAdvancing, isTrue);
+          expect(fixture.status(tester).failureMessage, isNull);
+          expect(outbound, hasLength(1));
+          expect(composerController.text, '');
+          expect((await chat.snapshot(session.id.value)).draftRequest, '');
+          expect(
+            editorA.snapshot()['text'],
+            mainContentFixtureTextA.substring(1),
+          );
+
+          if (cleanupFailure) {
+            await action('Open B');
+            await _terminalUntil(
+              tester,
+              () => find.byType(CodeForge).evaluate().length == 2,
+              'second pane before failing departure',
+            );
+            final departingB = resources.editor(session.id, 'editor-b')!;
+            final oldAccesses = accesses.toList();
+            final releasedBefore = released.length;
+            final oldRename = tester
+                .widget<TextButton>(find.widgetWithText(TextButton, 'Rename B'))
+                .onPressed!;
+            final diagnostics = <FlutterErrorDetails>[];
+            final originalOnError = FlutterError.onError;
+            FlutterError.onError = (details) {
+              if (identical(details.exception, cleanupError)) {
+                diagnostics.add(details);
+              } else {
+                originalOnError?.call(details);
+              }
+            };
+            try {
+              failRelease = true;
+              await _terminalTap(
+                tester,
+                find.byKey(const ValueKey('task-breadcrumb')),
+              );
+              await _terminalUntil(
+                tester,
+                () =>
+                    find.byType(MainContentHost).evaluate().isEmpty &&
+                    find.text('New Chat Session').evaluate().isNotEmpty,
+                'usable Task Browser after accepted departure cleanup fails',
+              );
+            } finally {
+              FlutterError.onError = originalOnError;
+            }
+            final shell = tester.widget<AdeleShell>(find.byType(AdeleShell));
+            expect(shell.sessionPresented, isFalse);
+            expect(shell.sessionContent, isNull);
+            expect(shell.inspection, isNull);
+            expect(shell.console, isNull);
+            expect(
+              find.text(
+                'Left the Session, but some presentation resources could not be released.',
+              ),
+              findsOneWidget,
+            );
+            expect(
+              find.textContaining('Save pending changes and try again'),
+              findsNothing,
+            );
+            expect(diagnostics, hasLength(1));
+            expect(diagnostics.single.exception, same(cleanupError));
+            expect(
+              diagnostics.single.stack.toString(),
+              cleanupStack.toString(),
+            );
+            expect(released.sublist(releasedBefore), ['editor-a', 'editor-b']);
+            expect(oldAccesses.every((isActive) => !isActive()), isTrue);
+            expect(editorA.isDisposed, isTrue);
+            expect(departingB.isDisposed, isTrue);
+            expect(resources.editors, isEmpty);
+            expect(runtime.store.session(session.id), same(session));
+            expect(runtime.store.runRecord(runId), isNull);
+            expect(fixture.runIds.values, [runId]);
+            expect(outbound, hasLength(1));
+
+            // A deliberate return obtains fresh views of the original running owner.
+            await _terminalTap(tester, find.text('Open'));
+            await _terminalUntil(
+              tester,
+              () =>
+                  _composer().evaluate().isNotEmpty &&
+                  find.byType(CodeForge).evaluate().length == 1,
+              'fresh Chat and editor access on return',
+            );
+            expect(_session(tester), same(session));
+            expect(tester.state(_chatView()), isNot(same(chatState)));
+            expect(
+              resources.editor(session.id, 'editor-a'),
+              isNot(same(editorA)),
+            );
+            expect(fixture.status(tester).isAdvancing, isTrue);
+            expect(oldAccesses.every((isActive) => !isActive()), isTrue);
+            await _terminalTap(
+              tester,
+              find.widgetWithText(TextButton, 'Open B'),
+            );
+            await _terminalUntil(
+              tester,
+              () => find.byType(CodeForge).evaluate().length == 2,
+              'fresh second editor on return',
+            );
+            expect(oldRename, returnsNormally);
+            expect(find.text('Editor B'), findsOneWidget);
+            expect(find.text('Renamed B'), findsNothing);
+            expect(released.length, releasedBefore + 2);
+            expect(fixture.runIds.values, [runId]);
+            expect(outbound, hasLength(1));
+          }
+
+          releaseResponse.complete();
+          await _terminalUntil(
+            tester,
+            () =>
+                find.text(answer).evaluate().isNotEmpty &&
+                !fixture.status(tester).isAdvancing,
+            'original Chat Run completion',
+          );
+          _rethrowEndpointFailure(endpointFailures);
+          if (!cleanupFailure) retainedChat();
+          expect(
+            runtime.store.runRecord(runId)!.state,
+            RunTerminalState.completed,
+          );
+          expect(fixture.runIds.values, [runId]);
+          expect(outbound, hasLength(1));
+          final snapshot = await chat.snapshot(session.id.value);
+          expect(snapshot.entries.map((entry) => (entry.role, entry.content)), [
+            ('user', draft),
+            ('assistant', answer),
+          ]);
+          expect(snapshot.entries.first.runId, runId.value);
+          expect(find.text('Frontend unavailable.'), findsNothing);
+          expect(tester.takeException(), isNull);
+        } finally {
+          failRelease = false;
+          // Finish real backend I/O before Flutter's automatic fake-async disposal.
+          // Also unblock the model if a preceding assertion failed while gated.
+          if (!releaseResponse.isCompleted) releaseResponse.complete();
+          await tester.binding.handleRequestAppExit().timeout(
+            const Duration(seconds: 30),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+        expect(resources.editors, isEmpty);
+      }),
+    );
+  }
 
   testWidgets(
     'normal application concurrently runs separate Sessions and retains hidden approvals and output',
@@ -280,7 +755,7 @@ void main() {
         await _breadcrumb(tester, 'project-breadcrumb');
         await _terminalUntil(
           tester,
-          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
           'leave the active Session without draining execution',
         );
         expect(fixture.shell(tester).navigationError, isNull);
@@ -305,7 +780,7 @@ void main() {
         int index,
       ) async {
         final compact = find.descendant(
-          of: find.byType(SessionPresentationHost),
+          of: _chatView(),
           matching: find.textContaining('Run Command:'),
         );
         await _terminalUntil(
@@ -547,7 +1022,9 @@ void main() {
       await _terminalTap(tester, _sessionRow(sessionA.id));
       await _terminalUntil(
         tester,
-        () => fixture.status(tester).pendingApproval != null,
+        () =>
+            find.byType(RunExecutionStatus).evaluate().isNotEmpty &&
+            fixture.status(tester).pendingApproval != null,
         'reattached exact second A approval',
       );
       final approvalA2 = fixture.status(tester).pendingApproval!;
@@ -913,7 +1390,7 @@ void main() {
         _rethrowEndpointFailure(endpointFailures);
         final compactText = find
             .descendant(
-              of: find.byType(SessionPresentationHost),
+              of: _chatView(),
               matching: find.textContaining('Run Command:'),
             )
             .last;
@@ -1453,7 +1930,7 @@ void main() {
       await _breadcrumb(tester, 'project-breadcrumb');
       await _terminalUntil(
         tester,
-        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        () => find.byType(MainContentHost).evaluate().isEmpty,
         'Session departure releases the entire resident working set',
       );
       expect(consoleHost, findsNothing);
@@ -1542,7 +2019,7 @@ void main() {
         () =>
             find
                 .descendant(
-                  of: find.byType(SessionPresentationHost),
+                  of: _chatView(),
                   matching: find.textContaining('Run Command:'),
                 )
                 .evaluate()
@@ -1565,7 +2042,7 @@ void main() {
               .ancestor(
                 of: find
                     .descendant(
-                      of: find.byType(SessionPresentationHost),
+                      of: _chatView(),
                       matching: find.textContaining('Run Command:'),
                     )
                     .at(index),
@@ -1861,7 +2338,7 @@ void main() {
       await _breadcrumb(tester, 'task-breadcrumb');
       await _terminalUntil(
         tester,
-        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        () => find.byType(MainContentHost).evaluate().isEmpty,
         'Task Browser navigation',
       );
       expect(find.byType(TerminalView), findsNothing);
@@ -1881,7 +2358,7 @@ void main() {
       await _breadcrumb(tester, 'task-breadcrumb');
       await _terminalUntil(
         tester,
-        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        () => find.byType(MainContentHost).evaluate().isEmpty,
         'browse sibling Session',
       );
       await _terminalTap(tester, find.text('New Chat Session'));
@@ -2005,7 +2482,7 @@ void main() {
       await _breadcrumb(tester, 'task-breadcrumb');
       await _terminalUntil(
         tester,
-        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        () => find.byType(MainContentHost).evaluate().isEmpty,
         'hide console before actual shell exit',
       );
       expect(find.byType(TerminalView), findsNothing);
@@ -2309,7 +2786,7 @@ void main() {
             .single;
         expect(strategy.value.strategyId, chatStrategyId);
         final presentation = runtime.extensions
-            .discover(sessionPresentationContributions)
+            .discover(mainContentContributions)
             .single;
         expect(presentation.id.value, '$_chatPluginId.presentation');
         // Pin the generated client to this installed backend, never capability
@@ -2346,8 +2823,8 @@ void main() {
         );
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-        final host = find.byType(SessionPresentationHost);
-        final session = tester.widget<SessionPresentationHost>(host).session;
+        final host = find.byType(MainContentHost);
+        final session = _session(tester);
         expect(runtime.store.session(session.id), same(session));
         expect(session.strategyId, chatStrategyId);
         expect(
@@ -2458,7 +2935,7 @@ void main() {
           await _breadcrumb(tester, breadcrumb);
           await _pumpUntil(
             tester,
-            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+            () => find.byType(MainContentHost).evaluate().isEmpty,
           );
           expect(fixture.shell(tester).navigationError, isNull);
           oldApprovalView.onDecision(patchApproval, true);
@@ -2520,7 +2997,7 @@ void main() {
           await _breadcrumb(tester, breadcrumb);
           await _pumpUntil(
             tester,
-            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+            () => find.byType(MainContentHost).evaluate().isEmpty,
           );
           expect(fixture.shell(tester).navigationError, isNull);
           if (breadcrumb == 'project-breadcrumb') {
@@ -2628,7 +3105,7 @@ void main() {
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(
           tester,
-          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
         );
         expect(fixture.shell(tester).task, same(task));
         expect(find.byType(InspectionHost), findsNothing);
@@ -2736,7 +3213,7 @@ void main() {
         expect(reopened, isNot(same(project)));
         expect(fixture.shell(tester).task, isNull);
         expect(fixture.shell(tester).environment, isNull);
-        expect(find.byType(SessionPresentationHost), findsNothing);
+        expect(find.byType(MainContentHost), findsNothing);
         expect(find.byType(InspectionHost), findsNothing);
         expect(
           fresh.store.tasksFor(reopened.id).map((task) => task.id),
@@ -2754,7 +3231,7 @@ void main() {
         expect(_sessionRow(otherSession.id), findsNothing);
         expect(find.text('Chat'), findsNWidgets(2));
         expect(find.text('New Chat Session'), findsOneWidget);
-        expect(find.byType(SessionPresentationHost), findsNothing);
+        expect(find.byType(MainContentHost), findsNothing);
         final restoredEnvironment = fresh.store.primaryEnvironmentFor(task.id)!;
         expect(restoredEnvironment.id, environment.id);
         expect(restoredEnvironment.providerState, environment.providerState);
@@ -2880,7 +3357,7 @@ void main() {
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(
           tester,
-          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
         );
         expect(fixture.shell(tester).task!.id, task.id);
         expect(find.byType(InspectionHost), findsNothing);
@@ -2913,7 +3390,7 @@ void main() {
         await _breadcrumb(tester, 'project-breadcrumb');
         await _pumpUntil(tester, () => fixture.shell(tester).task == null);
         expect(fixture.shell(tester).environment, isNull);
-        expect(find.byType(SessionPresentationHost), findsNothing);
+        expect(find.byType(MainContentHost), findsNothing);
         expect(_sessionRow(session.id), findsNothing);
         await _tap(tester, otherTask.title);
         await _pumpUntil(
@@ -2952,7 +3429,7 @@ void main() {
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(
           tester,
-          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
         );
         expect(fixture.shell(tester).task!.id, otherTask.id);
         await _breadcrumb(tester, 'project-breadcrumb');
@@ -3054,7 +3531,8 @@ void main() {
           if (!releaseLatest.isCompleted) releaseLatest.complete();
         });
         await fixture.openTask(tester);
-        await _tap(tester, 'New Chat Session');
+        // The gated backend intentionally has no optional strategy display name.
+        await _tap(tester, 'New ${chatStrategyId.value} Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final session = _session(tester);
         final task = fixture.shell(tester).task!;
@@ -3096,7 +3574,14 @@ void main() {
         if (rejectLatest) {
           expect(_session(tester), same(session));
           expect(fixture.shell(tester).task, same(task));
-          expect(fixture.status(tester).enabled, isTrue);
+          expect(fixture.status(tester).unavailableReason, isNull);
+          expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+          expect(
+            tester
+                .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
+                .onPressed,
+            isNotNull,
+          );
           expect(
             find.text(
               'Could not leave this Session. Save pending changes and try again.',
@@ -3121,7 +3606,7 @@ void main() {
           await _breadcrumb(tester, 'project-breadcrumb');
           await _pumpUntil(
             tester,
-            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+            () => find.byType(MainContentHost).evaluate().isEmpty,
           );
           expect(fixture.shell(tester).task, isNull);
           expect(writes, [firstDraft, latestDraft, latestDraft]);
@@ -3131,7 +3616,7 @@ void main() {
             () => fixture.shell(tester).task?.id == task.id,
           );
         } else {
-          expect(find.byType(SessionPresentationHost), findsNothing);
+          expect(find.byType(MainContentHost), findsNothing);
           expect(fixture.shell(tester).task, same(task));
           expect(writes, [firstDraft, latestDraft]);
         }
@@ -3165,7 +3650,7 @@ void main() {
   // while an unresolved approval must never be silently allowed during disposal.
   for (final waiting in [false, true]) {
     testWidgets(
-      'hidden installed Session ${waiting ? 'disposal abandons waiting approval' : 'exit drains accepted model work before backend shutdown'}',
+      'hidden installed Session ${waiting ? 'disposal abandons waiting approval' : 'frontend retirement preserves accepted model work until exit drains before backend shutdown'}',
       (tester) => tester.runAsync(() async {
         final fixture = await _ProductFixture.create();
         final arrived = Completer<void>();
@@ -3218,110 +3703,154 @@ void main() {
           await subscription.cancel();
           await server.close(force: true);
         });
-        await fixture.launch(tester, prepared, endpoint: server);
-        addTearDown(() {
-          if (!release.isCompleted) release.complete();
-        });
-        await fixture.openTask(tester);
-        await _tap(tester, 'New Chat Session');
-        await _send(tester, 'Shutdown fixture');
-        await arrived.future.timeout(const Duration(seconds: 15));
-        _rethrowEndpointFailure(errors);
-        final runtime = fixture.runtime;
-        final session = tester
-            .widget<SessionPresentationHost>(
-              find.byType(SessionPresentationHost),
-            )
-            .session;
-        final connection = runtime.plugins.backends
-            .singleWhere(
-              (backend) =>
-                  backend.installation.metadata.id.value == _chatPluginId,
-            )
-            .connection!;
-        final chat = _chatClient(connection);
-        expect(
-          (await chat.snapshot(session.id.value)).entries.single.content,
-          'Shutdown fixture',
-        );
-        expect(fixture.runIds.values, hasLength(1));
-        if (waiting) {
+        try {
+          await fixture.launch(tester, prepared, endpoint: server);
+          addTearDown(() {
+            if (!release.isCompleted) release.complete();
+          });
+          await fixture.openTask(tester);
+          await _tap(tester, 'New Chat Session');
+          await _send(tester, 'Shutdown fixture');
+          await arrived.future.timeout(const Duration(seconds: 15));
+          _rethrowEndpointFailure(errors);
+          final runtime = fixture.runtime;
+          final session = _session(tester);
+          final connection = runtime.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!;
+          final chat = _chatClient(connection);
+          expect(
+            (await chat.snapshot(session.id.value)).entries.single.content,
+            'Shutdown fixture',
+          );
+          expect(fixture.runIds.values, hasLength(1));
+          if (waiting) {
+            await _pumpUntil(
+              tester,
+              () => fixture.status(tester).pendingApproval != null,
+            );
+          }
+          final hiddenStatus = fixture.status(tester);
+          await _breadcrumb(tester, 'task-breadcrumb');
           await _pumpUntil(
             tester,
-            () => fixture.status(tester).pendingApproval != null,
+            () => find.byType(MainContentHost).evaluate().isEmpty,
           );
-        }
-        final hiddenStatus = fixture.status(tester);
-        await _breadcrumb(tester, 'task-breadcrumb');
-        await _pumpUntil(
-          tester,
-          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
-        );
-        // At the default small viewport, the existing Session row can put
-        // creation below the detail ListView's built children. Mount it by
-        // scrolling this pane, rather than polling for an off-screen element.
-        final taskDetail = find.ancestor(
-          of: find.text('Primary Environment'),
-          matching: find.byType(Scrollable),
-        );
-        expect(taskDetail, findsOneWidget);
-        await tester.scrollUntilVisible(
-          find.text('New Chat Session'),
-          120,
-          scrollable: taskDetail,
-          maxScrolls: 8,
-        );
-        await _tap(tester, 'New Chat Session');
-        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-        expect(_session(tester).id, isNot(session.id));
-        expect(fixture.status(tester).pendingApproval, isNull);
-        expect(fixture.status(tester).isAdvancing, isFalse);
-        if (waiting) {
-          final approval = hiddenStatus.pendingApproval!;
-          await tester.pumpWidget(const SizedBox.shrink());
-          hiddenStatus.onDecision(approval, true);
-          hiddenStatus.onDecision(approval, false);
-        } else {
-          var exited = false;
-          final exiting = tester.binding.handleRequestAppExit().then((result) {
-            exited = true;
-            return result;
-          });
-          await Future<void>.delayed(Duration.zero);
-          await tester.pump();
-          expect(exited, isFalse);
-          expect(runtime.plugins.state, ApplicationPluginState.ready);
-          expect(connection.isClosed, isFalse);
-          expect((await chat.snapshot(session.id.value)).entries, hasLength(1));
-          release.complete();
+          // At the default small viewport, the existing Session row can put
+          // creation below the detail ListView's built children. Mount it by
+          // scrolling this pane, rather than polling for an off-screen element.
+          final taskDetail = find.ancestor(
+            of: find.text('Primary Environment'),
+            matching: find.byType(Scrollable),
+          );
+          expect(taskDetail, findsOneWidget);
+          await tester.scrollUntilVisible(
+            find.text('New Chat Session'),
+            120,
+            scrollable: taskDetail,
+            maxScrolls: 8,
+          );
+          await _tap(tester, 'New Chat Session');
+          await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+          expect(_session(tester).id, isNot(session.id));
+          expect(fixture.status(tester).pendingApproval, isNull);
+          expect(fixture.status(tester).isAdvancing, isFalse);
+          if (waiting) {
+            final approval = hiddenStatus.pendingApproval!;
+            await tester.pumpWidget(const SizedBox.shrink());
+            hiddenStatus.onDecision(approval, true);
+            hiddenStatus.onDecision(approval, false);
+          } else {
+            final selected = _session(tester);
+            PreparedFrontend? generation;
+            // Prepared views key their exact generation. Retire the shared Chat
+            // frontend through B's actual pane while A's accepted Run is hidden.
+            tester.element(_chatView()).visitAncestorElements((element) {
+              if (element.widget.key case ValueKey(
+                value: (
+                  final PreparedFrontend owner,
+                  String _,
+                  String _,
+                  Key? _,
+                ),
+              )) {
+                generation = owner;
+                return false;
+              }
+              return true;
+            });
+            expect(generation, isNotNull);
+            generation!.invalidate();
+            await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+            expect(_session(tester), same(selected));
+            expect(find.text('Frontend unavailable.'), findsOneWidget);
+            expect(connection.isClosed, isFalse);
+            expect(runtime.plugins.state, ApplicationPluginState.ready);
+            expect(
+              runtime.store.runRecord(fixture.runIds.values.single),
+              isNull,
+            );
+            expect(
+              (await chat.snapshot(session.id.value)).entries,
+              hasLength(1),
+            );
+            expect(fixture.runIds.values, hasLength(1));
+            expect(requests, 1);
+            var exited = false;
+            final exiting = tester.binding.handleRequestAppExit().then((
+              result,
+            ) {
+              exited = true;
+              return result;
+            });
+            await Future<void>.delayed(Duration.zero);
+            await tester.pump();
+            expect(exited, isFalse);
+            expect(runtime.plugins.state, ApplicationPluginState.ready);
+            expect(connection.isClosed, isFalse);
+            expect(
+              (await chat.snapshot(session.id.value)).entries,
+              hasLength(1),
+            );
+            release.complete();
+            expect(
+              await exiting.timeout(const Duration(seconds: 15)),
+              AppExitResponse.exit,
+            );
+            expect(find.text('Late accepted answer.'), findsNothing);
+          }
+          await _pumpUntil(
+            tester,
+            () => runtime.plugins.state == ApplicationPluginState.closed,
+          );
+          _rethrowEndpointFailure(errors);
+          expect(requests, 1);
+          expect(fixture.runIds.values, hasLength(1));
           expect(
-            await exiting.timeout(const Duration(seconds: 15)),
-            AppExitResponse.exit,
+            runtime.store.runRecord(fixture.runIds.values.single)?.state,
+            waiting ? isNull : RunTerminalState.completed,
           );
-          expect(find.text('Late accepted answer.'), findsNothing);
+          expect(connection.isClosed, isTrue);
+          expect(
+            runtime.extensions.discover(orchestrationStrategyContributions),
+            isEmpty,
+          );
+          await expectLater(
+            chat.snapshot(session.id.value),
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!release.isCompleted) release.complete();
+          await tester.binding.handleRequestAppExit().timeout(
+            const Duration(seconds: 30),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
         }
-        await _pumpUntil(
-          tester,
-          () => runtime.plugins.state == ApplicationPluginState.closed,
-        );
-        _rethrowEndpointFailure(errors);
-        expect(requests, 1);
-        expect(fixture.runIds.values, hasLength(1));
-        expect(
-          runtime.store.runRecord(fixture.runIds.values.single)?.state,
-          waiting ? isNull : RunTerminalState.completed,
-        );
-        expect(connection.isClosed, isTrue);
-        expect(
-          runtime.extensions.discover(orchestrationStrategyContributions),
-          isEmpty,
-        );
-        await expectLater(
-          chat.snapshot(session.id.value),
-          throwsA(isA<PluginConnectionClosed>()),
-        );
-        await tester.pumpWidget(const SizedBox.shrink());
-        expect(tester.takeException(), isNull);
       }),
       timeout: const Timeout(Duration(seconds: 45)),
     );
@@ -3397,7 +3926,7 @@ void main() {
               isEmpty,
             );
             expect(
-              runtime.extensions.discover(sessionPresentationContributions),
+              runtime.extensions.discover(mainContentContributions),
               hasLength(1),
             );
             final backends = runtime.plugins.backends.where(
@@ -3415,6 +3944,9 @@ void main() {
               ),
               throwsA(isA<OrchestrationStrategyUnavailable>()),
             );
+            expect(find.text('New Chat Session'), findsNothing);
+            expect(runtime.store.sessionsForTask(task.id), isEmpty);
+            expect(find.byType(MainContentHost), findsNothing);
             expect(find.text('Send'), findsNothing);
           } else {
             final backend = runtime.plugins.backends.singleWhere(
@@ -3426,10 +3958,14 @@ void main() {
               hasLength(1),
             );
             final chat = _chatClient(backend.connection!);
-            final session = runtime.lifecycle.createSession(
-              taskId: task.id,
-              strategyId: chatStrategyId,
+            // Creation is a backend strategy operation, not renderer selection.
+            await _tap(tester, 'New Chat Session');
+            await _pumpUntil(
+              tester,
+              () => find.byType(MainContentHost).evaluate().isNotEmpty,
             );
+            final session = _session(tester);
+            expect(runtime.store.sessionsForTask(task.id), [same(session)]);
             await chat.configureSession(
               session.id.value,
               'Backend remains independent.',
@@ -3444,18 +3980,29 @@ void main() {
             expect(snapshot.entries.single.content, entry.content);
             expect(snapshot.instructions, 'Backend remains independent.');
             expect(snapshot.maxModelInvocations, 3);
-            if (corruption == 'corrupt') {
-              await _tap(tester, 'New Chat Session');
-              await _pumpUntil(
-                tester,
-                () => find.text('Frontend unavailable.').evaluate().isNotEmpty,
-              );
-            } else {
-              expect(
-                runtime.extensions.discover(sessionPresentationContributions),
-                isEmpty,
-              );
-            }
+            // Main Content validates bytecode on activation. Both absence and
+            // corruption leave no Chat registration, without a native fallback.
+            expect(
+              runtime.extensions.discover(mainContentContributions),
+              isEmpty,
+            );
+            expect(
+              find.text('No Main Content is available for this Session.'),
+              findsOneWidget,
+            );
+            await _breadcrumb(tester, 'task-breadcrumb');
+            await _pumpUntil(
+              tester,
+              () => find.byType(MainContentHost).evaluate().isEmpty,
+            );
+            await _openSession(tester, session.id);
+            await _pumpUntil(
+              tester,
+              () => find.byType(MainContentHost).evaluate().isNotEmpty,
+            );
+            expect(_session(tester), same(session));
+            expect(runtime.store.sessionsForTask(task.id), [same(session)]);
+            expect(runtime.store.runsForSession(session.id), isEmpty);
             expect(find.text('Send'), findsNothing);
           }
           expect(fixture.runIds.values, isEmpty);
@@ -3470,7 +4017,7 @@ void main() {
             isEmpty,
           );
           expect(
-            runtime.extensions.discover(sessionPresentationContributions),
+            runtime.extensions.discover(mainContentContributions),
             isEmpty,
           );
           await tester.pumpWidget(const SizedBox.shrink());
@@ -3478,6 +4025,161 @@ void main() {
         timeout: const Timeout(Duration(seconds: 45)),
       );
     }
+  }
+
+  for (final availability in [
+    'Chat frontend absent with backend and editor contribution',
+    'Chat backend unavailable',
+    'no Main Content contributions',
+  ]) {
+    testWidgets(
+      'actual Task Browser opens retained canonical Session: $availability',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1400, 1000));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final fixture = await _ProductFixture.create();
+        final resources = MainContentFixtureResources();
+        addTearDown(resources.dispose);
+        try {
+          await fixture.launch(tester, prepared);
+          await fixture.openTask(tester);
+          await _tap(tester, 'New Chat Session');
+          await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+          final original = _session(tester);
+          final task = fixture.shell(tester).task!;
+          final environment = fixture.shell(tester).environment!;
+          expect(fixture.runIds.values, isEmpty);
+          await tester.binding.handleRequestAppExit();
+          await tester.pumpWidget(const SizedBox.shrink());
+
+          final root = await prepared.copyInstallations(fixture.directory);
+          final backendUnavailable = availability == 'Chat backend unavailable';
+          final hasEditors =
+              availability ==
+              'Chat frontend absent with backend and editor contribution';
+          await File(
+            '${root.path}/$_chatPluginId/${backendUnavailable ? 'backend.aot' : 'frontend.evc'}',
+          ).delete();
+          if (hasEditors) {
+            await installMainContentFixture(
+              installationRoot: root,
+              artifact: await prepared.mainContentFixture(),
+            );
+          }
+          final ids = _NoReopenIds();
+          final fresh = NativeAdeleRuntime(ids: ids, runIds: ids);
+          addTearDown(fresh.close);
+          await fixture.launch(
+            tester,
+            prepared,
+            root: root,
+            usingRuntime: fresh,
+            usingRunIds: ids,
+            mainContentHost: resources.host,
+          );
+          await _tap(tester, 'Open Local Directory...');
+          await _pumpUntil(tester, () => fixture.shell(tester).project != null);
+          final restored = fresh.store.session(original.id)!;
+          final authority = fresh.store.requireSessionAuthority(restored.id);
+          expect(restored, isNot(same(original)));
+          expect(restored.taskId, task.id);
+          expect(restored.strategyId, original.strategyId);
+          expect(authority.environmentId, environment.id);
+          expect(
+            fresh.lifecycle.environmentRuntime.currentMaterialization(
+              environment.id,
+            ),
+            isNull,
+          );
+          await _tap(tester, task.title);
+          await _pumpUntil(
+            tester,
+            () => _sessionRow(restored.id).evaluate().isNotEmpty,
+          );
+          expect(
+            tester.widget<ListTile>(_sessionRow(restored.id)).onTap,
+            isNotNull,
+          );
+          expect(
+            find.text('New Chat Session'),
+            backendUnavailable ? findsNothing : findsOneWidget,
+          );
+          if (backendUnavailable) {
+            expect(
+              () => fresh.lifecycle.createSession(
+                taskId: task.id,
+                strategyId: restored.strategyId,
+              ),
+              throwsA(isA<OrchestrationStrategyUnavailable>()),
+            );
+          }
+          await _terminalTap(tester, _sessionRow(restored.id));
+          await _terminalUntil(
+            tester,
+            () => find.byType(MainContentHost).evaluate().isNotEmpty,
+            'retained canonical workspace opening',
+          );
+          expect(_session(tester), same(restored));
+          expect(fixture.shell(tester).sessionPresented, isTrue);
+          expect(fixture.shell(tester).navigationError, isNull);
+          expect(fresh.store.sessionsForTask(task.id), [same(restored)]);
+          expect(
+            fresh.store.requireSessionAuthority(restored.id),
+            same(authority),
+          );
+          if (hasEditors) {
+            await _terminalUntil(
+              tester,
+              () => find.byType(CodeForge).evaluate().length == 1,
+              'independent editor with absent Chat frontend',
+            );
+            expect(resources.editor(restored.id, 'editor-a'), isNotNull);
+            expect(
+              fresh.extensions.discover(mainContentContributions),
+              hasLength(1),
+            );
+          } else if (backendUnavailable) {
+            await _pumpUntil(
+              tester,
+              () => find.text('Frontend unavailable.').evaluate().isNotEmpty,
+            );
+            expect(
+              fresh.extensions.discover(mainContentContributions),
+              hasLength(1),
+            );
+          } else {
+            expect(
+              fresh.extensions.discover(mainContentContributions),
+              isEmpty,
+            );
+            expect(
+              find.text('No Main Content is available for this Session.'),
+              findsOneWidget,
+            );
+          }
+          expect(_composer(), findsNothing);
+          expect(find.byType(RunExecutionStatus), findsNothing);
+          expect(fresh.store.runsForSession(restored.id), isEmpty);
+          expect(fresh.lifecycle.runActivitiesForSession(restored.id), isEmpty);
+          expect(
+            fresh.lifecycle.environmentRuntime.currentMaterialization(
+              environment.id,
+            ),
+            isNull,
+          );
+          expect(ids.calls, 0);
+          expect(fixture.runIds.values, isEmpty);
+          expect(tester.takeException(), isNull);
+        } finally {
+          // Real backend cleanup must finish before fake-async auto-disposal.
+          await tester.binding.handleRequestAppExit().timeout(
+            const Duration(seconds: 30),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      }),
+      timeout: const Timeout(Duration(seconds: 90)),
+    );
   }
 
   // Preserve the focused installed-tool startup regression while using the same
@@ -3669,6 +4371,16 @@ final class _PreparedProduct {
   File get gatedChat => File('${directory.path}/gated-chat.aot');
   File get commandProcess => File('${directory.path}/command-process.aot');
   File backend(String id) => File('${root.path}/$id/backend.aot');
+  Future<File>? _mainContentFixture;
+
+  Future<File> mainContentFixture() => _mainContentFixture ??= () async {
+    final artifact = File('${directory.path}/main-content.evc');
+    await prepareMainContentFixture(
+      repositoryRoot: Directory.current.parent,
+      artifact: artifact,
+    );
+    return artifact;
+  }();
 
   static Future<_PreparedProduct> prepare() async {
     final repository = Directory.current.parent;
@@ -3898,6 +4610,7 @@ final class _ProductFixture {
     HttpServer? endpoint,
     NativeAdeleRuntime? usingRuntime,
     RunIdSource? usingRunIds,
+    PreparedMainContentHost? mainContentHost,
     Map<String, List<String>> startupArguments = const {},
   }) async {
     final runtime = usingRuntime ?? this.runtime;
@@ -3949,6 +4662,7 @@ final class _ProductFixture {
         readChatGptConfiguration: () =>
             const StockChatGptConfiguration(model: 'gpt-6-astra'),
         runIds: usingRunIds ?? runIds,
+        mainContentHost: mainContentHost,
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,
@@ -4311,13 +5025,20 @@ Future<void> _tap(WidgetTester tester, String label) async {
   await tester.pumpAndSettle();
 }
 
-Session _session(WidgetTester tester) => tester
-    .widget<SessionPresentationHost>(find.byType(SessionPresentationHost))
-    .session;
+Session _session(WidgetTester tester) =>
+    tester.widget<MainContentHost>(find.byType(MainContentHost)).session;
 
-Finder _composer() => find.descendant(
-  of: find.byType(SessionPresentationHost),
-  matching: find.byType(TextField),
+Finder _composer() =>
+    find.descendant(of: _chatView(), matching: find.byType(TextField));
+
+Finder _chatView() => find.ancestor(
+  of: find.descendant(
+    of: find.byType(MainContentHost),
+    matching: find.text('Ask ADELE...'),
+  ),
+  matching: find.byWidgetPredicate(
+    (widget) => widget is $StatefulWidget$bridge,
+  ),
 );
 
 Finder _sessionRow(SessionId id) => find.ancestor(
@@ -4340,10 +5061,7 @@ Future<void> _breadcrumb(WidgetTester tester, String key) async {
 }
 
 Future<void> _send(WidgetTester tester, String prompt) async {
-  final field = find.descendant(
-    of: find.byType(SessionPresentationHost),
-    matching: find.byType(TextField),
-  );
+  final field = _composer();
   await _pumpUntil(
     tester,
     () =>

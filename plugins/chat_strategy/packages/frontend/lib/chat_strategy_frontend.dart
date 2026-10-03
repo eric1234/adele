@@ -1,9 +1,16 @@
 import 'package:adele_ui/inspection_display.dart';
+import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter/material.dart';
+
+void initializeChatMainContent() {
+  final context = readMainContentContext();
+  if (context['strategyId'] != chatStrategyId.value) return;
+  openMainContentPane('chat', 'Chat', false);
+}
 
 Future<Widget> buildChat() async {
   final client = ChatSessionServiceClient(
@@ -20,12 +27,22 @@ Future<Widget> buildChat() async {
     snapshot = null;
     failure = 'Chat history is unavailable. Retry to refresh.';
   }
-  return ChatFrontend(
-    client: client,
-    initialSnapshot: snapshot,
-    sessionId: sessionId,
-    initialFailure: failure,
-    initialStateRevision: stateRevision,
+  return SingleChildScrollView(
+    padding: EdgeInsets.all(24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        ChatFrontend(
+          client: client,
+          initialSnapshot: snapshot,
+          sessionId: sessionId,
+          initialFailure: failure,
+          initialStateRevision: stateRevision,
+        ),
+        buildSessionExecutionStatus(),
+      ],
+    ),
   );
 }
 

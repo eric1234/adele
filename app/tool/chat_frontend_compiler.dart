@@ -1,8 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
+import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart' as chat;
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter_eval/flutter_eval.dart';
@@ -25,10 +29,23 @@ Future<Map<String, Map<String, String>>> chatFrontendSources(
         '$root/plugins/chat_strategy/packages/frontend/lib/chat_strategy_frontend.dart',
       ).readAsString(),
     },
-    'chat_strategy_contract': {'chat_strategy_contract.dart': contract},
+    'chat_strategy_contract': {
+      // The generated wire client omits unannotated identity exports. Project
+      // only the public identity's scalar value, not product/runtime services.
+      'chat_strategy_contract.dart':
+          '''
+$contract
+class _ChatStrategyIdentity {
+  _ChatStrategyIdentity(this.value);
+  final String value;
+}
+final chatStrategyId = _ChatStrategyIdentity(${jsonEncode(chat.chatStrategyId.value)});
+''',
+    },
     'adele_contract': {'adele_contract.dart': evalContractSupportSource},
     'adele_ui': {
       for (final name in [
+        'main_content_bridge.dart',
         'owning_backend_bridge.dart',
         'session_execution_bridge.dart',
         'session_presentation_lifecycle_bridge.dart',
@@ -59,6 +76,8 @@ Future<void> compileChatFrontend({
 }) async {
   final Compiler compiler = Compiler()
     ..addPlugin(flutterEvalPlugin)
+    ..addPlugin(const ScrollViewBridge())
+    ..addPlugin(const MainContentDeclarations())
     ..addPlugin(const OwningBackendDeclarations())
     ..addPlugin(const SessionExecutionDeclarations())
     ..addPlugin(const SessionPresentationLifecycleDeclarations())

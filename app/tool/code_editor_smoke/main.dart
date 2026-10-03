@@ -2,13 +2,21 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:adele_desktop/application.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
 import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_desktop/ui/shell/adele_shell.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 
 import '../../../tools/code_editor_smoke_support.dart';
+import '../main_content_fixture.dart';
 
 const _library = 'package:code_editor_smoke/main.dart';
 const _initial = 'void main() {\n  print("ADELE");\n}\n';
@@ -72,6 +80,15 @@ Future<void> main(List<String> arguments) async {
     return;
   }
 
+  if (arguments.contains('--workspace') ||
+      arguments.contains('--workspace-smoke')) {
+    await _workspace(
+      settlement,
+      automated: arguments.contains('--workspace-smoke'),
+    );
+    return;
+  }
+
   final editable = NativeCodeEditor(text: _initial);
   final reference = NativeCodeEditor(text: _reference, readOnly: true);
   PreparedFrontend? editableFrontend;
@@ -112,6 +129,279 @@ Future<void> main(List<String> arguments) async {
   reference.dispose();
   stdout.writeln('CODEFORGE_NATIVE_DISPOSED');
   await settlement.settle();
+}
+
+Future<void> _workspace(
+  SmokeSettlement settlement, {
+  required bool automated,
+}) async {
+  final resources = MainContentFixtureResources();
+  final runtime = NativeAdeleRuntime();
+  final root = GlobalKey();
+  final previousPicker = FileSelectorPlatform.instance;
+  Directory? project;
+  var interactive = false;
+  try {
+    _require(
+      const bool.fromEnvironment('ADELE_CODE_EDITOR_WORKSPACE'),
+      'Prepare this bundle with editor-smoke linux --workspace first.',
+    );
+    if (automated) {
+      project = await Directory.systemTemp.createTemp(
+        'adele-editor-workspace-',
+      );
+      for (final arguments in [
+        ['init', '--initial-branch=main'],
+        [
+          '-c',
+          'user.name=ADELE Smoke',
+          '-c',
+          'user.email=smoke@adele.invalid',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Temporary smoke baseline',
+        ],
+      ]) {
+        final result = await Process.run(
+          'git',
+          arguments,
+          workingDirectory: project.path,
+        );
+        _require(result.exitCode == 0, 'Fixture Git failed: ${result.stderr}');
+      }
+      FileSelectorPlatform.instance = _WorkspacePicker(project.path);
+    }
+    runApp(
+      AdeleApplication(
+        key: root,
+        createRuntime: () => runtime,
+        mainContentHost: resources.host,
+        // This development route never needs or starts paid model execution.
+        readChatGptConfiguration: () => null,
+      ),
+    );
+    await _until(
+      // Frontend selectors can appear before their backing providers are ready.
+      () =>
+          runtime.plugins.state == ApplicationPluginState.ready &&
+          _buttons(root, 'Open Local Directory...').isNotEmpty,
+      'Prepared normal application startup',
+      timeout: const Duration(seconds: 30),
+    );
+    stdout.writeln('ADELE_EDITOR_WORKSPACE_READY');
+    if (!automated) {
+      interactive = true;
+      return;
+    }
+    await _press(root, 'Open Local Directory...');
+    await _until(() {
+      final shell = _shell(root);
+      _require(
+        shell.projectError == null,
+        'Project opening: ${shell.projectError}',
+      );
+      return shell.project != null;
+    }, 'Normal Project opening');
+    await _press(root, 'New Task');
+    await _until(() => _texts(root).contains('Task title'), 'Task form');
+    final title = _elements(
+      root,
+    ).map((element) => element.widget).whereType<TextField>().last;
+    title.controller!.text = 'Synthetic editor workspace';
+    title.onChanged?.call(title.controller!.text);
+    await _press(root, 'Create Task');
+    await _until(() => _shell(root).task != null, 'Normal Task creation');
+    await _press(root, 'New Chat Session');
+    await _until(
+      () =>
+          resources.editors.length == 1 &&
+          resources.editors.single.isInitialized &&
+          _texts(root).contains('Ask ADELE...') &&
+          _texts(root).contains('Synthetic pane: editor-a'),
+      'Prepared Chat and initial editor A',
+    );
+    final host = _elements(
+      root,
+    ).singleWhere((element) => element.widget is MainContentHost);
+    final session = (host.widget as MainContentHost).session;
+    final prompt = _elements(root).singleWhere(
+      (element) =>
+          element.widget is Text &&
+          (element.widget as Text).data == 'Ask ADELE...',
+    );
+    Element? contributedChat;
+    prompt.visitAncestorElements((element) {
+      if (element.widget is $StatefulWidget$bridge) {
+        contributedChat = element;
+        return false;
+      }
+      return !identical(element, host);
+    });
+    _require(
+      contributedChat != null,
+      'Chat is not an interpreted contributed pane.',
+    );
+    final chat = contributedChat! as StatefulElement;
+    final chatWidget = chat.widget as $StatefulWidget$bridge;
+    final chatState = chat.state;
+    final chatRuntime = chatWidget.$runtime;
+    Element? composerElement;
+    void findComposer(Element element) {
+      if (element.widget is TextField) composerElement = element;
+      element.visitChildren(findComposer);
+    }
+
+    chat.visitChildren(findComposer);
+    _require(composerElement != null, 'Contributed Chat has no composer.');
+    final composer = composerElement!;
+    final composerController = (composer.widget as TextField).controller;
+    bool chatRetained() =>
+        host.mounted &&
+        identical((host.widget as MainContentHost).session, session) &&
+        chat.mounted &&
+        identical(chat.widget, chatWidget) &&
+        identical(chat.state, chatState) &&
+        identical(
+          (chat.widget as $StatefulWidget$bridge).$runtime,
+          chatRuntime,
+        ) &&
+        composer.mounted &&
+        identical(
+          (composer.widget as TextField).controller,
+          composerController,
+        );
+    final a = resources.editor(session.id, 'editor-a')!;
+    _require(
+      resources.editor(session.id, 'editor-b') == null,
+      'B opened early.',
+    );
+    await _press(root, 'Open B');
+    await _until(
+      () =>
+          resources.editor(session.id, 'editor-b')?.isInitialized == true &&
+          _texts(root).contains('Synthetic pane: editor-b'),
+      'Prepared editor B',
+    );
+    final b = resources.editor(session.id, 'editor-b')!;
+    _require(!identical(a, b), 'Editor panes share a native owner.');
+    RenderBox editorBox(NativeCodeEditor editor) =>
+        _elements(root)
+                .singleWhere(
+                  (element) => element.widget.key == ObjectKey(editor),
+                )
+                .findRenderObject()!
+            as RenderBox;
+    final hostBox = host.findRenderObject()! as RenderBox;
+    for (final editor in [a, b]) {
+      final size = editorBox(editor).size;
+      _require(
+        size.width.isFinite &&
+            size.width > 0 &&
+            size.height.isFinite &&
+            size.height > 0 &&
+            size.height <= hostBox.size.height,
+        'Editor geometry is not bounded: $size.',
+      );
+    }
+    _require(
+      (editorBox(a).size.width - editorBox(b).size.width).abs() < 1,
+      'Editor panes do not share equal width.',
+    );
+    await _press(root, 'Focus B');
+    await _until(() => _editorFocused(b), 'Interpreted focus B');
+    await _press(root, 'Rename B');
+    await _until(() => _texts(root).contains('Renamed B'), 'Interpreted title');
+    await _press(root, 'Reverse editors');
+    await _until(
+      () =>
+          editorBox(b).localToGlobal(Offset.zero).dx <
+          editorBox(a).localToGlobal(Offset.zero).dx,
+      'Interpreted ordering',
+    );
+    _require(
+      identical(resources.editor(session.id, 'editor-a'), a) &&
+          identical(resources.editor(session.id, 'editor-b'), b) &&
+          chatRetained() &&
+          _elements(root).contains(chat),
+      'Title/order/focus replaced a native owner or Chat presentation.',
+    );
+    await _press(root, 'Remove B');
+    await _until(
+      () => b.isDisposed && resources.editors.length == 1,
+      'Remove B',
+    );
+    _require(
+      !a.isDisposed && chatRetained(),
+      'Removing B disturbed A or Chat.',
+    );
+    final departure = _elements(root)
+        .map((element) => element.widget)
+        .whereType<TextButton>()
+        .singleWhere(
+          (button) => button.key == const ValueKey('task-breadcrumb'),
+        );
+    departure.onPressed!();
+    await _until(
+      () => resources.editors.isEmpty && a.isDisposed && !chat.mounted,
+      'Session departure discards synthetic owners',
+    );
+    stdout.writeln('ADELE_EDITOR_WORKSPACE_COMPLETE');
+  } catch (error, stack) {
+    settlement.recordFailure('CODEFORGE_SMOKE_FAILED', error, stack);
+  } finally {
+    if (!interactive) {
+      await WidgetsBinding.instance.handleRequestAppExit();
+      runApp(const SizedBox.shrink());
+      await _frames();
+      await runtime.close();
+      resources.dispose();
+      FileSelectorPlatform.instance = previousPicker;
+      await project?.delete(recursive: true);
+      stdout.writeln('CODEFORGE_NATIVE_DISPOSED');
+      await settlement.settle();
+    }
+  }
+}
+
+AdeleShell _shell(GlobalKey root) => _elements(
+  root,
+).map((element) => element.widget).whereType<AdeleShell>().single;
+
+List<ButtonStyleButton> _buttons(GlobalKey root, String label) => [
+  for (final element in _elements(root))
+    if (element.widget case final ButtonStyleButton button)
+      if (button.onPressed != null &&
+          button.child is Text &&
+          (button.child! as Text).data == label)
+        button,
+];
+
+Future<void> _press(GlobalKey root, String label) async {
+  await _until(() => _buttons(root, label).isNotEmpty, 'Button $label');
+  _buttons(root, label).single.onPressed!();
+  await _frames();
+}
+
+bool _editorFocused(NativeCodeEditor editor) {
+  var focused = false;
+  FocusManager.instance.primaryFocus?.context?.visitAncestorElements((element) {
+    if (element.widget.key == ObjectKey(editor)) focused = true;
+    return !focused;
+  });
+  return focused;
+}
+
+final class _WorkspacePicker extends FileSelectorPlatform {
+  _WorkspacePicker(this.path);
+  final String path;
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(
+    FileDialogOptions options,
+  ) async => path;
 }
 
 Future<PreparedFrontend> _load(File artifact) async {
@@ -416,10 +706,14 @@ Future<void> _frames() async {
   }
 }
 
-Future<void> _until(bool Function() predicate, String label) async {
+Future<void> _until(
+  bool Function() predicate,
+  String label, {
+  Duration timeout = const Duration(seconds: 10),
+}) async {
   final watch = Stopwatch()..start();
   while (!predicate()) {
-    _require(watch.elapsed < const Duration(seconds: 10), '$label timed out.');
+    _require(watch.elapsed < timeout, '$label timed out.');
     await _frames();
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }

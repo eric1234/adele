@@ -84,6 +84,11 @@ class SessionExecutionDeclarations implements EvalPlugin {
         const BridgeTypeAnnotation($Widget.$type),
         [handle],
       ),
+      (
+        'buildSessionExecutionStatus',
+        const BridgeTypeAnnotation($Widget.$type),
+        <BridgeParameter>[],
+      ),
     ]) {
       registry.defineBridgeTopLevelFunction(
         BridgeFunctionDeclaration(
@@ -126,6 +131,7 @@ final class SessionExecutionBridge extends SessionExecutionDeclarations
   $Value? _retainedExecution;
   final Map<String, $Value> _retainedActivity = {};
   final Map<String, Widget> _activityWidgets = {};
+  Widget? _statusWidget;
 
   @override
   set onFailure(VoidCallback? callback) => _onFailure = callback;
@@ -148,6 +154,19 @@ final class SessionExecutionBridge extends SessionExecutionDeclarations
   @override
   void configureForRuntime(Runtime runtime) {
     runtime
+      ..registerBridgeFunc(_bridgeLibrary, 'buildSessionExecutionStatus', (
+        _,
+        _,
+        _,
+      ) {
+        if (_retainedExecution != null) {
+          return $Widget.wrap(_statusWidget ?? const SizedBox.shrink());
+        }
+        if (!_available) {
+          return $Widget.wrap(const SizedBox.shrink());
+        }
+        return $Widget.wrap(_statusWidget ??= _source.buildStatus());
+      })
       ..registerBridgeFunc(_bridgeLibrary, 'currentSessionId', (_, _, _) {
         if (_retainedSessionId case final sessionId?) return $String(sessionId);
         _validate();
@@ -318,6 +337,7 @@ final class SessionExecutionBridge extends SessionExecutionDeclarations
     _retainedExecution = null;
     _retainedActivity.clear();
     _activityWidgets.clear();
+    _statusWidget = null;
     _active = false;
     _runHandles.clear();
     _activityHandles.clear();

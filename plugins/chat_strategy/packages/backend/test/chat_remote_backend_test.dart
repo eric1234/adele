@@ -35,6 +35,7 @@ void main() {
       expect(extension.metadata, {
         'strategyId': chatStrategyId.value,
         'routeId': chatStrategyRouteId,
+        'displayName': 'Chat',
       });
       expect(backend.hostCalls, isEmpty);
 

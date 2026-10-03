@@ -9,23 +9,24 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
-import 'package:adele_desktop/frontend/prepared_session_host.dart';
+import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
-import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
-import 'package:adele_desktop/ui/session/session_presentation_host.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/task_browser/task_browser_presentation_host.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -38,6 +39,7 @@ final class AdeleApplication extends StatefulWidget {
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
+    this.mainContentHost,
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -46,6 +48,11 @@ final class AdeleApplication extends StatefulWidget {
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
+
+  /// Optional native bindings for declared prepared Main Content panes.
+  /// Catalog discovery and registration still use the ordinary frontend path.
+  /// Selected once at mount; this application closes the host on shutdown.
+  final PreparedMainContentHost? mainContentHost;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -71,10 +78,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   bool _modelConfigurationFailed = false;
   SessionExecutionController? _execution;
   late final SessionExecutionOwners _executions;
-  Object? _presentation;
-  VoidCallback? _validatePresentation;
+  Object? _workbench;
   Session? _session;
-  late final PreparedSessionHost _sessionHost;
   late final ConsoleController _console;
   late final PreparedConsoleHost _consoleHost;
   late final ApplicationFrontendBootstrap _frontends;
@@ -101,27 +106,25 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       controller: _console,
       backends: _runtime.plugins,
     );
-    _sessionHost = PreparedSessionHost(
-      extensions: _runtime.extensions,
-      backends: _runtime.plugins,
-      inspectActivity: _inspectActivity,
-      lookupControllerForSession: (session) => _executions.lookup(session),
-      controllerForSession: (session) {
-        final controller = _execution;
-        if (_closing != null ||
-            controller == null ||
-            controller.isClosed ||
-            !identical(controller.session, session)) {
-          throw StateError('No execution controller for this Session.');
-        }
-        return controller;
-      },
-    );
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
-      sessionHost: _sessionHost,
+      sessionServices: PreparedSessionServices(
+        extensions: _runtime.extensions,
+        backends: _runtime.plugins,
+        inspectActivity: _inspectActivity,
+        lookupControllerForSession: (session) => _executions.lookup(session),
+        controllerForSession: _controllerForPresentation,
+        isCurrent: (session) =>
+            mounted && _closing == null && identical(_session, session),
+        isInteractive: (session) =>
+            mounted &&
+            _closing == null &&
+            !_navigating &&
+            identical(_session, session),
+      ),
       consoleHost: _consoleHost,
+      mainContentHost: widget.mainContentHost,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -191,21 +194,38 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     if (_inspection.cards.isNotEmpty) _inspectionChanged();
   }
 
-  bool _hasPresentationAuthority(Session session, Object? presentation) {
-    if (!mounted ||
-        _closing != null ||
-        _navigating ||
-        presentation == null ||
-        !identical(_presentation, presentation) ||
-        !identical(_session, session)) {
-      return false;
+  bool _hasWorkbenchAuthority(Session session, Object? workbench) =>
+      mounted &&
+      _closing == null &&
+      !_navigating &&
+      workbench != null &&
+      identical(_workbench, workbench) &&
+      identical(_session, session);
+
+  SessionExecutionController _controllerForPresentation(
+    Session session,
+    ResolvedOrchestrationStrategy? strategy,
+  ) {
+    if (!mounted || _closing != null || !identical(_session, session)) {
+      throw StateError(
+        'This Session is not presented in the current workbench.',
+      );
     }
-    try {
-      _validatePresentation!();
-      return true;
-    } on Object {
-      return false;
+    final controller = _executions.getOrCreate(session, strategy: strategy);
+    if (_execution == null) {
+      _execution = controller;
+      controller.addListener(_executionChanged);
+      controller.activityChanges.addListener(_activityChanged);
+      // Service acquisition can happen while a contributed pane is building.
+      scheduleMicrotask(() {
+        if (mounted && _closing == null && identical(_session, session)) {
+          setState(() {});
+        }
+      });
+    } else if (!identical(_execution, controller)) {
+      throw StateError('The Session execution owner changed.');
     }
+    return controller;
   }
 
   bool _inspectActivity(Session session, InspectionTarget target) {
@@ -237,12 +257,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   void _inspectOutput(
     Session session,
-    Object? presentation,
+    Object? workbench,
     InspectionCardId originCardId,
     ModelOutputInspectionTarget target,
   ) {
     final execution = _execution;
-    if (!_hasPresentationAuthority(session, presentation) ||
+    if (!_hasWorkbenchAuthority(session, workbench) ||
         execution == null ||
         execution.isClosed ||
         !identical(_session, session) ||
@@ -281,7 +301,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       project: project,
       lifecycle: _runtime.lifecycle,
       extensions: _runtime.extensions,
-      sessionHost: _sessionHost,
       browser: TaskBrowserResolver(_runtime.extensions).resolve(),
       isCurrent: () =>
           mounted &&
@@ -327,10 +346,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _refreshBrowsers();
   }
 
-  /// New and retained Sessions share controller, binding, and Inspection setup.
+  /// Selecting a canonical Session never requires an available renderer/backend.
   void _activateSession(
     Session session,
-    SessionPresentationSelection selection,
+    ResolvedOrchestrationStrategy? strategy,
   ) {
     final task = _task;
     if (!mounted ||
@@ -344,28 +363,27 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         session.taskId != task.id) {
       throw StateError('Session is not in the currently selected Task.');
     }
-    selection.validate();
-    final SessionExecutionController controller;
-    try {
-      controller = _executions.getOrCreate(
-        session,
-        strategy: selection.pinStrategy ? selection.strategy : null,
-      );
-      selection.validateController(controller);
-      _sessionHost.bind(session, selection);
-    } on Object {
-      _sessionHost.unbind(session);
-      rethrow;
+    if (strategy != null) {
+      _runtime.lifecycle.validateResolvedStrategy(session.strategyId, strategy);
+    } else {
+      try {
+        strategy = _runtime.lifecycle.resolveSessionStrategy(session.id);
+      } on Object {
+        // A retained workspace remains navigable without its executable plugin.
+      }
     }
-    controller.addListener(_executionChanged);
-    controller.activityChanges.addListener(_activityChanged);
+    // Existing work remains window-owned. A new execution owner is acquired by
+    // an opted-in service binding after its exact affinity has been captured.
+    final controller = _executions.lookup(session);
+    controller?.addListener(_executionChanged);
+    controller?.activityChanges.addListener(_activityChanged);
     setState(() {
-      _presentation = Object();
-      _validatePresentation = selection.validate;
+      _workbench = Object();
       _session = session;
       _environment = _consoleHost.environmentForSession(session);
       _execution = controller;
-      _sessionLabel = selection.presentation.value.displayName;
+      _sessionLabel =
+          strategy?.binding.value.displayName ?? session.strategyId.value;
       _navigationError = null;
     });
     _console.setSession(session);
@@ -446,46 +464,79 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _selectTask(task);
       return;
     }
-    final execution = _execution!;
     setState(() {
       _navigating = true;
       _navigationError = null;
     });
+    _execution?.refresh();
     try {
-      await _sessionHost.prepareToDeactivate(session);
+      try {
+        await _frontends.prepareToDeactivate(session);
+      } on Object {
+        if (mounted && _closing == null && identical(_session, session)) {
+          setState(
+            () => _navigationError =
+                'Could not leave this Session. Save pending changes and try again.',
+          );
+        }
+        return;
+      }
       if (!mounted || _closing != null || !identical(_session, session)) return;
-      _presentation = null;
-      _validatePresentation = null;
-      _sessionHost.unbind(session);
-      execution.removeListener(_executionChanged);
-      execution.activityChanges.removeListener(_activityChanged);
-      _console.setSession(null);
-      _inspection.presentSession(null);
+
+      // Settlement accepted departure. Cleanup failure cannot restore authority
+      // to a workspace whose presentation teardown has already begun.
+      _workbench = null;
+      Object? cleanupError;
+      StackTrace? cleanupStack;
+      for (final cleanup in <VoidCallback>[
+        () => _frontends.unbind(session),
+        () => _execution?.removeListener(_executionChanged),
+        () => _execution?.activityChanges.removeListener(_activityChanged),
+        () => _console.setSession(null),
+        () => _inspection.presentSession(null),
+      ]) {
+        try {
+          cleanup();
+        } on Object catch (error, stackTrace) {
+          cleanupError ??= error;
+          cleanupStack ??= stackTrace;
+        }
+      }
       setState(() {
         _execution = null;
         _session = null;
         _sessionLabel = null;
-        _navigationError = null;
+        _navigationError = cleanupError == null
+            ? null
+            : 'Left the Session, but some presentation resources could not be released.';
         _task = task;
         _environment = task == null
             ? null
             : _runtime.store.primaryEnvironmentFor(task.id);
       });
-    } on Object {
-      if (mounted && _closing == null) {
-        setState(
-          () => _navigationError =
-              'Could not leave this Session. Save pending changes and try again.',
+      if (cleanupError != null) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: cleanupError,
+            stack: cleanupStack,
+            library: 'ADELE application',
+            context: ErrorDescription(
+              'while releasing presentations after leaving a Session',
+            ),
+          ),
         );
       }
     } finally {
-      if (mounted && _closing == null) setState(() => _navigating = false);
+      if (mounted && _closing == null) {
+        setState(() => _navigating = false);
+        // Retained native affordances observe the restored interaction gate too.
+        _execution?.refresh();
+      }
     }
   }
 
   Future<void> _closeRuntime() => _closing ??= () {
-    _presentation = null;
-    _validatePresentation = null;
+    _workbench = null;
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
@@ -603,7 +654,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   @override
   Widget build(BuildContext context) {
     final session = _session;
-    final presentation = _presentation;
+    final workbench = _workbench;
     return ValueListenableBuilder<bool>(
       valueListenable: _retainingPresentations,
       builder: (context, retaining, child) => PreparedFrontendRetention(
@@ -620,6 +671,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           task: _task,
           environment: _environment,
           sessionLabel: _sessionLabel,
+          sessionPresented: session != null,
           onProject: () => _showBrowser(keepTask: false),
           onTask: () => _showBrowser(keepTask: true),
           navigating: _navigating,
@@ -640,7 +692,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                         ? (_) {}
                         : (target) => _inspectOutput(
                             session,
-                            presentation,
+                            workbench,
                             card.id,
                             target,
                           ),
@@ -658,41 +710,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                   ignoring: _navigating,
                   child: ExcludeFocus(
                     excluding: _navigating,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SessionPresentationHost(
-                          session: session,
-                          extensions: _runtime.extensions,
-                        ),
-                        if (_execution case final controller?)
-                          RunExecutionStatus(
-                            pendingApproval: controller.pendingApproval,
-                            enabled:
-                                !controller.isAdvancing &&
-                                !controller.isClosed &&
-                                controller.unavailableReason == null &&
-                                _hasPresentationAuthority(
-                                  session,
-                                  presentation,
-                                ),
-                            isAdvancing: controller.isAdvancing,
-                            failureMessage: controller.failureMessage,
-                            unavailableReason: controller.unavailableReason,
-                            onDecision: (approval, approved) {
-                              if (_hasPresentationAuthority(
-                                    session,
-                                    presentation,
-                                  ) &&
-                                  controller.unavailableReason == null) {
-                                controller.resolveApproval(
-                                  approval,
-                                  approved: approved,
-                                );
-                              }
-                            },
-                          ),
-                      ],
+                    child: MainContentHost(
+                      session: session,
+                      extensions: _runtime.extensions,
+                      isCurrent: () =>
+                          _closing == null && identical(_session, session),
                     ),
                   ),
                 ),

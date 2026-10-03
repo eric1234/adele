@@ -7,7 +7,9 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
-import 'package:adele_desktop/frontend/prepared_session_host.dart';
+import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
@@ -21,6 +23,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart' show $Value;
 import 'package:dart_eval/stdlib/core.dart';
@@ -28,6 +31,7 @@ import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 final _strategyId = OrchestrationStrategyId('dev.adele.test.execution');
@@ -721,6 +725,316 @@ Widget build(String handle) => buildSessionActivity(handle);
     },
   );
 
+  for (final foreign in [false, true]) {
+    test(
+      'expected strategy rejects ${foreign ? 'foreign' : 'retired'} same-ID bindings before Run allocation',
+      () async {
+        final controller = fixture.controller(pinStrategy: false);
+        final expected = foreign
+            ? OrchestrationStrategyResolver(
+                ExtensionRegistry()..register(
+                  point: orchestrationStrategyContributions,
+                  id: fixture.runtime.extensions
+                      .discover(orchestrationStrategyContributions)
+                      .single
+                      .id,
+                  value: fixture.runtime.extensions
+                      .discover(orchestrationStrategyContributions)
+                      .single
+                      .value,
+                ),
+              ).resolve(_strategyId)
+            : fixture.runtime.lifecycle.resolveSessionStrategy(
+                fixture.session.id,
+              );
+        final source = SessionExecutionPresentationSource(
+          controller: controller,
+          extensions: fixture.runtime.extensions,
+          isActive: () => true,
+          inspect: (_, _) => false,
+          expectedStrategy: expected,
+        );
+        addTearDown(source.invalidate);
+        if (!foreign) {
+          await fixture.strategy.close();
+          fixture.strategy = fixture.registerStrategy();
+        }
+        expect(controller.canStart, isTrue);
+        await expectLater(
+          source.startRun(),
+          foreign ? throwsArgumentError : throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(controller.capturedStrategy, isNull);
+        expect(fixture.ids.values, isEmpty);
+        expect(fixture.model.calls, isEmpty);
+        final fresh = fixture.runtime.lifecycle.resolveSessionStrategy(
+          fixture.session.id,
+        );
+        await controller.startRun(expectedStrategy: fresh);
+        expect(controller.strategy, isNull);
+        expect(
+          controller.capturedStrategy!.binding.isSameRegistration(
+            fresh.binding,
+          ),
+          isTrue,
+        );
+        final advancing = controller.activeRunFuture!;
+        (await fixture.model.callAt(0)).settle();
+        await advancing;
+        expect(controller.currentRun!.run.state, RunState.completed);
+        expect(fixture.ids.values, hasLength(1));
+      },
+    );
+  }
+
+  group('additive owning-backend services', () {
+    late Directory installationRoot;
+    late File hostArtifact;
+    late String aotRuntime;
+    late Program program;
+    const library = 'package:affinity_probe/main.dart';
+    const pluginId = 'dev.adele.test.affinity';
+
+    setUpAll(() async {
+      final artifacts = await Directory.systemTemp.createTemp(
+        'adele-service-affinity-',
+      );
+      addTearDown(() => artifacts.delete(recursive: true));
+      final dart =
+          '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}';
+      aotRuntime = File(dart).parent.uri
+          .resolve(Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime')
+          .toFilePath();
+      hostArtifact = File('${artifacts.path}/host.aot');
+      installationRoot = await Directory(
+        '${artifacts.path}/installations',
+      ).create();
+      final installation = await Directory(
+        '${installationRoot.path}/probe',
+      ).create();
+      final backendArtifact = File('${installation.path}/backend.aot');
+      for (final target in [
+        (
+          entrypoint:
+              'packages/plugin_backend_host/bin/adele_backend_host.dart',
+          artifact: hostArtifact,
+        ),
+        (
+          entrypoint: 'app/test/core/fixtures/remote_orchestration_probe.dart',
+          artifact: backendArtifact,
+        ),
+      ]) {
+        await compileAotSnapshot(
+          dartExecutable: dart,
+          workingDirectory: Directory.current.parent,
+          entrypoint: target.entrypoint,
+          artifact: target.artifact,
+          stage: 'service-affinity',
+        );
+      }
+      await File(
+        '${installation.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': pluginId,
+            'version': 'test',
+            'displayName': 'Affinity probe',
+          },
+          'components': {
+            'backend': {'artifact': 'backend.aot'},
+          },
+        }),
+      );
+      program =
+          (Compiler()
+                ..addPlugin(flutterEvalPlugin)
+                ..addPlugin(const SessionExecutionDeclarations())
+                ..addPlugin(const OwningBackendDeclarations())
+                ..entrypoints.add(library))
+              .compile({
+                'affinity_probe': {
+                  'main.dart': '''
+import 'package:adele_ui/session_execution_bridge.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
+Map<String, Object?> read() => readSessionExecution();
+Future<String> start() => startSessionRun();
+Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String, dynamic>{});
+''',
+                },
+                'adele_ui': {
+                  for (final name in [
+                    'session_execution_bridge.dart',
+                    'owning_backend_bridge.dart',
+                  ])
+                    name: await File('../packages/ui/lib/$name').readAsString(),
+                },
+                'adele_contract': {
+                  'adele_contract.dart': evalContractSupportSource,
+                },
+              });
+    });
+
+    for (final attachDuringRun in [false, true]) {
+      test(
+        'independent first, owning attaches ${attachDuringRun ? 'during Run' : 'while idle'} and survives settlement',
+        () async {
+          await fixture.strategy.close();
+          await fixture.runtime.plugins.start(
+            installationRoot: installationRoot.path,
+            dartaotruntimeExecutable: aotRuntime,
+            hostArtifactPath: hostArtifact.path,
+            startupArguments: {
+              pluginId: [
+                'dev.adele.test.execution.strategy',
+                jsonEncode({'strategyId': _strategyId.value, 'hold': 'start'}),
+              ],
+            },
+          );
+          final installation =
+              fixture.runtime.plugins.catalog!.installations.single;
+          final backend = fixture.runtime.plugins.backendForInstallation(
+            installation,
+          )!;
+          final strategy = fixture.runtime.lifecycle.resolveSessionStrategy(
+            fixture.session.id,
+          );
+          expect(backend.strategyOrigin(strategy.binding), isNotNull);
+          final channel = backend.openChannel(
+            backendServices: ['probe'],
+            strategyAffinity: PreparedStrategyAffinity.owningBackend,
+            strategyBinding: strategy.binding,
+            validatePresentation: () {},
+          );
+          addTearDown(
+            () => channel.request('probe', 'release', {'operation': 'start'}),
+          );
+          SessionExecutionController? owner;
+          var allocations = 0;
+          final services = PreparedSessionServices(
+            extensions: fixture.runtime.extensions,
+            backends: fixture.runtime.plugins,
+            controllerForSession: (session, pin) {
+              expect(session, same(fixture.session));
+              expect(pin, isNull);
+              allocations++;
+              return owner = fixture.controller(pinStrategy: false);
+            },
+            lookupControllerForSession: (_) => owner,
+            inspectActivity: (_, _) => false,
+            isCurrent: (session) => identical(session, fixture.session),
+          );
+          PreparedFrontendBridge bind(bool owning) {
+            final descriptor = PreparedMainContentPresentation(
+              extensionId: ExtensionId(
+                'dev.adele.test.${owning ? 'owning' : 'independent'}',
+              ),
+              order: owning ? 100 : 0,
+              library: library,
+              initialize: 'initialize',
+              entrypoint: 'build',
+              sessionExecution: true,
+              strategyAffinity: owning
+                  ? PreparedStrategyAffinity.owningBackend
+                  : PreparedStrategyAffinity.independent,
+              backendServices: owning ? ['probe'] : [],
+            );
+            final contribution = MainContentContribution(
+              order: descriptor.order,
+              attach: (_) {},
+            );
+            final registration = fixture.runtime.extensions.register(
+              point: mainContentContributions,
+              id: descriptor.extensionId,
+              value: contribution,
+            );
+            addTearDown(registration.close);
+            services.registerMetadata(contribution, installation, descriptor);
+            final bridge = services.bind(
+              fixture.runtime.extensions
+                  .discover(mainContentContributions)
+                  .singleWhere((view) => view.id == descriptor.extensionId),
+              session: fixture.session,
+              isActive: () => true,
+            );
+            addTearDown(bridge.invalidate);
+            return bridge;
+          }
+
+          bind(false);
+          final controller = owner!;
+          expect(controller.strategy, isNull);
+          if (attachDuringRun) {
+            await controller.startRun();
+            await channel.request('probe', 'ready', {'operation': 'start'});
+          }
+          final bridge = bind(true);
+          final eval = Runtime.ofProgram(program)
+            ..addPlugin(flutterEvalPlugin)
+            ..addPlugin(bridge);
+          Map<String, Object?> read() =>
+              copyStructuredBridgeData(eval.executeLib(library, 'read'))!
+                  as Map<String, Object?>;
+          Future<Object?> invoke(String name) async => copyStructuredBridgeData(
+            await (eval.executeLib(library, name) as $Future).$value,
+          );
+          expect(allocations, 1);
+          expect(owner, same(controller));
+          expect(read()['running'], attachDuringRun);
+          expect(await invoke('snapshot'), isA<Map<String, Object?>>());
+          if (!attachDuringRun) {
+            expect(await invoke('start'), isA<String>());
+            await channel.request('probe', 'ready', {'operation': 'start'});
+          }
+          expect(read()['running'], isTrue);
+          expect(
+            controller.capturedStrategy!.binding.isSameRegistration(
+              strategy.binding,
+            ),
+            isTrue,
+          );
+          final advancing = controller.activeRunFuture!;
+          await channel.request('probe', 'release', {'operation': 'start'});
+          (await fixture.model.callAt(0)).settle();
+          (await fixture.model.callAt(1)).settle();
+          await advancing;
+          expect(controller.currentRun!.run.state, RunState.completed);
+          expect(read()['canStart'], isTrue);
+          expect(await invoke('snapshot'), isA<Map<String, Object?>>());
+          expect(owner, same(controller));
+          expect(controller.strategy, isNull);
+          expect(allocations, 1);
+          // The very same owning view can start another Run without pinning or
+          // replacing the independent owner's ordinary strategy selection.
+          await invoke('start');
+          final second = controller.activeRunFuture!;
+          (await fixture.model.callAt(2)).settle();
+          (await fixture.model.callAt(3)).settle();
+          await second;
+          expect(read()['canStart'], isTrue);
+          expect(controller.currentRun!.run.state, RunState.completed);
+          expect(fixture.ids.values, hasLength(2));
+          final snapshot = await invoke('snapshot') as Map<String, Object?>;
+          expect(snapshot['executionCount'], 0);
+          expect(
+            (snapshot['records']! as List<Object?>)
+                .where(
+                  (record) =>
+                      (record! as Map<String, Object?>)['operation'] ==
+                      'materialize.begin',
+                )
+                .map(
+                  (record) => (record! as Map<String, Object?>)['sessionId'],
+                ),
+            [fixture.session.id.value, fixture.session.id.value],
+          );
+        },
+        timeout: const Timeout(Duration(minutes: 2)),
+      );
+    }
+  });
+
   test(
     'accepted preparation retains the retired model; only a fresh Run binds replacement',
     () async {
@@ -770,32 +1084,63 @@ Widget build(String handle) => buildSessionActivity(handle);
       'unpinned affinity permits a fresh strategy only after settlement ($replaceWhileActive)',
       () async {
         final controller = fixture.controller(pinStrategy: false);
+        final descriptor = PreparedMainContentPresentation(
+          extensionId: ExtensionId('dev.adele.test.unpinned.presentation'),
+          order: 100,
+          library: 'package:independent/main.dart',
+          initialize: 'initialize',
+          entrypoint: 'buildView',
+          sessionExecution: true,
+        );
+        final contribution = MainContentContribution(
+          order: descriptor.order,
+          attach: (_) {},
+        );
         final presentation = fixture.runtime.extensions.register(
-          point: sessionPresentationContributions,
-          id: ExtensionId('dev.adele.test.unpinned.presentation'),
-          value: SessionPresentationContribution(
-            strategyId: _strategyId,
-            displayName: 'Independent frontend',
-            createPresentation: (_) => const SizedBox.shrink(),
-          ),
+          point: mainContentContributions,
+          id: descriptor.extensionId,
+          value: contribution,
         );
         addTearDown(presentation.close);
-        final host = PreparedSessionHost(
+        final services = PreparedSessionServices(
           extensions: fixture.runtime.extensions,
           backends: fixture.runtime.plugins,
-          controllerForSession: (_) => controller,
+          controllerForSession: (_, _) => controller,
           lookupControllerForSession: (_) => controller,
           inspectActivity: (_, _) => false,
+          isCurrent: (session) => identical(session, fixture.session),
         );
-        addTearDown(host.close);
-        SessionPresentationSelection resolve() => host.resolve(
-          SessionPresentationResolver(
-            fixture.runtime.extensions,
-          ).resolve(_strategyId),
-          session: fixture.session,
+        services.registerMetadata(
+          contribution,
+          PreparedPluginInstallation(
+            metadata: PluginMetadata(
+              id: PluginId('dev.adele.test.independent'),
+              version: '0.1.0',
+              displayName: 'Independent frontend',
+            ),
+            installationDirectory: Directory.systemTemp,
+            backendArtifactUri: null,
+          ),
+          descriptor,
         );
+        final view = fixture.runtime.extensions
+            .discover(mainContentContributions)
+            .single;
+        void bind() {
+          final bridge = services.bind(
+            view,
+            session: fixture.session,
+            isActive: () => true,
+          );
+          addTearDown(bridge.invalidate);
+        }
+
+        bind();
+        expect(controller.strategy, isNull);
+        expect(fixture.ids.values, isEmpty);
         await controller.startRun();
         final first = controller.activeRunFuture!;
+        final captured = controller.capturedStrategy!;
         final call = await fixture.model.callFor(fixture.session);
         if (!replaceWhileActive) {
           call.settle();
@@ -803,18 +1148,37 @@ Widget build(String handle) => buildSessionActivity(handle);
         }
         await fixture.strategy.close();
         fixture.strategy = fixture.registerStrategy();
+        final replacement = fixture.runtime.lifecycle.resolveSessionStrategy(
+          fixture.session.id,
+        );
+        expect(captured.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+        expect(captured.binding.id, replacement.binding.id);
+        expect(
+          captured.binding.isSameRegistration(replacement.binding),
+          isFalse,
+        );
         if (replaceWhileActive) {
-          expect(resolve, throwsA(isA<StaleExtensionBinding>()));
+          expect(bind, throwsA(isA<StaleExtensionBinding>()));
+          expect(controller.capturedStrategy, same(captured));
+          expect(fixture.ids.values, hasLength(1));
           call.settle();
           await first;
         }
-        expect(resolve, returnsNormally);
+        expect(bind, returnsNormally);
+        expect(controller.strategy, isNull);
         expect(controller.canStart, isTrue);
         await controller.startRun();
+        expect(
+          controller.capturedStrategy!.binding.isSameRegistration(
+            replacement.binding,
+          ),
+          isTrue,
+        );
         final second = controller.activeRunFuture!;
         (await fixture.model.callFor(fixture.session, 1)).settle();
         await second;
         expect(controller.currentRun!.run.state, RunState.completed);
+        expect(fixture.ids.values, hasLength(2));
       },
     );
   }

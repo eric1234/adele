@@ -46,3 +46,8 @@ bool inspectSessionActivity(String activityHandle) =>
 
 Widget buildSessionActivity(String activityHandle) =>
     throw UnsupportedError('Interpreted host only.');
+
+/// Host-owned status and approval controls for this exact presentation's Session.
+/// The plugin chooses placement, not decision permissions or approval identity.
+Widget buildSessionExecutionStatus() =>
+    throw UnsupportedError('Interpreted host only.');

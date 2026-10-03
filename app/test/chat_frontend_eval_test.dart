@@ -2,10 +2,16 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
+import 'package:adele_desktop/ui/main_content/main_content_controller.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
@@ -13,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/chat_frontend_compiler.dart';
 
 void main() {
@@ -36,11 +43,182 @@ void main() {
     addTearDown(generation.invalidate);
   });
 
+  test('stock Chat declares one ordinary Main Content contribution', () {
+    expect(stockFrontendDescriptors[chatStrategyPluginId.value], [
+      {
+        'role': 'mainContent',
+        'library': chatFrontendLibrary,
+        'extensionId': 'dev.adele.plugin.chat-strategy.presentation',
+        'order': 100,
+        'initialize': 'initializeChatMainContent',
+        'entrypoint': 'buildChat',
+        'sessionExecution': true,
+        'backendServices': [chatSessionServiceId],
+        'strategyAffinity': 'owningBackend',
+      },
+    ]);
+  });
+
+  for (final matching in [true, false]) {
+    for (final backendAvailable in [true, false]) {
+      testWidgets(
+        'compiled Chat initializer ${matching ? 'opens one pane' : 'opens nothing'} '
+        'with backend ${backendAvailable ? 'present' : 'absent'}',
+        (tester) async {
+          final extensions = ExtensionRegistry();
+          final session = Session(
+            id: SessionId('session-opaque'),
+            taskId: TaskId('task'),
+            strategyId: matching
+                ? chatStrategyId
+                : OrchestrationStrategyId('test.independent'),
+          );
+          final controller = MainContentController(
+            session: session,
+            extensions: extensions,
+          );
+          addTearDown(controller.dispose);
+          late Future<void> initialized;
+          late MainContentBridge initializer;
+          late MainContentAccess chatAccess;
+          extensions.register(
+            point: mainContentContributions,
+            id: ExtensionId('test.chat'),
+            value: MainContentContribution(
+              order: 100,
+              attach: (access) {
+                chatAccess = access;
+                return initialized = generation.invoke<void>(
+                  library: chatFrontendLibrary,
+                  entrypoint: 'initializeChatMainContent',
+                  createBridge: () => initializer = MainContentBridge(
+                    access: access,
+                    isActive: () => access.isActive,
+                    open: (id, title, canClose) => access.open(
+                      MainContentPane(
+                        id: id,
+                        title: title,
+                        onClose: canClose ? () => access.remove(id) : null,
+                        createPresentation: () => _presentation(
+                          generation,
+                          source,
+                          backendAvailable: backendAvailable,
+                        ),
+                      ),
+                    ),
+                  ),
+                  decodeResult: (value) {
+                    expect(
+                      value == null || (value as $Value).$reified == null,
+                      isTrue,
+                    );
+                  },
+                );
+              },
+            ),
+          );
+          extensions.register(
+            point: mainContentContributions,
+            id: ExtensionId('test.independent'),
+            value: MainContentContribution(
+              order: 300,
+              attach: (access) => access.open(
+                MainContentPane(
+                  id: 'independent',
+                  title: 'Independent',
+                  createPresentation: () => const Text('Independent content'),
+                ),
+              ),
+            ),
+          );
+          controller.reconcile();
+          await initialized;
+          expect(initializer.isActive, isFalse);
+          expect(chatAccess.panes, hasLength(matching ? 1 : 0));
+          if (matching) {
+            expect(chatAccess.panes.single.id, 'chat');
+            expect(chatAccess.panes.single.title, 'Chat');
+            expect(chatAccess.panes.single.canClose, isFalse);
+          }
+          expect(source.serviceAcquisitions, 0);
+          expect(source.executionReads, 0);
+          expect(source.calls, isEmpty);
+          expect(source.starts, 0);
+
+          Widget workspace() => MaterialApp(
+            home: Scaffold(
+              body: Row(
+                children: [
+                  for (final entry in controller.entries)
+                    Expanded(child: entry.presentation),
+                ],
+              ),
+            ),
+          );
+          await tester.pumpWidget(workspace());
+          await tester.pumpAndSettle();
+          expect(find.text('Independent content'), findsOneWidget);
+          final independent = tester.element(find.text('Independent content'));
+          if (matching) {
+            expect(source.serviceAcquisitions, 1);
+            if (backendAvailable) {
+              expect(find.byType(TextField), findsOneWidget);
+              expect(source.calls.single.$1, 'chat.session.snapshot');
+              expect(source.executionReads, greaterThan(0));
+              final scroll = tester.widget<SingleChildScrollView>(
+                find.byType(SingleChildScrollView),
+              );
+              expect(scroll.padding, const EdgeInsets.all(24));
+              final composer = tester
+                  .widget<TextField>(find.byType(TextField))
+                  .controller;
+              chatAccess.setTitle('chat', 'Renamed Chat');
+              await tester.pumpWidget(workspace());
+              await tester.pumpAndSettle();
+              expect(
+                tester.widget<SingleChildScrollView>(
+                  find.byType(SingleChildScrollView),
+                ),
+                same(scroll),
+              );
+              expect(
+                tester.widget<TextField>(find.byType(TextField)).controller,
+                same(composer),
+              );
+              expect(source.serviceAcquisitions, 1);
+              expect(source.calls, hasLength(1));
+            } else {
+              expect(find.text('Frontend unavailable.'), findsOneWidget);
+              expect(source.calls, isEmpty);
+            }
+          } else {
+            expect(find.text('Chat'), findsNothing);
+            expect(find.text('Frontend unavailable.'), findsNothing);
+            expect(source.serviceAcquisitions, 0);
+            expect(source.executionReads, 0);
+            expect(source.calls, isEmpty);
+          }
+          expect(
+            tester.element(find.text('Independent content')),
+            same(independent),
+          );
+          expect(source.starts, 0);
+          expect(source.submitted, isEmpty);
+          expect(source.writes, isEmpty);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(source.hasSubscriptions, isFalse);
+        },
+      );
+    }
+  }
+
   test(
     'prepared entrypoint returns a widget after generated snapshot loading',
     () async {
       final runtime = Runtime(artifact.readAsBytesSync().buffer.asByteData())
         ..addPlugin(flutterEvalPlugin)
+        ..addPlugin(const ScrollViewBridge())
         ..addPlugin(
           PreparedFrontendBridges([
             SessionPresentationLifecycleBridge(isActive: () => source.active),
@@ -1266,6 +1444,8 @@ Future<bool> configure() async {
       };
       final compiler = Compiler()
         ..addPlugin(flutterEvalPlugin)
+        ..addPlugin(const ScrollViewBridge())
+        ..addPlugin(const MainContentDeclarations())
         ..addPlugin(const OwningBackendDeclarations())
         ..addPlugin(const SessionExecutionDeclarations())
         ..addPlugin(const SessionPresentationLifecycleDeclarations())
@@ -1376,28 +1556,33 @@ Future<void> _submit(
   await tester.pumpAndSettle();
 }
 
-Widget _host(PreparedFrontend generation, _Source source) => MaterialApp(
-  home: Scaffold(
-    body: SingleChildScrollView(
-      child: generation.createPresentation(
-        library: chatFrontendLibrary,
-        entrypoint: 'buildChat',
-        key: ObjectKey(source),
-        createBridge: () => PreparedFrontendBridges([
-          source.lifecycle = SessionPresentationLifecycleBridge(
-            isActive: () => source.active,
-          ),
-          SessionExecutionBridge(source: source, isActive: () => source.active),
-          OwningBackendBridge(
-            channels: {chatSessionServiceId: source},
-            validateBinding: () {
-              if (!source.active) throw StateError('Retired fixture');
-            },
-          ),
-        ]),
+Widget _host(PreparedFrontend generation, _Source source) =>
+    MaterialApp(home: Scaffold(body: _presentation(generation, source)));
+
+Widget _presentation(
+  PreparedFrontend generation,
+  _Source source, {
+  bool backendAvailable = true,
+}) => generation.createPresentation(
+  library: chatFrontendLibrary,
+  entrypoint: 'buildChat',
+  key: ObjectKey(source),
+  createBridge: () {
+    source.serviceAcquisitions++;
+    if (!backendAvailable) throw StateError('Backend unavailable');
+    return PreparedFrontendBridges([
+      source.lifecycle = SessionPresentationLifecycleBridge(
+        isActive: () => source.active,
       ),
-    ),
-  ),
+      SessionExecutionBridge(source: source, isActive: () => source.active),
+      OwningBackendBridge(
+        channels: {chatSessionServiceId: source},
+        validateBinding: () {
+          if (!source.active) throw StateError('Retired fixture');
+        },
+      ),
+    ]);
+  },
 );
 
 String _draft(WidgetTester tester) =>
@@ -1474,6 +1659,8 @@ class _Source extends ChangeNotifier
   bool finishDuringStart = false;
   String? failure;
   int starts = 0;
+  int serviceAcquisitions = 0;
+  int executionReads = 0;
   int snapshotReads = 0;
   int sessionStateRevision = 0;
   int configurations = 0;
@@ -1570,7 +1757,11 @@ class _Source extends ChangeNotifier
   }
 
   @override
-  String currentSessionId() => 'session-opaque';
+  String currentSessionId() {
+    executionReads++;
+    return 'session-opaque';
+  }
+
   @override
   String? openRunActivity(String runId) {
     opened.add(runId);
@@ -1578,13 +1769,17 @@ class _Source extends ChangeNotifier
   }
 
   @override
-  Map<String, Object?> readExecution() => {
-    'canStart': active && !running,
-    'running': running,
-    'advancing': advancing,
-    'failure': failure,
-    'sessionStateRevision': sessionStateRevision,
-  };
+  Map<String, Object?> readExecution() {
+    executionReads++;
+    return {
+      'canStart': active && !running,
+      'running': running,
+      'advancing': advancing,
+      'failure': failure,
+      'sessionStateRevision': sessionStateRevision,
+    };
+  }
+
   @override
   Future<String> startRun() async {
     events.add('start');
@@ -1640,6 +1835,9 @@ class _Source extends ChangeNotifier
       child: Text('COMPACT $handle'),
     );
   }
+
+  @override
+  Widget buildStatus() => const SizedBox.shrink();
 
   @override
   void invalidate() => active = false;

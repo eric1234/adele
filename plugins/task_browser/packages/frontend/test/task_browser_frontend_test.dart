@@ -226,7 +226,7 @@ Widget build() => Text('Another frontend');
           'session-$status',
           '$status Session',
           executionStatus: status,
-          available: status != 'waitingForApproval',
+          executionAvailable: status != 'waitingForApproval',
         ),
       );
     }
@@ -256,9 +256,8 @@ Widget build() => Text('Another frontend');
             find.widgetWithText(ListTile, 'waitingForApproval Session'),
           )
           .enabled,
-      isFalse,
+      isTrue,
     );
-    await tester.tap(find.text('waitingForApproval Session'));
     expect(source.operations, isEmpty);
     final reads = source.reads;
     source.sessions[2]['executionStatus'] = 'completed';
@@ -411,47 +410,56 @@ Widget build() => Text('Another frontend');
     ]);
   });
 
-  testWidgets('Session rows open exact IDs and unavailable rows are disabled', (
-    tester,
-  ) async {
-    source.selectedId = 'task-a';
-    source.sessions.addAll([
-      _session('session-first', 'First session'),
-      _session('session-last', 'Other session'),
-      _session('session-unavailable', 'Offline session', available: false),
-    ]);
-    await mount(tester);
-    expect(
-      find.text(
-        'Session: session-first\nStrategy: dev.example.chat\nStatus: Idle',
-      ),
-      findsOneWidget,
-    );
-    expect(
-      tester
-          .widget<ListTile>(find.widgetWithText(ListTile, 'Offline session'))
-          .enabled,
-      isFalse,
-    );
-    await tester.tap(find.text('Offline session'));
-    await tester.tap(find.text('First session'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Other session'));
-    await tester.pumpAndSettle();
-    expect(source.operations, [
-      ('openSession', 'session-first'),
-      ('openSession', 'session-last'),
-    ]);
-    source.sessions[0]['available'] = false;
-    source.notifyListeners();
-    await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<ListTile>(find.widgetWithText(ListTile, 'First session'))
-          .enabled,
-      isFalse,
-    );
-  });
+  testWidgets(
+    'Session rows open exact IDs even when execution is unavailable',
+    (tester) async {
+      source.selectedId = 'task-a';
+      source.sessions.addAll([
+        _session('session-first', 'First session'),
+        _session('session-last', 'Other session'),
+        _session(
+          'session-unavailable',
+          'Offline session',
+          executionAvailable: false,
+        ),
+      ]);
+      await mount(tester);
+      expect(
+        find.text(
+          'Session: session-first\nStrategy: dev.example.chat\nStatus: Idle',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Offline session'))
+            .enabled,
+        isTrue,
+      );
+      expect(find.text('Open'), findsNWidgets(3));
+      expect(find.textContaining('Execution unavailable'), findsOneWidget);
+      await tester.tap(find.text('Offline session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('First session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Other session'));
+      await tester.pumpAndSettle();
+      expect(source.operations, [
+        ('openSession', 'session-unavailable'),
+        ('openSession', 'session-first'),
+        ('openSession', 'session-last'),
+      ]);
+      source.sessions[0]['canOpen'] = false;
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'First session'))
+            .enabled,
+        isFalse,
+      );
+    },
+  );
 
   testWidgets('narrow detail navigation and resizing retain local state', (
     tester,
@@ -850,7 +858,7 @@ Widget build() => Text('Another frontend');
         _session(
           'session-b5d48a0c-9a39-480a-aaf5-bfdb40fd4675',
           'A descriptive Chat Session presentation',
-          available: false,
+          executionAvailable: false,
           executionStatus: 'waitingForApproval',
         ),
       );
@@ -858,7 +866,7 @@ Widget build() => Text('Another frontend');
       await tester.tap(find.text(title));
       await tester.pumpAndSettle();
       expect(find.text('Primary Environment'), findsOneWidget);
-      expect(find.text('Unavailable'), findsOneWidget);
+      expect(find.text('Open'), findsOneWidget);
       expect(
         find.text('Back to Tasks'),
         width < 760 ? findsOneWidget : findsNothing,
@@ -871,13 +879,15 @@ Widget build() => Text('Another frontend');
 Map<String, Object?> _session(
   String id,
   String name, {
-  bool available = true,
+  bool canOpen = true,
+  bool executionAvailable = true,
   String executionStatus = 'idle',
 }) => {
   'id': id,
   'strategyId': 'dev.example.chat',
-  'presentationName': name,
-  'available': available,
+  'displayName': name,
+  'canOpen': canOpen,
+  'executionAvailable': executionAvailable,
   'executionStatus': executionStatus,
 };
 

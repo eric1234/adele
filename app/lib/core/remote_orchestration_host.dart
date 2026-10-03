@@ -24,15 +24,21 @@ final class RemoteOrchestrationStrategyAdapter
     final metadata = remote.exposure.metadata;
     final strategyId = metadata['strategyId'];
     final routeId = metadata['routeId'];
+    final displayName = metadata['displayName'];
     if (remote.exposure.serviceId != remoteOrchestrationServiceId ||
-        metadata.length != 2 ||
+        metadata.keys.any(
+          (key) =>
+              key != 'strategyId' && key != 'routeId' && key != 'displayName',
+        ) ||
         strategyId is! String ||
         strategyId.trim().isEmpty ||
         routeId is! String ||
-        routeId.trim().isEmpty) {
+        routeId.trim().isEmpty ||
+        (metadata.containsKey('displayName') &&
+            (displayName is! String || displayName.trim().isEmpty))) {
       throw const ExtensionContractException(
         'Orchestration exposure requires its supported service and only '
-        'nonblank strategyId and routeId metadata.',
+        'nonblank strategyId, routeId, and optional displayName metadata.',
       );
     }
     final strategy = _RemoteStrategy(
@@ -42,6 +48,7 @@ final class RemoteOrchestrationStrategyAdapter
     );
     return OrchestrationStrategyContribution(
       strategyId: strategy.strategyId,
+      displayName: displayName as String?,
       materialize: strategy.materialize,
     );
   }

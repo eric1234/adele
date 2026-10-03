@@ -10,6 +10,46 @@ import '../../tools/stock_frontend_descriptors.dart';
 import '../../tools/test_runner.dart';
 
 void main() {
+  test(
+    'editor-smoke wires workspace and preparation as independent opt-ins',
+    () {
+      final source = File('tools/adele.dart').readAsStringSync();
+      final start = source.indexOf("case 'editor-smoke':");
+      final route = source.substring(
+        start,
+        source.indexOf("case 'bootstrap':", start),
+      );
+      expect(
+        route,
+        contains("prepareOnly: arguments.contains('--prepare-only')"),
+      );
+      expect(route, contains("workspace: arguments.contains('--workspace')"));
+      expect(route, contains('arguments.skip(2).toSet().length'));
+      expect(route, contains('linux [--workspace] [--prepare-only]'));
+    },
+  );
+
+  test(
+    'editor-smoke rejects unsupported and duplicate options before preparation',
+    () async {
+      for (final options in [
+        <String>[],
+        ['windows', '--workspace'],
+        ['linux', '--workspace', '--workspace'],
+        ['linux', '--prepare-only', '--prepare-only'],
+        ['linux', '--other'],
+      ]) {
+        final result = await Process.run(Platform.resolvedExecutable, [
+          'tools/adele.dart',
+          'editor-smoke',
+          ...options,
+        ]);
+        expect(result.exitCode, 64, reason: options.toString());
+        expect(result.stderr, contains('linux [--workspace] [--prepare-only]'));
+      }
+    },
+  );
+
   group('test target pool', () {
     test(
       'bounds concurrency, overlaps work, and executes every target',
@@ -826,7 +866,7 @@ void main() {
   test('compact composition preserves plugin parsing and authority boundaries', () {
     final files = <File>[
       for (final path in [
-        'app/lib/ui/session',
+        'app/lib/ui/main_content',
         'app/lib/ui/execution',
         'app/lib/ui/activity',
         'app/lib/ui/inspection',

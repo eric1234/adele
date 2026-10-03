@@ -11,6 +11,7 @@ final class AdeleShell extends StatelessWidget {
     required this.project,
     required this.selectors,
     required this.onSelectProject,
+    required this.sessionPresented,
     this.openingProject = false,
     this.projectError,
     this.task,
@@ -36,6 +37,9 @@ final class AdeleShell extends StatelessWidget {
   final Task? task;
   final Environment? environment;
   final Widget? taskBrowser;
+
+  /// Workbench context is independent of strategy widget availability.
+  final bool sessionPresented;
   final Widget? sessionContent;
   final String? sessionLabel;
   final VoidCallback? onProject;
@@ -63,7 +67,7 @@ final class AdeleShell extends StatelessWidget {
                   child: Text(projectDisplayName(project)),
                 ),
                 const Text(' > '),
-                if (sessionContent != null && task != null) ...[
+                if (sessionPresented && task != null) ...[
                   TextButton(
                     key: const ValueKey('task-breadcrumb'),
                     onPressed: navigating ? null : onTask,
@@ -99,7 +103,7 @@ final class AdeleShell extends StatelessWidget {
             Expanded(
               child: project == null
                   ? _projectSelection(context)
-                  : sessionContent == null
+                  : !sessionPresented
                   ? taskBrowser ??
                         const Center(child: Text('Task Browser unavailable'))
                   : _sessionLayout(),
@@ -187,10 +191,11 @@ final class AdeleShell extends StatelessWidget {
         children: [
           Expanded(
             flex: 3,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: sessionContent,
-            ),
+            child:
+                sessionContent ??
+                const Center(
+                  child: Text('Session presentation is unavailable.'),
+                ),
           ),
           if (inspection case final content?)
             Expanded(

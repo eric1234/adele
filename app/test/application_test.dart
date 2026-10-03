@@ -9,7 +9,7 @@ import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/main.dart' as application;
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
-import 'package:adele_desktop/ui/session/session_presentation_host.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -62,10 +62,7 @@ void main() {
         expect(runtime.plugins.catalog!.installations, isEmpty);
         expect(runtime.plugins.catalog!.issues, isEmpty);
         expect(runtime.plugins.backends, isEmpty);
-        expect(
-          runtime.extensions.discover(sessionPresentationContributions),
-          isEmpty,
-        );
+        expect(runtime.extensions.discover(mainContentContributions), isEmpty);
         expect(
           runtime.extensions.discover(toolActivityInspectionContributions),
           isEmpty,
@@ -445,35 +442,45 @@ void main() {
         ),
       );
       final presented = <Session>[];
-      ExtensionRegistration presentation(String name, {bool strategy = true}) {
+      ExtensionRegistration? contribution(String name, {bool strategy = true}) {
         final key = name.toLowerCase();
         final id = OrchestrationStrategyId('dev.example.$key');
+        ExtensionRegistration? strategyRegistration;
         if (strategy) {
-          registrations.add(
-            runtime.extensions.register(
-              point: orchestrationStrategyContributions,
-              id: ExtensionId('dev.example.$key.strategy'),
-              value: OrchestrationStrategyContribution(
-                strategyId: id,
-                materialize: (_) => throw StateError('No Run should start.'),
-              ),
+          strategyRegistration = runtime.extensions.register(
+            point: orchestrationStrategyContributions,
+            id: ExtensionId('dev.example.$key.strategy'),
+            value: OrchestrationStrategyContribution(
+              strategyId: id,
+              displayName: name,
+              materialize: (_) => throw StateError('No Run should start.'),
             ),
           );
+          registrations.add(strategyRegistration);
         }
-        final registration = runtime.extensions.register(
-          point: sessionPresentationContributions,
-          id: ExtensionId('dev.example.$key.presentation'),
-          value: SessionPresentationContribution(
-            strategyId: id,
-            displayName: name,
-            createPresentation: (session) {
-              presented.add(session);
-              return Text('$name presentation');
-            },
+        registrations.add(
+          runtime.extensions.register(
+            point: mainContentContributions,
+            id: ExtensionId('dev.example.$key.presentation'),
+            value: MainContentContribution(
+              order: 100,
+              attach: (access) {
+                if (access.session.strategyId != id) return;
+                access.open(
+                  MainContentPane(
+                    id: 'fixture',
+                    title: name,
+                    createPresentation: () {
+                      presented.add(access.session);
+                      return Text('$name presentation');
+                    },
+                  ),
+                );
+              },
+            ),
           ),
         );
-        registrations.add(registration);
-        return registration;
+        return strategyRegistration;
       }
 
       await tester.runAsync(() async {
@@ -514,9 +521,9 @@ void main() {
         find.text('No Session creation strategy is available.'),
         findsOneWidget,
       );
-      presentation('Unavailable', strategy: false);
-      final first = presentation('First');
-      presentation('Second');
+      contribution('Unavailable', strategy: false);
+      final first = contribution('First')!;
+      contribution('Second');
       await tester.pumpAndSettle();
       expect(find.text('Unavailable'), findsNothing);
       expect(find.text('First'), findsOneWidget);
@@ -527,7 +534,7 @@ void main() {
       await first.close();
       stale();
       await tester.pumpAndSettle();
-      expect(find.byType(SessionPresentationHost), findsNothing);
+      expect(find.byType(MainContentHost), findsNothing);
       expect(presented, isEmpty);
       expect(runtime.store.sessionsForTask(task.id), isEmpty);
       await tester.tap(find.text('New Second Session'));

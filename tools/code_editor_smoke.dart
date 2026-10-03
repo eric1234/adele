@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'backend_artifacts.dart';
 import 'code_editor_dependency.dart';
 import 'code_editor_smoke_support.dart';
 
@@ -9,6 +10,7 @@ import 'code_editor_smoke_support.dart';
 Future<void> runCodeEditorSmoke(
   Directory repository, {
   bool prepareOnly = false,
+  bool workspace = false,
 }) async {
   if (!Platform.isLinux) {
     throw UnsupportedError('The integrated editor smoke supports Linux x64.');
@@ -98,11 +100,21 @@ Future<void> runCodeEditorSmoke(
                 ).readAsString(),
               )
               as Map<String, dynamic>;
+      if (workspace) stage = 'prepare-workspace';
+      final defines = workspace
+          ? await prepareDesktopPluginDefines(
+              repositoryRoot: repository,
+              flutterExecutable: '$flutterRoot/bin/flutter',
+              environment: environment,
+            )
+          : const <String>[];
       await run('prepare-evc', '$flutterRoot/bin/flutter', [
         'test',
         '--no-pub',
         '--concurrency',
         '1',
+        ...defines,
+        if (workspace) '--dart-define=ADELE_CODE_EDITOR_WORKSPACE=true',
         'tool/code_editor_smoke/prepare_test.dart',
       ]);
       final artifact = File('${output.path}/editor_frontend.evc');
@@ -115,6 +127,8 @@ Future<void> runCodeEditorSmoke(
         '--profile',
         '--no-pub',
         '--target=tool/code_editor_smoke/main.dart',
+        ...defines,
+        if (workspace) '--dart-define=ADELE_CODE_EDITOR_WORKSPACE=true',
         '--dart-define=ADELE_CODE_EDITOR_IDENTITY=${codeEditorSmokeIdentity(metadata, preparationIdentity: prepared['identity'] as String)}',
       ]);
       final bundle = Directory('${app.path}/build/linux/x64/profile/bundle');
@@ -130,6 +144,14 @@ Future<void> runCodeEditorSmoke(
       await artifact.copy('${bundle.path}/data/editor_frontend.evc');
       await run('native-artifact', 'sha256sum', [library.path]);
       stdout.writeln('Manual editor: ${executable.path} --interactive');
+      if (workspace) {
+        stdout.writeln('Manual workspace: ${executable.path} --workspace');
+        stdout.writeln(
+          'Open a Git Project, create a Task and Chat Session, then use the '
+          'synthetic editor controls. Editor text is in-memory and discarded '
+          'on Session departure; no model configuration is needed.',
+        );
+      }
       if (prepareOnly) {
         stdout.writeln(
           'Bundle prepared; automated runtime checks were not run.',
@@ -168,6 +190,23 @@ Future<void> runCodeEditorSmoke(
         } finally {
           await File(unavailable).rename(library.path);
         }
+        if (workspace) {
+          final workspaceSmoke = await run(
+            'workspace-run',
+            'xvfb-run',
+            [...launch, '--workspace-smoke'],
+            cwd: runtime,
+            env: runtimeEnvironment,
+            seconds: 180,
+            allowFailure: true,
+          );
+          validateCodeEditorSmoke(workspaceSmoke);
+          if (!(workspaceSmoke.stdout as String).contains(
+            'ADELE_EDITOR_WORKSPACE_COMPLETE',
+          )) {
+            throw StateError('Workspace smoke did not complete.');
+          }
+        }
       } finally {
         await runtime.delete(recursive: true);
       }
@@ -181,6 +220,7 @@ Future<void> runCodeEditorSmoke(
     await File('${logs.path}/result.json').writeAsString(
       const JsonEncoder.withIndent('  ').convert({
         'prepareOnly': prepareOnly,
+        'workspace': workspace,
         'lastStage': stage,
         'failure': failure?.toString(),
         'flutter': sdk,

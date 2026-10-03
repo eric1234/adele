@@ -1,16 +1,22 @@
 # Chat Frontend
 
-`chat_strategy_frontend` is the installed Chat Session EVC. It depends on Flutter,
+`chat_strategy_frontend` is the installed Chat Main Content EVC. It depends on Flutter,
 the plugin-owned Chat contract, and public `adele_ui` bridges, not the application,
 kernel, or Chat backend implementation.
 
 The generated `ChatSessionServiceClient` loads canonical snapshots, saves the
 plain-text Draft Request, and submits it over `OwningBackendRequestChannel`.
-The prepared Session descriptor explicitly allowlists the generated service ID
-and requires `owningBackend`
-strategy affinity. Generic hosting captures the exact sibling backend connection
-and pins execution to its strategy binding. Neither service requests nor later
-Runs silently select a replacement generation.
+Its `mainContent` descriptor uses ordinary order 100, requests `sessionExecution`,
+explicitly allowlists the generated service ID, and requires `owningBackend`
+strategy affinity. `initializeChatMainContent` reads only
+`readMainContentContext()` (`sessionId`, `strategyId`, `taskId`) and opens local pane
+`chat` only when the strategy matches the public `chatStrategyId`. A mismatch opens
+nothing and acquires no execution controller or backend service. The host neither
+injects Chat nor reserves its order value.
+
+For an admitted pane, generic hosting validates and captures the exact sibling
+backend connection and pins execution to its strategy binding. Neither service
+requests nor later Runs silently select a replacement generation.
 
 The backend owns the durable Draft Request; the frontend restores its exact text
 on initial load and owns immediate local edits, asynchronous save/acceptance/start
@@ -24,15 +30,18 @@ Failed initial snapshot loading remains explicitly retryable, and later history 
 overwrite newer local edits. Disposal detaches subscriptions and rejects late
 settlements without issuing queued saves or starting a Run.
 
-The prepared presentation registers a `Future<bool>` deactivation callback through
+The contributed pane registers a `Future<bool>` deactivation callback through
 the public Session presentation lifecycle bridge and unregisters it on disposal.
-Before ordinary navigation, the host suppresses input and awaits this hook while
-the view and its backend channel remain live. Chat joins the sequential save queue
+Before actual Session departure, the host suppresses input and aggregates this
+hook with those of other contributed panes while the view and its backend channel
+remain live. Chat joins the sequential save queue
 until the latest local draft is acknowledged. A failed save returns false, keeping
 the view, text, and error available for retry; an in-flight Send also refuses
 deactivation rather than allowing partial acceptance/navigation. The hook neither
 submits a message nor starts a Run. Forced disposal or generation retirement still
-cannot guarantee durability of unacknowledged edits.
+cannot guarantee durability of unacknowledged edits. Title/order/width changes and
+pane focus do not invoke Session departure. Frontend retirement revokes the pane's
+services and callbacks, not the independently owned Run.
 
 Send disables duplicate submission, flushes the latest local draft, then asks the
 backend to atomically accept and clear it. Save or submission failure preserves
@@ -56,7 +65,10 @@ evaluator's `TextField` bridge, which currently exposes no `maxLines` option.
 Chat decides which completed model activities appear between messages and whether
 to show a single compact output or a narrated group. The generic Session bridge
 supplies immutable activity and validated handles for compact widgets and
-Inspection. Common Run status and approval controls remain in core native UI.
+Inspection. `buildChat` owns its scroll/layout and places
+`buildSessionExecutionStatus()` below the Chat frontend. That public bridge builds
+the existing native Run status and approval controls; core retains controllers,
+policy, and exact approval validation while Chat chooses UI placement.
 Canonical user entries carry a nullable semantic `runId` association, while opaque
 handles remain presentation-local. After hydration, the frontend calls
 `openSessionRunActivity` only for associated entries without an existing live

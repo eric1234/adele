@@ -126,12 +126,14 @@ desktop-plugins/build-*/
 
 Each installed JSON manifest contains a schema version, plugin metadata, and
 independently optional `backend` and `frontend` components. Each frontend contains
-a relative artifact, required `presentations` list for Session, tool activity,
-or model-native activity roles, and optional separate `extensions` list supporting
+a relative artifact, required `presentations` list for Main Content, Task Browser,
+console, tool activity, or model-native activity roles, and optional separate `extensions` list supporting
 `kind: 'projectSelector'`. Empty lists are valid and both may coexist under manifest
-version 1. Session descriptors include `displayName` and may declare an explicit
-`backendServices` allowlist and `strategyAffinity`; Chat allowlists generated
-`chatSessionServiceId` and uses `owningBackend`, with no `hostAdapter`. Descriptors are executable
+version 1. Main Content descriptors declare a group order and initialization and
+pane entrypoints; optional `sessionExecution`, `backendServices`, and
+`strategyAffinity` request scoped services. Chat's initializer decides its own
+applicability; its pane allowlists generated `chatSessionServiceId` and uses
+`owningBackend`. Descriptors are executable
 ABI/preparation data, not profile state. Manifests contain no source paths, backend
 capability/extension exposures, configuration, or activation state. Their runtime schema and catalog failure rules
 are maintained in

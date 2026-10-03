@@ -1304,6 +1304,9 @@ class _InspectionSessionSource extends ChangeNotifier
       throw StateError('The probe EVC owns its group presentation.');
 
   @override
+  Widget buildStatus() => const SizedBox.shrink();
+
+  @override
   void invalidate() {}
 
   @override

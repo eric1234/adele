@@ -269,8 +269,9 @@ class _TaskBrowserFrontendState extends State<TaskBrowserFrontend> {
   Widget sessionRow(dynamic session) {
     final String id = session['id'] as String;
     final String strategy = session['strategyId'] as String;
-    final String name = session['presentationName'] as String;
-    final bool available = session['available'] == true;
+    final String name = session['displayName'] as String;
+    final bool canOpen = session['canOpen'] == true;
+    final bool executionAvailable = session['executionAvailable'] == true;
     final labels = <String, String>{
       'idle': 'Idle',
       'preparing': 'Preparing',
@@ -281,12 +282,17 @@ class _TaskBrowserFrontendState extends State<TaskBrowserFrontend> {
       'failed': 'Failed',
     };
     final String status = labels[session['executionStatus']] as String;
+    final String availability = executionAvailable
+        ? ''
+        : '\nExecution unavailable';
     return ListTile(
       title: Text(name),
-      subtitle: Text('Session: $id\nStrategy: $strategy\nStatus: $status'),
+      subtitle: Text(
+        'Session: $id\nStrategy: $strategy\nStatus: $status$availability',
+      ),
       isThreeLine: true,
-      trailing: Text(available ? 'Open' : 'Unavailable'),
-      enabled: available && canAct(),
+      trailing: Text(canOpen ? 'Open' : 'Unavailable'),
+      enabled: canOpen && canAct(),
       onTap: actionCallback('openSession', id),
     );
   }

@@ -17,6 +17,21 @@ void main() {
     expect(productId, product.OrchestrationStrategyId(strategyId.value));
   });
 
+  test('strategy display name is optional non-executable metadata', () {
+    final unnamed = OrchestrationStrategyContribution(
+      strategyId: strategyId,
+      materialize: _materialize,
+    );
+    final named = OrchestrationStrategyContribution(
+      strategyId: strategyId,
+      displayName: 'Example',
+      materialize: _materialize,
+    );
+    expect(unnamed.displayName, isNull);
+    expect(named.displayName, 'Example');
+    expect(named.strategyId, unnamed.strategyId);
+  });
+
   test('unavailable strategy carries the requested semantic identity', () {
     final OrchestrationStrategyResolver resolver =
         OrchestrationStrategyResolver(ExtensionRegistry());

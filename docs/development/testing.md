@@ -151,13 +151,15 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
+| Grouped Main Content ownership/layout | [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart), [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart), [`test/adele_shell_test.dart`](../../app/test/adele_shell_test.dart) (registered groups only, ordinary ordering including Chat, zero-pane geometry, contiguous groups, stable panes, equal individual widths/minima, local reveal/focus, departure/retirement, and canonical Session context independent of view availability) |
+| Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (short-lived identity-only initialization, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
 | Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, selected-only default, lazy bounded LRU residency including the selected slot, exact interaction epochs, working-set departure, advisory confirmation, retirement, and bounded cleanup) |
 | Prepared console/Session Environment authority | [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (actual EVC action/content paths, canonical Session association rather than Task primary, captured creation scope, fresh view access, title/exit policy, and failure cleanup) |
 | Native terminal lifecycle/title observation | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart), [`test/environment_terminal_owner_test.dart`](../../app/test/environment_terminal_owner_test.dart) (normalized title changes, hidden observation, lifecycle/cleanup evidence separate from output, and conservative pre-resource failure) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
-| Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, unavailable retained Sessions, exact creation choices, retirement, and opening without Environment materialization or Run start) |
+| Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, canonical opening independent of frontend/backend availability, separate execution status/readiness, exact orchestration creation choices and label fallback, retirement, and opening without Environment materialization or Run start) |
 | Task Browser bridge/view hosting | [`test/task_browser_bridge_test.dart`](../../app/test/task_browser_bridge_test.dart), [`test/task_browser_presentation_host_test.dart`](../../app/test/task_browser_presentation_host_test.dart) (safe action settlement, subscriptions/revocation, zero/one/many resolution, and retained factory state) |
 | Prepared Task Browser activation | [`test/prepared_task_browser_host_test.dart`](../../app/test/prepared_task_browser_host_test.dart) (frontend-only activation, lazy source creation/disposal, exact retirement, and per-view bytecode/entrypoint failure) |
 | Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
@@ -167,13 +169,13 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Prepared Chat composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
-| Session presentation settlement/rebinding | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_host_test.dart`](../../app/test/prepared_session_host_test.dart) (async hook acceptance/failure, no-hook behavior, retirement during settlement, and exact action revocation on unbind/reopen) |
-| Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
+| Prepared Chat applicability/composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
+| Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
+| Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
+| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; canonical Session opening with missing components or zero Main Content, ordinary Chat/editor coexistence, frontend retirement without Run closure, concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
 
 Application dependency-boundary checks belong to
@@ -186,6 +188,79 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused Main Content checks
+
+These commands map affected boundaries, not recorded test outcomes. After bootstrap
+and current generation, select public API, catalog, and tooling targets from the
+repository root:
+
+```sh
+dart tools/adele.dart test --target adele_ui
+dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart test --target adele_orchestration
+dart tools/adele.dart test --target adele_tools
+```
+
+The public cases live in
+[`packages/ui/test/main_content_test.dart`](../../packages/ui/test/main_content_test.dart)
+and [`session_bridge_test.dart`](../../packages/ui/test/session_bridge_test.dart);
+descriptor validation remains in
+[`prepared_plugin_catalog_test.dart`](../../packages/plugin_runtime/test/prepared_plugin_catalog_test.dart).
+For focused host iteration from `app/`, serialize Flutter invocations sharing its
+build directory:
+
+```sh
+flutter test --no-pub --concurrency 1 test/main_content_controller_test.dart test/main_content_host_test.dart test/adele_shell_test.dart test/inspection_stack_test.dart
+flutter test --no-pub --concurrency 1 test/prepared_main_content_host_test.dart test/prepared_session_services_test.dart test/session_presentation_lifecycle_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/window_task_browser_source_test.dart test/session_execution_bridge_test.dart
+```
+
+The controller/widget tests target registered groups without an injected strategy
+pane, zero-pane layout, ordinary Chat ordering, exact retirement, and pane
+identity across title/order/width changes, local scroll/focus, bounded geometry,
+and failure isolation. Prepared-host tests use actual EVC through the generic
+catalog/bootstrap path, including readiness and stale callback boundaries. Service
+tests keep exact backend/installation/controller validation separate from renderer
+selection. Chat's initializer uses only captured identities; applicability mismatch
+must not acquire execution or backend services. Navigation checks distinguish
+canonical `canOpen` from `executionAvailable` and retained status, and creation
+choices from UI availability.
+
+For native editor ownership and stock Chat integration, first run
+`dart tools/adele.dart build-code-editor-tests` from the repository root and set
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the absolute directory it prints.
+Then, from `app/`:
+
+```sh
+flutter test --no-pub --concurrency 1 test/main_content_editor_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --plain-name 'normal catalog editor panes preserve the stock Chat draft and active Run'
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --name 'actual Task Browser opens retained|hidden installed Session|prepared Chat navigation'
+```
+
+The focused editor case checks independent EVC runtimes, native text/undo, and
+stable view/controller identities across interpreted collection changes. The
+normal application case installs the frontend-only synthetic fixture alongside the
+stock catalog and launches actual `AdeleApplication`. The interpreted
+[`main_content_frontend.dart`](../../app/test/fixtures/main_content_frontend.dart)
+owns open/title/order/focus/remove requests; the shared
+[`main_content_fixture.dart`](../../app/tool/main_content_fixture.dart) supplies
+independent native editor bindings. Assertions compare retained Chat presentation,
+composer, Session/Run, and editor identities before and during a gated local fake
+Responses invocation. Neighbor operations must retain the actual Chat EVC, not a
+native stand-in. The same suite maps retained opening with absent frontend,
+absent backend, or no Main Content; per-pane draft settlement/retry; and frontend
+retirement while core execution survives. The synthetic editors may release their
+owners on Session departure; this is fixture policy, not future Source Document
+lifetime. These are test paths and intended assertions, not recorded passing
+outcomes, live-model checks, or human desktop evidence.
+
+The unrestricted maintained `adele_desktop` target discovers these app files
+without new test-list wiring or a CI concurrency change. For application-wide
+changes use `dart tools/adele.dart test --target adele_desktop --ci`, which also
+prepares the native library/environment. Use the [editor checks](#focused-editor-checks)
+for lower-level native/bridge changes and the
+[manual grouped workspace](#manual-grouped-workspace) for interactive inspection.
 
 ### Focused editor checks
 
@@ -310,7 +385,7 @@ flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_t
 flutter test --no-pub --concurrency 1 test/core/command_output_capture_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/remote_model_tool_host_test.dart test/core/remote_model_tool_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/project_storage_host_test.dart test/core/project_database_test.dart test/core/product_lifecycle_test.dart
-flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/prepared_session_host_test.dart test/session_execution_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/prepared_session_services_test.dart test/session_execution_bridge_test.dart
 ```
 
 The early stream fixture compiles a generated `Stream<DTO>` client and mounts its
@@ -493,7 +568,7 @@ For focused host and navigation iteration from `app/`, with generated parts curr
 ```sh
 flutter test --no-pub test/window_task_browser_source_test.dart test/task_browser_bridge_test.dart test/task_browser_presentation_host_test.dart
 flutter test --no-pub test/prepared_task_browser_host_test.dart
-flutter test --no-pub test/session_presentation_lifecycle_bridge_test.dart test/prepared_session_host_test.dart test/chat_frontend_eval_test.dart
+flutter test --no-pub test/session_presentation_lifecycle_bridge_test.dart test/prepared_session_services_test.dart test/chat_frontend_eval_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 ```
 
@@ -647,7 +722,9 @@ generation, and artifact-preparation details.
 as its development entrypoint. It first compiles the public-UI fixture into EVC,
 then packages `data/editor_frontend.evc` beside the app's native library. Runtime
 loads those prepared bytes; it never compiles source or substitutes another editor.
-This is a single development target, separate from normal product startup.
+The default mode is an isolated development surface, separate from normal product
+startup. The same target's [workspace mode](#manual-grouped-workspace) instead
+hosts prepared contributions alongside stock Chat in the actual application.
 
 Use Linux x64, the pinned Flutter/Dart and Rust toolchains, ordinary Linux Flutter
 desktop dependencies, `timeout`, `sha256sum`, and Xvfb (`xvfb-run`). After bootstrap,
@@ -717,6 +794,50 @@ output or with explicit dependency replacement.
 
 Human validation of this integrated path is not established here. An automated
 smoke result or `--prepare-only` build must not be reported as those human checks.
+
+#### Manual grouped workspace
+
+Reuse the same editor-smoke target rather than a separate development application.
+With the pinned SDK and native prerequisites above, run from the repository root:
+
+```sh
+dart tools/adele.dart editor-smoke linux --workspace --prepare-only
+env -C /tmp -u LD_LIBRARY_PATH -u LD_PRELOAD -u FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR "$PWD/app/build/linux/x64/profile/bundle/adele_desktop" --workspace
+```
+
+Preparation uses the stock catalog/build path and adds the freshly compiled
+frontend-only Main Content fixture to that development installation root. Launch
+uses `AdeleApplication`, ordinary catalog discovery/registration, stock Task Browser
+and directly contributed Chat, and the shared fixture's native bindings. No runtime
+compilation or manual collection injection substitutes for the interpreted contribution. Model
+execution is intentionally disabled in this workspace route; no credentials or
+Run are needed. The synthetic editor text is in memory, but ordinary Project/Task
+creation still uses the stock product lifecycle, so choose a disposable Git Project.
+
+1. Open that Git Project, create a Task, and create a Chat Session. Confirm Chat
+   and **Editor A** are visible, then enter an unsent Chat draft.
+2. Use **Open B**, **Rename B**, and **Reverse editors** in A. Check equal
+   individual pane widths and that Chat's draft and both editors' text remain
+   intact through title/order changes. Type separately in A and B and use ordinary
+   undo/redo to check their independent state.
+3. Narrow the window until Main Content overflows. Use **Focus A** and **Focus B**
+   to reveal/focus the chosen editor without scrolling the surrounding surfaces.
+4. Finish composition, use **Remove B** or its close chrome, then **Open B** again.
+   B is a fresh editor; A and Chat should remain unchanged. Use the Task breadcrumb
+   to leave, then reopen the Session to inspect fresh attachment. Consult the
+   [known native limitations](../../app/README.md#known-limitations) for composition
+   at departure.
+
+The fixture deliberately releases its in-memory editor owners on departure.
+It does not establish a rule for Source Documents keyed by Environment and
+resource path; see [Document/view direction](../product/development-workflow/README.md#39-document-versus-editor-view).
+
+For automated profile coverage, `dart tools/adele.dart editor-smoke linux
+--workspace` runs the existing editor positive/negative checks and an additional
+`--workspace-smoke` subprocess over a temporary Git Project, normal application
+navigation, and pane operations. This is not human keyboard/IME evidence. Neither
+these commands nor `--prepare-only` assert that manual validation has been run.
+Do not prepare or run concurrent Flutter jobs against the same app build output.
 
 ## Live tests
 

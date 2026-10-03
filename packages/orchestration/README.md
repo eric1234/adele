@@ -16,10 +16,17 @@ registration. A replacement registration may retain both IDs, but it is still a
 different exact binding even when its metadata is unchanged.
 
 `OrchestrationStrategyContribution` contains a required `strategyId` and
-`materialize` callback. Register it at the typed
+`materialize` callback, plus optional `displayName`. The label is presentation
+metadata on the strategy contribution, independent of any frontend; consumers
+fall back to `strategyId` when it is absent. Register it at the typed
 `orchestrationStrategyContributions` extension point using `ExtensionRegistry`.
 `OrchestrationStrategyResolver(registry).resolve(strategyId)` scans the current
 contributions by semantic ID; it has no separate strategy registry or cache.
+
+Host New Session choices come from these exact executable registrations, not
+Main Content or a dummy UI contribution. Creation revalidates the retained
+choice's liveness and uniqueness. Opening an existing canonical Session is separate
+from strategy availability and does not require a frontend or start a Run.
 
 No match throws `OrchestrationStrategyUnavailable` with the requested strategy
 ID. Multiple matches throw `AmbiguousOrchestrationStrategy` with that ID and an
@@ -120,8 +127,9 @@ backend execution route; actual strategy configuration is captured then, not
 deferred until start.
 
 The app's `RemoteOrchestrationStrategyAdapter` registers an exact-generation
-contribution in `orchestrationStrategyContributions`. Readiness requires exactly
-nonblank `strategyId` and `routeId` metadata and the supported generated service.
+contribution in `orchestrationStrategyContributions`. Readiness requires nonblank
+`strategyId` and `routeId`, permits optional nonblank `displayName`, rejects other
+metadata keys, and requires the supported generated service.
 The existing resolver still owns unavailable/one/ambiguous results, without
 priority or fallback. Plugin identity is connection-owned; readiness includes no
 Session, Run, Environment, or provider selectors.
@@ -165,9 +173,11 @@ execution resources. Cleanup is authority-free and best-effort after failure;
 it cannot replace primary failure evidence or retarget a replacement generation.
 Installed `chat_strategy_backend` uses this boundary with a retained backend-owned
 `ChatSessionStore`. Its plugin-internal Session service and strategy share that
-store; the service is defined in Chat's contract, not in orchestration. Prepared
-Session hosting can pin a Run to the exact resolved strategy from the same backend
-connection used by its frontend, without exposing generation identities to plugins.
+store; the service is defined in Chat's contract, not in orchestration. Explicit
+pane-scoped services can pin a Run to the exact resolved strategy from the same
+backend connection used by that frontend. The host validates a retained controller
+against that origin without replacing its captured binding or exposing generation
+identities to plugins. UI placement does not own the controller or Run lifetime.
 Chat's canonical persistence uses a separate generation-scoped
 [Project storage service](../project_storage/README.md), not the start/resume
 invocation context. Live Run execution remains non-durable; terminal product

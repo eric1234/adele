@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
@@ -17,7 +18,8 @@ import 'model_native_activity_bridge.dart';
 import 'owning_backend_bridge.dart';
 import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
-import 'prepared_session_host.dart';
+import 'prepared_main_content_host.dart';
+import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
@@ -38,20 +40,23 @@ final class ApplicationFrontendBootstrap {
   ApplicationFrontendBootstrap({
     required ExtensionRegistry extensions,
     ApplicationPluginBootstrap? backends,
-    PreparedSessionHost? sessionHost,
+    PreparedSessionServices? sessionServices,
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
+    PreparedMainContentHost? mainContentHost,
   }) : _extensions = extensions,
        _backends = backends,
-       _sessionHost = sessionHost,
+       _sessionServices = sessionServices,
        _taskBrowserHost = taskBrowserHost,
-       _consoleHost = consoleHost;
+       _consoleHost = consoleHost,
+       _mainContentHost = mainContentHost ?? PreparedMainContentHost();
 
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
-  final PreparedSessionHost? _sessionHost;
+  final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
+  final PreparedMainContentHost _mainContentHost;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -65,6 +70,11 @@ final class ApplicationFrontendBootstrap {
   List<InstalledFrontendActivation> get generations =>
       List.unmodifiable(_generations);
   Stream<ApplicationFrontendState> get changes => _changes.stream;
+
+  Future<void> prepareToDeactivate(Session session) =>
+      _mainContentHost.prepareToDeactivate(session);
+
+  void unbind(Session session) => _mainContentHost.unbind(session);
 
   /// Prepared selectors require their exact installation's provider registration,
   /// not merely a matching PluginId declared by an unrelated endpoint.
@@ -106,9 +116,10 @@ final class ApplicationFrontendBootstrap {
             installation,
             _extensions,
             _backends,
-            _sessionHost,
+            _sessionServices,
             _taskBrowserHost,
             _consoleHost,
+            _mainContentHost,
           ),
     ]);
     _setState(ApplicationFrontendState.starting);
@@ -172,9 +183,9 @@ final class ApplicationFrontendBootstrap {
     try {
       await closeResources([
         () async => await Future.wait(retiring),
-        if (_sessionHost case final host?) host.close,
         if (_taskBrowserHost case final host?) host.close,
         if (_consoleHost case final host?) host.close,
+        _mainContentHost.close,
       ]);
     } finally {
       _setState(ApplicationFrontendState.closed);
@@ -195,17 +206,19 @@ final class InstalledFrontendActivation {
     this.installation,
     this._extensions,
     this._backends,
-    this._sessionHost,
+    this._sessionServices,
     this._taskBrowserHost,
     this._consoleHost,
+    this._mainContentHost,
   );
 
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
-  final PreparedSessionHost? _sessionHost;
+  final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
+  final PreparedMainContentHost _mainContentHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -245,6 +258,28 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedMainContentPresentation():
+            for (final entrypoint in [
+              descriptor.initialize,
+              descriptor.entrypoint,
+            ]) {
+              generation.validateOperation(
+                library: descriptor.library,
+                entrypoint: entrypoint,
+              );
+            }
+            _register(
+              point: mainContentContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => _mainContentHost.createContribution(
+                extensions: _extensions,
+                installation: installation,
+                generation: generation,
+                descriptor: descriptor,
+                isActive: isActive,
+                services: _sessionServices,
+              ),
+            );
           case PreparedConsolePresentation():
             // Optional read-only hosting must not retire unrelated factual
             // presentation roles. No registration means opening is unavailable.
@@ -295,38 +330,6 @@ final class InstalledFrontendActivation {
                       isActive: isActive,
                     );
                   },
-                );
-                return contribution;
-              },
-            );
-          case PreparedSessionPresentation():
-            _register(
-              point: sessionPresentationContributions,
-              id: descriptor.extensionId,
-              contribution: (isActive) {
-                late final SessionPresentationContribution contribution;
-                contribution = SessionPresentationContribution(
-                  strategyId: descriptor.strategyId,
-                  displayName: descriptor.displayName,
-                  createPresentation: (session) {
-                    _requireActive(isActive);
-                    final host = _sessionHost;
-                    if (host == null) {
-                      throw StateError('Session hosting is unavailable.');
-                    }
-                    return host.createPresentation(
-                      generation: generation,
-                      contribution: contribution,
-                      descriptor: descriptor,
-                      session: session,
-                      isActive: isActive,
-                    );
-                  },
-                );
-                _sessionHost?.registerMetadata(
-                  contribution,
-                  installation,
-                  descriptor,
                 );
                 return contribution;
               },

@@ -472,6 +472,33 @@ void main() {
     },
   );
 
+  test(
+    'optional display name is copied without materializing execution',
+    () async {
+      final probe = await activate({
+        'metadata': {
+          'strategyId': 'dev.adele.test.named-strategy',
+          'routeId': 'attack-route',
+          'displayName': 'Named strategy',
+        },
+      });
+      final contributions = extensions.discover(
+        orchestrationStrategyContributions,
+      );
+      expect(contributions, hasLength(2));
+      final unnamed = contributions.singleWhere(
+        (binding) => binding.value.strategyId.value == _strategyId,
+      );
+      final named = contributions.singleWhere(
+        (binding) =>
+            binding.value.strategyId.value == 'dev.adele.test.named-strategy',
+      );
+      expect(unnamed.value.displayName, isNull);
+      expect(named.value.displayName, 'Named strategy');
+      expect(await _control(probe.connection, 'released'), isEmpty);
+    },
+  );
+
   for (final invalid in <String, Map<String, Object?>>{
     'unknown metadata': {
       'metadata': {
@@ -488,6 +515,22 @@ void main() {
     },
     'missing route': {
       'metadata': {'strategyId': _strategyId},
+    },
+    for (final displayName in [null, 123, '', ' \t'])
+      'invalid display name $displayName': {
+        'metadata': {
+          'strategyId': _strategyId,
+          'routeId': 'attack-route',
+          'displayName': displayName,
+        },
+      },
+    'unknown metadata alongside display name': {
+      'metadata': {
+        'strategyId': _strategyId,
+        'routeId': 'attack-route',
+        'displayName': 'Named strategy',
+        'authority': true,
+      },
     },
     'unsupported service': {'serviceId': 'unsupportedOrchestration'},
   }.entries) {

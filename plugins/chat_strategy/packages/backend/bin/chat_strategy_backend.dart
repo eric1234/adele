@@ -73,6 +73,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           metadata: {
             'strategyId': chatStrategyId.value,
             'routeId': chatStrategyRouteId,
+            'displayName': 'Chat',
           },
         ).toMap(),
       ],

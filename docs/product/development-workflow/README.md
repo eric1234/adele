@@ -15,7 +15,7 @@ The mockups should be read as one concrete composition approximately involving s
 - Local Directory Project;
 - Task Browser;
 - Git-backed Environment provider;
-- Agent Interaction + Chat strategy;
+- Chat strategy, with a separate Agent Interaction plugin only as a possible future arrangement;
 - Agent and Model configuration/policy plugins;
 - Context Monitoring and Accounting;
 - Filesystem/Search/Command/TODO/Plan tooling;
@@ -25,6 +25,10 @@ The mockups should be read as one concrete composition approximately involving s
 - OpenAI provider.
 
 Other plugin/configuration sets may provide different Project selection, orchestration strategies, Environment implementations, source editors, review systems, status summaries, or presentation details while preserving ADELE's broader architecture.
+
+Chat can contribute directly to Main Content; a separate Agent Interaction owner
+is not required for this UX. Core retains Session navigation and execution
+authority while plugins choose their presentation and control placement.
 
 The current physical layout shown here is also product direction rather than plugin API identity. A Session status contribution may currently appear on the right, for example, while a future layout could move it or make placement configurable without changing the semantic extension contract.
 
@@ -418,7 +422,7 @@ Generic branch browsers, interactive rebases, stash managers, Git graphs, etc. a
 
 The stock active-session Main Content layout is intentionally **one-dimensional and horizontally ordered**, rather than an arbitrary recursive tiling system.
 
-The current semantic order is:
+The intended fixed order for the stock defaults is:
 
 ```text
 Chat
@@ -435,37 +439,54 @@ Visually:
 
 Not every region is visible at all times.
 
-Current stock layout rules:
+Stock layout direction:
 
 - Chat is singleton for the Chat strategy.
 - Diff is singleton.
-- Source Group contains zero or more visible editor views.
+- Source Group contains zero or more contiguous visible editor views.
 - Artifact is a singleton presentation slot for plugin-owned rich content.
-- ordering is fixed;
+- group ordering follows the fixed stock defaults;
 - only vertical pane boundaries are supported initially;
 - top-level panels are not arbitrarily reordered.
 
-These are UX choices for the stock composition, not requirements that every orchestration strategy render Chat or that plugin extension APIs expose `center` coordinates.
+These are UX choices layered over extensible contribution ordering, not fixed core
+slots or a Chat/Diff/Source/Artifact enum. Other contributions may choose their own
+order; each group retains its owner's contiguous item sequence. These defaults do
+not require every orchestration strategy to render Chat, and plugin APIs do not
+expose `center` coordinates. Chat is an ordinary registration, not a host-injected
+pane or a reserved order-100 slot. A canonical Session with no contributed panes
+still has a valid, generically empty workspace.
+See [grouped Main Content](../../architecture/plugin-system.md#grouped-main-content)
+for the accepted composition boundary.
 
 ## 6.1 Width and horizontal overflow
 
-Each surface has a practical minimum useful width. Available space is divided/shrunk until minima are reached.
+Widths apply to individual panes, not groups: Source 1 and Source 2 each share
+space on the same basis as Chat or Diff. The initial equal-width allocation divides
+available space across flattened panes down to a practical minimum for each.
 
 If visible panels cannot fit, the Main Content workspace becomes horizontally scrollable while title/status/stream areas remain fixed in the current layout.
 
-Focusing an offscreen pane automatically scrolls enough to reveal it.
+Focusing an offscreen pane automatically scrolls enough to reveal it. Pane focus
+and resizing are workbench operations, not Session navigation; Inspection and
+Console remain outside the Main Content pane row.
 
 ADELE should not automatically hide panels merely because space becomes tight. The visible set represents explicit user state.
 
 ## 6.2 Resizing
 
-Pane boundaries are draggable. Manual resizing redistributes space while respecting practical minima.
+Directionally, pane boundaries should be draggable. Manual resizing redistributes
+space while respecting practical minima. Current geometry and implementation
+limits belong to the [application map](../../../app/README.md#grouped-main-content).
 
 Pane widths are live window/workbench state rather than Session or strategy state.
 
 ## 6.3 Focus/maximize
 
 A temporary `Focus Current View` or equivalent Command may hide other Main Content surfaces while preserving the underlying arrangement. Restoring returns to the previous layout.
+
+Hide/show, maximize, and any later docking remain future workbench direction, not
+capabilities implied by grouped hosting or its reveal/keyboard-focus operation.
 
 ---
 
@@ -1176,6 +1197,10 @@ There are no hidden source tabs in this direction. A source file is visible or n
 
 Source views are side-by-side initially. Horizontal splits are postponed. Simple ordering enables strong keyboard focus/move operations and drag/drop reordering.
 
+The Source owner orders its items within one contiguous contribution group; the
+group is flattened with other Main Content before widths are assigned. It is not
+a single narrow panel internally dividing one group's width among all editors.
+
 ---
 
 # 35. Opening/displaying files
@@ -1239,7 +1264,17 @@ Editor View
     folds
 ```
 
-Multiple Source views can share one Document.
+Multiple Source views can share one Document. Within the current window/runtime,
+Source Document identity is Environment plus resource path, not the Session that
+happened to open a view. The selected Session chooses the relevant Environment;
+two Sessions sharing it can present the same retained Document.
+
+Changing Session presentation may detach or replace view access, but must not
+universally close Source Documents or discard their dirty state. Document close,
+save/conflict handling, and resource release belong to the Source/domain owner.
+This does not imply cross-window singleton Documents or implemented workbench
+persistence. The synthetic in-memory editor fixture may deliberately release its
+owner on departure; that fixture lifetime is not the Source domain rule.
 
 ---
 
@@ -1295,7 +1330,7 @@ The stock Plan plugin owns Plan semantics/state and may provide model tools plus
 
 After a Project is selected, the stock **Task Browser plugin** provides the Project/Task/Session selection and management experience shown by the mockups.
 
-The Task Browser is not assumed to be a `MainContentView` inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
+The Task Browser is not assumed to be a Main Content contribution inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
 
 The Task Browser also serves as the top-level/user Session selector; there is no separate dedicated Session-selection page in the stock design. It **triggers** core navigation/selection operations; it does not own the window's current Project/Task/Session identity or the general workbench layout.
 
@@ -1360,6 +1395,11 @@ The stock pane lists top-level/user Sessions and `+ New Session`, plus Task summ
 
 Clicking a Session asks core to navigate the current window into/resume presentation of that Session. There is no separate ambiguous Resume button.
 
+Opening an existing canonical Session is independent of strategy backend or
+frontend availability. Missing execution support and retained execution status
+should remain visible without preventing navigation to other contributed content
+or an empty workspace.
+
 Agent-created child Sessions are not normal peers in this list. They are primarily inspected from the parent Session/orchestration surface that created them.
 
 ---
@@ -1382,7 +1422,11 @@ Use **Session**, not `Chat`, consistently at the product level. Chat is one orch
 
 A normal stock path can create a Session bound to the configured/default Chat strategy, associate it with the Task's primary Environment, initialize Chat state, select configured Agent defaults, and focus Draft Request.
 
-If multiple orchestration strategies are installed/applicable, Agent Interaction may expose strategy choice. A Session is permanently bound to the selected strategy; changing strategy means creating another Session.
+Strategy choices come from core's executable orchestration registrations, with an
+optional contributed display name and strategy-ID fallback; no UI registration is
+needed just to offer creation. Task Browser or a possible future Agent Interaction
+plugin may present those choices. A Session is permanently bound to the selected
+strategy; changing strategy means creating another Session.
 
 ---
 
@@ -1445,6 +1489,8 @@ The current stock conceptual ownership model is:
 | Agent selection / model overrides | Agent/Model plugins, Session/workflow scoped as defined by each plugin |
 | Plan state/content | Plan plugin, associated with Session as appropriate |
 | Main Content/inspection live layout | core window/workbench state, possibly seeded from remembered state |
+| Source Document identity/content/dirty state | Source domain owner, keyed by Environment and resource path within the current window/runtime |
+| Source view cursor/selection/scroll/folds | Window/view state, independent of Document lifetime |
 | Shell/process resources | Environment/runtime-resource provider |
 | Shared Console tabs/actions/selection | Core window/workbench host |
 | Console content and resource policy | Independent contributing plugin; Terminal uses Session-authorized Environment context |
@@ -1526,7 +1572,7 @@ The mockups should be implemented through **semantic extension roles**, not plug
 Likely broad core-facing semantics include concepts such as:
 
 ```text
-MainContentView
+MainContentContribution / ordered pane group
 NavigationView
 SessionStatusContribution
 InspectionPresentation

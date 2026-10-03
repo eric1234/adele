@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_product/adele_product.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -206,15 +205,16 @@ void main() {
       expect(tool.compactEntrypoint, _toolActivity['compactEntrypoint']);
       expect(tool.backendServices, isEmpty);
       expect(tool.consoleExtensions, isEmpty);
-      final session = frontend.presentations[1] as PreparedSessionPresentation;
+      final session =
+          frontend.presentations[1] as PreparedMainContentPresentation;
       expect(session.library, _session['library']);
-      expect(session.extensionId, ExtensionId(_session['extensionId']!));
       expect(
-        session.strategyId,
-        OrchestrationStrategyId(_session['strategyId']!),
+        session.extensionId,
+        ExtensionId(_session['extensionId']! as String),
       );
       expect(session.entrypoint, _session['entrypoint']);
-      expect(session.displayName, _session['displayName']);
+      expect(session.initialize, _session['initialize']);
+      expect(session.sessionExecution, isFalse);
       expect(session.backendServices, isEmpty);
       expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
       expect(() => session.backendServices.clear(), throwsUnsupportedError);
@@ -333,6 +333,117 @@ void main() {
       );
       final catalog = await PreparedPluginCatalog.discover(root.path);
       expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
+
+  test('Main Content is data-only, ordered and frontend-only', () async {
+    await install(
+      'panes',
+      _manifest(
+        components: {
+          'frontend': _frontend(presentations: [_mainContent]),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final descriptor =
+        installation.frontend!.presentations.single
+            as PreparedMainContentPresentation;
+    expect(descriptor.extensionId, ExtensionId('org.example.main-content'));
+    expect(descriptor.order, 200);
+    expect(descriptor.library, 'package:example_frontend/main_content.dart');
+    expect(descriptor.initialize, 'initializePanes');
+    expect(descriptor.entrypoint, 'buildPane');
+    for (final order in [-200, 0, 100, 200]) {
+      expect(
+        PreparedMainContentPresentation(
+          extensionId: descriptor.extensionId,
+          order: order,
+          library: descriptor.library,
+          initialize: descriptor.initialize,
+          entrypoint: descriptor.entrypoint,
+        ).order,
+        order,
+      );
+    }
+  });
+
+  test(
+    'Main Content constructor validates both callable names and library',
+    () {
+      for (final (library, initialize, entrypoint) in [
+        ('pane.dart', 'initializePanes', 'buildPane'),
+        ('package:example/../pane.dart', 'initializePanes', 'buildPane'),
+        ('package:example/pane.dart', 'Pane.initialize', 'buildPane'),
+        ('package:example/pane.dart', 'initializePanes', 'buildPane()'),
+      ]) {
+        expect(
+          () => PreparedMainContentPresentation(
+            extensionId: ExtensionId('org.example.main-content'),
+            order: 200,
+            library: library,
+            initialize: initialize,
+            entrypoint: entrypoint,
+          ),
+          throwsFormatException,
+        );
+      }
+    },
+  );
+
+  final invalidMainContent = <String, Object?>{
+    for (final field in _mainContent.keys)
+      'missing $field': {..._mainContent}..remove(field),
+    for (final field in ['extensionId', 'library', 'initialize', 'entrypoint'])
+      for (final value in <Object?>[null, 1, false, [], {}, '', '  '])
+        'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
+    for (final value in <Object?>[null, false, '200', 200.0, [], {}])
+      'invalid order ${jsonEncode(value)}': {..._mainContent, 'order': value},
+    for (final field in [
+      'hostAdapter',
+      'strategyId',
+      'panes',
+      'displayName',
+      'unknown',
+    ])
+      'unsupported $field': {..._mainContent, field: 'unsupported'},
+    'invalid extension ID': {..._mainContent, 'extensionId': 'not namespaced'},
+    for (final library in [
+      'main_content.dart',
+      'file:///pane.dart',
+      'package:example/../pane.dart',
+      'package:example//pane.dart',
+      'package:example/pane.dart?query',
+    ])
+      'invalid library $library': {..._mainContent, 'library': library},
+    for (final field in ['initialize', 'entrypoint'])
+      for (final name in [
+        'Pane.build',
+        'build()',
+        '1build',
+        'build pane',
+        'build\n',
+      ])
+        'invalid $field ${jsonEncode(name)}': {..._mainContent, field: name},
+  };
+  for (final entry in invalidMainContent.entries) {
+    test('Main Content ${entry.key} invalidates only frontend', () async {
+      await install(
+        'invalid-panes',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': _frontend(presentations: [_session, entry.value]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
       expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     });
   }
@@ -894,14 +1005,17 @@ void main() {
     final catalog = await PreparedPluginCatalog.discover(root.path);
     expect(catalog.issues, isEmpty);
     final frontend = catalog.installations.single.frontend!;
-    expect(frontend.presentations.single, isA<PreparedSessionPresentation>());
+    expect(
+      frontend.presentations.single,
+      isA<PreparedMainContentPresentation>(),
+    );
     expect(frontend.extensions, isEmpty);
     expect(() => frontend.extensions.clear(), throwsUnsupportedError);
   });
 
   for (final affinity in PreparedStrategyAffinity.values) {
     test(
-      'session metadata decodes ${affinity.name} and backend services',
+      'Main Content metadata decodes ${affinity.name} and opt-in services',
       () async {
         await install(
           'session',
@@ -912,6 +1026,7 @@ void main() {
                   {
                     ..._session,
                     'strategyAffinity': affinity.name,
+                    'sessionExecution': true,
                     'backendServices': ['history.v1', 'testService'],
                   },
                 ],
@@ -923,31 +1038,38 @@ void main() {
         expect(catalog.issues, isEmpty);
         final descriptor =
             catalog.installations.single.frontend!.presentations.single
-                as PreparedSessionPresentation;
+                as PreparedMainContentPresentation;
+        expect(descriptor.sessionExecution, isTrue);
         expect(descriptor.strategyAffinity, affinity);
         expect(descriptor.backendServices, ['history.v1', 'testService']);
       },
     );
   }
 
-  test('session constructor snapshots and validates the service allowlist', () {
-    PreparedSessionPresentation descriptor(List<String> services) =>
-        PreparedSessionPresentation(
-          extensionId: ExtensionId(_session['extensionId']!),
-          strategyId: OrchestrationStrategyId(_session['strategyId']!),
-          displayName: 'Session',
-          library: _session['library']!,
-          entrypoint: _session['entrypoint']!,
-          backendServices: services,
-        );
-    final services = ['history.v1'];
-    final prepared = descriptor(services);
-    services.clear();
-    expect(prepared.backendServices, ['history.v1']);
-    expect(() => prepared.backendServices.add('other'), throwsUnsupportedError);
-    expect(() => descriptor(['a', 'a']), throwsFormatException);
-    expect(() => descriptor(['not a service']), throwsFormatException);
-  });
+  test(
+    'Main Content constructor snapshots and validates the service allowlist',
+    () {
+      PreparedMainContentPresentation descriptor(List<String> services) =>
+          PreparedMainContentPresentation(
+            extensionId: ExtensionId(_session['extensionId']! as String),
+            order: 100,
+            initialize: _session['initialize']! as String,
+            library: _session['library']! as String,
+            entrypoint: _session['entrypoint']! as String,
+            backendServices: services,
+          );
+      final services = ['history.v1'];
+      final prepared = descriptor(services);
+      services.clear();
+      expect(prepared.backendServices, ['history.v1']);
+      expect(
+        () => prepared.backendServices.add('other'),
+        throwsUnsupportedError,
+      );
+      expect(() => descriptor(['a', 'a']), throwsFormatException);
+      expect(() => descriptor(['not a service']), throwsFormatException);
+    },
+  );
 
   test('OpenAI backend and native frontend are one installation', () async {
     final directory = await install(
@@ -1030,7 +1152,7 @@ void main() {
           );
           expect(
             installation.frontend!.presentations.single,
-            isA<PreparedSessionPresentation>(),
+            isA<PreparedMainContentPresentation>(),
           );
         } else {
           expect(installation.frontend, isNull);
@@ -1078,7 +1200,7 @@ void main() {
     final list = descriptor.containsKey('kind')
         ? 'extensions'
         : 'presentations';
-    for (final field in descriptor.keys) {
+    for (final field in descriptor.keys.where((key) => key != 'order')) {
       test(
         '${descriptor['role'] ?? descriptor['kind']} requires nonblank string $field',
         () async {
@@ -1148,9 +1270,15 @@ void main() {
       'role': 'projectSelector',
     }..remove('kind'),
     'unknown role': {..._session, 'role': 'future'},
+    'removed session role': {..._session, 'role': 'session'},
     'case-sensitive role': {..._session, 'role': 'Session'},
     'foreign session field': {..._session, 'toolId': 'org.example.tool'},
     'removed hostAdapter': {..._session, 'hostAdapter': 'example.session.v1'},
+    for (final value in <Object?>[null, 'true', 1, [], {}])
+      'invalid sessionExecution $value': {
+        ..._session,
+        'sessionExecution': value,
+      },
     for (final value in <Object?>[
       null,
       true,
@@ -1895,18 +2023,27 @@ Map<String, Object?> _frontend({
 }) => {'artifact': artifact, 'presentations': presentations};
 
 const _session = {
-  'role': 'session',
+  'role': 'mainContent',
   'library': 'package:example_frontend/session.dart',
   'extensionId': 'org.example.session',
-  'strategyId': 'org.example.strategy',
+  'order': 100,
+  'initialize': 'initializeSession',
   'entrypoint': 'buildSession',
-  'displayName': 'Example Session',
 };
 
 const _consoleAction = {
   'id': 'new-console',
   'label': 'New Console',
   'entrypoint': 'newConsole',
+};
+
+const _mainContent = <String, Object?>{
+  'role': 'mainContent',
+  'extensionId': 'org.example.main-content',
+  'order': 200,
+  'library': 'package:example_frontend/main_content.dart',
+  'initialize': 'initializePanes',
+  'entrypoint': 'buildPane',
 };
 
 const _console = {
