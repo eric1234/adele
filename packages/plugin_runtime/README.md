@@ -93,10 +93,12 @@ service-ID allowlist defaulting to empty, and `strategyAffinity` is `independent
 by default or `owningBackend`. There is no strategy selector, role-level `displayName`, or
 stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
 and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
-data-only and remains Flutter/eval-independent. The initializer reads captured Session identity
-data and may open an initial collection; it receives no execution or backend
-services, including when the descriptor requests them. The content entrypoint
-renders each admitted pane in its own runtime.
+data-only and remains Flutter/eval-independent. The initializer reads captured
+Session/Environment identity data and may open an initial collection; it receives
+no execution, backend, or file services, including when the descriptor requests
+them. Identity context is independent of descriptor grants and provider readiness;
+its API belongs to the [UI bridge map](../ui/README.md#interpreted-bridges).
+The content entrypoint renders each admitted pane in its own runtime.
 
 Additional Main Content fields are explicit opt-ins:
 
@@ -107,12 +109,13 @@ Additional Main Content fields are explicit opt-ins:
 | `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
 | `retainedData` | False by default; requests copied contribution-owned records retained independently of attachment. |
 | `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
-| `environmentTextFiles` | False by default; requires nonempty `operations` and requests captured Environment file access only for finite operations. |
+| `environmentTextFiles` | False by default; requires nonempty `operations` and requests the separate Environment read/replace bridge only for finite operations with captured Session context. |
 
 Hooks cannot name undeclared operations. Actions and operations are immutable
-metadata, not stored evaluator callbacks. Exit operations need no mounted pane or
-Environment grant. These fields do not imply Session execution or owning-backend
-services, and the host still validates each scoped grant. Manifest version remains 1.
+metadata, not stored evaluator callbacks. Exit operations need no mounted pane and
+receive no Session context or Environment grant. These fields do not imply Session
+execution or owning-backend services, and the host still validates each scoped
+grant. Manifest version remains 1.
 
 Normal frontend bootstrap validates initializer, pane, action, and operation
 entrypoints, then registers through the existing catalog/extension-registry path.

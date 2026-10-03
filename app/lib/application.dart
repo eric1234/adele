@@ -129,7 +129,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           widget.mainContentHost ??
           PreparedMainContentHost(
             environmentRuntime: _runtime.lifecycle.environmentRuntime,
-            confirmDiscard: _confirmContributionDiscard,
+            confirm: _confirmContribution,
           ),
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
@@ -189,22 +189,24 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     );
   }
 
-  Future<bool> _confirmContributionDiscard(String message) async {
+  Future<bool> _confirmContribution(Map<String, Object?> request) async {
     final context = _navigator.currentContext;
     if (!mounted || _closing != null || context == null) return false;
     return await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Discard unsaved changes?'),
-            content: SingleChildScrollView(child: Text(message)),
+            title: Text(request['title']! as String),
+            content: SingleChildScrollView(
+              child: Text(request['message']! as String),
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
+                child: Text(request['cancelLabel']! as String),
               ),
               TextButton(
                 onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Discard'),
+                child: Text(request['acceptLabel']! as String),
               ),
             ],
           ),

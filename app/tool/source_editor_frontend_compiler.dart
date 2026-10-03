@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
+import 'package:adele_desktop/frontend/environment_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter_eval/flutter_eval.dart';
@@ -17,6 +18,7 @@ Future<Uint8List> compileSourceEditorFrontend({
     ..addPlugin(const MainContentDeclarations())
     ..addPlugin(const CodeEditorDeclarations())
     ..addPlugin(const ContributionDeclarations())
+    ..addPlugin(const EnvironmentAccessDeclarations())
     ..entrypoints.add(sourceEditorFrontendLibrary)
     // The pinned evaluator does not retain top-level helpers referenced only
     // from instance methods in an imported interpreted library.
@@ -40,6 +42,7 @@ Future<Uint8List> compileSourceEditorFrontend({
         'main_content_bridge.dart',
         'code_editor_bridge.dart',
         'contribution_bridge.dart',
+        'environment_access_bridge.dart',
       ])
         name: await File('$root/packages/ui/lib/$name').readAsString(),
     },

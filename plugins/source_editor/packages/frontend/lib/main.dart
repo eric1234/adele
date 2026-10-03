@@ -1,5 +1,6 @@
 import 'package:adele_ui/code_editor_bridge.dart';
 import 'package:adele_ui/contribution_bridge.dart';
+import 'package:adele_ui/environment_access_bridge.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:flutter/material.dart';
 
@@ -47,11 +48,16 @@ class ContributionSourcePort implements SourceDocumentPort {
   ) => replaceEnvironmentTextFile(path, text, expectedRevision);
   @override
   Future<bool> confirmDiscard(String message) =>
-      confirmContributionDiscard(message);
+      confirmContribution(<String, dynamic>{
+        'title': 'Discard unsaved changes?',
+        'message': message,
+        'acceptLabel': 'Discard',
+        'cancelLabel': 'Cancel',
+      });
 }
 
 SourceDocuments sourceDocuments() {
-  final context = readContributionContext();
+  final context = readMainContentContext();
   final environmentKey = context['environmentKey'];
   return SourceDocuments(
     ContributionSourcePort(),
@@ -60,8 +66,7 @@ SourceDocuments sourceDocuments() {
 }
 
 String sourceArgument(String key) {
-  final context = readContributionContext();
-  final arguments = context['arguments'];
+  final arguments = readContributionArguments();
   if (arguments == null) return '';
   final value = arguments[key];
   return value is String ? value : '';
@@ -134,7 +139,7 @@ class SourcePane extends StatefulWidget {
 
 class SourcePaneState extends State<SourcePane> {
   final SourceDocuments documents = sourceDocuments();
-  final String id = readContributionContext()['paneId'] as String;
+  final String id = readMainContentPaneId();
   final String handle = requestCodeEditor();
   late Widget editor;
   void Function() editorListener = () {};
@@ -146,9 +151,10 @@ class SourcePaneState extends State<SourcePane> {
 
   bool active() {
     if (!alive) return false;
-    final context = readContributionContext();
-    return context['environmentKey'] == documents.environmentKey &&
-        context['paneId'] == id;
+    final context = readMainContentContext();
+    return readContributionArguments() != null &&
+        context['environmentKey'] == documents.environmentKey &&
+        readMainContentPaneId() == id;
   }
 
   @override
@@ -288,8 +294,9 @@ class OpenSourceInputState extends State<OpenSourceInput> {
 
   bool active() {
     if (!alive || documents.environmentKey.isEmpty) return false;
-    final context = readContributionContext();
-    return context['environmentKey'] == documents.environmentKey;
+    final context = readMainContentContext();
+    return readContributionArguments() != null &&
+        context['environmentKey'] == documents.environmentKey;
   }
 
   Future<void> open() async {

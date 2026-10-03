@@ -307,10 +307,15 @@ Focus/reveal and geometry changes are not Session navigation. Revoking a present
 independently hosted Run or universally dispose underlying domain resources.
 
 Prepared contributions initialize through a short-lived operation runtime that
-reads captured Session/strategy/Task identities through the collection bridge,
-may open initial panes, and is disposed on settlement. It obtains no execution or
-backend services, including when declared for later panes. Each pane then has an
-independent presentation runtime whose bridge can manage that same owned group.
+reads captured Session/strategy/Task/Environment identities through the collection
+bridge, may open initial panes, and is disposed on settlement. The Environment
+identity comes from canonical `SessionEnvironmentAuthority`, without provider
+resolution or materialization, independently of any service, retention, or native
+resource grant. The same identity context serves input/pane views and finite
+operations; operation arguments remain separate copied data. Initialization obtains
+no execution, backend, or file services, including when declared for later panes.
+Each pane then has an independent presentation runtime whose bridge can manage
+that same owned group.
 Declared contribution actions remain discoverable even with zero panes; they open
 fresh input presentations without manufacturing a pane or execution authority.
 Descriptor-selected finite operations use fresh short-lived runtimes, not retained
@@ -336,7 +341,10 @@ application-exit preflight also consults opted-in retained collections without
 mounting hidden views, including while Task Browser is shown. Cancellation or
 failure precedes irreversible frontend/execution revocation and leaves retained
 documents available. Acceptance is not early disposal if another participant can
-still refuse exit. Forced teardown and plugin retirement are separate cleanup paths.
+still refuse exit. These exit operations have no Session context or Environment
+grant; hidden records and browser selection do not manufacture one. Plugins own
+confirmation wording and discard decisions over generic host two-choice dialogs.
+Forced teardown and plugin retirement are separate cleanup paths.
 
 Execution and owning-backend services are explicit pane-scoped requests, not a
 privileged presentation role. Neither is granted by default. The binder validates

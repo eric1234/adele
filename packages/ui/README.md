@@ -272,27 +272,47 @@ native implementations supply their behavior; calling a stub natively throws
   remain scoped to that contribution, not a global document lookup.
   `invokeContributionOperation` admits only descriptor-declared finite entrypoints
   with copied arguments and captured context. Admitted operations can settle into
-  retained data after navigation without reviving a departed view. Only these
-  operations may receive opted-in `readEnvironmentTextFile` and conditional
-  `replaceEnvironmentTextFile(path, text, expectedRevision)` access; views and
-  initializers receive none. Reads return complete text, normalized path, size,
-  and opaque provider revision; replacements return the new revision. Declared
-  failures retain `code`, `message`, and `details`, never truncated editable text.
-  Data subscriptions are coalesced invalidations, not text feeds. The generic
-  discard confirmation supplies no Source policy. See the
+  retained data after navigation without reviving a departed view.
+  `readContributionArguments()` returns a nullable copied map: `{}` for active
+  presentations or argument-free operations, and null after retirement. Identity
+  and pane ID reads belong only to `main_content_bridge.dart` below.
+  `confirmContribution(request)` supplies native two-choice confirmation for a
+  finite operation. The request contains exactly four nonempty strings: `title`,
+  `message`, `acceptLabel`, and `cancelLabel`. The plugin owns the wording, when
+  to ask, and the meaning of acceptance; dismissal, unavailable support, malformed
+  requests, and retired access return false. Data subscriptions are coalesced
+  invalidations, not text feeds. See the
   [public stub](lib/contribution_bridge.dart),
   [catalog opt-ins](../plugin_runtime/README.md#prepared-catalog), and
   [application retention/authority](../../app/README.md#source-editor-hosting).
+- `environment_access_bridge.dart` supplies only `readEnvironmentTextFile(path)`
+  and conditional `replaceEnvironmentTextFile(path, text, expectedRevision)` for
+  an admitted finite operation's captured Environment. Views, initializers, and
+  operations without permission or captured context receive `binding_unavailable`.
+  Read success is `{ok: true, path, text, sizeBytes, revision}` with complete text,
+  normalized path, and opaque provider revision; replacement success is
+  `{ok: true, revision}`. Failure is `{ok: false, failure: {code, message, details}}`,
+  preserving declared provider failures. Unknown failures use
+  `operation_unacknowledged` with `The Environment operation was not acknowledged.`
+  This reports neither local-buffer state nor rollback. Capture lifetime and
+  explicit-operation recovery belong to the
+  [frontend grant](../../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations);
+  the [public stub](lib/environment_access_bridge.dart) defines the narrow API.
 - `main_content_bridge.dart` supplies `readMainContentContext()` with only the
-  captured `{sessionId, strategyId, taskId}`, `readMainContentPanes()`, and
-  `readMainContentPaneId()`, plus boolean-returning `openMainContentPane(id, title,
-  canClose)`, `setMainContentPaneTitle(id, title)`, `setMainContentPaneOrder(ids)`,
-  `removeMainContentPane(id)`, and `focusMainContentPane(id, keyboardFocus)`.
+  captured `{sessionId, strategyId, taskId, environmentKey}`, plus
+  `readMainContentPanes()` and `readMainContentPaneId()`, and boolean-returning
+  `openMainContentPane(id, title, canClose)`, `setMainContentPaneTitle(id, title)`,
+  `setMainContentPaneOrder(ids)`, `removeMainContentPane(id)`, and
+  `focusMainContentPane(id, keyboardFocus)`.
   Requests affect only the originating contribution's collection. Rejected requests
-  return false; retired reads return an empty context, snapshot, or ID. Context
-  identities are data, not execution or backend authority. The current pane ID
-  is also empty during initialization. A short-lived initializer can inspect the
-  context and open no panes without acquiring services, or open initial
+  return false; retired reads return an empty context, snapshot, or ID. Environment
+  identity comes from canonical `SessionEnvironmentAuthority`, without provider
+  resolution or materialization and independently of retained-data, native-editor,
+  file, execution, or backend grants. Context is available to initialization,
+  input/pane views, and finite operations; Session-less exit receives `{}`, not a
+  fabricated current Environment. Identities are data, not authority. The current
+  pane ID is empty outside a pane presentation. A short-lived initializer can
+  inspect the context and open no panes without acquiring services, or open initial
   panes, then loses bridge access; each pane has an independent presentation runtime
   with its own scoped bridge. Closing every pane leaves no autonomous evaluator
   updating the collection. Declared actions and finite operations remain separate

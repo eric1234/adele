@@ -843,9 +843,12 @@ It invokes `initialize` in a short-lived operation runtime, then uses a fresh
 `PreparedFrontend` presentation runtime per pane. The app-native
 [`MainContentBridge`](lib/frontend/main_content_bridge.dart) limits collection
 operations to that exact attachment and originating pane lifetime; it is not a
-global pane/editor lookup. `readMainContentContext()` exposes only captured
-`sessionId`, `strategyId`, and `taskId`. The initializer receives no execution or
-backend services and can choose no panes without acquiring them.
+global pane/editor lookup. Its captured identity context comes from the canonical
+Session and the store's `SessionEnvironmentAuthority`, independently of descriptor
+grants and without resolving or materializing a provider. The
+[public bridge map](../packages/ui/README.md#interpreted-bridges) owns context,
+arguments, and pane-ID shapes. The initializer receives no execution, backend, or
+file access and can choose no panes without acquiring services.
 Initialization retains no evaluator; later collection updates come from pane
 runtimes or declared finite operations followed by fresh reconciliation, with no
 autonomous updater after all views depart.
@@ -931,20 +934,31 @@ There is no durable document/workbench restoration or cursor/viewport guarantee.
 
 [`CapturedEnvironmentTextFiles`](lib/frontend/environment_text_files.dart)
 synchronously captures canonical Session authority and memoizes lazy materialization
-per retained Environment capture, including failure. It implements the
-[narrow user-operation grant](../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations),
-without direct frontend I/O or model tools. The host preserves declared failures;
-the plugin owns Environment-plus-normalized-path deduplication/order, opaque
-provider revisions, single-flight snapshot Save, edits-during-save retention, and
-Close/conflict policy. Follow its [ownership map](../plugins/source_editor/README.md#ownership),
-not a parallel host file model. The stock provider reads/replaces complete UTF-8
-files up to one MiB, failing rather than exposing truncated editable text.
+per capture, including failure. `PreparedMainContentHost` creates a fresh capture
+for each admitted finite operation with file permission and Session context, not
+an Environment- or contribution-lifetime cache. `EnvironmentRuntime` may reuse a
+valid materialization; failed or stale captures never retry or migrate within the
+same operation. See the
+[frontend grant](../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations)
+for later explicit-operation recovery and unchanged conditional-write semantics.
+
+Separate [`EnvironmentAccessDeclarations` / `EnvironmentAccessBridge`](lib/frontend/environment_access_bridge.dart)
+implement only the public read/replace API and structured failure mapping. Views,
+initializers, and operations without file permission or context receive no file
+grant. `ContributionBridge` handles retained data/resources, copied arguments,
+finite-operation dispatch, and generic native two-choice confirmation; the plugin
+supplies all confirmation text and owns discard policy. Follow Source's
+[ownership map](../plugins/source_editor/README.md#ownership) for deduplication,
+provider revisions, snapshot Save, and Close/conflict policy, not a parallel host
+file model. The stock provider reads/replaces complete UTF-8 files up to one MiB,
+failing rather than exposing truncated editable text.
 
 `AdeleApplication`'s `onExitRequested` awaits
 `ApplicationFrontendBootstrap.prepareToExit` before retaining inert display or
 starting irreversible close. `PreparedMainContentHost` fences new finite-operation
 admission, drains admitted work, then invokes every declared exit hook with no
-Environment grant, including hidden collections while Task Browser is shown.
+Session context or Environment grant, including hidden collections while Task
+Browser is shown; no current Environment is fabricated from browser selection.
 Rejection or failure cancels exit without disposing retained documents; acceptance
 does not dispose early while other contributions can still reject. Forced disposal
 is not this cancellable preflight. There is no Project-switch feature.

@@ -10,10 +10,11 @@ bool removeContributionData(String key) =>
     throw UnsupportedError('Prepared only.');
 String allocateContributionId() => throw UnsupportedError('Prepared only.');
 
-/// Captured environmentKey (identity data, not authority), paneId and arguments.
-/// Exit operations have no Environment. Presentation handles are freshly issued
-/// on every attachment; admitted finite operations retain their original owner.
-Map<String, dynamic> readContributionContext() =>
+/// Copied arguments for the current finite operation. An active presentation or
+/// an argument-free operation returns an empty map; retired access returns null.
+/// Session/Environment identity is supplied only by readMainContentContext, and
+/// the current pane by readMainContentPaneId, in main_content_bridge.dart.
+Map<String, dynamic>? readContributionArguments() =>
     throw UnsupportedError('Prepared only.');
 
 /// Invoke only an operation named in this contribution's prepared descriptor.
@@ -44,19 +45,9 @@ Map<String, dynamic> readContributionCodeEditorState(String id) =>
 bool releaseContributionCodeEditor(String id) =>
     throw UnsupportedError('Prepared only.');
 
-/// Only finite operations receive file access to their host-captured Environment.
-/// Success: {ok: true, path, text, sizeBytes, revision} for read; replacement
-/// returns {ok: true, revision}. Failure: {ok: false, failure:
-/// {code, message, details}}. Complete files only; there is no preview/truncation.
-Future<Map<String, dynamic>> readEnvironmentTextFile(String path) =>
-    throw UnsupportedError('Prepared only.');
-Future<Map<String, dynamic>> replaceEnvironmentTextFile(
-  String path,
-  String text,
-  String expectedRevision,
-) => throw UnsupportedError('Prepared only.');
-
-/// Generic host modal support; plugin supplies the document-specific explanation.
-/// False includes cancellation or unavailable presentation support.
-Future<bool> confirmContributionDiscard(String message) =>
+/// Native two-choice confirmation for a finite operation. The requesting plugin
+/// supplies exactly four nonempty strings: title, message, acceptLabel and
+/// cancelLabel. It owns when to ask and the meaning of acceptance. False includes
+/// dismissal, unavailable support, malformed requests and retired operation access.
+Future<bool> confirmContribution(Map<String, dynamic> request) =>
     throw UnsupportedError('Prepared only.');

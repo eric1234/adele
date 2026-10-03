@@ -234,6 +234,100 @@ void main() {
   );
 
   testWidgets(
+    'actual Source EVC retries a failed restore on a new explicit display',
+    (tester) => tester.runAsync(() async {
+      final fixture = await start(tester);
+      final generation = fixture.frontends.generations.single;
+      const failure = EnvironmentFailure(
+        code: 'restore_failed',
+        message: 'The retained provider state cannot be restored.',
+        details: {'environment': 'additional'},
+      );
+      fixture.provider.restoreFailure = failure;
+      expect(await fixture.display(_path), {
+        'ok': false,
+        'failure': {
+          'code': failure.code,
+          'message': failure.message,
+          'details': failure.details,
+        },
+      });
+      await tester.pump();
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, isEmpty);
+      expect(find.byType(CodeForge), findsNothing);
+
+      fixture.provider.restoreFailure = null;
+      final recovered = await fixture.display(_path);
+      expect(
+        {
+          'restores': fixture.provider.restored.length,
+          'reads': fixture.provider.reads.length,
+        },
+        {'restores': 2, 'reads': 1},
+        reason: 'A new explicit display must acquire fresh file access.',
+      );
+      expect(recovered['ok'], isTrue);
+      expect(fixture.provider.restored, [
+        fixture.additional.id,
+        fixture.additional.id,
+      ]);
+      expect(fixture.provider.reads, [(fixture.additional.id, _path)]);
+      expect(fixture.frontends.generations.single, same(generation));
+      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
+      expect(_editor(tester).controller!.text, _original);
+      expect(fixture.provider.replacements, isEmpty);
+      expect(fixture.store.runsForSession(fixture.session.id), isEmpty);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  testWidgets(
+    'actual Source EVC never migrates a pending restore but a new display uses the replacement',
+    (tester) => tester.runAsync(() async {
+      final fixture = await start(tester);
+      final generation = fixture.frontends.generations.single;
+      final restoring = Completer<EnvironmentProviderResult>();
+      addTearDown(() {
+        if (!restoring.isCompleted) {
+          restoring.complete(
+            EnvironmentProviderResult(providerState: {'ready': true}),
+          );
+        }
+      });
+      fixture.provider.restoration = restoring.future;
+      final pending = fixture.display(_path);
+      await _until(tester, () => fixture.provider.restored.length == 1);
+      await fixture.registration.close();
+      final replacement = _Provider();
+      fixture.registration = fixture.register(replacement);
+      restoring.complete(
+        EnvironmentProviderResult(providerState: {'ready': true}),
+      );
+      final retired = await pending;
+      expect(retired['ok'], isFalse);
+      expect(retired['failure'], containsPair('code', 'binding_stale'));
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, isEmpty);
+      expect(replacement.restored, isEmpty);
+      expect(replacement.reads, isEmpty);
+      expect(find.byType(CodeForge), findsNothing);
+
+      expect((await fixture.display(_path))['ok'], isTrue);
+      expect(replacement.restored, [fixture.additional.id]);
+      expect(replacement.reads, [(fixture.additional.id, _path)]);
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, isEmpty);
+      expect(fixture.frontends.generations.single, same(generation));
+      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
+      expect(_editor(tester).controller!.text, _original);
+      expect(fixture.provider.replacements, isEmpty);
+      expect(replacement.replacements, isEmpty);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  testWidgets(
     'actual Source EVC failed and oversized provider reads never create an editor',
     (tester) => tester.runAsync(() async {
       final fixture = await start(tester);
@@ -503,6 +597,91 @@ void main() {
   );
 
   testWidgets(
+    'later explicit Source Save uses the last acknowledged revision without migrating or retrying a pending write',
+    (tester) => tester.runAsync(() async {
+      final fixture = await start(tester);
+      final generation = fixture.frontends.generations.single;
+      expect((await fixture.display(_path))['ok'], isTrue);
+      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
+      final original = _editor(tester);
+      await _deleteFirst(tester, original);
+      _press(tester, 'Save');
+      await fixture.host.drainOperations();
+      await _until(tester, () => find.text('Saved').evaluate().isNotEmpty);
+      expect(fixture.provider.replacements.single, (
+        fixture.additional.id,
+        _path,
+        _original.substring(1),
+        _readRevision,
+      ));
+
+      await _deleteFirst(tester, original);
+      final changed = _original.substring(2);
+      final replacing = Completer<EnvironmentTextFileReplacement>();
+      addTearDown(() {
+        if (!replacing.isCompleted) {
+          replacing.complete(
+            const EnvironmentTextFileReplacement(revision: _writeRevision),
+          );
+        }
+      });
+      fixture.provider.replacing = replacing.future;
+      _press(tester, 'Save');
+      await _until(tester, () => fixture.provider.replacements.length == 2);
+      expect(fixture.provider.replacements.last, (
+        fixture.additional.id,
+        _path,
+        changed,
+        _writeRevision,
+      ));
+      await fixture.registration.close();
+      final replacement = _Provider();
+      fixture.registration = fixture.register(replacement);
+      await tester.pump();
+      expect(replacement.restored, isEmpty);
+      expect(replacement.reads, isEmpty);
+      expect(replacement.replacements, isEmpty);
+      const failure = EnvironmentFailure(
+        code: 'write_unacknowledged',
+        message: 'The retired provider did not acknowledge the replacement.',
+        details: {'providerFact': 'unacknowledged'},
+      );
+      replacing.completeError(failure);
+      await fixture.host.drainOperations();
+      await _until(
+        tester,
+        () => find.textContaining(failure.message).evaluate().isNotEmpty,
+      );
+      expect(find.text('Save unconfirmed'), findsOneWidget);
+      expect(original.controller!.text, changed);
+      expect(_editor(tester).controller, same(original.controller));
+      expect(_editor(tester).undoController, same(original.undoController));
+      expect(fixture.provider.replacements, hasLength(2));
+      expect(replacement.restored, isEmpty);
+      expect(replacement.reads, isEmpty);
+      expect(replacement.replacements, isEmpty);
+
+      _press(tester, 'Save');
+      await fixture.host.drainOperations();
+      await _until(tester, () => find.text('Saved').evaluate().isNotEmpty);
+      expect(replacement.restored, [fixture.additional.id]);
+      expect(replacement.reads, isEmpty);
+      expect(replacement.replacements, [
+        (fixture.additional.id, _path, changed, _writeRevision),
+      ]);
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, [(fixture.additional.id, _path)]);
+      expect(fixture.provider.replacements, hasLength(2));
+      expect(fixture.frontends.generations.single, same(generation));
+      expect(original.controller!.text, changed);
+      expect(_editor(tester).controller, same(original.controller));
+      expect(_editor(tester).undoController, same(original.undoController));
+      expect(fixture.store.runsForSession(fixture.session.id), isEmpty);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  testWidgets(
     'hidden exit preflight snapshots actual text despite missed native notifications and Cancel retains it',
     (tester) => tester.runAsync(() async {
       final fixture = await start(tester);
@@ -685,16 +864,7 @@ final class _Fixture {
       authorities: [(session.id, additional.id), (otherSession.id, primary.id)],
       runRecords: const [],
     );
-    registration = registry.register(
-      provider: ProviderDescriptor(
-        id: provider.providerId,
-        capability: environmentProviderCapability,
-        pluginId: 'test.source-files',
-        displayName: 'Source files fixture',
-        serviceId: environmentProviderServiceId,
-      ),
-      endpoint: _Endpoint(provider),
-    );
+    registration = register(provider);
     host = PreparedMainContentHost(
       environmentRuntime: EnvironmentRuntime(
         store: store,
@@ -703,8 +873,11 @@ final class _Fixture {
             binding.endpointAs<_Endpoint>().provider,
         retainEnvironment: store.replaceEnvironment,
       ),
-      confirmDiscard: (message) async {
-        confirmations.add(message);
+      confirm: (request) async {
+        expect(request['title'], 'Discard unsaved changes?');
+        expect(request['acceptLabel'], 'Discard');
+        expect(request['cancelLabel'], 'Cancel');
+        confirmations.add(request['message']! as String);
         return discard;
       },
     );
@@ -736,11 +909,22 @@ final class _Fixture {
   );
   late final Environment primary;
   late final Environment additional;
-  late final CapabilityRegistration registration;
+  late CapabilityRegistration registration;
   late final PreparedMainContentHost host;
   late final ApplicationFrontendBootstrap frontends;
   bool discard = false;
   Session? current;
+
+  CapabilityRegistration register(_Provider provider) => registry.register(
+    provider: ProviderDescriptor(
+      id: provider.providerId,
+      capability: environmentProviderCapability,
+      pluginId: 'test.source-files',
+      displayName: 'Source files fixture',
+      serviceId: environmentProviderServiceId,
+    ),
+    endpoint: _Endpoint(provider),
+  );
 
   Future<Map<String, Object?>> display(String path) =>
       DisplaySourceFileResolver(extensions).display(path);
@@ -786,8 +970,10 @@ final class _Provider implements EnvironmentProvider {
   final restored = <EnvironmentId>[];
   final reads = <(EnvironmentId, String)>[];
   final replacements = <(EnvironmentId, String, String, String)>[];
+  Future<EnvironmentProviderResult>? restoration;
   Future<EnvironmentTextFile>? reading;
   Future<EnvironmentTextFileReplacement>? replacing;
+  EnvironmentFailure? restoreFailure;
   EnvironmentFailure? readFailure;
   EnvironmentFailure? replaceFailure;
 
@@ -796,7 +982,9 @@ final class _Provider implements EnvironmentProvider {
     LocalEnvironment environment,
   ) async {
     restored.add(environment.id);
-    return EnvironmentProviderResult(providerState: environment.providerState!);
+    if (restoreFailure case final failure?) throw failure;
+    return restoration ??
+        EnvironmentProviderResult(providerState: environment.providerState!);
   }
 
   @override

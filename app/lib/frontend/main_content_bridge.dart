@@ -73,26 +73,29 @@ class MainContentDeclarations implements EvalPlugin {
 
   @override
   void configureForRuntime(Runtime runtime) =>
-      throw UnsupportedError('Use an attachment-scoped MainContentBridge.');
+      throw UnsupportedError('Use a scoped MainContentBridge.');
 }
 
-/// A short-lived initialization or mounted pane, never a retained evaluator
-/// service. All requests stay on the captured collection and native error zone.
+/// A view, initialization or finite operation over captured workbench context.
+/// Collection requests additionally require the exact live attachment access.
 final class MainContentBridge extends MainContentDeclarations
     implements PreparedFrontendBridge {
   MainContentBridge({
-    required MainContentAccess access,
+    MainContentAccess? access,
+    required Map<String, Object?> context,
     required bool Function() isActive,
-    required void Function(String id, String title, bool canClose) open,
+    void Function(String id, String title, bool canClose)? open,
     String paneId = '',
   }) : _access = access,
+       _context = Map.unmodifiable(context),
        _isActive = isActive,
        _open = open,
        _paneId = paneId;
 
-  final MainContentAccess _access;
+  final MainContentAccess? _access;
+  final Map<String, Object?> _context;
   final bool Function() _isActive;
-  final void Function(String, String, bool) _open;
+  final void Function(String, String, bool)? _open;
   final String _paneId;
   final Zone _nativeZone = Zone.current;
   bool _active = true;
@@ -101,7 +104,7 @@ final class MainContentBridge extends MainContentDeclarations
   bool get isActive {
     if (!_active) return false;
     try {
-      if (_isActive() && _access.isActive) return true;
+      if (_isActive() && (_access?.isActive ?? true)) return true;
     } on Object {
       // A failed liveness check permanently revokes this runtime's access.
     }
@@ -112,7 +115,7 @@ final class MainContentBridge extends MainContentDeclarations
   List<Map<String, Object?>> readPanes() {
     try {
       return _nativeZone.run(() {
-        if (!isActive) return const <Map<String, Object?>>[];
+        if (!isActive || _access == null) return const <Map<String, Object?>>[];
         return List<Map<String, Object?>>.unmodifiable([
           for (final pane in _access.panes)
             Map<String, Object?>.unmodifiable({
@@ -131,18 +134,13 @@ final class MainContentBridge extends MainContentDeclarations
 
   Map<String, Object?> readContext() {
     if (!isActive) return const {};
-    final session = _access.session;
-    return Map<String, Object?>.unmodifiable({
-      'sessionId': session.id.value,
-      'strategyId': session.strategyId.value,
-      'taskId': session.taskId.value,
-    });
+    return _context;
   }
 
   bool _request(void Function() action) {
     try {
       return _nativeZone.run(() {
-        if (!isActive) return false;
+        if (!isActive || _access == null) return false;
         action();
         return true;
       });
@@ -179,7 +177,7 @@ final class MainContentBridge extends MainContentDeclarations
         'openMainContentPane',
         (_, _, args) => $bool(
           _request(
-            () => _open(
+            () => _open!(
               args[0]!.$value as String,
               args[1]!.$value as String,
               args[2]!.$value as bool,
@@ -192,7 +190,7 @@ final class MainContentBridge extends MainContentDeclarations
         'setMainContentPaneTitle',
         (_, _, args) => $bool(
           _request(
-            () => _access.setTitle(
+            () => _access!.setTitle(
               args[0]!.$value as String,
               args[1]!.$value as String,
             ),
@@ -208,7 +206,7 @@ final class MainContentBridge extends MainContentDeclarations
             if (data is! List<Object?> || data.any((id) => id is! String)) {
               throw const FormatException('Pane order must be a string list.');
             }
-            _access.setOrder(List<String>.unmodifiable(data.cast<String>()));
+            _access!.setOrder(List<String>.unmodifiable(data.cast<String>()));
           }),
         ),
       )
@@ -216,7 +214,7 @@ final class MainContentBridge extends MainContentDeclarations
         _library,
         'removeMainContentPane',
         (_, _, args) => $bool(
-          _request(() => _access.remove(args.single!.$value as String)),
+          _request(() => _access!.remove(args.single!.$value as String)),
         ),
       )
       ..registerBridgeFunc(
@@ -224,7 +222,7 @@ final class MainContentBridge extends MainContentDeclarations
         'focusMainContentPane',
         (_, _, args) => $bool(
           _request(
-            () => _access.focus(
+            () => _access!.focus(
               args[0]!.$value as String,
               keyboardFocus: args[1]!.$value as bool,
             ),

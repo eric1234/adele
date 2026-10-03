@@ -277,15 +277,27 @@ the Local Directory example belong to [`ui`](../../packages/ui/README.md#interpr
 and the [Local Directory Project plugin](../../plugins/local_directory_project/README.md).
 
 Explicit user file operations are another narrow frontend grant, not model-tool
-execution. For an opted-in Main Content operation, the host captures the canonical
-Session's Environment association before asynchronous work, never a caller-supplied
-Environment ID or Task-primary fallback. It retains one lazy materialization
-attempt and its exact provider binding or failure, rather than resolving again
-after navigation or provider replacement. Only complete existing-text reads
-and revision-conditional replacement are exposed; the frontend receives no direct
-I/O, Run, model, process, or arbitrary Environment facet. Initializers and views
-cannot call these file operations directly. Declared provider failures remain
-structured; revocation does not undo an admitted write or justify automatic retry.
+execution. Session/Environment identity is separate provider-free data through the
+[Main Content context](plugin-system.md#grouped-main-content), not a file grant.
+For each opted-in finite operation, the host creates a fresh capture of the
+canonical Session's Environment association before asynchronous work, never a
+caller-supplied Environment ID or Task-primary fallback. Captures are not cached
+for the contribution or Environment lifetime. Each capture retains one lazy
+materialization attempt, including failure, and validates its exact provider
+binding without re-resolving after navigation or provider replacement. The runtime
+may reuse an already valid materialization. A failed or stale operation never
+retries or migrates; a later explicit Open or Save may freshly resolve the same
+captured Environment without reviving earlier access.
+
+The separate Environment access bridge exposes only complete existing-text reads
+and revision-conditional replacement. Initializers, views, and operations without
+file permission or captured Session context receive no file grant. The frontend
+receives no direct I/O, Run, model, process, or arbitrary Environment facet.
+Declared provider failures remain structured; unknown failures do not assert
+local-buffer retention or that the file was unchanged. The host forwards the
+plugin's opaque expected revision unchanged, without rebasing or automatic write
+retry. Revocation does not undo an admitted write, and missing acknowledgement
+does not establish rollback.
 See the [application adapter](../../app/README.md#source-editor-hosting) and
 [public bridge](../../packages/ui/README.md#interpreted-bridges).
 

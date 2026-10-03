@@ -14,6 +14,9 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
+import 'package:adele_desktop/frontend/contribution_bridge.dart';
+import 'package:adele_desktop/frontend/environment_access_bridge.dart';
+import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
@@ -36,10 +39,12 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
@@ -71,6 +76,12 @@ const _localDirectoryProjectPluginId =
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
 const _sourceEditorPluginId = 'dev.adele.source-editor';
+const _reviewPluginId = 'test.review-workspace';
+const _reviewLibrary = 'package:review_workspace/main.dart';
+const _reviewTitle = 'Leave the review workspace?';
+const _reviewMessage =
+    'Your review session is still open. Leave it now?\n'
+    'Context: 0; arguments: 0; active: true; pane: .';
 const _sourcePath = 'lib/task_answer.dart';
 const _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const _patchedText = 'const taskAnswer = "approved-task-value";\n';
@@ -422,11 +433,21 @@ void main() {
         expect(await _git(fixture.source, ['diff', '--binary', 'HEAD']), '');
 
         await _sourceAction(tester, _sourcePath, 'Close');
+        await _expectSourceConfirmation(
+          tester,
+          'Discard unsaved changes to $_sourcePath and close this Source Document? '
+          'Reopen the path to read the current file.',
+        );
         await _terminalTap(tester, find.widgetWithText(TextButton, 'Cancel'));
         expect(_sourceOwner(tester, _sourcePath), same(ownerA));
         expect(ownerA.isDisposed, isFalse);
         expect(ownerA.snapshot()['text'], _taskText.substring(2));
         await _sourceAction(tester, _sourcePath, 'Close');
+        await _expectSourceConfirmation(
+          tester,
+          'Discard unsaved changes to $_sourcePath and close this Source Document? '
+          'Reopen the path to read the current file.',
+        );
         await _terminalTap(tester, find.widgetWithText(TextButton, 'Discard'));
         await _terminalUntil(
           tester,
@@ -523,11 +544,13 @@ void main() {
   );
 
   testWidgets(
-    'normal Source Editor exit Cancel retains hidden documents and the active Run',
+    'normal Source Editor and generic Review exit Cancel retain hidden documents and the active Run',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1800, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final fixture = await _ProductFixture.create();
+      final root = await prepared.copyInstallations(fixture.directory);
+      await prepared.installReview(root);
       final release = Completer<void>();
       final outbound = <Map<String, Object?>>[];
       final errors = <(Object, StackTrace)>[];
@@ -567,8 +590,9 @@ void main() {
       });
       final runtime = fixture.runtime;
       try {
-        await fixture.launch(tester, prepared, endpoint: server);
+        await fixture.launch(tester, prepared, root: root, endpoint: server);
         await fixture.openTask(tester);
+        final task = fixture.shell(tester).task!;
         final environmentA = fixture.shell(tester).environment!;
         final worktreeA = Directory(
           developmentGitWorktreePath(
@@ -584,6 +608,17 @@ void main() {
           'gated local Run before Source editing',
         );
         final session = _session(tester);
+        final review = runtime.plugins.catalog!.installations.singleWhere(
+          (entry) => entry.metadata.id.value == _reviewPluginId,
+        );
+        expect(review.backendArtifactUri, isNull);
+        final descriptor = review.frontend!.presentations
+            .whereType<PreparedMainContentPresentation>()
+            .single;
+        expect(descriptor.retainedData, isFalse);
+        expect(descriptor.nativeCodeEditor, isFalse);
+        expect(descriptor.environmentTextFiles, isFalse);
+        await _reviewProbe(tester, session, environmentA.id);
         final runId = fixture.runIds.values.single;
         final connection = runtime.plugins.backends
             .singleWhere(
@@ -624,16 +659,9 @@ void main() {
           () => find.byType(AlertDialog).evaluate().isNotEmpty,
           'exit inspects hidden unsaved Source',
         );
-        expect(
-          find.textContaining('1 Source Document(s) and exit?'),
-          findsOneWidget,
-        );
-        expect(
-          find.descendant(
-            of: find.byType(AlertDialog),
-            matching: find.textContaining(_sourcePath),
-          ),
-          findsOneWidget,
+        await _expectSourceConfirmation(
+          tester,
+          'Discard unsaved changes in 1 Source Document(s) and exit?\n$_sourcePath (${environmentA.id.value})',
         );
         expect(connection.isClosed, isFalse);
         expect(runtime.store.runRecord(runId), isNull);
@@ -656,6 +684,36 @@ void main() {
         expect(fixture.runIds.values, [runId]);
         expect(fixture.shell(tester).sessionPresented, isFalse);
 
+        // Source acceptance is advice only: a later, unrelated participant can
+        // still cancel without destroying Source data or revoking the app.
+        final reviewCancelledExit = tester.binding.handleRequestAppExit();
+        await _terminalUntil(
+          tester,
+          () => find.byType(AlertDialog).evaluate().isNotEmpty,
+          'Source advice before Review exit participation',
+        );
+        await _expectSourceConfirmation(
+          tester,
+          'Discard unsaved changes in 1 Source Document(s) and exit?\n$_sourcePath (${environmentA.id.value})',
+        );
+        await _terminalTap(tester, find.widgetWithText(TextButton, 'Discard'));
+        await _terminalUntil(
+          tester,
+          () => find.text(_reviewTitle).evaluate().isNotEmpty,
+          'Review-owned confirmation after accepted Source advice',
+        );
+        _expectReviewConfirmation();
+        await _terminalTap(
+          tester,
+          find.widgetWithText(TextButton, 'Keep reviewing'),
+        );
+        expect(await reviewCancelledExit, AppExitResponse.cancel);
+        expect(runtime.plugins.state, ApplicationPluginState.ready);
+        expect(connection.isClosed, isFalse);
+        expect(owner.isDisposed, isFalse);
+        expect(owner.snapshot()['text'], _taskText.substring(1));
+        expect(runtime.store.runRecord(runId), isNull);
+
         await _terminalTap(tester, _sessionRow(session.id));
         await _terminalUntil(
           tester,
@@ -675,6 +733,7 @@ void main() {
           same(native.undoController),
         );
         expect(fixture.status(tester).isAdvancing, isTrue);
+        await _reviewProbe(tester, session, environmentA.id);
         await _sourceKey(tester, owner, LogicalKeyboardKey.keyZ, control: true);
         expect(owner.snapshot()['text'], _taskText);
         await _sourceKey(tester, owner, LogicalKeyboardKey.keyY, control: true);
@@ -722,11 +781,64 @@ void main() {
         );
         expect(find.byType(AlertDialog), findsNothing);
         expect(tester.takeException(), isNull);
-        expect(
-          await tester.binding.handleRequestAppExit(),
-          AppExitResponse.exit,
+        final acceptedExit = tester.binding.handleRequestAppExit();
+        await _terminalUntil(
+          tester,
+          () => find.text(_reviewTitle).evaluate().isNotEmpty,
+          'Review confirmation remains retryable',
         );
+        _expectReviewConfirmation();
+        await _terminalTap(
+          tester,
+          find.widgetWithText(TextButton, 'Leave review'),
+        );
+        expect(await acceptedExit, AppExitResponse.exit);
         expect(connection.isClosed, isTrue);
+        await tester.pumpWidget(const SizedBox.shrink());
+
+        // Restore the same canonical Session without any Environment provider.
+        // Identity-only initialization/view/probe must not materialize it.
+        await Directory('${root.path}/$_gitPluginId').delete(recursive: true);
+        final ids = _NoReopenIds();
+        final fresh = NativeAdeleRuntime(ids: ids, runIds: ids);
+        addTearDown(fresh.close);
+        try {
+          await fixture.launch(
+            tester,
+            prepared,
+            root: root,
+            usingRuntime: fresh,
+            usingRunIds: ids,
+            configureModel: false,
+          );
+          expect(
+            fresh.registry.providersFor(environmentProviderCapability),
+            isEmpty,
+          );
+          await _tap(tester, 'Open Local Directory...');
+          await _pumpUntil(tester, () => fixture.shell(tester).project != null);
+          final restored = fresh.store.session(session.id)!;
+          expect(
+            fresh.store.requireSessionAuthority(restored.id).environmentId,
+            environmentA.id,
+          );
+          await _terminalTap(tester, find.text(task.title));
+          await _terminalTap(tester, _sessionRow(restored.id));
+          await _reviewProbe(tester, restored, environmentA.id);
+          expect(
+            fresh.lifecycle.environmentRuntime.currentMaterialization(
+              environmentA.id,
+            ),
+            isNull,
+          );
+          expect(find.byType(CodeForge), findsNothing);
+          expect(ids.calls, 0);
+          expect(fresh.store.runsForSession(restored.id).single.id, runId);
+          expect(tester.takeException(), isNull);
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await fresh.close();
+        }
       } finally {
         if (!release.isCompleted) release.complete();
         await tester.pumpWidget(const SizedBox.shrink());
@@ -4997,6 +5109,192 @@ Future<void> _projectionText(
   }
 }
 
+Future<void> _expectSourceConfirmation(
+  WidgetTester tester,
+  String message,
+) async {
+  final dialog = find.byType(AlertDialog);
+  await _terminalUntil(
+    tester,
+    () => dialog.evaluate().isNotEmpty,
+    'Source-supplied confirmation',
+  );
+  expect(dialog, findsOneWidget);
+  for (final text in ['Discard unsaved changes?', message]) {
+    expect(
+      find.descendant(of: dialog, matching: find.text(text)),
+      findsOneWidget,
+    );
+  }
+  for (final label in ['Discard', 'Cancel']) {
+    expect(
+      find.descendant(
+        of: dialog,
+        matching: find.widgetWithText(TextButton, label),
+      ),
+      findsOneWidget,
+    );
+  }
+}
+
+void _expectReviewConfirmation() {
+  final dialog = find.byType(AlertDialog);
+  expect(dialog, findsOneWidget);
+  for (final text in [_reviewTitle, _reviewMessage]) {
+    expect(
+      find.descendant(of: dialog, matching: find.text(text)),
+      findsOneWidget,
+    );
+  }
+  for (final label in ['Leave review', 'Keep reviewing']) {
+    expect(
+      find.descendant(
+        of: dialog,
+        matching: find.widgetWithText(TextButton, label),
+      ),
+      findsOneWidget,
+    );
+  }
+  expect(find.text('Discard unsaved changes?'), findsNothing);
+  expect(find.widgetWithText(TextButton, 'Discard'), findsNothing);
+  expect(find.widgetWithText(TextButton, 'Cancel'), findsNothing);
+}
+
+Future<void> _reviewProbe(
+  WidgetTester tester,
+  Session session,
+  EnvironmentId environmentId,
+) async {
+  await _terminalUntil(
+    tester,
+    () => find.text('Review ${environmentId.value}').evaluate().isNotEmpty,
+    'Review initializer receives canonical context without retained data',
+  );
+  await _terminalUntil(
+    tester,
+    () =>
+        find
+            .text(
+              'View Environment: ${environmentId.value}; pane: review; arguments: 0',
+            )
+            .evaluate()
+            .length ==
+        1,
+    'Review presentation receives its own captured context and empty arguments',
+  );
+  await _terminalTap(tester, find.widgetWithText(TextButton, 'Probe review'));
+  await _terminalUntil(
+    tester,
+    () => find
+        .text(
+          'Probe: ${session.id.value}/${session.taskId.value}/${session.strategyId.value}/'
+          '${environmentId.value}; pane: ; marker: review-probe; '
+          'read: false/binding_unavailable',
+        )
+        .evaluate()
+        .isNotEmpty,
+    'finite Review operation receives context and arguments but no file grant',
+  );
+  expect(find.text('Frontend unavailable.'), findsNothing);
+}
+
+const _reviewSource = r'''
+import 'package:flutter/material.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/contribution_bridge.dart';
+import 'package:adele_ui/environment_access_bridge.dart';
+
+void initializeReview() {
+  final context = readMainContentContext();
+  final arguments = readContributionArguments();
+  if (arguments == null || arguments.isNotEmpty) return;
+  final environment = context['environmentKey'];
+  if (readMainContentPaneId() != '') return;
+  openMainContentPane('review', 'Review $environment', false);
+}
+
+Widget reviewPane() => ReviewPane();
+class ReviewPane extends StatefulWidget {
+  ReviewPane();
+  @override
+  State<ReviewPane> createState() => ReviewPaneState();
+}
+class ReviewPaneState extends State<ReviewPane> {
+  String result = 'Not probed';
+  bool disposed = false;
+  Future<void> probe() async {
+    final response = await invokeContributionOperation('probe', <String, dynamic>{
+      'marker': 'review-probe',
+    });
+    final context = response['context'];
+    final session = context['sessionId'];
+    final task = context['taskId'];
+    final strategy = context['strategyId'];
+    final environment = context['environmentKey'];
+    final pane = response['paneId'];
+    final marker = response['marker'];
+    final read = response['read'];
+    final ok = read['ok'];
+    final failure = read['failure'];
+    final code = failure['code'];
+    final message = 'Probe: $session/$task/$strategy/$environment; pane: $pane; '
+        'marker: $marker; read: $ok/$code';
+    if (!disposed && readContributionArguments() != null) {
+      setState(() { result = message; });
+    }
+  }
+  @override
+  void dispose() {
+    disposed = true;
+    super.dispose();
+  }
+  @override
+  Widget build(BuildContext context) {
+    final identity = readMainContentContext();
+    final environment = identity['environmentKey'];
+    final pane = readMainContentPaneId();
+    final arguments = readContributionArguments();
+    var count = -1;
+    if (arguments != null) count = arguments.length;
+    return Column(children: <Widget>[
+      Text('View Environment: $environment; pane: $pane; arguments: $count'),
+      TextButton(onPressed: () => probe(), child: Text('Probe review')),
+      Text(result),
+    ]);
+  }
+}
+
+Future<Map<String, dynamic>> probeReview() async {
+  final context = readMainContentContext();
+  final arguments = readContributionArguments();
+  final pane = readMainContentPaneId();
+  var marker = '';
+  if (arguments != null) marker = arguments['marker'];
+  final read = await readEnvironmentTextFile('lib/task_answer.dart');
+  return <String, dynamic>{
+    'context': context, 'paneId': pane, 'marker': marker, 'read': read,
+  };
+}
+
+Future<Map<String, dynamic>> exitReview() async {
+  final context = readMainContentContext();
+  final arguments = readContributionArguments();
+  final pane = readMainContentPaneId();
+  final contextCount = context.length;
+  var argumentCount = -1;
+  if (arguments != null) argumentCount = arguments.length;
+  final active = arguments != null;
+  final accepted = await confirmContribution(<String, dynamic>{
+    'title': 'Leave the review workspace?',
+    'message': 'Your review session is still open. Leave it now?\n'
+        'Context: $contextCount; arguments: $argumentCount; active: $active; pane: $pane.',
+    'acceptLabel': 'Leave review',
+    'cancelLabel': 'Keep reviewing',
+  });
+  return <String, dynamic>{'accepted': accepted};
+}
+''';
+
 final class _PreparedProduct {
   _PreparedProduct(this.directory, this.root, this.dart, this.dartaotruntime);
   final Directory directory;
@@ -5017,6 +5315,60 @@ final class _PreparedProduct {
     );
     return artifact;
   }();
+
+  Future<void> installReview(Directory root) async {
+    final installed = await Directory('${root.path}/$_reviewPluginId').create();
+    final program =
+        (Compiler()
+              ..addPlugin(flutterEvalPlugin)
+              ..addPlugin(const MainContentDeclarations())
+              ..addPlugin(const ContributionDeclarations())
+              ..addPlugin(const EnvironmentAccessDeclarations())
+              ..entrypoints.add(_reviewLibrary))
+            .compile({
+              'review_workspace': {'main.dart': _reviewSource},
+              'adele_ui': {
+                for (final bridge in [
+                  'main_content_bridge.dart',
+                  'contribution_bridge.dart',
+                  'environment_access_bridge.dart',
+                ])
+                  bridge: await File(
+                    '../packages/ui/lib/$bridge',
+                  ).readAsString(),
+              },
+            });
+    await File('${installed.path}/frontend.evc').writeAsBytes(program.write());
+    await File(
+      '${installed.path}/adele_plugin.installation.json',
+    ).writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': _reviewPluginId,
+          'version': '1',
+          'displayName': 'Review',
+        },
+        'components': {
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations': [
+              {
+                'role': 'mainContent',
+                'extensionId': '$_reviewPluginId.main-content',
+                'order': 400,
+                'library': _reviewLibrary,
+                'initialize': 'initializeReview',
+                'entrypoint': 'reviewPane',
+                'operations': {'probe': 'probeReview', 'exit': 'exitReview'},
+                'exitOperation': 'exit',
+              },
+            ],
+          },
+        },
+      }),
+    );
+  }
 
   static Future<_PreparedProduct> prepare() async {
     final repository = Directory.current.parent;

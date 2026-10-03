@@ -61,16 +61,16 @@ Future<void> installMainContentFixture({
 /// Native resource policy shared by tests and the manual development route.
 /// Collection operations belong exclusively to the interpreted frontend.
 final class MainContentFixtureResources {
-  MainContentFixtureResources({this.environmentRuntime, this.confirmDiscard});
+  MainContentFixtureResources({this.environmentRuntime, this.confirm});
 
   final EnvironmentRuntime? environmentRuntime;
-  final Future<bool> Function(String message)? confirmDiscard;
+  final Future<bool> Function(Map<String, Object?> request)? confirm;
   final Map<(SessionId, String), NativeCodeEditor> _editors = {};
   bool _disposed = false;
 
   late final PreparedMainContentHost host = PreparedMainContentHost(
     environmentRuntime: environmentRuntime,
-    confirmDiscard: confirmDiscard,
+    confirm: confirm,
     createBinding:
         ({
           required installation,

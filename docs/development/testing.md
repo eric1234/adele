@@ -152,8 +152,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
 | Grouped Main Content ownership/layout | [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart), [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart), [`test/adele_shell_test.dart`](../../app/test/adele_shell_test.dart) (registered groups only, ordinary ordering including Chat, zero-pane geometry, contiguous groups, stable panes, equal individual widths/minima, local reveal/focus, departure/retirement, and canonical Session context independent of view availability) |
-| Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (short-lived identity-only initialization, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
-| Source retained data/native owners and captured file authority | [`test/source_editor_host_test.dart`](../../app/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart) (actual Source EVC, normalized duplicate opens, finite Save/Close operations, hidden exit preflight, canonical Session authority, lazy exact binding, and structured failures); see [focused Source checks](#focused-source-checks) |
+| Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (provider-free canonical Session/Environment context without grants, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
+| Source retained data/native owners and captured file authority | [`test/source_editor_host_test.dart`](../../app/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart), [`test/environment_access_bridge_test.dart`](../../app/test/environment_access_bridge_test.dart) (actual Source EVC, explicit-operation recovery without same-capture retry/migration, unchanged expected revisions, finite Save/Close, hidden exit, denied grants, and structured failures); see [focused Source checks](#focused-source-checks) |
 | Normal Source workflow and exit cancellation | Source cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (stock catalog/EVC and real Git worktrees, Session/Environment retention without Chat or Run, conditional Save/conflict/Close, and hidden unsaved exit cancellation without closing an active Run) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
@@ -290,7 +290,7 @@ From `app/`, serialize Flutter invocations sharing build output. Authority and
 generic action-chrome checks need no native editor library:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/environment_text_files_test.dart test/main_content_controller_test.dart test/main_content_host_test.dart
+flutter test --no-pub --concurrency 1 test/environment_text_files_test.dart test/environment_access_bridge_test.dart test/main_content_controller_test.dart test/main_content_host_test.dart
 ```
 
 For the native Source paths, first run `dart tools/adele.dart build-code-editor-tests`
@@ -304,8 +304,13 @@ flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_t
 
 The focused host fixture compiles actual Source EVC and uses a deterministic
 Environment provider with held/failing operations: Save snapshots and baseline
-advancement, edits during a held write, navigation, stale callbacks, failed opens,
-conflicts, native owner release, and hidden exit snapshots are separate boundaries.
+advancement, edits during a held write, navigation, stale callbacks, explicit Open
+recovery after restore failure or retirement, later explicit Save with the last
+acknowledged revision, conflicts, native owner release, and hidden exit snapshots
+are separate boundaries. The capture and Environment bridge tests distinguish
+sticky per-capture failure/exact binding from fresh-operation access, and cover
+denied grants, complete DTOs, structured failures, and admitted acknowledgements
+without automatic retry.
 The normal application cases use prepared stock components and real Git AOT/file
 replacement; their active-Run case uses local fake model responses, not paid/live
 credentials. Provider encoding, confinement, one-MiB bound, and revision checks

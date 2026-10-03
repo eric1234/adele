@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -215,6 +218,75 @@ void main() {
       expect(find.text('Renamed a'), findsOneWidget);
       expect(tester.element(find.text('body a')), same(element));
       expect(find.text('Independent content'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'context-only prepared panes receive canonical Environment identity without materialization',
+    (tester) async {
+      final runtime = AdeleRuntime();
+      addTearDown(runtime.close);
+      final project = Project(
+        id: ProjectId('project'),
+        sourceLocation: Uri.parse('file:///context-only'),
+      );
+      final task = Task(
+        id: session.taskId,
+        projectId: project.id,
+        title: 'Task',
+      );
+      Environment environment(String id, EnvironmentRole role) => Environment(
+        id: EnvironmentId(id),
+        taskId: task.id,
+        role: role,
+        providerId: ProviderId('test.unavailable-provider'),
+        providerState: const {},
+      );
+      final primary = environment('primary', EnvironmentRole.primary);
+      final additional = environment(
+        'canonical-additional',
+        EnvironmentRole.additional,
+      );
+      runtime.store.publishRestoredProject(
+        project: project,
+        tasks: [task],
+        environments: [primary, additional],
+        sessions: [session],
+        authorities: [(session.id, additional.id)],
+        runRecords: [],
+      );
+      await tester.runAsync(
+        () => activate(
+          host: PreparedMainContentHost(
+            environmentRuntime: runtime.lifecycle.environmentRuntime,
+          ),
+          initialize: 'initializeContextPane',
+          entrypoint: 'buildContextPane',
+        ),
+      );
+      await tester.pumpWidget(host());
+      await tester.pumpAndSettle();
+      expect(find.text('Captured canonical-additional'), findsOneWidget);
+      expect(
+        find.text('Environment canonical-additional; pane context'),
+        findsOneWidget,
+      );
+      expect(find.text('Independent content'), findsOneWidget);
+      expect(
+        runtime.registry.providersFor(environmentProviderCapability),
+        isEmpty,
+      );
+      for (final environment in [primary, additional]) {
+        expect(
+          runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+      }
+      expect(runtime.store.runsForSession(session.id), isEmpty);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
     },
@@ -703,11 +775,23 @@ final class _RecordingBridge implements PreparedFrontendBridge {
   void invalidate() => onInvalidate?.call();
 }
 
-const _source = '''
+const _source = r'''
 import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
+void initializeContextPane() {
+  final context = readMainContentContext();
+  final environment = context['environmentKey'];
+  if (readMainContentPaneId() != '') return;
+  openMainContentPane('context', 'Captured ' + environment, false);
+}
+Widget buildContextPane() {
+  final context = readMainContentContext();
+  final environment = context['environmentKey'];
+  final pane = readMainContentPaneId();
+  return Text('Environment $environment; pane $pane');
+}
 List<Map<String, dynamic>> panes() => readMainContentPanes();
 Map<String, dynamic> context() => readMainContentContext();
 String paneId() => readMainContentPaneId();

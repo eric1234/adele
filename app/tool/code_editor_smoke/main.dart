@@ -140,12 +140,10 @@ Future<void> _workspace(
 }) async {
   final runtime = NativeAdeleRuntime();
   final root = GlobalKey();
-  var cleaningUp = false;
   final resources = MainContentFixtureResources(
     environmentRuntime: runtime.lifecycle.environmentRuntime,
-    confirmDiscard: (message) async {
-      // Checks must not discard; only failed disposable-Project cleanup may do so.
-      if (automated) return cleaningUp;
+    confirm: (request) async {
+      if (automated) return false;
       final navigator = _elements(root)
           .map((element) => element.widget)
           .whereType<MaterialApp>()
@@ -156,16 +154,18 @@ Future<void> _workspace(
       return await showDialog<bool>(
             context: navigator,
             builder: (context) => AlertDialog(
-              title: const Text('Discard unsaved changes?'),
-              content: SingleChildScrollView(child: Text(message)),
+              title: Text(request['title'] as String),
+              content: SingleChildScrollView(
+                child: Text(request['message'] as String),
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Cancel'),
+                  child: Text(request['cancelLabel'] as String),
                 ),
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(true),
-                  child: const Text('Discard'),
+                  child: Text(request['acceptLabel'] as String),
                 ),
               ],
             ),
@@ -528,7 +528,6 @@ Future<void> _workspace(
     settlement.recordFailure('CODEFORGE_SMOKE_FAILED', error, stack);
   } finally {
     if (!interactive) {
-      cleaningUp = true;
       await WidgetsBinding.instance.handleRequestAppExit();
       runApp(const SizedBox.shrink());
       await _frames();

@@ -11,6 +11,7 @@ import '../core/product_lifecycle.dart';
 import '../core/resource_cleanup.dart';
 import 'code_editor_bridge.dart';
 import 'contribution_bridge.dart';
+import 'environment_access_bridge.dart';
 import 'environment_text_files.dart';
 import 'main_content_bridge.dart';
 import 'prepared_frontend.dart';
@@ -40,11 +41,11 @@ final class PreparedMainContentHost {
   PreparedMainContentHost({
     this.createBinding,
     this.environmentRuntime,
-    this.confirmDiscard,
+    this.confirm,
   });
 
   final EnvironmentRuntime? environmentRuntime;
-  final Future<bool> Function(String message)? confirmDiscard;
+  final Future<bool> Function(Map<String, Object?> request)? confirm;
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
       {};
   final Set<Future<Map<String, Object?>>> _operations = {};
@@ -106,11 +107,20 @@ final class PreparedMainContentHost {
                 key: UniqueKey(),
                 library: descriptor.library,
                 entrypoint: action.entrypoint,
-                createBridge: () => _dataBridge(
-                  retained!,
-                  attachment,
-                  isActive: () => access.isActive && isActive(),
-                ),
+                createBridge: () => PreparedFrontendBridges([
+                  MainContentBridge(
+                    context: attachment.context,
+                    isActive: () => access.isActive && isActive(),
+                  ),
+                  _dataBridge(
+                    retained!,
+                    attachment,
+                    isActive: () => access.isActive && isActive(),
+                  ),
+                  EnvironmentAccessBridge(
+                    isActive: () => access.isActive && isActive(),
+                  ),
+                ]),
               );
             },
           ),
@@ -128,20 +138,7 @@ final class PreparedMainContentHost {
           }
         }
 
-        CapturedEnvironmentTextFiles? files;
-        if (retained != null && descriptor.environmentTextFiles) {
-          final runtime = environmentRuntime;
-          if (runtime != null) {
-            final captured = CapturedEnvironmentTextFiles(
-              session: access.session,
-              environmentRuntime: runtime,
-            );
-            files = retained.environments.putIfAbsent(
-              captured.environmentKey,
-              () => captured,
-            );
-          }
-        }
+        final context = _contextForSession(access.session);
         late final _MainContentAttachment attachment;
 
         void open(String id, String title, bool canClose) {
@@ -214,6 +211,7 @@ final class PreparedMainContentHost {
                     bridges?.invalidate();
                     final collection = MainContentBridge(
                       access: access,
+                      context: context,
                       isActive: paneActive,
                       open: open,
                       paneId: id,
@@ -233,13 +231,9 @@ final class PreparedMainContentHost {
                     final acquired = <PreparedFrontendBridge>[
                       collection,
                       lifecycle,
+                      EnvironmentAccessBridge(isActive: paneActive),
                       if (retained != null)
-                        _dataBridge(
-                          retained,
-                          attachment,
-                          paneId: id,
-                          isActive: paneActive,
-                        ),
+                        _dataBridge(retained, attachment, isActive: paneActive),
                     ];
                     try {
                       if (descriptor.sessionExecution ||
@@ -345,9 +339,11 @@ final class PreparedMainContentHost {
             createBridge: () => PreparedFrontendBridges([
               MainContentBridge(
                 access: access,
+                context: context,
                 isActive: available,
                 open: open,
               ),
+              EnvironmentAccessBridge(isActive: available),
               if (retained != null)
                 _dataBridge(retained, attachment, isActive: available),
             ]),
@@ -364,7 +360,7 @@ final class PreparedMainContentHost {
 
         attachment = _MainContentAttachment(
           access: access,
-          files: files,
+          context: context,
           initialize: initialize,
         );
         if (retained != null) retained.attachment = attachment;
@@ -379,21 +375,32 @@ final class PreparedMainContentHost {
   ContributionBridge _dataBridge(
     _RetainedMainContent retained,
     _MainContentAttachment attachment, {
-    String paneId = '',
     required bool Function() isActive,
   }) => ContributionBridge(
     owner: retained.owner,
     isActive: () => retained.isActive() && isActive(),
-    context: {
-      'environmentKey': attachment.files?.environmentKey ?? '',
-      'paneId': paneId,
-      'arguments': <String, Object?>{},
-    },
     nativeCodeEditor: retained.descriptor.nativeCodeEditor,
     retainedData: retained.descriptor.retainedData,
     invoke: (operation, arguments) =>
         _invoke(retained, attachment, operation, arguments),
   );
+
+  Map<String, Object?> _contextForSession(Session session) {
+    final store = environmentRuntime?.store;
+    if (store != null && !identical(store.session(session.id), session)) {
+      throw StateError('Main Content context requires the canonical Session.');
+    }
+    return Map.unmodifiable({
+      'sessionId': session.id.value,
+      'strategyId': session.strategyId.value,
+      'taskId': session.taskId.value,
+      if (store != null)
+        'environmentKey': store
+            .requireSessionAuthority(session.id)
+            .environmentId
+            .value,
+    });
+  }
 
   /// Called by the public provider-neutral display registration, not a global
   /// command service. Only the current host-approved attachment can admit work.
@@ -429,26 +436,45 @@ final class PreparedMainContentHost {
     }
     // Everything below is captured before eval can suspend. Presentation
     // departure does not revoke this finite operation's retained owner access.
-    final files = attachment?.files;
-    final context = <String, Object?>{
-      'environmentKey': files?.environmentKey ?? '',
-      'paneId': '',
-      'arguments': copyStructuredBridgeData(arguments),
-    };
+    final context = attachment?.context ?? const <String, Object?>{};
+    CapturedEnvironmentTextFiles? files;
+    final runtime = environmentRuntime;
+    if (retained.descriptor.environmentTextFiles &&
+        attachment != null &&
+        runtime != null) {
+      try {
+        files = CapturedEnvironmentTextFiles(
+          session: attachment.access.session,
+          environmentRuntime: runtime,
+        );
+        if (files.environmentKey != context['environmentKey']) {
+          throw StateError(
+            'The captured Session Environment association changed.',
+          );
+        }
+      } on Object catch (error, stack) {
+        return Future.error(error, stack);
+      }
+    }
+    final capturedArguments =
+        copyStructuredBridgeData(arguments) as Map<String, Object?>;
     late final Future<Map<String, Object?>> pending;
     pending = retained.generation
         .invoke<Map<String, Object?>>(
           library: retained.descriptor.library,
           entrypoint: entrypoint,
-          createBridge: () => ContributionBridge(
-            owner: retained.owner,
-            isActive: retained.isActive,
-            context: context,
-            nativeCodeEditor: retained.descriptor.nativeCodeEditor,
-            retainedData: retained.descriptor.retainedData,
-            files: retained.descriptor.environmentTextFiles ? files : null,
-            confirmDiscard: confirmDiscard,
-          ),
+          createBridge: () => PreparedFrontendBridges([
+            MainContentBridge(context: context, isActive: retained.isActive),
+            ContributionBridge(
+              owner: retained.owner,
+              isActive: retained.isActive,
+              arguments: capturedArguments,
+              nativeCodeEditor: retained.descriptor.nativeCodeEditor,
+              retainedData: retained.descriptor.retainedData,
+              confirm: confirm,
+            ),
+            EnvironmentAccessBridge(files: files, isActive: retained.isActive),
+          ]),
           decodeResult: (value) {
             if (!retained.isActive()) {
               throw StateError(
@@ -471,7 +497,8 @@ final class PreparedMainContentHost {
             final focus = result['focus'];
             if (focus is String &&
                 current.access.isActive &&
-                current.files?.environmentKey == files?.environmentKey &&
+                current.context['environmentKey'] ==
+                    context['environmentKey'] &&
                 current.access.panes.any((pane) => pane.id == focus)) {
               current.access.focus(focus, keyboardFocus: true);
             }
@@ -598,7 +625,6 @@ final class _RetainedMainContent {
   final PreparedFrontend generation;
   final PreparedMainContentPresentation descriptor;
   final bool Function() isActive;
-  final Map<String, CapturedEnvironmentTextFiles> environments = {};
   _MainContentAttachment? attachment;
 }
 
@@ -606,11 +632,11 @@ final class _RetainedMainContent {
 final class _MainContentAttachment {
   _MainContentAttachment({
     required this.access,
-    required this.files,
+    required this.context,
     required this.initialize,
   });
   final MainContentAccess access;
-  final CapturedEnvironmentTextFiles? files;
+  final Map<String, Object?> context;
   final Future<void> Function() initialize;
   Future<void>? _refreshing;
   bool _again = false;

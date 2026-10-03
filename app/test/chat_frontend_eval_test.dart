@@ -93,6 +93,11 @@ void main() {
                   entrypoint: 'initializeChatMainContent',
                   createBridge: () => initializer = MainContentBridge(
                     access: access,
+                    context: {
+                      'sessionId': access.session.id.value,
+                      'strategyId': access.session.strategyId.value,
+                      'taskId': access.session.taskId.value,
+                    },
                     isActive: () => access.isActive,
                     open: (id, title, canClose) => access.open(
                       MainContentPane(

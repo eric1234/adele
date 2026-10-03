@@ -1,12 +1,10 @@
 import 'dart:async';
 
-import 'package:adele_environment/adele_environment.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 
 import '../editor/native_code_editor.dart';
-import 'environment_text_files.dart';
 import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
 
@@ -103,6 +101,13 @@ class ContributionDeclarations implements EvalPlugin {
     const futureBool = BridgeTypeAnnotation(
       BridgeTypeRef(CoreTypes.future, [boolean]),
     );
+    const nullableMap = BridgeTypeAnnotation(
+      BridgeTypeRef(CoreTypes.map, [
+        string,
+        BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.dynamic)),
+      ]),
+      nullable: true,
+    );
     const key = BridgeParameter('key', string, false);
     const id = BridgeParameter('id', string, false);
     const text = BridgeParameter('text', string, false);
@@ -121,7 +126,7 @@ class ContributionDeclarations implements EvalPlugin {
       ),
       ('removeContributionData', boolean, const [key]),
       ('allocateContributionId', string, const <BridgeParameter>[]),
-      ('readContributionContext', map, const <BridgeParameter>[]),
+      ('readContributionArguments', nullableMap, const <BridgeParameter>[]),
       (
         'invokeContributionOperation',
         futureMap,
@@ -141,23 +146,9 @@ class ContributionDeclarations implements EvalPlugin {
       ('readContributionCodeEditorState', map, const [id]),
       ('releaseContributionCodeEditor', boolean, const [id]),
       (
-        'readEnvironmentTextFile',
-        futureMap,
-        const [BridgeParameter('path', string, false)],
-      ),
-      (
-        'replaceEnvironmentTextFile',
-        futureMap,
-        const [
-          BridgeParameter('path', string, false),
-          text,
-          BridgeParameter('expectedRevision', string, false),
-        ],
-      ),
-      (
-        'confirmContributionDiscard',
+        'confirmContribution',
         futureBool,
-        const [BridgeParameter('message', string, false)],
+        const [BridgeParameter('request', map, false)],
       ),
     ]) {
       registry.defineBridgeTopLevelFunction(
@@ -182,23 +173,21 @@ final class ContributionBridge extends ContributionDeclarations
   ContributionBridge({
     required this.owner,
     required this.isActive,
-    required this.context,
+    this.arguments = const {},
     required this.retainedData,
     required this.nativeCodeEditor,
-    this.files,
     this.invoke,
-    this.confirmDiscard,
+    this.confirm,
   });
 
   final RetainedContribution owner;
   final bool Function() isActive;
-  final Map<String, Object?> context;
+  final Map<String, Object?> arguments;
   final bool retainedData;
   final bool nativeCodeEditor;
-  final CapturedEnvironmentTextFiles? files;
   final Future<Map<String, Object?>> Function(String, Map<String, Object?>)?
   invoke;
-  final Future<bool> Function(String)? confirmDiscard;
+  final Future<bool> Function(Map<String, Object?> request)? confirm;
   final Zone _nativeZone = Zone.current;
   final Set<EvalCallable> _listeners = Set.identity();
   Runtime? _runtime;
@@ -277,53 +266,6 @@ final class ContributionBridge extends ContributionDeclarations
     return $Future<$Value>.wrap(completion.future);
   }
 
-  Future<Map<String, Object?>> _file(
-    Future<Map<String, Object?>> Function(CapturedEnvironmentTextFiles) action,
-  ) async {
-    try {
-      _validate();
-      final access = files;
-      if (access == null) {
-        throw const AuthorizedEnvironmentBindingUnavailable(
-          'Environment file access is unavailable.',
-        );
-      }
-      return await action(access);
-    } on EnvironmentFailure catch (failure) {
-      return {
-        'ok': false,
-        'failure': {
-          'code': failure.code,
-          'message': failure.message,
-          'details': failure.details,
-        },
-      };
-    } on AuthorizedEnvironmentBindingException catch (failure) {
-      return {
-        'ok': false,
-        'failure': {
-          'code': failure is AuthorizedEnvironmentBindingStale
-              ? 'binding_stale'
-              : 'binding_unavailable',
-          'message': failure.message,
-          'details': <String, Object?>{},
-        },
-      };
-    } on Object {
-      // An unacknowledged mutation must not be represented as a successful write
-      // or automatically replayed. The plugin retains its local baseline.
-      return {
-        'ok': false,
-        'failure': {
-          'code': 'operation_unacknowledged',
-          'message':
-              'The Environment operation was not acknowledged. Local changes are retained; do not assume the file was unchanged.',
-          'details': <String, Object?>{},
-        },
-      };
-    }
-  }
-
   @override
   void configureForRuntime(Runtime runtime) {
     if (_runtime != null) {
@@ -358,10 +300,8 @@ final class ContributionBridge extends ContributionDeclarations
         _validateData();
         return $String(owner.allocateId());
       })
-      ..registerBridgeFunc(_library, 'readContributionContext', (_, _, _) {
-        return wrapStructuredBridgeData(
-          available ? context : const <String, Object?>{},
-        );
+      ..registerBridgeFunc(_library, 'readContributionArguments', (_, _, _) {
+        return wrapStructuredBridgeData(available ? arguments : null);
       })
       ..registerBridgeFunc(_library, 'invokeContributionOperation', (
         _,
@@ -384,8 +324,7 @@ final class ContributionBridge extends ContributionDeclarations
           } on Object {
             return {
               'ok': false,
-              'message':
-                  'Contribution operation is unavailable. Retained content was not discarded.',
+              'message': 'Contribution operation is unavailable.',
             };
           }
         });
@@ -444,45 +383,27 @@ final class ContributionBridge extends ContributionDeclarations
         owner.releaseEditor(id);
         return $bool(true);
       })
-      ..registerBridgeFunc(_library, 'readEnvironmentTextFile', (_, _, args) {
-        final path = string(args, 0);
-        return _future(
-          () => _file((access) async {
-            final file = await access.read(path);
-            return {
-              'ok': true,
-              'path': file.relativePath,
-              'text': file.text,
-              'sizeBytes': file.sizeBytes,
-              'revision': file.revision,
-            };
-          }),
-        );
-      })
-      ..registerBridgeFunc(_library, 'replaceEnvironmentTextFile', (
-        _,
-        _,
-        args,
-      ) {
-        final path = string(args, 0);
-        final text = string(args, 1);
-        final revision = string(args, 2);
-        return _future(
-          () => _file((access) async {
-            final result = await access.replace(path, text, revision);
-            return {'ok': true, 'revision': result.revision};
-          }),
-        );
-      })
-      ..registerBridgeFunc(_library, 'confirmContributionDiscard', (
-        _,
-        _,
-        args,
-      ) {
-        final message = string(args, 0);
+      ..registerBridgeFunc(_library, 'confirmContribution', (_, _, args) {
+        Map<String, Object?> request;
+        try {
+          request =
+              copyStructuredBridgeData(args.single) as Map<String, Object?>;
+          const fields = ['title', 'message', 'acceptLabel', 'cancelLabel'];
+          if (request.length != fields.length ||
+              fields.any(
+                (field) =>
+                    request[field] is! String ||
+                    (request[field]! as String).trim().isEmpty,
+              )) {
+            return _future(() async => false, unavailable: false);
+          }
+        } on Object {
+          return _future(() async => false, unavailable: false);
+        }
         return _future(() async {
           try {
-            return await confirmDiscard?.call(message) ?? false;
+            final accepted = await confirm?.call(request) ?? false;
+            return available && accepted;
           } on Object {
             return false;
           }
