@@ -23,6 +23,11 @@ no file was created or replaced. The contract does not define the revision
 representation or promise atomicity against writers outside a provider's
 coordination mechanism.
 
+Explicit frontend text-file operations use the separate public
+[UI Environment bridge](../ui/lib/environment_access_bridge.dart), not the backend
+host services below. Its [operation-scoped grant](../../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations)
+defines capture lifetime and fresh explicit-operation recovery.
+
 The package also defines one Session/Environment authority identity with
 coherent filesystem, read, mutation, and process views. Facets are operation
 views over the same authorized provider materialization, not separately selected

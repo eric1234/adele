@@ -617,6 +617,62 @@ Future<String?> nativeSelector() async => await pickDirectory();
   );
 
   test(
+    'Main Content operations validate without executing and retire with their owner',
+    () async {
+      await install('retained', [
+        {
+          ..._sessionDescriptor('retained'),
+          'retainedData': true,
+          'actions': [
+            {'id': 'open', 'label': 'Open file', 'entrypoint': 'customPane'},
+          ],
+          // This entrypoint throws if executed. Activation only resolves it.
+          'operations': {'display': 'semanticFailure'},
+          'displaySourceFileOperation': 'display',
+        },
+      ]);
+      await owner.start(await discover());
+      expect(owner.generations.single.state, InstalledFrontendState.active);
+      final display = extensions
+          .discover(displaySourceFileContributions)
+          .single;
+      expect(display.validate, returnsNormally);
+      await owner.generations.single.retire(
+        mainContentContributions,
+        ExtensionId('dev.example.retained.session'),
+      );
+      expect(extensions.discover(mainContentContributions), isEmpty);
+      expect(extensions.discover(displaySourceFileContributions), isEmpty);
+      expect(display.validate, throwsA(isA<StaleExtensionBinding>()));
+    },
+  );
+
+  for (final missing in ['action', 'operation']) {
+    test('missing Main Content $missing fails before registration', () async {
+      await install('missing-$missing', [
+        {
+          ..._sessionDescriptor('missing'),
+          'retainedData': true,
+          if (missing == 'action')
+            'actions': [
+              {
+                'id': 'open',
+                'label': 'Open file',
+                'entrypoint': 'notInArtifact',
+              },
+            ],
+          if (missing == 'operation')
+            'operations': {'display': 'notInArtifact'},
+        },
+      ]);
+      await owner.start(await discover());
+      expect(owner.generations.single.state, InstalledFrontendState.failed);
+      expect(extensions.discover(mainContentContributions), isEmpty);
+      expect(extensions.discover(displaySourceFileContributions), isEmpty);
+    });
+  }
+
+  test(
     'retired Main Content attachments cannot migrate to replacement bindings',
     () async {
       await install('sessions', [

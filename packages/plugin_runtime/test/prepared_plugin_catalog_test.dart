@@ -218,6 +218,16 @@ void main() {
       expect(session.backendServices, isEmpty);
       expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
       expect(() => session.backendServices.clear(), throwsUnsupportedError);
+      expect(session.actions, isEmpty);
+      expect(session.operations, isEmpty);
+      expect(session.closeOperation, isNull);
+      expect(session.exitOperation, isNull);
+      expect(session.displaySourceFileOperation, isNull);
+      expect(session.retainedData, isFalse);
+      expect(session.nativeCodeEditor, isFalse);
+      expect(session.environmentTextFiles, isFalse);
+      expect(() => session.actions.clear(), throwsUnsupportedError);
+      expect(() => session.operations.clear(), throwsUnsupportedError);
       final native =
           frontend.presentations[2] as PreparedModelNativeActivityPresentation;
       expect(native.library, _modelNativeActivity['library']);
@@ -395,6 +405,178 @@ void main() {
     },
   );
 
+  const mainContentAction = {
+    'id': 'open',
+    'label': 'Open Source...',
+    'entrypoint': 'openSourceInput',
+  };
+  const mainContentOperations = {
+    'display': 'displaySource',
+    'save': 'saveSource',
+    'close': 'closeSource',
+    'exit': 'closeSources',
+  };
+
+  test(
+    'Main Content decodes explicit actions, operations and permissions',
+    () async {
+      await install(
+        'source',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                {
+                  ..._mainContent,
+                  'actions': [mainContentAction],
+                  'operations': mainContentOperations,
+                  'closeOperation': 'close',
+                  'exitOperation': 'exit',
+                  'displaySourceFileOperation': 'display',
+                  'retainedData': true,
+                  'nativeCodeEditor': true,
+                  'environmentTextFiles': true,
+                },
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      final descriptor =
+          installation.frontend!.presentations.single
+              as PreparedMainContentPresentation;
+      expect(descriptor.actions.single.id, 'open');
+      expect(descriptor.actions.single.label, 'Open Source...');
+      expect(descriptor.actions.single.entrypoint, 'openSourceInput');
+      expect(descriptor.operations, mainContentOperations);
+      expect(descriptor.closeOperation, 'close');
+      expect(descriptor.exitOperation, 'exit');
+      expect(descriptor.displaySourceFileOperation, 'display');
+      expect(descriptor.retainedData, isTrue);
+      expect(descriptor.nativeCodeEditor, isTrue);
+      expect(descriptor.environmentTextFiles, isTrue);
+      expect(descriptor.sessionExecution, isFalse);
+      expect(descriptor.backendServices, isEmpty);
+      expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
+      expect(() => descriptor.actions.clear(), throwsUnsupportedError);
+      expect(() => descriptor.operations.clear(), throwsUnsupportedError);
+    },
+  );
+
+  PreparedMainContentPresentation mainContent({
+    List<PreparedMainContentAction> actions = const [],
+    Map<String, String> operations = const {},
+    String? closeOperation,
+    String? exitOperation,
+    String? displaySourceFileOperation,
+    bool retainedData = false,
+    bool nativeCodeEditor = false,
+    bool environmentTextFiles = false,
+  }) => PreparedMainContentPresentation(
+    extensionId: ExtensionId('org.example.main-content'),
+    order: 200,
+    library: 'package:example_frontend/main_content.dart',
+    initialize: 'initializePanes',
+    entrypoint: 'buildPane',
+    actions: actions,
+    operations: operations,
+    closeOperation: closeOperation,
+    exitOperation: exitOperation,
+    displaySourceFileOperation: displaySourceFileOperation,
+    retainedData: retainedData,
+    nativeCodeEditor: nativeCodeEditor,
+    environmentTextFiles: environmentTextFiles,
+  );
+
+  test(
+    'Main Content snapshots actions and operations without implicit grants',
+    () {
+      final actions = [
+        PreparedMainContentAction(
+          id: 'open',
+          label: 'L' * 128,
+          entrypoint: 'openInput',
+        ),
+        PreparedMainContentAction(
+          id: 'another',
+          label: 'Another',
+          entrypoint: r'_input$2',
+        ),
+      ];
+      final operations = {'open': 'openSource'};
+      final descriptor = mainContent(actions: actions, operations: operations);
+      actions.clear();
+      operations.clear();
+      expect(descriptor.actions.map((action) => action.id), [
+        'open',
+        'another',
+      ]);
+      expect(descriptor.actions.last.entrypoint, r'_input$2');
+      expect(descriptor.operations, {'open': 'openSource'});
+      expect(descriptor.retainedData, isFalse);
+      expect(descriptor.nativeCodeEditor, isFalse);
+      expect(descriptor.environmentTextFiles, isFalse);
+      expect(mainContent(retainedData: true).operations, isEmpty);
+      expect(
+        mainContent(
+          operations: {'read': 'readSource'},
+          environmentTextFiles: true,
+        ).retainedData,
+        isFalse,
+      );
+    },
+  );
+
+  test('Main Content constructors enforce action and operation invariants', () {
+    for (final create in <Object Function()>[
+      () =>
+          PreparedMainContentAction(id: ' ', label: 'Open', entrypoint: 'open'),
+      () =>
+          PreparedMainContentAction(id: 'open', label: ' ', entrypoint: 'open'),
+      () => PreparedMainContentAction(
+        id: 'open',
+        label: 'L' * 129,
+        entrypoint: 'open',
+      ),
+      () => PreparedMainContentAction(
+        id: 'open',
+        label: 'Open',
+        entrypoint: 'open()',
+      ),
+      () => mainContent(
+        actions: [
+          PreparedMainContentAction(
+            id: 'open',
+            label: 'Open',
+            entrypoint: 'open',
+          ),
+          PreparedMainContentAction(
+            id: 'open',
+            label: 'Other',
+            entrypoint: 'other',
+          ),
+        ],
+      ),
+      () => mainContent(operations: {' ': 'openSource'}),
+      () => mainContent(operations: {'open': 'Source.open'}),
+      () => mainContent(closeOperation: 'close'),
+      () => mainContent(exitOperation: 'exit'),
+      () => mainContent(displaySourceFileOperation: 'display'),
+      () => mainContent(
+        operations: {'close': 'closeSource'},
+        closeOperation: 'closeSource',
+      ),
+      () => mainContent(nativeCodeEditor: true),
+      () => mainContent(environmentTextFiles: true),
+    ]) {
+      expect(create, throwsFormatException);
+    }
+  });
+
   final invalidMainContent = <String, Object?>{
     for (final field in _mainContent.keys)
       'missing $field': {..._mainContent}..remove(field),
@@ -429,6 +611,98 @@ void main() {
         'build\n',
       ])
         'invalid $field ${jsonEncode(name)}': {..._mainContent, field: name},
+    for (final field in [
+      'retainedData',
+      'nativeCodeEditor',
+      'environmentTextFiles',
+    ])
+      for (final value in <Object?>[null, 'true', 1, [], {}])
+        'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
+    'native editor without retention': {
+      ..._mainContent,
+      'nativeCodeEditor': true,
+    },
+    'environment access without operations': {
+      ..._mainContent,
+      'environmentTextFiles': true,
+    },
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'invalid actions ${jsonEncode(value)}': {
+        ..._mainContent,
+        'actions': value,
+      },
+    for (final value in <Object?>[
+      null,
+      false,
+      '',
+      1,
+      [],
+      {},
+      for (final field in mainContentAction.keys)
+        {...mainContentAction}..remove(field),
+      for (final field in mainContentAction.keys)
+        for (final value in <Object?>[null, 1, false, [], {}, '', '  '])
+          {...mainContentAction, field: value},
+      {...mainContentAction, 'label': 'L' * 129},
+      {...mainContentAction, 'entrypoint': 'Source.open'},
+      {...mainContentAction, 'unknown': true},
+    ])
+      'invalid action ${jsonEncode(value)}': {
+        ..._mainContent,
+        'actions': [value],
+      },
+    'duplicate action IDs': {
+      ..._mainContent,
+      'actions': [mainContentAction, mainContentAction],
+    },
+    for (final value in <Object?>[
+      null,
+      false,
+      '',
+      1,
+      [],
+      {'': 'displaySource'},
+      {'  ': 'displaySource'},
+      for (final entrypoint in <Object?>[
+        null,
+        1,
+        false,
+        [],
+        {},
+        '',
+        '  ',
+        'Source.display',
+        'display()',
+        '1display',
+        'display\n',
+      ])
+        {'display': entrypoint},
+    ])
+      'invalid operations ${jsonEncode(value)}': {
+        ..._mainContent,
+        'operations': value,
+      },
+    for (final field in [
+      'closeOperation',
+      'exitOperation',
+      'displaySourceFileOperation',
+    ])
+      for (final value in <Object?>[
+        null,
+        1,
+        false,
+        [],
+        {},
+        '',
+        '  ',
+        'unknown',
+        'displaySource',
+      ])
+        'invalid $field ${jsonEncode(value)}': {
+          ..._mainContent,
+          'operations': mainContentOperations,
+          field: value,
+        },
   };
   for (final entry in invalidMainContent.entries) {
     test('Main Content ${entry.key} invalidates only frontend', () async {

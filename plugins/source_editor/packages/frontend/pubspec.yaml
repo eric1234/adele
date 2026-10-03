@@ -1,0 +1,21 @@
+name: source_editor_frontend
+description: Stock interpreted Source Editor presentation and document policy for ADELE.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  test: ^1.26.3
+
+flutter:
+  uses-material-design: true

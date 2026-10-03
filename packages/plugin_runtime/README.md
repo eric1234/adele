@@ -93,13 +93,33 @@ service-ID allowlist defaulting to empty, and `strategyAffinity` is `independent
 by default or `owningBackend`. There is no strategy selector, role-level `displayName`, or
 stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
 and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
-data-only and remains Flutter/eval-independent. The initializer reads captured Session identity
-data and may open an initial collection; it receives no execution or backend
-services, including when the descriptor requests them. The content entrypoint
-renders each admitted pane in its own runtime.
+data-only and remains Flutter/eval-independent. The initializer reads captured
+Session/Environment identity data and may open an initial collection; it receives
+no execution, backend, or file services, including when the descriptor requests
+them. Identity context is independent of descriptor grants and provider readiness;
+its API belongs to the [UI bridge map](../ui/README.md#interpreted-bridges).
+The content entrypoint renders each admitted pane in its own runtime.
 
-Normal frontend bootstrap validates both entrypoints, then registers through the
-existing catalog/extension-registry path. Discovery and registration do not open
+Additional Main Content fields are explicit opt-ins:
+
+| Field | Meaning / default |
+| --- | --- |
+| `actions` | Empty by default; unique local `id`, `label`, and widget `entrypoint` for each host-chrome input action. |
+| `operations` | Empty by default; finite operation keys mapped to top-level entrypoints in the same `library`. |
+| `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
+| `retainedData` | False by default; requests copied contribution-owned records retained independently of attachment. |
+| `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
+| `environmentTextFiles` | False by default; requires nonempty `operations` and requests the separate Environment read/replace bridge only for finite operations with captured Session context. |
+
+Hooks cannot name undeclared operations. Actions and operations are immutable
+metadata, not stored evaluator callbacks. Exit operations need no mounted pane and
+receive no Session context or Environment grant. These fields do not imply Session
+execution or owning-backend services, and the host still validates each scoped
+grant. Manifest version remains 1.
+
+Normal frontend bootstrap validates initializer, pane, action, and operation
+entrypoints, then registers through the existing catalog/extension-registry path.
+Discovery and registration do not open
 panes or acquire native editors. The role requires no backend process by default.
 Requested services are pane-scoped and require an actual host binder, exact live
 registration/installation ownership, and validation of any captured execution
@@ -142,6 +162,13 @@ Stock Chat uses `mainContent`, ordinary order 100, explicit `sessionExecution: t
 an allowlisted Chat service, and `owningBackend` affinity. Its initializer decides
 applicability; runtime does not know Chat identities or service semantics. There is
 no separate Session presentation descriptor or reserved strategy slot.
+
+Stock [Source Editor](../../plugins/source_editor/README.md) is a frontend-only
+`mainContent` installation with retained data, native editor, and finite Environment
+operations explicitly enabled, without execution or owning-backend grants. Its
+descriptor remains in the build-side
+[`stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart),
+not a runtime Source policy table.
 
 Tool activity descriptors use `role: 'toolActivity'` with `toolId`, `library`,
 `inspectionExtensionId`, `compactExtensionId`, `inspectionEntrypoint`, and

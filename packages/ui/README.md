@@ -1,7 +1,8 @@
 # ADELE UI
 
 `adele_ui` is the experimental public Flutter package for semantic Task Browser,
-Session, grouped Main Content, shared console, and read-only activity presentation.
+Session, grouped Main Content, source-file display, shared console, and read-only
+activity presentation.
 It depends only on Flutter and public ADELE contracts, never application code,
 internal host implementations, or stock plugins.
 Product, orchestration, model tools, and the extension registry remain pure Dart.
@@ -39,6 +40,12 @@ contiguous local pane sequence before layout. Broader composition and retirement
 rules belong to the
 [Main Content architecture](../../docs/architecture/plugin-system.md#grouped-main-content).
 
+Optional `MainContentAction(id, label, createPresentation)` entries expose input
+presentations through common host chrome even when the group has no panes. Each
+opening receives the exact attachment's access, not a dummy pane or execution
+grant. Optional `detach(MainContentAccess)` ends transient attachment references;
+it is not a document-close request or permission to reuse revoked access.
+
 `MainContentAccess` exposes the captured `session`, `isActive`, and immutable local
 `panes` snapshots, plus `open(MainContentPane)`, `setTitle(id, title)`,
 `setOrder(ids)`, `remove(id)`, and `focus(id, keyboardFocus: false)`. Reordering must
@@ -74,6 +81,19 @@ such services. See the
 [Application hosting](../../app/README.md#grouped-main-content) owns geometry and
 native bindings. Focused checks are mapped in
 [Main Content validation](../../docs/development/testing.md#focused-main-content-checks).
+
+## Source File Display
+
+[`display_source_file.dart`](lib/display_source_file.dart) defines
+`displaySourceFileContributions` and `DisplaySourceFileContribution(display)`.
+`DisplaySourceFileResolver.display(relativePath, select: ...)` captures one exact
+registration: zero is unavailable, multiple are ambiguous, and explicit selection
+never falls back. Retirement rejects a late result without retrying or cancelling
+already admitted work. The caller supplies a path, not Session/Environment
+authority; prepared hosting captures the current approved Session attachment.
+The stock [Source Editor](../../plugins/source_editor/README.md) uses the same
+finite operation for this route and its Open Source input. Resolver checks live in
+[`test/display_source_file_test.dart`](test/display_source_file_test.dart).
 
 ## Shared Console
 
@@ -242,19 +262,62 @@ native implementations supply their behavior; calling a stub natively throws
   [application owner](../../app/README.md#native-code-editor), and
   [prepared-EVC tests](../../app/test/code_editor_bridge_test.dart). This bridge
   registers no Main Content/editor role and supplies no file/save, diff, or LSP API.
+- `contribution_bridge.dart` supplies explicitly opted-in, current-window copied
+  primitive records and native editor construction for one exact Main Content
+  contribution. Keys and record semantics belong to the plugin; data contains no
+  widgets, callbacks, controllers, or retained evaluator. Supplied-text
+  `createContributionCodeEditor` rejects an existing ID without replacement; the
+  native text/undo owner outlives attachments, with fresh per-pane access through
+  `code_editor_bridge.dart`. Deliberate snapshots/state reads and explicit release
+  remain scoped to that contribution, not a global document lookup.
+  `invokeContributionOperation` admits only descriptor-declared finite entrypoints
+  with copied arguments and captured context. Admitted operations can settle into
+  retained data after navigation without reviving a departed view.
+  `readContributionArguments()` returns a nullable copied map: `{}` for active
+  presentations or argument-free operations, and null after retirement. Identity
+  and pane ID reads belong only to `main_content_bridge.dart` below.
+  `confirmContribution(request)` supplies native two-choice confirmation for a
+  finite operation. The request contains exactly four nonempty strings: `title`,
+  `message`, `acceptLabel`, and `cancelLabel`. The plugin owns the wording, when
+  to ask, and the meaning of acceptance; dismissal, unavailable support, malformed
+  requests, and retired access return false. Data subscriptions are coalesced
+  invalidations, not text feeds. See the
+  [public stub](lib/contribution_bridge.dart),
+  [catalog opt-ins](../plugin_runtime/README.md#prepared-catalog), and
+  [application retention/authority](../../app/README.md#source-editor-hosting).
+- `environment_access_bridge.dart` supplies only `readEnvironmentTextFile(path)`
+  and conditional `replaceEnvironmentTextFile(path, text, expectedRevision)` for
+  an admitted finite operation's captured Environment. Views, initializers, and
+  operations without permission or captured context receive `binding_unavailable`.
+  Read success is `{ok: true, path, text, sizeBytes, revision}` with complete text,
+  normalized path, and opaque provider revision; replacement success is
+  `{ok: true, revision}`. Failure is `{ok: false, failure: {code, message, details}}`,
+  preserving declared provider failures. Unknown failures use
+  `operation_unacknowledged` with `The Environment operation was not acknowledged.`
+  This reports neither local-buffer state nor rollback. Capture lifetime and
+  explicit-operation recovery belong to the
+  [frontend grant](../../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations);
+  the [public stub](lib/environment_access_bridge.dart) defines the narrow API.
 - `main_content_bridge.dart` supplies `readMainContentContext()` with only the
-  captured `{sessionId, strategyId, taskId}`, `readMainContentPanes()`, and
-  `readMainContentPaneId()`, plus boolean-returning `openMainContentPane(id, title,
-  canClose)`, `setMainContentPaneTitle(id, title)`, `setMainContentPaneOrder(ids)`,
-  `removeMainContentPane(id)`, and `focusMainContentPane(id, keyboardFocus)`.
+  captured `{sessionId, strategyId, taskId, environmentKey}`, plus
+  `readMainContentPanes()` and `readMainContentPaneId()`, and boolean-returning
+  `openMainContentPane(id, title, canClose)`, `setMainContentPaneTitle(id, title)`,
+  `setMainContentPaneOrder(ids)`, `removeMainContentPane(id)`, and
+  `focusMainContentPane(id, keyboardFocus)`.
   Requests affect only the originating contribution's collection. Rejected requests
-  return false; retired reads return an empty context, snapshot, or ID. Context
-  identities are data, not execution or backend authority. The current pane ID
-  is also empty during initialization. A short-lived initializer can inspect the
-  context and open no panes without acquiring services, or open initial
+  return false; retired reads return an empty context, snapshot, or ID. Environment
+  identity comes from canonical `SessionEnvironmentAuthority`, without provider
+  resolution or materialization and independently of retained-data, native-editor,
+  file, execution, or backend grants. Context is available to initialization,
+  input/pane views, and finite operations; Session-less exit receives `{}`, not a
+  fabricated current Environment. Identities are data, not authority. The current
+  pane ID is empty outside a pane presentation. A short-lived initializer can
+  inspect the context and open no panes without acquiring services, or open initial
   panes, then loses bridge access; each pane has an independent presentation runtime
   with its own scoped bridge. Closing every pane leaves no autonomous evaluator
-  updating the collection. A fresh Session attachment may initialize again.
+  updating the collection. Declared actions and finite operations remain separate
+  entrypoints, not hidden residency. A fresh Session attachment may initialize
+  again over explicitly retained data/native owners.
   Native editor access, when supplied, is a separate per-pane binding, not an
   editor lookup through these local IDs.
 - `terminal_projection_bridge.dart` is a separate, presentation-owned read-only

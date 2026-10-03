@@ -23,10 +23,15 @@ void main() {
     String id,
     void Function(MainContentAccess) attach, {
     int order = 0,
+    List<MainContentAction> actions = const [],
   }) => extensions.register(
     point: mainContentContributions,
     id: ExtensionId(id),
-    value: MainContentContribution(order: order, attach: attach),
+    value: MainContentContribution(
+      order: order,
+      attach: attach,
+      actions: actions,
+    ),
   );
 
   Widget host({
@@ -108,6 +113,201 @@ void main() {
     expect(find.byType(_Probe), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'zero-pane actions use contributed labels and fresh bounded input',
+    (tester) async {
+      late MainContentAccess attached;
+      final inputs = <MainContentAccess>[];
+      register(
+        'test.resources',
+        (access) => attached = access,
+        actions: [
+          MainContentAction(
+            id: 'choose',
+            label: 'Choose resource',
+            createPresentation: (access) {
+              inputs.add(access);
+              return _Probe('input');
+            },
+          ),
+        ],
+      );
+      await tester.pumpWidget(host(width: 700));
+      expect(find.text('Choose resource'), findsOneWidget);
+      expect(
+        find.text('No Main Content is available for this Session.'),
+        findsOneWidget,
+      );
+      expect(attached.panes, isEmpty);
+      expect(inputs, isEmpty);
+      expect(find.byType(_Probe), findsNothing);
+
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      expect(inputs, [same(attached)]);
+      expect(inputs.single.session, same(session));
+      expect(attached.panes, isEmpty);
+      expect(find.byType(Dialog), findsOneWidget);
+      final box = find.descendant(
+        of: find.byType(Dialog),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is SizedBox && widget.width == 480 && widget.height == 260,
+        ),
+      );
+      expect(tester.getSize(box), const Size(480, 260));
+      final first = tester.state<_ProbeState>(probe('input'));
+      await tester.enterText(find.byType(TextField), 'temporary input');
+      inputs.single.open(pane('opened'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Dialog), findsNothing);
+      expect(first.disposed, isTrue);
+      expect(attached.panes.single.id, 'opened');
+      final opened = tester.state(probe('opened'));
+
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      expect(inputs, [same(attached), same(attached)]);
+      final second = tester.state<_ProbeState>(probe('input'));
+      expect(second, isNot(same(first)));
+      expect(second.text.text, isEmpty);
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(tester.state(probe('opened')), same(opened));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'navigation revokes and removes old input without mounting a pane',
+    (tester) async {
+      var current = true;
+      final inputs = <MainContentAccess>[];
+      register(
+        'test.resources',
+        (_) {},
+        actions: [
+          MainContentAction(
+            id: 'choose',
+            label: 'Choose resource',
+            createPresentation: (access) {
+              inputs.add(access);
+              return _Probe('input');
+            },
+          ),
+        ],
+      );
+      await tester.pumpWidget(host(isCurrent: () => current));
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      final original = tester.state<_ProbeState>(probe('input'));
+      final old = inputs.single;
+      current = false;
+      expect(old.isActive, isFalse);
+      expect(() => old.open(pane('late')), throwsStateError);
+      final other = Session(
+        id: session.id,
+        taskId: session.taskId,
+        strategyId: session.strategyId,
+      );
+      await tester.pumpWidget(host(current: other));
+      await tester.pumpAndSettle();
+      expect(find.byType(Dialog), findsNothing);
+      expect(find.byType(_Probe), findsNothing);
+      expect(original.disposed, isTrue);
+      expect(inputs, hasLength(1));
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      expect(inputs.last, isNot(same(old)));
+      expect(inputs.last.session, same(other));
+      expect(inputs.last.panes, isEmpty);
+      expect(old.isActive, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(inputs.last.isActive, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'retiring actions removes input while preserving pane state and width',
+    (tester) async {
+      registerChat();
+      final action = MainContentAction(
+        id: 'choose',
+        label: 'Choose resource',
+        createPresentation: (_) => _Probe('input'),
+      );
+      await tester.pumpWidget(host(width: 700));
+      final chat = tester.state(probe('chat'));
+      final originalSize = tester.getSize(probe('chat'));
+      final registration = register(
+        'test.resources',
+        (_) {},
+        actions: [action],
+      );
+      await tester.pumpAndSettle();
+      expect(tester.state(probe('chat')), same(chat));
+      expect(tester.getSize(probe('chat')).width, originalSize.width);
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      final input = tester.state<_ProbeState>(probe('input'));
+      await registration.close();
+      final replacement = register('test.resources', (_) {}, actions: [action]);
+      await tester.pumpAndSettle();
+      expect(find.byType(Dialog), findsNothing);
+      expect(input.disposed, isTrue);
+      expect(tester.state(probe('chat')), same(chat));
+      expect(find.text('Choose resource'), findsOneWidget);
+      await replacement.close();
+      await tester.pumpAndSettle();
+      expect(tester.state(probe('chat')), same(chat));
+      expect(tester.getSize(probe('chat')), originalSize);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'input dialog fits a small viewport and contains factory failure',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 280));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      register(
+        'test.resources',
+        (_) {},
+        actions: [
+          MainContentAction(
+            id: 'choose',
+            label: 'Choose resource',
+            createPresentation: (_) => throw StateError('fixture failure'),
+          ),
+        ],
+      );
+      await tester.pumpWidget(host(width: 300));
+      await tester.tap(find.text('Choose resource'));
+      await tester.pumpAndSettle();
+      expect(find.text('Main Content input is unavailable.'), findsOneWidget);
+      final box = find.descendant(
+        of: find.byType(Dialog),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is SizedBox && widget.width == 480 && widget.height == 260,
+        ),
+      );
+      final bounds = tester.getRect(box);
+      expect(bounds.left, greaterThanOrEqualTo(16));
+      expect(bounds.right, lessThanOrEqualTo(304));
+      expect(bounds.top, greaterThanOrEqualTo(16));
+      expect(bounds.bottom, lessThanOrEqualTo(264));
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Dialog), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   for (final chatOrder in [100, 400]) {
     testWidgets(

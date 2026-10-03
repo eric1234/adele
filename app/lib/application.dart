@@ -90,6 +90,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final Set<WindowTaskBrowserSource> _browsers = {};
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
+  final GlobalKey<NavigatorState> _navigator = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -124,7 +125,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
             identical(_session, session),
       ),
       consoleHost: _consoleHost,
-      mainContentHost: widget.mainContentHost,
+      mainContentHost:
+          widget.mainContentHost ??
+          PreparedMainContentHost(
+            environmentRuntime: _runtime.lifecycle.environmentRuntime,
+            confirm: _confirmContribution,
+          ),
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -170,6 +176,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     unawaited(_bootstrapPlugins());
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
+        if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
         _retainingPresentations.value = true;
         _frontends.retainPresentations();
         await _closeAndReport();
@@ -180,6 +187,31 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         unawaited(_closeAndReport());
       },
     );
+  }
+
+  Future<bool> _confirmContribution(Map<String, Object?> request) async {
+    final context = _navigator.currentContext;
+    if (!mounted || _closing != null || context == null) return false;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(request['title']! as String),
+            content: SingleChildScrollView(
+              child: Text(request['message']! as String),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: Text(request['cancelLabel']! as String),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: Text(request['acceptLabel']! as String),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _inspectionChanged() {
@@ -543,6 +575,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final settlingRuns = _executions.close();
     final closingConsole = _console.close();
     final closingConsoleHost = _consoleHost.close();
+    final settlingMainContent = _frontends.stopMainContentOperations();
     _inspection.removeListener(_inspectionChanged);
     if (!_retainingPresentations.value) _inspection.clear();
     // All owners are fenced before waiting. Storage/backends remain available
@@ -551,6 +584,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       settlingRuns,
       closingConsole,
       closingConsoleHost,
+      settlingMainContent,
       if (_taskCreation case final creating?)
         creating.then<void>((_) {}, onError: (Object _) {}),
     ]);
@@ -665,6 +699,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         ),
       ),
       child: MaterialApp(
+        navigatorKey: _navigator,
         debugShowCheckedModeBanner: false,
         home: AdeleShell(
           project: _project,

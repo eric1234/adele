@@ -10,6 +10,7 @@ import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +23,8 @@ const _library = 'package:code_editor_smoke/main.dart';
 const _initial = 'void main() {\n  print("ADELE");\n}\n';
 const _reference = '// Independent read-only editor.\nfinal answer = 42;\n';
 const _identity = String.fromEnvironment('ADELE_CODE_EDITOR_IDENTITY');
+const _workspaceSourcePath = 'smoke_source.dart';
+const _workspaceSourceText = 'const source = "workspace";\n';
 
 Future<void> main(List<String> arguments) async {
   final settlement = SmokeSettlement(
@@ -135,9 +138,41 @@ Future<void> _workspace(
   SmokeSettlement settlement, {
   required bool automated,
 }) async {
-  final resources = MainContentFixtureResources();
   final runtime = NativeAdeleRuntime();
   final root = GlobalKey();
+  final resources = MainContentFixtureResources(
+    environmentRuntime: runtime.lifecycle.environmentRuntime,
+    confirm: (request) async {
+      if (automated) return false;
+      final navigator = _elements(root)
+          .map((element) => element.widget)
+          .whereType<MaterialApp>()
+          .single
+          .navigatorKey!
+          .currentContext;
+      if (navigator == null) return false;
+      return await showDialog<bool>(
+            context: navigator,
+            builder: (context) => AlertDialog(
+              title: Text(request['title'] as String),
+              content: SingleChildScrollView(
+                child: Text(request['message'] as String),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: Text(request['cancelLabel'] as String),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: Text(request['acceptLabel'] as String),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+    },
+  );
   final previousPicker = FileSelectorPlatform.instance;
   Directory? project;
   var interactive = false;
@@ -150,8 +185,12 @@ Future<void> _workspace(
       project = await Directory.systemTemp.createTemp(
         'adele-editor-workspace-',
       );
+      await File(
+        '${project.path}/$_workspaceSourcePath',
+      ).writeAsString(_workspaceSourceText);
       for (final arguments in [
         ['init', '--initial-branch=main'],
+        ['add', '--', _workspaceSourcePath],
         [
           '-c',
           'user.name=ADELE Smoke',
@@ -160,7 +199,6 @@ Future<void> _workspace(
           '-c',
           'commit.gpgsign=false',
           'commit',
-          '--allow-empty',
           '-m',
           'Temporary smoke baseline',
         ],
@@ -337,6 +375,89 @@ Future<void> _workspace(
       !a.isDisposed && chatRetained(),
       'Removing B disturbed A or Chat.',
     );
+
+    // Stock Source uses the canonical Session Environment, not the Project root
+    // or the synthetic editors supplied by this development host.
+    final authority = runtime.store.requireSessionAuthority(session.id);
+    final environment = await runtime.lifecycle.environmentRuntime.materialize(
+      authority.environmentId,
+    );
+    await _press(root, 'Open Source...');
+    final input = _elements(root).singleWhere(
+      (element) =>
+          element.widget is TextField &&
+          element.findAncestorWidgetOfExactType<Dialog>() != null,
+    );
+    (input.widget as TextField).onChanged!(_workspaceSourcePath);
+    await _press(root, 'Open');
+    await _until(
+      () => _texts(root).contains('Source Document opened.'),
+      'Stock Open Source action',
+    );
+    _elements(root)
+        .map((element) => element.widget)
+        .whereType<IconButton>()
+        .singleWhere((button) => button.tooltip == 'Close input')
+        .onPressed!();
+    List<NativeCodeEditor> sourceEditors() => [
+      for (final element in _elements(root))
+        if (element.widget.key case ObjectKey(
+          value: final NativeCodeEditor editor,
+        ))
+          if (!resources.editors.contains(editor)) editor,
+    ];
+    await _until(
+      () => sourceEditors().length == 1,
+      'Stock Source native editor',
+    );
+    final source = sourceEditors().single;
+    _require(
+      source.snapshot()['text'] == _workspaceSourceText && chatRetained(),
+      'Opening Source replaced Chat or read the wrong file.',
+    );
+    final duplicate = await DisplaySourceFileResolver(
+      runtime.extensions,
+    ).display('./$_workspaceSourcePath');
+    await _frames();
+    _require(
+      duplicate['ok'] == true && identical(sourceEditors().single, source),
+      'Public Source display did not reuse the stock document: $duplicate',
+    );
+    _require(source.requestFocus(), 'Source focus refused.');
+    await _frames();
+    await _key(
+      LogicalKeyboardKey.home,
+      PhysicalKeyboardKey.home,
+      control: true,
+    );
+    await _key(LogicalKeyboardKey.delete, PhysicalKeyboardKey.delete);
+    final editedSource = _workspaceSourceText.substring(1);
+    _require(
+      source.snapshot()['text'] == editedSource,
+      'Source native edit failed.',
+    );
+    environment.validateBinding();
+    _require(
+      (await environment.provider.readFile(
+            authority.environmentId,
+            _workspaceSourcePath,
+          )).text ==
+          _workspaceSourceText,
+      'Source wrote without explicit Save.',
+    );
+    await _press(root, 'Save');
+    await resources.host.drainOperations().timeout(const Duration(seconds: 10));
+    environment.validateBinding();
+    _require(
+      (await environment.provider.readFile(
+                authority.environmentId,
+                _workspaceSourcePath,
+              )).text ==
+              editedSource &&
+          await File('${project!.path}/$_workspaceSourcePath').readAsString() ==
+              _workspaceSourceText,
+      'Source Save missed its Environment or changed the Project root copy.',
+    );
     final departure = _elements(root)
         .map((element) => element.widget)
         .whereType<TextButton>()
@@ -348,6 +469,60 @@ Future<void> _workspace(
       () => resources.editors.isEmpty && a.isDisposed && !chat.mounted,
       'Session departure discards synthetic owners',
     );
+    _require(
+      !source.isDisposed && source.snapshot()['text'] == editedSource,
+      'Task Browser departure discarded the stock Source owner.',
+    );
+    List<ListTile> sessionRows() => [
+      for (final element in _elements(root))
+        if (element.widget case final ListTile row)
+          if (row.enabled &&
+              row.onTap != null &&
+              row.subtitle is Text &&
+              ((row.subtitle! as Text).data ?? '').startsWith(
+                'Session: ${session.id.value}\n',
+              ))
+            row,
+    ];
+    await _until(() => sessionRows().isNotEmpty, 'Stock Session browser row');
+    sessionRows().single.onTap!();
+    await _until(
+      () => sourceEditors().contains(source) && source.requestFocus(),
+      'Retained Source after Session reopening',
+    );
+    _require(
+      source.snapshot()['text'] == editedSource,
+      'Source text changed on remount.',
+    );
+    await _frames();
+    await _key(
+      LogicalKeyboardKey.keyZ,
+      PhysicalKeyboardKey.keyZ,
+      control: true,
+    );
+    _require(
+      source.snapshot()['text'] == _workspaceSourceText,
+      'Source undo history was not retained.',
+    );
+    await _key(
+      LogicalKeyboardKey.keyY,
+      PhysicalKeyboardKey.keyY,
+      control: true,
+    );
+    _require(
+      source.snapshot()['text'] == editedSource,
+      'Source redo did not restore the saved text.',
+    );
+    await _press(root, 'Close');
+    await _until(
+      () => source.isDisposed,
+      'Saved Source closes without discard',
+    );
+    _require(
+      runtime.store.runsForSession(session.id).isEmpty,
+      'Source roundtrip unexpectedly started a Run.',
+    );
+    stdout.writeln('ADELE_SOURCE_WORKSPACE_COMPLETE');
     stdout.writeln('ADELE_EDITOR_WORKSPACE_COMPLETE');
   } catch (error, stack) {
     settlement.recordFailure('CODEFORGE_SMOKE_FAILED', error, stack);

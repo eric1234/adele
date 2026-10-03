@@ -4,9 +4,12 @@
 List<Map<String, dynamic>> readMainContentPanes() =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
 
-/// Immutable captured context: sessionId, strategyId and taskId. Available during
-/// initialization without acquiring execution or backend services. Empty when
-/// retired; these identities are data, not authority to select another Session.
+/// Immutable captured context: sessionId, strategyId, taskId and environmentKey.
+/// Environment identity comes from the canonical Session's retained association,
+/// independently of file permission or provider availability. No materialization
+/// is performed. Available in views, initialization and finite operations;
+/// Session-less exit operations and retired access return an empty map.
+/// Identities are data, not authority to select a Session or Environment.
 Map<String, dynamic> readMainContentContext() =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
 

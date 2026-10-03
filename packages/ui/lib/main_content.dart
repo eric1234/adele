@@ -10,14 +10,38 @@ final ExtensionPoint<MainContentContribution> mainContentContributions =
     ExtensionPoint<MainContentContribution>('dev.adele.extension.main-content');
 
 final class MainContentContribution {
-  const MainContentContribution({required this.order, required this.attach});
+  const MainContentContribution({
+    required this.order,
+    required this.attach,
+    this.actions = const [],
+    this.detach,
+  });
 
   final int order;
+  final List<MainContentAction> actions;
 
   /// Called once per exact registration and current canonical Session attachment.
   /// Returning does not revoke access; departure, retirement, or host shutdown do.
   /// Returning to a Session creates fresh access, never revives an earlier handle.
   final FutureOr<void> Function(MainContentAccess) attach;
+
+  /// Called once after attachment access is revoked, including empty collections.
+  /// Only [MainContentAccess.isActive] may be read from the retired access.
+  final void Function(MainContentAccess)? detach;
+}
+
+/// Explicit contribution input, available even with no panes. The host supplies
+/// placement; the contribution supplies the input presentation and behavior.
+final class MainContentAction {
+  const MainContentAction({
+    required this.id,
+    required this.label,
+    required this.createPresentation,
+  });
+
+  final String id;
+  final String label;
+  final Widget Function(MainContentAccess access) createPresentation;
 }
 
 abstract interface class MainContentAccess {
