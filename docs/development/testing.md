@@ -69,7 +69,8 @@ one on a single-processor host. This is separate from concurrency inside an
 individual Dart/Flutter test process. Queued targets still run after another
 target fails; the final summary reports failures.
 
-For one maintained target, use `dart tools/adele.dart test --target <name>`.
+For one maintained target, use `dart tools/adele.dart test --target <name>`
+or `dart tools/adele.dart test --target=<name>`.
 Representative choices are:
 
 ```sh
@@ -95,7 +96,7 @@ discovery of every package containing tests.
 | Test option | Meaning and constraints |
 | --- | --- |
 | `--jobs N` | Positive integer controlling concurrent target processes; `--jobs=N` also works. Cannot be combined with `--target`. An explicit value may exceed the default of two. |
-| `--target NAME` | Runs exactly one named maintained target. Unknown names fail; use the separated form, not `--target=NAME`. |
+| `--target NAME` | Runs exactly one named maintained target. Unknown names fail; `--target=NAME` also works, including with `--ci`. |
 | `--ci` | Valid only with `--target`. Applies that target's CI runner arguments/concurrency policy. It is not a generic credential/environment scrub. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and

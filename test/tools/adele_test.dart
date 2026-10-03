@@ -163,40 +163,60 @@ void main() {
   });
 
   group('test options', () {
-    test('accepts an exact target and rejects ambiguous combinations', () {
-      final TestOptions options = parseTestOptions(<String>[
-        '--target',
-        'contract_codegen',
-      ]);
-      expect(options.target, 'contract_codegen');
-      expect(options.jobs, 1);
-      expect(options.ci, isFalse);
-      final TestOptions ciOptions = parseTestOptions(<String>[
-        '--target',
-        'contract_codegen',
-        '--ci',
-      ]);
-      expect(ciOptions.ci, isTrue);
-      expect(
-        () => parseTestOptions(<String>[
-          '--target',
-          'contract_codegen',
-          '--jobs',
-          '2',
-        ]),
-        throwsA(isA<TestUsageException>()),
-      );
+    test('target forms produce equivalent options and maintained targets', () {
+      for (final target in testTargets) {
+        for (final ci in [false, true]) {
+          final separated = parseTestOptions([
+            '--target',
+            target.name,
+            if (ci) '--ci',
+          ]);
+          final equals = parseTestOptions([
+            '--target=${target.name}',
+            if (ci) '--ci',
+          ]);
+          expect(separated.target, target.name);
+          expect(separated.jobs, 1);
+          expect(separated.ci, ci);
+          expect(equals.target, separated.target);
+          expect(equals.jobs, separated.jobs);
+          expect(equals.ci, separated.ci);
+          expect(lookupTestTarget(separated.target!), same(target));
+          expect(lookupTestTarget(equals.target!), same(target));
+        }
+      }
+      expect(parseTestOptions(['--ci', '--target=adele_tools']).ci, isTrue);
     });
 
-    test('rejects missing, duplicate, equals, and unknown target options', () {
-      for (final List<String> arguments in <List<String>>[
-        <String>['--target'],
-        <String>['--target', 'one', '--target', 'two'],
-        <String>['--target=one'],
-        <String>['--ci'],
-        <String>['--target', 'one', '--ci', '--ci'],
-        <String>['--other'],
-      ]) {
+    final invalidOptions = <List<String>>[
+      ['--target'],
+      ['--target', ''],
+      ['--target='],
+      ['--target', '--ci'],
+      ['--target=--ci'],
+      ['--target', 'one', '--target', 'two'],
+      ['--target=one', '--target=two'],
+      ['--target', 'one', '--target=two'],
+      ['--target=one', '--target', 'two'],
+      ['--ci'],
+      ['--target', 'one', '--ci', '--ci'],
+      ['--target=one', '--ci', '--ci'],
+      ['--other'],
+      for (final target in [
+        ['--target', 'adele_tools'],
+        ['--target=adele_tools'],
+      ])
+        for (final jobs in [
+          ['--jobs', '2'],
+          ['--jobs=2'],
+        ]) ...[
+          [...target, ...jobs],
+          [...jobs, ...target],
+        ],
+    ];
+
+    test('rejects missing, empty, duplicate, and conflicting options', () {
+      for (final arguments in invalidOptions) {
         expect(
           () => parseTestOptions(arguments),
           throwsA(isA<TestUsageException>()),
@@ -204,6 +224,51 @@ void main() {
         );
       }
     });
+
+    test('unknown names use normal target validation for both forms', () {
+      for (final arguments in [
+        ['--target', 'missing'],
+        ['--target=missing'],
+      ]) {
+        final options = parseTestOptions(arguments);
+        expect(options.target, 'missing');
+        expect(
+          () => lookupTestTarget(options.target!),
+          throwsA(
+            isA<TestUsageException>().having(
+              (error) => error.message,
+              'message',
+              'Unknown test target: missing',
+            ),
+          ),
+        );
+      }
+    });
+
+    for (final arguments in [
+      ...invalidOptions,
+      ['--target', 'missing'],
+      ['--target=missing', '--ci'],
+    ]) {
+      test('CLI rejects $arguments before preparation or execution', () async {
+        final script = File('tools/adele.dart').absolute.path;
+        final directory = Directory.systemTemp.createTempSync(
+          'adele-test-options-',
+        );
+        addTearDown(() => directory.deleteSync(recursive: true));
+        final result = await Process.run(Platform.resolvedExecutable, [
+          script,
+          'test',
+          ...arguments,
+        ], workingDirectory: directory.path);
+        expect(result.exitCode, 64, reason: arguments.toString());
+        expect(result.stderr, startsWith('ERROR: '));
+        expect(result.stdout, startsWith('Usage: dart tools/adele.dart'));
+        expect(result.stdout, contains('--target=NAME'));
+        expect(result.stdout, isNot(contains('==>')));
+        expect(directory.listSync(), isEmpty);
+      });
+    }
   });
 
   group('test plan', () {
