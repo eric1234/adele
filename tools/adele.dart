@@ -778,15 +778,20 @@ TestOptions parseTestOptions(
           ? arguments[++index]
           : argument.substring('--jobs='.length);
       jobs = _parseTestJobsValue(value);
-    } else if (argument == '--target') {
-      if (index + 1 >= arguments.length ||
-          arguments[index + 1].startsWith('-')) {
+    } else if (argument == '--target' || argument.startsWith('--target=')) {
+      if (argument == '--target' && index + 1 >= arguments.length) {
         throw const TestUsageException('--target requires a target name.');
       }
       if (target != null) {
         throw const TestUsageException('--target may only be specified once.');
       }
-      target = arguments[++index];
+      final String value = argument == '--target'
+          ? arguments[++index]
+          : argument.substring('--target='.length);
+      if (value.isEmpty || value.startsWith('-')) {
+        throw const TestUsageException('--target requires a target name.');
+      }
+      target = value;
     } else if (argument == '--ci') {
       if (ci) {
         throw const TestUsageException('--ci may only be specified once.');
@@ -1036,6 +1041,7 @@ Commands:
   test [--jobs N]    Run tests with at most N package processes (default: up to 2).
   test --target NAME [--ci]
                       Run exactly one named test target; --ci applies CI policy.
+                      --target=NAME is also supported.
   test-plan --json   Print the CI test matrix without resolving dependencies.
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
