@@ -276,6 +276,19 @@ Their composition and prepared-component boundaries belong to the
 the Local Directory example belong to [`ui`](../../packages/ui/README.md#interpreted-bridges)
 and the [Local Directory Project plugin](../../plugins/local_directory_project/README.md).
 
+Explicit user file operations are another narrow frontend grant, not model-tool
+execution. For an opted-in Main Content operation, the host captures the canonical
+Session's Environment association before asynchronous work, never a caller-supplied
+Environment ID or Task-primary fallback. It retains one lazy materialization
+attempt and its exact provider binding or failure, rather than resolving again
+after navigation or provider replacement. Only complete existing-text reads
+and revision-conditional replacement are exposed; the frontend receives no direct
+I/O, Run, model, process, or arbitrary Environment facet. Initializers and views
+cannot call these file operations directly. Declared provider failures remain
+structured; revocation does not undo an admitted write or justify automatic retry.
+See the [application adapter](../../app/README.md#source-editor-hosting) and
+[public bridge](../../packages/ui/README.md#interpreted-bridges).
+
 ## Operation-scoped host calls
 
 Execution-related backend-to-host access is explicitly supplied for one authorized

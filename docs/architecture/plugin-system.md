@@ -311,11 +311,32 @@ reads captured Session/strategy/Task identities through the collection bridge,
 may open initial panes, and is disposed on settlement. It obtains no execution or
 backend services, including when declared for later panes. Each pane then has an
 independent presentation runtime whose bridge can manage that same owned group.
-No initializer callback is retained as a factory, and there is no hidden evaluator
-or background residency to update a collection after all its panes close. A fresh
-Session attachment can initialize again. Optional native bindings capture resources
-for the exact registration, Session attachment, and pane lifetime; readiness does
-not grant a stale presentation access to a replacement resource.
+Declared contribution actions remain discoverable even with zero panes; they open
+fresh input presentations without manufacturing a pane or execution authority.
+Descriptor-selected finite operations use fresh short-lived runtimes, not retained
+callbacks. No initializer callback is retained as a factory, and no hidden evaluator
+or background residency updates a collection after its views depart.
+
+An explicit retention grant lets the host keep copied opaque plugin data and native
+editor owners beyond a Session attachment. The plugin owns record meaning, document
+identity, deduplication/order, baseline, and save/close policy; the host owns native
+resource lifetime and exact access validation. Retained data contains no widgets,
+evaluators, callbacks, or attachment access. Fresh attachment projects those records
+with fresh view handles; old handles never revive. An admitted finite operation
+may finish against its captured owner after navigation, but may not retarget its
+Environment or focus an unrelated workspace. Native construction from supplied
+text grants no filesystem authority; explicit user Environment access follows the
+[narrow frontend grant](contracts-and-capabilities.md#frontend-behavioral-operations).
+
+The public source-file display point resolves one exact registration, with absent,
+ambiguous, and explicit-selection outcomes and no native fallback. Stock Source
+uses it and its input action to reach the same plugin-owned operation. Window-local
+retention is not durable workbench persistence. Pane close requests owner policy;
+application-exit preflight also consults opted-in retained collections without
+mounting hidden views, including while Task Browser is shown. Cancellation or
+failure precedes irreversible frontend/execution revocation and leaves retained
+documents available. Acceptance is not early disposal if another participant can
+still refuse exit. Forced teardown and plugin retirement are separate cleanup paths.
 
 Execution and owning-backend services are explicit pane-scoped requests, not a
 privileged presentation role. Neither is granted by default. The binder validates

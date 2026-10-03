@@ -154,6 +154,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | --- | --- |
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
 | [`tool/compile_task_browser_frontend.dart`](tool/compile_task_browser_frontend.dart) | `ADELE_TASK_BROWSER_FRONTEND_OUTPUT` |
+| [`tool/compile_source_editor_frontend.dart`](tool/compile_source_editor_frontend.dart) | `ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT` |
 | [`tool/compile_terminal_frontend.dart`](tool/compile_terminal_frontend.dart) | `ADELE_TERMINAL_FRONTEND_OUTPUT` |
 | [`tool/compile_local_directory_project_frontend.dart`](tool/compile_local_directory_project_frontend.dart) | `ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT` |
 | [`tool/compile_tool_inspection_frontends.dart`](tool/compile_tool_inspection_frontends.dart) | `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or `command`), `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` |
@@ -204,7 +205,9 @@ and retired handles fail closed; there is no global current-document lookup.
 `PreparedFrontend` retirement, failure, and disposal end interpreted access and
 observation, not the independently owned editor. Native component operations
 already admitted are not a new cancellation boundary. CodeForge types, controllers,
-construction, mutation, and disposal are not exported through the public API.
+and Rust handles are not exported. The separate opt-in contribution bridge
+supports supplied-text construction and release of retained native owners; the
+per-view editor bridge exposes neither controller mutation nor file authority.
 
 `readCodeEditorState` returns cheap `ready`, `readOnly`, `language`, and `revision`
 metadata, without text or selection. Revision counts component notifications,
@@ -223,15 +226,16 @@ Snapshots do not promise uncommitted composition text. The
 observed selected-range composition losing its pending replacement after either
 blur/refocus of the same widget or full unmount/remount: replacing `a` in `ab`
 with composing `x` ultimately left `b`, not `xb`; undo restored `ab`. Finish
-composition before leaving or closing the editor. This is an upstream departure
-edge, not an ADELE cancellation policy or a human OS/IME result.
+composition before Save, leaving, or closing the editor. This is an upstream
+departure edge, not an ADELE cancellation policy or a human OS/IME result.
 Supplementary-character Tab/Shift-Tab and double-click word selection still have
 documented upstream offset edge cases; their expanded patches were not retained.
 Avoid those combinations during early development and use explicit selection or
-space insertion instead. Revisit them, grouped Unicode edits and broader
-clipboard/IME behavior before file saving. Other retained evidence lives in the
+space insertion instead. Source file saving does not resolve these edges or
+establish general Unicode/clipboard/IME correctness. Other retained evidence lives in
 [retained correctness findings](../docs/experiments/codeforge-correctness.md).
-There is no ADELE-specific fixed text cap or memory bound.
+The native primitive has no ADELE-specific fixed text cap or memory bound;
+Source file access remains subject to its Environment provider's complete-text limit.
 
 See [focused owner/EVC checks](../docs/development/testing.md#focused-editor-checks)
 and the [Linux profile/manual entrypoint](../docs/development/testing.md#integrated-editor-smoke).
@@ -788,8 +792,9 @@ backend executions are released through the existing terminal path.
 against a requesting pane's owning-backend affinity. A compatible frontend
 remount does not replace execution; unavailable or retired backends remain
 unavailable rather than migrating work. This is navigation settlement, not Run
-cancellation, restart recovery, or a promise to flush on arbitrary widget
-disposal/application exit. Follow
+cancellation, restart recovery, or a promise to flush on arbitrary widget disposal.
+Explicit retained-contribution exit preflight is separate, as described
+[below](#source-editor-hosting). Follow
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
@@ -809,6 +814,12 @@ fallback strategy pane. Pane changes do not replace another pane's captured
 binding, backend, or deactivation hook.
 `AdeleShell.sessionPresented` selects Session versus Browser layout independently
 of whether strategy content is available.
+
+The same live groups supply optional actions to common chrome, including when
+there are no panes. Each explicit opening creates a fresh, bounded input dialog
+over that attachment's access; departure/retirement closes it. The host renders
+contributed labels and widgets rather than special-casing Source or creating a
+dummy editor pane to expose Open.
 
 The controller sorts whole groups by ascending integer order, then lexical
 ExtensionId, preserving each group's contiguous local sequence. It flattens their
@@ -836,7 +847,8 @@ global pane/editor lookup. `readMainContentContext()` exposes only captured
 `sessionId`, `strategyId`, and `taskId`. The initializer receives no execution or
 backend services and can choose no panes without acquiring them.
 Initialization retains no evaluator; later collection updates come from pane
-runtimes, with no autonomous updater after all panes close.
+runtimes or declared finite operations followed by fresh reconciliation, with no
+autonomous updater after all views depart.
 
 The optional `createBinding` factory returns `PreparedMainContentPaneBinding`
 with a native bridge factory, optional readiness Future, focus callback, and
@@ -881,20 +893,65 @@ through `FlutterError.reportError`; it does not imply that the revoked workspace
 can be retried in place. Returning deliberately creates fresh presentation access
 without replacing or cancelling the core-owned Run.
 New presentations admitted during settlement require a fresh departure attempt.
-Orderly exit freezes service display before revoking collection authority, keeping
-inert status/activity visible while core-owned accepted work drains.
+After retained-contribution exit preflight accepts, orderly exit freezes service
+display before revoking collection authority, keeping inert status/activity
+visible while core-owned accepted work drains.
 
 The development-only [`main_content_fixture.dart`](tool/main_content_fixture.dart)
 supplies independent in-memory native editors to the interpreted
 [`main_content_frontend.dart`](test/fixtures/main_content_frontend.dart), which
 owns collection actions. Its simple owner-release-on-departure policy is only a
 synthetic fixture lifetime, not a rule that Session navigation closes domain
-Documents. Future Source Document ownership belongs to
+Documents. Stock Source retention uses the separate hosting path below; broader
+Document/view UX remains
 [product direction](../docs/product/development-workflow/README.md#39-document-versus-editor-view).
 Compilation stays in
 [`main_content_frontend_compiler.dart`](tool/main_content_frontend_compiler.dart),
 outside production startup. See [focused checks](../docs/development/testing.md#focused-main-content-checks)
 and the [normal-workspace manual route](../docs/development/testing.md#manual-grouped-workspace).
+
+### Source Editor hosting
+
+Stock [Source Editor](../plugins/source_editor/README.md) is a normally prepared
+frontend-only package, not app-linked file policy. It uses ordinary Main Content
+actions/panes and the public `DisplaySourceFile` resolver; bootstrap registers the
+display adapter from the descriptor's declared operation. No Source backend, Chat
+presentation, model configuration, or Run is required to open/edit/save a file in
+an existing canonical Session.
+
+[`ContributionBridge`](lib/frontend/contribution_bridge.dart) and
+`RetainedContribution` retain copied primitive plugin data and `NativeCodeEditor`
+owners per exact contribution generation, independently of attachments. Navigation
+revokes view handles and clears transient attachment references, not native
+text/undo or records. No evaluator/widget/access object is retained as document
+state. Returning to the same Environment, including through another Session, lets
+the plugin project its documents in retained order; other Environments stay hidden.
+Explicit document release, frontend retirement, and final host close dispose owners.
+There is no durable document/workbench restoration or cursor/viewport guarantee.
+
+[`CapturedEnvironmentTextFiles`](lib/frontend/environment_text_files.dart)
+synchronously captures canonical Session authority and memoizes lazy materialization
+per retained Environment capture, including failure. It implements the
+[narrow user-operation grant](../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations),
+without direct frontend I/O or model tools. The host preserves declared failures;
+the plugin owns Environment-plus-normalized-path deduplication/order, opaque
+provider revisions, single-flight snapshot Save, edits-during-save retention, and
+Close/conflict policy. Follow its [ownership map](../plugins/source_editor/README.md#ownership),
+not a parallel host file model. The stock provider reads/replaces complete UTF-8
+files up to one MiB, failing rather than exposing truncated editable text.
+
+`AdeleApplication`'s `onExitRequested` awaits
+`ApplicationFrontendBootstrap.prepareToExit` before retaining inert display or
+starting irreversible close. `PreparedMainContentHost` fences new finite-operation
+admission, drains admitted work, then invokes every declared exit hook with no
+Environment grant, including hidden collections while Task Browser is shown.
+Rejection or failure cancels exit without disposing retained documents; acceptance
+does not dispose early while other contributions can still reject. Forced disposal
+is not this cancellable preflight. There is no Project-switch feature.
+Forced OS termination, crashes, hot plugin replacement with unsaved state, and
+cross-window/restart recovery are not protected by this current-window lifetime.
+See [focused Source checks](../docs/development/testing.md#focused-source-checks)
+and the [disposable-worktree manual workflow](../docs/development/testing.md#manual-source-workflow).
 
 ### Plugin storage hosting
 

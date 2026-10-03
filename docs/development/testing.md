@@ -153,6 +153,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
 | Grouped Main Content ownership/layout | [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart), [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart), [`test/adele_shell_test.dart`](../../app/test/adele_shell_test.dart) (registered groups only, ordinary ordering including Chat, zero-pane geometry, contiguous groups, stable panes, equal individual widths/minima, local reveal/focus, departure/retirement, and canonical Session context independent of view availability) |
 | Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (short-lived identity-only initialization, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
+| Source retained data/native owners and captured file authority | [`test/source_editor_host_test.dart`](../../app/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart) (actual Source EVC, normalized duplicate opens, finite Save/Close operations, hidden exit preflight, canonical Session authority, lazy exact binding, and structured failures); see [focused Source checks](#focused-source-checks) |
+| Normal Source workflow and exit cancellation | Source cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (stock catalog/EVC and real Git worktrees, Session/Environment retention without Chat or Run, conditional Save/conflict/Close, and hidden unsaved exit cancellation without closing an active Run) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
 | Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, selected-only default, lazy bounded LRU residency including the selected slot, exact interaction epochs, working-set departure, advisory confirmation, retirement, and bounded cleanup) |
@@ -251,8 +253,9 @@ Responses invocation. Neighbor operations must retain the actual Chat EVC, not a
 native stand-in. The same suite maps retained opening with absent frontend,
 absent backend, or no Main Content; per-pane draft settlement/retry; and frontend
 retirement while core execution survives. The synthetic editors may release their
-owners on Session departure; this is fixture policy, not future Source Document
-lifetime. These are test paths and intended assertions, not recorded passing
+owners on Session departure; this is fixture policy, not the stock
+[Source Document lifetime](../../plugins/source_editor/README.md#ownership).
+These are test paths and intended assertions, not recorded passing
 outcomes, live-model checks, or human desktop evidence.
 
 The unrestricted maintained `adele_desktop` target discovers these app files
@@ -261,6 +264,58 @@ changes use `dart tools/adele.dart test --target adele_desktop --ci`, which also
 prepares the native library/environment. Use the [editor checks](#focused-editor-checks)
 for lower-level native/bridge changes and the
 [manual grouped workspace](#manual-grouped-workspace) for interactive inspection.
+
+### Focused Source checks
+
+These are validation commands and ownership maps, not passing outcomes. After
+bootstrap/current generation, select the affected public, policy, catalog, and
+tooling targets from the repository root:
+
+```sh
+dart tools/adele.dart test --target source_editor_frontend
+dart tools/adele.dart test --target adele_ui
+dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart test --target adele_tools
+```
+
+The Source target runs pure-Dart policy cases in
+[`source_documents_test.dart`](../../plugins/source_editor/packages/frontend/test/source_documents_test.dart),
+not a substitute for native/EVC coverage. Public resolver cases are in
+[`display_source_file_test.dart`](../../packages/ui/test/display_source_file_test.dart).
+Catalog checks own explicit permissions/actions/operations and hook validation;
+tooling checks own workspace/analysis/test discovery, stock descriptor entrypoints,
+frontend-only preparation, and the production app/plugin dependency boundary.
+
+From `app/`, serialize Flutter invocations sharing build output. Authority and
+generic action-chrome checks need no native editor library:
+
+```sh
+flutter test --no-pub --concurrency 1 test/environment_text_files_test.dart test/main_content_controller_test.dart test/main_content_host_test.dart
+```
+
+For the native Source paths, first run `dart tools/adele.dart build-code-editor-tests`
+from the repository root and set `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR`
+to the absolute directory it prints. Then, from `app/`:
+
+```sh
+flutter test --no-pub --concurrency 1 test/source_editor_host_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --name 'normal Source Editor'
+```
+
+The focused host fixture compiles actual Source EVC and uses a deterministic
+Environment provider with held/failing operations: Save snapshots and baseline
+advancement, edits during a held write, navigation, stale callbacks, failed opens,
+conflicts, native owner release, and hidden exit snapshots are separate boundaries.
+The normal application cases use prepared stock components and real Git AOT/file
+replacement; their active-Run case uses local fake model responses, not paid/live
+credentials. Provider encoding, confinement, one-MiB bound, and revision checks
+belong to `git_environment_backend` and its
+[`git_worktree_environment_provider_test.dart`](../../plugins/git_environment/packages/backend/test/git_worktree_environment_provider_test.dart).
+App files are discovered by the existing `adele_desktop` target; no new CI
+concurrency policy is needed. These checks do not establish human keyboard/IME,
+profile packaging, or macOS/Windows acceptance. Follow the
+[manual Source workflow](#manual-source-workflow) and preserve the
+[native limitations](../../app/README.md#known-limitations).
 
 ### Focused editor checks
 
@@ -830,14 +885,69 @@ creation still uses the stock product lifecycle, so choose a disposable Git Proj
 
 The fixture deliberately releases its in-memory editor owners on departure.
 It does not establish a rule for Source Documents keyed by Environment and
-resource path; see [Document/view direction](../product/development-workflow/README.md#39-document-versus-editor-view).
+resource path; see [stock Source ownership](../../plugins/source_editor/README.md#ownership)
+and the separate normal Source workflow below.
 
 For automated profile coverage, `dart tools/adele.dart editor-smoke linux
 --workspace` runs the existing editor positive/negative checks and an additional
 `--workspace-smoke` subprocess over a temporary Git Project, normal application
-navigation, and pane operations. This is not human keyboard/IME evidence. Neither
+navigation, and pane operations. It also exercises stock Source Open, explicit
+Save into the captured Environment, retention/undo across Task Browser departure,
+and Close, emitting `ADELE_SOURCE_WORKSPACE_COMPLETE`. This is not human
+keyboard/IME evidence. Neither
 these commands nor `--prepare-only` assert that manual validation has been run.
 Do not prepare or run concurrent Flutter jobs against the same app build output.
+
+### Manual Source workflow
+
+Use the normal application, not the synthetic editor-smoke fixture. With the
+pinned SDK/native prerequisites and bootstrap complete, run from the repository root:
+
+```sh
+dart tools/adele.dart run linux
+```
+
+Use a disposable Git Project with an existing committed small UTF-8 text file.
+ADELE creates a separate Task Environment worktree; identify that checkout with
+`git -C /absolute/path/to/disposable-project worktree list` before inspecting or
+externally editing files. All checks below target that disposable Task worktree,
+not the original Project source or the ADELE development checkout. No model
+credentials or Run are needed. **Complete IME composition before Save, blur,
+navigation, Close, or exit**; snapshots do not promise pending composition text.
+
+1. Open the disposable Project, create a Task and Session, then choose
+   **Open Source...**. Enter the existing Environment-relative path and choose
+   **Open**; dismiss the input with **Close input**. Open the same path again and
+   check that it focuses the same document without replacing text/undo. Open a
+   second file and use **Move left** / **Move right** to check local order.
+2. Edit each document independently and use ordinary undo/redo. Choose **Save**
+   explicitly and inspect the Task worktree's file/diff. Check that the original
+   Project source is unchanged. Unsaved edits are not autosaved; if edits occur
+   while a Save is pending, only its captured snapshot is saved and later edits
+   must remain unsaved.
+3. Leave unsaved text, return to Task Browser, then reopen the Session or another
+   Session in the same Task Environment. Check retained text, undo, and order.
+   Create another Task/Environment and open the same relative path there: it is a
+   separate document. Returning to the first Environment must not replace it.
+4. With local edits still open, change that exact Task-worktree file externally.
+   Choose **Save** and inspect the conflict indication and retained local text;
+   the external version must not be forcibly overwritten. Use **Close**, then
+   **Cancel** to retain the document. Deliberately choose **Close** / **Discard**
+   and reopen to read the external version. There is no automatic retry, reload,
+   merge, or force-save recovery.
+5. Close unchanged/saved documents without a discard prompt. Close all Source
+   panes and check that **Open Source...** still works. Make an unsaved edit,
+   navigate to another Environment or Task Browser, then request window exit.
+   Choose **Cancel** in the aggregate discard prompt and return to the document:
+   text/undo and further editing/Save must remain usable. Finally save or explicitly
+   accept discard and exit. There is no Project-switch action to test.
+
+This procedure records no human result. Retain the existing
+[selected-composition and Unicode limitations](../../app/README.md#known-limitations);
+Source does not repair them or promise cursor/viewport restoration. The stock
+provider rejects oversized, invalid UTF-8, or unsupported files rather than opening
+a truncated editable preview. No autosave, file watcher, new-file operation, or
+durable document restoration is implied; broader UX direction remains unchanged.
 
 ## Live tests
 
