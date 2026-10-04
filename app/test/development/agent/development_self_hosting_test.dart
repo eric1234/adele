@@ -2,17 +2,23 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 import '../../../tool/self_hosting/development_self_hosting.dart';
 import '../../../tool/self_hosting/development_self_hosting_report.dart';
@@ -110,11 +116,98 @@ void main() {
         ]),
       );
       final git = await _createGitFixture(container);
+      final outbound = <Map<String, Object?>>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          expect(
+            request.headers.value('ChatGPT-Account-ID'),
+            'fixture-account',
+          );
+          outbound.add(
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, Object?>,
+          );
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          final message = {
+            'type': 'message',
+            'id': 'message-${outbound.length}',
+            'role': 'assistant',
+            'status': 'completed',
+            'content': [
+              {
+                'type': 'output_text',
+                'text': outbound.length == 1 ? 'Complete.' : 'Continued.',
+                'annotations': <Object?>[],
+              },
+            ],
+          };
+          for (final event in [
+            {'type': 'response.output_item.done', 'item': message},
+            {
+              'type': 'response.completed',
+              'response': {
+                'id': 'response-${outbound.length}',
+                'model': developmentSelfHostingChatGptDefaultModel,
+              },
+            },
+          ]) {
+            request.response.write('data: ${jsonEncode(event)}\n\n');
+          }
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(subscription.cancel);
+      String encode(Object value) =>
+          base64Url.encode(utf8.encode(jsonEncode(value))).replaceAll('=', '');
+      final credentials = File('${container.path}/synthetic-credentials.json');
+      await credentials.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'instances': {
+            'fixture': {
+              'revision': 1,
+              'credential': {
+                'idToken':
+                    '${encode({'alg': 'none'})}.${encode({
+                      'https://api.openai.com/auth': {'chatgpt_account_id': 'fixture-account'},
+                    })}.',
+                'accessToken': 'synthetic-access',
+                'refreshToken': 'synthetic-refresh-never-used',
+                'accountId': 'fixture-account',
+                'fedRamp': false,
+              },
+            },
+          },
+        }),
+      );
+      final origin = 'http://${server.address.address}:${server.port}';
+      final configuration =
+          DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+            DevelopmentSelfHostingProfile.chatgpt,
+            environment: {
+              'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+              'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'fixture',
+              'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'fixture',
+              'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': origin,
+              'ADELE_OPENAI_CHATGPT_REDIRECT_URI': '$origin/auth/callback',
+              'ADELE_OPENAI_CHATGPT_ENDPOINT':
+                  '$origin/backend-api/codex/responses',
+            },
+          );
       DevelopmentSelfHostingRetainedState? retainedState;
       final topology = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,
         projectSource: git.project,
-        hostEnvironment: const {},
+        hostEnvironment: configuration.hostEnvironment,
         identity: 'remote-context',
         taskTitle: 'Explicit backend composition',
         onTaskEstablished: (state) => retainedState = state,
@@ -174,12 +267,52 @@ void main() {
       expect(retainedState!.baselineCommit, git.startingHead);
       expect(topology.runtime.plugins.host, isNull);
       expect(topology.runtime.plugins.backends, isEmpty);
+      final materialized = topology.catalog.materialize().tools;
       expect(
-        topology.catalog.materialize().tools.map(
-          (tool) => tool.modelDefinition.alias,
-        ),
+        materialized.map((tool) => tool.modelDefinition.alias),
         developmentSelfHostingToolAliases,
       );
+      // Source registrations are only the oracle; the Run uses the AOT catalog.
+      final context = SessionModelToolHostContext(
+        sessionId: topology.sessionId,
+        environmentRuntime: topology.lifecycle.environmentRuntime,
+      );
+      final sourceTools = [
+        const SearchExecutable.unbound().registration,
+        ...filesystemToolRegistrations(
+          await context
+              .requireHostService<AuthorizedEnvironmentFileReadFacet>(),
+          await context
+              .requireHostService<AuthorizedEnvironmentFileMutationFacet>(),
+        ),
+        commandToolRegistration(
+          await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
+        ),
+      ];
+      expect(materialized, hasLength(6));
+      expect(
+        materialized.map((tool) => tool.modelDefinition.alias).toSet(),
+        hasLength(6),
+      );
+      for (final sourceTool in sourceTools) {
+        final sourceModel = sourceTool.modelDefinition;
+        final remote = materialized.singleWhere(
+          (tool) => tool.modelDefinition.alias == sourceModel.alias,
+        );
+        expect(
+          remote.definition.description,
+          sourceTool.definition.description,
+        );
+        expect(remote.modelDefinition.description, sourceModel.description);
+        expect(
+          remote.modelDefinition.description,
+          isNot(remote.definition.description),
+        );
+        expect(
+          remote.modelDefinition.argumentsSchema,
+          sourceModel.argumentsSchema,
+        );
+      }
       final search = topology.runtime.extensions
           .discover(modelToolContributions)
           .singleWhere(
@@ -212,6 +345,23 @@ void main() {
         '${git.project.path}/AGENTS.md',
       ).writeAsString('Project guidance is not Task guidance.\n');
       final requests = <SemanticModelRequest>[];
+      final provider = await activateDevelopmentSelfHostingModelProvider(
+        host: topology.host,
+        registry: topology.registry,
+        artifact: artifacts.openAiArtifact,
+        profile: configuration.profile,
+      );
+      addTearDown(provider.close);
+      final model = _RecordingModel(
+        ModelProviderCapabilityAdapter(
+          topology.registry.resolve(
+            modelProviderCapability,
+            providerId: ProviderId(configuration.providerId),
+          ),
+          selectedModel: configuration.selectedModel,
+        ),
+        requests,
+      );
       final result = await executeDevelopmentSelfHostingRun(
         identity: 'remote-context',
         lifecycle: topology.lifecycle,
@@ -221,7 +371,7 @@ void main() {
         sessionId: topology.sessionId,
         prompt: 'Complete.',
         instructions: 'Respond.',
-        model: _FinalModel(requests: requests),
+        model: model,
         catalog: topology.catalog,
         maxModelInvocations: 1,
       );
@@ -235,6 +385,29 @@ void main() {
       expect(requests.single.context.sourceResults.single.sourceId, source.id);
       expect(requests.single.instructions, contains(guidance));
       expect(requests.single.instructions, isNot(contains('Project guidance')));
+      final captured = outbound.single;
+      final capturedTools = (captured['tools']! as List<Object?>)
+          .cast<Map<String, Object?>>();
+      expect(
+        capturedTools.map((tool) => tool['name']),
+        materialized.map((tool) => tool.modelDefinition.alias),
+      );
+      for (final sourceTool in sourceTools) {
+        final definition = sourceTool.modelDefinition;
+        final sent = capturedTools.singleWhere(
+          (tool) => tool['name'] == definition.alias,
+        );
+        expect(sent, {
+          'type': 'function',
+          'name': definition.alias,
+          'description': definition.description,
+          'parameters': definition.argumentsSchema,
+        }, reason: 'Source-to-HTTP equality for ${definition.alias}');
+      }
+      expect(captured['tool_choice'], 'auto');
+      expect(captured['parallel_tool_calls'], isTrue);
+      expect(captured['store'], isFalse);
+      expect(captured['stream'], isTrue);
       final commandRetired = topology.runtime.extensions.changes.firstWhere(
         (_) => !topology.runtime.extensions
             .discover(modelToolContributions)
@@ -272,11 +445,18 @@ void main() {
         sessionId: topology.sessionId,
         prompt: 'Continue.',
         instructions: 'Continue remotely.',
-        model: const _FinalModel(response: 'Continued.'),
+        model: model,
         catalog: withoutCommand,
         maxModelInvocations: 2,
       );
       expect(followUp.succeeded, isTrue);
+      expect(outbound, hasLength(2));
+      expect(
+        outbound.last['tools'],
+        capturedTools.where((tool) => tool['name'] != 'run_command').toList(),
+      );
+      expect(outbound.last['tool_choice'], 'auto');
+      expect(outbound.last['parallel_tool_calls'], isTrue);
       expect(followUp.sessionSnapshot.entries.map((entry) => entry.content), [
         'Complete.',
         'Complete.',
@@ -1975,6 +2155,19 @@ Future<DevelopmentSelfHostingRunResult> _executeRun({
     catalog: catalog,
     maxModelInvocations: maxModelInvocations,
   );
+}
+
+final class _RecordingModel implements ModelPort {
+  const _RecordingModel(this.delegate, this.requests);
+
+  final ModelPort delegate;
+  final List<SemanticModelRequest> requests;
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) {
+    requests.add(request);
+    return delegate.invoke(request);
+  }
 }
 
 final class _FinalModel implements ModelPort {
