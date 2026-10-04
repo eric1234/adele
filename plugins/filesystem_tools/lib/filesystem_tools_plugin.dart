@@ -86,11 +86,18 @@ final class _ReadFileExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'read_file',
       description:
-          'Read one UTF-8 file and its opaque revision from the current Session '
-          'Environment by relative path. Optional positive integer startLine (1-based) '
-          'and lineCount independently select exact unnumbered logical lines; '
-          'defaults are line 1 and through EOF. Returns the whole-file revision '
-          'and size; existing whole-file read bounds still apply.',
+          'Use for ordinary source inspection in the current Session Environment '
+          'by relativePath, returning exact, unnumbered UTF-8 text and a '
+          'provider-produced opaque whole-file revision. For larger files, select '
+          'relevant line ranges rather than unrelated text. startLine (1-based) '
+          'and lineCount (a count, not an ending line) are independently optional '
+          'positive integers; defaults are line 1 and through EOF, and omitting '
+          'both reads the whole file. Ranged reads still return the complete '
+          "observed file's revision and size. Follow returned continuation "
+          'information when more source is needed. Whole-file provider bounds '
+          'still apply; ranges do not permit oversized-file reads. Pass the '
+          'returned revision unchanged as expectedRevision to apply_patch or '
+          'delete_file.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath'],
@@ -364,17 +371,22 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'apply_patch',
       description:
-          'Patch one existing UTF-8 file in the current Session Environment '
-          'using one observed opaque expectedRevision. Apply edits in array '
-          'order: each search is an exact, case-sensitive literal that must '
-          'occur exactly once when evaluated, and later edits see the in-memory '
-          'result of earlier edits. Include enough surrounding function, class, '
-          'or test context to make each search unique. Every edit must change '
-          'its occurrence, and the final text must differ from the original. '
-          'The tool validates the entire sequence before one conditional '
-          'filesystem replacement; if any edit fails, no ADELE-requested '
-          'filesystem mutation occurs. Normally group multiple changes to the same '
-          'observed file into one apply_patch call rather than separate calls.',
+          'Prefer this tool for focused source edits to one existing UTF-8 file '
+          'in the current Session Environment rather than blind rewriting. Set '
+          'expectedRevision to the unchanged opaque revision from read_file '
+          '(including a ranged read) or an acknowledged mutation when the '
+          'relevant current text and revision are already known. Apply '
+          'search/replace edits in array order: each search is an exact, '
+          'case-sensitive literal that must occur exactly once when evaluated; '
+          "later edits see earlier edits' in-memory results. Include enough "
+          'surrounding function, class, or test context to make each search '
+          'unique. Every edit must change its occurrence, and the final text '
+          'must differ from the original. The complete sequence is validated '
+          'before one conditional replacement; failed preflight requests no '
+          'filesystem mutation. Group related changes to the same observed file '
+          'into one call when appropriate. On revision conflict, reread and '
+          'reassess current source; never invent a revision or blindly retry '
+          'against a newer token.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath', 'expectedRevision', 'edits'],
@@ -740,8 +752,11 @@ final class _CreateFileExecutable implements ToolExecutable {
       alias: 'create_file',
       description:
           'Create one new bounded UTF-8 file in the current Session '
-          'Environment. The parent directory must already exist and the '
-          'target must not exist.',
+          'Environment; prefer this over shell redirection when its semantics '
+          'fit. The parent directory must already exist and the target must be '
+          'absent; this is not create-or-overwrite. Edit existing files with an '
+          'appropriate editing operation, not deletion/recreation to bypass '
+          'safeguards. Success returns the new opaque revision.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath', 'content'],
@@ -941,10 +956,13 @@ final class _DeleteFileExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'delete_file',
       description:
-          'Delete one existing UTF-8 file from the current Session '
-          'Environment only if its opaque revision still matches '
-          'expectedRevision. Read the file first and copy its exact visible '
-          'Revision.',
+          'Remove one existing supported UTF-8 text file from the current '
+          'Session Environment as part of the requested task; prefer this over '
+          'shell deletion when its semantics fit. Copy an observed opaque '
+          'revision unchanged into expectedRevision, normally from read_file. '
+          "The file's revision must still match. No force, recursion, directory "
+          'removal, or arbitrary file-kind deletion. Do not use deletion to work '
+          'around patch or revision failures.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath', 'expectedRevision'],

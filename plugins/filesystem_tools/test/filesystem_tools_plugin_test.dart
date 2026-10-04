@@ -16,6 +16,14 @@ void main() {
         _FileSystem(),
         'read_file',
       );
+      expect(
+        registration.modelDefinition.description,
+        allOf(
+          contains('relevant line ranges'),
+          contains('independently optional'),
+          contains('revision unchanged as expectedRevision'),
+        ),
+      );
       expect(registration.modelDefinition.argumentsSchema, <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath'],
@@ -438,6 +446,10 @@ void main() {
       fileSystem,
       'create_file',
     );
+    expect(
+      registration.modelDefinition.description,
+      allOf(contains('shell redirection'), contains('not create-or-overwrite')),
+    );
     final ToolExecutable executable = registration.executable;
     final Map<String, Object?> schema =
         registration.modelDefinition.argumentsSchema;
@@ -636,6 +648,14 @@ void main() {
       _FileSystem(),
       'delete_file',
     );
+    expect(
+      registration.modelDefinition.description,
+      allOf(
+        contains('shell deletion'),
+        contains('No force, recursion'),
+        contains('patch or revision failures'),
+      ),
+    );
     final ToolExecutable executable = registration.executable;
     final Map<String, Object?> schema =
         registration.modelDefinition.argumentsSchema;
@@ -809,6 +829,15 @@ void main() {
     final ToolRegistration registration = await _registration(
       _FileSystem(),
       'apply_patch',
+    );
+    expect(
+      registration.modelDefinition.description,
+      allOf(
+        contains('focused source edits'),
+        contains('read_file (including a ranged read)'),
+        contains('acknowledged mutation'),
+        contains('revision conflict, reread and reassess'),
+      ),
     );
     final Map<String, Object?> schema =
         registration.modelDefinition.argumentsSchema;

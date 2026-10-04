@@ -78,13 +78,21 @@ final class SearchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'search',
       description:
-          'Search Environment text files for one case-sensitive literal query. '
-          'Optional path is an Environment-relative file or directory scope: '
+          'Locate literal content in Environment text files. Prefer the '
+          'narrowest useful known file or directory scope; root search is valid '
+          'when the location is unknown. query is case-sensitive literal text, '
+          'not regex: "|" is not alternation. Optional path is Environment-relative: '
           'search only that file, or recursively search that directory. '
           'Omitted or empty path recursively searches root. '
+          'Results identify paths and matching line numbers with bounded snippets. '
+          'Read relevant source before editing; snippets are not complete file '
+          'context. Check truncation/incompleteness indicators: limits or read '
+          'failures can prevent exhaustive results. '
           'Current stock search defaults exclude common generated, dependency, '
           'and metadata directories: .git, .dart_tool, build, and node_modules. '
-          'These directory names match case-insensitively on every Environment.',
+          'These directory names match case-insensitively on every Environment. '
+          'Use an available command tool when the requested search cannot be '
+          'adequately expressed here.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['query'],
