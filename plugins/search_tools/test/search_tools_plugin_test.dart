@@ -70,6 +70,14 @@ void main() {
         tool.modelDefinition.description,
         contains('case-insensitively on every Environment'),
       );
+      expect(
+        tool.modelDefinition.description,
+        allOf(
+          contains('narrowest useful known'),
+          contains('"|" is not alternation'),
+          contains('truncation/incompleteness'),
+        ),
+      );
       expect(tool.modelDefinition.argumentsSchema['required'], const <Object?>[
         'query',
       ]);

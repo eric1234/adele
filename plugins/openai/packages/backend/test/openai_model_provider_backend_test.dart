@@ -2297,6 +2297,9 @@ void main() {
           (requests[1]['input']! as List<Object?>)[1],
           _reasoning('rs_chat', 'enc-chat'),
         );
+        expect(requests[1]['tools'], requests.first['tools']);
+        expect(requests[1]['tool_choice'], 'auto');
+        expect(requests[1]['parallel_tool_calls'], isTrue);
       },
     );
 

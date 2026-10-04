@@ -137,6 +137,14 @@ void main() {
         tool.modelDefinition.description,
         contains('does not implicitly invoke a shell'),
       );
+      expect(
+        tool.modelDefinition.description,
+        allOf(
+          contains('Prefer an available dedicated'),
+          contains('absent or unsuitable'),
+          contains('tool completion alone does not prove'),
+        ),
+      );
     });
   });
 

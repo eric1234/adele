@@ -82,12 +82,22 @@ final class _RunCommandExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'run_command',
       description:
-          'Run one foreground program directly in the current Session '
-          'Environment. program is one executable name or path and arguments '
+          'Use for builds, tests, Git, and other operations requiring program '
+          'execution. Prefer an available dedicated file-reading, content-search, '
+          'or file-editing tool when it adequately supports the operation, rather '
+          'than recreating it with shell commands or scripts. Commands remain '
+          'available when those tools are absent or unsuitable, including regex '
+          'queries or file discovery unsupported by available tools, as well as '
+          'generators, formatters, and other transformations. Runs one foreground '
+          'executable directly in the current Session Environment: program is '
+          'one executable name or path and arguments '
           'are passed verbatim. This tool does not implicitly invoke a shell '
-          'or interpret pipes, redirects, command chaining, variable '
-          'expansion, or other shell syntax. workingDirectory is '
-          'Environment-relative; omitted or empty means the Environment root.',
+          'or interpret pipes, redirects, command chaining, or variable expansion; '
+          'shell syntax requires explicitly invoking an available shell. '
+          'workingDirectory is Environment-relative; omitted or empty means the '
+          'Environment root. Inspect returned termination, exit code, output, and '
+          'truncation indicators: tool completion alone does not prove program '
+          'or validation success.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['program'],
