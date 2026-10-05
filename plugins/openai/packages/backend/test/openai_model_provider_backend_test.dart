@@ -24,6 +24,135 @@ void main() {
 
     for (final bool chatGpt in <bool>[false, true]) {
       final String profile = chatGpt ? 'ChatGPT' : 'API key';
+      for (final bool refused in <bool>[false, true]) {
+        test(
+          '$profile ignores keepalive before and after ${refused ? 'refusal' : 'text'} output',
+          () async {
+            int requests = 0;
+            final String text = refused ? 'No.' : 'Ready.';
+            final _FakeServer server = await _FakeServer.start((request) async {
+              requests++;
+              await request.drain<void>();
+              request.response.headers.set('x-request-id', 'req_keepalive');
+              _sse(request.response, <String, Object?>{'type': 'keepalive'});
+              _sse(
+                request.response,
+                _outputDone(
+                  refused
+                      ? _refusal('msg_keepalive', text)
+                      : _message('msg_keepalive', text),
+                ),
+              );
+              _sse(request.response, <String, Object?>{'type': 'keepalive'});
+              _sse(request.response, _completed('resp_keepalive'));
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: chatGpt,
+            );
+
+            final List<ModelProviderEvent> events = await provider
+                .invoke(_request())
+                .toList();
+
+            expect(requests, 1);
+            expect(events.map((event) => event.kind), <ModelProviderEventKind>[
+              ModelProviderEventKind.output,
+              ModelProviderEventKind.terminal,
+            ]);
+            expect(
+              events.map((event) => event.observation),
+              everyElement(isNull),
+            );
+            expect(events.first.terminal, isNull);
+            expect(events.last.output, isNull);
+            final ModelProviderOutput output = events.first.output!;
+            expect(output.kind, ModelProviderOutputKind.text);
+            expect(output.text, text);
+            expect(output.itemId, 'msg_keepalive');
+            expect(output.toolProposal, isNull);
+            expect(output.nativeMetadata, isNull);
+            expect(output.nativePresentation, isNull);
+            final ModelProviderTerminal terminal = events.last.terminal!;
+            expect(
+              terminal.settlement,
+              refused
+                  ? ModelProviderSettlement.refused
+                  : ModelProviderSettlement.completed,
+            );
+            expect(
+              terminal.providerStopReason,
+              refused ? 'refusal' : 'completed',
+            );
+            expect(terminal.incompleteReason, isNull);
+            expect(terminal.failure, isNull);
+            expect(terminal.nativeState, isNull);
+            expect(terminal.responseId, 'resp_keepalive');
+            expect(terminal.requestId, 'req_keepalive');
+            expect(terminal.effectiveModel, 'test-model-effective');
+            expect(terminal.usage?.inputTokens, 11);
+            expect(terminal.usage?.outputTokens, 7);
+            expect(terminal.usage?.cacheReadTokens, 3);
+            expect(terminal.usage?.cacheWriteTokens, isNull);
+            expect(terminal.usage?.providerDetails, <String, Object?>{
+              'totalTokens': 18,
+              'reasoningTokens': 2,
+            });
+          },
+        );
+      }
+
+      // Keep the strict default: only the exact keepalive type is newly ignored.
+      for (final String type in <String>[
+        'test.unknown-event',
+        'keepalive.extra',
+        'test.keepalive',
+      ]) {
+        test('$profile rejects unknown top-level event $type', () async {
+          int requests = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests++;
+            await request.drain<void>();
+            _sse(
+              request.response,
+              _outputDone(_message('msg_before', 'Ready.')),
+            );
+            _sse(request.response, <String, Object?>{'type': type});
+            _sse(request.response, _completed('resp_after'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+
+          final List<ModelProviderEvent> events = await provider
+              .invoke(_request())
+              .toList();
+
+          expect(requests, 1);
+          expect(events.map((event) => event.kind), <ModelProviderEventKind>[
+            ModelProviderEventKind.output,
+            ModelProviderEventKind.terminal,
+          ]);
+          expect(events.first.output?.text, 'Ready.');
+          final ModelProviderTerminal terminal = events.last.terminal!;
+          expect(terminal.settlement, ModelProviderSettlement.failed);
+          expect(
+            terminal.failure?.kind,
+            ModelProviderFailureKind.malformedResponse,
+          );
+          expect(terminal.failure?.providerCode, 'unsupported_event');
+          expect(
+            terminal.failure?.providerMessage,
+            'Unsupported authoritative OpenAI event: $type.',
+          );
+        });
+      }
+
       for (final (String model, bool supported) in <(String, bool)>[
         ('gpt-6-astra', true),
         ('gpt-5.6-sol', true),
