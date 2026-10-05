@@ -13,3 +13,20 @@ dependencies:
   adele_ui: ^0.1.0
   flutter:
     sdk: flutter
+
+dev_dependencies:
+  adele_desktop: ^0.1.0
+  adele_orchestration: ^0.1.0
+  adele_plugin_api: ^0.1.0
+  adele_product: ^0.1.0
+  command_tools_plugin: ^0.1.0
+  dart_eval: 0.8.5
+  filesystem_tools_plugin: ^0.1.0
+  flutter_eval: 0.8.2
+  flutter_test:
+    sdk: flutter
+  openai_contract: ^0.1.0
+  plugin_runtime: ^0.1.0
+
+flutter:
+  uses-material-design: true

@@ -103,6 +103,13 @@ The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` a
 runs each matrix entry with `test --target NAME --ci` after independent bootstrap.
 The local two-process default does not limit CI matrix parallelism.
 
+Single-plugin interpreted frontend integration belongs to the owning frontend
+package even when it uses the private desktop host as test infrastructure.
+`chat_strategy_frontend`, `command_tools_frontend`, and `openai_frontend` run
+that coverage independently with development-only host dependencies and shared
+app-side compiler support. Generic desktop/native infrastructure and whole-product
+multi-plugin integration remain in `adele_desktop`.
+
 The `adele_desktop` CI target runs Flutter test files with one worker. Its real-AOT
 and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
 unchanged activity timing and full-capture deadlines through resource contention.
@@ -172,11 +179,11 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Prepared Chat applicability/composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
+| Prepared Chat applicability/composer/history | [`chat_strategy_frontend/test/chat_frontend_eval_test.dart`](../../plugins/chat_strategy/packages/frontend/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
 | Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
-| Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
+| Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`openai_frontend/test/openai_activity_frontend_eval_test.dart`](../../plugins/openai/packages/frontend/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
 | Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; canonical Session opening with missing components or zero Main Content, ordinary Chat/editor coexistence, frontend retirement without Run closure, concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
@@ -216,7 +223,8 @@ build directory:
 ```sh
 flutter test --no-pub --concurrency 1 test/main_content_controller_test.dart test/main_content_host_test.dart test/adele_shell_test.dart test/inspection_stack_test.dart
 flutter test --no-pub --concurrency 1 test/prepared_main_content_host_test.dart test/prepared_session_services_test.dart test/session_presentation_lifecycle_bridge_test.dart
-flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/window_task_browser_source_test.dart test/session_execution_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/window_task_browser_source_test.dart test/session_execution_bridge_test.dart
+(cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
 ```
 
 The controller/widget tests target registered groups without an injected strategy
@@ -439,14 +447,16 @@ the PTY target. From `app/`:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/owning_backend_stream_bridge_test.dart
-flutter test --no-pub --concurrency 1 test/command_output_frontend_eval_test.dart test/tool_inspection_frontend_eval_test.dart test/tool_activity_inspection_bridge_test.dart test/inspection_host_test.dart
+(cd .. && dart tools/adele.dart test --target command_tools_frontend)
+flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart test/tool_activity_inspection_bridge_test.dart test/inspection_host_test.dart
 flutter test --no-pub --concurrency 1 test/terminal_projection_bridge_test.dart test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
 flutter test --no-pub --concurrency 1 test/console_bridge_test.dart test/console_controller_test.dart test/prepared_console_host_test.dart test/workbench_console_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/command_output_capture_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/remote_model_tool_host_test.dart test/core/remote_model_tool_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/project_storage_host_test.dart test/core/project_database_test.dart test/core/product_lifecycle_test.dart
-flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/prepared_session_services_test.dart test/session_execution_bridge_test.dart
+(cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
+flutter test --no-pub --concurrency 1 test/prepared_session_services_test.dart test/session_execution_bridge_test.dart
 ```
 
 The early stream fixture compiles a generated `Stream<DTO>` client and mounts its
@@ -629,7 +639,8 @@ For focused host and navigation iteration from `app/`, with generated parts curr
 ```sh
 flutter test --no-pub test/window_task_browser_source_test.dart test/task_browser_bridge_test.dart test/task_browser_presentation_host_test.dart
 flutter test --no-pub test/prepared_task_browser_host_test.dart
-flutter test --no-pub test/session_presentation_lifecycle_bridge_test.dart test/prepared_session_services_test.dart test/chat_frontend_eval_test.dart
+flutter test --no-pub test/session_presentation_lifecycle_bridge_test.dart test/prepared_session_services_test.dart
+(cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 ```
 
@@ -665,7 +676,7 @@ running the full application target:
 ```sh
 flutter test --no-pub test/core/project_database_test.dart test/core/durable_session_lifecycle_test.dart test/core/project_storage_host_test.dart
 flutter test --no-pub --concurrency 1 test/core/durable_chat_session_integration_test.dart
-flutter test --no-pub test/chat_frontend_eval_test.dart
+(cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 ```
 

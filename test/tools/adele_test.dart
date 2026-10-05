@@ -552,17 +552,10 @@ void main() {
     });
 
     test('does not register a frontend target without standalone tests', () {
-      for (final String name in [
-        'chat_strategy_frontend',
-        'filesystem_tools_frontend',
-        'command_tools_frontend',
-        'openai_frontend',
-      ]) {
-        expect(
-          () => lookupTestTarget(name),
-          throwsA(isA<TestUsageException>()),
-        );
-      }
+      expect(
+        () => lookupTestTarget('filesystem_tools_frontend'),
+        throwsA(isA<TestUsageException>()),
+      );
     });
 
     test('discovers the local selector without Linux desktop dependencies', () {
@@ -594,6 +587,54 @@ void main() {
       expect(analysis.path, target.path);
       expect(analysis.flutter, isFalse);
     });
+
+    for (final (name, plugin, file) in [
+      (
+        'chat_strategy_frontend',
+        'chat_strategy',
+        'chat_frontend_eval_test.dart',
+      ),
+      (
+        'command_tools_frontend',
+        'command_tools',
+        'command_output_frontend_eval_test.dart',
+      ),
+      ('openai_frontend', 'openai', 'openai_activity_frontend_eval_test.dart'),
+    ]) {
+      test('discovers $name as an independent Flutter integration target', () {
+        final options = parseTestOptions(['--target', name, '--ci']);
+        final target = lookupTestTarget(options.target!);
+        final path = 'plugins/$plugin/packages/frontend';
+        expect(testTargets.where((entry) => entry.name == name), hasLength(1));
+        expect(target.path, path);
+        expect(target.executable, 'flutter');
+        expect(target.argumentsFor(), ['test']);
+        expect(target.argumentsFor(ci: options.ci), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.ciTestConcurrency, isNull);
+        final analysis = analysisTargets.singleWhere(
+          (entry) => entry.name == name,
+        );
+        expect(analysis.path, path);
+        expect(analysis.flutter, isTrue);
+        expect(File('$path/test/$file').existsSync(), isTrue);
+        expect(File('app/test/$file').existsSync(), isFalse);
+        final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
+        final entries = (plan['include']! as List<Object?>)
+            .cast<Map<String, Object?>>()
+            .where((entry) => entry['name'] == name);
+        expect(entries, hasLength(1));
+        expect(entries.single['linuxDesktopDeps'], isFalse);
+        expect(entries.single['ciTestConcurrency'], isNull);
+        expect(lookupTestTarget('adele_desktop').path, 'app');
+        expect(
+          File(
+            'app/test/core/normal_chatgpt_run_integration_test.dart',
+          ).existsSync(),
+          isTrue,
+        );
+      });
+    }
 
     test('discovers the frontend-only Task Browser in workspace and CI', () {
       const path = 'plugins/task_browser/packages/frontend';
@@ -1125,10 +1166,12 @@ void main() {
         'command_tools_plugin|dart|plugins/command_tools|test',
         'command_tools_backend|dart|plugins/command_tools/packages/backend|test',
         'command_tools_contract|dart|plugins/command_tools/packages/contract|test',
+        'command_tools_frontend|flutter|plugins/command_tools/packages/frontend|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
+        'chat_strategy_frontend|flutter|plugins/chat_strategy/packages/frontend|test',
         'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
@@ -1138,6 +1181,7 @@ void main() {
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',
         'openai_contract|dart|plugins/openai/packages/contract|test',
+        'openai_frontend|flutter|plugins/openai/packages/frontend|test',
         'workspace_demo_contract|dart|plugins/workspace_demo/packages/contract|test',
         'workspace_demo_backend|dart|plugins/workspace_demo/packages/backend|test',
         'adele_desktop|flutter|app|test',
@@ -1228,7 +1272,9 @@ void main() {
       }
     }
     expect(
-      File('app/test/openai_activity_frontend_eval_test.dart').existsSync(),
+      File(
+        'plugins/openai/packages/frontend/test/openai_activity_frontend_eval_test.dart',
+      ).existsSync(),
       isTrue,
     );
 

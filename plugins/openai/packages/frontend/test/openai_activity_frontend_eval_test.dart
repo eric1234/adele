@@ -22,9 +22,9 @@ import 'package:openai_contract/openai_contract.dart'
     show openAiReasoningSummaryPresentationKind;
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../tool/openai_activity_frontend_compiler.dart';
-import '../tool/tool_inspection_frontend_compiler.dart';
-import 'support/prepared_frontend_installations.dart';
+import '../../../../../app/test/support/prepared_frontend_installations.dart';
+import '../../../../../app/tool/openai_activity_frontend_compiler.dart';
+import '../../../../../app/tool/tool_inspection_frontend_compiler.dart';
 
 const String _library = 'package:openai_frontend/openai_frontend.dart';
 const String _secret = 'ENCRYPTED-PRIVATE-SECRET';
@@ -44,7 +44,7 @@ void main() {
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-openai-activity-');
-    final root = Directory.current.parent;
+    final root = Directory.current.parent.parent.parent.parent;
     artifact = File('${temporary.path}/openai.evc');
     await artifact.writeAsBytes(
       await compileOpenAiActivityFrontend(repositoryRoot: root),

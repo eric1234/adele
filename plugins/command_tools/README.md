@@ -369,7 +369,7 @@ same `tools/stock_frontend_descriptors.dart` metadata drives normal preparation
 and maintained fixtures; generated native contract siblings remain ignored.
 
 Focused generated-client EVC behavior belongs to
-`app/test/command_output_frontend_eval_test.dart`; the real normal-application
+`packages/frontend/test/command_output_frontend_eval_test.dart`; the real normal-application
 path belongs to `app/test/core/normal_chatgpt_run_integration_test.dart`. The
 latter uses local deterministic model responses and socket-gated Command/Git AOT
 output before completion, two identical invocations, simultaneous card/console
