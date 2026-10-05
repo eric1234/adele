@@ -666,6 +666,7 @@ final class _ResponsesNormalizer {
     }
     final String type = decoded['type']! as String;
     switch (type) {
+      case 'keepalive':
       case 'response.created':
       case 'response.in_progress':
       case 'response.output_item.added':
