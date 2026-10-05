@@ -14,3 +14,16 @@ dependencies:
   chat_strategy_contract: ^0.1.0
   flutter:
     sdk: flutter
+
+dev_dependencies:
+  adele_contract: ^0.1.0
+  adele_desktop: ^0.1.0
+  adele_plugin_api: ^0.1.0
+  adele_product: ^0.1.0
+  dart_eval: 0.8.5
+  flutter_eval: 0.8.2
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

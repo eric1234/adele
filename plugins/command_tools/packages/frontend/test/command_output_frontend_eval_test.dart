@@ -21,7 +21,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm2/xterm.dart';
 
-import '../tool/tool_inspection_frontend_compiler.dart';
+import '../../../../../app/tool/tool_inspection_frontend_compiler.dart';
 
 // The backend is a deterministic test fixture, but both codecs, the stock reader
 // EVC, native bridge admission, and terminal parsing/rendering are production.
@@ -37,7 +37,7 @@ void main() {
     temporary = await Directory.systemTemp.createTemp('command-output-evc-');
     artifact = File('${temporary.path}/command.evc');
     await compileToolInspectionFrontend(
-      repositoryRoot: Directory.current.parent,
+      repositoryRoot: Directory.current.parent.parent.parent.parent,
       artifact: artifact,
       frontend: ToolInspectionFrontend.command,
     );

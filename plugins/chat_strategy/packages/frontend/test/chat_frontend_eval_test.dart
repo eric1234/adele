@@ -19,8 +19,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../tools/stock_frontend_descriptors.dart';
-import '../tool/chat_frontend_compiler.dart';
+import '../../../../../app/tool/chat_frontend_compiler.dart';
+import '../../../../../tools/stock_frontend_descriptors.dart';
 
 void main() {
   late Directory temporary;
@@ -32,7 +32,7 @@ void main() {
     temporary = await Directory.systemTemp.createTemp('adele-chat-eval-');
     artifact = File('${temporary.path}/chat.evc');
     await compileChatFrontend(
-      repositoryRoot: Directory.current.parent,
+      repositoryRoot: Directory.current.parent.parent.parent.parent,
       artifact: artifact,
     );
   });
@@ -1425,7 +1425,9 @@ void main() {
   test(
     'real EVC generated codecs reject malformed canonical snapshots',
     () async {
-      final sources = await chatFrontendSources(Directory.current.parent);
+      final sources = await chatFrontendSources(
+        Directory.current.parent.parent.parent.parent,
+      );
       const library = 'package:probe/main.dart';
       sources['probe'] = {
         'main.dart': '''

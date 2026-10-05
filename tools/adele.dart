@@ -180,6 +180,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'command_tools_frontend',
+    path: 'plugins/command_tools/packages/frontend',
+    executable: 'flutter',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'agents_md_plugin',
     path: 'plugins/agents_md',
     executable: 'dart',
@@ -201,6 +207,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'chat_strategy_backend',
     path: 'plugins/chat_strategy/packages/backend',
     executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'chat_strategy_frontend',
+    path: 'plugins/chat_strategy/packages/frontend',
+    executable: 'flutter',
     arguments: <String>['test'],
   ),
   TestTarget(
@@ -255,6 +267,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'openai_contract',
     path: 'plugins/openai/packages/contract',
     executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'openai_frontend',
+    path: 'plugins/openai/packages/frontend',
+    executable: 'flutter',
     arguments: <String>['test'],
   ),
   TestTarget(
