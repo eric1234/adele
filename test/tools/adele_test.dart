@@ -318,6 +318,18 @@ void main() {
       ]);
       expect(names.toSet(), hasLength(testTargets.length));
       expect(
+        testTargets
+            .where((target) => target.nativeCodeEditor)
+            .map((target) => target.name),
+        ['source_editor_frontend', 'adele_desktop'],
+      );
+      for (final entry in entries) {
+        expect(
+          entry['nativeCodeEditor'],
+          ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
+        );
+      }
+      expect(
         include,
         everyElement(
           isA<Map<String, Object?>>().having(
@@ -326,6 +338,7 @@ void main() {
             unorderedEquals(<String>[
               'name',
               'linuxDesktopDeps',
+              'nativeCodeEditor',
               'ciTestConcurrency',
             ]),
           ),
@@ -360,6 +373,7 @@ void main() {
       'desktop CI serializes compiler-heavy fixtures without changing local defaults',
       () {
         final target = lookupTestTarget('adele_desktop');
+        expect(target.nativeCodeEditor, isTrue);
         expect(target.argumentsFor(), ['test']);
         expect(target.argumentsFor(ci: true), ['test', '--concurrency', '1']);
         expect(target.ciTestConcurrency, 1);
@@ -721,8 +735,25 @@ void main() {
       () {
         const path = 'plugins/source_editor/packages/frontend';
         final target = lookupTestTarget('source_editor_frontend');
+        expect(
+          testTargets.where((entry) => entry.name == target.name),
+          hasLength(1),
+        );
         expect(target.path, path);
-        expect(target.executable, 'dart');
+        expect(target.executable, 'flutter');
+        expect(target.nativeCodeEditor, isTrue);
+        expect(
+          File('$path/test/source_documents_test.dart').existsSync(),
+          isTrue,
+        );
+        expect(
+          File('$path/test/source_editor_host_test.dart').existsSync(),
+          isTrue,
+        );
+        expect(
+          File('app/test/source_editor_host_test.dart').existsSync(),
+          isFalse,
+        );
         expect(target.argumentsFor(ci: true), ['test']);
         expect(target.linuxDesktopDeps, isFalse);
         expect(target.ciTestConcurrency, isNull);
@@ -1176,7 +1207,7 @@ void main() {
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
         'terminal_frontend|flutter|plugins/terminal/packages/frontend|test',
-        'source_editor_frontend|dart|plugins/source_editor/packages/frontend|test',
+        'source_editor_frontend|flutter|plugins/source_editor/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

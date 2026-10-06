@@ -9,12 +9,14 @@ final class TestTarget {
     this.testConcurrency,
     this.ciTestConcurrency,
     this.linuxDesktopDeps = false,
+    this.nativeCodeEditor = false,
   });
 
   final List<String> arguments;
   final int? ciTestConcurrency;
   final String executable;
   final bool linuxDesktopDeps;
+  final bool nativeCodeEditor;
   final String name;
   final String path;
   final int? testConcurrency;

@@ -2,7 +2,7 @@
 
 Source Editor is a frontend-only stock plugin. Its
 `packages/frontend` package, `source_editor_frontend`, imports Flutter and the
-public UI bridges, not application code, filesystem I/O, native controllers, or
+public UI bridges in production, not application code, filesystem I/O, native controllers, or
 CodeForge. It contributes ordinary Main Content panes and an Open Source File
 path form. It has no backend, autosave, file watcher, or new-file operation.
 
@@ -98,10 +98,16 @@ and simple map/list policy with no plugin-owned text controller.
 `packages/frontend/test/source_documents_test.dart` exercises document policy
 through an explicit in-memory implementation of the public port shape. It does
 not substitute for prepared-EVC/native integration, authority, or catalog checks.
-The compiler, descriptor, installation, and repository discovery are maintained
-outside this plugin. Follow the [testing guide](../../docs/development/testing.md)
-and [toolchain policy](../../docs/development/toolchain.md), and serialize Flutter
-invocations sharing app output.
+`packages/frontend/test/source_editor_host_test.dart` owns the real compiled
+Source EVC/native integration suite, including retained documents, native undo,
+provider recovery, conditional Save/conflicts, and Close/exit lifecycle races.
+Both suites run through `dart tools/adele.dart test --target source_editor_frontend`
+from the repository root, including maintained native editor preparation.
+The app-side compiler and native/host bridges remain outside this plugin and are
+used through development-only integration dependencies; descriptors and repository
+discovery also remain with repository tooling. Follow the
+[testing guide](../../docs/development/testing.md) and
+[toolchain policy](../../docs/development/toolchain.md).
 The [disposable-worktree manual workflow](../../docs/development/testing.md#manual-source-workflow)
 covers Open, Edit, Save, Environment navigation, conflict, and Close/exit
 cancellation through the normal application. Automated launch is not human

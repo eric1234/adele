@@ -96,9 +96,10 @@ dart tools/adele.dart build-code-editor-tests
 `build-code-editor-tests` verifies source, builds with exact Rust/Cargo,
 `--locked --release` and `RUST_MIN_STACK=16777216`, and prints the library directory
 under `.adele/dependencies/code_forge-native/<preparation-identity>/x86_64-unknown-linux-gnu/release`.
-The maintained `adele_desktop` test target builds it before workers and supplies
-`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the app test process. Other
-maintained test targets prepare/verify source without building Rust.
+Maintained test targets declaring `nativeCodeEditor` (`adele_desktop` and
+`source_editor_frontend`) share one build before workers and receive
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR`. Other maintained test targets
+prepare/verify source without building Rust.
 
 Flutter desktop packaging instead uses the prepared dependency's CMake/Cargokit
 hooks, exact compiler and Cargo lock, and pinned build-runner lock on the maintained
