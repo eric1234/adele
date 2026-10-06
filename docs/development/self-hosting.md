@@ -165,6 +165,20 @@ worktree directory name is provider-generated rather than a fixed `task/` path.
 | `runner.log` | Runner messages and captured compilation diagnostics, not a complete backend-stderr log. |
 | `git/` | Task/Project/launching-checkout status, patch/stat/whitespace-check evidence, changed paths, Git facts, and collection errors. |
 
+Usage counters retain provider evidence independently: `cacheReadTokens` and
+`cacheWriteTokens` are null when unreported, while an explicit zero remains zero.
+Totals sum only reported values; each completeness indicator compares that
+counter's reporting count with terminal model invocations. A zero write count is
+not proof that caching is disabled, and provider-specific billing must not be
+inferred from the common counters alone. The
+[OpenAI backend](../../plugins/openai/packages/backend/README.md) owns Responses
+field mapping and experimental ChatGPT routing behavior.
+
+Run-local provider affinity is ephemeral execution state, not report data. Its
+opaque routing tokens do not enter journals or summaries. Retained evidence also
+does not contain complete lowered requests, so it cannot establish historical
+request-prefix equality or explain an individual provider cache miss.
+
 Git evidence includes tracked changes against the Task baseline and nonignored
 untracked files. Normal teardown closes runtime resources and removes transient
 `.artifacts`, but retains source, worktrees, and evidence rather than automatically

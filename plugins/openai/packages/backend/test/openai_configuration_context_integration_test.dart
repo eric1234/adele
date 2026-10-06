@@ -560,6 +560,7 @@ ModelProviderRequest _request(String semanticRouteSpoof) =>
       maxOutputTokens: null,
       providerOptions: const <String, Object?>{},
       nativeState: null,
+      affinity: null,
     );
 
 Future<void> _compile(

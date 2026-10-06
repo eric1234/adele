@@ -122,6 +122,7 @@ void main() {
                 maxOutputTokens: null,
                 providerOptions: const <String, Object?>{},
                 nativeState: null,
+                affinity: null,
               ),
             )
             .toList();

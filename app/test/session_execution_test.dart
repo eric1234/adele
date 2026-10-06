@@ -2609,6 +2609,7 @@ final class _ModelCall {
       'responseId': 'fixture-response',
       'requestId': null,
       'nativeState': null,
+      'affinityState': null,
     },
   });
 }

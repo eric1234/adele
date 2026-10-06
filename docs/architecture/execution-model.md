@@ -316,6 +316,34 @@ Later valid lifecycle boundaries may discover replacements. Generic binding
 mechanics belong to the [plugin system](plugin-system.md#live-discovery-and-exact-captured-bindings)
 and [contracts and capabilities](contracts-and-capabilities.md#live-discovery-and-exact-binding).
 
+### Run-local provider affinity
+
+The model-provider adapter may retain ephemeral routing/cache affinity for its
+one live Run. It creates a fresh opaque identity, independent of product IDs,
+configuration identities, and prompt contents. Continuations and approval resume
+reuse that adapter; another Run, including in the same Session, requires another
+adapter and affinity identity. This deliberately targets within-Run reuse rather
+than sharing provider transport state across Sessions or durable history.
+
+`ModelProviderRequest.affinity` carries the provider-neutral identity and optional
+opaque provider state. `ModelProviderTerminal.affinityState` returns state only to
+the live adapter; null clears it. The provider owns interpretation and compatibility
+of that state, including authentication-owner fencing. The adapter retains it only
+with its exact provider binding and selected model. State learned from a terminal
+does not retroactively affect already-started invocations; a late concurrent
+terminal must not overwrite a newer retained context.
+
+Affinity is an optional performance hint, not execution authority, conversation
+continuation, or a guarantee of cache residency. It cannot supply omitted input,
+freeze fresh context, revive retired bindings, or justify a retry. Canonical
+semantic replay remains complete and authoritative; invocation `nativeState`
+remains null. Affinity identities and opaque state are not projected into semantic
+model events, Run journals, retained activity, Chat history, or ordinary logs.
+Providers need no global affinity-state table or separate lifecycle service: the
+caller owns the bounded live context. Concrete routing policy belongs in the
+provider implementation, not the strategy or kernel; see the
+[OpenAI backend](../../plugins/openai/packages/backend/README.md).
+
 ## Environment execution context
 
 Execution may use the Session-authorized Task Environment. Application/core

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -8,6 +9,8 @@ import 'package:adele_orchestration/adele_orchestration.dart'
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+/// One live Run's model adapter; never reuse it for another Run or Session.
+/// Affinity remains private to this exact provider binding and selected model.
 final class ModelProviderCapabilityAdapter implements ModelPort {
   ModelProviderCapabilityAdapter(
     this._binding, {
@@ -23,6 +26,9 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
   final int? maxOutputTokens;
   final ModelProviderToolChoice toolChoice;
   final Map<String, Object?> providerOptions;
+  final String _affinityId = _newAffinityId();
+  ModelProviderNativeEnvelope? _affinityState;
+  int _affinityRevision = 0;
   int _invocationCount = 0;
 
   ProviderDescriptor get provider => _binding.provider;
@@ -94,6 +100,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
             _binding.streamChannel,
           );
           _invocationCount++;
+          final int affinityRevision = _affinityRevision;
           final StreamSubscription<ModelProviderEvent> created = client
               .invoke(_toProviderRequest(request, this))
               .listen(
@@ -122,6 +129,12 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                           request.invocationId,
                           event.terminal!,
                         );
+                        // Only the first terminal using this state revision may
+                        // replace it; a late concurrent response cannot undo it.
+                        if (affinityRevision == _affinityRevision) {
+                          _affinityState = event.terminal!.affinityState;
+                          _affinityRevision++;
+                        }
                         semanticTerminal = true;
                         settled = true;
                         controller.add(terminal);
@@ -209,7 +222,23 @@ ModelProviderRequest _toProviderRequest(
   // Invocation-native reuse needs explicit Session/Run ownership and
   // compatibility policy; canonical semantic replay remains authoritative.
   nativeState: null,
+  affinity: ModelProviderAffinity(
+    id: adapter._affinityId,
+    state: adapter._affinityState,
+  ),
 );
+
+String _newAffinityId() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes
+      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+      .join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
 
 ModelProviderInput _toProviderInput(
   SemanticModelInputItem item,

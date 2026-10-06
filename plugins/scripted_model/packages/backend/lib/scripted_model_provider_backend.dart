@@ -397,6 +397,7 @@ ModelProviderEvent _terminal(
     effectiveModel: ScriptedCommonModelProvider.model,
     responseId: responseId,
     requestId: 'request-$responseId',
+    affinityState: null,
     nativeState: ModelProviderNativeEnvelope(
       kind: 'scripted-invocation-v1',
       compatibility: const <String, Object?>{
@@ -430,6 +431,7 @@ ModelProviderEvent _outputLimitTerminal(
     responseId: responseId,
     requestId: 'request-$responseId',
     nativeState: null,
+    affinityState: null,
   ),
 );
 
@@ -456,5 +458,6 @@ ModelProviderEvent _failure(
     responseId: null,
     requestId: null,
     nativeState: null,
+    affinityState: null,
   ),
 );

@@ -725,6 +725,7 @@ final class _Channel implements AdeleStreamChannel {
         'responseId': null,
         'requestId': null,
         'nativeState': null,
+        'affinityState': null,
       },
     };
   }

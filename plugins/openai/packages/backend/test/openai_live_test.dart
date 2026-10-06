@@ -43,6 +43,7 @@ void main() {
               maxOutputTokens: 64,
               providerOptions: const <String, Object?>{},
               nativeState: null,
+              affinity: null,
             ),
           )
           .toList();
