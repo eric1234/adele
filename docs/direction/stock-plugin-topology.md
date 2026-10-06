@@ -144,19 +144,30 @@ current geometry and limits belong to the [application map](../../app/README.md#
 
 ## 2.2 Commands and input
 
-The [accepted Command domain](../architecture/plugin-system.md#commands-and-input)
-now establishes presentation-independent registration, applicability/enabled state,
-unique resolution, and exact-binding invocation. The application hosts the first
-global [Command Palette/search](../../app/README.md#command-palette) consumer over
-native/in-process registrations. Commands need not accompany a UI contribution;
-backend-only and presentation-free implementations remain valid design directions.
+The intended core Command/input system spans:
 
-Prepared frontend and remote backend Command adapters are still future work.
-Suggested/default keybindings, user/Profile/Project overrides, and configuration
-also remain deferred. Plugins should eventually contribute Commands and suggested
-bindings while core owns discovery, conflict handling, rebinding, and dispatch.
-Those adapters and input/configuration surfaces should consume the established
-semantic contract, not make palette or UI participation a registration prerequisite.
+```text
+Command registration
+Command Palette/search
+Command applicability/enabled state
+suggested/default keybindings
+user/Profile/Project keybinding overrides
+```
+
+Commands are semantic operations independent of presentation. Command contribution
+must not require Main Content, Console, Task Browser, or another UI contribution.
+A frontend-only, backend-only, mixed, or presentation-free plugin should be able
+to contribute Commands once the applicable hosting adapter exists.
+
+Core owns Command discovery, composition, conflict handling, and dispatch semantics;
+plugins supply Commands and suggested bindings. The Command Palette/search is one
+input surface over Commands, not their owner. Suggested/default keybindings and
+user/Profile/Project overrides belong to the broader Command/input system.
+
+Future frontend/backend adapters and input/configuration surfaces should consume
+the same [semantic Command contract](../architecture/plugin-system.md#commands-and-input),
+rather than introduce presentation-specific Command concepts or require palette
+participation.
 
 ## 2.3 Selection and callable interfaces
 

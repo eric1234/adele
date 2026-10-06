@@ -592,8 +592,9 @@ The AppBar button resolves and invokes the registered Show Command Palette
 Command through `CommandResolver`; it does not open a special hard-coded palette
 entry outside the Command system.
 
-[`AdeleApplication`](lib/application.dart) owns two native contributions through an
-`ExtensionRegistrationGroup`: `dev.adele.command.show-palette` and
+[`AdeleApplication`](lib/application.dart) owns two native Command contributions
+through an `ExtensionRegistrationGroup`, with Command IDs
+`dev.adele.command.show-palette` and
 `dev.adele.command.toggle-console`. Show is hidden while its dialog is presented,
 preventing nesting. Toggle is hidden without a presented canonical Session,
 enabled in an interactive Session, and disabled during navigation/exit settlement.
