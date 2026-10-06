@@ -23,10 +23,10 @@ void main() {
           bound.modelDefinition.argumentsSchema,
         );
         final CanonicalToolArguments arguments = unbound.validateAndNormalize({
-          'query': 'needle',
+          'pattern': 'needle',
           'path': './src//./',
         });
-        expect(arguments.snapshot, {'query': 'needle', 'path': 'src'});
+        expect(arguments.snapshot, {'pattern': 'needle', 'path': 'src'});
         expect(unbound.validateBinding, throwsStateError);
         await expectLater(
           unbound.describe(arguments, _execution(SessionId('session-1'))),
@@ -62,7 +62,7 @@ void main() {
       );
       expect(
         tool.modelDefinition.description,
-        contains('case-sensitive literal'),
+        contains('case-sensitive regular-expression'),
       );
       expect(tool.modelDefinition.description, contains('.git'));
       expect(tool.modelDefinition.description, contains('node_modules'));
@@ -74,19 +74,19 @@ void main() {
         tool.modelDefinition.description,
         allOf(
           contains('narrowest useful known'),
-          contains('"|" is not alternation'),
+          contains('Dart dart:core RegExp'),
           contains('truncation/incompleteness'),
         ),
       );
       expect(tool.modelDefinition.argumentsSchema['required'], const <Object?>[
-        'query',
+        'pattern',
       ]);
 
       expect(tool.modelDefinition.argumentsSchema, <String, Object?>{
         'type': 'object',
-        'required': <Object?>['query'],
+        'required': <Object?>['pattern'],
         'properties': <String, Object?>{
-          'query': <String, Object?>{
+          'pattern': <String, Object?>{
             'type': 'string',
             'minLength': 1,
             'maxLength': 256,
@@ -106,33 +106,48 @@ void main() {
       await generationB.close();
     });
 
-    test('validates the exact literal query contract', () async {
-      final ToolExecutable tool = await _search(_FileSystem());
-      for (final Map<String, Object?> invalid in <Map<String, Object?>>[
-        const <String, Object?>{},
-        const <String, Object?>{'query': ''},
-        const <String, Object?>{'query': 'a\nb'},
-        const <String, Object?>{'query': 'a\u0000b'},
-        <String, Object?>{'query': 'x' * 257},
-        const <String, Object?>{'query': 'x', 'unknown': 'forbidden'},
-        const <String, Object?>{'query': 'x', 'path': null},
-        const <String, Object?>{'query': 'x', 'path': 1},
-        const <String, Object?>{'query': 'x', 'path': '/absolute'},
-        const <String, Object?>{'query': 'x', 'path': 'a/../b'},
-        const <String, Object?>{'query': 'x', 'path': 'a\u0000b'},
-      ]) {
-        await expectLater(
-          () => tool.validateAndNormalize(invalid),
-          throwsA(isA<ToolArgumentValidationException>()),
+    test(
+      'validates the exact regex pattern contract without authority',
+      () async {
+        const ToolExecutable tool = SearchExecutable.unbound();
+        for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+          const <String, Object?>{},
+          const <String, Object?>{'pattern': ''},
+          const <String, Object?>{'query': 'needle'},
+          const <String, Object?>{'pattern': 'needle', 'query': 'needle'},
+          for (final pattern in [
+            '[',
+            '(',
+            '*',
+            r'\',
+            'a\rb',
+            'a\u2028b',
+            'a\u2029b',
+          ])
+            <String, Object?>{'pattern': pattern},
+          const <String, Object?>{'pattern': 'a\nb'},
+          const <String, Object?>{'pattern': 'a\u0000b'},
+          <String, Object?>{'pattern': 'x' * 257},
+          const <String, Object?>{'pattern': 'x', 'unknown': 'forbidden'},
+          const <String, Object?>{'pattern': 'x', 'path': null},
+          const <String, Object?>{'pattern': 'x', 'path': 1},
+          const <String, Object?>{'pattern': 'x', 'path': '/absolute'},
+          const <String, Object?>{'pattern': 'x', 'path': 'a/../b'},
+          const <String, Object?>{'pattern': 'x', 'path': 'a\u0000b'},
+        ]) {
+          await expectLater(
+            () => tool.validateAndNormalize(invalid),
+            throwsA(isA<ToolArgumentValidationException>()),
+          );
+        }
+        expect(
+          (await tool.validateAndNormalize(const <String, Object?>{
+            'pattern': r'a.*[literal]',
+          })).snapshot,
+          const <String, Object?>{'pattern': r'a.*[literal]', 'path': ''},
         );
-      }
-      expect(
-        (await tool.validateAndNormalize(const <String, Object?>{
-          'query': r'a.*[literal]',
-        })).snapshot,
-        const <String, Object?>{'query': r'a.*[literal]', 'path': ''},
-      );
-    });
+      },
+    );
 
     test('describes a source read against the Environment root', () async {
       final _FileSystem fileSystem = _FileSystem();
@@ -179,7 +194,7 @@ void main() {
         // Validation itself must reject, without describe/execute or encoding.
         await expectLater(
           () => tool.validateAndNormalize(<String, Object?>{
-            'query': 'needle',
+            'pattern': 'needle',
             'path': path,
           }),
           throwsA(isA<ToolArgumentValidationException>()),
@@ -196,7 +211,7 @@ void main() {
         final ToolOutcome outcome = await _execute(
           tool,
           tool.validateAndNormalize(<String, Object?>{
-            'query': 'needle',
+            'pattern': 'needle',
             'path': ?path,
           }),
           fs.sessionId,
@@ -240,7 +255,7 @@ void main() {
           );
           final ToolExecutable tool = await _search(fs);
           final CanonicalToolArguments args = await tool.validateAndNormalize(
-            <String, Object?>{'query': 'needle', 'path': './$scope//./'},
+            <String, Object?>{'pattern': 'needle', 'path': './$scope//./'},
           );
           expect(args.snapshot['path'], scope);
           final EffectDescription effect = await tool.describe(
@@ -411,7 +426,7 @@ void main() {
     );
 
     test(
-      'file scope normalizes identity and searches only literal matching lines',
+      'file scope normalizes identity and supports escaped metacharacters',
       () async {
         final _FileSystem fs = _FileSystem(
           files: <String, String>{
@@ -421,7 +436,10 @@ void main() {
         );
         final ToolExecutable tool = await _search(fs);
         final CanonicalToolArguments args = await tool.validateAndNormalize(
-          <String, Object?>{'query': 'a.*[x]', 'path': './src//café.txt'},
+          <String, Object?>{
+            'pattern': r'a\.\*\[x\]',
+            'path': './src//café.txt',
+          },
         );
         final EffectDescription effect = await tool.describe(
           args,
@@ -522,7 +540,7 @@ void main() {
   });
 
   group('search algorithm', () {
-    test('exclusions ignore case on every Environment, not queries', () async {
+    test('exclusions ignore case on every Environment, not patterns', () async {
       const List<String> excludedNames = <String>[
         '.GIT',
         '.DART_TOOL',
@@ -571,14 +589,14 @@ void main() {
           '${prefix}visible.txt',
         ]);
         expect(outcome.hostData['path'], scope);
-        expect(outcome.hostData['query'], 'needle');
+        expect(outcome.hostData['pattern'], 'needle');
         expect(outcome.hostData['incomplete'], false);
         expect(outcome.hostData['truncated'], false);
       }
     });
 
     test(
-      'recurses lexically, searches literally, and reports once per line',
+      'recurses lexically, searches regex, and reports once per line',
       () async {
         final _FileSystem fileSystem = _FileSystem(
           directories: <String, List<EnvironmentDirectoryEntry>>{
@@ -600,15 +618,71 @@ void main() {
         expect(outcome.disposition, ToolOutcomeDisposition.success);
         expect(_matchLocations(outcome), <String>[
           'a.txt:1',
+          'b.txt:1',
           'b.txt:2',
           'z/c.txt:1',
         ]);
         expect(fileSystem.directoryReads, <String>['', 'z']);
         expect(fileSystem.fileReads, <String>['a.txt', 'b.txt', 'z/c.txt']);
-        expect(outcome.hostData['query'], r'a.*[x]');
+        expect(outcome.hostData['pattern'], r'a.*[x]');
         expect(outcome.hostData['environmentId'], 'environment-1');
         expect(outcome.hostData['truncated'], isFalse);
         expect(outcome.hostData['incomplete'], isFalse);
+      },
+    );
+
+    test(
+      'regex syntax is case-sensitive and independently line-oriented',
+      () async {
+        final fs = _FileSystem(
+          files: {'source.txt': 'foo\nbar42 bar7\nFoo\na.*[x]\n\nfoobar\nend'},
+        );
+        for (final entry in <String, List<int>>{
+          'foo': [1, 6],
+          r'foo|bar\d+': [1, 2, 6],
+          r'^bar[0-9]+ bar[0-9]+$': [2],
+          r'^foo$': [1],
+          r'a\.\*\[x\]': [4],
+          r'foo\nbar': [],
+          r'^$': [5],
+          r'(?=bar)': [2, 6],
+          r'^': [1, 2, 3, 4, 5, 6, 7],
+        }.entries) {
+          final outcome = await _run(fs, entry.key, path: 'source.txt');
+          expect(_matchLocations(outcome), [
+            for (final line in entry.value) 'source.txt:$line',
+          ], reason: entry.key);
+        }
+      },
+    );
+
+    test('first regex match span positions the bounded snippet', () async {
+      final fs = _FileSystem(
+        files: {'source.txt': '${'x' * 600}abc123${'y' * 600}abc456'},
+      );
+      final outcome = await _run(fs, r'abc\d+', path: 'source.txt');
+      final match = (outcome.hostData['matches']! as List).single as Map;
+      expect(match['snippet'], '${'x' * 247}abc123${'y' * 247}');
+    });
+
+    test(
+      'oversized and zero-length regex spans stay bounded and Unicode-safe',
+      () async {
+        for (final entry in <String, String>{
+          r'(?:😀)+': '😀' * 250,
+          r'(?=😀)': '${'x' * 250}${'😀' * 125}',
+          r'\uDE00.*': '😀' * 249,
+        }.entries) {
+          final fs = _FileSystem(
+            files: {'source.txt': '${'x' * 601}${'😀' * 600}tail'},
+          );
+          final outcome = await _run(fs, entry.key, path: 'source.txt');
+          final match = (outcome.hostData['matches']! as List).single as Map;
+          final snippet = match['snippet'] as String;
+          expect(snippet.length, lessThanOrEqualTo(500));
+          expect(snippet, entry.value, reason: entry.key);
+          expect(utf8.decode(utf8.encode(snippet)), snippet);
+        }
       },
     );
 
@@ -1062,8 +1136,8 @@ Future<ToolExecutable> _search(_FileSystem fileSystem) async {
 
 FutureOr<CanonicalToolArguments> _arguments(
   ToolExecutable tool,
-  String query,
-) => tool.validateAndNormalize(<String, Object?>{'query': query});
+  String pattern,
+) => tool.validateAndNormalize(<String, Object?>{'pattern': pattern});
 
 ToolExecutionContext _execution(SessionId sessionId) => ToolExecutionContext(
   runId: RunId('run-1'),
@@ -1073,13 +1147,16 @@ ToolExecutionContext _execution(SessionId sessionId) => ToolExecutionContext(
 
 Future<ToolOutcome> _run(
   _FileSystem fileSystem,
-  String query, {
+  String pattern, {
   String? path,
 }) async {
   final ToolExecutable tool = await _search(fileSystem);
   return _execute(
     tool,
-    tool.validateAndNormalize(<String, Object?>{'query': query, 'path': ?path}),
+    tool.validateAndNormalize(<String, Object?>{
+      'pattern': pattern,
+      'path': ?path,
+    }),
     fileSystem.sessionId,
   );
 }

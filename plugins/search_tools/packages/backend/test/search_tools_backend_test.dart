@@ -39,8 +39,11 @@ void main() {
       fixture.host.close();
       const semantic = SearchExecutable.unbound();
       for (final proposed in <Map<String, Object?>>[
-        {'query': 1},
-        {'query': 'x', 'path': '/absolute'},
+        {'pattern': 1},
+        {'pattern': '['},
+        {'pattern': 'needle', 'query': 'needle'},
+        {'query': 'needle'},
+        {'pattern': 'x', 'path': '/absolute'},
       ]) {
         late String message;
         try {
@@ -66,8 +69,8 @@ void main() {
         });
       }
       for (final proposed in <Map<String, Object?>>[
-        {'query': r'a.*[literal]'},
-        {'query': '  ', 'path': './src//./'},
+        {'pattern': r'a.*[literal]'},
+        {'pattern': '  ', 'path': './src//./'},
       ]) {
         expect(
           (await fixture.client.validateAndNormalize(
@@ -147,7 +150,7 @@ void main() {
       final descriptor = (await fixture.client.materialize('session')).single;
       final arguments = await fixture.client.validateAndNormalize(
         descriptor.routeId,
-        {'query': 'needle', 'path': './src//file.txt'},
+        {'pattern': 'needle', 'path': './src//file.txt'},
       );
       for (final environmentId in ['environment-one', 'environment-two']) {
         final effect = await fixture.client.describe(
@@ -386,7 +389,7 @@ void main() {
 RemoteCanonicalToolArguments _arguments({String path = ''}) =>
     RemoteCanonicalToolArguments.fromLocal(
       const SearchExecutable.unbound().validateAndNormalize({
-        'query': 'needle',
+        'pattern': 'needle',
         'path': path,
       }),
     );

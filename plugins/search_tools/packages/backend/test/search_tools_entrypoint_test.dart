@@ -54,10 +54,10 @@ void main() {
       });
       backend.request(remoteModelToolServiceValidateAndNormalizeId, {
         'routeId': searchToolId.value,
-        'proposedArguments': {'query': 'needle', 'path': './src//./'},
+        'proposedArguments': {'pattern': 'needle', 'path': './src//./'},
       });
       expect((await backend.next())['payload'], {
-        'snapshot': {'query': 'needle', 'path': 'src'},
+        'snapshot': {'pattern': 'needle', 'path': 'src'},
       });
       await backend.shutdown();
     },
@@ -199,7 +199,7 @@ void main() {
 Map<String, Object?> _operationPayload({bool execute = false}) => {
   'routeId': searchToolId.value,
   'arguments': {
-    'snapshot': {'query': 'needle', 'path': ''},
+    'snapshot': {'pattern': 'needle', 'path': ''},
   },
   'sessionId': 'session',
   'runId': 'semantic-run-only',

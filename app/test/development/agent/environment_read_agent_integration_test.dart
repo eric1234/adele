@@ -575,7 +575,7 @@ void main() {
       expect(fileScope.disposition, ToolOutcomeDisposition.success);
       expect(fileScope.effectCertainty, EffectCertainty.knownOccurred);
       expect(fileScope.hostData['path'], _sourceRelativePath);
-      expect(fileScope.hostData['query'], 'final class ChatSessionState');
+      expect(fileScope.hostData['pattern'], 'final class ChatSessionState');
       expect(
         fileScope.hostData['environmentId'],
         authority.environmentId.value,
@@ -1285,7 +1285,7 @@ final class _SearchReadModel implements ModelPort {
           readFile.modelDefinition.argumentsSchema['properties'];
       if (searchProperties is! Map<String, Object?> ||
           searchProperties.keys.toSet().difference(<String>{
-            'query',
+            'pattern',
             'path',
           }).isNotEmpty ||
           searchProperties.length != 2 ||
@@ -1307,7 +1307,7 @@ final class _SearchReadModel implements ModelPort {
             providerCallId: 'search-call-1',
             alias: 'search',
             arguments: const <String, Object?>{
-              'query': 'final class ChatSessionState',
+              'pattern': 'final class ChatSessionState',
               'path': './plugins/chat_strategy/packages/backend//lib/',
             },
           ),
@@ -1820,7 +1820,7 @@ Future<ToolOutcome> _executeSearch(
 }) async {
   final CanonicalToolArguments arguments = await tool.executable
       .validateAndNormalize(<String, Object?>{
-        'query': 'final class ChatSessionState',
+        'pattern': 'final class ChatSessionState',
         'path': path,
       });
   return (await tool.executable

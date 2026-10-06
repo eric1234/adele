@@ -1413,7 +1413,7 @@ Map<String, Object?> _attemptEvidence(
       outcome?.hostData ?? const <String, Object?>{};
   return switch (alias) {
     'search' => <String, Object?>{
-      'query': arguments['query'],
+      'pattern': arguments['pattern'],
       'path': arguments['path'] ?? hostData['path'] ?? hostData['scope'],
       'matchCount': switch (hostData['matches']) {
         final List<Object?> matches => matches.length,

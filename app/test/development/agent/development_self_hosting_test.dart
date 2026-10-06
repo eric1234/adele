@@ -1675,10 +1675,13 @@ void main() {
         (aliases['apply_patch']! as Map<String, Object?>)['proposalCount'],
         2,
       );
-      expect(
-        _attemptEvidence(attempts, 'search'),
-        containsPair('matchCount', 2),
-      );
+      expect(_attemptEvidence(attempts, 'search'), <String, Object?>{
+        'pattern': _searchPattern,
+        'path': null,
+        'matchCount': 2,
+        'incomplete': false,
+        'truncated': true,
+      });
       expect(
         _attemptEvidence(attempts, 'read_file'),
         containsPair('revision', 'r1'),
@@ -1859,8 +1862,31 @@ void main() {
       ).readAsString();
       expect(manifestText, isNot(contains(credentialValue)));
       expect(manifestText, isNot(contains('/private/credential.json')));
+      final Map<String, Object?> savedSummary =
+          jsonDecode(
+                await File('${runDirectory.path}/summary.json').readAsString(),
+              )
+              as Map<String, Object?>;
+      final Map<String, Object?> savedTools =
+          savedSummary['tools']! as Map<String, Object?>;
       expect(
-        await File('${runDirectory.path}/summary.md').readAsString(),
+        _attemptEvidence(savedTools['attempts']! as List<Object?>, 'search'),
+        _attemptEvidence(attempts, 'search'),
+      );
+      final String markdown = await File(
+        '${runDirectory.path}/summary.md',
+      ).readAsString();
+      expect(
+        markdown
+            .split('\n')
+            .singleWhere((line) => line.startsWith('- `search` ')),
+        allOf(
+          contains('pattern=${jsonEncode(_searchPattern)}'),
+          isNot(contains('query=')),
+        ),
+      );
+      expect(
+        markdown,
         allOf(
           contains('## Model Usage'),
           contains('| Patch edits | 4 |'),
@@ -2462,6 +2488,8 @@ final class _RefusedModel implements ModelPort {
   }
 }
 
+const String _searchPattern = r'^needle\d+$|haystack';
+
 const Map<String, Object?> _patchArguments = <String, Object?>{
   'relativePath': 'lib/a.dart',
   'expectedRevision': 'r1',
@@ -2526,7 +2554,7 @@ final class _EvidenceModel implements ModelPort {
   }
 
   Map<String, Object?> _arguments(String alias) => switch (alias) {
-    'search' => <String, Object?>{'query': 'needle'},
+    'search' => <String, Object?>{'pattern': _searchPattern},
     'read_file' => <String, Object?>{'relativePath': 'lib/a.dart'},
     'apply_patch' => _patchArguments,
     'create_file' => <String, Object?>{
@@ -2641,7 +2669,7 @@ final class _FixtureTool implements ToolExecutable {
 
   Map<String, Object?> _hostData(String alias) => switch (alias) {
     'search' => <String, Object?>{
-      'query': 'needle',
+      'pattern': _searchPattern,
       'matches': <Object?>[
         <String, Object?>{'relativePath': 'lib/a.dart', 'lineNumber': 1},
         <String, Object?>{'relativePath': 'lib/b.dart', 'lineNumber': 2},
