@@ -345,13 +345,23 @@ void main() {
     await tester.pump();
     final row = find.widgetWithText(ListTile, 'Focused operation');
     final oldElement = tester.element(row);
-    contribute('unrelated', 'Unrelated operation');
+    final oldFocus = FocusManager.instance.primaryFocus!;
+    expect(
+      find.ancestor(
+        of: find.byElementPredicate((element) => element == oldFocus.context),
+        matching: row,
+      ),
+      findsOneWidget,
+    );
+    contribute('earlier', 'Earlier operation');
     await tester.pumpAndSettle();
     expect(tester.element(row), same(oldElement));
+    expect(FocusManager.instance.primaryFocus, same(oldFocus));
     await old.close();
     contribute('focused', 'Focused operation', invoke: () => calls++);
     await tester.pumpAndSettle();
     expect(tester.element(row), isNot(same(oldElement)));
+    expect(FocusManager.instance.primaryFocus, isNot(same(oldFocus)));
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
     expect(calls, 0);
@@ -360,6 +370,127 @@ void main() {
     expect(calls, 1);
     await unmount(tester);
   });
+
+  for (final removeEarlier in [false, true]) {
+    testWidgets(
+      'Tab-focused exact row survives sorted ${removeEarlier ? 'removal' : 'insertion'}',
+      (tester) async {
+        final calls = <String>[];
+        final earlier = removeEarlier
+            ? contribute(
+                'earlier',
+                'A earlier',
+                invoke: () => calls.add('earlier'),
+              )
+            : null;
+        contribute('first', 'B first', invoke: () => calls.add('first'));
+        contribute('focused', 'C focused', invoke: () => calls.add('focused'));
+        await mount(tester);
+        try {
+          await open(tester);
+          final oldIndex = removeEarlier ? 2 : 1;
+          for (var index = 0; index <= oldIndex; index++) {
+            await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          }
+          await tester.pump();
+          final row = find.widgetWithText(ListTile, 'C focused');
+          final element = tester.element(row);
+          final focus = FocusManager.instance.primaryFocus!;
+          expect(
+            find.ancestor(
+              of: find.byElementPredicate(
+                (element) => element == focus.context,
+              ),
+              matching: row,
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.byType(ListTile).evaluate().toList()[oldIndex],
+            same(element),
+          );
+
+          if (earlier != null) {
+            await earlier.close();
+          } else {
+            contribute(
+              'earlier',
+              'A earlier',
+              invoke: () => calls.add('earlier'),
+            );
+          }
+          await tester.pumpAndSettle();
+          final newIndex = removeEarlier ? 1 : 2;
+          expect(
+            find.byType(ListTile).evaluate().toList()[newIndex],
+            same(element),
+          );
+          expect(tester.element(row), same(element));
+          expect(FocusManager.instance.primaryFocus, same(focus));
+          expect(focus.hasPrimaryFocus, isTrue);
+          expect(tester.widget<ListTile>(row).selected, isFalse);
+
+          await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+          await tester.pumpAndSettle();
+          expect(calls, ['focused']);
+          expect(find.byType(CommandPalette), findsNothing);
+        } finally {
+          await unmount(tester);
+        }
+      },
+    );
+  }
+
+  for (final key in [
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+  ]) {
+    testWidgets('${key.keyLabel} passes through during search composition', (
+      tester,
+    ) async {
+      var calls = 0;
+      contribute('composed', 'Composed operation', invoke: () => calls++);
+      await mount(tester);
+      try {
+        await open(tester);
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'Com',
+            selection: TextSelection.collapsed(offset: 3),
+            composing: TextRange(start: 0, end: 3),
+          ),
+        );
+        await tester.pump();
+        final field = tester.widget<TextField>(search);
+        expect(
+          field.controller!.value.composing,
+          const TextRange(start: 0, end: 3),
+        );
+        expect(
+          await tester.sendKeyDownEvent(key),
+          isFalse,
+          reason: 'Enter must remain unconsumed for the text-input/IME path.',
+        );
+        await tester.sendKeyUpEvent(key);
+        await tester.pumpAndSettle();
+        expect(calls, 0);
+        expect(find.byType(CommandPalette), findsOneWidget);
+        expect(field.focusNode!.hasPrimaryFocus, isTrue);
+
+        // Commit only the composing range, without changing the search text.
+        tester.testTextInput.updateEditingValue(
+          field.controller!.value.copyWith(composing: TextRange.empty),
+        );
+        // Admission reads current composition without waiting for a rebuild.
+        await tester.sendKeyEvent(key);
+        await tester.pumpAndSettle();
+        expect(calls, 1);
+        expect(find.byType(CommandPalette), findsNothing);
+      } finally {
+        await unmount(tester);
+      }
+    });
+  }
 
   testWidgets('Enter respects a tab-focused row or Close button', (
     tester,

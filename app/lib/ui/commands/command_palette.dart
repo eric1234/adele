@@ -91,6 +91,25 @@ final class _CommandPaletteState extends State<CommandPalette> {
     Navigator.of(context).pop(command);
   }
 
+  KeyEventResult _handleSearchKey(FocusNode node, KeyEvent event) {
+    final keyboard = HardwareKeyboard.instance;
+    if (!const SingleActivator(
+          LogicalKeyboardKey.enter,
+        ).accepts(event, keyboard) &&
+        !const SingleActivator(
+          LogicalKeyboardKey.numpadEnter,
+        ).accepts(event, keyboard)) {
+      return KeyEventResult.ignored;
+    }
+    final composing = _search.value.composing;
+    if (composing.isValid && !composing.isCollapsed) {
+      // Let TextField/IME confirm provisional input without consuming Enter.
+      return KeyEventResult.ignored;
+    }
+    if (_selected case final command?) _choose(command);
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
     final query = _search.text.trim().toLowerCase();
@@ -163,26 +182,24 @@ final class _CommandPaletteState extends State<CommandPalette> {
                         _move(-1),
                     const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
                         _move(1),
-                    const SingleActivator(LogicalKeyboardKey.enter): () {
-                      if (_selected case final command?) _choose(command);
-                    },
-                    const SingleActivator(LogicalKeyboardKey.numpadEnter): () {
-                      if (_selected case final command?) _choose(command);
-                    },
                   },
-                  child: TextField(
-                    key: const ValueKey('command-palette-search'),
-                    controller: _search,
-                    focusNode: _focus,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Search commands',
-                      prefixIcon: Icon(Icons.search),
+                  child: Focus(
+                    canRequestFocus: false,
+                    onKeyEvent: _handleSearchKey,
+                    child: TextField(
+                      key: const ValueKey('command-palette-search'),
+                      controller: _search,
+                      focusNode: _focus,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Search commands',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (_) {
+                        setState(() => _selectFirst = true);
+                        if (_scroll.hasClients) _scroll.jumpTo(0);
+                      },
                     ),
-                    onChanged: (_) {
-                      setState(() => _selectFirst = true);
-                      if (_scroll.hasClients) _scroll.jumpTo(0);
-                    },
                   ),
                 ),
               ),
@@ -203,6 +220,12 @@ final class _CommandPaletteState extends State<CommandPalette> {
                     shrinkWrap: true,
                     itemExtent: 72,
                     itemCount: _results.length,
+                    findChildIndexCallback: (key) {
+                      final index = _results.indexWhere(
+                        (entry) => ObjectKey(entry.command) == key,
+                      );
+                      return index < 0 ? null : index;
+                    },
                     itemBuilder: (context, index) {
                       final entry = _results[index];
                       final enabled =
