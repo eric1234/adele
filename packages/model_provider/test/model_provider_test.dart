@@ -68,7 +68,7 @@ void main() {
   });
 
   for (final String scope in <String>['absent', 'initial', 'continuation']) {
-    test('generated affinity round-trip preserves $scope scope', () async {
+    test('generated affinity round-trip preserves $scope state', () async {
       final Map<String, Object?> compatibility = <String, Object?>{
         'owner': <String, Object?>{'binding': 'fixture'},
       };
@@ -82,7 +82,7 @@ void main() {
       final ModelProviderAffinity? affinity = scope == 'absent'
           ? null
           : ModelProviderAffinity(
-              id: 'opaque-run-scope',
+              id: 'opaque-session-scope',
               state: scope == 'continuation' ? state : null,
             );
       final ModelProviderRequest request = _request(affinity: affinity);
@@ -103,7 +103,7 @@ void main() {
             scope == 'absent'
                 ? isNull
                 : <String, Object?>{
-                    'id': 'opaque-run-scope',
+                    'id': 'opaque-session-scope',
                     'state': scope == 'initial'
                         ? null
                         : <String, Object?>{

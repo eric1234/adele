@@ -9,24 +9,35 @@ import 'package:adele_orchestration/adele_orchestration.dart'
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+/// An opaque live Session routing identity, without provider state or authority.
+final class ModelProviderRoutingAffinity {
+  ModelProviderRoutingAffinity() : _id = _newAffinityId();
+
+  final String _id;
+}
+
 /// One live Run's model adapter; never reuse it for another Run or Session.
-/// Affinity remains private to this exact provider binding and selected model.
+/// Provider state remains private to this exact binding and selected model;
+/// only the routing identity may be shared by fresh adapters for one Session.
 final class ModelProviderCapabilityAdapter implements ModelPort {
+  /// Without [routingAffinity], a standalone Run receives a fresh identity.
   ModelProviderCapabilityAdapter(
     this._binding, {
     required String selectedModel,
     this.maxOutputTokens,
     this.toolChoice = ModelProviderToolChoice.auto,
     Map<String, Object?> providerOptions = const <String, Object?>{},
+    ModelProviderRoutingAffinity? routingAffinity,
   }) : selectedModel = _requireNonEmpty(selectedModel, 'Selected model'),
-       providerOptions = _freezeJsonMap(providerOptions);
+       providerOptions = _freezeJsonMap(providerOptions),
+       _routingAffinity = routingAffinity ?? ModelProviderRoutingAffinity();
 
   final ProviderBinding _binding;
   final String selectedModel;
   final int? maxOutputTokens;
   final ModelProviderToolChoice toolChoice;
   final Map<String, Object?> providerOptions;
-  final String _affinityId = _newAffinityId();
+  final ModelProviderRoutingAffinity _routingAffinity;
   ModelProviderNativeEnvelope? _affinityState;
   int _affinityRevision = 0;
   int _invocationCount = 0;
@@ -223,7 +234,7 @@ ModelProviderRequest _toProviderRequest(
   // compatibility policy; canonical semantic replay remains authoritative.
   nativeState: null,
   affinity: ModelProviderAffinity(
-    id: adapter._affinityId,
+    id: adapter._routingAffinity._id,
     state: adapter._affinityState,
   ),
 );

@@ -3344,8 +3344,12 @@ void main() {
             if (outbound.length == 3 || outbound.length == 4) {
               expect(affinityId, affinityHeaders[1].id);
               expect(affinityState, 'f3g-turn-state-2');
+            } else if (outbound.length == 2) {
+              // The next Run keeps Session routing, but not the previous token.
+              expect(affinityId, affinityHeaders[0].id);
+              expect(affinityState, isNull);
             } else {
-              // New Runs, including in the same canonical Session, start clean.
+              // Other live Sessions have independent routing identities.
               expect(affinityState, isNull);
               expect(
                 affinityHeaders
@@ -4010,7 +4014,7 @@ void main() {
         expect(outbound, hasLength(6));
         expect(
           affinityHeaders.map((headers) => headers.id).toSet(),
-          hasLength(4),
+          hasLength(3),
         );
         expect(affinityHeaders.map((headers) => headers.state), [
           null,

@@ -1396,11 +1396,18 @@ String? _optionalNonBlankString(Object? value) =>
 
 String? _redactProviderText(String? value, List<String> sensitiveValues) {
   if (value == null) return null;
+  // Redacting a substring first would prevent matching the complete secret.
+  final List<String> secrets =
+      sensitiveValues
+          .where((String sensitive) => sensitive.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort(
+          (String left, String right) => right.length.compareTo(left.length),
+        );
   String redacted = value;
-  for (final String sensitive in sensitiveValues) {
-    if (sensitive.isNotEmpty) {
-      redacted = redacted.replaceAll(sensitive, '[REDACTED]');
-    }
+  for (final String sensitive in secrets) {
+    redacted = redacted.replaceAll(sensitive, '[REDACTED]');
   }
   return redacted;
 }

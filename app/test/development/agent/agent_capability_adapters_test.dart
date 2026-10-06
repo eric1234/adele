@@ -471,6 +471,58 @@ void main() {
     },
   );
 
+  test(
+    'fresh Run adapters share routing identity but never provider state',
+    () async {
+      final routing = ModelProviderRoutingAffinity();
+      final firstState = _affinityState('first-run');
+      final secondState = _affinityState('second-run');
+      final states = [firstState, secondState, firstState, secondState];
+      late final _ProviderChannel channel;
+      channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.multi((controller) {
+          controller.add(
+            _terminal(affinityState: states[channel.streamCount - 1]),
+          );
+          controller.close();
+        }),
+      );
+      final binding = _binding(channel);
+      final first = ModelProviderCapabilityAdapter(
+        binding,
+        selectedModel: 'scripted-v1',
+        routingAffinity: routing,
+      );
+      await first.invoke(_request()).toList();
+      final second = ModelProviderCapabilityAdapter(
+        binding,
+        selectedModel: 'scripted-v1',
+        routingAffinity: routing,
+      );
+      await second.invoke(_request()).toList();
+      await first.invoke(_request('first-continuation')).toList();
+      await second.invoke(_request('second-continuation')).toList();
+      final affinities = channel.requests
+          .map((request) => request['affinity']! as Map<Object?, Object?>)
+          .toList();
+      expect(affinities.first['id'], matches(_uuidPattern));
+      expect(
+        affinities.map((affinity) => affinity['id']).toSet(),
+        hasLength(1),
+      );
+      expect(affinities.map((affinity) => affinity['state']), [
+        null,
+        null,
+        _encodeNative(firstState),
+        _encodeNative(secondState),
+      ]);
+      expect(
+        channel.requests.map((request) => request['nativeState']),
+        everyElement(isNull),
+      );
+    },
+  );
+
   for (final lateState in [null, _affinityState('late')]) {
     test(
       'late concurrent terminal cannot overwrite affinity (null=${lateState == null})',

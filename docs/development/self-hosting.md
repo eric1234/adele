@@ -174,8 +174,10 @@ inferred from the common counters alone. The
 [OpenAI backend](../../plugins/openai/packages/backend/README.md) owns Responses
 field mapping and experimental ChatGPT routing behavior.
 
-Run-local provider affinity is ephemeral execution state, not report data. Its
-opaque routing tokens do not enter journals or summaries. Retained evidence also
+Provider routing identity and Run-local turn state are ephemeral, not report data.
+The single-Run self-hosting adapter allocates its own opaque identity and starts
+with null turn state; it does not need a multi-Run Session owner. These routing
+values do not enter journals or summaries. Retained evidence also
 does not contain complete lowered requests, so it cannot establish historical
 request-prefix equality or explain an individual provider cache miss.
 

@@ -197,13 +197,16 @@ final class ModelProviderTool {
   final Map<String, Object?> argumentsSchema;
 }
 
-/// Ephemeral routing/cache locality for related invocations in one live Run.
+/// Ephemeral Session routing/cache locality with separate Run-local state.
 ///
-/// The caller supplies a fresh opaque [id] per Run and retains returned [state]
-/// only with that Run's exact provider binding and model. Providers may ignore
-/// this hint. It grants no authority, supplies no conversation input, and does
-/// not guarantee cache residency. Neither identity nor state belongs in history,
-/// terminal execution evidence, or ordinary logs.
+/// The caller supplies a secure opaque [id] for one live Session execution owner,
+/// retaining it across that Session's Runs. Each new Run starts with null [state]
+/// and retains returned state only with its exact provider binding and model.
+/// State must not cross Run boundaries even when the routing identity is shared.
+/// A standalone single-Run caller may allocate its own fresh routing identity.
+/// Providers may ignore this hint: it grants no authority, supplies no input,
+/// and does not guarantee cache residency. Neither identity nor state belongs in
+/// durable storage, history, terminal execution evidence, or ordinary logs.
 @AdeleValue('modelProvider.affinity')
 final class ModelProviderAffinity {
   ModelProviderAffinity({required this.id, required this.state}) {
@@ -400,11 +403,11 @@ final class ModelProviderTerminal {
   final String? requestId;
   final ModelProviderNativeEnvelope? nativeState;
 
-  /// Private routing state for the next request in the same affinity scope.
+  /// Private turn state for the next request in the same Run, not the next Run.
   ///
   /// This is not native conversation continuation or terminal execution evidence.
-  /// A caller that supplied affinity retains this value only in its live adapter;
-  /// null clears previously retained affinity state.
+  /// A caller that supplied affinity retains this value only in its Run adapter;
+  /// null clears it. A new Run starts null even with the same Session routing ID.
   final ModelProviderNativeEnvelope? affinityState;
 }
 

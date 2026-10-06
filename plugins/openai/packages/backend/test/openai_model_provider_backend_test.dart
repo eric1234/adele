@@ -1377,6 +1377,115 @@ void main() {
         },
       );
 
+      for (final bool httpFailure in <bool>[true, false]) {
+        for (final bool accountSecret in <bool>[true, false]) {
+          test(
+            '${httpFailure ? 'HTTP' : 'SSE'} redacts overlapping ${accountSecret ? 'account' : 'access'} secrets longest first',
+            () async {
+              const String shortSecret = 'ABC';
+              const String turnToken = 'prefixABCsecretSuffix';
+              const String diagnostic = 'reported $turnToken and $turnToken';
+              const String redacted = 'reported [REDACTED] and [REDACTED]';
+              final String accountId = accountSecret
+                  ? shortSecret
+                  : 'test-account';
+              final String accessToken = accountSecret
+                  ? 'test-access'
+                  : shortSecret;
+              final _FakeServer server = await _FakeServer.start((
+                request,
+              ) async {
+                expect(request.headers.value('ChatGPT-Account-ID'), accountId);
+                expect(
+                  request.headers.value(HttpHeaders.authorizationHeader),
+                  'Bearer $accessToken',
+                );
+                await request.drain<void>();
+                request.response.headers.set('x-codex-turn-state', turnToken);
+                request.response.headers.set('x-request-id', diagnostic);
+                final Map<String, Object?> error = <String, Object?>{
+                  'code': diagnostic,
+                  'message': diagnostic,
+                };
+                if (httpFailure) {
+                  request.response.statusCode = HttpStatus.badRequest;
+                  request.response.headers.set('retry-after', diagnostic);
+                  request.response.write(
+                    jsonEncode(<String, Object?>{'error': error}),
+                  );
+                } else {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.failed',
+                    'response': <String, Object?>{
+                      'id': diagnostic,
+                      'model': diagnostic,
+                      'error': error,
+                    },
+                  });
+                }
+                await request.response.close();
+              });
+              addTearDown(server.close);
+              final OpenAiChatGptAuth auth = await _testAuth(server);
+              await auth.install(
+                OpenAiChatGptCredential(
+                  idToken: _idToken(accountId),
+                  accessToken: accessToken,
+                  refreshToken: 'test-refresh',
+                  accountId: accountId,
+                  fedRamp: false,
+                  expiresAt: null,
+                ),
+              );
+              final OpenAiModelProvider provider = await _testProvider(
+                server,
+                chatGpt: true,
+                auth: auth,
+              );
+              final ModelProviderTerminal terminal =
+                  (await provider
+                          .invoke(
+                            _request(
+                              affinity: ModelProviderAffinity(
+                                id: scope,
+                                state: null,
+                              ),
+                            ),
+                          )
+                          .toList())
+                      .single
+                      .terminal!;
+              final List<String?> diagnostics = <String?>[
+                terminal.failure!.providerCode,
+                terminal.failure!.providerMessage,
+                terminal.requestId,
+                if (httpFailure) ...<String?>[
+                  terminal.failure!.providerDetails['requestId'] as String?,
+                  terminal.failure!.providerDetails['retryAfter'] as String?,
+                ] else ...<String?>[
+                  terminal.responseId,
+                  terminal.effectiveModel,
+                ],
+              ];
+              final String surfaced = diagnostics.join('\n');
+              for (final String fragment in <String>[
+                shortSecret,
+                'prefix',
+                'secretSuffix',
+              ]) {
+                expect(surfaced, isNot(contains(fragment)));
+              }
+              expect(diagnostics, everyElement(redacted));
+              expect(
+                terminal.affinityState?.data['turnState'],
+                httpFailure ? null : turnToken,
+              );
+              expect(terminal.nativeState, isNull);
+            },
+          );
+        }
+      }
+
       for (final (String label, String responseToken) in <(String, String)>[
         ('valid', 'later-secret'),
         ('oversized', 'x' * 8193),

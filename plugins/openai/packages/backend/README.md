@@ -48,16 +48,20 @@ Existing `store: false`, `stream: true`, `parallel_tool_calls: true`, and
 `include: ['reasoning.encrypted_content']` remain in place. Parallel tool calls
 permit multiple proposals in one response, not concurrent ADELE tool execution.
 
-## Run Affinity And Cache Usage
+## Session Routing, Run State, And Cache Usage
 
 For the experimental ChatGPT profile, a supplied `ModelProviderRequest.affinity`
-maps its opaque Run-scoped ID to the literal `session-id` HTTP header. The backend
-captures the first usable `x-codex-turn-state` header from a successful HTTP
-response before consuming SSE. It returns that token only through
+maps its opaque live-Session routing ID to the literal `session-id` HTTP header.
+The same Session keeps that ID across Runs, but each Run starts with null provider
+turn state. Different live Sessions use different IDs; neither identity nor state
+is persisted. A standalone single-Run caller can allocate its own routing ID.
+The backend captures the first usable `x-codex-turn-state` header from a successful
+HTTP response before consuming SSE. It returns that token only through
 `ModelProviderTerminal.affinityState`, including on incomplete, refused, failed,
 and malformed/transport stream terminals when available. Later requests replay
-the first token unchanged; later response headers do not rotate it. Cancellation
-without a terminal does not publish state.
+the first token unchanged within that Run; later response headers do not rotate
+it. The next Run retains the Session routing ID but must not send the preceding
+Run's token. Cancellation without a terminal does not publish state.
 
 The caller owns this ephemeral state for one live Run and exact provider/model
 binding. There is no backend affinity table or durable state. The private envelope

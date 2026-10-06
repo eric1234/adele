@@ -713,7 +713,7 @@ final class DevelopmentSelfHostingRunResult {
 }
 
 /// The caller must supply a fresh Run-scoped [model] adapter for each execution,
-/// including subsequent Runs in the same Session; do not reuse provider affinity.
+/// including subsequent Runs in the same Session; do not reuse provider turn state.
 Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required String identity,
   required ProductLifecycleCoordinator lifecycle,
