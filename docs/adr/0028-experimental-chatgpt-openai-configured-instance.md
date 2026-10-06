@@ -108,6 +108,16 @@ Codex originator, session, turn, subagent, tracing, feature, installation, and
 other product/workflow metadata are not emitted. ADELE does not impersonate
 Codex.
 
+The subsequent [Session routing and Run-state affinity policy](../architecture/execution-model.md#session-routing-affinity-and-run-local-state)
+narrows that original metadata exclusion for transport affinity: the experimental
+backend may emit an opaque live-Session-scoped `session-id` across Runs and replay
+the first server-issued `x-codex-turn-state` only within its Run. Every new Run
+starts without a turn token. These private routing hints do not identify a
+Codex workflow, select credentials, or enable provider-managed conversation
+continuation. The [backend README](../../plugins/openai/packages/backend/README.md)
+owns current wire behavior and compatibility limits; other product metadata stays
+excluded.
+
 Both profiles share the OpenAI plugin's private B4 Responses machinery for
 ordered request/item lowering, canonical `store:false` replay, encrypted
 reasoning/native items, function tools and outcomes, HTTP/SSE streaming,

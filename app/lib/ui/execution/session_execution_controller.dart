@@ -46,6 +46,9 @@ final class SessionExecutionController extends ChangeNotifier {
   final String? model;
   final ResolvedOrchestrationStrategy? strategy;
   final RunIdSource _runIds;
+  // Session routing survives Runs; provider state belongs to each fresh adapter.
+  final ModelProviderRoutingAffinity _routingAffinity =
+      ModelProviderRoutingAffinity();
   final String? configurationUnavailableReason;
   final VoidCallback? onChanged;
   final VoidCallback? onActivityChanged;
@@ -256,6 +259,7 @@ final class SessionExecutionController extends ChangeNotifier {
         final adapter = ModelProviderCapabilityAdapter(
           binding,
           selectedModel: model!,
+          routingAffinity: _routingAffinity,
         );
         final tools = await buildModelToolCatalogForSession(
           sessionId: session.id,

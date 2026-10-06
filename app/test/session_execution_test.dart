@@ -79,6 +79,83 @@ void main() {
     },
   );
 
+  test(
+    'Session routing identity survives Runs while affinity state resets',
+    () async {
+      final owners = fixture.owners();
+      final controller = owners.getOrCreate(fixture.session);
+      String? routingId;
+      for (var runIndex = 0; runIndex < 2; runIndex++) {
+        expect(owners.getOrCreate(fixture.session), same(controller));
+        final runId = await controller.startRun();
+        final starting = controller.activeRunFuture!;
+        final first = await fixture.model.callAt(runIndex * 2);
+        final firstAffinity = first.request['affinity']! as Map;
+        routingId ??= firstAffinity['id']! as String;
+        expect(
+          firstAffinity['id'] == routingId,
+          isTrue,
+          reason:
+              'One live Session controller must keep its routing identity across Runs.',
+        );
+        expect(firstAffinity['state'], isNull);
+        expect(first.request['nativeState'], isNull);
+        final state = <String, Object?>{
+          'kind': 'fixture-routing-state',
+          'compatibility': <String, Object?>{},
+          'data': {'token': 'T${runIndex + 1}'},
+        };
+        first.propose('run-$runIndex');
+        first.settle(affinityState: state);
+        await starting;
+        expect(controller.currentRun!.run.state, RunState.waiting);
+
+        // Presentation departure must not discard the controller or Run state.
+        final view = SessionExecutionPresentationSource(
+          controller: controller,
+          extensions: fixture.runtime.extensions,
+          isActive: () => true,
+          inspect: (_, _) => false,
+        );
+        view.invalidate();
+        expect(owners.getOrCreate(fixture.session), same(controller));
+        expect(
+          controller.resolveApproval(
+            controller.pendingApproval!,
+            approved: true,
+          ),
+          isTrue,
+        );
+        final resuming = controller.activeRunFuture!;
+        final continuation = await fixture.model.callAt(runIndex * 2 + 1);
+        final nextAffinity = continuation.request['affinity']! as Map;
+        expect(nextAffinity['id'] == routingId, isTrue);
+        expect(nextAffinity['state'], state);
+        continuation.settle(affinityState: state);
+        await resuming;
+        expect(controller.currentRun!.run.state, RunState.completed);
+        expect(controller.currentRun!.run.id, runId);
+        for (final model in controller.activityForRun(runId)!.models) {
+          expect(model.metadata!.providerNativeState, isNull);
+        }
+      }
+
+      final otherSession = fixture.anotherSession();
+      final other = owners.getOrCreate(otherSession);
+      await other.startRun();
+      final advancing = other.activeRunFuture!;
+      final call = await fixture.model.callFor(otherSession);
+      final affinity = call.request['affinity']! as Map;
+      expect(affinity['id'] == routingId, isFalse);
+      expect(affinity['state'], isNull);
+      call.settle();
+      await advancing;
+      expect(other.currentRun!.run.state, RunState.completed);
+      expect(owners.lookup(fixture.session), same(controller));
+      expect(owners.length, 2);
+    },
+  );
+
   testWidgets(
     'public EVC bridge emits exact view-local activity and revokes queued listeners',
     (tester) => tester.runAsync(() async {
@@ -2588,27 +2665,29 @@ final class _ModelCall {
       'nativePresentation': null,
     },
   });
-  void settle({bool fails = false}) => events.add({
-    'kind': 'terminal',
-    'observation': null,
-    'output': null,
-    'terminal': {
-      'settlement': fails ? 'failed' : 'completed',
-      'incompleteReason': null,
-      'failure': fails
-          ? {
-              'kind': 'rateLimited',
-              'providerCode': '429',
-              'providerMessage': 'Fixture failure',
-              'providerDetails': <String, Object?>{},
-            }
-          : null,
-      'providerStopReason': 'stop',
-      'usage': null,
-      'effectiveModel': 'fixture-model',
-      'responseId': 'fixture-response',
-      'requestId': null,
-      'nativeState': null,
-    },
-  });
+  void settle({bool fails = false, Map<String, Object?>? affinityState}) =>
+      events.add({
+        'kind': 'terminal',
+        'observation': null,
+        'output': null,
+        'terminal': {
+          'settlement': fails ? 'failed' : 'completed',
+          'incompleteReason': null,
+          'failure': fails
+              ? {
+                  'kind': 'rateLimited',
+                  'providerCode': '429',
+                  'providerMessage': 'Fixture failure',
+                  'providerDetails': <String, Object?>{},
+                }
+              : null,
+          'providerStopReason': 'stop',
+          'usage': null,
+          'effectiveModel': 'fixture-model',
+          'responseId': 'fixture-response',
+          'requestId': null,
+          'nativeState': null,
+          'affinityState': affinityState,
+        },
+      });
 }

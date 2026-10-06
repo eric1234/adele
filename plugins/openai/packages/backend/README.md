@@ -48,6 +48,51 @@ Existing `store: false`, `stream: true`, `parallel_tool_calls: true`, and
 `include: ['reasoning.encrypted_content']` remain in place. Parallel tool calls
 permit multiple proposals in one response, not concurrent ADELE tool execution.
 
+## Session Routing, Run State, And Cache Usage
+
+For the experimental ChatGPT profile, a supplied `ModelProviderRequest.affinity`
+maps its opaque live-Session routing ID to the literal `session-id` HTTP header.
+The same Session keeps that ID across Runs, but each Run starts with null provider
+turn state. Different live Sessions use different IDs; neither identity nor state
+is persisted. A standalone single-Run caller can allocate its own routing ID.
+The backend captures the first usable `x-codex-turn-state` header from a successful
+HTTP response before consuming SSE. It returns that token only through
+`ModelProviderTerminal.affinityState`, including on incomplete, refused, failed,
+and malformed/transport stream terminals when available. Later requests replay
+the first token unchanged within that Run; later response headers do not rotate
+it. The next Run retains the Session routing ID but must not send the preceding
+Run's token. Cancellation without a terminal does not publish state.
+
+The caller owns this ephemeral state for one live Run and exact provider/model
+binding. There is no backend affinity table or durable state. The private envelope
+is bound to the supplied scope, requested model, configured auth instance, and
+endpoint. Unsupported or incompatible envelopes fail explicitly before HTTP.
+Affinity-bearing requests do not follow redirects to another route.
+Account or FedRAMP routing changes clear the old token before sending, including
+the existing pre-output 401 recovery path; ordinary same-account token refresh
+preserves it. IDs and tokens are bounded safe header values. Affinity tokens and
+account routing stay out of usage, native replay metadata, history, and ordinary
+diagnostics; failure text and diagnostic IDs redact known affinity values.
+
+Null affinity and the API-key profile add no affinity headers. This policy changes
+neither request bodies nor ordered replay: `nativeState` remains null,
+`providerOptions` remain unsupported, and no `prompt_cache_key`,
+`previous_response_id`, retention setting, or additional retry is introduced.
+Affinity is a locality hint, not an assertion of cache residency or a cache hit.
+The interoperability basis is pinned Codex
+[ChatGPT session routing and turn lifetime](https://github.com/openai/codex/blob/ade17c62b0caf6fb1354eb7f3bc25853f44656ab/codex-rs/core/src/client.rs),
+[HTTP first-value capture](https://github.com/openai/codex/blob/ade17c62b0caf6fb1354eb7f3bc25853f44656ab/codex-rs/codex-api/src/sse/responses.rs),
+and [same-turn HTTP regression](https://github.com/openai/codex/blob/ade17c62b0caf6fb1354eb7f3bc25853f44656ab/codex-rs/core/tests/suite/turn_state.rs).
+
+Both profiles preserve reported `usage.input_tokens_details.cached_tokens` and
+`cache_write_tokens` as nullable read/write counts. A reported zero remains zero;
+missing, null, or invalid counters remain unreported rather than fabricated zero.
+The [public prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching#monitor-cache-performance)
+and [Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
+document these fields. Public API automatic caching does not establish identical
+ChatGPT routing or billing: [Codex pricing](https://developers.openai.com/codex/pricing#token-rates)
+explicitly distinguishes subscription credit billing from API-key pricing.
+
 ## Replay And Presentation
 
 The pure-Dart sibling [Contract](../contract/README.md), `openai_contract`, owns
@@ -124,6 +169,11 @@ summaries, and compact/full display bounds. The separate app
 `test/core/normal_chatgpt_run_integration_test.dart` uses real host/Git/OpenAI
 artifacts and prepared frontends against local fake Responses for mixed
 reasoning/tool approvals and a separate reasoning-only final response.
+
+Backend affinity tests use local fake HTTP/OAuth endpoints to check first-token
+retention, scope/model/endpoint/account isolation, auth recovery, cancellation and
+failure settlement, redaction, unchanged bodies/replay, and nullable cache usage
+across both profiles and semantic settlements. They do not assert real cache hits.
 
 Local fake endpoints and temporary fake credentials require no live account or
 API key. Existing opt-in live smokes remain separate and do not establish summary

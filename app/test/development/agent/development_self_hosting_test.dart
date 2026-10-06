@@ -117,6 +117,8 @@ void main() {
       );
       final git = await _createGitFixture(container);
       final outbound = <Map<String, Object?>>[];
+      final affinityIds = <String?>[];
+      final affinityStates = <String?>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
       final subscription = server.listen((request) async {
@@ -130,6 +132,12 @@ void main() {
           outbound.add(
             jsonDecode(await utf8.decoder.bind(request).join())
                 as Map<String, Object?>,
+          );
+          affinityIds.add(request.headers.value('session-id'));
+          affinityStates.add(request.headers.value('x-codex-turn-state'));
+          request.response.headers.set(
+            'x-codex-turn-state',
+            'fixture-turn-${outbound.length}',
           );
           request.response.headers.contentType = ContentType(
             'text',
@@ -352,15 +360,9 @@ void main() {
         profile: configuration.profile,
       );
       addTearDown(provider.close);
-      final model = _RecordingModel(
-        ModelProviderCapabilityAdapter(
-          topology.registry.resolve(
-            modelProviderCapability,
-            providerId: ProviderId(configuration.providerId),
-          ),
-          selectedModel: configuration.selectedModel,
-        ),
-        requests,
+      final binding = topology.registry.resolve(
+        modelProviderCapability,
+        providerId: ProviderId(configuration.providerId),
       );
       final result = await executeDevelopmentSelfHostingRun(
         identity: 'remote-context',
@@ -371,7 +373,13 @@ void main() {
         sessionId: topology.sessionId,
         prompt: 'Complete.',
         instructions: 'Respond.',
-        model: model,
+        model: _RecordingModel(
+          ModelProviderCapabilityAdapter(
+            binding,
+            selectedModel: configuration.selectedModel,
+          ),
+          requests,
+        ),
         catalog: topology.catalog,
         maxModelInvocations: 1,
       );
@@ -445,12 +453,22 @@ void main() {
         sessionId: topology.sessionId,
         prompt: 'Continue.',
         instructions: 'Continue remotely.',
-        model: model,
+        // Adapters own one Run's ephemeral affinity, not the Session's history.
+        model: _RecordingModel(
+          ModelProviderCapabilityAdapter(
+            binding,
+            selectedModel: configuration.selectedModel,
+          ),
+          requests,
+        ),
         catalog: withoutCommand,
         maxModelInvocations: 2,
       );
       expect(followUp.succeeded, isTrue);
       expect(outbound, hasLength(2));
+      expect(affinityIds, everyElement(isNotNull));
+      expect(affinityIds.last, isNot(affinityIds.first));
+      expect(affinityStates, <String?>[null, null]);
       expect(
         outbound.last['tools'],
         capturedTools.where((tool) => tool['name'] != 'run_command').toList(),
@@ -1229,6 +1247,216 @@ void main() {
       isNull,
     );
   });
+
+  for (final (name, usages, readTotal, writeTotal, reported, complete)
+      in <(String, List<ModelUsage?>, int?, int?, int, bool)>[
+        (
+          'mixed positive, zero and unreported',
+          <ModelUsage?>[
+            ModelUsage(
+              inputTokens: 100,
+              outputTokens: 10,
+              cacheReadTokens: 12,
+              cacheWriteTokens: 0,
+            ),
+            ModelUsage(
+              inputTokens: 100,
+              outputTokens: 10,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 8,
+            ),
+            ModelUsage(inputTokens: 100, outputTokens: 10),
+          ],
+          12,
+          8,
+          2,
+          false,
+        ),
+        (
+          'all reported zero',
+          <ModelUsage?>[
+            for (var index = 0; index < 4; index++)
+              ModelUsage(
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+              ),
+          ],
+          0,
+          0,
+          4,
+          true,
+        ),
+        (
+          'all unreported',
+          <ModelUsage?>[for (var index = 0; index < 4; index++) ModelUsage()],
+          null,
+          null,
+          0,
+          false,
+        ),
+        (
+          'absent usage versus present all-null usage',
+          <ModelUsage?>[null, ModelUsage()],
+          null,
+          null,
+          0,
+          false,
+        ),
+        ('no terminals', <ModelUsage?>[], null, null, 0, true),
+      ]) {
+    test('reports cache usage $name without inventing counts', () {
+      final ChatSessionState session = ChatSessionState(
+        SessionId('session-cache-usage'),
+      );
+      final AgentRun run = AgentRun(
+        id: RunId('run-cache-usage'),
+        sessionId: session.id,
+      )..start();
+      const List<ModelSettlement?> settlements = <ModelSettlement?>[
+        ModelSettlement.completed,
+        ModelSettlement.incomplete,
+        ModelSettlement.refused,
+        null,
+      ];
+      for (var index = 0; index < usages.length; index++) {
+        final ModelInvocationId invocationId = ModelInvocationId(
+          'model-$index',
+        );
+        final ModelTerminalMetadata metadata = ModelTerminalMetadata(
+          effectiveModel: 'fake-model',
+          usage: usages[index],
+        );
+        run.record(ModelInvocationStarted(invocationId));
+        final ModelSettlement? settlement = settlements[index];
+        run.record(
+          settlement == null
+              ? ModelInvocationFailed(
+                  invocationId: invocationId,
+                  error: StateError('fixture failure'),
+                  semanticTerminalMetadata: metadata,
+                )
+              : ModelInvocationSettled(
+                  invocationId: invocationId,
+                  settlement: settlement,
+                  incompleteReason: settlement == ModelSettlement.incomplete
+                      ? ModelIncompleteReason.outputLimit
+                      : null,
+                  metadata: metadata,
+                ),
+        );
+      }
+      // A started invocation without a terminal must not dilute completeness.
+      run.record(ModelInvocationStarted(ModelInvocationId('unterminated')));
+      run.cancel();
+      final DevelopmentSelfHostingRunResult result =
+          DevelopmentSelfHostingRunResult(
+            run: run,
+            sessionSnapshot: session.snapshot(),
+            finalAssistantResponse: null,
+            executionFailure: null,
+            executionStackTrace: null,
+          );
+      final Map<String, Object?> journal =
+          jsonDecode(jsonEncode(developmentSelfHostingJournalJson(result)))
+              as Map<String, Object?>;
+      final List<Map<String, Object?>> terminals =
+          (journal['records']! as List<Object?>)
+              .cast<Map<String, Object?>>()
+              .where(
+                (record) =>
+                    record['event'] == 'modelInvocationSettled' ||
+                    record['event'] == 'modelInvocationFailed',
+              )
+              .toList();
+      final Map<String, Object?> summary =
+          jsonDecode(
+                jsonEncode(
+                  developmentSelfHostingSummaryJson(
+                    result: result,
+                    selectedModel: 'fake-model',
+                    git: _emptyGitEvidence,
+                  ),
+                ),
+              )
+              as Map<String, Object?>;
+      final Map<String, Object?> runSummary =
+          summary['run']! as Map<String, Object?>;
+      expect(runSummary['startedModelInvocations'], usages.length + 1);
+      expect(runSummary['terminalModelInvocations'], usages.length);
+      expect(runSummary['completedModelInvocations'], usages.isEmpty ? 0 : 1);
+      expect(runSummary['failedModelInvocations'], usages.length == 4 ? 1 : 0);
+      final Map<String, Object?> totals =
+          summary['usageTotals']! as Map<String, Object?>;
+      expect(totals['terminalInvocations'], usages.length);
+      expect(totals['cacheReadTokens'], readTotal);
+      expect(totals['cacheWriteTokens'], writeTotal);
+      expect(totals['reportedCacheReadInvocations'], reported);
+      expect(totals['reportedCacheWriteInvocations'], reported);
+      expect(totals['cacheReadTotalComplete'], complete);
+      expect(totals['cacheWriteTotalComplete'], complete);
+      if (readTotal == 12) {
+        // Cache reads describe input usage; they must not be added to input.
+        expect(totals['inputTokens'], 300);
+        expect(totals['outputTokens'], 30);
+        expect(totals['reportedInputInvocations'], 3);
+        expect(totals['inputTotalComplete'], isTrue);
+      } else {
+        expect(totals['inputTokens'], readTotal);
+        expect(totals['outputTokens'], readTotal);
+        expect(totals['reportedInputInvocations'], reported);
+        expect(totals['reportedOutputInvocations'], reported);
+        expect(totals['inputTotalComplete'], complete);
+        expect(totals['outputTotalComplete'], complete);
+      }
+      final List<Map<String, Object?>> invocations =
+          (summary['modelInvocations']! as List<Object?>)
+              .cast<Map<String, Object?>>();
+      expect(invocations, hasLength(usages.length));
+      expect(terminals, hasLength(usages.length));
+      final String markdown = developmentSelfHostingSummaryMarkdown(summary);
+      for (var index = 0; index < usages.length; index++) {
+        final ModelUsage? usage = usages[index];
+        final Map<String, Object?>? expectedUsage = usage == null
+            ? null
+            : <String, Object?>{
+                'inputTokens': usage.inputTokens,
+                'outputTokens': usage.outputTokens,
+                'cacheReadTokens': usage.cacheReadTokens,
+                'cacheWriteTokens': usage.cacheWriteTokens,
+                'providerDetails': <String, Object?>{},
+              };
+        final String state = settlements[index]?.name ?? 'failed';
+        final Map<String, Object?> metadata =
+            terminals[index][state == 'failed'
+                    ? 'semanticTerminalMetadata'
+                    : 'metadata']!
+                as Map<String, Object?>;
+        expect(metadata, containsPair('usage', expectedUsage));
+        expect(invocations[index], containsPair('usage', expectedUsage));
+        expect(invocations[index]['invocationId'], 'model-$index');
+        expect(invocations[index]['terminalState'], state);
+        expect(
+          markdown,
+          contains(
+            '| `model-$index` | $state | fake-model | '
+            '${usage?.inputTokens ?? 'unreported'} | '
+            '${index == 0 || usage?.inputTokens == null ? 'unreported' : 0} | '
+            '${usage?.outputTokens ?? 'unreported'} | '
+            '${usage?.cacheReadTokens ?? 'unreported'} |',
+          ),
+        );
+      }
+      expect(markdown, isNot(contains('`unterminated`')));
+      expect(
+        markdown,
+        contains(
+          'cache read `$readTotal` (complete: `$complete`), cache write `$writeTotal` (complete: `$complete`)',
+        ),
+      );
+    });
+  }
 
   test('reports deterministic proposal counts in model-start order', () {
     final ChatSessionState session = ChatSessionState(

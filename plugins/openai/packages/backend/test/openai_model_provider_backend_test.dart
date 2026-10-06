@@ -24,6 +24,212 @@ void main() {
 
     for (final bool chatGpt in <bool>[false, true]) {
       final String profile = chatGpt ? 'ChatGPT' : 'API key';
+      for (final ModelProviderSettlement settlement
+          in <ModelProviderSettlement>[
+            ModelProviderSettlement.completed,
+            ModelProviderSettlement.incomplete,
+            ModelProviderSettlement.refused,
+            ModelProviderSettlement.failed,
+          ]) {
+        test(
+          '$profile preserves nullable cache usage on $settlement',
+          () async {
+            final List<(Map<String, Object?>, int?, int?)> cases =
+                <(Map<String, Object?>, int?, int?)>[
+                  for (final (
+                        Map<String, Object?> details,
+                        int? read,
+                        int? write,
+                      )
+                      in <(Map<String, Object?>, int?, int?)>[
+                        (
+                          <String, Object?>{
+                            'cached_tokens': 12,
+                            'cache_write_tokens': 7,
+                          },
+                          12,
+                          7,
+                        ),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': 0,
+                            'cache_write_tokens': 0,
+                          },
+                          0,
+                          0,
+                        ),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': 12,
+                            'cache_write_tokens': 0,
+                          },
+                          12,
+                          0,
+                        ),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': 0,
+                            'cache_write_tokens': 7,
+                          },
+                          0,
+                          7,
+                        ),
+                        (<String, Object?>{'cached_tokens': 12}, 12, null),
+                        (<String, Object?>{'cache_write_tokens': 7}, null, 7),
+                        (<String, Object?>{'cached_tokens': 0}, 0, null),
+                        (<String, Object?>{'cache_write_tokens': 0}, null, 0),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': null,
+                            'cache_write_tokens': 7,
+                          },
+                          null,
+                          7,
+                        ),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': 12,
+                            'cache_write_tokens': null,
+                          },
+                          12,
+                          null,
+                        ),
+                        (
+                          <String, Object?>{
+                            'cached_tokens': null,
+                            'cache_write_tokens': null,
+                          },
+                          null,
+                          null,
+                        ),
+                        (<String, Object?>{}, null, null),
+                        for (final Object invalid in <Object>[-1, '7', 1.5])
+                          (
+                            <String, Object?>{
+                              'cached_tokens': invalid,
+                              'cache_write_tokens': invalid,
+                            },
+                            null,
+                            null,
+                          ),
+                      ])
+                    (
+                      <String, Object?>{
+                        'usage': <String, Object?>{
+                          'input_tokens': 30,
+                          'output_tokens': 5,
+                          'input_tokens_details': details,
+                        },
+                      },
+                      read,
+                      write,
+                    ),
+                  (
+                    <String, Object?>{
+                      'usage': <String, Object?>{'input_tokens_details': null},
+                    },
+                    null,
+                    null,
+                  ),
+                  (<String, Object?>{'usage': <String, Object?>{}}, null, null),
+                  (<String, Object?>{'usage': null}, null, null),
+                  (<String, Object?>{}, null, null),
+                ];
+            int index = 0;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              await request.drain<void>();
+              if (settlement == ModelProviderSettlement.refused) {
+                _sse(
+                  request.response,
+                  _outputDone(_refusal('msg_cache', 'No.')),
+                );
+              }
+              _sse(request.response, <String, Object?>{
+                'type': switch (settlement) {
+                  ModelProviderSettlement.incomplete => 'response.incomplete',
+                  ModelProviderSettlement.failed => 'response.failed',
+                  _ => 'response.completed',
+                },
+                'response': <String, Object?>{
+                  'id': 'resp_cache',
+                  'incomplete_details': <String, Object?>{
+                    'reason': 'max_output_tokens',
+                  },
+                  'error': <String, Object?>{
+                    'code': 'test_failure',
+                    'message': 'Test failure.',
+                  },
+                  ...cases[index++].$1,
+                },
+              });
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: chatGpt,
+            );
+            for (final (Map<String, Object?> response, int? read, int? write)
+                in cases) {
+              final ModelProviderTerminal terminal =
+                  (await provider.invoke(_request()).toList()).last.terminal!;
+              expect(terminal.settlement, settlement);
+              expect(terminal.usage?.cacheReadTokens, read);
+              expect(terminal.usage?.cacheWriteTokens, write);
+              expect(terminal.usage == null, response['usage'] == null);
+              expect(terminal.nativeState, isNull);
+              expect(terminal.affinityState, isNull);
+            }
+            expect(index, cases.length);
+          },
+        );
+      }
+
+      test(
+        '$profile without usable affinity keeps headers and body unchanged',
+        () async {
+          final List<Map<String, Object?>> bodies = <Map<String, Object?>>[];
+          final _FakeServer server = await _FakeServer.start((request) async {
+            expect(request.headers.value('session-id'), isNull);
+            expect(request.headers.value('session_id'), isNull);
+            expect(request.headers.value('x-codex-turn-state'), isNull);
+            bodies.add(await _jsonBody(request));
+            request.response.headers.set('x-codex-turn-state', 'ignored-token');
+            _sse(request.response, _completed('resp_no_affinity'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final List<ModelProviderAffinity?> hints = <ModelProviderAffinity?>[
+            null,
+            if (!chatGpt)
+              ModelProviderAffinity(
+                id: 'unused-scope',
+                state: ModelProviderNativeEnvelope(
+                  kind: 'uninterpreted',
+                  compatibility: <String, Object?>{},
+                  data: <String, Object?>{},
+                ),
+              ),
+          ];
+          for (final ModelProviderAffinity? hint in hints) {
+            final ModelProviderTerminal terminal =
+                (await provider.invoke(_request(affinity: hint)).toList())
+                    .single
+                    .terminal!;
+            expect(terminal.settlement, ModelProviderSettlement.completed);
+            expect(terminal.affinityState, isNull);
+            expect(terminal.nativeState, isNull);
+          }
+          expect(bodies, everyElement(bodies.first));
+          expect(bodies.first.containsKey('prompt_cache_key'), isFalse);
+          expect(bodies.first.containsKey('previous_response_id'), isFalse);
+          expect(bodies.first['store'], isFalse);
+        },
+      );
       for (final bool refused in <bool>[false, true]) {
         test(
           '$profile ignores keepalive before and after ${refused ? 'refusal' : 'text'} output',
@@ -405,6 +611,1290 @@ void main() {
         },
       );
     }
+
+    group('ChatGPT affinity', () {
+      const String scope = 'e52edb20-97e7-4f5e-b10f-b5a0902c4019';
+
+      test(
+        'stable header and first token survive replay and terminal cancellation',
+        () async {
+          final List<Map<String, Object?>> bodies = <Map<String, Object?>>[];
+          final List<String?> tokens = <String?>[];
+          final List<String?> scopes = <String?>[];
+          final _FakeServer server = await _FakeServer.start((request) async {
+            tokens.add(request.headers.value('x-codex-turn-state'));
+            scopes.add(request.headers.value('session-id'));
+            expect(request.headers.value('session_id'), isNull);
+            expect(request.headers.value('thread-id'), isNull);
+            expect(request.headers.value('x-client-request-id'), isNull);
+            bodies.add(await _jsonBody(request));
+            if (bodies.length != 4) {
+              request.response.headers.set(
+                'x-codex-turn-state',
+                bodies.length <= 2 ? 'first-token' : 'later-token',
+              );
+            }
+            _sse(
+              request.response,
+              _outputDone(_reasoning('rs_affinity', 'opaque-replay')),
+            );
+            _sse(request.response, _completed('resp_affinity'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          await provider.invoke(_request()).toList();
+          final List<ModelProviderEvent> first = await provider
+              .invoke(
+                _request(
+                  affinity: ModelProviderAffinity(id: scope, state: null),
+                ),
+              )
+              .toList();
+          final ModelProviderNativeEnvelope state =
+              first.last.terminal!.affinityState!;
+          expect(state.data['turnState'], 'first-token');
+          expect(bodies[1], bodies[0]);
+          final ModelProviderEvent next = await provider
+              .invoke(
+                _request(
+                  affinity: ModelProviderAffinity(id: scope, state: state),
+                ),
+              )
+              .firstWhere((event) => event.terminal != null);
+          expect(identical(next.terminal!.affinityState, state), isTrue);
+          final List<ModelProviderInput> replay = <ModelProviderInput>[
+            _userInput(),
+            _replay(first.first.output!),
+          ];
+          final ModelProviderTerminal last =
+              (await provider
+                      .invoke(
+                        _request(
+                          input: replay,
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: next.terminal!.affinityState,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .last
+                  .terminal!;
+          expect(identical(last.affinityState, state), isTrue);
+          expect(last.nativeState, isNull);
+          expect(scopes, <String?>[null, scope, scope, scope]);
+          expect(tokens, <String?>[null, null, 'first-token', 'first-token']);
+          expect(bodies[2], bodies[1]);
+          expect(bodies[3]['input'], <Object?>[
+            ...(bodies[2]['input']! as List<Object?>),
+            _reasoning('rs_affinity', 'opaque-replay'),
+          ]);
+          expect(first.first.output!.nativeMetadata!.data, <String, Object?>{
+            'item': _reasoning('rs_affinity', 'opaque-replay'),
+          });
+          expect(last.usage!.providerDetails, <String, Object?>{
+            'totalTokens': 18,
+            'reasoningTokens': 2,
+          });
+        },
+      );
+
+      test('different scopes do not share backend state', () async {
+        final List<String?> tokens = <String?>[];
+        final _FakeServer server = await _FakeServer.start((request) async {
+          await request.drain<void>();
+          tokens.add(request.headers.value('x-codex-turn-state'));
+          request.response.headers.set(
+            'x-codex-turn-state',
+            'token-${request.headers.value('session-id')}',
+          );
+          _sse(request.response, _completed('resp_scope'));
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final OpenAiModelProvider provider = await _testProvider(
+          server,
+          chatGpt: true,
+        );
+        final ModelProviderTerminal first =
+            (await provider
+                    .invoke(
+                      _request(
+                        affinity: ModelProviderAffinity(id: scope, state: null),
+                      ),
+                    )
+                    .toList())
+                .single
+                .terminal!;
+        final ModelProviderTerminal other =
+            (await provider
+                    .invoke(
+                      _request(
+                        affinity: ModelProviderAffinity(
+                          id: 'other-scope',
+                          state: null,
+                        ),
+                      ),
+                    )
+                    .toList())
+                .single
+                .terminal!;
+        await provider
+            .invoke(
+              _request(
+                affinity: ModelProviderAffinity(
+                  id: scope,
+                  state: first.affinityState,
+                ),
+              ),
+            )
+            .toList();
+        expect(tokens, <String?>[null, null, 'token-$scope']);
+        expect(other.affinityState!.data['turnState'], 'token-other-scope');
+      });
+
+      test(
+        'rejects incompatible and malformed envelopes without HTTP',
+        () async {
+          int requests = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests++;
+            await request.drain<void>();
+            request.response.headers.set('x-codex-turn-state', 'first-token');
+            _sse(request.response, _completed('resp_scope'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          final ModelProviderNativeEnvelope state =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: null,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!
+                  .affinityState!;
+          for (final (
+                String kind,
+                Map<String, Object?> compatibility,
+                Map<String, Object?> data,
+                String code,
+              )
+              in <(String, Map<String, Object?>, Map<String, Object?>, String)>[
+                (
+                  'unknown',
+                  state.compatibility,
+                  state.data,
+                  'unsupported_affinity_state',
+                ),
+                (
+                  state.kind,
+                  <String, Object?>{...state.compatibility, 'version': 2},
+                  state.data,
+                  'unsupported_affinity_state',
+                ),
+                for (final String key in <String>[
+                  'scope',
+                  'model',
+                  'instanceId',
+                  'endpoint',
+                ])
+                  (
+                    state.kind,
+                    <String, Object?>{...state.compatibility, key: 'another'},
+                    state.data,
+                    'incompatible_affinity_state',
+                  ),
+                (
+                  state.kind,
+                  <String, Object?>{...state.compatibility, 'extra': true},
+                  state.data,
+                  'incompatible_affinity_state',
+                ),
+                for (final Object? token in <Object?>[
+                  null,
+                  42,
+                  '',
+                  ' ',
+                  'bad\r\nheader',
+                  'bad\tvalue',
+                  'bad\u007fvalue',
+                  'bad\u0080value',
+                  'x' * 8193,
+                ])
+                  (
+                    state.kind,
+                    state.compatibility,
+                    <String, Object?>{...state.data, 'turnState': token},
+                    'invalid_affinity_state',
+                  ),
+                (
+                  state.kind,
+                  state.compatibility,
+                  <String, Object?>{...state.data, 'accountId': null},
+                  'invalid_affinity_state',
+                ),
+                (
+                  state.kind,
+                  state.compatibility,
+                  <String, Object?>{...state.data, 'fedRamp': null},
+                  'invalid_affinity_state',
+                ),
+                (
+                  state.kind,
+                  state.compatibility,
+                  <String, Object?>{...state.data, 'extra': true},
+                  'invalid_affinity_state',
+                ),
+              ]) {
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: ModelProviderNativeEnvelope(
+                                kind: kind,
+                                compatibility: compatibility,
+                                data: data,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(terminal.failure!.providerCode, code);
+            expect(terminal.affinityState, isNull);
+            expect(
+              terminal.failure!.providerMessage,
+              isNot(contains('first-token')),
+            );
+          }
+          for (final String id in <String>[
+            'bad\r\nheader',
+            'has space',
+            'bad\tvalue',
+            'x' * 257,
+          ]) {
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: id,
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(terminal.failure!.providerCode, 'invalid_affinity_id');
+          }
+          final ModelProviderTerminal modelMismatch =
+              (await provider
+                      .invoke(
+                        _request(
+                          model: 'other-model',
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: state,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(
+            modelMismatch.failure!.providerCode,
+            'incompatible_affinity_state',
+          );
+          final ModelProviderTerminal scopeMismatch =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: 'other-scope',
+                            state: state,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(
+            scopeMismatch.failure!.providerCode,
+            'incompatible_affinity_state',
+          );
+          expect(requests, 1);
+        },
+      );
+
+      test('endpoint and configured auth instance isolate envelopes', () async {
+        int requests = 0;
+        Future<void> respond(HttpRequest request) async {
+          requests++;
+          await request.drain<void>();
+          request.response.headers.set('x-codex-turn-state', 'endpoint-token');
+          _sse(request.response, _completed('resp_endpoint'));
+          await request.response.close();
+        }
+
+        final _FakeServer server = await _FakeServer.start(respond);
+        final _FakeServer otherServer = await _FakeServer.start(respond);
+        addTearDown(server.close);
+        addTearDown(otherServer.close);
+        final OpenAiChatGptAuth auth = await _testAuth(server);
+        final OpenAiModelProvider provider = await _testProvider(
+          server,
+          chatGpt: true,
+          auth: auth,
+        );
+        final ModelProviderNativeEnvelope state =
+            (await provider
+                    .invoke(
+                      _request(
+                        affinity: ModelProviderAffinity(id: scope, state: null),
+                      ),
+                    )
+                    .toList())
+                .single
+                .terminal!
+                .affinityState!;
+        final OpenAiModelProvider otherEndpoint = await _testProvider(
+          otherServer,
+          chatGpt: true,
+          auth: auth,
+        );
+        final OpenAiModelProvider otherInstance = await _testProvider(
+          server,
+          chatGpt: true,
+          auth: await _testAuth(server, instanceId: 'other-instance'),
+        );
+        for (final OpenAiModelProvider incompatible in <OpenAiModelProvider>[
+          otherEndpoint,
+          otherInstance,
+        ]) {
+          final ModelProviderTerminal terminal =
+              (await incompatible
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: state,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(terminal.failure!.providerCode, 'incompatible_affinity_state');
+          expect(terminal.affinityState, isNull);
+        }
+        expect(requests, 1);
+      });
+
+      test(
+        'affinity headers never follow redirects beyond their endpoint',
+        () async {
+          int targetRequests = 0;
+          final _FakeServer target = await _FakeServer.start((request) async {
+            targetRequests++;
+            expect(request.headers.value('session-id'), isNull);
+            expect(request.headers.value('x-codex-turn-state'), isNull);
+            await request.drain<void>();
+            _sse(request.response, _completed('resp_target'));
+            await request.response.close();
+          });
+          addTearDown(target.close);
+          int requests = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests++;
+            await request.drain<void>();
+            if (requests == 1) {
+              request.response.headers.set(
+                'x-codex-turn-state',
+                'endpoint-token',
+              );
+              _sse(request.response, _completed('resp_origin'));
+            } else {
+              request.response.statusCode = HttpStatus.seeOther;
+              request.response.headers.set(
+                HttpHeaders.locationHeader,
+                target.responsesUri.toString(),
+              );
+            }
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          final ModelProviderNativeEnvelope state =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: null,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!
+                  .affinityState!;
+          for (final ModelProviderNativeEnvelope? incoming
+              in <ModelProviderNativeEnvelope?>[state, null]) {
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: incoming,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(terminal.failure!.providerCode, 'http_303');
+            expect(terminal.affinityState, same(incoming));
+            expect(targetRequests, 0);
+          }
+          final ModelProviderTerminal withoutAffinity =
+              (await provider.invoke(_request()).toList()).single.terminal!;
+          expect(withoutAffinity.settlement, ModelProviderSettlement.completed);
+          expect(withoutAffinity.affinityState, isNull);
+          expect(targetRequests, 1);
+        },
+      );
+
+      for (final bool fedRampChange in <bool>[false, true]) {
+        test(
+          'clears prior owner token before ${fedRampChange ? 'FedRAMP' : 'account'} change',
+          () async {
+            final List<String?> tokens = <String?>[];
+            final _FakeServer server = await _FakeServer.start((request) async {
+              await request.drain<void>();
+              tokens.add(request.headers.value('x-codex-turn-state'));
+              final bool changed = tokens.length > 1;
+              expect(
+                request.headers.value('ChatGPT-Account-ID'),
+                changed && !fedRampChange ? 'other-account' : 'summary-account',
+              );
+              expect(
+                request.headers.value('X-OpenAI-Fedramp'),
+                changed && fedRampChange ? 'true' : null,
+              );
+              if (tokens.length != 2) {
+                request.response.headers.set(
+                  'x-codex-turn-state',
+                  changed ? 'new-owner-token' : 'old-owner-token',
+                );
+              }
+              _sse(request.response, _completed('resp_owner'));
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiChatGptAuth auth = await _testAuth(server);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: true,
+              auth: auth,
+            );
+            final ModelProviderNativeEnvelope oldState =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!
+                    .affinityState!;
+            await auth.install(
+              _testCredential(
+                accountId: fedRampChange ? 'summary-account' : 'other-account',
+                fedRamp: fedRampChange,
+              ),
+            );
+            final ModelProviderTerminal cleared =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: oldState,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(cleared.affinityState, isNull);
+            final ModelProviderTerminal acquired =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: cleared.affinityState,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(
+              acquired.affinityState!.data['turnState'],
+              'new-owner-token',
+            );
+            await provider
+                .invoke(
+                  _request(
+                    affinity: ModelProviderAffinity(
+                      id: scope,
+                      state: acquired.affinityState,
+                    ),
+                  ),
+                )
+                .toList();
+            expect(tokens, <String?>[null, null, null, 'new-owner-token']);
+          },
+        );
+      }
+
+      for (final String recovery in <String>[
+        'same-account',
+        'new-account',
+        'account-mismatch',
+        'persistent-401',
+        'refresh-failure',
+      ]) {
+        test(
+          '401 $recovery preserves auth boundaries and original body',
+          () async {
+            final List<String?> tokens = <String?>[];
+            final List<Map<String, Object?>> bodies = <Map<String, Object?>>[];
+            int refreshes = 0;
+            late final OpenAiChatGptAuth auth;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              if (request.uri.path == '/oauth/token') {
+                refreshes++;
+                await request.drain<void>();
+                if (recovery == 'refresh-failure') {
+                  request.response.statusCode = HttpStatus.serviceUnavailable;
+                } else {
+                  request.response.write(
+                    jsonEncode(<String, Object?>{
+                      'access_token': 'refreshed-access',
+                      if (recovery == 'account-mismatch')
+                        'id_token': _idToken('new-account'),
+                    }),
+                  );
+                }
+                await request.response.close();
+                return;
+              }
+              tokens.add(request.headers.value('x-codex-turn-state'));
+              bodies.add(await _jsonBody(request));
+              if (tokens.length == 2 ||
+                  (tokens.length > 2 && recovery == 'persistent-401')) {
+                if (recovery == 'new-account') {
+                  await auth.install(_testCredential(accountId: 'new-account'));
+                }
+                request.response.statusCode = HttpStatus.unauthorized;
+                request.response.headers.set(
+                  'x-codex-turn-state',
+                  'never-learn-from-401',
+                );
+              } else {
+                request.response.headers.set(
+                  'x-codex-turn-state',
+                  tokens.length == 1 ? 'original-token' : 'replacement-token',
+                );
+                if (tokens.length > 2) {
+                  expect(
+                    request.headers.value('ChatGPT-Account-ID'),
+                    recovery == 'new-account'
+                        ? 'new-account'
+                        : 'summary-account',
+                  );
+                }
+                _sse(request.response, _completed('resp_auth'));
+              }
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            auth = await _testAuth(server);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: true,
+              auth: auth,
+            );
+            final ModelProviderNativeEnvelope state =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!
+                    .affinityState!;
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: state,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(refreshes, recovery == 'new-account' ? 0 : 1);
+            expect(tokens, <String?>[
+              null,
+              'original-token',
+              if (recovery != 'refresh-failure' &&
+                  recovery != 'account-mismatch')
+                recovery == 'new-account' ? null : 'original-token',
+            ]);
+            expect(bodies, everyElement(bodies.first));
+            expect(
+              terminal.affinityState!.data['turnState'],
+              recovery == 'new-account'
+                  ? 'replacement-token'
+                  : 'original-token',
+            );
+            expect(
+              terminal.settlement,
+              recovery == 'persistent-401' ||
+                      recovery == 'refresh-failure' ||
+                      recovery == 'account-mismatch'
+                  ? ModelProviderSettlement.failed
+                  : ModelProviderSettlement.completed,
+            );
+          },
+        );
+      }
+
+      test(
+        'first 401 header is not captured and proactive refresh retains same-account token',
+        () async {
+          final List<String?> tokens = <String?>[];
+          int refreshes = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            await request.drain<void>();
+            if (request.uri.path == '/oauth/token') {
+              refreshes++;
+              request.response.write(
+                jsonEncode(<String, Object?>{
+                  'access_token': 'refreshed-$refreshes',
+                }),
+              );
+            } else {
+              tokens.add(request.headers.value('x-codex-turn-state'));
+              request.response.headers.set(
+                'x-codex-turn-state',
+                tokens.length == 1 ? 'rejected-token' : 'usable-token',
+              );
+              if (tokens.length == 1) {
+                request.response.statusCode = HttpStatus.unauthorized;
+              } else {
+                _sse(request.response, _completed('resp_refresh'));
+              }
+            }
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiChatGptAuth auth = await _testAuth(server);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+            auth: auth,
+          );
+          final ModelProviderNativeEnvelope state =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: null,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!
+                  .affinityState!;
+          expect(state.data['turnState'], 'usable-token');
+          await auth.install(_testCredential(expiresAt: DateTime.utc(2000)));
+          final ModelProviderTerminal terminal =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: state,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(identical(terminal.affinityState, state), isTrue);
+          expect(tokens, <String?>[null, null, 'usable-token']);
+          expect(refreshes, 2);
+        },
+      );
+
+      for (final bool httpFailure in <bool>[true, false]) {
+        for (final bool accountSecret in <bool>[true, false]) {
+          test(
+            '${httpFailure ? 'HTTP' : 'SSE'} redacts overlapping ${accountSecret ? 'account' : 'access'} secrets longest first',
+            () async {
+              const String shortSecret = 'ABC';
+              const String turnToken = 'prefixABCsecretSuffix';
+              const String diagnostic = 'reported $turnToken and $turnToken';
+              const String redacted = 'reported [REDACTED] and [REDACTED]';
+              final String accountId = accountSecret
+                  ? shortSecret
+                  : 'test-account';
+              final String accessToken = accountSecret
+                  ? 'test-access'
+                  : shortSecret;
+              final _FakeServer server = await _FakeServer.start((
+                request,
+              ) async {
+                expect(request.headers.value('ChatGPT-Account-ID'), accountId);
+                expect(
+                  request.headers.value(HttpHeaders.authorizationHeader),
+                  'Bearer $accessToken',
+                );
+                await request.drain<void>();
+                request.response.headers.set('x-codex-turn-state', turnToken);
+                request.response.headers.set('x-request-id', diagnostic);
+                final Map<String, Object?> error = <String, Object?>{
+                  'code': diagnostic,
+                  'message': diagnostic,
+                };
+                if (httpFailure) {
+                  request.response.statusCode = HttpStatus.badRequest;
+                  request.response.headers.set('retry-after', diagnostic);
+                  request.response.write(
+                    jsonEncode(<String, Object?>{'error': error}),
+                  );
+                } else {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.failed',
+                    'response': <String, Object?>{
+                      'id': diagnostic,
+                      'model': diagnostic,
+                      'error': error,
+                    },
+                  });
+                }
+                await request.response.close();
+              });
+              addTearDown(server.close);
+              final OpenAiChatGptAuth auth = await _testAuth(server);
+              await auth.install(
+                OpenAiChatGptCredential(
+                  idToken: _idToken(accountId),
+                  accessToken: accessToken,
+                  refreshToken: 'test-refresh',
+                  accountId: accountId,
+                  fedRamp: false,
+                  expiresAt: null,
+                ),
+              );
+              final OpenAiModelProvider provider = await _testProvider(
+                server,
+                chatGpt: true,
+                auth: auth,
+              );
+              final ModelProviderTerminal terminal =
+                  (await provider
+                          .invoke(
+                            _request(
+                              affinity: ModelProviderAffinity(
+                                id: scope,
+                                state: null,
+                              ),
+                            ),
+                          )
+                          .toList())
+                      .single
+                      .terminal!;
+              final List<String?> diagnostics = <String?>[
+                terminal.failure!.providerCode,
+                terminal.failure!.providerMessage,
+                terminal.requestId,
+                if (httpFailure) ...<String?>[
+                  terminal.failure!.providerDetails['requestId'] as String?,
+                  terminal.failure!.providerDetails['retryAfter'] as String?,
+                ] else ...<String?>[
+                  terminal.responseId,
+                  terminal.effectiveModel,
+                ],
+              ];
+              final String surfaced = diagnostics.join('\n');
+              for (final String fragment in <String>[
+                shortSecret,
+                'prefix',
+                'secretSuffix',
+              ]) {
+                expect(surfaced, isNot(contains(fragment)));
+              }
+              expect(diagnostics, everyElement(redacted));
+              expect(
+                terminal.affinityState?.data['turnState'],
+                httpFailure ? null : turnToken,
+              );
+              expect(terminal.nativeState, isNull);
+            },
+          );
+        }
+      }
+
+      for (final (String label, String responseToken) in <(String, String)>[
+        ('valid', 'later-secret'),
+        ('oversized', 'x' * 8193),
+        ('control', 'private\tstate'),
+      ]) {
+        test(
+          'HTTP failure echoes redact $label tokens and never learn error headers',
+          () async {
+            int requests = 0;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              requests++;
+              await request.drain<void>();
+              request.response.headers.set(
+                'x-codex-turn-state',
+                requests == 1 ? 'secret-turn-token' : responseToken,
+              );
+              if (requests == 1) {
+                _sse(request.response, _completed('resp_redaction'));
+              } else {
+                request.response.statusCode = HttpStatus.badRequest;
+                final String echo =
+                    'secret-turn-token $responseToken summary-account';
+                request.response.headers.set('x-request-id', echo);
+                request.response.headers.set('retry-after', echo);
+                request.response.write(
+                  jsonEncode(<String, Object?>{
+                    'error': <String, Object?>{
+                      'code': 'rejected',
+                      'message': echo,
+                    },
+                  }),
+                );
+              }
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: true,
+            );
+            final ModelProviderNativeEnvelope state =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!
+                    .affinityState!;
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: state,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(identical(terminal.affinityState, state), isTrue);
+            expect(
+              terminal.failure!.kind,
+              ModelProviderFailureKind.invalidRequest,
+            );
+            final String surfaced = <Object?>[
+              terminal.failure!.providerCode,
+              terminal.failure!.providerMessage,
+              terminal.failure!.providerDetails,
+              terminal.requestId,
+              terminal.usage?.providerDetails,
+            ].join('\n');
+            expect(surfaced, isNot(contains('secret-turn-token')));
+            expect(surfaced, isNot(contains(responseToken)));
+            expect(surfaced, isNot(contains('summary-account')));
+            expect(surfaced, contains('[REDACTED]'));
+            expect(
+              terminal.failure!.providerMessage,
+              '[REDACTED] [REDACTED] [REDACTED]',
+            );
+            final ModelProviderTerminal freshFailure =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: 'fresh-scope',
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(freshFailure.affinityState, isNull);
+            expect(requests, 3);
+          },
+        );
+
+        test(
+          'SSE diagnostics redact retained and $label tokens without replacing state',
+          () async {
+            int requests = 0;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              requests++;
+              await request.drain<void>();
+              request.response.headers.set(
+                'x-codex-turn-state',
+                requests == 1 ? 'first-secret' : responseToken,
+              );
+              if (requests == 1) {
+                _sse(request.response, _completed('resp_first'));
+              } else {
+                final String echo =
+                    'first-secret $responseToken summary-account';
+                _sse(request.response, <String, Object?>{
+                  'type': requests == 2
+                      ? 'response.failed'
+                      : 'response.incomplete',
+                  'response': <String, Object?>{
+                    'id': echo,
+                    'model': echo,
+                    'error': <String, Object?>{'code': echo, 'message': echo},
+                    'incomplete_details': <String, Object?>{'reason': echo},
+                  },
+                });
+              }
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: true,
+            );
+            final ModelProviderNativeEnvelope state =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: null,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!
+                    .affinityState!;
+            for (int index = 0; index < 2; index++) {
+              final ModelProviderTerminal terminal =
+                  (await provider
+                          .invoke(
+                            _request(
+                              affinity: ModelProviderAffinity(
+                                id: scope,
+                                state: state,
+                              ),
+                            ),
+                          )
+                          .toList())
+                      .single
+                      .terminal!;
+              expect(identical(terminal.affinityState, state), isTrue);
+              final String surfaced = <Object?>[
+                terminal.failure?.providerCode,
+                terminal.failure?.providerMessage,
+                terminal.failure?.providerDetails,
+                terminal.effectiveModel,
+                terminal.responseId,
+                terminal.providerStopReason,
+              ].join('\n');
+              for (final String secret in <String>[
+                'first-secret',
+                responseToken,
+                'summary-account',
+              ]) {
+                expect(surfaced, isNot(contains(secret)));
+              }
+              expect(surfaced, contains('[REDACTED]'));
+            }
+          },
+        );
+      }
+
+      test(
+        'transport failure before headers retains compatible incoming state',
+        () async {
+          final _FakeServer server = await _FakeServer.start((request) async {
+            await request.drain<void>();
+            request.response.headers.set(
+              'x-codex-turn-state',
+              'retained-token',
+            );
+            _sse(request.response, _completed('resp_transport'));
+            await request.response.close();
+          });
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          final ModelProviderNativeEnvelope state =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: null,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!
+                  .affinityState!;
+          await server.close();
+          final ModelProviderTerminal terminal =
+              (await provider
+                      .invoke(
+                        _request(
+                          affinity: ModelProviderAffinity(
+                            id: scope,
+                            state: state,
+                          ),
+                        ),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(terminal.failure!.kind, ModelProviderFailureKind.transport);
+          expect(identical(terminal.affinityState, state), isTrue);
+        },
+      );
+
+      test(
+        'ignores unusable response headers and acquires first later usable token',
+        () async {
+          int requests = 0;
+          final List<List<String>> headers = <List<String>>[
+            <String>[],
+            <String>[''],
+            <String>[' '],
+            <String>['x' * 8193],
+            <String>['first', 'second'],
+            <String>['usable-token'],
+            <String>['ignored-replacement'],
+          ];
+          final _FakeServer server = await _FakeServer.start((request) async {
+            await request.drain<void>();
+            expect(
+              request.headers.value('x-codex-turn-state'),
+              requests == headers.length - 1 ? 'usable-token' : null,
+            );
+            request.response.headers.noFolding('x-codex-turn-state');
+            for (final String value in headers[requests++]) {
+              request.response.headers.add('x-codex-turn-state', value);
+            }
+            _sse(request.response, _completed('resp_header'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          ModelProviderNativeEnvelope? state;
+          for (int index = 0; index < headers.length; index++) {
+            final ModelProviderTerminal terminal =
+                (await provider
+                        .invoke(
+                          _request(
+                            affinity: ModelProviderAffinity(
+                              id: scope,
+                              state: state,
+                            ),
+                          ),
+                        )
+                        .toList())
+                    .single
+                    .terminal!;
+            expect(terminal.settlement, ModelProviderSettlement.completed);
+            state = terminal.affinityState;
+            expect(
+              state?.data['turnState'],
+              index < headers.length - 2 ? null : 'usable-token',
+            );
+          }
+        },
+      );
+
+      for (final String path in <String>[
+        'completed',
+        'refused',
+        'incomplete',
+        'failed',
+        'error',
+        'malformed',
+        'missing-terminal',
+        'invalid-utf8',
+        'transport',
+      ]) {
+        test('learns state before $path settlement without retry', () async {
+          int requests = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests++;
+            await request.drain<void>();
+            request.response.headers.set('x-codex-turn-state', 'learned-token');
+            if (path == 'transport') {
+              final Socket socket = await request.response.detachSocket(
+                writeHeaders: false,
+              );
+              socket.write(
+                'HTTP/1.1 200 OK\r\nContent-Length: 10000\r\nx-codex-turn-state: learned-token\r\n\r\ndata: ',
+              );
+              await socket.flush();
+              await socket.close();
+              return;
+            }
+            switch (path) {
+              case 'completed':
+                _sse(request.response, _completed('resp_terminal'));
+              case 'refused':
+                _sse(
+                  request.response,
+                  _outputDone(_refusal('msg_refusal', 'No.')),
+                );
+                _sse(request.response, _completed('resp_terminal'));
+              case 'incomplete':
+                _sse(request.response, <String, Object?>{
+                  'type': 'response.incomplete',
+                  'response': _response(
+                    'resp_terminal',
+                    extra: <String, Object?>{
+                      'incomplete_details': <String, Object?>{
+                        'reason': 'max_output_tokens',
+                      },
+                    },
+                  ),
+                });
+              case 'failed':
+                _sse(request.response, <String, Object?>{
+                  'type': 'response.failed',
+                  'response': _response(
+                    'resp_terminal',
+                    extra: <String, Object?>{
+                      'error': <String, Object?>{
+                        'code': 'learned-token',
+                        'message': 'learned-token',
+                      },
+                    },
+                  ),
+                });
+              case 'error':
+                _sse(request.response, <String, Object?>{
+                  'type': 'error',
+                  'code': 'learned-token',
+                  'message': 'learned-token',
+                });
+              case 'malformed':
+                request.response.write('data: not-json\n\n');
+              case 'invalid-utf8':
+                request.response.add(<int>[0xff]);
+              default:
+                break;
+            }
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: true,
+          );
+          final List<ModelProviderEvent> events = await provider
+              .invoke(
+                _request(
+                  affinity: ModelProviderAffinity(id: scope, state: null),
+                ),
+              )
+              .toList();
+          final ModelProviderTerminal terminal = events.last.terminal!;
+          expect(terminal.affinityState!.data['turnState'], 'learned-token');
+          expect(terminal.nativeState, isNull);
+          expect(terminal.settlement, switch (path) {
+            'completed' => ModelProviderSettlement.completed,
+            'refused' => ModelProviderSettlement.refused,
+            'incomplete' => ModelProviderSettlement.incomplete,
+            _ => ModelProviderSettlement.failed,
+          });
+          if (path == 'transport') {
+            expect(terminal.failure!.kind, ModelProviderFailureKind.transport);
+          }
+          expect(
+            terminal.failure?.providerMessage ?? '',
+            isNot(contains('learned-token')),
+          );
+          expect(
+            terminal.failure?.providerCode ?? '',
+            isNot(contains('learned-token')),
+          );
+          expect(events.where((event) => event.terminal != null), hasLength(1));
+          expect(requests, 1);
+        });
+      }
+    });
 
     test('allows HTTPS and loopback HTTP endpoints only', () {
       final List<OpenAiModelProvider> allowed = <OpenAiModelProvider>[
@@ -2623,6 +4113,7 @@ ModelProviderRequest _request({
   int? maxOutputTokens,
   Map<String, Object?> providerOptions = const <String, Object?>{},
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
+  ModelProviderAffinity? affinity,
 }) => ModelProviderRequest(
   model: model,
   instructions: 'Follow test instructions.',
@@ -2638,6 +4129,7 @@ ModelProviderRequest _request({
   maxOutputTokens: maxOutputTokens,
   providerOptions: providerOptions,
   nativeState: null,
+  affinity: affinity,
 );
 
 ModelProviderInput _userInput() => ModelProviderInput(
@@ -2770,28 +4262,12 @@ Future<Map<String, Object?>> _jsonBody(HttpRequest request) async {
 Future<OpenAiModelProvider> _testProvider(
   _FakeServer server, {
   required bool chatGpt,
+  OpenAiChatGptAuth? auth,
 }) async {
   final OpenAiModelProvider provider;
   if (chatGpt) {
-    final OpenAiOAuthClient oauth = _oauth(server);
-    addTearDown(oauth.close);
-    final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-      instanceId: 'summary-test',
-      store: InMemoryOpenAiCredentialStore(),
-      oauth: oauth,
-    );
-    await auth.install(
-      OpenAiChatGptCredential(
-        idToken: _idToken('summary-account'),
-        accessToken: 'summary-access',
-        refreshToken: 'summary-refresh',
-        accountId: 'summary-account',
-        fedRamp: false,
-        expiresAt: null,
-      ),
-    );
     provider = OpenAiModelProvider.chatGpt(
-      auth: auth,
+      auth: auth ?? await _testAuth(server),
       endpoint: server.responsesUri,
     );
   } else {
@@ -2803,6 +4279,34 @@ Future<OpenAiModelProvider> _testProvider(
   addTearDown(provider.close);
   return provider;
 }
+
+Future<OpenAiChatGptAuth> _testAuth(
+  _FakeServer server, {
+  String instanceId = 'summary-test',
+}) async {
+  final OpenAiOAuthClient oauth = _oauth(server);
+  addTearDown(oauth.close);
+  final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+    instanceId: instanceId,
+    store: InMemoryOpenAiCredentialStore(),
+    oauth: oauth,
+  );
+  await auth.install(_testCredential());
+  return auth;
+}
+
+OpenAiChatGptCredential _testCredential({
+  String accountId = 'summary-account',
+  bool fedRamp = false,
+  DateTime? expiresAt,
+}) => OpenAiChatGptCredential(
+  idToken: _idToken(accountId, fedRamp: fedRamp),
+  accessToken: 'summary-access',
+  refreshToken: 'summary-refresh',
+  accountId: accountId,
+  fedRamp: fedRamp,
+  expiresAt: expiresAt,
+);
 
 OpenAiOAuthClient _oauth(_FakeServer server) =>
     _oauthWithIssuer(_serverOrigin(server));

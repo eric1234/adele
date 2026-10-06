@@ -288,6 +288,7 @@ ModelProviderRequest _request() => ModelProviderRequest(
   maxOutputTokens: null,
   providerOptions: const <String, Object?>{},
   nativeState: null,
+  affinity: null,
 );
 
 String _dartExecutable() {

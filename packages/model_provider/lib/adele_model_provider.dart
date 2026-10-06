@@ -197,6 +197,26 @@ final class ModelProviderTool {
   final Map<String, Object?> argumentsSchema;
 }
 
+/// Ephemeral Session routing/cache locality with separate Run-local state.
+///
+/// The caller supplies a secure opaque [id] for one live Session execution owner,
+/// retaining it across that Session's Runs. Each new Run starts with null [state]
+/// and retains returned state only with its exact provider binding and model.
+/// State must not cross Run boundaries even when the routing identity is shared.
+/// A standalone single-Run caller may allocate its own fresh routing identity.
+/// Providers may ignore this hint: it grants no authority, supplies no input,
+/// and does not guarantee cache residency. Neither identity nor state belongs in
+/// durable storage, history, terminal execution evidence, or ordinary logs.
+@AdeleValue('modelProvider.affinity')
+final class ModelProviderAffinity {
+  ModelProviderAffinity({required this.id, required this.state}) {
+    _requireNonEmpty(id, 'Model request affinity ID');
+  }
+
+  final String id;
+  final ModelProviderNativeEnvelope? state;
+}
+
 @AdeleValue('modelProvider.request')
 final class ModelProviderRequest {
   ModelProviderRequest({
@@ -208,6 +228,7 @@ final class ModelProviderRequest {
     required this.maxOutputTokens,
     required Map<String, Object?> providerOptions,
     required this.nativeState,
+    required this.affinity,
   }) : input = List<ModelProviderInput>.unmodifiable(input),
        tools = List<ModelProviderTool>.unmodifiable(tools),
        providerOptions = adeleSnapshotJsonMap(providerOptions) {
@@ -225,6 +246,7 @@ final class ModelProviderRequest {
   final int? maxOutputTokens;
   final Map<String, Object?> providerOptions;
   final ModelProviderNativeEnvelope? nativeState;
+  final ModelProviderAffinity? affinity;
 }
 
 @AdeleValue('modelProvider.observation')
@@ -352,6 +374,7 @@ final class ModelProviderTerminal {
     required this.responseId,
     required this.requestId,
     required this.nativeState,
+    required this.affinityState,
   }) {
     if ((settlement == ModelProviderSettlement.failed) != (failure != null)) {
       throw const FormatException(
@@ -379,6 +402,13 @@ final class ModelProviderTerminal {
   final String? responseId;
   final String? requestId;
   final ModelProviderNativeEnvelope? nativeState;
+
+  /// Private turn state for the next request in the same Run, not the next Run.
+  ///
+  /// This is not native conversation continuation or terminal execution evidence.
+  /// A caller that supplied affinity retains this value only in its Run adapter;
+  /// null clears it. A new Run starts null even with the same Session routing ID.
+  final ModelProviderNativeEnvelope? affinityState;
 }
 
 @AdeleValue('modelProvider.event')

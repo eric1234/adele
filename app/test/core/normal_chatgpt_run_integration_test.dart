@@ -39,6 +39,7 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
+import 'package:crypto/crypto.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/gestures.dart';
@@ -3283,7 +3284,32 @@ void main() {
             ? 'Patched the Task file and git diff --check exited with code 0.'
             : 'Patched the Task file. The validation command was denied and did not run.';
         final outbound = <Map<String, Object?>>[];
+        final affinityHeaders = <({String id, String? state})>[];
         final endpointFailures = <(Object, StackTrace)>[];
+        void expectSameJson(String label, Object? previous, Object? next) {
+          final previousJson = jsonEncode(previous);
+          final nextJson = jsonEncode(next);
+          final previousBytes = utf8.encode(previousJson);
+          final nextBytes = utf8.encode(nextJson);
+          var sharedBytes = 0;
+          while (sharedBytes < previousBytes.length &&
+              sharedBytes < nextBytes.length &&
+              previousBytes[sharedBytes] == nextBytes[sharedBytes]) {
+            sharedBytes++;
+          }
+          // Compare serialization, not map equality, without dumping payloads.
+          expect(
+            nextJson == previousJson,
+            isTrue,
+            reason:
+                '$label: previous bytes=${previousBytes.length} '
+                'sha256=${sha256.convert(previousBytes)}; '
+                'next bytes=${nextBytes.length} '
+                'sha256=${sha256.convert(nextBytes)}; '
+                'first differing byte=${nextJson == previousJson ? 'none' : sharedBytes}',
+          );
+        }
+
         final continuationArrived = Completer<void>();
         final releaseFinal = Completer<void>();
         String? observedRevision;
@@ -3306,6 +3332,70 @@ void main() {
                 jsonDecode(await utf8.decoder.bind(request).join())
                     as Map<String, Object?>;
             outbound.add(body);
+            final affinityId = request.headers.value('session-id');
+            expect(
+              affinityId,
+              matches(
+                r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+              ),
+            );
+            final affinityState = request.headers.value('x-codex-turn-state');
+            affinityHeaders.add((id: affinityId!, state: affinityState));
+            if (outbound.length == 3 || outbound.length == 4) {
+              expect(affinityId, affinityHeaders[1].id);
+              expect(affinityState, 'f3g-turn-state-2');
+            } else if (outbound.length == 2) {
+              // The next Run keeps Session routing, but not the previous token.
+              expect(affinityId, affinityHeaders[0].id);
+              expect(affinityState, isNull);
+            } else {
+              // Other live Sessions have independent routing identities.
+              expect(affinityState, isNull);
+              expect(
+                affinityHeaders
+                    .take(affinityHeaders.length - 1)
+                    .map((headers) => headers.id),
+                isNot(contains(affinityId)),
+              );
+            }
+            // A different later response token must not rotate the first token.
+            request.response.headers.set(
+              'x-codex-turn-state',
+              'f3g-turn-state-${outbound.length}',
+            );
+            expect(body.containsKey('prompt_cache_key'), isFalse);
+            expect(body.containsKey('affinity'), isFalse);
+            if (outbound.length >= 3 && outbound.length <= 4) {
+              final requestNumber = outbound.length;
+              final input = body['input']! as List<Object?>;
+              final infrastructure = Map<String, Object?>.of(body)
+                ..remove('input');
+              final previous = outbound[requestNumber - 2];
+              final previousInput = previous['input']! as List<Object?>;
+              final previousInfrastructure = Map<String, Object?>.of(previous)
+                ..remove('input');
+              final transition = 'request ${requestNumber - 1}->$requestNumber';
+              // This includes model/instructions, ordered complete tool
+              // definitions, tool choice, reasoning/include and all settings.
+              expectSameJson(
+                '$transition infrastructure',
+                previousInfrastructure,
+                infrastructure,
+              );
+              expect(input.length, greaterThan(previousInput.length));
+              for (var index = 0; index < previousInput.length; index++) {
+                expectSameJson(
+                  '$transition input[$index]',
+                  previousInput[index],
+                  input[index],
+                );
+              }
+              expectSameJson(
+                '$transition input prefix',
+                previousInput,
+                input.take(previousInput.length).toList(),
+              );
+            }
             expect(body['model'], 'gpt-6-astra');
             expect(body['instructions'], contains(_agentsText));
             expect(body['instructions'], isNot(contains(_projectAgentsText)));
@@ -3783,6 +3873,14 @@ void main() {
         final retainedActivity = runtime.lifecycle.runActivity(runId)!;
         expect(retainedActivity.state, RunState.completed);
         expect(retainedActivity.models, hasLength(3));
+        for (final model in retainedActivity.models) {
+          expect(model.metadata!.providerNativeState, isNull);
+        }
+        final evidence = _activityEvidence(retainedActivity).toString();
+        for (final headers in affinityHeaders) {
+          expect(evidence.contains(headers.id), isFalse);
+        }
+        expect(evidence.contains('f3g-turn-state-'), isFalse);
         expect(retainedActivity.tools.map((tool) => tool.alias), [
           'read_file',
           'apply_patch',
@@ -3914,6 +4012,18 @@ void main() {
         );
         expect(fixture.runIds.values, hasLength(4));
         expect(outbound, hasLength(6));
+        expect(
+          affinityHeaders.map((headers) => headers.id).toSet(),
+          hasLength(3),
+        );
+        expect(affinityHeaders.map((headers) => headers.state), [
+          null,
+          null,
+          'f3g-turn-state-2',
+          'f3g-turn-state-2',
+          null,
+          null,
+        ]);
         _rethrowEndpointFailure(endpointFailures);
         expect(
           await tester.binding.handleRequestAppExit(),

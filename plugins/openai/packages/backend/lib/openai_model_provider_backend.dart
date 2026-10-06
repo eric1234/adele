@@ -95,6 +95,8 @@ final class OpenAiModelProvider implements ModelProviderService {
     bool cancelled = false;
     bool settled = false;
     Future<void>? stoppingFuture;
+    _ChatGptAffinity? affinity;
+    final List<String> affinitySecrets = <String>[];
 
     Future<void> stopNetwork() {
       final Future<void>? existing = stoppingFuture;
@@ -114,7 +116,45 @@ final class OpenAiModelProvider implements ModelProviderService {
     void emitTerminal(ModelProviderTerminal terminal) {
       if (cancelled || settled) return;
       settled = true;
-      controller.add(_terminalEvent(terminal));
+      final ModelProviderFailure? failure = terminal.failure;
+      controller.add(
+        _terminalEvent(
+          ModelProviderTerminal(
+            settlement: terminal.settlement,
+            incompleteReason: terminal.incompleteReason,
+            failure: failure == null
+                ? null
+                : ModelProviderFailure(
+                    kind: failure.kind,
+                    providerCode: _redactProviderText(
+                      failure.providerCode,
+                      affinitySecrets,
+                    ),
+                    providerMessage: _redactProviderText(
+                      failure.providerMessage,
+                      affinitySecrets,
+                    ),
+                    providerDetails: failure.providerDetails,
+                  ),
+            providerStopReason: _redactProviderText(
+              terminal.providerStopReason,
+              affinitySecrets,
+            ),
+            usage: terminal.usage,
+            effectiveModel: _redactProviderText(
+              terminal.effectiveModel,
+              affinitySecrets,
+            ),
+            responseId: _redactProviderText(
+              terminal.responseId,
+              affinitySecrets,
+            ),
+            requestId: _redactProviderText(terminal.requestId, affinitySecrets),
+            nativeState: null,
+            affinityState: affinity?.state,
+          ),
+        ),
+      );
       unawaited(controller.close());
       unawaited(stopNetwork());
     }
@@ -140,6 +180,19 @@ final class OpenAiModelProvider implements ModelProviderService {
     Future<void> start() async {
       final Map<String, Object?> body;
       try {
+        if (_chatGptAuth != null && request.affinity != null) {
+          affinity = _ChatGptAffinity(
+            request.affinity!,
+            model: request.model,
+            instanceId: _chatGptAuth.instanceId,
+            endpoint: _endpoint,
+          );
+          affinitySecrets.addAll(<String>[
+            request.affinity!.id,
+            ?affinity!.state?.data['turnState'] as String?,
+            ?affinity!.state?.data['accountId'] as String?,
+          ]);
+        }
         body = _lowerRequest(request, _profile);
       } on _OpenAiRequestException catch (error) {
         fail(error.kind, error.code, error.message);
@@ -163,6 +216,12 @@ final class OpenAiModelProvider implements ModelProviderService {
               : authorization ?? await _chatGptAuth.authorization();
           final OpenAiChatGptCredential? chatGptCredential =
               chatGptAuthorization?.credential;
+          if (chatGptCredential != null) {
+            affinity?.bind(chatGptCredential);
+            if (affinity != null) {
+              affinitySecrets.add(chatGptCredential.accountId);
+            }
+          }
           if (cancelled) return;
           final HttpClientRequest outgoing = await _httpClient.postUrl(
             _endpoint,
@@ -187,6 +246,14 @@ final class OpenAiModelProvider implements ModelProviderService {
               outgoing.headers.set('X-OpenAI-Fedramp', 'true');
             }
           }
+          if (affinity case final _ChatGptAffinity value) {
+            // Custom affinity headers must not escape the envelope's endpoint.
+            outgoing.followRedirects = false;
+            outgoing.headers.set('session-id', value.id);
+            if (value.state?.data['turnState'] case final String token) {
+              outgoing.headers.set('x-codex-turn-state', token);
+            }
+          }
           outgoing.write(jsonEncode(body));
           final HttpClientResponse response = await outgoing.close();
           if (cancelled) {
@@ -195,12 +262,24 @@ final class OpenAiModelProvider implements ModelProviderService {
             );
             return;
           }
+          // Capture before any SSE consumer can cancel at the semantic terminal.
+          if (affinity != null) {
+            for (final String token
+                in response.headers['x-codex-turn-state'] ?? const <String>[]) {
+              // A value rejected for replay is still private in diagnostics.
+              if (token.isNotEmpty) affinitySecrets.add(token);
+            }
+          }
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            affinity?.capture(response.headers, chatGptCredential!);
+          }
           final List<String> sensitiveValues = <String>[
             ?_apiKey,
             if (chatGptCredential case final OpenAiChatGptCredential value)
               value.accessToken,
             if (chatGptCredential case final OpenAiChatGptCredential value)
               value.accountId,
+            ...affinitySecrets,
           ];
           final String? requestId = _redactProviderText(
             _optionalNonBlankString(response.headers.value('x-request-id')) ??
@@ -260,10 +339,7 @@ final class OpenAiModelProvider implements ModelProviderService {
             emit: (ModelProviderEvent event) {
               if (cancelled || settled) return;
               if (event.kind == ModelProviderEventKind.terminal) {
-                settled = true;
-                controller.add(event);
-                unawaited(controller.close());
-                unawaited(stopNetwork());
+                emitTerminal(event.terminal!);
               } else {
                 controller.add(event);
               }
@@ -406,6 +482,100 @@ final class OpenAiModelProvider implements ModelProviderService {
     return controller.stream;
   }
 }
+
+// Invocation-local only. The caller owns the envelope's logical-turn lifetime.
+final class _ChatGptAffinity {
+  _ChatGptAffinity(
+    ModelProviderAffinity affinity, {
+    required String model,
+    required String instanceId,
+    required Uri endpoint,
+  }) : id = affinity.id,
+       state = affinity.state,
+       compatibility = <String, Object?>{
+         'version': 1,
+         'scope': affinity.id,
+         'model': model,
+         'instanceId': instanceId,
+         'endpoint': endpoint.toString(),
+       } {
+    if (!_safeAffinityHeader(id, maximumLength: 256) || id.contains(' ')) {
+      throw const _OpenAiRequestException(
+        ModelProviderFailureKind.invalidRequest,
+        'invalid_affinity_id',
+        'The ChatGPT affinity ID is not a safe bounded header value.',
+      );
+    }
+    final ModelProviderNativeEnvelope? envelope = state;
+    if (envelope == null) return;
+    if (envelope.kind != 'openai.chatgpt.affinity.v1' ||
+        envelope.compatibility['version'] != 1) {
+      throw const _OpenAiRequestException(
+        ModelProviderFailureKind.unsupportedRequest,
+        'unsupported_affinity_state',
+        'The ChatGPT affinity state kind or version is unsupported.',
+      );
+    }
+    if (envelope.compatibility.length != compatibility.length ||
+        compatibility.entries.any(
+          (entry) => envelope.compatibility[entry.key] != entry.value,
+        )) {
+      throw const _OpenAiRequestException(
+        ModelProviderFailureKind.invalidRequest,
+        'incompatible_affinity_state',
+        'The ChatGPT affinity state belongs to a different request scope.',
+      );
+    }
+    if (envelope.data.length != 3 ||
+        !_safeAffinityHeader(envelope.data['turnState']) ||
+        !_safeAffinityHeader(envelope.data['accountId']) ||
+        envelope.data['fedRamp'] is! bool) {
+      throw const _OpenAiRequestException(
+        ModelProviderFailureKind.invalidRequest,
+        'invalid_affinity_state',
+        'The ChatGPT affinity state is malformed.',
+      );
+    }
+  }
+
+  final String id;
+  final Map<String, Object?> compatibility;
+  ModelProviderNativeEnvelope? state;
+
+  void bind(OpenAiChatGptCredential credential) {
+    if (state?.data['accountId'] != credential.accountId ||
+        state?.data['fedRamp'] != credential.fedRamp) {
+      state = null;
+    }
+  }
+
+  void capture(HttpHeaders headers, OpenAiChatGptCredential credential) {
+    // Codex's HTTP turn-state contract is first usable value wins, not rotation.
+    if (state != null) return;
+    final List<String>? values = headers['x-codex-turn-state'];
+    if (values == null ||
+        values.length != 1 ||
+        !_safeAffinityHeader(values.single)) {
+      return;
+    }
+    state = ModelProviderNativeEnvelope(
+      kind: 'openai.chatgpt.affinity.v1',
+      compatibility: compatibility,
+      data: <String, Object?>{
+        'turnState': values.single,
+        'accountId': credential.accountId,
+        'fedRamp': credential.fedRamp,
+      },
+    );
+  }
+}
+
+bool _safeAffinityHeader(Object? value, {int maximumLength = 8192}) =>
+    value is String &&
+    value.isNotEmpty &&
+    value.length <= maximumLength &&
+    value == value.trim() &&
+    value.codeUnits.every((int code) => code >= 0x20 && code <= 0x7e);
 
 String _validateApiKey(String apiKey) {
   if (apiKey.trim().isEmpty || apiKey != apiKey.trim()) {
@@ -917,6 +1087,7 @@ final class _ResponsesNormalizer {
           responseId: metadata.responseId,
           requestId: metadata.requestId,
           nativeState: null,
+          affinityState: null,
         ),
       ),
     );
@@ -942,6 +1113,7 @@ final class _ResponsesNormalizer {
           responseId: metadata.responseId,
           requestId: metadata.requestId,
           nativeState: null,
+          affinityState: null,
         ),
       ),
     );
@@ -972,6 +1144,7 @@ final class _ResponsesNormalizer {
           responseId: metadata.responseId,
           requestId: metadata.requestId,
           nativeState: null,
+          affinityState: null,
         ),
       ),
     );
@@ -1014,7 +1187,9 @@ final class _ResponsesNormalizer {
               inputTokens: _optionalInt(usage['input_tokens']),
               outputTokens: _optionalInt(usage['output_tokens']),
               cacheReadTokens: _optionalInt(inputDetails?['cached_tokens']),
-              cacheWriteTokens: null,
+              cacheWriteTokens: _optionalInt(
+                inputDetails?['cache_write_tokens'],
+              ),
               providerDetails: <String, Object?>{
                 if (_optionalInt(usage['total_tokens']) case final int value)
                   'totalTokens': value,
@@ -1027,6 +1202,7 @@ final class _ResponsesNormalizer {
       responseId: _optionalString(response['id']),
       requestId: requestId,
       nativeState: null,
+      affinityState: null,
     );
   }
 }
@@ -1182,6 +1358,7 @@ ModelProviderTerminal _failedTerminal(
   responseId: null,
   requestId: requestId,
   nativeState: null,
+  affinityState: null,
 );
 
 Map<String, Object?> _requiredMap(Map<String, Object?> map, String key) {
@@ -1219,11 +1396,18 @@ String? _optionalNonBlankString(Object? value) =>
 
 String? _redactProviderText(String? value, List<String> sensitiveValues) {
   if (value == null) return null;
+  // Redacting a substring first would prevent matching the complete secret.
+  final List<String> secrets =
+      sensitiveValues
+          .where((String sensitive) => sensitive.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort(
+          (String left, String right) => right.length.compareTo(left.length),
+        );
   String redacted = value;
-  for (final String sensitive in sensitiveValues) {
-    if (sensitive.isNotEmpty) {
-      redacted = redacted.replaceAll(sensitive, '[REDACTED]');
-    }
+  for (final String sensitive in secrets) {
+    redacted = redacted.replaceAll(sensitive, '[REDACTED]');
   }
   return redacted;
 }

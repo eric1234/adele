@@ -47,18 +47,287 @@ void main() {
     ]);
   });
 
-  test('multiple completed proposals and usage round-trip', () {
-    final List<ModelProviderEvent> events = <ModelProviderEvent>[
+  test('multiple completed proposals and usage round-trip', () async {
+    final List<ModelProviderEvent> events = <ModelProviderEvent>[];
+    for (final ModelProviderEvent event in <ModelProviderEvent>[
       _proposal('call-1', 'item-1'),
       _proposal('call-2', 'item-2'),
       _terminal(),
-    ];
+    ]) {
+      events.add(
+        await ModelProviderServiceClient(
+          _Channel(event: await _generatedEvent(event)),
+        ).invoke(_request()).single,
+      );
+    }
     expect(
       events.where((event) => event.output?.toolProposal != null),
       hasLength(2),
     );
     expect(events.last.terminal!.usage!.cacheWriteTokens, 3);
   });
+
+  for (final String scope in <String>['absent', 'initial', 'continuation']) {
+    test('generated affinity round-trip preserves $scope state', () async {
+      final Map<String, Object?> compatibility = <String, Object?>{
+        'owner': <String, Object?>{'binding': 'fixture'},
+      };
+      final List<Object?> tokens = <Object?>['opaque-token', null, 0];
+      final Map<String, Object?> data = <String, Object?>{'tokens': tokens};
+      final ModelProviderNativeEnvelope state = ModelProviderNativeEnvelope(
+        kind: 'fixture-affinity.v1',
+        compatibility: compatibility,
+        data: data,
+      );
+      final ModelProviderAffinity? affinity = scope == 'absent'
+          ? null
+          : ModelProviderAffinity(
+              id: 'opaque-session-scope',
+              state: scope == 'continuation' ? state : null,
+            );
+      final ModelProviderRequest request = _request(affinity: affinity);
+      final _EventService service = _EventService(
+        _terminal(affinityState: affinity?.state),
+      );
+      (compatibility['owner']! as Map<String, Object?>).clear();
+      tokens.clear();
+      data.clear();
+
+      final Map<String, Object?> frame = await _dispatchEvent(
+        service,
+        request: request,
+        mutateRequest: (wire) {
+          expect(wire, contains('affinity'));
+          expect(
+            wire['affinity'],
+            scope == 'absent'
+                ? isNull
+                : <String, Object?>{
+                    'id': 'opaque-session-scope',
+                    'state': scope == 'initial'
+                        ? null
+                        : <String, Object?>{
+                            'kind': state.kind,
+                            'compatibility': state.compatibility,
+                            'data': state.data,
+                          },
+                  },
+          );
+        },
+      );
+      expect(frame['kind'], 'streamItem');
+      final Map<String, Object?> encoded =
+          frame['payload']! as Map<String, Object?>;
+      final Map<String, Object?> wireTerminal =
+          encoded['terminal']! as Map<String, Object?>;
+      expect(wireTerminal, contains('affinityState'));
+      expect(
+        wireTerminal['affinityState'],
+        scope == 'continuation' ? isNotNull : isNull,
+      );
+      final ModelProviderTerminal terminal = (await ModelProviderServiceClient(
+        _Channel(event: encoded),
+      ).invoke(request).single).terminal!;
+      final ModelProviderRequest decoded = service.request!;
+      expect(decoded.nativeState!.kind, 'cursor-v1');
+      expect(decoded.nativeState!.data, <String, Object?>{'cursor': 'abc'});
+      expect(terminal.nativeState!.kind, 'invocation-v1');
+      expect(terminal.nativeState!.data, <String, Object?>{'opaque': 'value'});
+      if (affinity == null) {
+        expect(decoded.affinity, isNull);
+      } else {
+        expect(decoded.affinity!.id, affinity.id);
+        expect(decoded.affinity, isNot(same(affinity)));
+      }
+      if (scope != 'continuation') {
+        expect(decoded.affinity?.state, isNull);
+        expect(terminal.affinityState, isNull);
+        return;
+      }
+      for (final ModelProviderNativeEnvelope value
+          in <ModelProviderNativeEnvelope>[
+            affinity!.state!,
+            decoded.affinity!.state!,
+            terminal.affinityState!,
+          ]) {
+        expect(value.kind, 'fixture-affinity.v1');
+        expect(value.compatibility, <String, Object?>{
+          'owner': <String, Object?>{'binding': 'fixture'},
+        });
+        expect(value.data, <String, Object?>{
+          'tokens': <Object?>['opaque-token', null, 0],
+        });
+        expect(() => value.compatibility.clear(), throwsUnsupportedError);
+        expect(
+          () => (value.compatibility['owner']! as Map<String, Object?>).clear(),
+          throwsUnsupportedError,
+        );
+        expect(() => value.data.clear(), throwsUnsupportedError);
+        expect(
+          () => (value.data['tokens']! as List<Object?>).clear(),
+          throwsUnsupportedError,
+        );
+      }
+      expect(decoded.affinity!.state, isNot(same(state)));
+      expect(terminal.affinityState, isNot(same(state)));
+    });
+  }
+
+  test('affinity validates IDs and required nullable request keys', () async {
+    for (final String id in <String>['', ' \t\n']) {
+      expect(
+        () => ModelProviderAffinity(id: id, state: null),
+        throwsFormatException,
+      );
+    }
+    for (final Object? invalid in <Object?>[
+      <String, Object?>{'id': '', 'state': null},
+      <String, Object?>{'id': ' \t\n', 'state': null},
+      <String, Object?>{'id': 1, 'state': null},
+      <String, Object?>{'id': 'scope'},
+      <String, Object?>{'id': 'scope', 'state': true},
+      <String, Object?>{
+        'id': 'scope',
+        'state': <String, Object?>{
+          'kind': '',
+          'compatibility': <String, Object?>{},
+          'data': <String, Object?>{},
+        },
+      },
+      true,
+    ]) {
+      final _EventService service = _EventService(_terminal());
+      final Map<String, Object?> frame = await _dispatchEvent(
+        service,
+        mutateRequest: (wire) => wire['affinity'] = invalid,
+      );
+      expect(frame['kind'], 'streamFailure');
+      expect(service.request, isNull);
+    }
+    final _EventService service = _EventService(_terminal());
+    expect(
+      (await _dispatchEvent(
+        service,
+        mutateRequest: (wire) => wire.remove('affinity'),
+      ))['kind'],
+      'streamFailure',
+    );
+    expect(service.request, isNull);
+  });
+
+  for (final (int? read, int? write) in <(int?, int?)>[
+    (12, 8),
+    (0, 0),
+    (12, null),
+    (null, 8),
+    (null, null),
+  ]) {
+    test('generated cache usage round-trips read=$read write=$write', () async {
+      final ModelProviderUsage usage = ModelProviderUsage(
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: read,
+        cacheWriteTokens: write,
+        providerDetails: const <String, Object?>{},
+      );
+      final Map<String, Object?> encoded = await _generatedEvent(
+        _terminal(usage: usage),
+      );
+      final Map<String, Object?> expected = <String, Object?>{
+        'inputTokens': null,
+        'outputTokens': null,
+        'cacheReadTokens': read,
+        'cacheWriteTokens': write,
+        'providerDetails': <String, Object?>{},
+      };
+      expect((encoded['terminal']! as Map<String, Object?>)['usage'], expected);
+      final ModelProviderUsage decoded = (await ModelProviderServiceClient(
+        _Channel(event: encoded),
+      ).invoke(_request()).single).terminal!.usage!;
+      expect(decoded.inputTokens, isNull);
+      expect(decoded.outputTokens, isNull);
+      expect(decoded.cacheReadTokens, read);
+      expect(decoded.cacheWriteTokens, write);
+      expect(decoded.providerDetails, isEmpty);
+      expect(decoded, isNot(same(usage)));
+    });
+  }
+
+  test(
+    'generated absent usage remains distinct from present all-null usage',
+    () async {
+      final Map<String, Object?> encoded = await _generatedEvent(
+        _terminal(reportUsage: false),
+      );
+      final Map<String, Object?> terminal =
+          encoded['terminal']! as Map<String, Object?>;
+      expect(terminal, containsPair('usage', null));
+      expect(
+        (await ModelProviderServiceClient(
+          _Channel(event: encoded),
+        ).invoke(_request()).single).terminal!.usage,
+        isNull,
+      );
+    },
+  );
+
+  test('terminal and cache usage nullable wire keys remain required', () async {
+    for (final String key in <String>[
+      'affinityState',
+      'usage',
+      'cacheReadTokens',
+      'cacheWriteTokens',
+    ]) {
+      final Map<String, Object?> encoded = await _generatedEvent(_terminal());
+      final Map<String, Object?> terminal =
+          encoded['terminal']! as Map<String, Object?>;
+      final Map<String, Object?> owner = key.startsWith('cache')
+          ? terminal['usage']! as Map<String, Object?>
+          : terminal;
+      owner.remove(key);
+      await expectLater(
+        ModelProviderServiceClient(
+          _Channel(event: encoded),
+        ).invoke(_request()).single,
+        throwsA(isA<AdeleProtocolException>()),
+      );
+    }
+  });
+
+  test(
+    'cache usage rejects negative counts and malformed wire types',
+    () async {
+      for (final String key in <String>[
+        'cacheReadTokens',
+        'cacheWriteTokens',
+      ]) {
+        expect(
+          () => ModelProviderUsage(
+            inputTokens: null,
+            outputTokens: null,
+            cacheReadTokens: key == 'cacheReadTokens' ? -1 : null,
+            cacheWriteTokens: key == 'cacheWriteTokens' ? -1 : null,
+            providerDetails: const <String, Object?>{},
+          ),
+          throwsFormatException,
+        );
+        for (final Object invalid in <Object>[-1, 1.5, '0', false]) {
+          final Map<String, Object?> encoded = await _generatedEvent(
+            _terminal(),
+          );
+          ((encoded['terminal']! as Map<String, Object?>)['usage']!
+                  as Map<String, Object?>)[key] =
+              invalid;
+          await expectLater(
+            ModelProviderServiceClient(
+              _Channel(event: encoded),
+            ).invoke(_request()).single,
+            throwsA(isA<AdeleProtocolException>()),
+          );
+        }
+      }
+    },
+  );
 
   for (final bool present in <bool>[false, true]) {
     test('generated native output round-trips presentation=$present', () async {
@@ -359,6 +628,7 @@ void main() {
         responseId: null,
         requestId: null,
         nativeState: null,
+        affinityState: null,
       ),
       throwsFormatException,
     );
@@ -520,6 +790,7 @@ void main() {
         maxOutputTokens: null,
         providerOptions: providerOptions,
         nativeState: null,
+        affinity: null,
       );
       final _CapturingChannel channel = _CapturingChannel();
       final Stream<ModelProviderEvent> stream = ModelProviderServiceClient(
@@ -703,69 +974,72 @@ ModelProviderRequest _optionsRequest(Map<String, Object?> options) =>
       maxOutputTokens: null,
       providerOptions: options,
       nativeState: null,
+      affinity: null,
     );
 
-ModelProviderRequest _request() => ModelProviderRequest(
-  model: 'scripted-v1',
-  instructions: '',
-  input: <ModelProviderInput>[
-    ModelProviderInput(
-      kind: ModelProviderInputKind.message,
-      itemId: null,
-      message: ModelProviderMessage(
-        role: ModelProviderMessageRole.user,
-        content: <ModelProviderContent>[
-          ModelProviderContent(
-            kind: ModelProviderContentKind.text,
-            text: 'Inspect.',
+ModelProviderRequest _request({ModelProviderAffinity? affinity}) =>
+    ModelProviderRequest(
+      model: 'scripted-v1',
+      instructions: '',
+      input: <ModelProviderInput>[
+        ModelProviderInput(
+          kind: ModelProviderInputKind.message,
+          itemId: null,
+          message: ModelProviderMessage(
+            role: ModelProviderMessageRole.user,
+            content: <ModelProviderContent>[
+              ModelProviderContent(
+                kind: ModelProviderContentKind.text,
+                text: 'Inspect.',
+              ),
+            ],
           ),
-        ],
+          toolProposal: null,
+          toolOutcome: null,
+          nativeMetadata: null,
+        ),
+        ModelProviderInput(
+          kind: ModelProviderInputKind.toolProposal,
+          itemId: 'item-9',
+          message: null,
+          toolProposal: ModelProviderToolProposal(
+            callId: 'call-1',
+            name: 'inspect_resource',
+            arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
+          ),
+          toolOutcome: null,
+          nativeMetadata: _native('item'),
+        ),
+        ModelProviderInput(
+          kind: ModelProviderInputKind.toolOutcome,
+          itemId: null,
+          message: null,
+          toolProposal: null,
+          toolOutcome: ModelProviderToolOutcome(
+            callId: 'call-1',
+            status: ModelProviderToolOutcomeStatus.success,
+            content: 'ok',
+          ),
+          nativeMetadata: null,
+        ),
+      ],
+      tools: <ModelProviderTool>[
+        ModelProviderTool(
+          name: 'inspect_resource',
+          description: 'Inspect one resource.',
+          argumentsSchema: const <String, Object?>{'type': 'object'},
+        ),
+      ],
+      toolChoice: ModelProviderToolChoice.auto,
+      maxOutputTokens: 100,
+      providerOptions: const <String, Object?>{'mode': 'fixture'},
+      affinity: affinity,
+      nativeState: ModelProviderNativeEnvelope(
+        kind: 'cursor-v1',
+        compatibility: const <String, Object?>{'model': 'scripted-v1'},
+        data: const <String, Object?>{'cursor': 'abc'},
       ),
-      toolProposal: null,
-      toolOutcome: null,
-      nativeMetadata: null,
-    ),
-    ModelProviderInput(
-      kind: ModelProviderInputKind.toolProposal,
-      itemId: 'item-9',
-      message: null,
-      toolProposal: ModelProviderToolProposal(
-        callId: 'call-1',
-        name: 'inspect_resource',
-        arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
-      ),
-      toolOutcome: null,
-      nativeMetadata: _native('item'),
-    ),
-    ModelProviderInput(
-      kind: ModelProviderInputKind.toolOutcome,
-      itemId: null,
-      message: null,
-      toolProposal: null,
-      toolOutcome: ModelProviderToolOutcome(
-        callId: 'call-1',
-        status: ModelProviderToolOutcomeStatus.success,
-        content: 'ok',
-      ),
-      nativeMetadata: null,
-    ),
-  ],
-  tools: <ModelProviderTool>[
-    ModelProviderTool(
-      name: 'inspect_resource',
-      description: 'Inspect one resource.',
-      argumentsSchema: const <String, Object?>{'type': 'object'},
-    ),
-  ],
-  toolChoice: ModelProviderToolChoice.auto,
-  maxOutputTokens: 100,
-  providerOptions: const <String, Object?>{'mode': 'fixture'},
-  nativeState: ModelProviderNativeEnvelope(
-    kind: 'cursor-v1',
-    compatibility: const <String, Object?>{'model': 'scripted-v1'},
-    data: const <String, Object?>{'cursor': 'abc'},
-  ),
-);
+    );
 
 ModelProviderEvent _proposal(String callId, String itemId) =>
     ModelProviderEvent(
@@ -795,7 +1069,11 @@ ModelProviderOutput _textOutput(String text) => ModelProviderOutput(
   nativeMetadata: null,
 );
 
-ModelProviderEvent _terminal() => ModelProviderEvent(
+ModelProviderEvent _terminal({
+  ModelProviderUsage? usage,
+  bool reportUsage = true,
+  ModelProviderNativeEnvelope? affinityState,
+}) => ModelProviderEvent(
   kind: ModelProviderEventKind.terminal,
   observation: null,
   output: null,
@@ -804,17 +1082,21 @@ ModelProviderEvent _terminal() => ModelProviderEvent(
     incompleteReason: null,
     failure: null,
     providerStopReason: 'complete',
-    usage: ModelProviderUsage(
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 2,
-      cacheWriteTokens: 3,
-      providerDetails: const <String, Object?>{},
-    ),
+    usage: !reportUsage
+        ? null
+        : usage ??
+              ModelProviderUsage(
+                inputTokens: 10,
+                outputTokens: 5,
+                cacheReadTokens: 2,
+                cacheWriteTokens: 3,
+                providerDetails: const <String, Object?>{},
+              ),
     effectiveModel: 'scripted-v1',
     responseId: 'response-1',
     requestId: 'request-1',
     nativeState: _native('invocation'),
+    affinityState: affinityState,
   ),
 );
 
@@ -876,11 +1158,33 @@ final class _CapturingChannel implements AdeleStreamChannel {
 
 Future<Map<String, Object?>> _generatedOutputEvent(
   ModelProviderOutput output,
-) async {
+) => _generatedEvent(
+  ModelProviderEvent(
+    kind: ModelProviderEventKind.output,
+    observation: null,
+    output: output,
+    terminal: null,
+  ),
+);
+
+Future<Map<String, Object?>> _generatedEvent(ModelProviderEvent event) async {
+  final Map<String, Object?> frame = await _dispatchEvent(_EventService(event));
+  expect(frame['kind'], 'streamItem');
+  return frame['payload']! as Map<String, Object?>;
+}
+
+Future<Map<String, Object?>> _dispatchEvent(
+  _EventService service, {
+  ModelProviderRequest? request,
+  void Function(Map<String, Object?>)? mutateRequest,
+}) async {
   final _CapturingChannel channel = _CapturingChannel();
-  await ModelProviderServiceClient(channel).invoke(_request()).toList();
+  await ModelProviderServiceClient(
+    channel,
+  ).invoke(request ?? _request()).toList();
+  mutateRequest?.call(channel.encodedRequest!);
   final ModelProviderServiceDispatcher dispatcher =
-      ModelProviderServiceDispatcher(_OutputService(output));
+      ModelProviderServiceDispatcher(service);
   final Completer<Map<String, Object?>> received =
       Completer<Map<String, Object?>>();
   try {
@@ -895,29 +1199,23 @@ Future<Map<String, Object?>> _generatedOutputEvent(
       'requestId': 1,
       'credit': 1,
     }, received.complete);
-    final Map<String, Object?> event = await received.future;
-    expect(event['kind'], 'streamItem');
-    return event['payload']! as Map<String, Object?>;
+    return await received.future;
   } finally {
     await dispatcher.close();
   }
 }
 
-final class _OutputService implements ModelProviderService {
-  _OutputService(this.output);
+final class _EventService implements ModelProviderService {
+  _EventService(this.event);
 
-  final ModelProviderOutput output;
+  final ModelProviderEvent event;
+  ModelProviderRequest? request;
 
   @override
-  Stream<ModelProviderEvent> invoke(ModelProviderRequest request) =>
-      Stream<ModelProviderEvent>.value(
-        ModelProviderEvent(
-          kind: ModelProviderEventKind.output,
-          observation: null,
-          output: output,
-          terminal: null,
-        ),
-      );
+  Stream<ModelProviderEvent> invoke(ModelProviderRequest request) {
+    this.request = request;
+    return Stream<ModelProviderEvent>.value(event);
+  }
 }
 
 Map<String, Object?> _encodedDelta(String delta) => <String, Object?>{
@@ -966,6 +1264,7 @@ Map<String, Object?> _encodedTerminal() {
       'effectiveModel': terminal.effectiveModel,
       'responseId': terminal.responseId,
       'requestId': terminal.requestId,
+      'affinityState': null,
       'nativeState': <String, Object?>{
         'kind': terminal.nativeState!.kind,
         'compatibility': terminal.nativeState!.compatibility,

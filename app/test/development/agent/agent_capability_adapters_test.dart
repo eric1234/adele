@@ -220,7 +220,9 @@ void main() {
     channel = _ProviderChannel(
       events: Stream<ModelProviderEvent>.multi((controller) {
         controller.add(
-          channel.streamCount == 1 ? _failedTerminal() : _terminal(),
+          channel.streamCount == 1
+              ? _failedTerminal(affinityState: _affinityState('retry'))
+              : _terminal(),
         );
         controller.close();
       }),
@@ -239,6 +241,7 @@ void main() {
     catalog.remove(resourceInspectionToolId);
     await registrations.close();
 
+    String? affinityId;
     for (var attempt = 0; attempt < 2; attempt++) {
       final List<ModelEvent> events =
           await (attempt == 0 ? firstAttempt : adapter.invoke(request))
@@ -253,6 +256,9 @@ void main() {
       expect(channel.lastPayload!.keys, <String>['request']);
       final Map<Object?, Object?> encoded =
           channel.lastPayload!['request']! as Map<Object?, Object?>;
+      final affinity = encoded['affinity']! as Map<Object?, Object?>;
+      affinityId ??= affinity['id']! as String;
+      expect(affinityId, matches(_uuidPattern));
       expect(
         encoded.keys,
         unorderedEquals(<String>[
@@ -264,6 +270,7 @@ void main() {
           'maxOutputTokens',
           'providerOptions',
           'nativeState',
+          'affinity',
         ]),
       );
       expect(encoded, <String, Object?>{
@@ -332,6 +339,10 @@ void main() {
         'maxOutputTokens': 200,
         'providerOptions': <String, Object?>{'fixture': true},
         'nativeState': null,
+        'affinity': <String, Object?>{
+          'id': affinityId,
+          'state': attempt == 0 ? null : _encodeNative(_affinityState('retry')),
+        },
       });
       expect(request.instructions, encoded['instructions']);
     }
@@ -341,6 +352,243 @@ void main() {
     expect(channel.streamCount, 2);
     expect(channel.requestCount, 0);
   });
+
+  for (final failed in [false, true]) {
+    test(
+      'Run affinity round-trips privately and null clears (failed=$failed)',
+      () async {
+        final states = [
+          _affinityState('first'),
+          _affinityState('updated'),
+          null,
+          null,
+        ];
+        late final _ProviderChannel channel;
+        channel = _ProviderChannel(
+          events: Stream<ModelProviderEvent>.multi((controller) {
+            final state = states[channel.streamCount - 1];
+            controller.add(
+              failed
+                  ? _failedTerminal(affinityState: state)
+                  : _terminal(affinityState: state),
+            );
+            controller.close();
+          }),
+        );
+        final adapter = ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+        );
+        String? id;
+        for (var index = 0; index < states.length; index++) {
+          final events = await adapter
+              .invoke(_request('model-$index'))
+              .toList();
+          final request =
+              channel.lastPayload!['request']! as Map<Object?, Object?>;
+          final affinity = request['affinity']! as Map<Object?, Object?>;
+          id ??= affinity['id']! as String;
+          expect(id, matches(_uuidPattern));
+          expect(affinity, {
+            'id': id,
+            'state': index == 0 || states[index - 1] == null
+                ? null
+                : _encodeNative(states[index - 1]!),
+          });
+          expect(request['nativeState'], isNull);
+          expect(events, hasLength(1));
+          final metadata = failed
+              ? (events.single as ModelInvocationFailedEvent)
+                    .semanticTerminalMetadata!
+              : (events.single as ModelInvocationSettledEvent).metadata;
+          expect(metadata.effectiveModel, 'scripted-v1');
+          expect(
+            metadata.providerResponseId,
+            failed ? 'response-f' : 'response-1',
+          );
+          expect(
+            metadata.providerRequestId,
+            failed ? 'request-f' : 'request-1',
+          );
+          expect(metadata.providerStopReason, failed ? 'error' : 'stop');
+          // Affinity must not replace the unrelated terminal-native evidence.
+          expect(
+            metadata.providerNativeState?.kind,
+            failed ? 'failure-state-v1' : null,
+          );
+          expect(
+            metadata.providerNativeState?.data,
+            failed ? {'cursor': 'failed'} : null,
+          );
+          expect(metadata.usage?.providerDetails, failed ? isEmpty : isNull);
+        }
+      },
+    );
+  }
+
+  test(
+    'concurrent Run adapters isolate affinity with the same binding and model',
+    () async {
+      final pending = <MultiStreamController<ModelProviderEvent>>[];
+      final channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.multi(pending.add),
+      );
+      final binding = _binding(channel);
+      final adapters = [
+        ModelProviderCapabilityAdapter(binding, selectedModel: 'scripted-v1'),
+        ModelProviderCapabilityAdapter(binding, selectedModel: 'scripted-v1'),
+      ];
+      final initial = [
+        for (final adapter in adapters) adapter.invoke(_request()).toList(),
+      ];
+      final ids = channel.requests.map((request) {
+        final affinity = request['affinity']! as Map<Object?, Object?>;
+        expect(affinity['state'], isNull);
+        expect(affinity['id'], matches(_uuidPattern));
+        return affinity['id'];
+      }).toList();
+      expect(ids.toSet(), hasLength(2));
+      for (var index = 0; index < 2; index++) {
+        pending[index].add(
+          _terminal(affinityState: _affinityState('run-$index')),
+        );
+        pending[index].close();
+      }
+      await Future.wait(initial);
+      final continuations = [
+        for (final adapter in adapters)
+          adapter.invoke(_request('next')).toList(),
+      ];
+      for (var index = 0; index < 2; index++) {
+        expect(channel.requests[index + 2]['affinity'], {
+          'id': ids[index],
+          'state': _encodeNative(_affinityState('run-$index')),
+        });
+        pending[index + 2].add(_terminal());
+        pending[index + 2].close();
+      }
+      await Future.wait(continuations);
+    },
+  );
+
+  test(
+    'fresh Run adapters share routing identity but never provider state',
+    () async {
+      final routing = ModelProviderRoutingAffinity();
+      final firstState = _affinityState('first-run');
+      final secondState = _affinityState('second-run');
+      final states = [firstState, secondState, firstState, secondState];
+      late final _ProviderChannel channel;
+      channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.multi((controller) {
+          controller.add(
+            _terminal(affinityState: states[channel.streamCount - 1]),
+          );
+          controller.close();
+        }),
+      );
+      final binding = _binding(channel);
+      final first = ModelProviderCapabilityAdapter(
+        binding,
+        selectedModel: 'scripted-v1',
+        routingAffinity: routing,
+      );
+      await first.invoke(_request()).toList();
+      final second = ModelProviderCapabilityAdapter(
+        binding,
+        selectedModel: 'scripted-v1',
+        routingAffinity: routing,
+      );
+      await second.invoke(_request()).toList();
+      await first.invoke(_request('first-continuation')).toList();
+      await second.invoke(_request('second-continuation')).toList();
+      final affinities = channel.requests
+          .map((request) => request['affinity']! as Map<Object?, Object?>)
+          .toList();
+      expect(affinities.first['id'], matches(_uuidPattern));
+      expect(
+        affinities.map((affinity) => affinity['id']).toSet(),
+        hasLength(1),
+      );
+      expect(affinities.map((affinity) => affinity['state']), [
+        null,
+        null,
+        _encodeNative(firstState),
+        _encodeNative(secondState),
+      ]);
+      expect(
+        channel.requests.map((request) => request['nativeState']),
+        everyElement(isNull),
+      );
+    },
+  );
+
+  for (final lateState in [null, _affinityState('late')]) {
+    test(
+      'late concurrent terminal cannot overwrite affinity (null=${lateState == null})',
+      () async {
+        final pending = <MultiStreamController<ModelProviderEvent>>[];
+        final channel = _ProviderChannel(
+          events: Stream<ModelProviderEvent>.multi(pending.add),
+        );
+        final adapter = ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+        );
+        final older = adapter.invoke(_request('older')).toList();
+        final newer = adapter.invoke(_request('newer')).toList();
+        pending[1].add(_terminal(affinityState: _affinityState('current')));
+        pending[1].close();
+        await newer;
+        pending[0].add(_failedTerminal(affinityState: lateState));
+        pending[0].close();
+        await older;
+        final continuation = adapter.invoke(_request('next')).toList();
+        final affinity =
+            channel.requests.last['affinity']! as Map<Object?, Object?>;
+        expect(affinity['state'], _encodeNative(_affinityState('current')));
+        pending[2].add(_terminal());
+        pending[2].close();
+        await continuation;
+      },
+    );
+  }
+
+  for (final failed in [false, true]) {
+    for (final (read, write) in <(int?, int?)>[(12, 8), (0, 0), (null, null)]) {
+      test(
+        'terminal usage preserves read=$read write=$write (failed=$failed)',
+        () async {
+          final usage = ModelProviderUsage(
+            inputTokens: 40,
+            outputTokens: 2,
+            cacheReadTokens: read,
+            cacheWriteTokens: write,
+            providerDetails: const {'reported': true},
+          );
+          final channel = _ProviderChannel(
+            events: Stream.value(
+              failed ? _failedTerminal(usage: usage) : _terminal(usage: usage),
+            ),
+          );
+          final events = await ModelProviderCapabilityAdapter(
+            _binding(channel),
+            selectedModel: 'scripted-v1',
+          ).invoke(_request()).toList();
+          final mapped = failed
+              ? (events.single as ModelInvocationFailedEvent)
+                    .semanticTerminalMetadata!
+                    .usage!
+              : (events.single as ModelInvocationSettledEvent).metadata.usage!;
+          expect(mapped.inputTokens, 40);
+          expect(mapped.outputTokens, 2);
+          expect(mapped.cacheReadTokens, read);
+          expect(mapped.cacheWriteTokens, write);
+          expect(mapped.providerDetails, {'reported': true});
+        },
+      );
+    }
+  }
 
   for (final String strategy in <String>['', ' Strategy only.\n']) {
     for (final String? source in <String?>[null, ' \tSource only.\n']) {
@@ -1070,8 +1318,18 @@ void main() {
   });
 }
 
-SemanticModelRequest _request() => SemanticModelRequest(
-  invocationId: ModelInvocationId('model-1'),
+const _uuidPattern =
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+
+ModelProviderNativeEnvelope _affinityState(String value) =>
+    ModelProviderNativeEnvelope(
+      kind: 'fixture-affinity-v1',
+      compatibility: const {'route': 'fixture'},
+      data: {'private-routing-state': value},
+    );
+
+SemanticModelRequest _request([String id = 'model-1']) => SemanticModelRequest(
+  invocationId: ModelInvocationId(id),
   context: InferenceContextSnapshot.fromStrategy(
     StrategyInferenceMaterial(
       instructions: 'Be concise.',
@@ -1172,7 +1430,10 @@ ModelProviderEvent _proposal(String callId, String itemId, String uri) =>
       terminal: null,
     );
 
-ModelProviderEvent _terminal() => ModelProviderEvent(
+ModelProviderEvent _terminal({
+  ModelProviderNativeEnvelope? affinityState,
+  ModelProviderUsage? usage,
+}) => ModelProviderEvent(
   kind: ModelProviderEventKind.terminal,
   observation: null,
   output: null,
@@ -1181,15 +1442,19 @@ ModelProviderEvent _terminal() => ModelProviderEvent(
     incompleteReason: null,
     failure: null,
     providerStopReason: 'stop',
-    usage: null,
+    usage: usage,
     effectiveModel: 'scripted-v1',
     responseId: 'response-1',
     requestId: 'request-1',
     nativeState: null,
+    affinityState: affinityState,
   ),
 );
 
-ModelProviderEvent _failedTerminal() => ModelProviderEvent(
+ModelProviderEvent _failedTerminal({
+  ModelProviderNativeEnvelope? affinityState,
+  ModelProviderUsage? usage,
+}) => ModelProviderEvent(
   kind: ModelProviderEventKind.terminal,
   observation: null,
   output: null,
@@ -1203,13 +1468,15 @@ ModelProviderEvent _failedTerminal() => ModelProviderEvent(
       providerDetails: const <String, Object?>{},
     ),
     providerStopReason: 'error',
-    usage: ModelProviderUsage(
-      inputTokens: 4,
-      outputTokens: 2,
-      cacheReadTokens: null,
-      cacheWriteTokens: null,
-      providerDetails: const <String, Object?>{},
-    ),
+    usage:
+        usage ??
+        ModelProviderUsage(
+          inputTokens: 4,
+          outputTokens: 2,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          providerDetails: const <String, Object?>{},
+        ),
     effectiveModel: 'scripted-v1',
     responseId: 'response-f',
     requestId: 'request-f',
@@ -1218,6 +1485,7 @@ ModelProviderEvent _failedTerminal() => ModelProviderEvent(
       compatibility: const <String, Object?>{'model': 'scripted-v1'},
       data: const <String, Object?>{'cursor': 'failed'},
     ),
+    affinityState: affinityState,
   ),
 );
 
@@ -1269,6 +1537,7 @@ final class _ProviderChannel implements AdeleStreamChannel {
   int requestCount = 0;
   int streamCount = 0;
   Map<String, Object?>? lastPayload;
+  final requests = <Map<Object?, Object?>>[];
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
@@ -1281,6 +1550,7 @@ final class _ProviderChannel implements AdeleStreamChannel {
     streamCount++;
     expect(method, modelProviderServiceInvokeId);
     lastPayload = payload;
+    requests.add(payload['request']! as Map<Object?, Object?>);
     return events.map<Object?>(_encodeEvent);
   }
 }
@@ -1370,6 +1640,9 @@ Map<String, Object?> _encodeTerminal(ModelProviderTerminal terminal) =>
       'nativeState': terminal.nativeState == null
           ? null
           : _encodeNative(terminal.nativeState!),
+      'affinityState': terminal.affinityState == null
+          ? null
+          : _encodeNative(terminal.affinityState!),
     };
 
 Map<String, Object?> _encodeNative(ModelProviderNativeEnvelope native) =>

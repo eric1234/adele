@@ -541,6 +541,7 @@ ModelProviderRequest _request({
   maxOutputTokens: maxOutputTokens,
   providerOptions: const <String, Object?>{},
   nativeState: null,
+  affinity: null,
 );
 
 ModelProviderInput _user({String text = 'Inspect.'}) => ModelProviderInput(

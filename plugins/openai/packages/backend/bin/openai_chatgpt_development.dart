@@ -129,6 +129,7 @@ Future<void> _testInference(OpenAiChatGptAuth auth) async {
             maxOutputTokens: null,
             providerOptions: const <String, Object?>{},
             nativeState: null,
+            affinity: null,
           ),
         )
         .toList();

@@ -316,6 +316,43 @@ Later valid lifecycle boundaries may discover replacements. Generic binding
 mechanics belong to the [plugin system](plugin-system.md#live-discovery-and-exact-captured-bindings)
 and [contracts and capabilities](contracts-and-capabilities.md#live-discovery-and-exact-binding).
 
+### Session routing affinity and Run-local state
+
+Each live `SessionExecutionController` owns one securely generated opaque routing
+identity, independent of product IDs, configuration identities, and prompt
+contents. `SessionExecutionOwners` retains that controller for its canonical
+Session independently of presentation. Successive Runs in the same live Session
+reuse the routing identity; different Sessions receive different identities.
+This identity is ephemeral and may reset on execution-owner/window teardown.
+It is never the raw product `SessionId` and is not persisted across restarts.
+
+Every Run still receives a fresh model-provider adapter with null provider turn
+state. Only its routing identity is shared with other Runs in that live Session.
+Model/tool continuations and approval resume retain the current Run's adapter
+and state; no previous Run's state is supplied when the next Run starts. A
+standalone single-Run caller, such as the self-hosting runner, may simply let its
+adapter allocate a fresh routing identity.
+
+`ModelProviderRequest.affinity` carries the provider-neutral identity and optional
+opaque Run-local provider state. `ModelProviderTerminal.affinityState` returns
+state only to the current Run's adapter; null clears it. The provider owns
+interpretation and compatibility of that state, including authentication-owner
+fencing. The adapter retains it only with its exact provider binding and selected
+model. State learned from a terminal
+does not retroactively affect already-started invocations; a late concurrent
+terminal must not overwrite a newer retained context.
+
+Affinity is an optional performance hint, not execution authority, conversation
+continuation, or a guarantee of cache residency. It cannot supply omitted input,
+freeze fresh context, revive retired bindings, or justify a retry. Canonical
+semantic replay remains complete and authoritative; invocation `nativeState`
+remains null. Affinity identities and opaque state are not projected into semantic
+model events, Run journals, retained activity, Chat history, or ordinary logs.
+Providers need no global affinity-state table or separate lifecycle service: the
+Session controller owns identity and the Run adapter owns state. Concrete routing
+policy belongs in the provider implementation, not the strategy or kernel; see the
+[OpenAI backend](../../plugins/openai/packages/backend/README.md).
+
 ## Environment execution context
 
 Execution may use the Session-authorized Task Environment. Application/core
