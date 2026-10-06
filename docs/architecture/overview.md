@@ -99,6 +99,13 @@ for current Run composition and approval policy.
 
 ## Presentation and UI
 
+Commands are presentation-independent semantic operations, with core-owned
+composition, exact binding resolution, availability, and invocation admission in
+`adele_core_extensions`. The application hosts a global Command Palette over those
+contracts. Native/in-process registration works independently of presentation
+contributions; prepared frontend/backend adapters and keybindings remain future
+input/hosting work. See [Commands and input](plugin-system.md#commands-and-input).
+
 UI presents and invokes functionality; displaying a control does not make it the
 semantic owner of the operation. Plugin frontend presentation is dynamically
 hosted with its own lifecycle. Semantic UI roles describe meaning rather than
@@ -181,7 +188,7 @@ and [infrastructure access](contracts-and-capabilities.md#generation-scoped-infr
 | Private Project storage | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
 | Shared relational storage contract / app mediation | [`packages/project_storage/`](../../packages/project_storage/), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Extension registry and binding liveness | [`packages/plugin_api/`](../../packages/plugin_api/) |
-| Core-owned Project selection/backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
+| Core-owned Commands and Project selection/backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
 | Capability routing and transport contracts | [`packages/capabilities/`](../../packages/capabilities/), [`packages/contract/`](../../packages/contract/) |
 | Environment contract | [`packages/environment/`](../../packages/environment/) |
 | Orchestration and Run hosting | [`packages/orchestration/`](../../packages/orchestration/), [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart) |
@@ -189,6 +196,7 @@ and [infrastructure access](contracts-and-capabilities.md#generation-scoped-infr
 | Internal execution mechanics | [`packages/agent_kernel/`](../../packages/agent_kernel/) |
 | Backend runtime | [`packages/plugin_runtime/`](../../packages/plugin_runtime/), [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
 | Desktop composition | [`app/lib/core/adele_runtime.dart`](../../app/lib/core/adele_runtime.dart), `AdeleRuntime` |
+| Global Command Palette and application Command ownership | [`app/lib/ui/commands/command_palette.dart`](../../app/lib/ui/commands/command_palette.dart), [`app/lib/application.dart`](../../app/lib/application.dart); [hosting map](../../app/README.md#command-palette) |
 | UI semantic contracts and frontend hosting | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |
 | Main Content composition and opt-in Session services | [`app/lib/ui/main_content/`](../../app/lib/ui/main_content/), [`app/lib/frontend/prepared_main_content_host.dart`](../../app/lib/frontend/prepared_main_content_host.dart), [`app/lib/frontend/prepared_session_services.dart`](../../app/lib/frontend/prepared_session_services.dart) |
 | Task Browser projection and window navigation | [`app/lib/frontend/window_task_browser_source.dart`](../../app/lib/frontend/window_task_browser_source.dart), [`app/lib/application.dart`](../../app/lib/application.dart); [local hosting map](../../app/README.md#task-browser) |

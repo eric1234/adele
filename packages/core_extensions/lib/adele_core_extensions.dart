@@ -4,6 +4,7 @@ library;
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
+export 'commands.dart';
 export 'project_provider.dart';
 
 /// Zero or more independently selectable contributions, without priority or an

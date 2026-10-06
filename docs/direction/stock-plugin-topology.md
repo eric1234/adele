@@ -144,17 +144,30 @@ current geometry and limits belong to the [application map](../../app/README.md#
 
 ## 2.2 Commands and input
 
-Core should eventually provide:
+The intended core Command/input system spans:
 
 ```text
 Command registration
 Command Palette/search
 Command applicability/enabled state
 suggested/default keybindings
-user/profile/project keybinding overrides
+user/Profile/Project keybinding overrides
 ```
 
-Plugins register Commands and suggested bindings; core owns discovery, conflict handling, rebinding, and dispatch.
+Commands are semantic operations independent of presentation. Command contribution
+must not require Main Content, Console, Task Browser, or another UI contribution.
+A frontend-only, backend-only, mixed, or presentation-free plugin should be able
+to contribute Commands once the applicable hosting adapter exists.
+
+Core owns Command discovery, composition, conflict handling, and dispatch semantics;
+plugins supply Commands and suggested bindings. The Command Palette/search is one
+input surface over Commands, not their owner. Suggested/default keybindings and
+user/Profile/Project overrides belong to the broader Command/input system.
+
+Future frontend/backend adapters and input/configuration surfaces should consume
+the same [semantic Command contract](../architecture/plugin-system.md#commands-and-input),
+rather than introduce presentation-specific Command concepts or require palette
+participation.
 
 ## 2.3 Selection and callable interfaces
 

@@ -9,6 +9,8 @@ import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/main.dart' as application;
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
+import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -509,6 +511,15 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Open fixture'));
       await tester.pumpAndSettle();
+      final commands = CommandResolver(runtime.extensions);
+      final toggleConsole = commands.resolve(toggleConsoleCommandId);
+      expect(toggleConsole.availability, CommandAvailability.hidden);
+      await tester.tap(find.byTooltip('Show Command Palette'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsOneWidget);
+      expect(find.text('Toggle Console'), findsNothing);
+      await tester.tap(find.byTooltip('Close Command Palette'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('New Task'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).last, 'Generic task');
@@ -547,6 +558,31 @@ void main() {
       expect(runtime.store.sessionsForTask(task.id), [same(presented.single)]);
       expect(find.text('Second presentation'), findsOneWidget);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      final console = tester
+          .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+          .controller;
+      expect(toggleConsole.availability, CommandAvailability.enabled);
+      expect(console.visible, isTrue);
+      await tester.tap(find.byTooltip('Show Command Palette'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Toggle Console'));
+      await tester.pumpAndSettle();
+      expect(console.visible, isFalse);
+      expect(find.byTooltip('Show console'), findsOneWidget);
+      await toggleConsole.invoke();
+      await tester.pumpAndSettle();
+      expect(console.visible, isTrue);
+      // Departure synchronously fences actions before asynchronous settlement.
+      tester.widget<AdeleShell>(find.byType(AdeleShell)).onTask!();
+      expect(toggleConsole.availability, CommandAvailability.disabled);
+      await expectLater(
+        toggleConsole.invoke(),
+        throwsA(isA<CommandUnavailable>()),
+      );
+      await tester.pumpAndSettle();
+      expect(toggleConsole.availability, CommandAvailability.hidden);
+      expect(console.visible, isTrue);
+      expect(find.byType(WorkbenchConsole), findsNothing);
       await tester.runAsync(tester.binding.handleRequestAppExit);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();

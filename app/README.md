@@ -25,6 +25,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
+| Global Command Palette and application-owned Commands | Presentation-independent Command contract, composition, and dispatch admission: [core extensions](../packages/core_extensions/README.md#commands). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -582,6 +583,42 @@ hosts plugin presentation and Project/Task/Session breadcrumbs. The presented
 Project/Task/Environment/Session and Inspection arrangement are window-local state,
 not new product identities or a final workbench architecture.
 The [product model](../docs/architecture/product-model.md) owns their semantics.
+
+### Command Palette
+
+[`CommandPalette`](lib/ui/commands/command_palette.dart) is global shell chrome,
+available before Project opening, in Task Browser, and in the Session workbench.
+The AppBar button resolves and invokes the registered Show Command Palette
+Command through `CommandResolver`; it does not open a special hard-coded palette
+entry outside the Command system.
+
+[`AdeleApplication`](lib/application.dart) owns two native Command contributions
+through an `ExtensionRegistrationGroup`, with Command IDs
+`dev.adele.command.show-palette` and
+`dev.adele.command.toggle-console`. Show is hidden while its dialog is presented,
+preventing nesting. Toggle is hidden without a presented canonical Session,
+enabled in an interactive Session, and disabled during navigation/exit settlement.
+It uses the existing window `ConsoleController`, without separate console state
+or Session/Environment authority. Registrations retire during application close;
+disposal starts the same cleanup, and graceful exit awaits it. Captured bindings
+never revive on remount or ID reuse.
+
+The modal focuses search, filters labels/IDs case-insensitively, and consumes the
+domain's deterministic unique catalog. Hidden entries are omitted, disabled
+entries cannot be invoked, and conflicts have no arbitrarily selected row.
+Up/Down and Enter work from search, ordinary Tab focus activates its own control,
+and Escape dismisses the dialog. Registry changes refresh membership while
+preserving only exact selections; a replacement requires fresh user selection.
+Availability is reevaluated on build and before invocation, not polled.
+
+Dismissal returns an exact resolved Command to application dispatch, allowing the
+invoked operation to present its own input. Navigation and exit dismiss/fence the
+palette; application dispatch checks interaction again and the public domain
+revalidates admission. Failures use a bounded generic snackbar, not exception text.
+Current contributions are native/in-process; no prepared frontend/backend Command
+transport, keybindings, configuration, or projection of Main Content/Console actions
+is implemented. This hosting limit does not require Commands to originate in UI
+code. Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
 
 <a id="b1-project-opening"></a>
 ### Project opening
