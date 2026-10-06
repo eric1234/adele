@@ -10,7 +10,7 @@ Session-authorized Environment. It contributes one semantic model tool:
 | Tool, `searchToolId` | `dev.adele.plugin.search-tools.search` |
 | Model alias | `search` |
 
-Search owns argument validation, literal matching, traversal, stock exclusions,
+Search owns argument validation, regular-expression matching, traversal, stock exclusions,
 budgets, and result diagnostics. It does not own Environment identity/lifecycle,
 general filesystem access, Capability provider resolution, application
 policy/approval, UI presentation, or generic model-tool execution mechanics.
@@ -59,9 +59,16 @@ See [Environment](../../packages/environment/README.md) and
 
 ## Search Semantics
 
-- `query` is a nonempty, single-line, NUL-free string of at most 256 UTF-16 code
-  units. Single-line excludes LF (`\n`), CR (`\r`), U+2028, and U+2029. Matching
-  is case-sensitive literal substring matching, not a regular expression.
+- Required `pattern` is a nonempty, single-line, NUL-free regular-expression
+  string of at most 256 UTF-16 code units. Single-line excludes LF (`\n`), CR
+  (`\r`), U+2028, and U+2029. Matching uses Dart's `dart:core RegExp` with
+  ECMAScript-style syntax and default flags (case-sensitive, no multiline,
+  dotAll, or Unicode mode). Patterns are applied independently to each text line,
+  never across lines. Alternation (`foo|bar`), classes (`[a-z]+`), and anchors
+  (`^foo$`) are supported; escape metacharacters to match them literally
+  (for example, `a\.*` matches `a` followed by zero or more literal dots).
+  Invalid regex syntax is rejected during argument validation, before description
+  or Environment reads. `query` is not accepted as an alias.
   `path` is the only optional argument; omitted or empty scope searches the
   Environment root. Directory scopes recurse; file scopes search only that file.
 - Paths stay Environment-relative. Validation canonicalizes redundant `/` and `.`
@@ -77,6 +84,9 @@ See [Environment](../../packages/environment/README.md) and
 - Directory entries are sorted by relative path and traversed depth-first; matching
   lines retain ascending line order. Each matching line yields one result with
   Environment-relative path, one-based line number, and a bounded snippet.
+  Multiple occurrences still produce one result; zero-length matches count.
+  The first match's span positions the snippet. A match larger than the snippet
+  budget is clipped, not returned in full.
 - Current budgets are 100 matching lines, 10,000 visited entries, 16 MiB admitted
   for searching, and 32 failed file reads. Snippets are bounded to 500 UTF-16 code
   units without splitting surrogate pairs. The byte budget applies after a whole

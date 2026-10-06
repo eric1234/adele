@@ -685,9 +685,9 @@ void main() {
     expect(search.definition.id.value, '$_searchId.search');
     expect(search.modelDefinition.argumentsSchema, {
       'type': 'object',
-      'required': ['query'],
+      'required': ['pattern'],
       'properties': {
-        'query': {'type': 'string', 'minLength': 1, 'maxLength': 256},
+        'pattern': {'type': 'string', 'minLength': 1, 'maxLength': 256},
         'path': {'type': 'string'},
       },
       'additionalProperties': false,
@@ -696,12 +696,12 @@ void main() {
     expect(files.calls, isEmpty);
 
     final proposed = <String, Object?>{
-      'query': 'needle.*',
+      'pattern': 'needle.*',
       'path': './src//nested/./',
     };
     final invocation = await _resolve(tools, context.sessionId, proposed);
     expect(invocation.canonicalArguments, {
-      'query': 'needle.*',
+      'pattern': 'needle.*',
       'path': 'src/nested',
     });
     expect(invocation.proposal.arguments, proposed);
@@ -731,9 +731,9 @@ void main() {
       ToolPolicyDecision.allow,
     );
     final root = await _resolve(tools, context.sessionId, {
-      'query': ' spaced ',
+      'pattern': ' spaced ',
     });
-    expect(root.canonicalArguments, {'query': ' spaced ', 'path': ''});
+    expect(root.canonicalArguments, {'pattern': ' spaced ', 'path': ''});
     expect(
       files.calls,
       isEmpty,
@@ -742,24 +742,27 @@ void main() {
     expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
   });
 
-  test('plugin query/path validation becomes resolver invalidArguments; '
+  test('plugin pattern/path validation becomes resolver invalidArguments; '
       'model-supplied authority identifiers are rejected', () async {
     await start(searchArtifact, _searchId);
     final tools = await compose();
     for (final invalid in <Map<String, Object?>>[
       {},
-      {'query': ''},
-      {'query': 'a\nb'},
-      {'query': 'a\u0000b'},
-      {'query': 'a\u2028b'},
-      {'query': 'x' * 257},
-      {'query': 'needle', 'path': '/outside'},
-      {'query': 'needle', 'path': 'src/../outside'},
-      {'query': 'needle', 'path': 'bad\u0000path'},
-      {'query': 'needle', 'path': 'bad\ud800'},
-      {'query': 'needle', 'path': null},
+      {'pattern': ''},
+      {'pattern': '['},
+      {'query': 'needle'},
+      {'pattern': 'needle', 'query': 'needle'},
+      {'pattern': 'a\nb'},
+      {'pattern': 'a\u0000b'},
+      {'pattern': 'a\u2028b'},
+      {'pattern': 'x' * 257},
+      {'pattern': 'needle', 'path': '/outside'},
+      {'pattern': 'needle', 'path': 'src/../outside'},
+      {'pattern': 'needle', 'path': 'bad\u0000path'},
+      {'pattern': 'needle', 'path': 'bad\ud800'},
+      {'pattern': 'needle', 'path': null},
       for (final key in ['sessionId', 'runId', 'environmentId'])
-        {'query': 'needle', key: 'forged-authority'},
+        {'pattern': 'needle', key: 'forged-authority'},
     ]) {
       final result = await _resolution(tools, context.sessionId, invalid);
       expect(result, isA<RejectedToolProposal>(), reason: '$invalid');
@@ -776,90 +779,87 @@ void main() {
     );
   });
 
-  test(
-    'server stream composes nested reads in sorted order with exact '
-    'literal matches, exclusions, line numbers and bounded snippets',
-    () async {
-      await start(searchArtifact, _searchId);
-      files.text['src/z.txt'] = '${'x' * 600}needle.*${'y' * 600}\n';
-      files.directories['src'] = [
-        _entry('src/z.txt'),
-        _entry('src/nested', directory: true),
-        _entry('src/NODE_MODULES', directory: true),
-        _entry('src/a.txt'),
-        _entry('src/.GiT', directory: true),
-        _entry('src/.DART_TOOL', directory: true),
-        _entry('src/BuIlD', directory: true),
-        const EnvironmentDirectoryEntry(
-          name: 'link',
-          relativePath: 'src/link',
-          kind: EnvironmentDirectoryEntryKind.other,
-        ),
-      ];
-      final tools = await compose();
-      final invocation = await _resolve(tools, context.sessionId, {
-        'query': 'needle.*',
-        'path': './src//',
-      });
-      final events = await invocation.tool.executable
-          .execute(invocation.arguments, invocation.context)
-          .toList()
-          .timeout(_bound);
-      expect(events, hasLength(1));
-      expect(events.single, isA<ToolExecutionTerminal>());
-      final outcome = (events.single as ToolExecutionTerminal).outcome;
-      final matches = [
-        {
-          'relativePath': 'src/a.txt',
-          'lineNumber': 2,
-          'snippet': 'needle.* first',
-        },
-        {
-          'relativePath': 'src/nested/b.txt',
-          'lineNumber': 1,
-          'snippet': 'prefix needle.* nested',
-        },
-        {
-          'relativePath': 'src/z.txt',
-          'lineNumber': 1,
-          'snippet': '${'x' * 246}needle.*${'y' * 246}',
-        },
-      ];
-      expect(outcome.disposition, ToolOutcomeDisposition.success);
-      expect(outcome.failureKind, isNull);
-      expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
-      expect(outcome.hostData, {
-        'query': 'needle.*',
-        'path': 'src',
-        'matches': matches,
-        'truncated': false,
-        'incomplete': false,
-        'stopReason': null,
-        'stopLimit': null,
-        'entriesVisited': 9,
-        'searchedBytes': files.text.values.fold<int>(
-          0,
-          (n, s) => n + utf8.encode(s).length,
-        ),
-        'failedFileReads': 0,
-        'failedDirectoryReads': 0,
-        'environmentId': files.environmentId.value,
-      });
-      expect(
-        outcome.modelContent,
-        'Search results:\nScope: "src"\n${matches.map(jsonEncode).join('\n')}',
-      );
-      expect(files.calls, [
-        'directory:src',
-        'file:src/a.txt',
-        'directory:src/nested',
-        'file:src/nested/b.txt',
-        'file:src/z.txt',
-      ]);
-      expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
-      expect(() => outcome.hostData.clear(), throwsUnsupportedError);
-    },
-  );
+  test('server stream composes nested reads in sorted order with exact '
+      'regex matches, exclusions, line numbers and bounded snippets', () async {
+    await start(searchArtifact, _searchId);
+    files.text['src/z.txt'] = '${'x' * 600}needle regex${'😀' * 600}\n';
+    files.directories['src'] = [
+      _entry('src/z.txt'),
+      _entry('src/nested', directory: true),
+      _entry('src/NODE_MODULES', directory: true),
+      _entry('src/a.txt'),
+      _entry('src/.GiT', directory: true),
+      _entry('src/.DART_TOOL', directory: true),
+      _entry('src/BuIlD', directory: true),
+      const EnvironmentDirectoryEntry(
+        name: 'link',
+        relativePath: 'src/link',
+        kind: EnvironmentDirectoryEntryKind.other,
+      ),
+    ];
+    final tools = await compose();
+    final invocation = await _resolve(tools, context.sessionId, {
+      'pattern': 'needle.*',
+      'path': './src//',
+    });
+    final events = await invocation.tool.executable
+        .execute(invocation.arguments, invocation.context)
+        .toList()
+        .timeout(_bound);
+    expect(events, hasLength(1));
+    expect(events.single, isA<ToolExecutionTerminal>());
+    final outcome = (events.single as ToolExecutionTerminal).outcome;
+    final matches = [
+      {
+        'relativePath': 'src/a.txt',
+        'lineNumber': 2,
+        'snippet': 'needle.* first',
+      },
+      {
+        'relativePath': 'src/nested/b.txt',
+        'lineNumber': 1,
+        'snippet': 'prefix needle.* nested',
+      },
+      {
+        'relativePath': 'src/z.txt',
+        'lineNumber': 1,
+        'snippet': 'needle regex${'😀' * 244}',
+      },
+    ];
+    expect(outcome.disposition, ToolOutcomeDisposition.success);
+    expect(outcome.failureKind, isNull);
+    expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+    expect(outcome.hostData, {
+      'pattern': 'needle.*',
+      'path': 'src',
+      'matches': matches,
+      'truncated': false,
+      'incomplete': false,
+      'stopReason': null,
+      'stopLimit': null,
+      'entriesVisited': 9,
+      'searchedBytes': files.text.values.fold<int>(
+        0,
+        (n, s) => n + utf8.encode(s).length,
+      ),
+      'failedFileReads': 0,
+      'failedDirectoryReads': 0,
+      'environmentId': files.environmentId.value,
+    });
+    expect(
+      outcome.modelContent,
+      'Search results:\nScope: "src"\n${matches.map(jsonEncode).join('\n')}',
+    );
+    expect(files.calls, [
+      'directory:src',
+      'file:src/a.txt',
+      'directory:src/nested',
+      'file:src/nested/b.txt',
+      'file:src/z.txt',
+    ]);
+    expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
+    expect(() => outcome.hostData.clear(), throwsUnsupportedError);
+  });
 
   test(
     'file scope fallback, missing scope and excluded scope retain Search semantics',
@@ -959,7 +959,7 @@ void main() {
       ..text['src/a.txt'] = 'needle.* forbidden replacement';
     context.files = decoy;
     final invocation = await _resolve(tools, context.sessionId, {
-      'query': 'needle.*',
+      'pattern': 'needle.*',
       'path': 'src/a.txt',
     }, runId: RunId('forged-run'));
     final effects = await invocation.tool.executable.describe(
@@ -1037,7 +1037,7 @@ void main() {
         throwsA(isA<StaleToolBindingException>()),
       );
       final rejected = await _resolution(oldTools, context.sessionId, {
-        'query': 'needle.*',
+        'pattern': 'needle.*',
       });
       expect(
         (rejected as RejectedToolProposal).failure.kind,
@@ -1099,7 +1099,7 @@ void main() {
       await start(searchArtifact, _searchId);
       final tools = await compose();
       final invocation = await _resolve(tools, context.sessionId, {
-        'query': 'needle.*',
+        'pattern': 'needle.*',
         'path': 'src',
       });
       final received = <ToolExecutionEvent>[];
@@ -1136,7 +1136,7 @@ void main() {
     files.release = Completer<void>();
     addTearDown(files.unblock);
     final invocation = await _resolve(tools, context.sessionId, {
-      'query': 'needle.*',
+      'pattern': 'needle.*',
     });
     final events = <ToolExecutionEvent>[];
     final errors = <Object>[];
@@ -1419,7 +1419,7 @@ Future<ToolOutcome> _execute(
   String path = 'src',
 }) async {
   final invocation = await _resolve(tools, sessionId, {
-    'query': 'needle.*',
+    'pattern': 'needle.*',
     'path': path,
   });
   final observation = await collectToolExecution(

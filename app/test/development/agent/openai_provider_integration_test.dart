@@ -467,7 +467,7 @@ void main() {
                   'id': 'fc_search',
                   'call_id': 'call_search',
                   'name': 'search',
-                  'arguments': '{"query":"final class ChatSessionState"}',
+                  'arguments': '{"pattern":"final class ChatSessionState"}',
                   'status': 'completed',
                 }),
               );

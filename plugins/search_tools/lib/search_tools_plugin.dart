@@ -1,4 +1,4 @@
-/// Stock literal search tool for Session-authorized Environments.
+/// Stock regular-expression search tool for Session-authorized Environments.
 library;
 
 import 'dart:convert';
@@ -78,11 +78,13 @@ final class SearchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'search',
       description:
-          'Locate literal content in Environment text files. Prefer the '
+          'Search text files using a case-sensitive regular-expression pattern. '
+          'pattern is regex, not literal text: Dart dart:core RegExp '
+          '(ECMAScript-style syntax, default flags), applied independently to '
+          'each line. Optional path is Environment-relative: search only that '
+          'file, or recursively search that directory. Prefer the '
           'narrowest useful known file or directory scope; root search is valid '
-          'when the location is unknown. query is case-sensitive literal text, '
-          'not regex: "|" is not alternation. Optional path is Environment-relative: '
-          'search only that file, or recursively search that directory. '
+          'when the location is unknown. '
           'Omitted or empty path recursively searches root. '
           'Results identify paths and matching line numbers with bounded snippets. '
           'Read relevant source before editing; snippets are not complete file '
@@ -95,9 +97,9 @@ final class SearchExecutable implements ToolExecutable {
           'adequately expressed here.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
-        'required': <Object?>['query'],
+        'required': <Object?>['pattern'],
         'properties': <String, Object?>{
-          'query': <String, Object?>{
+          'pattern': <String, Object?>{
             'type': 'string',
             'minLength': 1,
             'maxLength': 256,
@@ -115,29 +117,36 @@ final class SearchExecutable implements ToolExecutable {
     Map<String, Object?> proposedArguments,
   ) {
     if (proposedArguments.keys.any(
-          (String key) => key != 'query' && key != 'path',
+          (String key) => key != 'pattern' && key != 'path',
         ) ||
-        proposedArguments['query'] is! String ||
+        proposedArguments['pattern'] is! String ||
         (proposedArguments.containsKey('path') &&
             proposedArguments['path'] is! String)) {
       throw const ToolArgumentValidationException(
-        'search requires string query and accepts only optional string path.',
+        'search requires string pattern and accepts only optional string path.',
       );
     }
-    final String query = proposedArguments['query']! as String;
-    if (query.isEmpty ||
-        query.length > 256 ||
-        query.contains('\u0000') ||
-        query.contains('\n') ||
-        query.contains('\r') ||
-        query.contains('\u2028') ||
-        query.contains('\u2029')) {
+    final String pattern = proposedArguments['pattern']! as String;
+    if (pattern.isEmpty ||
+        pattern.length > 256 ||
+        pattern.contains('\u0000') ||
+        pattern.contains('\n') ||
+        pattern.contains('\r') ||
+        pattern.contains('\u2028') ||
+        pattern.contains('\u2029')) {
       throw const ToolArgumentValidationException(
-        'query must be non-empty, single-line, NUL-free, and at most 256 UTF-16 code units.',
+        'pattern must be non-empty, single-line, NUL-free, and at most 256 UTF-16 code units.',
+      );
+    }
+    try {
+      RegExp(pattern);
+    } on FormatException catch (error) {
+      throw ToolArgumentValidationException(
+        'pattern must be a valid Dart regular expression: ${error.message}',
       );
     }
     return CanonicalToolArguments(<String, Object?>{
-      'query': query,
+      'pattern': pattern,
       'path': _canonicalScopePath(proposedArguments['path'] as String? ?? ''),
     });
   }
@@ -191,9 +200,9 @@ final class SearchExecutable implements ToolExecutable {
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
   ) async* {
-    final String query = arguments.snapshot['query']! as String;
+    final String pattern = arguments.snapshot['pattern']! as String;
     final _SearchState state = _SearchState(
-      query,
+      pattern,
       arguments.snapshot['path']! as String,
     );
     try {
@@ -357,7 +366,8 @@ final class SearchExecutable implements ToolExecutable {
     int lineNumber = 0;
     for (final String line in const LineSplitter().convert(file.text)) {
       lineNumber++;
-      if (!line.contains(state.query)) continue;
+      final RegExpMatch? match = state.regex.firstMatch(line);
+      if (match == null) continue;
       if (state.matches.length == _maxMatches) {
         state.stop('max_matches', _maxMatches);
         return;
@@ -368,8 +378,8 @@ final class SearchExecutable implements ToolExecutable {
           lineNumber: lineNumber,
           snippet: _boundedSnippet(
             line,
-            matchStart: line.indexOf(state.query),
-            matchLength: state.query.length,
+            matchStart: match.start,
+            matchLength: match.end - match.start,
           ),
         ),
       );
@@ -408,7 +418,7 @@ final class SearchExecutable implements ToolExecutable {
   }
 
   Map<String, Object?> _hostData(_SearchState state) => <String, Object?>{
-    'query': state.query,
+    'pattern': state.pattern,
     'path': state.path,
     'matches': <Object?>[
       for (final _SearchMatch match in state.matches)
@@ -468,9 +478,10 @@ String _canonicalScopePath(String path) {
 }
 
 final class _SearchState {
-  _SearchState(this.query, this.path);
+  _SearchState(this.pattern, this.path) : regex = RegExp(pattern);
 
-  final String query;
+  final RegExp regex;
+  final String pattern;
   final String path;
   final List<_SearchMatch> matches = <_SearchMatch>[];
   int entries = 0;
@@ -532,7 +543,9 @@ String _boundedSnippet(
 }) {
   if (line.length <= SearchExecutable._maxSnippetCodeUnits) return line;
   final int context =
-      (SearchExecutable._maxSnippetCodeUnits - matchLength) ~/ 2;
+      (SearchExecutable._maxSnippetCodeUnits -
+          math.min(matchLength, SearchExecutable._maxSnippetCodeUnits)) ~/
+      2;
   int start = math.max(0, matchStart - context);
   int end = math.min(
     line.length,
@@ -561,7 +574,7 @@ ToolOutcome _failure(
   effectCertainty: certainty,
   modelContent: modelContent,
   hostData: <String, Object?>{
-    'query': state.query,
+    'pattern': state.pattern,
     'path': state.path,
     'matches': <Object?>[
       for (final _SearchMatch match in state.matches)

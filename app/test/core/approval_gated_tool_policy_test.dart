@@ -13,7 +13,7 @@ import '../support/orchestration_test_lifecycle.dart';
 
 const Map<String, Map<String, Object?>> _stockArguments = {
   'read_file': {'relativePath': 'source.dart'},
-  'search': {'query': 'needle'},
+  'search': {'pattern': 'needle'},
   'apply_patch': {
     'relativePath': 'source.dart',
     'expectedRevision': 'observed-revision',
