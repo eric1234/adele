@@ -7,7 +7,7 @@ Implementation status: Partial
 This document defines plugin ownership, identity, lifecycle, and recursive typed
 composition. ADELE implements generic registration/discovery/liveness and several
 concrete extension-point families. The broader recursive ecosystem, general
-profile/activation management, Commands/keybindings, and full plugin-management
+profile/activation management, plugin Command adapters/keybindings, and full plugin-management
 and productization remain incomplete. Public plugin APIs remain experimental.
 Source/tests establish current behavior; [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md)
 records the recursive extension decision and its rationale.
@@ -151,6 +151,7 @@ Examples illustrate different contracts, not a universal rule:
 | Model tools | [Model-tool API](../../packages/model_tool/) defines contextual contributions; its composition has distinct tool-identity and model-alias collision semantics. |
 | Project selectors | [Core extension contracts](../../packages/core_extensions/README.md) expose independent actions, not interchangeable default providers. |
 | Project providers | The same public package defines backing preparation through an explicitly selected capability provider, without default substitution. |
+| Commands | [Core extension contracts](../../packages/core_extensions/README.md#commands) compose independent semantic operations; duplicate Command IDs are ambiguous, and invocation revalidates the exact unique binding and current enabled state. |
 | Task Browser | [UI](../../packages/ui/README.md#task-browser) requires exactly one active browser contribution; zero is unavailable and multiple are ambiguous, without fallback. |
 | Main Content | [UI](../../packages/ui/README.md#grouped-main-content) composes independent ordered groups; each exact registration controls only its own contiguous panes. |
 
@@ -251,6 +252,49 @@ Project publication, neither component generation remains a permanent identity
 pin. See [Project lifecycle/storage](product-model.md#opening-and-publication) and
 the [public contract map](../../packages/core_extensions/README.md).
 
+## Commands and input
+
+A Command is a semantic user operation independent of its presentation or input
+surface. Core owns its public domain in `adele_core_extensions`, including
+composition, resolution, and dispatch admission through the existing
+`ExtensionRegistry`. The application-owned global Command Palette is a consumer,
+not the semantic owner. A future keybinding, menu, or button can invoke the same
+Command without a second operation contract. Commands are distinct from model
+tools that execute external programs and from existing presentation-local
+`MainContentAction` and `ConsoleCreationAction` contracts.
+
+Stable `CommandId` names the operation independently of registration `ExtensionId`.
+Zero Commands is valid; distinct identities coexist. Multiple live claims to one
+Command ID are ambiguous, never resolved by priority or arbitrary selection.
+Discovery excludes such identities from executable choices; ID resolution
+distinguishes missing from ambiguous. A resolved Command retains its exact live
+registration, which cannot revive or retarget after retirement or ID reuse.
+
+Availability is a cheap synchronous side-effect-free evaluation: hidden means
+irrelevant, disabled means relevant but currently non-invokable, and enabled
+permits admission. Evaluation failures fail closed. Invocation revalidates exact
+registration liveness, unique resolution to that binding, and current enabled
+state immediately before calling the implementation. After admission, generic
+Command infrastructure imposes no cancellation on retirement; completion follows
+the implementation's owning-domain semantics. Consumers contain invocation
+failures rather than exposing arbitrary exception text as user-facing output.
+
+The current implementation accepts native/in-process contributions. Prepared
+frontend invocation bridges and backend advertisements/remote adapters remain
+unimplemented. That is a hosting limit, not a requirement for Commands to originate
+in UI code: frontend-only, backend-only, mixed, and presentation-free plugins may
+eventually implement the same semantic contract. Registration does not require
+Main Content, Console, Task Browser, or another Flutter contribution. Implementations
+capture their deliberately authorized services; no generalized Command context
+supplies Project/Task/Session/Environment authority.
+
+Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
+reevaluate availability when presenting/refreshing and at admission, without
+polling or a general state-notification/context-expression protocol. Keybinding
+registration, suggested/default bindings, overrides, and configuration remain
+future work. See the [public API map](../../packages/core_extensions/README.md#commands)
+and [application hosting](../../app/README.md#command-palette).
+
 ## UI and presentation
 
 Plugin-facing UI extension points describe semantic roles, not fixed physical
@@ -270,11 +314,8 @@ the [application presentation map](../../app/README.md#activity-inspection) cove
 implemented hosting. [Product direction](../product/README.md) describes intended
 experiences rather than fixed extension coordinates.
 
-Application Command registration, search, and keybinding resolution are host
-infrastructure; plugins contribute Commands and suggested bindings. UI affordances
-should invoke the same domain/Command behavior as other surfaces, not create
-UI-only semantics. Broader Command infrastructure is not yet implemented.
-Application Commands are distinct from model tools that execute external programs.
+UI affordances may consume the independent [Command domain](#commands-and-input);
+they do not make Command registration or behavior presentation-owned.
 
 ### Grouped Main Content
 

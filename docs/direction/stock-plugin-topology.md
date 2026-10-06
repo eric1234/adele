@@ -144,17 +144,19 @@ current geometry and limits belong to the [application map](../../app/README.md#
 
 ## 2.2 Commands and input
 
-Core should eventually provide:
+The [accepted Command domain](../architecture/plugin-system.md#commands-and-input)
+now establishes presentation-independent registration, applicability/enabled state,
+unique resolution, and exact-binding invocation. The application hosts the first
+global [Command Palette/search](../../app/README.md#command-palette) consumer over
+native/in-process registrations. Commands need not accompany a UI contribution;
+backend-only and presentation-free implementations remain valid design directions.
 
-```text
-Command registration
-Command Palette/search
-Command applicability/enabled state
-suggested/default keybindings
-user/profile/project keybinding overrides
-```
-
-Plugins register Commands and suggested bindings; core owns discovery, conflict handling, rebinding, and dispatch.
+Prepared frontend and remote backend Command adapters are still future work.
+Suggested/default keybindings, user/Profile/Project overrides, and configuration
+also remain deferred. Plugins should eventually contribute Commands and suggested
+bindings while core owns discovery, conflict handling, rebinding, and dispatch.
+Those adapters and input/configuration surfaces should consume the established
+semantic contract, not make palette or UI participation a registration prerequisite.
 
 ## 2.3 Selection and callable interfaces
 

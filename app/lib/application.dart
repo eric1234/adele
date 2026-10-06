@@ -15,6 +15,7 @@ import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
@@ -31,6 +32,9 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
+
+final showCommandPaletteCommandId = CommandId('dev.adele.command.show-palette');
+final toggleConsoleCommandId = CommandId('dev.adele.command.toggle-console');
 
 final class AdeleApplication extends StatefulWidget {
   const AdeleApplication({
@@ -91,6 +95,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
   final GlobalKey<NavigatorState> _navigator = GlobalKey<NavigatorState>();
+  final _messenger = GlobalKey<ScaffoldMessengerState>();
+  final _commandRegistrations = ExtensionRegistrationGroup();
+  late final CommandResolver _commands;
+  DialogRoute<ResolvedCommand>? _palette;
+  bool _preparingExit = false;
 
   @override
   void initState() {
@@ -99,6 +108,42 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _console = ConsoleController(
       _runtime.extensions,
       cleanupTimeout: const Duration(seconds: 3),
+    );
+    _commands = CommandResolver(_runtime.extensions);
+    _commandRegistrations.add(
+      _runtime.extensions.register(
+        point: commandContributions,
+        id: ExtensionId('dev.adele.application.show-palette'),
+        value: CommandContribution(
+          id: showCommandPaletteCommandId,
+          label: 'Show Command Palette',
+          availability: () => _palette != null
+              ? CommandAvailability.hidden
+              : _commandsInteractive
+              ? CommandAvailability.enabled
+              : CommandAvailability.disabled,
+          invoke: _showCommandPalette,
+        ),
+      ),
+    );
+    _commandRegistrations.add(
+      _runtime.extensions.register(
+        point: commandContributions,
+        id: ExtensionId('dev.adele.application.toggle-console'),
+        value: CommandContribution(
+          id: toggleConsoleCommandId,
+          label: 'Toggle Console',
+          availability: () => _session == null
+              ? CommandAvailability.hidden
+              : _commandsInteractive &&
+                    _workbench != null &&
+                    !_console.isClosed &&
+                    identical(_console.session, _session)
+              ? CommandAvailability.enabled
+              : CommandAvailability.disabled,
+          invoke: _console.toggleVisibility,
+        ),
+      ),
     );
     _consoleHost = PreparedConsoleHost(
       store: _runtime.store,
@@ -176,17 +221,94 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     unawaited(_bootstrapPlugins());
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
-        if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
-        _retainingPresentations.value = true;
-        _frontends.retainPresentations();
-        await _closeAndReport();
-        return AppExitResponse.exit;
+        if (_preparingExit) return AppExitResponse.cancel;
+        setState(() => _preparingExit = true);
+        _dismissCommandPalette();
+        try {
+          if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
+          _retainingPresentations.value = true;
+          _frontends.retainPresentations();
+          await _closeAndReport();
+          return AppExitResponse.exit;
+        } finally {
+          if (mounted) setState(() => _preparingExit = false);
+        }
       },
       onDetach: () {
         _frontends.releasePresentations();
         unawaited(_closeAndReport());
       },
     );
+  }
+
+  bool get _commandsInteractive =>
+      mounted &&
+      _closing == null &&
+      !_preparingExit &&
+      !_navigating &&
+      !_openingProject &&
+      !_creatingTask;
+
+  Future<void> _invokeCommand(ResolvedCommand command) async {
+    if (!_commandsInteractive) return;
+    try {
+      await command.invoke();
+    } on Object {
+      _reportCommandFailure();
+    }
+  }
+
+  void _reportCommandFailure() {
+    if (!mounted || _closing != null) return;
+    _messenger.currentState?.showSnackBar(
+      const SnackBar(content: Text('The command could not be completed.')),
+    );
+  }
+
+  Future<void> _invokeShowCommandPalette() async {
+    if (!_commandsInteractive) return;
+    try {
+      await _invokeCommand(_commands.resolve(showCommandPaletteCommandId));
+    } on Object {
+      _reportCommandFailure();
+    }
+  }
+
+  bool get _canShowCommandPalette {
+    try {
+      return _commands.resolve(showCommandPaletteCommandId).availability ==
+          CommandAvailability.enabled;
+    } on Object {
+      return false;
+    }
+  }
+
+  Future<void> _showCommandPalette() async {
+    final navigator = _navigator.currentState;
+    if (!_commandsInteractive || _palette != null || navigator == null) return;
+    final route = DialogRoute<ResolvedCommand>(
+      context: navigator.context,
+      builder: (_) => CommandPalette(
+        extensions: _runtime.extensions,
+        isInteractive: () => _commandsInteractive,
+      ),
+    );
+    setState(() => _palette = route);
+    ResolvedCommand? selected;
+    try {
+      selected = await navigator.push(route);
+    } finally {
+      if (mounted) setState(() => _palette = null);
+    }
+    if (selected != null) await _invokeCommand(selected);
+  }
+
+  void _dismissCommandPalette() {
+    final route = _palette;
+    final navigator = route?.navigator;
+    if (route != null && navigator != null && route.isActive) {
+      navigator.removeRoute(route);
+    }
   }
 
   Future<bool> _confirmContribution(Map<String, Object?> request) async {
@@ -500,6 +622,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _navigating = true;
       _navigationError = null;
     });
+    _dismissCommandPalette();
     _execution?.refresh();
     try {
       try {
@@ -569,6 +692,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _closeRuntime() => _closing ??= () {
     _workbench = null;
+    final closingCommands = _commandRegistrations.close();
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
@@ -581,6 +705,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     // All owners are fenced before waiting. Storage/backends remain available
     // for normal admitted settlement, including hidden Session history writes.
     final draining = Future.wait<void>([
+      closingCommands,
       settlingRuns,
       closingConsole,
       closingConsoleHost,
@@ -700,8 +825,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ),
       child: MaterialApp(
         navigatorKey: _navigator,
+        scaffoldMessengerKey: _messenger,
         debugShowCheckedModeBanner: false,
         home: AdeleShell(
+          onCommandPalette: _canShowCommandPalette
+              ? _invokeShowCommandPalette
+              : null,
           project: _project,
           task: _task,
           environment: _environment,

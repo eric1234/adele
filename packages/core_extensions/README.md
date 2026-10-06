@@ -2,8 +2,8 @@
 
 Experimental public, pure-Dart contracts for narrow core-owned extension points
 that lack a natural existing public domain owner. This is not a catch-all for
-plugin APIs or shared types. Its current contracts cover Project selection and
-provider backing preparation. It depends on public `adele_plugin_api`,
+plugin APIs or shared types. Its current contracts cover Commands, Project
+selection, and provider backing preparation. It depends on public `adele_plugin_api`,
 `adele_capabilities`, and `adele_contract`, not Flutter, product, SQLite,
 application code, or internal host implementations.
 
@@ -23,6 +23,45 @@ Existing owners remain authoritative:
 
 New contracts belong here only when a concrete core-owned need has no natural
 existing public domain owner. Generic infrastructure is not duplicated here.
+
+## Commands
+
+[`commands.dart`](lib/commands.dart) defines semantic user operations independently
+of presentation. `commandContributions` is the ordinary typed extension point
+`dev.adele.extension.commands` in the existing `ExtensionRegistry`.
+`CommandId` uses shared public-ID validation and names the stable operation;
+`ExtensionId` names its registration, not its semantic identity.
+
+`CommandContribution` carries one ID, a nonblank single-line label bounded to 160
+UTF-16 code units, a cheap synchronous side-effect-free availability callback, and
+a `FutureOr<void>` invocation callback. `CommandAvailability` distinguishes
+`hidden` (irrelevant), `disabled` (relevant but unavailable), and `enabled`.
+There is no generic Project/Session/Environment context or authority grant.
+
+`CommandResolver` owns composition and dispatch admission. Zero registrations is
+valid; distinct IDs coexist. Duplicate IDs are ambiguous regardless of their
+availability, with no priority or winner. Discovery omits conflicted identities,
+retains hidden/disabled entries for consumer filtering, and sorts by
+case-insensitive label then ID. Explicit resolution distinguishes `CommandNotFound`
+from `AmbiguousCommand`.
+
+`ResolvedCommand` retains the exact `ExtensionBinding` and copied ID/label. Its
+availability getter fails closed to disabled on evaluation failure, retirement,
+or conflict. `invoke()` checks liveness, unique exact resolution, and current
+enabled state immediately before entering the implementation; non-enabled or
+failed evaluation yields `CommandUnavailable`. Reusing IDs or a contribution
+object never retargets an old binding. Retirement after admission neither cancels
+an asynchronous invocation nor migrates its completion. Implementation errors
+propagate to the invoking surface for safe containment.
+
+Current registration is native/in-process. Prepared frontend and remote backend
+adapters remain future work, not a semantic requirement that Commands originate
+in UI code or accompany Main Content, Console, or other presentation contributions.
+The [application palette](../../app/README.md#command-palette) is one consumer;
+keybindings and other future input surfaces can use the same domain. Registration
+changes use the existing registry stream; no general availability notification or
+polling protocol is defined. Cross-system rules belong to
+[Commands and input](../../docs/architecture/plugin-system.md#commands-and-input).
 
 ## Project Selection
 
@@ -82,6 +121,7 @@ maps the stock provider and selector.
 
 After workspace dependency resolution, run
 `dart tools/adele.dart test --target adele_core_extensions` from the repository
-root. Tests cover typed selection/cancellation, exact binding staleness, and the
+root. Tests cover Command identity/composition/availability/admission and async
+retirement, typed selection/cancellation, exact binding staleness, and the
 generated provider contract. Host publication, confinement, and backend ownership
 tests belong to the [app](../../app/README.md#focused-validation).

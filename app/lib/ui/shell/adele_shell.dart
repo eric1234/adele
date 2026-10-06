@@ -26,6 +26,7 @@ final class AdeleShell extends StatelessWidget {
     this.inspection,
     this.inspectionScrollController,
     this.console,
+    this.onCommandPalette,
   });
 
   final Project? project;
@@ -49,11 +50,20 @@ final class AdeleShell extends StatelessWidget {
   final Widget? inspection;
   final ScrollController? inspectionScrollController;
   final Widget? console;
+  final VoidCallback? onCommandPalette;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        actions: [
+          IconButton(
+            key: const ValueKey('command-palette-button'),
+            tooltip: 'Show Command Palette',
+            onPressed: onCommandPalette,
+            icon: const Icon(Icons.search),
+          ),
+        ],
         title: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(

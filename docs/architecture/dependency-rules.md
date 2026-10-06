@@ -72,10 +72,11 @@ implementations into the normal application runtime.
 ### Special ownership rules
 
 - **`adele_core_extensions`** owns only core-owned extension contracts with no
-  natural existing public domain owner. Project selection and provider backing
-  preparation are narrow examples, not a template for moving all extension points
-  here. These pure-Dart contracts use public capability/transport APIs, not SQLite
-  or filesystem hosting. New APIs normally belong with their product,
+  natural existing public domain owner. Presentation-independent Commands, Project
+  selection, and provider backing preparation are concrete examples, not a template
+  for moving all extension points here. These pure-Dart contracts use the public
+  extension registry and, where needed, capability/transport APIs, not Flutter,
+  SQLite, or filesystem hosting. New APIs normally belong with their product,
   orchestration, tool, Environment, UI, or plugin-domain owner.
 - **`adele_product`** remains independent of executable strategy/runtime/UI layers
   and extension registration. Its `adele_capabilities` dependency supplies generic
