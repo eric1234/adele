@@ -103,8 +103,9 @@ Commands are presentation-independent semantic operations, with core-owned
 composition, exact binding resolution, availability, and invocation admission in
 `adele_core_extensions`. The application hosts a global Command Palette over those
 contracts. Native/in-process registration works independently of presentation
-contributions; prepared frontend/backend adapters and keybindings remain future
-input/hosting work. See [Commands and input](plugin-system.md#commands-and-input).
+contributions, as do context-free backend Commands adapted from backend-ready
+advertisements. Prepared-frontend adapters, dynamic contextual backend availability,
+and keybindings remain future work. See [Commands and input](plugin-system.md#commands-and-input).
 
 UI presents and invokes functionality; displaying a control does not make it the
 semantic owner of the operation. Plugin frontend presentation is dynamically

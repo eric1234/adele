@@ -54,14 +54,45 @@ object never retargets an old binding. Retirement after admission neither cancel
 an asynchronous invocation nor migrates its completion. Implementation errors
 propagate to the invoking surface for safe containment.
 
-Current registration is native/in-process. Prepared frontend and remote backend
-adapters remain future work, not a semantic requirement that Commands originate
-in UI code or accompany Main Content, Console, or other presentation contributions.
+Registration supports native/in-process contributions and context-free remote
+backend contributions, independently of Main Content, Console, or any frontend.
 The [application palette](../../app/README.md#command-palette) is one consumer;
 keybindings and other future input surfaces can use the same domain. Registration
 changes use the existing registry stream; no general availability notification or
 polling protocol is defined. Cross-system rules belong to
 [Commands and input](../../docs/architecture/plugin-system.md#commands-and-input).
+
+### Remote Commands
+
+[`remote_command.dart`](lib/remote_command.dart) declares the generated unary
+`RemoteCommandService.invoke(String routeId) -> Future<void>` service with ID
+`dev.adele.command.remote` (`remoteCommandServiceId`). Backends dispatch it with
+`RemoteCommandServiceDispatcher`; the app-private `RemoteCommandAdapter` uses
+`RemoteCommandServiceClient` and registers ordinary `CommandContribution`s.
+The native sibling is an ignored artifact configured in `contract_codegen.yaml`.
+
+A backend advertises each Command through ordinary `AdeleExtensionExposure` at
+`dev.adele.extension.commands`, with its own registration `extensionId`, the
+supported `serviceId`, and `configurationContext`. Metadata contains exactly
+`commandId`, `label`, and `routeId` strings. The adapter reuses `CommandId` and
+`CommandContribution` validation; route IDs are 1-256 ASCII characters matching
+`[A-Za-z0-9][A-Za-z0-9._:-]*`. A route is opaque backend-local implementation data,
+not a Command, extension, plugin, configured-instance identity, or authority token.
+Several advertised Commands can use one service/configuration context.
+
+Remote availability is synchronous and local: enabled while that exact extension
+registration/backend is live, failing closed through `ResolvedCommand` when stale
+or ambiguous. There is no availability RPC, backend state projection, polling, or
+invalidation event. A backend omits Commands that should not be exposed for that
+generation. Invocation sends only the advertised route to the captured generated
+service/configuration channel, without host context or services. It never retries
+through a replacement or rejects successful completion merely because registration
+retired after admission; transport termination can still fail in-flight requests.
+
+Prepared-frontend Command hosting, dynamic contextual backend availability, and
+keybindings remain unimplemented. No stock backend needs to advertise a Command;
+the app's real-AOT probe tests the production adapter without inventing a stock
+context-free operation.
 
 ## Project Selection
 
@@ -123,5 +154,5 @@ After workspace dependency resolution, run
 `dart tools/adele.dart test --target adele_core_extensions` from the repository
 root. Tests cover Command identity/composition/availability/admission and async
 retirement, typed selection/cancellation, exact binding staleness, and the
-generated provider contract. Host publication, confinement, and backend ownership
-tests belong to the [app](../../app/README.md#focused-validation).
+generated provider and remote Command contracts. Host publication, confinement,
+and backend ownership tests belong to the [app](../../app/README.md#focused-validation).

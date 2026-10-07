@@ -1,5 +1,6 @@
 sources:
   - packages/core_extensions/lib/project_provider.dart
+  - packages/core_extensions/lib/remote_command.dart
   - packages/environment/lib/adele_environment.dart
   - packages/model_provider/lib/adele_model_provider.dart
   - packages/model_tool/lib/remote_model_tool.dart

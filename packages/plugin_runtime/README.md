@@ -268,8 +268,17 @@ Failure rolls back both phases and closes that attempt's connection;
 retirement synchronously revokes generation infrastructure and removes both sets
 before awaiting adapter cleanup or connection close. Local failure and later
 termination do not remove unrelated registrations or replacements. The app supplies
-the inference-source, model-tool, and orchestration-strategy adapters; runtime
-owns none of those points' metadata or composition rules.
+the context-free Command, inference-source, model-tool, and orchestration-strategy
+adapters; runtime owns none of those points' metadata or composition rules.
+
+The [Command adapter](../core_extensions/README.md#remote-commands) uses local
+`RemoteExtensionContext.validate` for synchronous availability and its captured
+`channel` for generated invocation, not `RemoteExtensionContext.invoke` or an
+operation-scoped grant.
+There is no availability RPC or late registration-liveness check after admission.
+Backend-only installations register through this same activation path without
+prepared frontend descriptors; the application palette consumes the ordinary
+registry and its membership changes.
 
 `PluginBackendActivation.ownsProvider` delegates to
 `PluginCapabilityActivation.owns` and generic capability registration `.owns`
