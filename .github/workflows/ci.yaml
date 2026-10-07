@@ -113,7 +113,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
 
       - name: Install pinned native editor compiler
-        if: ${{ matrix.name == 'adele_desktop' }}
+        if: ${{ matrix.nativeCodeEditor }}
         run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
 
       - name: Install pinned Flutter toolchain

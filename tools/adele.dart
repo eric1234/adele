@@ -242,8 +242,9 @@ const List<TestTarget> testTargets = <TestTarget>[
   TestTarget(
     name: 'source_editor_frontend',
     path: 'plugins/source_editor/packages/frontend',
-    executable: 'dart',
+    executable: 'flutter',
     arguments: <String>['test'],
+    nativeCodeEditor: true,
   ),
   TestTarget(
     name: 'scripted_model_contract',
@@ -294,6 +295,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
     ciTestConcurrency: 1,
     linuxDesktopDeps: true,
+    nativeCodeEditor: true,
   ),
 ];
 
@@ -861,6 +863,7 @@ String testPlanJson([List<TestTarget> targets = testTargets]) {
         <String, Object?>{
           'name': target.name,
           'linuxDesktopDeps': target.linuxDesktopDeps,
+          'nativeCodeEditor': target.nativeCodeEditor,
           'ciTestConcurrency': target.ciTestConcurrency,
         },
     ],
@@ -874,7 +877,7 @@ Future<int> _runTests(TestOptions options) async {
   await prepareCodeEditorSource(Directory.current);
   await runContractCodegen(repositoryRoot: Directory.current);
   final Directory? codeEditorLibrary =
-      targets.any((target) => target.name == 'adele_desktop')
+      targets.any((target) => target.nativeCodeEditor)
       ? await buildNativeCodeEditorForTests(Directory.current)
       : null;
   return withCodeEditorSource(Directory.current, (source) async {
@@ -908,7 +911,7 @@ Future<int> _runTests(TestOptions options) async {
           mode: ProcessStartMode.inheritStdio,
           runInShell: Platform.isWindows,
           workingDirectory: target.path,
-          environment: target.name == 'adele_desktop'
+          environment: target.nativeCodeEditor
               ? {
                   'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR':
                       codeEditorLibrary!.path,

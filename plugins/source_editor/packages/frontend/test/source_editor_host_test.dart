@@ -19,8 +19,8 @@ import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../tools/stock_frontend_descriptors.dart';
-import '../tool/source_editor_frontend_compiler.dart';
+import '../../../../../app/tool/source_editor_frontend_compiler.dart';
+import '../../../../../tools/stock_frontend_descriptors.dart';
 
 const _path = 'lib/source.dart';
 const _original = 'original source\n';
@@ -37,7 +37,7 @@ void main() {
     final installed = await Directory('${temporary.path}/source').create();
     await File('${installed.path}/frontend.evc').writeAsBytes(
       await compileSourceEditorFrontend(
-        repositoryRoot: Directory.current.parent,
+        repositoryRoot: Directory.current.parent.parent.parent.parent,
       ),
     );
     await File(

@@ -51,7 +51,7 @@ These are available operations, not a checklist to run for every edit.
 | `format --check` | Checks repository Dart formatting without rewriting files; formatting differences fail. |
 | `generate --check` | Verifies current local generated siblings without writing; missing or stale output fails. |
 | `analyze` | Prepares/verifies CodeForge source, regenerates current contracts, then analyzes repository tools, tool tests, and maintained Dart/Flutter analysis targets with fatal infos. |
-| `test` | Prepares/verifies CodeForge source and regenerates contracts before workers; selecting `adele_desktop` also builds its pinned native editor test library and supplies the loader environment. |
+| `test` | Prepares/verifies CodeForge source and regenerates contracts before workers; selecting any target declaring `nativeCodeEditor` builds one shared pinned native editor test library and supplies the loader environment only to those targets. |
 | `check` | Runs `generate --check`, then format check, then analysis, then tests, stopping between phases on failure. |
 
 `check` does not bootstrap the workspace or run desktop builds/smokes. Its app test
@@ -89,7 +89,7 @@ dart tools/adele.dart test-plan --json
 ```
 
 This exports the maintained registry, including target names, Linux desktop
-dependency requirements, and CI concurrency metadata. It can run before bootstrap
+dependency requirements, native Code Editor requirements, and CI concurrency metadata. It can run before bootstrap
 without resolving dependencies or generating artifacts. It is not automatic
 discovery of every package containing tests.
 
@@ -105,7 +105,8 @@ The local two-process default does not limit CI matrix parallelism.
 
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.
-`chat_strategy_frontend`, `command_tools_frontend`, and `openai_frontend` run
+`chat_strategy_frontend`, `command_tools_frontend`, `openai_frontend`, and
+`source_editor_frontend` run
 that coverage independently with development-only host dependencies and shared
 app-side compiler support. Generic desktop/native infrastructure and whole-product
 multi-plugin integration remain in `adele_desktop`.
@@ -115,7 +116,9 @@ and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
 unchanged activity timing and full-capture deadlines through resource contention.
 Serial CI execution preserves those assertions, full transcript volumes, and all
 test selection. The non-CI target retains Flutter's normal worker default.
-The app target requires Rust 1.93.0 for its CodeForge library; source-only bootstrap
+The app and Source Editor targets require Rust 1.93.0 for their shared CodeForge
+library; Source Editor does not require Linux desktop or PTY prerequisites.
+Source-only bootstrap
 and tooling tests do not. Follow [native preparation](toolchain.md#native-editor-preparation)
 and use an explicit pinned `FLUTTER_ROOT`, not just a Dart executable selected by
 a version-manager shim.
@@ -162,7 +165,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
 | Grouped Main Content ownership/layout | [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart), [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart), [`test/adele_shell_test.dart`](../../app/test/adele_shell_test.dart) (registered groups only, ordinary ordering including Chat, zero-pane geometry, contiguous groups, stable panes, equal individual widths/minima, local reveal/focus, departure/retirement, and canonical Session context independent of view availability) |
 | Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (provider-free canonical Session/Environment context without grants, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
-| Source retained data/native owners and captured file authority | [`test/source_editor_host_test.dart`](../../app/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart), [`test/environment_access_bridge_test.dart`](../../app/test/environment_access_bridge_test.dart) (actual Source EVC, explicit-operation recovery without same-capture retry/migration, unchanged expected revisions, finite Save/Close, hidden exit, denied grants, and structured failures); see [focused Source checks](#focused-source-checks) |
+| Source retained data/native owners and captured file authority | [`source_editor_frontend/test/source_editor_host_test.dart`](../../plugins/source_editor/packages/frontend/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart), [`test/environment_access_bridge_test.dart`](../../app/test/environment_access_bridge_test.dart) (actual Source EVC, explicit-operation recovery without same-capture retry/migration, unchanged expected revisions, finite Save/Close, hidden exit, denied grants, and structured failures); see [focused Source checks](#focused-source-checks) |
 | Normal Source workflow and exit cancellation | Source cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (stock catalog/EVC and real Git worktrees, Session/Environment retention without Chat or Run, conditional Save/conflict/Close, and hidden unsaved exit cancellation without closing an active Run) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
@@ -288,9 +291,11 @@ dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target adele_tools
 ```
 
-The Source target runs pure-Dart policy cases in
-[`source_documents_test.dart`](../../plugins/source_editor/packages/frontend/test/source_documents_test.dart),
-not a substitute for native/EVC coverage. Public resolver cases are in
+The Source target runs both isolated pure-Dart policy cases in
+[`source_documents_test.dart`](../../plugins/source_editor/packages/frontend/test/source_documents_test.dart)
+and real prepared-EVC/native integration in
+[`source_editor_host_test.dart`](../../plugins/source_editor/packages/frontend/test/source_editor_host_test.dart)
+through Flutter, with native editor preparation handled by the maintained runner. Public resolver cases are in
 [`display_source_file_test.dart`](../../packages/ui/test/display_source_file_test.dart).
 Catalog checks own explicit permissions/actions/operations and hook validation;
 tooling checks own workspace/analysis/test discovery, stock descriptor entrypoints,
@@ -303,12 +308,11 @@ generic action-chrome checks need no native editor library:
 flutter test --no-pub --concurrency 1 test/environment_text_files_test.dart test/environment_access_bridge_test.dart test/main_content_controller_test.dart test/main_content_host_test.dart
 ```
 
-For the native Source paths, first run `dart tools/adele.dart build-code-editor-tests`
+For the app-owned whole-product Source workflow, first run `dart tools/adele.dart build-code-editor-tests`
 from the repository root and set `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR`
 to the absolute directory it prints. Then, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/source_editor_host_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --name 'normal Source Editor'
 ```
 
