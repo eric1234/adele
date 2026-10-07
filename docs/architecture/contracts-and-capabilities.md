@@ -206,6 +206,25 @@ management are not established by these live routes. See
 [profiles and configuration](profiles-and-configuration.md), and
 [`capabilities`](../../packages/capabilities/README.md).
 
+### Remote Commands
+
+Context-free backend Commands reuse `AdeleExtensionExposure` in backend readiness,
+not installed frontend descriptors or a Command-specific envelope. The app adapts
+the advertised semantic identity, label, and opaque implementation route into the
+existing Command extension point. Generated invocation captures the exact backend,
+configuration context, and service; the route payload distinguishes implementations
+within that service without selecting a generation or granting authority.
+
+The remote Command service has only unary invocation, no availability operation
+and no host invocation context or host services. Availability is a local liveness
+check under the [Command domain's synchronous admission rules](plugin-system.md#commands-and-input).
+Registration retirement after admission does not generically cancel the operation
+or invalidate successful completion; actual transport termination may fail it.
+No invocation token or empty operation-scoped grant is manufactured for this call.
+Separately configured backend infrastructure access is not enlarged by implementing
+a Command. Exact contract and metadata shape belong to
+[core extensions](../../packages/core_extensions/README.md#remote-commands).
+
 ## Own-backend frontend requests
 
 Prepared frontends can use generated unary and server-streaming clients to call
@@ -503,6 +522,6 @@ owns the private database and core graph.
 | Remote model-tool contract | [`packages/model_tool/`](../../packages/model_tool/) |
 | Environment authorized host services | [`packages/environment/`](../../packages/environment/) |
 | Relational infrastructure contract / service-entry validation | [`packages/project_storage/`](../../packages/project_storage/), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
-| App-side remote adapters | [`remote_inference_context_host.dart`](../../app/lib/core/remote_inference_context_host.dart), [`remote_model_tool_host.dart`](../../app/lib/core/remote_model_tool_host.dart), [`remote_orchestration_host.dart`](../../app/lib/core/remote_orchestration_host.dart) |
+| App-side remote adapters | [`remote_command_host.dart`](../../app/lib/core/remote_command_host.dart), [`remote_inference_context_host.dart`](../../app/lib/core/remote_inference_context_host.dart), [`remote_model_tool_host.dart`](../../app/lib/core/remote_model_tool_host.dart), [`remote_orchestration_host.dart`](../../app/lib/core/remote_orchestration_host.dart) |
 | Canonical local authority and Environment facets | [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`inference_context_host.dart`](../../app/lib/core/inference_context_host.dart) |
 | Prepared frontend ownership and bridges | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |

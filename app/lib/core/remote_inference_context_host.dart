@@ -4,11 +4,13 @@ import 'package:adele_orchestration/remote_inference_context.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'remote_command_host.dart';
 import 'remote_model_tool_host.dart';
 import 'remote_orchestration_host.dart';
 
 RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
     RemoteExtensionAdapterRegistry([
+      const RemoteCommandAdapter(),
       const RemoteInferenceContextSourceAdapter(),
       const RemoteModelToolAdapter(),
       const RemoteOrchestrationStrategyAdapter(),

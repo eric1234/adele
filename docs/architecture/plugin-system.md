@@ -7,8 +7,8 @@ Implementation status: Partial
 This document defines plugin ownership, identity, lifecycle, and recursive typed
 composition. ADELE implements generic registration/discovery/liveness and several
 concrete extension-point families. The broader recursive ecosystem, general
-profile/activation management, plugin Command adapters/keybindings, and full plugin-management
-and productization remain incomplete. Public plugin APIs remain experimental.
+profile/activation management, prepared-frontend Command adapters/keybindings, and
+full plugin-management and productization remain incomplete. Public plugin APIs remain experimental.
 Source/tests establish current behavior; [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md)
 records the recursive extension decision and its rationale.
 
@@ -279,14 +279,24 @@ Command infrastructure imposes no cancellation on retirement; completion follows
 the implementation's owning-domain semantics. Consumers contain invocation
 failures rather than exposing arbitrary exception text as user-facing output.
 
-The current implementation accepts native/in-process contributions. Prepared
-frontend invocation bridges and backend advertisements/remote adapters remain
-unimplemented. That is a hosting limit, not a requirement for Commands to originate
-in UI code: frontend-only, backend-only, mixed, and presentation-free plugins may
-eventually implement the same semantic contract. Registration does not require
-Main Content, Console, Task Browser, or another Flutter contribution. Implementations
-capture their deliberately authorized services; no generalized Command context
-supplies Project/Task/Session/Environment authority.
+The current implementation accepts native/in-process contributions and
+context-free backend Commands through ordinary backend-ready extension exposures.
+The app-private remote adapter registers the same public contribution; the palette
+does not distinguish its origin. A backend-only installation needs no prepared
+frontend, Main Content, Console, Task Browser, or other presentation contribution.
+Prepared-frontend Command invocation bridges remain unimplemented.
+
+For remote Commands, applicability means only that the exact contribution is live.
+Availability validates local registration/backend liveness synchronously, without
+an RPC, asynchronous cache, polling, or invalidation event. A backend that should
+not expose a Command omits its advertisement for that generation. Dynamic
+Project/Task/Session/Environment-sensitive backend availability remains deferred.
+Invocation uses generated transport on the exact captured backend/configuration
+route, with no replacement lookup, retry, or post-completion registration check.
+Backend termination can naturally fail an admitted request. The call carries no
+host invocation context or host-service grant; no generalized Command context
+supplies authority. See [remote Command transport](contracts-and-capabilities.md#remote-commands)
+and the [public API](../../packages/core_extensions/README.md#remote-commands).
 
 Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
 reevaluate availability when presenting/refreshing and at admission, without

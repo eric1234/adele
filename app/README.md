@@ -615,10 +615,14 @@ Dismissal returns an exact resolved Command to application dispatch, allowing th
 invoked operation to present its own input. Navigation and exit dismiss/fence the
 palette; application dispatch checks interaction again and the public domain
 revalidates admission. Failures use a bounded generic snackbar, not exception text.
-Current contributions are native/in-process; no prepared frontend/backend Command
-transport, keybindings, configuration, or projection of Main Content/Console actions
-is implemented. This hosting limit does not require Commands to originate in UI
-code. Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
+Native/in-process and context-free remote backend Commands share this registry and
+palette path. [`RemoteCommandAdapter`](lib/core/remote_command_host.dart) adapts
+backend-ready advertisements through the existing remote adapter registry, without
+requiring a frontend, presentation, or open Project. Backend retirement removes
+its registrations and refreshes an open palette through the existing registry stream.
+Prepared-frontend Command transport, contextual backend availability, keybindings,
+configuration, and projection of Main Content/Console actions remain unimplemented.
+Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
 
 <a id="b1-project-opening"></a>
 ### Project opening
@@ -1277,7 +1281,7 @@ repository-wide deferred-feature ledger here.
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |
 | Model-tool hosting | [`lib/core/model_tool_host.dart`](lib/core/model_tool_host.dart): `buildModelToolCatalogForSession`, `SessionModelToolHostContext` |
 | Inference-context hosting | [`lib/core/inference_context_host.dart`](lib/core/inference_context_host.dart): `SessionInferenceContextSourceContext` |
-| Remote extension adapters | [`lib/core/remote_inference_context_host.dart`](lib/core/remote_inference_context_host.dart), [`lib/core/remote_model_tool_host.dart`](lib/core/remote_model_tool_host.dart), [`lib/core/remote_orchestration_host.dart`](lib/core/remote_orchestration_host.dart) |
+| Remote extension adapters | [`lib/core/remote_command_host.dart`](lib/core/remote_command_host.dart), [`lib/core/remote_inference_context_host.dart`](lib/core/remote_inference_context_host.dart), [`lib/core/remote_model_tool_host.dart`](lib/core/remote_model_tool_host.dart), [`lib/core/remote_orchestration_host.dart`](lib/core/remote_orchestration_host.dart) |
 | Run activity projection | [`lib/core/run_activity_projection.dart`](lib/core/run_activity_projection.dart): `RunActivityProjection` |
 | Policy/common execution UI | [`lib/core/approval_gated_tool_policy.dart`](lib/core/approval_gated_tool_policy.dart), [`lib/ui/execution/`](lib/ui/execution/) |
 | Project selector/native picker and shell | [`lib/frontend/directory_picker_bridge.dart`](lib/frontend/directory_picker_bridge.dart), [`lib/ui/shell/`](lib/ui/shell/), `AdeleApplication` |
