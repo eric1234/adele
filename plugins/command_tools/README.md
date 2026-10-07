@@ -368,8 +368,21 @@ compile-only own-backend, console, and terminal-projection declarations. The
 same `tools/stock_frontend_descriptors.dart` metadata drives normal preparation
 and maintained fixtures; generated native contract siblings remain ignored.
 
-Focused generated-client EVC behavior belongs to
-`packages/frontend/test/command_output_frontend_eval_test.dart`; the real normal-application
+Package-owned rich/compact Inspection coverage belongs to
+[`command_tools_inspection_frontend_eval_test.dart`](packages/frontend/test/command_tools_inspection_frontend_eval_test.dart):
+direct argv boundaries, safe metadata, factual lifecycle/process outcomes, live
+identity, independent subscriptions/retirement, and no duplicate plaintext output.
+Generated-client output presentation behavior remains in
+[`command_output_frontend_eval_test.dart`](packages/frontend/test/command_output_frontend_eval_test.dart).
+Both reuse the app compiler/host through development-only dependencies and run
+once through the ordinary frontend target, from the repository root:
+
+```sh
+dart tools/adele.dart test --target command_tools_frontend
+```
+
+Mixed-plugin and generic Session/Inspection composition remains in
+`app/test/tool_inspection_frontend_eval_test.dart`; the real normal-application
 path belongs to `app/test/core/normal_chatgpt_run_integration_test.dart`. The
 latter uses local deterministic model responses and socket-gated Command/Git AOT
 output before completion, two identical invocations, simultaneous card/console

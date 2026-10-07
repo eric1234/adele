@@ -143,7 +143,8 @@ text is a bounded preview; this is not a Diff viewer or source editor.
 
 Prepared build-side descriptors identify `applyPatchToolId` for generic frontend
 activation to register `adele_ui`'s `ToolActivityInspectionContribution`. The frontend
-depends only on Flutter and `adele_ui`, not the headless implementation, app, or kernel. Generic
+has production dependencies only on Flutter and `adele_ui`, not the headless
+implementation, app, or kernel. Generic
 app hosting transports data without interpreting patch fields, composes proposals
 in model output order, and uses exact Tool ID/liveness resolution.
 
@@ -161,3 +162,17 @@ no backend failure or native card fallback. The card has no execution or approva
 controls or navigation callbacks: only common host approval UI supplies Allow/Deny.
 Source/Diff navigation and arbitrary plugin drill-down remain deferred. Build-time preparation is documented in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend).
+
+Rich/compact presentation integration belongs to
+[`filesystem_tools_frontend_eval_test.dart`](packages/frontend/test/filesystem_tools_frontend_eval_test.dart):
+canonical requested counts, safe path/outcome display, live identity and independent
+subscriptions/retirement, and stock dual-role registration rollback. It reuses the
+app compiler and prepared-installation support through development-only dependencies.
+Mixed-plugin and generic Session/Inspection composition remains app-owned; see
+[testing and validation](../../docs/development/testing.md).
+
+From the repository root, run:
+
+```sh
+dart tools/adele.dart test --target filesystem_tools_frontend
+```

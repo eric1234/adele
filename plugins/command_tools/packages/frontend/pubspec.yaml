@@ -21,8 +21,10 @@ dev_dependencies:
   adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
+  command_tools_plugin: ^0.1.0
   flutter_test:
     sdk: flutter
+  plugin_runtime: ^0.1.0
   xterm2: 5.2.0
 
 flutter:

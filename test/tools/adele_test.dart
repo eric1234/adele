@@ -565,13 +565,6 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
-    test('does not register a frontend target without standalone tests', () {
-      expect(
-        () => lookupTestTarget('filesystem_tools_frontend'),
-        throwsA(isA<TestUsageException>()),
-      );
-    });
-
     test('discovers the local selector without Linux desktop dependencies', () {
       final TestOptions options = parseTestOptions(<String>[
         '--target',
@@ -604,6 +597,11 @@ void main() {
 
     for (final (name, plugin, file) in [
       (
+        'filesystem_tools_frontend',
+        'filesystem_tools',
+        'filesystem_tools_frontend_eval_test.dart',
+      ),
+      (
         'chat_strategy_frontend',
         'chat_strategy',
         'chat_frontend_eval_test.dart',
@@ -621,6 +619,7 @@ void main() {
         final path = 'plugins/$plugin/packages/frontend';
         expect(testTargets.where((entry) => entry.name == name), hasLength(1));
         expect(target.path, path);
+        expect(target.nativeCodeEditor, isFalse);
         expect(target.executable, 'flutter');
         expect(target.argumentsFor(), ['test']);
         expect(target.argumentsFor(ci: options.ci), ['test']);
@@ -632,6 +631,14 @@ void main() {
         expect(analysis.path, path);
         expect(analysis.flutter, isTrue);
         expect(File('$path/test/$file').existsSync(), isTrue);
+        if (name == 'command_tools_frontend') {
+          expect(
+            File(
+              '$path/test/command_tools_inspection_frontend_eval_test.dart',
+            ).existsSync(),
+            isTrue,
+          );
+        }
         expect(File('app/test/$file').existsSync(), isFalse);
         final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
         final entries = (plan['include']! as List<Object?>)
@@ -639,6 +646,7 @@ void main() {
             .where((entry) => entry['name'] == name);
         expect(entries, hasLength(1));
         expect(entries.single['linuxDesktopDeps'], isFalse);
+        expect(entries.single['nativeCodeEditor'], isFalse);
         expect(entries.single['ciTestConcurrency'], isNull);
         expect(lookupTestTarget('adele_desktop').path, 'app');
         expect(
@@ -1102,7 +1110,10 @@ void main() {
       expect(frontend, contains('resolution: workspace\n'));
       expect(frontend, contains('  adele_ui: ^0.1.0\n'));
       expect(frontend, contains('    sdk: flutter\n'));
-      expect(frontend, isNot(contains('${tool}_plugin')));
+      final production = frontend.split('dev_dependencies:').first;
+      expect(production, isNot(contains('${tool}_plugin')));
+      expect(production, isNot(contains('adele_desktop')));
+      expect(production, isNot(contains('plugin_runtime')));
       final String headless = File(
         'plugins/$tool/pubspec.yaml',
       ).readAsStringSync();
@@ -1110,7 +1121,7 @@ void main() {
       expect(headless, isNot(contains('adele_ui:')));
       expect(headless, isNot(contains('${tool}_frontend')));
     }
-    // Actual EVC tests need Flutter and the app bridge, so use the app target.
+    // Mixed/generic Inspection composition remains application-owned.
     expect(lookupTestTarget('adele_desktop').argumentsFor(), ['test']);
     expect(
       File('app/test/tool_inspection_frontend_eval_test.dart').existsSync(),
@@ -1192,6 +1203,7 @@ void main() {
         'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'filesystem_tools_backend|dart|plugins/filesystem_tools/packages/backend|test',
+        'filesystem_tools_frontend|flutter|plugins/filesystem_tools/packages/frontend|test',
         'search_tools_plugin|dart|plugins/search_tools|test',
         'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
