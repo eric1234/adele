@@ -105,11 +105,29 @@ The local two-process default does not limit CI matrix parallelism.
 
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.
-`chat_strategy_frontend`, `command_tools_frontend`, `openai_frontend`, and
-`source_editor_frontend` run
+`chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
+`openai_frontend`, and `source_editor_frontend` run
 that coverage independently with development-only host dependencies and shared
 app-side compiler support. Generic desktop/native infrastructure and whole-product
 multi-plugin integration remain in `adele_desktop`.
+
+Single-plugin Apply Patch and Run Command rich/compact Inspection semantics live
+in the [Filesystem frontend suite](../../plugins/filesystem_tools/packages/frontend/test/filesystem_tools_frontend_eval_test.dart)
+and [Command Inspection suite](../../plugins/command_tools/packages/frontend/test/command_tools_inspection_frontend_eval_test.dart).
+The Command target also discovers its existing output presentation suite.
+[`app/test/tool_inspection_frontend_eval_test.dart`](../../app/test/tool_inspection_frontend_eval_test.dart)
+retains mixed-plugin retirement/failure isolation and generic Session/Inspection
+composition; generic activation rollback remains in
+[`prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart).
+Focused commands after bootstrap/current generation:
+
+```sh
+# Repository root: single-plugin presentation semantics.
+dart tools/adele.dart test --target filesystem_tools_frontend
+dart tools/adele.dart test --target command_tools_frontend
+# app/: mixed/generic composition.
+flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart
+```
 
 The `adele_desktop` CI target runs Flutter test files with one worker. Its real-AOT
 and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the

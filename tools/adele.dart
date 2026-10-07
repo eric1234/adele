@@ -150,6 +150,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'filesystem_tools_frontend',
+    path: 'plugins/filesystem_tools/packages/frontend',
+    executable: 'flutter',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'search_tools_plugin',
     path: 'plugins/search_tools',
     executable: 'dart',
