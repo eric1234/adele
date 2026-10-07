@@ -287,6 +287,7 @@ void main() {
       );
       final sourceTools = [
         const SearchExecutable.unbound().registration,
+        const GlobExecutable.unbound().registration,
         ...filesystemToolRegistrations(
           await context
               .requireHostService<AuthorizedEnvironmentFileReadFacet>(),
@@ -297,10 +298,10 @@ void main() {
           await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
         ),
       ];
-      expect(materialized, hasLength(6));
+      expect(materialized, hasLength(7));
       expect(
         materialized.map((tool) => tool.modelDefinition.alias).toSet(),
-        hasLength(6),
+        hasLength(7),
       );
       for (final sourceTool in sourceTools) {
         final sourceModel = sourceTool.modelDefinition;
@@ -903,7 +904,7 @@ void main() {
   });
 
   test(
-    'six-tool host preflight mirrors Linux x64 setsid requirement',
+    'stock-tool host preflight mirrors Linux x64 setsid requirement',
     () async {
       await validateDevelopmentSelfHostingCommandHost(
         hostIsLinux: true,
@@ -1660,7 +1661,7 @@ void main() {
           tools['aliases']! as Map<String, Object?>;
       final List<Object?> attempts = tools['attempts']! as List<Object?>;
 
-      expect(run['completedModelInvocations'], 8);
+      expect(run['completedModelInvocations'], 9);
       expect(run['effectiveModelSequence'], everyElement('fake-model'));
       expect(run['hasFinalAssistantResponse'], isTrue);
       expect(aggregates['totalBytesRead'], 12);
@@ -1668,13 +1669,19 @@ void main() {
       expect(aggregates['failedToolCount'], 1);
       expect(aggregates['revisionConflictCount'], 1);
       expect(aggregates['commandCount'], 1);
-      expect(usage['inputTokens'], 3600);
+      expect(usage['inputTokens'], 4500);
       expect(usage['inputTotalComplete'], isTrue);
-      expect(usage['reportedInputInvocations'], 8);
+      expect(usage['reportedInputInvocations'], 9);
       expect(
         (aliases['apply_patch']! as Map<String, Object?>)['proposalCount'],
         2,
       );
+      expect(_attemptEvidence(attempts, 'glob'), <String, Object?>{
+        'pattern': 'lib/*.dart',
+        'matchCount': 1,
+        'incomplete': true,
+        'truncated': false,
+      });
       expect(_attemptEvidence(attempts, 'search'), <String, Object?>{
         'pattern': _searchPattern,
         'path': null,
@@ -2504,6 +2511,7 @@ final class _EvidenceModel implements ModelPort {
 
   static const List<String?> _defaultTurns = <String?>[
     'search',
+    'glob',
     'read_file',
     'apply_patch',
     'apply_patch',
@@ -2555,6 +2563,7 @@ final class _EvidenceModel implements ModelPort {
 
   Map<String, Object?> _arguments(String alias) => switch (alias) {
     'search' => <String, Object?>{'pattern': _searchPattern},
+    'glob' => <String, Object?>{'pattern': 'lib/*.dart'},
     'read_file' => <String, Object?>{'relativePath': 'lib/a.dart'},
     'apply_patch' => _patchArguments,
     'create_file' => <String, Object?>{
@@ -2590,7 +2599,7 @@ final class _FixtureTool implements ToolExecutable {
     effects: <ToolEffect>[
       alias == 'run_command'
           ? ToolEffect.processExecution
-          : alias == 'read_file' || alias == 'search'
+          : alias == 'read_file' || alias == 'search' || alias == 'glob'
           ? ToolEffect.sourceRead
           : ToolEffect.sourceMutation,
     ],
@@ -2668,6 +2677,13 @@ final class _FixtureTool implements ToolExecutable {
   void validateBinding() {}
 
   Map<String, Object?> _hostData(String alias) => switch (alias) {
+    'glob' => <String, Object?>{
+      'matches': <Object?>[
+        {'relativePath': 'lib/a.dart', 'kind': 'file'},
+      ],
+      'incomplete': true,
+      'truncated': false,
+    },
     'search' => <String, Object?>{
       'pattern': _searchPattern,
       'matches': <Object?>[

@@ -36,7 +36,12 @@ void main() {
       });
       final materialized = await backend.next();
       expect(materialized['ok'], isTrue);
-      final descriptor = (materialized['payload']! as List).single! as Map;
+      final descriptors = materialized['payload']! as List;
+      expect(descriptors.map((d) => (d as Map)['modelAlias']), [
+        'search',
+        'glob',
+      ]);
+      final descriptor = descriptors.first! as Map;
       expect(descriptor['toolId'], searchToolId.value);
       expect(descriptor['modelAlias'], 'search');
       expect(descriptor['routeId'], searchToolId.value);

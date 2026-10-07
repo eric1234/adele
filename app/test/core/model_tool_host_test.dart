@@ -313,7 +313,7 @@ void main() {
     final ExtensionRegistration search = const SearchToolsPlugin().activate(
       extensions,
     );
-    expect(await aliases(), <String>{'search'});
+    expect(await aliases(), <String>{'search', 'glob'});
     await search.close();
 
     final ExtensionRegistration command = const CommandToolsPlugin().activate(

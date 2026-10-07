@@ -439,13 +439,14 @@ void main() {
                 ),
                 containsAll(<String>[
                   'search',
+                  'glob',
                   'read_file',
                   'apply_patch',
                   'create_file',
                   'delete_file',
                 ]),
               );
-              expect(tools, hasLength(5));
+              expect(tools, hasLength(6));
               final String encodedTools = jsonEncode(tools);
               for (final String forbidden in <String>[
                 'EnvironmentId',

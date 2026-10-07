@@ -19,7 +19,14 @@ void main() {
     () async {
       final local = const SearchExecutable.unbound().registration;
       fixture.host.close();
-      final descriptor = (await fixture.client.materialize('session')).single;
+      final descriptors = await fixture.client.materialize('session');
+      expect(descriptors.map((d) => d.modelAlias), ['search', 'glob']);
+      expect(descriptors.last.toolId, globToolId.value);
+      expect(descriptors.last.routeId, globToolId.value);
+      expect(descriptors.last.executionHostServices, [
+        authorizedEnvironmentReadServiceId,
+      ]);
+      final descriptor = descriptors.first;
       expect(descriptor.toolId, 'dev.adele.plugin.search-tools.search');
       expect(descriptor.routeId, descriptor.toolId);
       expect(descriptor.toolDescription, local.definition.description);
@@ -147,7 +154,7 @@ void main() {
     'describe uses captured identity without a host channel or authority call',
     () async {
       fixture.host.close();
-      final descriptor = (await fixture.client.materialize('session')).single;
+      final descriptor = (await fixture.client.materialize('session')).first;
       final arguments = await fixture.client.validateAndNormalize(
         descriptor.routeId,
         {'pattern': 'needle', 'path': './src//file.txt'},
@@ -173,6 +180,66 @@ void main() {
         );
       }
       expect(fixture.requests, isEmpty);
+    },
+  );
+
+  test(
+    'Glob route validates, describes without reads and executes directory-only discovery',
+    () async {
+      final files = fixture.bind('glob-token');
+      files.directories[''] = [
+        for (final kind in EnvironmentDirectoryEntryKind.values)
+          EnvironmentDirectoryEntry(
+            name: kind.name,
+            relativePath: kind.name,
+            kind: kind,
+          ),
+      ];
+      for (final arguments in <Map<String, Object?>>[
+        {'pattern': '['},
+        {'pattern': '{,src/}*.dart'},
+        {'pattern': '*', 'path': ''},
+      ]) {
+        await expectLater(
+          fixture.client.validateAndNormalize(globToolId.value, arguments),
+          throwsA(isA<RemoteToolArgumentValidationFailure>()),
+        );
+      }
+      final args = await fixture.client.validateAndNormalize(globToolId.value, {
+        'pattern': '*',
+      });
+      final effects = await fixture.client.describe(
+        globToolId.value,
+        args,
+        'session',
+        'run',
+        'invocation',
+        'environment',
+      );
+      expect(effects.effects, [RemoteToolEffect.sourceRead]);
+      expect(files.reads, isEmpty);
+      final event = await fixture.backend
+          .execute(
+            globToolId.value,
+            args,
+            'session',
+            'run',
+            'invocation',
+            'environment',
+            'glob-token',
+          )
+          .single;
+      expect(event.outcome!.hostData['matches'], [
+        for (final kind in ['directory', 'file', 'other'])
+          {'relativePath': kind, 'kind': kind},
+      ]);
+      expect(files.reads, ['directory:']);
+      expect(
+        fixture.requests.every(
+          (r) => r['serviceId'] == authorizedEnvironmentReadServiceId,
+        ),
+        true,
+      );
     },
   );
 

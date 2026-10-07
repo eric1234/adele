@@ -7,6 +7,10 @@ import 'dart:math' as math;
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:glob/glob.dart';
+import 'package:path/path.dart' as p;
+
+part 'src/glob.dart';
 
 final PluginId searchToolsPluginId = PluginId('dev.adele.plugin.search-tools');
 final ExtensionId searchToolsExtensionId = ExtensionId(
@@ -35,7 +39,10 @@ final class _SearchModelTools implements ModelToolContribution {
     if (fileSystem.sessionId != context.sessionId) {
       throw StateError('The filesystem authority belongs to another Session.');
     }
-    return <ToolRegistration>[SearchExecutable(fileSystem).registration];
+    return <ToolRegistration>[
+      SearchExecutable(fileSystem).registration,
+      GlobExecutable(fileSystem).registration,
+    ];
   }
 }
 

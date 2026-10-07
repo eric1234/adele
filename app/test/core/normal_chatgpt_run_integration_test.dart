@@ -3405,6 +3405,7 @@ void main() {
               tools.map((tool) => tool['name']),
               unorderedEquals([
                 'search',
+                'glob',
                 'read_file',
                 'apply_patch',
                 'create_file',

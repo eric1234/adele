@@ -25,7 +25,7 @@ const List<String> developmentSelfHostingPhases = <String>[
 
 const String developmentSelfHostingHostRequirementMessage =
     'ADELE developer self-hosting currently requires Linux x64 with setsid '
-    'because the maintained six-tool profile includes run_command.';
+    'because the maintained stock-tool profile includes run_command.';
 
 const List<String> _developmentSelfHostingSetSidCandidates = <String>[
   '/usr/bin/setsid',

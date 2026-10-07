@@ -15,13 +15,16 @@ final class SearchToolsBackend implements RemoteModelToolService {
 
   @override
   Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
-    final registration = const SearchExecutable.unbound().registration;
     return [
-      RemoteToolDescriptor.fromLocal(
-        registration,
-        routeId: searchToolId.value,
-        executionHostServices: const [authorizedEnvironmentReadServiceId],
-      ),
+      for (final registration in [
+        const SearchExecutable.unbound().registration,
+        const GlobExecutable.unbound().registration,
+      ])
+        RemoteToolDescriptor.fromLocal(
+          registration,
+          routeId: registration.definition.id.value,
+          executionHostServices: const [authorizedEnvironmentReadServiceId],
+        ),
     ];
   }
 
@@ -33,9 +36,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
     _requireRoute(routeId);
     final CanonicalToolArguments arguments;
     try {
-      arguments = const SearchExecutable.unbound().validateAndNormalize(
-        proposedArguments,
-      );
+      arguments = await _tool(routeId).validateAndNormalize(proposedArguments);
     } on FormatException catch (error) {
       throw RemoteToolArgumentValidationFailure(
         code: 'invalid_arguments',
@@ -56,9 +57,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
     String? environmentId,
   ) async {
     _requireRoute(routeId);
-    final tool = SearchExecutable(
-      _OperationReadFacet(sessionId, environmentId),
-    );
+    final tool = _tool(routeId, _OperationReadFacet(sessionId, environmentId));
     return RemoteEffectDescription.fromLocal(
       await tool.describe(
         arguments.toLocal(),
@@ -83,6 +82,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
   ) async* {
     _requireRoute(routeId);
     final tool = _operationTool(
+      routeId,
       sessionId,
       environmentId,
       hostInvocationContext,
@@ -100,7 +100,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
   }
 
   void _requireRoute(String routeId) {
-    if (routeId != searchToolId.value) {
+    if (routeId != searchToolId.value && routeId != globToolId.value) {
       throw ArgumentError.value(
         routeId,
         'routeId',
@@ -109,7 +109,23 @@ final class SearchToolsBackend implements RemoteModelToolService {
     }
   }
 
-  SearchExecutable _operationTool(
+  ToolExecutable _tool(
+    String routeId, [
+    AuthorizedEnvironmentFileReadFacet? facet,
+  ]) {
+    _requireRoute(routeId);
+    if (routeId == globToolId.value) {
+      return facet == null
+          ? const GlobExecutable.unbound()
+          : GlobExecutable(facet);
+    }
+    return facet == null
+        ? const SearchExecutable.unbound()
+        : SearchExecutable(facet);
+  }
+
+  ToolExecutable _operationTool(
+    String routeId,
     String sessionId,
     String? environmentId,
     String? hostInvocationContext,
@@ -125,7 +141,8 @@ final class SearchToolsBackend implements RemoteModelToolService {
         serviceId: authorizedEnvironmentReadServiceId,
       ),
     );
-    return SearchExecutable(
+    return _tool(
+      routeId,
       _OperationReadFacet(sessionId, environmentId, client: client),
     );
   }
