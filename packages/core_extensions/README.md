@@ -50,12 +50,15 @@ availability getter fails closed to disabled on evaluation failure, retirement,
 or conflict. `invoke()` checks liveness, unique exact resolution, and current
 enabled state immediately before entering the implementation; non-enabled or
 failed evaluation yields `CommandUnavailable`. Reusing IDs or a contribution
-object never retargets an old binding. Retirement after admission neither cancels
-an asynchronous invocation nor migrates its completion. Implementation errors
-propagate to the invoking surface for safe containment.
+object never retargets an old binding. The Command layer neither cancels an admitted
+asynchronous invocation on retirement nor migrates its completion. Implementation-owned
+lifetimes still apply; failures propagate to the invoking surface for safe containment.
 
-Registration supports native/in-process contributions and context-free remote
-backend contributions, independently of Main Content, Console, or any frontend.
+Registration supports native/in-process, context-free remote backend, and
+context-free prepared frontend contributions, independently of Main Content,
+Console, or other presentation. Prepared metadata reuses `CommandId` and
+`CommandContribution.validateLabel`; adaptation and evaluator lifetime belong to
+the [application frontend owner](../../app/README.md#prepared-frontend-activation).
 The [application palette](../../app/README.md#command-palette) is one consumer;
 keybindings and other future input surfaces can use the same domain. Registration
 changes use the existing registry stream; no general availability notification or
@@ -89,8 +92,8 @@ service/configuration channel, without host context or services. It never retrie
 through a replacement or rejects successful completion merely because registration
 retired after admission; transport termination can still fail in-flight requests.
 
-Prepared-frontend Command hosting, dynamic contextual backend availability, and
-keybindings remain unimplemented. No stock backend needs to advertise a Command;
+Dynamic contextual plugin availability/authority and keybindings remain
+unimplemented. No stock backend needs to advertise a Command;
 the app's real-AOT probe tests the production adapter without inventing a stock
 context-free operation.
 

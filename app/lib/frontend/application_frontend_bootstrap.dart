@@ -252,10 +252,11 @@ final class InstalledFrontendActivation {
       if (generation.failure case final failure?) throw failure;
       for (final descriptor in component.extensions) {
         switch (descriptor) {
-          case PreparedProjectSelectorExtension():
+          case PreparedProjectSelectorExtension(:final entrypoint) ||
+              PreparedCommandExtension(:final entrypoint):
             generation.validateOperation(
               library: descriptor.library,
-              entrypoint: descriptor.entrypoint,
+              entrypoint: entrypoint,
             );
         }
       }
@@ -492,6 +493,33 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.extensions) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedCommandExtension():
+            _register(
+              point: commandContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => CommandContribution(
+                id: descriptor.commandId,
+                label: descriptor.label,
+                availability: () => isActive()
+                    ? CommandAvailability.enabled
+                    : CommandAvailability.disabled,
+                invoke: () {
+                  _requireActive(isActive);
+                  return generation.invoke<void>(
+                    library: descriptor.library,
+                    entrypoint: descriptor.entrypoint,
+                    createBridge: () => PreparedFrontendBridges(const []),
+                    decodeResult: (value) {
+                      if (value != null && value is! $null) {
+                        throw const FormatException(
+                          'A prepared Command must return void or null.',
+                        );
+                      }
+                    },
+                  );
+                },
+              ),
+            );
           case PreparedProjectSelectorExtension():
             _register(
               point: projectSelectorContributions,
