@@ -6,13 +6,17 @@ import 'dart:typed_data';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
+import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
+import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
+import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -191,6 +195,37 @@ Future<void> delayedCommand() async {
     final catalog = await PreparedPluginCatalog.discover(root.path);
     expect(catalog.issues, isEmpty);
     return catalog;
+  }
+
+  Future<void> enableConsoleHost() async {
+    await owner.close();
+    final store = InMemoryProductStore();
+    final terminals = EnvironmentTerminalCoordinator(
+      environmentRuntime: EnvironmentRuntime(
+        store: store,
+        registry: CapabilityRegistry(),
+        providerForBinding: (_) => throw StateError(
+          'Activation cannot acquire an Environment provider.',
+        ),
+        retainEnvironment: store.replaceEnvironment,
+      ),
+    );
+    final controller = ConsoleController(extensions);
+    owner = ApplicationFrontendBootstrap(
+      extensions: extensions,
+      consoleHost: PreparedConsoleHost(
+        store: store,
+        terminals: terminals,
+        extensions: extensions,
+        controller: controller,
+      ),
+    );
+    addTearDown(() async {
+      await owner.close();
+      await controller.close();
+      await terminals.close();
+      controller.dispose();
+    });
   }
 
   test('empty snapshot starts and closes once', () async {
@@ -685,6 +720,159 @@ Future<void> delayedCommand() async {
     expect(extensions.discover(commandContributions), isEmpty);
     expect(extensions.discover(mainContentContributions), isEmpty);
   });
+
+  for (final invalid in [
+    'missing target',
+    'non-Console target',
+    'missing action',
+    'no-action target',
+    'read-only target',
+    'ambiguous target',
+    'foreign registered target',
+  ]) {
+    test('Console-action $invalid fails before any publication', () async {
+      await enableConsoleHost();
+      ExtensionRegistration? foreign;
+      if (invalid == 'foreign registered target') {
+        foreign = extensions.register(
+          point: consoleContributions,
+          id: ExtensionId('dev.example.target.console'),
+          value: ConsoleContribution(
+            actions: [
+              ConsoleCreationAction(
+                id: 'create',
+                label: 'Foreign action',
+                create: (_) => fail('Cannot execute a foreign action.'),
+              ),
+            ],
+          ),
+        );
+        addTearDown(foreign.close);
+      }
+      final publications = <ExtensionId>[];
+      final subscription = extensions.changes.listen((_) {
+        publications.addAll([
+          ...extensions
+              .discover(mainContentContributions)
+              .map((entry) => entry.id),
+          ...extensions.discover(commandContributions).map((entry) => entry.id),
+          ...extensions
+              .discover(consoleContributions)
+              .where((entry) => !(foreign?.owns(entry) ?? false))
+              .map((entry) => entry.id),
+        ]);
+      });
+      addTearDown(subscription.cancel);
+      await install(
+        'invalid',
+        [
+          _sessionDescriptor('not-published'),
+          if (invalid == 'non-Console target')
+            {
+              ..._sessionDescriptor('target'),
+              'extensionId': 'dev.example.target.console',
+            },
+          if (invalid == 'missing action' || invalid == 'ambiguous target')
+            _consoleDescriptor('target'),
+          if (invalid == 'ambiguous target') _consoleDescriptor('target'),
+          if (invalid == 'read-only target' || invalid == 'no-action target')
+            {
+              ..._consoleDescriptor('target'),
+              'readOnly': invalid == 'read-only target',
+              'actions': <Object?>[],
+            },
+        ],
+        extensionDescriptors: [
+          _commandDescriptor('not-published', 'voidCommand'),
+          {
+            ..._consoleCommandDescriptor('target'),
+            if (invalid == 'missing action') 'actionId': 'not-an-action',
+          },
+        ],
+      );
+      await owner.start(await discover());
+      await Future<void>.delayed(Duration.zero);
+      final generation = owner.generations.single;
+      expect(generation.state, InstalledFrontendState.failed);
+      expect(generation.failure, isA<StateError>());
+      expect(generation.registrations, isEmpty);
+      expect(publications, isEmpty);
+      expect(extensions.discover(commandContributions), isEmpty);
+      expect(extensions.discover(mainContentContributions), isEmpty);
+      expect(
+        extensions.discover(consoleContributions),
+        hasLength(foreign == null ? 0 : 1),
+      );
+      expect(foreign?.isClosed, foreign == null ? isNull : isFalse);
+    });
+  }
+
+  test(
+    'Console-action registration collision rolls back only its acquired generation',
+    () async {
+      await enableConsoleHost();
+      var calls = 0;
+      final unrelated = extensions.register(
+        point: commandContributions,
+        id: ExtensionId('dev.example.conflict.registration'),
+        value: CommandContribution(
+          id: CommandId('dev.example.unrelated'),
+          label: 'Unrelated',
+          availability: () => CommandAvailability.enabled,
+          invoke: () => calls++,
+        ),
+      );
+      addTearDown(unrelated.close);
+      final visibleFailedBindings = <ExtensionId>[];
+      final subscription = extensions.changes.listen((_) {
+        for (final generation in owner.generations) {
+          if (generation.state != InstalledFrontendState.failed) continue;
+          for (final binding in <ExtensionBinding<Object>>[
+            ...extensions.discover(commandContributions),
+            ...extensions.discover(consoleContributions),
+            ...extensions.discover(mainContentContributions),
+          ]) {
+            if (generation.registrations.any((entry) => entry.owns(binding))) {
+              visibleFailedBindings.add(binding.id);
+            }
+          }
+        }
+      });
+      addTearDown(subscription.cancel);
+      await install(
+        'a-conflict',
+        [_sessionDescriptor('rolled-back'), _consoleDescriptor('target')],
+        extensionDescriptors: [
+          _consoleCommandDescriptor('target'),
+          {
+            ..._consoleCommandDescriptor('target'),
+            'extensionId': 'dev.example.conflict.registration',
+            'commandId': 'dev.example.conflict',
+          },
+        ],
+      );
+      await install('b-healthy', [_sessionDescriptor('healthy')]);
+      await owner.start(await discover());
+      await Future<void>.delayed(Duration.zero);
+      final failed = owner.generations.first;
+      expect(failed.state, InstalledFrontendState.failed);
+      expect(failed.failure, isA<ExtensionRegistrationException>());
+      expect(failed.registrations, hasLength(3));
+      expect(failed.registrations.every((entry) => entry.isClosed), isTrue);
+      expect(visibleFailedBindings, isEmpty);
+      expect(unrelated.isClosed, isFalse);
+      expect(extensions.discover(consoleContributions), isEmpty);
+      final retained = CommandResolver(extensions).discover().single;
+      expect(unrelated.owns(retained.binding), isTrue);
+      await retained.invoke();
+      expect(calls, 1);
+      expect(
+        extensions.discover(mainContentContributions).single.id,
+        ExtensionId('dev.example.healthy.session'),
+      );
+      expect(owner.generations.last.state, InstalledFrontendState.active);
+    },
+  );
 
   test('prepared duplicate Command IDs use ordinary ambiguity', () async {
     await install(
@@ -1276,6 +1464,28 @@ Map<String, Object?> _commandDescriptor(String name, String entrypoint) =>
       label: 'Prepared $name',
       library: _library,
       entrypoint: entrypoint,
+    ).toJson();
+
+Map<String, Object?> _consoleDescriptor(String name) => {
+  'role': 'console',
+  'extensionId': 'dev.example.$name.console',
+  'library': _library,
+  'entrypoint': 'customPane',
+  'actions': [
+    {
+      'id': 'create',
+      'label': 'Create Console',
+      'entrypoint': 'semanticFailure',
+    },
+  ],
+};
+
+Map<String, Object?> _consoleCommandDescriptor(String name) =>
+    PreparedConsoleActionCommandExtension(
+      extensionId: ExtensionId('dev.example.$name.command'),
+      commandId: CommandId('dev.example.$name'),
+      consoleExtensionId: ExtensionId('dev.example.$name.console'),
+      actionId: 'create',
     ).toJson();
 
 final class _PendingPicker extends FileSelectorPlatform {

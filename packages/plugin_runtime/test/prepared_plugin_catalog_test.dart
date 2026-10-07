@@ -723,6 +723,21 @@ void main() {
     });
   }
 
+  final invalidConsoleActionIds = [
+    '',
+    '  ',
+    'new console',
+    ' new-console',
+    'new-console ',
+    'new-console\n',
+    'new\u0000console',
+    'n\u00e9w-console',
+    '_new-console',
+    '.new-console',
+    '-new-console',
+    'a' * 129,
+  ];
+
   test('Console is frontend-only with ordered immutable actions', () async {
     await install(
       'console',
@@ -939,6 +954,13 @@ void main() {
   }
 
   final invalidConsoles = <String, Object?>{
+    for (final id in invalidConsoleActionIds)
+      'invalid action ID ${jsonEncode(id)}': {
+        ..._console,
+        'actions': [
+          {..._consoleAction, 'id': id},
+        ],
+      },
     for (final field in ['extensionId', 'library', 'entrypoint', 'actions'])
       'missing $field': {..._console}..remove(field),
     for (final field in ['extensionId', 'library', 'entrypoint', 'actions'])
@@ -1323,14 +1345,92 @@ void main() {
     expect(() => frontend.extensions.clear(), throwsUnsupportedError);
   });
 
+  PreparedConsoleActionCommandExtension consoleActionCommand({
+    String actionId = 'new-console',
+  }) => PreparedConsoleActionCommandExtension(
+    extensionId: ExtensionId(_consoleActionCommand['extensionId']!),
+    commandId: CommandId(_consoleActionCommand['commandId']!),
+    consoleExtensionId: ExtensionId(
+      _consoleActionCommand['consoleExtensionId']!,
+    ),
+    actionId: actionId,
+  );
+
+  test(
+    'round-trips Console action Commands without resolving targets',
+    () async {
+      final PreparedFrontendExtension descriptor = consoleActionCommand();
+      expect(descriptor.toJson(), _consoleActionCommand);
+      final directory = await install(
+        'console-command',
+        _manifest(
+          components: {
+            'frontend': {
+              ..._frontend(),
+              'extensions': [descriptor],
+            },
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      final frontend = installation.frontend!;
+      expect(frontend.artifactUri, directory.uri.resolve('frontend.evc'));
+      expect(frontend.presentations, isEmpty);
+      final decoded =
+          frontend.extensions.single as PreparedConsoleActionCommandExtension;
+      expect(
+        decoded.extensionId,
+        ExtensionId(_consoleActionCommand['extensionId']!),
+      );
+      expect(decoded.commandId, CommandId(_consoleActionCommand['commandId']!));
+      expect(decoded.consoleExtensionId, ExtensionId('org.example.console'));
+      expect(decoded.actionId, 'new-console');
+      expect(decoded.toJson(), _consoleActionCommand);
+      expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test('Console actions and Command references share bounded ASCII IDs', () {
+    for (final id in ['a', '0', 'A0._-', 'a' * 128]) {
+      expect(consoleActionCommand(actionId: id).actionId, id);
+      expect(
+        PreparedConsoleAction(
+          id: id,
+          label: 'New Console',
+          entrypoint: 'newConsole',
+        ).id,
+        id,
+      );
+    }
+    for (final id in invalidConsoleActionIds) {
+      expect(() => consoleActionCommand(actionId: id), throwsFormatException);
+      expect(
+        () => PreparedConsoleAction(
+          id: id,
+          label: 'New Console',
+          entrypoint: 'newConsole',
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   test('commands coexist with selectors and presentations in order', () async {
     await install(
       'mixed',
       _manifest(
         components: {
           'frontend': {
-            ..._frontend(presentations: [_session]),
-            'extensions': [_command, _projectSelector, _command],
+            ..._frontend(presentations: [_session, _console]),
+            'extensions': [
+              _command,
+              _consoleActionCommand,
+              _projectSelector,
+              _command,
+            ],
           },
         },
       ),
@@ -1339,15 +1439,132 @@ void main() {
     expect(catalog.issues, isEmpty);
     final frontend = catalog.installations.single.frontend!;
     expect(
-      frontend.presentations.single,
+      frontend.presentations.first,
       isA<PreparedMainContentPresentation>(),
     );
+    expect(frontend.presentations.last, isA<PreparedConsolePresentation>());
     expect(frontend.extensions.map((extension) => extension.toJson()), [
       _command,
+      _consoleActionCommand,
       _projectSelector,
       _command,
     ]);
   });
+
+  test(
+    'Console action Command target semantics remain activation-owned',
+    () async {
+      for (final (index, console) in [
+        {..._console, 'extensionId': 'org.example.other-console'},
+        {..._console, 'actions': <Object?>[]},
+        {..._console, 'actions': <Object?>[], 'readOnly': true},
+      ].indexed) {
+        await install(
+          'unresolved-$index',
+          _manifest(
+            id: 'org.example.unresolved-$index',
+            components: {
+              'frontend': {
+                ..._frontend(presentations: [console]),
+                'extensions': [_consoleActionCommand],
+              },
+            },
+          ),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(3));
+      expect(
+        catalog.installations.map((item) => item.frontend!.extensions.single),
+        everyElement(isA<PreparedConsoleActionCommandExtension>()),
+      );
+    },
+  );
+
+  final invalidConsoleActionCommands = <String, Object?>{
+    'case-sensitive kind': {
+      ..._consoleActionCommand,
+      'kind': 'ConsoleActionCommand',
+    },
+    for (final field in [
+      'unknown',
+      'role',
+      'library',
+      'entrypoint',
+      'label',
+      'displayName',
+      'projectProviderId',
+      'backendServices',
+      'strategyAffinity',
+      'sessionExecution',
+      'hostAdapter',
+      'configuration',
+      'availability',
+      'arguments',
+      'sessionId',
+      'environmentId',
+      'authority',
+    ])
+      'unsupported $field': {..._consoleActionCommand, field: 'unsupported'},
+    for (final field in ['extensionId', 'commandId', 'consoleExtensionId'])
+      for (final id in [
+        'console',
+        'not namespaced',
+        'org.Example.console',
+        'org.example..console',
+        'org.example.console-',
+        'org.example.-console',
+        'org.example_console',
+        'org.ex\u00e4mple.console',
+        ' org.example.console',
+        'org.example.console ',
+        'org.example.console\n',
+      ])
+        'invalid $field ${jsonEncode(id)}': {
+          ..._consoleActionCommand,
+          field: id,
+        },
+    for (final id in invalidConsoleActionIds)
+      'invalid actionId ${jsonEncode(id)}': {
+        ..._consoleActionCommand,
+        'actionId': id,
+      },
+  };
+  for (final entry in invalidConsoleActionCommands.entries) {
+    test(
+      'Console action Command ${entry.key} invalidates only frontend',
+      () async {
+        final directory = await install(
+          'console-commands',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': {
+                ..._frontend(presentations: [_console]),
+                'extensions': [_command, entry.value, _projectSelector],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final installation = catalog.installations.single;
+        expect(installation.frontend, isNull);
+        expect(
+          installation.backendArtifactUri,
+          directory.uri.resolve('backend.aot'),
+        );
+        final issue = catalog.issues.single;
+        expect(issue.component, PreparedPluginComponent.frontend);
+        expect(issue.pluginId, installation.metadata.id);
+        expect(issue.installationDirectory.uri, directory.uri);
+        expect(issue.message, isNotEmpty);
+        if (entry.key.startsWith('invalid actionId')) {
+          expect(issue.message, contains('frontend.extensions[1].actionId'));
+        }
+      },
+    );
+  }
 
   final invalidCommandLabels = [
     '',
@@ -1694,6 +1911,7 @@ void main() {
     _modelNativeActivity,
     _projectSelector,
     _command,
+    _consoleActionCommand,
   ]) {
     final list = descriptor.containsKey('kind')
         ? 'extensions'
@@ -1764,6 +1982,11 @@ void main() {
     'string descriptor': 'session',
     'behavioral extension in presentations': _projectSelector,
     'command extension in presentations': _command,
+    'console action command extension in presentations': _consoleActionCommand,
+    'console action command presentation role': {
+      ..._consoleActionCommand,
+      'role': 'consoleActionCommand',
+    }..remove('kind'),
     'command presentation role': {..._command, 'role': 'command'}
       ..remove('kind'),
     'project selector presentation role': {
@@ -2571,6 +2794,14 @@ const _command = {
   'label': 'Run Command',
   'library': 'package:example_frontend/command.dart',
   'entrypoint': 'runCommand',
+};
+
+const _consoleActionCommand = {
+  'kind': 'consoleActionCommand',
+  'extensionId': 'org.example.console-command-extension',
+  'commandId': 'org.example.new-console',
+  'consoleExtensionId': 'org.example.console',
+  'actionId': 'new-console',
 };
 
 const _toolActivity = {

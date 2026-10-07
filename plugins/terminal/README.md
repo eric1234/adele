@@ -8,7 +8,10 @@ EVC under `dev.adele.plugin.terminal`. Its
 public UI APIs, not the app, a concrete Environment provider, or a PTY library in
 production. The [build-side descriptors](../../tools/stock_frontend_descriptors.dart)
 register `dev.adele.plugin.terminal.console` with the `New Terminal` creation action
-and terminal content entrypoint. There is no Terminal backend or model tool.
+and terminal content entrypoint, plus the stable semantic Command
+`dev.adele.plugin.terminal.new-terminal` under registration
+`dev.adele.plugin.terminal.command.new-terminal`. There is no Terminal backend or
+model tool.
 
 The host owns the shared tab strip, creation menu, selection, visibility,
 confirmation, and forced cleanup. Terminal supplies independent content and its
@@ -18,6 +21,16 @@ and [public UI contract](../../packages/ui/README.md#shared-console) define that
 boundary; the [app map](../../app/README.md#session-console) locates native hosting.
 
 ## Terminal policy
+
+The Command Palette and Console `+` menu invoke the same exact creation action
+and `newTerminal` operation, sharing numbering, policy, and resource ownership.
+The Command is hidden without a presented canonical Session, disabled when its
+canonical Environment association is unavailable or that exact action is pending,
+and otherwise enabled even when the console is collapsed. Invocation reveals the
+console before admission and selects the created terminal through normal Console
+behavior. Retiring the Console contribution also retires its dependent Command;
+retiring only the Command leaves the `+` action usable. The descriptor grants no
+new Session/Environment access and carries no independent label or entrypoint.
 
 `newTerminal` asks the host to create a default interactive shell in the admitted
 Session's canonical Environment association, never a Task-primary fallback. The

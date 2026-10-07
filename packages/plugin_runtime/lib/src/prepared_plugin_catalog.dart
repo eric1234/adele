@@ -38,9 +38,7 @@ final class PreparedFrontendComponent {
 
 /// Data-only behavioral extension metadata, separate from presentation roles.
 sealed class PreparedFrontendExtension {
-  const PreparedFrontendExtension({required this.library});
-
-  final String library;
+  const PreparedFrontendExtension();
 
   Map<String, Object?> toJson();
 }
@@ -50,7 +48,7 @@ final class PreparedCommandExtension extends PreparedFrontendExtension {
     required this.extensionId,
     required this.commandId,
     required this.label,
-    required super.library,
+    required this.library,
     required this.entrypoint,
   }) {
     CommandContribution.validateLabel(label);
@@ -61,6 +59,7 @@ final class PreparedCommandExtension extends PreparedFrontendExtension {
   final ExtensionId extensionId;
   final CommandId commandId;
   final String label;
+  final String library;
   final String entrypoint;
 
   @override
@@ -74,12 +73,39 @@ final class PreparedCommandExtension extends PreparedFrontendExtension {
   };
 }
 
+/// Names an existing console creation action without a separate operation.
+final class PreparedConsoleActionCommandExtension
+    extends PreparedFrontendExtension {
+  PreparedConsoleActionCommandExtension({
+    required this.extensionId,
+    required this.commandId,
+    required this.consoleExtensionId,
+    required this.actionId,
+  }) {
+    _consoleActionId(actionId, 'actionId');
+  }
+
+  final ExtensionId extensionId;
+  final CommandId commandId;
+  final ExtensionId consoleExtensionId;
+  final String actionId;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'consoleActionCommand',
+    'extensionId': extensionId.value,
+    'commandId': commandId.value,
+    'consoleExtensionId': consoleExtensionId.value,
+    'actionId': actionId,
+  };
+}
+
 final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
   const PreparedProjectSelectorExtension({
     required this.extensionId,
     required this.projectProviderId,
     required this.displayName,
-    required super.library,
+    required this.library,
     required this.entrypoint,
   });
 
@@ -88,6 +114,7 @@ final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
   /// Always resolved from this selector's exact owning backend installation.
   final ProviderId projectProviderId;
   final String displayName;
+  final String library;
   final String entrypoint;
 
   @override
@@ -220,7 +247,7 @@ final class PreparedConsoleAction {
     required this.label,
     required this.entrypoint,
   }) {
-    _text(id, 'id');
+    _consoleActionId(id, 'id');
     _text(label, 'label');
     if (label.length > 128) {
       throw const FormatException('label must not exceed 128 characters.');
@@ -622,6 +649,20 @@ PreparedFrontendExtension _extension(Object? value, String label) {
       } on ArgumentError catch (error) {
         throw FormatException('$label.label: ${error.message}');
       }
+    case 'consoleActionCommand':
+      _object(value, label, {
+        'kind',
+        'extensionId',
+        'commandId',
+        'consoleExtensionId',
+        'actionId',
+      });
+      return PreparedConsoleActionCommandExtension(
+        extensionId: ExtensionId(text('extensionId')),
+        commandId: CommandId(text('commandId')),
+        consoleExtensionId: ExtensionId(text('consoleExtensionId')),
+        actionId: _consoleActionId(value['actionId'], '$label.actionId'),
+      );
     case 'projectSelector':
       _object(value, label, {
         'kind',
@@ -957,6 +998,15 @@ String _library(Object? value, String label) {
     );
   }
   return library;
+}
+
+String _consoleActionId(Object? value, String label) {
+  final id = _text(value, label);
+  if (id.length > 128 ||
+      !RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$').hasMatch(id)) {
+    throw FormatException('$label must be a bounded ASCII identifier.');
+  }
+  return id;
 }
 
 String _entrypoint(Object? value, String label) {

@@ -112,6 +112,12 @@ or earlier on owner retirement or host close; it is not reusable background
 creation authority. Late content received after access ends is released rather
 than published, and each content object may be transferred only once.
 
+The host can deliberately expose a semantic Command over one exact creation action.
+Console still owns current-Session admission and resource lifetime; the action ID
+remains local and the public contract gains no Command context or authority API.
+See the [contextual adapter](../../app/README.md#session-console) for exact capture,
+collapsed-console reveal, and asymmetric retirement.
+
 The optional `openPrepared` factory admits declared read-only content through the
 same captured creation scope. A `ConsoleContentDescriptor(key, metadata, data)`
 contains bounded, immutable structured plugin data, not a widget or callback from

@@ -22,6 +22,7 @@ import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
@@ -2885,7 +2886,7 @@ void main() {
   );
 
   testWidgets(
-    'T2 installed Terminal keeps real shells across tabs and Session navigation',
+    'T2 installed Terminal palette and + menu keep real shells across tabs and Session navigation',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -2909,14 +2910,43 @@ void main() {
         (entry) => entry.metadata.id.value == _terminalPluginId,
       );
       expect(installed.backendArtifactUri, isNull);
-      expect(installed.frontend, isNotNull);
+      expect(
+        installed.frontend!.artifactUri,
+        File('${root.path}/$_terminalPluginId/frontend.evc').uri,
+      );
+      final commands = CommandResolver(runtime.extensions);
+      final commandId = CommandId('$_terminalPluginId.new-terminal');
       await _terminalUntil(
         tester,
-        () => runtime.extensions
-            .discover(consoleContributions)
-            .any((entry) => entry.id.value == '$_terminalPluginId.console'),
-        'prepared stock console registration',
+        () =>
+            runtime.extensions
+                .discover(consoleContributions)
+                .any(
+                  (entry) => entry.id.value == '$_terminalPluginId.console',
+                ) &&
+            commands.discover().any((entry) => entry.id == commandId),
+        'prepared stock console and Command registrations',
       );
+      final newTerminal = commands.resolve(commandId);
+      expect(
+        newTerminal.binding.id,
+        ExtensionId('$_terminalPluginId.command.new-terminal'),
+      );
+      expect(newTerminal.label, 'New Terminal');
+
+      Future<void> expectHiddenNewTerminal() async {
+        expect(newTerminal.availability, CommandAvailability.hidden);
+        await _terminalTap(
+          tester,
+          find.byKey(const ValueKey('command-palette-button')),
+        );
+        expect(find.byType(CommandPalette), findsOneWidget);
+        expect(find.widgetWithText(ListTile, 'New Terminal'), findsNothing);
+        expect(find.text(commandId.value), findsNothing);
+        await _terminalTap(tester, find.byTooltip('Close Command Palette'));
+        expect(find.byType(CommandPalette), findsNothing);
+      }
+
       expect(
         runtime.extensions
             .discover(consoleContributions)
@@ -2926,6 +2956,8 @@ void main() {
       expect(runtime.plugins.host, isA<PluginBackendHost>());
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
       expect(find.byType(WorkbenchConsole), findsNothing);
+      expect(fixture.shell(tester).project, isNull);
+      await expectHiddenNewTerminal();
       await fixture.openTask(tester);
       final task = fixture.shell(tester).task!;
       final environment = fixture.shell(tester).environment!;
@@ -2934,26 +2966,54 @@ void main() {
       ).resolveSymbolicLinks();
       expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
       expect(find.byType(WorkbenchConsole), findsNothing);
+      await expectHiddenNewTerminal();
+      expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
       await _tap(tester, 'New Chat Session');
       await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
       final session = _session(tester);
+      expect(runtime.store.session(session.id), same(session));
+      expect(
+        runtime.store.requireSessionAuthority(session.id).environmentId,
+        environment.id,
+      );
       expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
       final console = tester
           .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
           .controller;
+      expect(console.session, same(session));
       expect(console.eligibleTabs, isEmpty);
       expect(console.actions.single.label, 'New Terminal');
+      expect(newTerminal.availability, CommandAvailability.enabled);
 
-      await _newTerminal(tester);
+      await _terminalTap(tester, find.byTooltip('Hide console'));
+      expect(console.visible, isFalse);
+      expect(console.actions, isEmpty);
+      await _terminalTap(
+        tester,
+        find.byKey(const ValueKey('command-palette-button')),
+      );
+      expect(find.byType(CommandPalette), findsOneWidget);
+      final paletteAction = find.widgetWithText(ListTile, 'New Terminal');
+      expect(tester.widget<ListTile>(paletteAction).enabled, isTrue);
+      expect(find.text(commandId.value), findsOneWidget);
+      expect(console.visible, isFalse);
+      expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
+      await _terminalTap(tester, paletteAction);
       await _terminalUntil(
         tester,
         () =>
             runtime.terminals.forEnvironment(environment.id).length == 1 &&
             find.byType(TerminalView).evaluate().isNotEmpty,
-        'first stock Terminal action',
+        'palette reveals console and creates the first stock Terminal',
       );
       final first = runtime.terminals.forEnvironment(environment.id).single;
       final firstEngine = _terminalEngine(tester);
+      final firstTab = console.eligibleTabs.single;
+      expect(find.byType(CommandPalette), findsNothing);
+      expect(console.visible, isTrue);
+      expect(console.selectedTab, same(firstTab));
+      expect(firstTab.metadata.title, 'Terminal 1');
+      expect(first.environmentId, environment.id);
       expect(
         first.request.launchKind,
         EnvironmentTerminalLaunchKind.defaultShell,
@@ -3029,13 +3089,23 @@ void main() {
       final secondEngine = _terminalEngine(tester);
       expect(second, isNot(same(first)));
       expect(second.surface, isNot(same(first.surface)));
+      expect(second.environmentId, environment.id);
+      expect(runtime.terminals.forEnvironment(environment.id), [
+        same(first),
+        same(second),
+      ]);
+      expect(console.eligibleTabs, hasLength(2));
+      expect(console.eligibleTabs.first, same(firstTab));
+      expect(console.selectedTab, same(console.eligibleTabs.last));
+      expect(console.selectedTab!.metadata.title, 'Terminal 2');
       expect(_terminalTab('Terminal 1'), findsOneWidget);
       expect(_terminalTab('Terminal 2'), findsOneWidget);
       await _terminalCommand(
         tester,
-        r'''stty -echo; PS1=; printf '\nSECOND_INHERITED=%s\n' "${T2_VALUE-unset}"; T2_VALUE=second; printf 'SECOND_PID=%s\nSECOND_READY\n' "$$"''',
+        r'''stty -echo; PS1=; printf '\nSECOND_INHERITED=%s\n' "${T2_VALUE-unset}"; T2_VALUE=second; printf 'SECOND_PID=%s\nSECOND_CWD=%s\nSECOND_READY\n' "$$" "$PWD"''',
       );
       await _terminalText(tester, secondEngine, 'SECOND_READY');
+      expect(_terminalBuffer(secondEngine), contains('SECOND_CWD=$worktree\n'));
       expect(
         _terminalBuffer(secondEngine),
         contains('SECOND_INHERITED=unset\n'),
@@ -3085,6 +3155,7 @@ void main() {
       );
       expect(find.byType(TerminalView), findsNothing);
       expect(find.byType(WorkbenchConsole), findsNothing);
+      await expectHiddenNewTerminal();
       expect(runtime.terminals.forEnvironment(environment.id), [
         same(first),
         same(second),
@@ -5644,6 +5715,7 @@ final class _PreparedProduct {
           'frontend': {
             'artifact': 'frontend.evc',
             'presentations': stockFrontendDescriptors[_terminalPluginId]!,
+            'extensions': stockFrontendExtensionDescriptors[_terminalPluginId]!,
           },
         },
       }),

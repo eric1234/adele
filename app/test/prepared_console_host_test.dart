@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
@@ -11,6 +12,7 @@ import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -58,6 +60,7 @@ void main() {
           'frontend': {
             'artifact': 'frontend.evc',
             'presentations': stockFrontendDescriptors[_plugin],
+            'extensions': stockFrontendExtensionDescriptors[_plugin],
           },
         },
       }),
@@ -1536,6 +1539,302 @@ void main() {
   );
 
   test(
+    'Console-action Command uses canonical context and shares Terminal numbering',
+    () async {
+      final command = CommandResolver(fixture.extensions).discover().single;
+      final console = fixture.extensions.discover(consoleContributions).single;
+      expect(command.id, CommandId('$_plugin.new-terminal'));
+      expect(command.label, console.value.actions.single.label);
+      expect(command.availability, CommandAvailability.hidden);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      fixture.controller.setSession(
+        Session(
+          id: fixture.sessionA.id,
+          taskId: fixture.sessionA.taskId,
+          strategyId: fixture.sessionA.strategyId,
+        ),
+      );
+      expect(command.availability, CommandAvailability.hidden);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      fixture.controller.setSession(fixture.sessionA);
+      fixture.controller.setVisible(false);
+      fixture.host.environmentAvailable = false;
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      fixture.host.environmentAvailable = true;
+      for (var i = 0; i < 3; i++) {
+        expect(command.availability, CommandAvailability.enabled);
+        expect(
+          command.binding.value.availability(),
+          CommandAvailability.enabled,
+        );
+      }
+      expect(fixture.controller.visible, isFalse);
+      expect(fixture.provider.restores, 0);
+      expect(fixture.provider.requests, isEmpty);
+      expect(fixture.owners, isEmpty);
+
+      await command.invoke();
+      expect(fixture.controller.visible, isTrue);
+      expect(fixture.controller.selectedTab!.metadata.title, 'Terminal 1');
+      expect(fixture.provider.requests.single.$1, fixture.additional.id);
+      expect(
+        fixture.provider.requests.single.$2.launchKind,
+        EnvironmentTerminalLaunchKind.defaultShell,
+      );
+      expect(fixture.terminals.forEnvironment(fixture.primary.id), isEmpty);
+      await fixture.create();
+      expect(fixture.controller.selectedTab!.metadata.title, 'Terminal 2');
+      fixture.controller.setVisible(false);
+      await command.invoke();
+      expect(fixture.controller.selectedTab!.metadata.title, 'Terminal 3');
+      expect(fixture.controller.eligibleTabs, hasLength(3));
+      expect(fixture.provider.requests.map((request) => request.$1), [
+        fixture.additional.id,
+        fixture.additional.id,
+        fixture.additional.id,
+      ]);
+      expect(fixture.provider.restores, 1);
+      expect(fixture.controller.warning, isNull);
+    },
+  );
+
+  testWidgets(
+    'Console-action palette reads never execute EVC or provider work',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CommandPalette(
+            extensions: fixture.extensions,
+            isInteractive: () => true,
+          ),
+        ),
+      );
+      expect(find.text('New Terminal'), findsNothing);
+      fixture.controller.setSession(fixture.sessionA);
+      fixture.controller.setVisible(false);
+      await tester.enterText(find.byType(TextField), 'terminal');
+      await tester.pump();
+      expect(find.text('New Terminal'), findsOneWidget);
+      expect(tester.widget<ListTile>(find.byType(ListTile)).enabled, isTrue);
+      fixture.host.environmentAvailable = false;
+      await tester.enterText(find.byType(TextField), '$_plugin.new-terminal');
+      await tester.pump();
+      expect(find.text('New Terminal'), findsOneWidget);
+      expect(tester.widget<ListTile>(find.byType(ListTile)).enabled, isFalse);
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(fixture.controller.visible, isFalse);
+      expect(fixture.controller.eligibleTabs, isEmpty);
+      expect(fixture.controller.warning, isNull);
+      expect(fixture.provider.restores, 0);
+      expect(fixture.provider.requests, isEmpty);
+      expect(fixture.owners, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  test(
+    'Console-action Command pending survives reveal and Session context changes',
+    () async {
+      final command = CommandResolver(fixture.extensions).discover().single;
+      fixture.provider.openGate = Completer<void>();
+      fixture.controller.setSession(fixture.sessionA);
+      fixture.controller.setVisible(false);
+      final opening = command.invoke();
+      try {
+        await _turn();
+        expect(fixture.controller.visible, isTrue);
+        expect(fixture.provider.requests, hasLength(1));
+        expect(command.availability, CommandAvailability.disabled);
+        fixture.controller.setVisible(false);
+        fixture.controller.setSession(fixture.sessionPrimary);
+        expect(command.availability, CommandAvailability.disabled);
+        await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+        expect(fixture.controller.visible, isFalse);
+        fixture.controller.setVisible(true);
+        expect(fixture.controller.actions.single.isPending, isTrue);
+        final duplicate = fixture.controller.invoke(
+          fixture.controller.actions.single,
+        );
+        expect(fixture.provider.requests, hasLength(1));
+        fixture.provider.openGate!.complete();
+        await Future.wait([opening, duplicate]);
+        expect(fixture.controller.selectedTab, isNull);
+        expect(fixture.controller.eligibleTabs, isEmpty);
+        expect(fixture.provider.requests.single.$1, fixture.additional.id);
+        expect(command.availability, CommandAvailability.enabled);
+        fixture.controller.setSession(fixture.sessionB);
+        expect(fixture.controller.eligibleTabs, hasLength(1));
+        expect(fixture.controller.actions.single.isPending, isFalse);
+      } finally {
+        if (!fixture.provider.openGate!.isCompleted) {
+          fixture.provider.openGate!.complete();
+        }
+        await opening;
+      }
+    },
+  );
+
+  test(
+    'Console-action EVC failure is a safe Console warning before provider work',
+    () async {
+      final root = await Directory('${temporary.path}/failed-action').create();
+      final installation = await Directory('${root.path}/terminal').create();
+      await File(
+        '${temporary.path}/terminal/frontend.evc',
+      ).copy('${installation.path}/frontend.evc');
+      final manifest =
+          jsonDecode(
+                await File(
+                  '${temporary.path}/terminal/adele_plugin.installation.json',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      // The real stock view entrypoint requires a surface bridge. It resolves at
+      // activation, but invoking it as an action fails before a Terminal request.
+      manifest['components']['frontend']['presentations'][0]['actions'][0]['entrypoint'] =
+          'buildTerminal';
+      await File(
+        '${installation.path}/adele_plugin.installation.json',
+      ).writeAsString(jsonEncode(manifest));
+      final isolated = _Fixture();
+      addTearDown(isolated.close);
+      await isolated.frontends.start(
+        await PreparedPluginCatalog.discover(root.path),
+      );
+      expect(
+        isolated.frontends.generations.single.state,
+        InstalledFrontendState.active,
+      );
+      isolated.controller.setSession(isolated.sessionA);
+      isolated.controller.setVisible(false);
+      final command = CommandResolver(isolated.extensions).discover().single;
+      expect(command.availability, CommandAvailability.enabled);
+      expect(isolated.controller.warning, isNull);
+      await command.invoke();
+      expect(isolated.controller.visible, isTrue);
+      expect(isolated.controller.warning, 'The console could not be created.');
+      expect(isolated.provider.requests, isEmpty);
+      expect(isolated.provider.restores, 0);
+      expect(isolated.controller.eligibleTabs, isEmpty);
+      expect(command.availability, CommandAvailability.enabled);
+      expect(isolated.frontends.generations.single.failure, isNull);
+    },
+  );
+
+  for (final retirement in ['command', 'console', 'raw console', 'frontend']) {
+    test(
+      'Console-action $retirement retirement fences callbacks and same-ID replacements',
+      () async {
+        final commands = CommandResolver(fixture.extensions);
+        final captured = commands.discover().single;
+        final callback = captured.binding.value.invoke;
+        final availability = captured.binding.value.availability;
+        final console = fixture.extensions
+            .discover(consoleContributions)
+            .single;
+        final activation = fixture.frontends.generations.single;
+        final targetRegistration = activation.registrations.singleWhere(
+          (registration) => registration.owns(console),
+        );
+        await fixture.create();
+        final tab = fixture.controller.selectedTab!;
+        switch (retirement) {
+          case 'command':
+            await activation.retire(commandContributions, captured.binding.id);
+            expect(console.validate, returnsNormally);
+            expect(tab.isActive, isTrue);
+            expect(fixture.provider.closes, isEmpty);
+            await fixture.create();
+            expect(fixture.controller.eligibleTabs, hasLength(2));
+          case 'console':
+            await activation.retire(consoleContributions, console.id);
+          case 'raw console':
+            final retiring = targetRegistration.close();
+            // Registration closure is synchronous, ahead of registry listeners.
+            var replacementCalls = 0;
+            final nativeReplacement = fixture.extensions.register(
+              point: consoleContributions,
+              id: console.id,
+              value: ConsoleContribution(
+                actions: [
+                  ConsoleCreationAction(
+                    id: 'new-terminal',
+                    label: 'Replacement',
+                    create: (_) async => replacementCalls++,
+                  ),
+                ],
+              ),
+            );
+            expect(availability(), CommandAvailability.hidden);
+            await expectLater(
+              Future<void>.sync(callback),
+              throwsA(isA<CommandUnavailable>()),
+            );
+            expect(replacementCalls, 0);
+            await retiring;
+            await _turn();
+            expect(commands.discover(), isEmpty);
+            await activation.retire(consoleContributions, console.id);
+            expect(nativeReplacement.isClosed, isFalse);
+            await nativeReplacement.close();
+          case 'frontend':
+            await activation.close();
+        }
+        await _turn();
+        expect(commands.discover(), isEmpty);
+        expect(
+          captured.binding.validate,
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(captured.availability, CommandAvailability.disabled);
+        expect(availability(), CommandAvailability.hidden);
+        if (retirement != 'command') {
+          expect(console.validate, throwsA(isA<StaleExtensionBinding>()));
+          expect(tab.isActive, isFalse);
+          expect(fixture.controller.eligibleTabs, isEmpty);
+          expect(fixture.provider.closes, ['resource-1']);
+        } else {
+          await activation.retire(consoleContributions, console.id);
+        }
+
+        final replacement = ApplicationFrontendBootstrap(
+          extensions: fixture.extensions,
+          consoleHost: fixture.host,
+        );
+        // Closing an activation leaves the shared Console host available.
+        addTearDown(() async {
+          for (final generation in replacement.generations) {
+            await generation.close();
+          }
+        });
+        await replacement.start(catalog);
+        final fresh = commands.resolve(captured.id);
+        expect(fresh.binding.id, captured.binding.id);
+        expect(fresh.binding.isSameRegistration(captured.binding), isFalse);
+        await activation.close();
+        final requests = fixture.provider.requests.length;
+        fixture.controller.setVisible(false);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        await expectLater(
+          Future<void>.sync(callback),
+          throwsA(isA<CommandUnavailable>()),
+        );
+        expect(fixture.controller.visible, isFalse);
+        expect(fixture.provider.requests, hasLength(requests));
+        expect(fresh.binding.validate, returnsNormally);
+        await fresh.invoke();
+        expect(fixture.controller.visible, isTrue);
+        expect(fixture.provider.requests, hasLength(requests + 1));
+        expect(fixture.provider.requests.last.$1, fixture.additional.id);
+      },
+    );
+  }
+
+  test(
     'passive context uses exact Session authority, never Task primary',
     () async {
       expect(
@@ -2020,7 +2319,7 @@ final class _Fixture {
       cleanupTimeout: const Duration(milliseconds: 200),
       presentationLimit: presentationLimit,
     );
-    host = PreparedConsoleHost(
+    host = _ConsoleHost(
       store: store,
       terminals: terminals,
       extensions: extensions,
@@ -2047,7 +2346,7 @@ final class _Fixture {
   late final Session sessionB;
   late final Session sessionPrimary;
   late final EnvironmentTerminalCoordinator terminals;
-  late final PreparedConsoleHost host;
+  late final _ConsoleHost host;
   late final ConsoleController controller;
   late final ApplicationFrontendBootstrap frontends;
 
@@ -2067,6 +2366,21 @@ final class _Fixture {
     await terminals.close();
     controller.dispose();
   }
+}
+
+final class _ConsoleHost extends PreparedConsoleHost {
+  _ConsoleHost({
+    required super.store,
+    required super.terminals,
+    required super.extensions,
+    required super.controller,
+  });
+
+  bool environmentAvailable = true;
+
+  @override
+  Environment? environmentForSession(Session session) =>
+      environmentAvailable ? super.environmentForSession(session) : null;
 }
 
 final class _ObservedPresentation extends ChangeNotifier

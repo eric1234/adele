@@ -7,7 +7,7 @@ Implementation status: Partial
 This document defines plugin ownership, identity, lifecycle, and recursive typed
 composition. ADELE implements generic registration/discovery/liveness and several
 concrete extension-point families. The broader recursive ecosystem, general
-profile/activation management, contextual plugin Commands/keybindings, and
+profile/activation management, general contextual plugin Commands/keybindings, and
 full plugin-management and productization remain incomplete. Public plugin APIs remain experimental.
 Source/tests establish current behavior; [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md)
 records the recursive extension decision and its rationale.
@@ -280,11 +280,12 @@ the implementation's owning-domain semantics. Consumers contain invocation
 failures rather than exposing arbitrary exception text as user-facing output.
 
 The current implementation accepts native/in-process contributions, context-free
-backend Commands through ordinary backend-ready extension exposures, and
-context-free prepared frontend Commands through behavioral `frontend.extensions`
-descriptors. Application adapters register the same public contribution; the palette
-does not distinguish its origin. Backend-only and frontend-only installations need
-no Main Content, Console, Task Browser, or other presentation contribution.
+backend Commands through ordinary backend-ready extension exposures, and prepared
+frontend Commands through behavioral `frontend.extensions` descriptors, including
+context-free operations and explicit contextual Console-action adapters.
+Application adapters register the same public contribution; the palette
+does not distinguish its origin. Context-free backend-only and frontend-only
+Commands need no Main Content, Console, Task Browser, or other presentation contribution.
 
 For remote Commands, applicability means only that the exact contribution is live.
 Availability validates local registration/backend liveness synchronously, without
@@ -298,8 +299,8 @@ host invocation context or host-service grant; no generalized Command context
 supplies authority. See [remote Command transport](contracts-and-capabilities.md#remote-commands)
 and the [public API](../../packages/core_extensions/README.md#remote-commands).
 
-Prepared frontend Commands likewise expose only exact-registration liveness as
-local synchronous availability. They do not evaluate frontend code or receive
+Context-free prepared frontend Commands likewise expose only exact-registration
+liveness as local synchronous availability. They do not evaluate frontend code or receive
 Project/Task/Session/Environment state during availability. A frontend omits the
 descriptor when it should not expose a context-free Command. Invocation captures
 the exact frontend generation and runs the declared no-argument operation in a
@@ -311,11 +312,27 @@ existing frontend lifetime rules; an already-admitted operation may therefore fa
 It is not detached to outlive that generation and never retries through a replacement.
 See [frontend behavioral operations](contracts-and-capabilities.md#frontend-behavioral-operations).
 
+The contextual prepared Console-action adapter exposes one explicitly declared
+sibling creation action as an ordinary Command. Activation validates the exact
+same-component target, captures its live registration and action, and derives the
+label from that action. The local action ID is not a global Command identity.
+Stock Terminal's New Terminal is the first consumer: Console retains canonical
+Session/Environment lookup, admission, bridge, resources, navigation behavior, and
+cleanup. The adapter introduces no generalized Command context or native authority.
+It is hidden without meaningful current Session context or a live target, disabled
+when canonical Environment authority is unavailable or exact creation is pending,
+and otherwise enabled independently of Console visibility. Invocation reveals a
+collapsed Console before fresh admission to the same action used by its `+` menu.
+Creation failures remain contained by Console's safe warning, not a second palette
+diagnostic model. Retiring the target Console retires its dependent Command;
+Command-only retirement leaves Console participation intact. Replacement requires
+fresh bindings and never revives captured callbacks.
+
 Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
 reevaluate availability when presenting/refreshing and at admission, without
-polling or a general state-notification/context-expression protocol. Contextual
-frontend availability and authority, including Terminal New Terminal and Source
-Editor Open Source, remain deferred rather than projecting presentation actions.
+polling or a general state-notification/context-expression protocol. General
+contextual frontend authority, Source Editor Open Source, and automatic projection
+of presentation actions remain deferred.
 Keybinding registration, suggested/default bindings, overrides, and configuration
 remain future work. See the [public API map](../../packages/core_extensions/README.md#commands)
 and [application hosting](../../app/README.md#command-palette).
@@ -495,6 +512,12 @@ navigation; it cannot retarget or steal the new context's selection. Creation
 access ends on action settlement, owner retirement, or host close; late content is
 released rather than published. Retirement also removes exact owned content.
 Replacement requires fresh access, never migration of old bindings.
+
+An explicitly declared semantic Command may delegate to an exact sibling creation
+action without changing this authority or public Console contract. The host takes
+fresh current-context admission after revealing the surface, while pending work is
+recognized by exact owner/action rather than a view-specific action binding.
+
 Content registration is independent of mounted presentation: metadata and lifecycle
 observation may continue while hidden. Presentation is selected-only by default;
 content may explicitly opt into the host's bounded resident working set. Residents
