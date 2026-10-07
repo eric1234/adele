@@ -38,6 +38,11 @@ final class CommandContribution {
     required this.availability,
     required this.invoke,
   }) {
+    validateLabel(label);
+  }
+
+  /// Validates display metadata without constructing an executable contribution.
+  static void validateLabel(String label) {
     if (label.trim().isEmpty ||
         label.length > 160 ||
         RegExp(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]').hasMatch(label)) {

@@ -295,6 +295,16 @@ Their composition and prepared-component boundaries belong to the
 the Local Directory example belong to [`ui`](../../packages/ui/README.md#interpreted-bridges)
 and the [Local Directory Project plugin](../../plugins/local_directory_project/README.md).
 
+Context-free prepared Commands use the same finite-operation evaluator path with
+an empty bridge set. Their no-argument entrypoints must complete with void/null;
+neither descriptor declaration nor invocation supplies product context, native
+callbacks, owning-backend access, directory picking, filesystem/process services,
+Session execution, or retained presentation state. Unavailable bridge calls fail
+normally. The frontend generation owns operation revocation, while the
+[Command domain](plugin-system.md#commands-and-input) owns exact registration and
+unique enabled-state admission. This does not introduce a public Command bridge
+or an authority token.
+
 Explicit user file operations are another narrow frontend grant, not model-tool
 execution. Session/Environment identity is separate provider-free data through the
 [Main Content context](plugin-system.md#grouped-main-content), not a file grant.

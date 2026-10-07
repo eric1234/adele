@@ -110,6 +110,16 @@ Future<dynamic> cyclicResult() async {
 }
 Future<String?> semanticFailure() async { throw StateError('selection failed'); }
 Future<String?> nativeSelector() async => await pickDirectory();
+int commandCalls = 0;
+void voidCommand() {
+  commandCalls++;
+  if (commandCalls != 1) throw StateError('Command runtime was reused.');
+}
+dynamic nullCommand() => null;
+Future<void> asyncCommand() async {}
+Future<void> delayedCommand() async {
+  await Future<void>.delayed(Duration(seconds: 1));
+}
 ''',
       },
       'adele_ui': {
@@ -571,6 +581,291 @@ Future<String?> nativeSelector() async => await pickDirectory();
   );
 
   test(
+    'frontend-only Commands invoke void and null in fresh runtimes without presentations',
+    () async {
+      await install(
+        'commands',
+        [],
+        extensionDescriptors: [
+          _commandDescriptor('sync', 'voidCommand'),
+          _commandDescriptor('null', 'nullCommand'),
+          _commandDescriptor('async', 'asyncCommand'),
+          _commandDescriptor('async-null', 'cancellation'),
+        ],
+      );
+      await owner.start(await discover());
+      final installation = owner.catalog!.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.frontend!.presentations, isEmpty);
+      expect(owner.generations.single.state, InstalledFrontendState.active);
+      expect(owner.generations.single.registrations, hasLength(4));
+      expect(extensions.discover(mainContentContributions), isEmpty);
+      expect(extensions.discover(consoleContributions), isEmpty);
+      expect(extensions.discover(taskBrowserContributions), isEmpty);
+      final commands = CommandResolver(extensions);
+      expect(commands.discover(), hasLength(4));
+      for (final command in commands.discover()) {
+        expect(command.binding.id.value, '${command.id.value}.registration');
+        expect(command.label, 'Prepared ${command.id.value.split('.').last}');
+        expect(command.availability, CommandAvailability.enabled);
+        expect(
+          command.binding.value.availability(),
+          CommandAvailability.enabled,
+        );
+        await command.invoke();
+        await command.invoke();
+      }
+    },
+  );
+
+  test(
+    'Command result, semantic and unavailable native bridge failures stay operation-local',
+    () async {
+      final original = FileSelectorPlatform.instance;
+      final picker = _PendingPicker();
+      FileSelectorPlatform.instance = picker;
+      addTearDown(() => FileSelectorPlatform.instance = original);
+      await install(
+        'commands',
+        [],
+        extensionDescriptors: [
+          for (final name in [
+            'badShape',
+            'recordResult',
+            'cyclicResult',
+            'semanticFailure',
+            'nativeSelector',
+            'voidCommand',
+          ])
+            _commandDescriptor(name.toLowerCase(), name),
+        ],
+      );
+      await owner.start(await discover());
+      final commands = CommandResolver(extensions);
+      final generation = owner.generations.single;
+      expect(generation.state, InstalledFrontendState.active);
+      expect(picker.calls, 0);
+      for (final name in ['badshape', 'recordresult', 'cyclicresult']) {
+        await expectLater(
+          commands.resolve(CommandId('dev.example.$name')).invoke(),
+          throwsFormatException,
+        );
+      }
+      for (final name in ['semanticfailure', 'nativeselector']) {
+        await expectLater(
+          commands.resolve(CommandId('dev.example.$name')).invoke(),
+          throwsA(anything),
+        );
+      }
+      expect(picker.calls, 0);
+      await commands.resolve(CommandId('dev.example.voidcommand')).invoke();
+      expect(generation.state, InstalledFrontendState.active);
+      expect(generation.failure, isNull);
+      for (final command in commands.discover()) {
+        expect(command.binding.validate, returnsNormally);
+        expect(command.availability, CommandAvailability.enabled);
+      }
+    },
+  );
+
+  test('missing Command entrypoint fails before any registration', () async {
+    await install(
+      'commands',
+      [_sessionDescriptor('not-registered')],
+      extensionDescriptors: [
+        _commandDescriptor('valid', 'voidCommand'),
+        _commandDescriptor('absent', 'notInArtifact'),
+      ],
+    );
+    await owner.start(await discover());
+    final generation = owner.generations.single;
+    expect(generation.state, InstalledFrontendState.failed);
+    expect(generation.failure, isNotNull);
+    expect(generation.registrations, isEmpty);
+    expect(extensions.discover(commandContributions), isEmpty);
+    expect(extensions.discover(mainContentContributions), isEmpty);
+  });
+
+  test('prepared duplicate Command IDs use ordinary ambiguity', () async {
+    await install(
+      'commands',
+      [],
+      extensionDescriptors: [
+        _commandDescriptor('duplicate', 'voidCommand'),
+        {
+          ..._commandDescriptor('other', 'asyncCommand'),
+          'commandId': 'dev.example.duplicate',
+        },
+      ],
+    );
+    await owner.start(await discover());
+    final commands = CommandResolver(extensions);
+    final id = CommandId('dev.example.duplicate');
+    expect(owner.generations.single.state, InstalledFrontendState.active);
+    expect(extensions.discover(commandContributions), hasLength(2));
+    expect(commands.discover(), isEmpty);
+    expect(() => commands.resolve(id), throwsA(isA<AmbiguousCommand>()));
+    await owner.generations.single.retire(
+      commandContributions,
+      ExtensionId('dev.example.duplicate.registration'),
+    );
+    final remaining = commands.resolve(id);
+    expect(remaining.binding.id.value, 'dev.example.other.registration');
+    await remaining.invoke();
+  });
+
+  test(
+    'Command registration collision rolls back its generation, not unrelated contributions',
+    () async {
+      var nativeCalls = 0;
+      final existing = extensions.register(
+        point: commandContributions,
+        id: ExtensionId('dev.example.conflict.registration'),
+        value: CommandContribution(
+          id: CommandId('dev.example.native'),
+          label: 'Unrelated native Command',
+          availability: () => CommandAvailability.enabled,
+          invoke: () => nativeCalls++,
+        ),
+      );
+      addTearDown(existing.close);
+      await install(
+        'a-conflict',
+        [_sessionDescriptor('rolled-back')],
+        extensionDescriptors: [
+          _commandDescriptor('rolled-back', 'voidCommand'),
+          _commandDescriptor('conflict', 'asyncCommand'),
+        ],
+      );
+      await install('b-healthy', [_sessionDescriptor('healthy')]);
+      await owner.start(await discover());
+      final failed = owner.generations.first;
+      expect(failed.state, InstalledFrontendState.failed);
+      expect(failed.failure, isA<ExtensionRegistrationException>());
+      expect(failed.registrations, hasLength(2));
+      expect(failed.registrations.every((value) => value.isClosed), isTrue);
+      expect(existing.isClosed, isFalse);
+      final retained = CommandResolver(extensions).discover().single;
+      expect(retained.id, CommandId('dev.example.native'));
+      await retained.invoke();
+      expect(nativeCalls, 1);
+      expect(
+        extensions.discover(mainContentContributions).single.id.value,
+        'dev.example.healthy.session',
+      );
+    },
+  );
+
+  for (final closeFrontend in [false, true]) {
+    final retirement = closeFrontend
+        ? 'frontend close'
+        : 'individual retirement';
+    test(
+      'Command $retirement fences captured bindings and raw callbacks',
+      () async {
+        await install(
+          'commands',
+          [],
+          extensionDescriptors: [
+            _commandDescriptor('replace', 'voidCommand'),
+            _commandDescriptor('sibling', 'asyncCommand'),
+          ],
+        );
+        await owner.start(await discover());
+        final commands = CommandResolver(extensions);
+        final captured = commands.resolve(CommandId('dev.example.replace'));
+        final callback = captured.binding.value.invoke;
+        final availability = captured.binding.value.availability;
+        final sibling = commands.resolve(CommandId('dev.example.sibling'));
+        if (closeFrontend) {
+          await owner.close();
+          expect(commands.discover(), isEmpty);
+          expect(sibling.availability, CommandAvailability.disabled);
+        } else {
+          await owner.generations.single.retire(
+            commandContributions,
+            captured.binding.id,
+          );
+          expect(commands.discover().map((command) => command.id), [
+            sibling.id,
+          ]);
+          await sibling.invoke();
+        }
+        expect(
+          captured.binding.validate,
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(captured.availability, CommandAvailability.disabled);
+        expect(availability(), CommandAvailability.disabled);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        await expectLater(Future<void>.sync(callback), throwsStateError);
+        await install(
+          'commands',
+          [],
+          extensionDescriptors: [_commandDescriptor('replace', 'asyncCommand')],
+        );
+        final replacement = ApplicationFrontendBootstrap(
+          extensions: extensions,
+        );
+        addTearDown(replacement.close);
+        await replacement.start(await discover());
+        final fresh = commands.resolve(captured.id);
+        expect(fresh.binding.id, captured.binding.id);
+        expect(fresh.binding.isSameRegistration(captured.binding), isFalse);
+        await owner.close();
+        expect(fresh.binding.validate, returnsNormally);
+        expect(availability(), CommandAvailability.disabled);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        await expectLater(Future<void>.sync(callback), throwsStateError);
+        await fresh.invoke();
+      },
+    );
+
+    testWidgets('admitted Command completion follows $retirement semantics', (
+      tester,
+    ) async {
+      await tester.runAsync(() async {
+        await install(
+          'commands',
+          [],
+          extensionDescriptors: [
+            _commandDescriptor('delayed', 'delayedCommand'),
+          ],
+        );
+        await owner.start(await discover());
+      });
+      final command = CommandResolver(extensions).discover().single;
+      var settled = false;
+      final outcome = expectLater(
+        command.invoke(),
+        closeFrontend ? throwsStateError : completes,
+      ).then((_) => settled = true);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(settled, isFalse);
+      if (closeFrontend) {
+        // Closure awaits startup futures created in the real async zone.
+        await tester.runAsync(owner.close);
+      } else {
+        await owner.generations.single.retire(
+          commandContributions,
+          command.binding.id,
+        );
+      }
+      expect(command.availability, CommandAvailability.disabled);
+      expect(settled, isFalse);
+      await tester.pump(const Duration(seconds: 1));
+      await outcome;
+      expect(settled, isTrue);
+    });
+  }
+
+  test(
     'partial registration failure rolls back the whole generation only',
     () async {
       final existing = extensions.register(
@@ -973,6 +1268,15 @@ Map<String, Object?> _selectorDescriptor(String name, String entrypoint) => {
   'projectProviderId': 'dev.example.project',
   'entrypoint': entrypoint,
 };
+
+Map<String, Object?> _commandDescriptor(String name, String entrypoint) =>
+    PreparedCommandExtension(
+      extensionId: ExtensionId('dev.example.$name.registration'),
+      commandId: CommandId('dev.example.$name'),
+      label: 'Prepared $name',
+      library: _library,
+      entrypoint: entrypoint,
+    ).toJson();
 
 final class _PendingPicker extends FileSelectorPlatform {
   final pending = Completer<String?>();

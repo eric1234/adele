@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
@@ -42,6 +43,35 @@ sealed class PreparedFrontendExtension {
   final String library;
 
   Map<String, Object?> toJson();
+}
+
+final class PreparedCommandExtension extends PreparedFrontendExtension {
+  PreparedCommandExtension({
+    required this.extensionId,
+    required this.commandId,
+    required this.label,
+    required super.library,
+    required this.entrypoint,
+  }) {
+    CommandContribution.validateLabel(label);
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final ExtensionId extensionId;
+  final CommandId commandId;
+  final String label;
+  final String entrypoint;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'command',
+    'extensionId': extensionId.value,
+    'commandId': commandId.value,
+    'label': label,
+    'library': library,
+    'entrypoint': entrypoint,
+  };
 }
 
 final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
@@ -572,6 +602,26 @@ PreparedFrontendExtension _extension(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('kind')) {
+    case 'command':
+      _object(value, label, {
+        'kind',
+        'extensionId',
+        'commandId',
+        'label',
+        'library',
+        'entrypoint',
+      });
+      try {
+        return PreparedCommandExtension(
+          extensionId: ExtensionId(text('extensionId')),
+          commandId: CommandId(text('commandId')),
+          label: _text(value['label'], '$label.label', blank: true),
+          library: _library(value['library'], '$label.library'),
+          entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+        );
+      } on ArgumentError catch (error) {
+        throw FormatException('$label.label: ${error.message}');
+      }
     case 'projectSelector':
       _object(value, label, {
         'kind',

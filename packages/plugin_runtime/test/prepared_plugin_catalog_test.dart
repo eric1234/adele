@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -1264,6 +1265,228 @@ void main() {
     );
   }
 
+  PreparedCommandExtension command({
+    String label = 'Run Command',
+    String library = 'package:example_frontend/command.dart',
+    String entrypoint = 'runCommand',
+  }) => PreparedCommandExtension(
+    extensionId: ExtensionId(_command['extensionId']!),
+    commandId: CommandId(_command['commandId']!),
+    label: label,
+    library: library,
+    entrypoint: entrypoint,
+  );
+
+  test('round-trips frontend-only commands with zero presentations', () async {
+    final PreparedFrontendExtension descriptor = command();
+    expect(descriptor.toJson(), _command);
+    final commands = [
+      descriptor,
+      for (final label in [
+        '  Command with spaces  ',
+        'Ouvrir le projet \u00e9tendu',
+        'L' * 160,
+        '\u{1f680}' * 80,
+      ])
+        command(
+          label: label,
+          library: 'package:example_frontend/src/another_command.g.dart',
+          entrypoint: r'_runCommand$2',
+        ),
+    ];
+    final directory = await install(
+      'commands',
+      _manifest(
+        components: {
+          'frontend': {..._frontend(), 'extensions': commands},
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final frontend = installation.frontend!;
+    expect(frontend.artifactUri, directory.uri.resolve('frontend.evc'));
+    expect(frontend.presentations, isEmpty);
+    expect(frontend.extensions, everyElement(isA<PreparedCommandExtension>()));
+    final decoded = frontend.extensions.first as PreparedCommandExtension;
+    expect(decoded.extensionId, ExtensionId(_command['extensionId']!));
+    expect(decoded.commandId, CommandId(_command['commandId']!));
+    expect(decoded.label, _command['label']);
+    expect(decoded.library, _command['library']);
+    expect(decoded.entrypoint, _command['entrypoint']);
+    expect(
+      frontend.extensions.map((extension) => extension.toJson()),
+      commands.map((extension) => extension.toJson()),
+    );
+    expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+  });
+
+  test('commands coexist with selectors and presentations in order', () async {
+    await install(
+      'mixed',
+      _manifest(
+        components: {
+          'frontend': {
+            ..._frontend(presentations: [_session]),
+            'extensions': [_command, _projectSelector, _command],
+          },
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final frontend = catalog.installations.single.frontend!;
+    expect(
+      frontend.presentations.single,
+      isA<PreparedMainContentPresentation>(),
+    );
+    expect(frontend.extensions.map((extension) => extension.toJson()), [
+      _command,
+      _projectSelector,
+      _command,
+    ]);
+  });
+
+  final invalidCommandLabels = [
+    '',
+    '   ',
+    '\u00a0',
+    'L' * 161,
+    '\u{1f680}' * 81,
+    'before\u2028after',
+    'before\u2029after',
+    for (var unit = 0; unit <= 0x9f; unit++)
+      if (unit < 0x20 || unit >= 0x7f)
+        'before${String.fromCharCode(unit)}after',
+  ];
+  final invalidCommandOperations = {
+    'library': [
+      '',
+      ' ',
+      'lib/command.dart',
+      'file:///command.dart',
+      'package://example/command.dart',
+      'package:bad-package/command.dart',
+      'package:BadPackage/command.dart',
+      'package:1example/command.dart',
+      'package:example/',
+      'package:example/command',
+      'package:example/command.txt',
+      'package:example/command.dart/',
+      'package:example//command.dart',
+      'package:example/./command.dart',
+      'package:example/nested/../command.dart',
+      'package:example/../../command.dart',
+      r'package:example/src\command.dart',
+      'package:example/%63ommand.dart',
+      'package:example/%2e%2e/command.dart',
+      'package:example/command.dart?query',
+      'package:example/command.dart#fragment',
+      'package:example/my command.dart',
+      ' package:example/command.dart',
+      'package:example/command.dart\n',
+    ],
+    'entrypoint': [
+      '',
+      ' ',
+      'Command.run',
+      'runCommand()',
+      'run-command',
+      '1runCommand',
+      'run Command',
+      ' runCommand',
+      'runCommand ',
+      'runCommand\n',
+      r'run\u0043ommand',
+    ],
+  };
+
+  test('Command constructor validates labels and canonical operations', () {
+    for (final label in invalidCommandLabels) {
+      expect(() => command(label: label), throwsArgumentError);
+    }
+    for (final library in invalidCommandOperations['library']!) {
+      expect(() => command(library: library), throwsFormatException);
+    }
+    for (final entrypoint in invalidCommandOperations['entrypoint']!) {
+      expect(() => command(entrypoint: entrypoint), throwsFormatException);
+    }
+  });
+
+  final invalidCommands = <String, Object?>{
+    'case-sensitive kind': {..._command, 'kind': 'Command'},
+    for (final field in [
+      'unknown',
+      'role',
+      'displayName',
+      'projectProviderId',
+      'backendServices',
+      'strategyAffinity',
+      'sessionExecution',
+      'hostAdapter',
+      'configuration',
+      'availability',
+      'arguments',
+    ])
+      'unsupported $field': {..._command, field: 'unsupported'},
+    for (final field in ['extensionId', 'commandId'])
+      for (final id in [
+        'command',
+        'not namespaced',
+        'org.Example.command',
+        'org.example..command',
+        'org.example.command-',
+        'org.example.-command',
+        'org.example_command',
+        'org.ex\u00e4mple.command',
+        ' org.example.command',
+        'org.example.command ',
+        'org.example.command\n',
+      ])
+        'invalid $field ${jsonEncode(id)}': {..._command, field: id},
+    for (final label in invalidCommandLabels)
+      'invalid label ${jsonEncode(label)}': {..._command, 'label': label},
+    for (final field in invalidCommandOperations.entries)
+      for (final value in field.value)
+        'invalid ${field.key} ${jsonEncode(value)}': {
+          ..._command,
+          field.key: value,
+        },
+  };
+  for (final entry in invalidCommands.entries) {
+    test('Command ${entry.key} invalidates only frontend', () async {
+      final directory = await install(
+        'commands',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': {
+              ..._frontend(presentations: [_session]),
+              'extensions': [_projectSelector, entry.value, _command],
+            },
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final installation = catalog.installations.single;
+      expect(installation.frontend, isNull);
+      expect(
+        installation.backendArtifactUri,
+        directory.uri.resolve('backend.aot'),
+      );
+      final issue = catalog.issues.single;
+      expect(issue.component, PreparedPluginComponent.frontend);
+      expect(issue.pluginId, installation.metadata.id);
+      expect(issue.installationDirectory.uri, directory.uri);
+      expect(issue.message, isNotEmpty);
+      if (entry.key.startsWith('invalid label')) {
+        expect(issue.message, contains('frontend.extensions[1].label'));
+      }
+    });
+  }
+
   test('explicit empty extensions coexist with presentations', () async {
     await install(
       'frontend',
@@ -1470,6 +1693,7 @@ void main() {
     _toolActivity,
     _modelNativeActivity,
     _projectSelector,
+    _command,
   ]) {
     final list = descriptor.containsKey('kind')
         ? 'extensions'
@@ -1539,6 +1763,9 @@ void main() {
     'array descriptor': [],
     'string descriptor': 'session',
     'behavioral extension in presentations': _projectSelector,
+    'command extension in presentations': _command,
+    'command presentation role': {..._command, 'role': 'command'}
+      ..remove('kind'),
     'project selector presentation role': {
       ..._projectSelector,
       'role': 'projectSelector',
@@ -2335,6 +2562,15 @@ const _projectSelector = {
   'displayName': 'Open Project...',
   'library': 'package:example_frontend/project_selector.dart',
   'entrypoint': 'selectProject',
+};
+
+const _command = {
+  'kind': 'command',
+  'extensionId': 'org.example.command-extension',
+  'commandId': 'org.example.command',
+  'label': 'Run Command',
+  'library': 'package:example_frontend/command.dart',
+  'entrypoint': 'runCommand',
 };
 
 const _toolActivity = {

@@ -1,6 +1,7 @@
 @Timeout(Duration(minutes: 2))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,6 +11,7 @@ import 'package:adele_core_extensions/remote_command.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
@@ -19,6 +21,7 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
@@ -172,6 +175,146 @@ void main() {
           for (var index = 0; index < routes.length; index++)
             _invocation(routes[index], configuration: contexts[index]),
         ]);
+      },
+    );
+
+    test(
+      'native, real remote and prepared frontend Commands compose in one registry',
+      () async {
+        final probe = await start(exposures: [_exposure('success')]);
+        var nativeCalls = 0;
+        final nativeId = _commandId('native');
+        final native = extensions.register(
+          point: commandContributions,
+          id: ExtensionId('$_pluginId.native'),
+          value: CommandContribution(
+            id: nativeId,
+            label: 'Native Command',
+            availability: () => CommandAvailability.enabled,
+            invoke: () => nativeCalls++,
+          ),
+        );
+        addTearDown(native.close);
+        final directory = await Directory.systemTemp.createTemp(
+          'adele-command-coexistence-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final installation = await Directory(
+          '${directory.path}/frontend',
+        ).create();
+        const library = 'package:command_coexistence/main.dart';
+        final compiler = Compiler()..entrypoints.add(library);
+        final program = compiler.compile({
+          'command_coexistence': {
+            'main.dart': "void invoke() { print('prepared command invoked'); }",
+          },
+        });
+        await File(
+          '${installation.path}/frontend.evc',
+        ).writeAsBytes(program.write());
+        final preparedId = _commandId('prepared');
+        await File(
+          '${installation.path}/adele_plugin.installation.json',
+        ).writeAsString(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {
+              'id': '$_pluginId.frontend',
+              'version': '0.1.0',
+              'displayName': 'Prepared Command probe',
+            },
+            'components': {
+              'frontend': {
+                'artifact': 'frontend.evc',
+                'presentations': <Object?>[],
+                'extensions': [
+                  PreparedCommandExtension(
+                    extensionId: ExtensionId('$_pluginId.prepared'),
+                    commandId: preparedId,
+                    label: 'Prepared Command',
+                    library: library,
+                    entrypoint: 'invoke',
+                  ).toJson(),
+                ],
+              },
+            },
+          }),
+        );
+        final frontends = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(frontends.close);
+        final catalog = await PreparedPluginCatalog.discover(directory.path);
+        expect(catalog.issues, isEmpty);
+        expect(catalog.installations.single.backendArtifactUri, isNull);
+        await frontends.start(catalog);
+        expect(
+          frontends.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        expect(extensions.discover(commandContributions), hasLength(3));
+        expect(commands.discover().map((command) => command.id), [
+          nativeId,
+          preparedId,
+          _commandId('success'),
+        ]);
+        for (final command in commands.discover()) {
+          expect(command.availability, CommandAvailability.enabled);
+        }
+        expect(await _snapshot(probe.connection), {
+          'requests': <Object?>[],
+          'invocations': <Object?>[],
+        });
+        final prepared = commands.resolve(preparedId);
+        final output = <String>[];
+        await runZoned(
+          () async {
+            await commands.resolve(nativeId).invoke();
+            await prepared.invoke();
+            await commands
+                .resolve(_commandId('success'))
+                .invoke()
+                .timeout(_bound);
+          },
+          zoneSpecification: ZoneSpecification(
+            print: (_, _, _, line) => output.add(line),
+          ),
+        );
+        expect(nativeCalls, 1);
+        expect(output, ['prepared command invoked']);
+        expect(await _snapshot(probe.connection), {
+          'requests': [_request('success')],
+          'invocations': [_invocation('success')],
+        });
+        final conflict = extensions.register(
+          point: commandContributions,
+          id: ExtensionId('$_pluginId.prepared-conflict'),
+          value: CommandContribution(
+            id: preparedId,
+            label: 'Native conflict',
+            availability: () => CommandAvailability.enabled,
+            invoke: () => nativeCalls++,
+          ),
+        );
+        addTearDown(conflict.close);
+        expect(
+          () => commands.resolve(preparedId),
+          throwsA(isA<AmbiguousCommand>()),
+        );
+        expect(commands.discover().map((command) => command.id), [
+          nativeId,
+          _commandId('success'),
+        ]);
+        expect(prepared.availability, CommandAvailability.disabled);
+        await expectLater(prepared.invoke(), throwsA(isA<AmbiguousCommand>()));
+        expect(nativeCalls, 1);
+        await conflict.close();
+        expect(
+          commands
+              .resolve(preparedId)
+              .binding
+              .isSameRegistration(prepared.binding),
+          isTrue,
+        );
+        expect(prepared.availability, CommandAvailability.enabled);
       },
     );
 

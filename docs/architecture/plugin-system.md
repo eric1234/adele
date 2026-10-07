@@ -7,7 +7,7 @@ Implementation status: Partial
 This document defines plugin ownership, identity, lifecycle, and recursive typed
 composition. ADELE implements generic registration/discovery/liveness and several
 concrete extension-point families. The broader recursive ecosystem, general
-profile/activation management, prepared-frontend Command adapters/keybindings, and
+profile/activation management, contextual plugin Commands/keybindings, and
 full plugin-management and productization remain incomplete. Public plugin APIs remain experimental.
 Source/tests establish current behavior; [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md)
 records the recursive extension decision and its rationale.
@@ -279,12 +279,12 @@ Command infrastructure imposes no cancellation on retirement; completion follows
 the implementation's owning-domain semantics. Consumers contain invocation
 failures rather than exposing arbitrary exception text as user-facing output.
 
-The current implementation accepts native/in-process contributions and
-context-free backend Commands through ordinary backend-ready extension exposures.
-The app-private remote adapter registers the same public contribution; the palette
-does not distinguish its origin. A backend-only installation needs no prepared
-frontend, Main Content, Console, Task Browser, or other presentation contribution.
-Prepared-frontend Command invocation bridges remain unimplemented.
+The current implementation accepts native/in-process contributions, context-free
+backend Commands through ordinary backend-ready extension exposures, and
+context-free prepared frontend Commands through behavioral `frontend.extensions`
+descriptors. Application adapters register the same public contribution; the palette
+does not distinguish its origin. Backend-only and frontend-only installations need
+no Main Content, Console, Task Browser, or other presentation contribution.
 
 For remote Commands, applicability means only that the exact contribution is live.
 Availability validates local registration/backend liveness synchronously, without
@@ -298,11 +298,26 @@ host invocation context or host-service grant; no generalized Command context
 supplies authority. See [remote Command transport](contracts-and-capabilities.md#remote-commands)
 and the [public API](../../packages/core_extensions/README.md#remote-commands).
 
+Prepared frontend Commands likewise expose only exact-registration liveness as
+local synchronous availability. They do not evaluate frontend code or receive
+Project/Task/Session/Environment state during availability. A frontend omits the
+descriptor when it should not expose a context-free Command. Invocation captures
+the exact frontend generation and runs the declared no-argument operation in a
+fresh evaluator, accepting only void/null completion. The operation receives no
+host/native authority, owning-backend access, or presentation state. Missing native
+bridges and plugin failures propagate through ordinary Command invocation.
+Retiring a frontend generation invalidates its owned evaluator operations under
+existing frontend lifetime rules; an already-admitted operation may therefore fail.
+It is not detached to outlive that generation and never retries through a replacement.
+See [frontend behavioral operations](contracts-and-capabilities.md#frontend-behavioral-operations).
+
 Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
 reevaluate availability when presenting/refreshing and at admission, without
-polling or a general state-notification/context-expression protocol. Keybinding
-registration, suggested/default bindings, overrides, and configuration remain
-future work. See the [public API map](../../packages/core_extensions/README.md#commands)
+polling or a general state-notification/context-expression protocol. Contextual
+frontend availability and authority, including Terminal New Terminal and Source
+Editor Open Source, remain deferred rather than projecting presentation actions.
+Keybinding registration, suggested/default bindings, overrides, and configuration
+remain future work. See the [public API map](../../packages/core_extensions/README.md#commands)
 and [application hosting](../../app/README.md#command-palette).
 
 ## UI and presentation

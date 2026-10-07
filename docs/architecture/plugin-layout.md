@@ -167,6 +167,14 @@ This demonstrates independently optional components without changing the
 version-1 manifest envelope. The descriptor's exact fields remain with the runtime
 catalog owner linked above, not a second schema here.
 
+Context-free Commands are behavioral extensions in `frontend.extensions`, not a
+presentation role or a separate manifest collection. A frontend-only installation
+can declare them with zero presentations and no backend. Their descriptors select
+no-argument interpreted operations without granting host authority; activation
+adapts them to the shared public Command contract. Supported descriptor kinds are
+additive under the version-1 envelope. See
+[Commands and input](plugin-system.md#commands-and-input).
+
 ### Artifact references and confinement
 
 Artifact references are installation-relative and must remain confined to their

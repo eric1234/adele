@@ -80,11 +80,31 @@ descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedMainContentPresentation`,
 `PreparedConsolePresentation`, `PreparedTaskBrowserPresentation`,
 `PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
-The separate sealed `PreparedFrontendExtension` currently has
+The separate sealed `PreparedFrontendExtension` includes
 `PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
 `extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list. Manifest version remains 1.
+
+`PreparedCommandExtension` uses `kind: 'command'` and exactly these required fields:
+
+| Field | Meaning |
+| --- | --- |
+| `extensionId` | Public `ExtensionId` registration identity. |
+| `commandId` | Stable semantic `CommandId`, validated by the public Command contract. |
+| `label` | Public Command display label: nonblank, at most 160 UTF-16 code units, without controls or line breaks. |
+| `library` | Canonical `package:` Dart library URI, without traversal. |
+| `entrypoint` | Single top-level identifier for a no-argument finite operation returning void/null. |
+
+Unknown, missing, extra, or wrongly typed fields invalidate the frontend component,
+not a healthy backend sibling. The pure-Dart `adele_core_extensions` dependency
+keeps Command identity and label validation singular; descriptors contain no
+executable callback or evaluator object. The catalog validates data, while the
+application validates EVC operation existence before registration. Commands require
+neither presentations nor an owning backend. Their invocation receives no native
+bridge operations, host context, or authority; declaration is not a grant. Local
+availability and generation-owned execution belong to the
+[application adapter](../../app/README.md#prepared-frontend-activation), not this catalog.
 
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
 integer `order`, `library`, `initialize`, and `entrypoint`. Optional

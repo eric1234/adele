@@ -52,10 +52,16 @@ void main() {
         'x' * 160,
         '\u{1f680}' * 80,
       ]) {
+        expect(() => CommandContribution.validateLabel(label), returnsNormally);
         expect(_command(label: label).label, label);
       }
-      expect(() => _command(label: 'x' * 161), throwsArgumentError);
-      expect(() => _command(label: '\u{1f680}' * 81), throwsArgumentError);
+      for (final label in ['x' * 161, '\u{1f680}' * 81]) {
+        expect(
+          () => CommandContribution.validateLabel(label),
+          throwsArgumentError,
+        );
+        expect(() => _command(label: label), throwsArgumentError);
+      }
     });
 
     test('rejects blank labels, controls, and Unicode line breaks', () {
@@ -69,6 +75,11 @@ void main() {
           if (unit < 0x20 || unit >= 0x7f)
             'before${String.fromCharCode(unit)}after',
       ]) {
+        expect(
+          () => CommandContribution.validateLabel(label),
+          throwsArgumentError,
+          reason: label.codeUnits.toString(),
+        );
         expect(
           () => _command(label: label),
           throwsArgumentError,

@@ -127,11 +127,22 @@ presentation and behavioral entrypoints. `InstalledFrontendActivation` owns each
 independent generation's registrations; [`PreparedFrontend`](lib/frontend/prepared_frontend.dart)
 retains prepared bytes and supplies interpreted execution/presentation.
 
+`PreparedCommandExtension` is adapted here into an ordinary `CommandContribution`,
+independently of presentations and backends. Activation validates the declared EVC
+operation before registration. Availability reads only the exact registration's
+local liveness; invocation captures that generation and uses `PreparedFrontend.invoke`
+with a fresh evaluator, no arguments, an empty `PreparedFrontendBridges`, and strict
+void/null decoding. No native authority or owning-backend lookup is supplied.
+Registration retirement fences new admission; retiring the frontend generation
+also invalidates its active operations through existing evaluator lifetime rules.
+Captured bindings/callbacks never retarget a replacement, even when IDs are reused.
+
 The app implements native bridges when authority is required, while public
-semantics remain in [UI](../packages/ui/README.md). Component activation and
-per-view failures have different scopes: successful registration is not proof that
-every view will render. A missing/failed frontend does not invalidate canonical
-product objects or its sibling backend.
+presentation semantics remain in [UI](../packages/ui/README.md) and Commands in
+[core extensions](../packages/core_extensions/README.md#commands). Component
+activation and per-view failures have different scopes: successful registration
+is not proof that every view will render. A missing/failed frontend does not
+invalidate canonical product objects or its sibling backend.
 
 Retirement closes exact owned registrations and revokes captured factories and
 bridges, never removing or retargeting a replacement generation. Hosts observe
@@ -615,12 +626,15 @@ Dismissal returns an exact resolved Command to application dispatch, allowing th
 invoked operation to present its own input. Navigation and exit dismiss/fence the
 palette; application dispatch checks interaction again and the public domain
 revalidates admission. Failures use a bounded generic snackbar, not exception text.
-Native/in-process and context-free remote backend Commands share this registry and
-palette path. [`RemoteCommandAdapter`](lib/core/remote_command_host.dart) adapts
+Native/in-process, context-free remote backend, and context-free prepared frontend
+Commands share this registry and palette path.
+[`RemoteCommandAdapter`](lib/core/remote_command_host.dart) adapts
 backend-ready advertisements through the existing remote adapter registry, without
 requiring a frontend, presentation, or open Project. Backend retirement removes
 its registrations and refreshes an open palette through the existing registry stream.
-Prepared-frontend Command transport, contextual backend availability, keybindings,
+Prepared frontend activation adapts behavioral descriptors through that same point;
+frontend retirement refreshes membership identically. The palette has no transport
+or descriptor-specific path. Contextual plugin availability/authority, keybindings,
 configuration, and projection of Main Content/Console actions remain unimplemented.
 Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
 
