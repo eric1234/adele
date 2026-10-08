@@ -5,6 +5,8 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'command_search.dart';
+
 /// Global shell presentation only. The caller dispatches the returned exact
 /// binding after dismissal, so a command can itself present an input surface.
 final class CommandPalette extends StatefulWidget {
@@ -115,7 +117,7 @@ final class _CommandPaletteState extends State<CommandPalette> {
     final query = _search.text.trim().toLowerCase();
     final results =
         <({ResolvedCommand command, CommandAvailability availability})>[];
-    for (final discovered in _commands.discover()) {
+    for (final discovered in searchCommands(_commands.discover(), query)) {
       // Preserve row/focus identity only for the same exact registration.
       final command =
           _results
@@ -128,9 +130,7 @@ final class _CommandPaletteState extends State<CommandPalette> {
               ?.command ??
           discovered;
       final availability = command.availability;
-      if (availability != CommandAvailability.hidden &&
-          (command.label.toLowerCase().contains(query) ||
-              command.id.value.toLowerCase().contains(query))) {
+      if (availability != CommandAvailability.hidden) {
         results.add((command: command, availability: availability));
       }
     }
