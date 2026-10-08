@@ -16,6 +16,7 @@ import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/commands/command_palette.dart';
+import 'package:adele_desktop/ui/commands/command_palette_shortcut.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
@@ -277,6 +278,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   bool get _canShowCommandPalette {
+    if (!_commandsInteractive) return false;
     try {
       return _commands.resolve(showCommandPaletteCommandId).availability ==
           CommandAvailability.enabled;
@@ -829,78 +831,84 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         navigatorKey: _navigator,
         scaffoldMessengerKey: _messenger,
         debugShowCheckedModeBanner: false,
-        home: AdeleShell(
-          onCommandPalette: _canShowCommandPalette
-              ? _invokeShowCommandPalette
-              : null,
-          project: _project,
-          task: _task,
-          environment: _environment,
-          sessionLabel: _sessionLabel,
-          sessionPresented: session != null,
-          onProject: () => _showBrowser(keepTask: false),
-          onTask: () => _showBrowser(keepTask: true),
-          navigating: _navigating,
-          navigationError: _navigationError,
-          inspection: _inspection.cards.isEmpty
-              ? null
-              : InspectionStackHost(
-                  cards: _inspection.cards,
-                  cardBuilder: (context, card) => InspectionHost(
-                    card: card,
-                    activity: _execution?.activityForRun(card.target.runId),
-                    heading: 'Run activity',
-                    extensions: _runtime.extensions,
-                    onCollapse: () => _inspection.collapse(card.id),
-                    onExpand: () => _inspection.expand(card.id),
-                    onDismiss: () => _inspection.dismiss(card.id),
-                    onInspectOutput: session == null
-                        ? (_) {}
-                        : (target) => _inspectOutput(
-                            session,
-                            workbench,
-                            card.id,
-                            target,
-                          ),
-                  ),
-                ),
-          taskBrowser: _project == null || session != null
-              ? null
-              : TaskBrowserPresentationHost(
-                  project: _project!,
-                  extensions: _runtime.extensions,
-                ),
-          sessionContent: session == null
-              ? null
-              : IgnorePointer(
-                  ignoring: _navigating,
-                  child: ExcludeFocus(
-                    excluding: _navigating,
-                    child: MainContentHost(
-                      session: session,
+        home: CommandPaletteShortcut(
+          canInvoke: () => _canShowCommandPalette,
+          onInvoke: _invokeShowCommandPalette,
+          child: AdeleShell(
+            onCommandPalette: _canShowCommandPalette
+                ? _invokeShowCommandPalette
+                : null,
+            project: _project,
+            task: _task,
+            environment: _environment,
+            sessionLabel: _sessionLabel,
+            sessionPresented: session != null,
+            onProject: () => _showBrowser(keepTask: false),
+            onTask: () => _showBrowser(keepTask: true),
+            navigating: _navigating,
+            navigationError: _navigationError,
+            inspection: _inspection.cards.isEmpty
+                ? null
+                : InspectionStackHost(
+                    cards: _inspection.cards,
+                    cardBuilder: (context, card) => InspectionHost(
+                      card: card,
+                      activity: _execution?.activityForRun(card.target.runId),
+                      heading: 'Run activity',
                       extensions: _runtime.extensions,
-                      actionCoordinator: _mainContentHost.actionCoordinator,
-                      isCurrent: () =>
-                          _closing == null &&
-                          workbench != null &&
-                          identical(_workbench, workbench) &&
-                          identical(_session, session),
+                      onCollapse: () => _inspection.collapse(card.id),
+                      onExpand: () => _inspection.expand(card.id),
+                      onDismiss: () => _inspection.dismiss(card.id),
+                      onInspectOutput: session == null
+                          ? (_) {}
+                          : (target) => _inspectOutput(
+                              session,
+                              workbench,
+                              card.id,
+                              target,
+                            ),
                     ),
                   ),
-                ),
-          console: session == null
-              ? null
-              : IgnorePointer(
-                  ignoring: _navigating,
-                  child: ExcludeFocus(
-                    excluding: _navigating,
-                    child: WorkbenchConsole(controller: _console),
+            taskBrowser: _project == null || session != null
+                ? null
+                : TaskBrowserPresentationHost(
+                    project: _project!,
+                    extensions: _runtime.extensions,
                   ),
-                ),
-          selectors: _runtime.extensions.discover(projectSelectorContributions),
-          onSelectProject: _openProject,
-          openingProject: _openingProject,
-          projectError: _projectError,
+            sessionContent: session == null
+                ? null
+                : IgnorePointer(
+                    ignoring: _navigating,
+                    child: ExcludeFocus(
+                      excluding: _navigating,
+                      child: MainContentHost(
+                        session: session,
+                        extensions: _runtime.extensions,
+                        actionCoordinator: _mainContentHost.actionCoordinator,
+                        isCurrent: () =>
+                            _closing == null &&
+                            workbench != null &&
+                            identical(_workbench, workbench) &&
+                            identical(_session, session),
+                      ),
+                    ),
+                  ),
+            console: session == null
+                ? null
+                : IgnorePointer(
+                    ignoring: _navigating,
+                    child: ExcludeFocus(
+                      excluding: _navigating,
+                      child: WorkbenchConsole(controller: _console),
+                    ),
+                  ),
+            selectors: _runtime.extensions.discover(
+              projectSelectorContributions,
+            ),
+            onSelectProject: _openProject,
+            openingProject: _openingProject,
+            projectError: _projectError,
+          ),
         ),
         theme: buildAdeleTheme(),
         title: 'ADELE',

@@ -258,7 +258,7 @@ A Command is a semantic user operation independent of its presentation or input
 surface. Core owns its public domain in `adele_core_extensions`, including
 composition, resolution, and dispatch admission through the existing
 `ExtensionRegistry`. The application-owned global Command Palette is a consumer,
-not the semantic owner. A future keybinding, menu, or button can invoke the same
+not the semantic owner. A keyboard binding, menu, or button can invoke the same
 Command without a second operation contract. Commands are distinct from model
 tools that execute external programs and from existing presentation-local
 `MainContentAction` and `ConsoleCreationAction` contracts.
@@ -356,8 +356,13 @@ reevaluate availability when presenting/refreshing and at admission, without
 polling or a general state-notification/context-expression protocol. General
 contextual frontend authority, Command arguments, and automatic projection
 of presentation actions remain deferred.
-Keybinding registration, suggested/default bindings, overrides, and configuration
-remain future work. See the [public API map](../../packages/core_extensions/README.md#commands)
+The application implements one fixed desktop shortcut for Show Command Palette,
+using the same live resolution and admission as its button, within shell-route
+focus and modal ownership. This is an input consumer, not a public keybinding
+domain. Keybinding registration, plugin-suggested/default bindings, deterministic
+binding conflicts, user/Profile/Project overrides, Settings integration, and
+additional binding scopes remain future work.
+See the [public API map](../../packages/core_extensions/README.md#commands)
 and [application hosting](../../app/README.md#command-palette).
 
 ## UI and presentation

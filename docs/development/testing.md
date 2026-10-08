@@ -176,7 +176,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Changed boundary | Representative app test paths |
 | --- | --- |
 | Zero-plugin runtime/shell | [`test/core/adele_runtime_test.dart`](../../app/test/core/adele_runtime_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) |
-| Global Commands/Command Palette | [`test/command_palette_test.dart`](../../app/test/command_palette_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) (AppBar dispatch, focus/search/keyboard/empty states, live conflicts and exact stale selection, safe failures, Session-only console toggling/navigation fencing, and application retirement); pure-Dart identity/resolution/admission belongs to the maintained `adele_core_extensions` target and [`commands_test.dart`](../../packages/core_extensions/test/commands_test.dart) |
+| Global Commands/Command Palette | [`test/command_palette_test.dart`](../../app/test/command_palette_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) (AppBar and fixed platform-shortcut dispatch across shell states, text-field focus restoration, modal isolation, repeat suppression, focus/search/keyboard/empty states, live conflicts and exact stale selection, safe failures, Session-only console toggling/navigation fencing, and application retirement); pure-Dart identity/resolution/admission belongs to the maintained `adele_core_extensions` target and [`commands_test.dart`](../../packages/core_extensions/test/commands_test.dart) |
 | Context-free remote Commands | [`test/core/remote_command_integration_test.dart`](../../app/test/core/remote_command_integration_test.dart) (real shared-host/probe AOT, strict backend-ready metadata, local availability, exact route/generation, retirement and admitted completion, and backend-only prepared installation through the actual application palette before Project opening); generated client/dispatcher payload and completion tests belong to [`remote_command_test.dart`](../../packages/core_extensions/test/remote_command_test.dart) in `adele_core_extensions` |
 | Context-free prepared frontend Commands | [`test/prepared_command_palette_test.dart`](../../app/test/prepared_command_palette_test.dart) (actual compiled EVC, normal frontend-only/no-presentation startup before Project opening, safe invocation failure, and live palette retirement/replacement); [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) covers operation validation, no-authority invocation/return shape, rollback, exact retirement and evaluator lifetime; the remote integration suite above proves native/backend/frontend coexistence. Strict descriptor parsing belongs to the maintained `plugin_runtime` catalog tests. |
 | Contextual Console-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (same-component target validation before publication); [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (canonical authority, availability without EVC, shared creation/policy, safe warning, rollback, and asymmetric exact retirement); [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart) (fresh post-reveal admission and owner/action pending state across context changes); stock palette/PTY evidence is in the Terminal case of [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart). |
@@ -224,6 +224,24 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused Command checks
+
+After bootstrap/current generation, run from `app/` with the pinned SDK:
+
+```sh
+flutter test --no-pub --concurrency 1 test/command_palette_test.dart test/application_test.dart test/adele_shell_test.dart
+```
+
+The application fixtures cover the keyboard-to-Command boundary without adding a
+backend or new integration harness. Platform variants verify modifier policy,
+not physical macOS/Windows execution. The native editor and terminal suites also
+exercise the production shell shortcut around focused real native views; terminal
+cases include Kitty and modifyOtherKeys encoding, repeats/releases, and absence of
+the shell scope. Run those files with the existing
+[editor library prerequisites](#focused-editor-checks) and
+[terminal checks](#focused-terminal-checks). Palette IME composition and Tab-focused
+exact row identity remain in the palette suite; native IME behavior is unchanged.
 
 ### Focused Main Content checks
 

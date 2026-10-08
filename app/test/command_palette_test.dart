@@ -11,6 +11,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/command_palette_shortcut.dart';
+import 'support/project_provider.dart';
+
 void main() {
   late NativeAdeleRuntime runtime;
   late ExtensionRegistrationGroup registrations;
@@ -75,6 +78,245 @@ void main() {
   }
 
   final search = find.byKey(const ValueKey('command-palette-search'));
+
+  for (final platform in [
+    TargetPlatform.linux,
+    TargetPlatform.windows,
+    TargetPlatform.macOS,
+  ]) {
+    testWidgets(
+      '${platform.name} shell shortcut uses only its platform chord',
+      (tester) async {
+        await mount(tester);
+        final modifier = platform == TargetPlatform.macOS
+            ? LogicalKeyboardKey.metaLeft
+            : LogicalKeyboardKey.controlLeft;
+        final wrongModifier = platform == TargetPlatform.macOS
+            ? LogicalKeyboardKey.controlLeft
+            : LogicalKeyboardKey.metaLeft;
+        for (final modifiers in <List<LogicalKeyboardKey>>[
+          [],
+          [LogicalKeyboardKey.shiftLeft],
+          [modifier],
+          [wrongModifier],
+          [wrongModifier, LogicalKeyboardKey.shiftLeft],
+          [modifier, LogicalKeyboardKey.shiftLeft, LogicalKeyboardKey.altLeft],
+          [modifier, wrongModifier, LogicalKeyboardKey.shiftLeft],
+        ]) {
+          await sendPaletteShortcut(tester, modifiers: modifiers);
+          await tester.pump();
+          expect(find.byType(CommandPalette), findsNothing);
+        }
+        for (var opening = 0; opening < 2; opening++) {
+          expect(
+            await sendPaletteShortcut(
+              tester,
+              modifiers: [modifier, LogicalKeyboardKey.shiftLeft],
+            ),
+            isTrue,
+          );
+          await tester.pumpAndSettle();
+          expect(find.byType(CommandPalette), findsOneWidget);
+          expect(tester.widget<TextField>(search).focusNode!.hasFocus, isTrue);
+          expect(tester.widget<TextField>(search).controller!.text, isEmpty);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+          expect(find.byType(CommandPalette), findsNothing);
+        }
+        await unmount(tester);
+      },
+      variant: TargetPlatformVariant({platform}),
+    );
+  }
+
+  testWidgets('shortcut uses live Command admission without a rebuild', (
+    tester,
+  ) async {
+    await mount(tester);
+    var duplicateCalls = 0;
+    final duplicate = runtime.extensions.register(
+      point: commandContributions,
+      id: ExtensionId('test.shortcut-duplicate'),
+      value: CommandContribution(
+        id: showCommandPaletteCommandId,
+        label: 'Duplicate Show',
+        availability: () => CommandAvailability.enabled,
+        invoke: () => duplicateCalls++,
+      ),
+    );
+    registrations.add(duplicate);
+    expect(await sendPaletteShortcut(tester), isFalse);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsNothing);
+    expect(duplicateCalls, 0);
+    expect(find.text('The command could not be completed.'), findsNothing);
+
+    await duplicate.close();
+    expect(await sendPaletteShortcut(tester), isTrue);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+
+    final show = commands.resolve(showCommandPaletteCommandId);
+    await tester.binding.handleRequestAppExit();
+    expect(show.availability, CommandAvailability.disabled);
+    expect(
+      () => commands.resolve(showCommandPaletteCommandId),
+      throwsA(isA<CommandNotFound>()),
+    );
+    expect(await sendPaletteShortcut(tester), isFalse);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets('held chord ignores repeats and an open palette never nests', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    try {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyP);
+      // Also repeat before the dialog has acquired focus.
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyP);
+      await tester.pumpAndSettle();
+      final palette = tester.element(find.byType(CommandPalette));
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyP);
+      await tester.tap(find.byTooltip('Close Command Palette'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
+      expect(await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyP), isFalse);
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await tester.pumpAndSettle();
+      final reopened = tester.element(find.byType(CommandPalette));
+      expect(reopened, isNot(same(palette)));
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await tester.pumpAndSettle();
+      expect(tester.element(find.byType(CommandPalette)), same(reopened));
+      expect(
+        commands.resolve(showCommandPaletteCommandId).availability,
+        CommandAvailability.hidden,
+      );
+      expect(find.text('The command could not be completed.'), findsNothing);
+      expect(tester.widget<TextField>(search).controller!.text, isEmpty);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'pending Project selection disables shortcut without consuming it',
+    (tester) async {
+      final provider = TestProjectProvider(runtime.registry);
+      addTearDown(provider.close);
+      final selection = Completer<Uri?>();
+      registrations.add(
+        runtime.extensions.register(
+          point: projectSelectorContributions,
+          id: ExtensionId('test.shortcut-selector'),
+          value: ProjectSelectorContribution(
+            displayName: 'Select fixture',
+            projectProviderId: provider.providerId,
+            selectProject: () => selection.future,
+          ),
+        ),
+      );
+      await mount(tester);
+      await tester.tap(find.text('Select fixture'));
+      await tester.pump();
+      expect(
+        commands.resolve(showCommandPaletteCommandId).availability,
+        CommandAvailability.disabled,
+      );
+      expect(await sendPaletteShortcut(tester), isFalse);
+      await tester.pump();
+      expect(find.byType(CommandPalette), findsNothing);
+      selection.complete(null);
+      await tester.pumpAndSettle();
+      expect(await sendPaletteShortcut(tester), isTrue);
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsOneWidget);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets('modal input keeps focus and keyboard ownership over the shell', (
+    tester,
+  ) async {
+    await mount(tester);
+    final input = TextEditingController();
+    final focus = FocusNode();
+    addTearDown(input.dispose);
+    addTearDown(focus.dispose);
+    final dialog = showDialog<void>(
+      context: tester.element(find.byType(Scaffold)),
+      builder: (context) => AlertDialog(
+        content: TextField(
+          controller: input,
+          focusNode: focus,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Finish input'),
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'keep this');
+    await sendPaletteShortcut(tester);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsNothing);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(focus.hasPrimaryFocus, isTrue);
+    expect(input.text, 'keep this');
+    await tester.enterText(find.byType(TextField), 'still usable');
+    await tester.tap(find.text('Finish input'));
+    await dialog;
+    await tester.pumpAndSettle();
+    expect(await sendPaletteShortcut(tester), isTrue);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsOneWidget);
+    await unmount(tester);
+  });
+
+  testWidgets('a non-focusing modal also fences the underlying shortcut', (
+    tester,
+  ) async {
+    await mount(tester);
+    final focus = FocusManager.instance.primaryFocus;
+    final context = tester.element(find.byType(Scaffold));
+    final dialog = showDialog<void>(
+      context: context,
+      requestFocus: false,
+      builder: (_) => const AlertDialog(title: Text('Confirmation')),
+    );
+    await tester.pumpAndSettle();
+    expect(FocusManager.instance.primaryFocus, same(focus));
+    expect(await sendPaletteShortcut(tester), isFalse);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsNothing);
+    expect(find.text('Confirmation'), findsOneWidget);
+    Navigator.of(context).pop();
+    await dialog;
+    await tester.pumpAndSettle();
+    expect(await sendPaletteShortcut(tester), isTrue);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandPalette), findsOneWidget);
+    await unmount(tester);
+  });
 
   testWidgets('global pre-Project palette focuses search and Escape closes', (
     tester,

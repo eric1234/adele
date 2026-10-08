@@ -1,11 +1,17 @@
 import 'dart:async';
 
 import 'package:adele_desktop/terminal/native_terminal_surface.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
+import 'package:adele_desktop/ui/commands/command_palette_shortcut.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm2/xterm.dart';
+
+import 'support/command_palette_shortcut.dart';
 
 Widget _host(Widget view, {double width = 480, double height = 240}) =>
     MaterialApp(
@@ -34,6 +40,318 @@ void _expectProjectionRowVisible(WidgetTester tester, int row) {
 }
 
 void main() {
+  for (final mode in {
+    'legacy': '',
+    'Kitty 1': '\x1b[=1u',
+    'Kitty 3': '\x1b[=3u',
+    'modifyOtherKeys 2': '\x1b[>4;2m',
+  }.entries) {
+    testWidgets(
+      'focused terminal yields palette press/repeat/release in ${mode.key}',
+      (tester) async {
+        final input = <String>[];
+        final surface = NativeTerminalSurface(onInput: input.add);
+        addTearDown(surface.dispose);
+        var calls = 0;
+        await tester.pumpWidget(
+          _host(
+            CommandPaletteShortcut(
+              canInvoke: () => true,
+              onInvoke: () => calls++,
+              child: surface.buildView(isActive: () => true),
+            ),
+          ),
+        );
+        final focus = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .focusNode!;
+        focus.requestFocus();
+        await tester.pump();
+        expect(focus.hasPrimaryFocus, isTrue);
+        surface.write(List.generate(80, (index) => 'line $index').join('\r\n'));
+        await tester.pump();
+        final position = tester
+            .state<ScrollableState>(
+              find.descendant(
+                of: find.byType(TerminalView),
+                matching: find.byType(Scrollable),
+              ),
+            )
+            .position;
+        expect(position.maxScrollExtent, greaterThan(0));
+        position.jumpTo(0);
+        final modifiers = [
+          defaultTargetPlatform == TargetPlatform.macOS
+              ? LogicalKeyboardKey.metaLeft
+              : LogicalKeyboardKey.controlLeft,
+          LogicalKeyboardKey.shiftLeft,
+        ];
+        // Isolate P from Kitty's independent modifier-key reports.
+        for (final modifier in modifiers) {
+          await tester.sendKeyDownEvent(modifier);
+        }
+        try {
+          surface.write(mode.value);
+          input.clear();
+          expect(
+            await sendPaletteShortcut(tester, modifiers: const []),
+            isTrue,
+          );
+          expect(calls, 1);
+          expect(input, isEmpty);
+          await tester.sendKeyDownEvent(
+            LogicalKeyboardKey.keyP,
+            character: 'P',
+          );
+          try {
+            await tester.sendKeyRepeatEvent(
+              LogicalKeyboardKey.keyP,
+              character: 'P',
+            );
+          } finally {
+            await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
+          }
+          expect(calls, 2, reason: 'The repeat must not invoke again.');
+          expect(input, isEmpty, reason: 'No P event may reach the terminal.');
+          expect(focus.hasPrimaryFocus, isTrue);
+          expect(position.pixels, 0, reason: 'Yielded events must not scroll.');
+        } finally {
+          surface.write('\x1b[=0u\x1b[>4;0m');
+          for (final modifier in modifiers.reversed) {
+            await tester.sendKeyUpEvent(modifier);
+          }
+        }
+        input.clear();
+        await sendPaletteShortcut(
+          tester,
+          modifiers: const [LogicalKeyboardKey.controlLeft],
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyX, character: 'x');
+        expect(input, ['\x10', 'x']);
+        expect(calls, 2);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+      variant: const TargetPlatformVariant({
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      }),
+    );
+  }
+
+  for (final disabledScope in [false, true]) {
+    testWidgets(
+      'terminal retains enhanced palette-chord input with ${disabledScope ? 'disabled' : 'absent'} shell scope',
+      (tester) async {
+        final input = <String>[];
+        final surface = NativeTerminalSurface(onInput: input.add);
+        addTearDown(surface.dispose);
+        final view = surface.buildView(isActive: () => true);
+        await tester.pumpWidget(
+          _host(
+            disabledScope
+                ? CommandPaletteShortcut(
+                    canInvoke: () => false,
+                    onInvoke: () => fail('Disabled shortcut invoked'),
+                    child: view,
+                  )
+                : view,
+          ),
+        );
+        final focus = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .focusNode!;
+        focus.requestFocus();
+        await tester.pump();
+        expect(focus.hasPrimaryFocus, isTrue);
+        final macOS = defaultTargetPlatform == TargetPlatform.macOS;
+        final modifiers = [
+          macOS ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft,
+          LogicalKeyboardKey.shiftLeft,
+        ];
+        for (final modifier in modifiers) {
+          await tester.sendKeyDownEvent(modifier);
+        }
+        try {
+          surface.write('\x1b[=3u');
+          input.clear();
+          expect(
+            await sendPaletteShortcut(tester, modifiers: const []),
+            isTrue,
+          );
+          final encodedModifiers = macOS ? 10 : 6;
+          expect(input, [
+            '\x1b[112;${encodedModifiers}u',
+            '\x1b[112;$encodedModifiers:3u',
+          ]);
+        } finally {
+          surface.write('\x1b[=0u');
+          for (final modifier in modifiers.reversed) {
+            await tester.sendKeyUpEvent(modifier);
+          }
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+      variant: const TargetPlatformVariant({
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      }),
+    );
+  }
+
+  for (final yielded in [false, true]) {
+    testWidgets(
+      'Kitty retains ${yielded ? 'yielded' : 'ordinary'} P routing after modifier changes',
+      (tester) async {
+        final input = <String>[];
+        final surface = NativeTerminalSurface(onInput: input.add);
+        addTearDown(surface.dispose);
+        var calls = 0;
+        await tester.pumpWidget(
+          _host(
+            CommandPaletteShortcut(
+              canInvoke: () => true,
+              onInvoke: () => calls++,
+              child: surface.buildView(isActive: () => true),
+            ),
+          ),
+        );
+        final focus = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .focusNode!;
+        focus.requestFocus();
+        await tester.pump();
+        expect(focus.hasPrimaryFocus, isTrue);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        try {
+          if (yielded) {
+            await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          }
+          surface.write('\x1b[=3u');
+          input.clear();
+          await tester.sendKeyDownEvent(
+            LogicalKeyboardKey.keyP,
+            character: yielded ? 'P' : 'p',
+          );
+          expect(calls, yielded ? 1 : 0);
+          expect(input, yielded ? isEmpty : ['\x1b[112;5u']);
+          input.clear();
+
+          if (yielded) {
+            await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+          } else {
+            await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          }
+          // Shift's own protocol report is independent of the held P key.
+          expect(input, [yielded ? '\x1b[57441;5:3u' : '\x1b[57441;6u']);
+          input.clear();
+          if (yielded) {
+            await tester.sendKeyRepeatEvent(
+              LogicalKeyboardKey.keyP,
+              character: 'p',
+            );
+            expect(input, isEmpty);
+            await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+            expect(input, ['\x1b[57442;1:3u']);
+            input.clear();
+          }
+          await tester.sendKeyRepeatEvent(
+            LogicalKeyboardKey.keyP,
+            character: yielded ? 'p' : 'P',
+          );
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
+          expect(calls, yielded ? 1 : 0);
+          expect(input, yielded ? isEmpty : ['\x1b[112;6:2u', '\x1b[112;6:3u']);
+        } finally {
+          surface.write('\x1b[=0u');
+          for (final key in [
+            LogicalKeyboardKey.keyP,
+            LogicalKeyboardKey.shiftLeft,
+            LogicalKeyboardKey.controlLeft,
+          ]) {
+            if (HardwareKeyboard.instance.logicalKeysPressed.contains(key)) {
+              await tester.sendKeyUpEvent(key);
+            }
+          }
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    );
+  }
+
+  testWidgets(
+    'palette dismissal restores terminal focus and permits typing and reopening',
+    (tester) async {
+      final input = <String>[];
+      final surface = NativeTerminalSurface(onInput: input.add);
+      addTearDown(surface.dispose);
+      final extensions = ExtensionRegistry();
+      final view = surface.buildView(isActive: () => true);
+      var opens = 0;
+      await tester.pumpWidget(
+        _host(
+          Builder(
+            builder: (context) => CommandPaletteShortcut(
+              canInvoke: () => true,
+              onInvoke: () {
+                opens++;
+                unawaited(
+                  showDialog<void>(
+                    context: context,
+                    builder: (_) => CommandPalette(
+                      extensions: extensions,
+                      isInteractive: () => true,
+                    ),
+                  ),
+                );
+              },
+              child: view,
+            ),
+          ),
+        ),
+      );
+      final focus = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .focusNode!;
+      focus.requestFocus();
+      await tester.pump();
+      expect(focus.hasPrimaryFocus, isTrue);
+      for (var opening = 1; opening <= 2; opening++) {
+        expect(await sendPaletteShortcut(tester), isTrue);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.pump();
+        expect(opens, opening);
+        expect(find.byType(CommandPalette), findsOneWidget);
+        final search = tester.widget<TextField>(
+          find.byKey(const ValueKey('command-palette-search')),
+        );
+        expect(search.focusNode!.hasPrimaryFocus, isTrue);
+        expect(focus.hasFocus, isFalse);
+        expect(input, isEmpty);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.pump();
+        expect(find.byType(CommandPalette), findsNothing);
+        expect(focus.hasPrimaryFocus, isTrue);
+        expect(input, isEmpty);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyX, character: 'x');
+        expect(input, ['x']);
+        input.clear();
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.linux),
+  );
+
   for (final kind in ['tap', 'selection', 'long press']) {
     testWidgets('resident epoch change cancels pending native $kind', (
       tester,
