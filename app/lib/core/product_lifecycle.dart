@@ -326,6 +326,58 @@ final class SessionEnvironmentAuthority {
   final EnvironmentId environmentId;
 }
 
+/// Captures canonical Session authority synchronously, before provider work.
+final class CapturedSessionEnvironment {
+  factory CapturedSessionEnvironment({
+    required Session session,
+    required EnvironmentRuntime environmentRuntime,
+  }) {
+    final store = environmentRuntime.store;
+    if (!identical(store.session(session.id), session)) {
+      throw ArgumentError('Environment access requires the canonical Session.');
+    }
+    final authority = store.requireSessionAuthority(session.id);
+    final task = store.task(session.taskId);
+    final environment = store.environment(authority.environmentId);
+    if (task == null ||
+        store.project(task.projectId) == null ||
+        authority.sessionId != session.id ||
+        authority.taskId != task.id ||
+        environment == null ||
+        environment.taskId != task.id) {
+      throw StateError('Session Environment graph is not canonical.');
+    }
+    return CapturedSessionEnvironment._(
+      session,
+      environment,
+      environmentRuntime,
+    );
+  }
+
+  CapturedSessionEnvironment._(this.session, this.environment, this._runtime);
+
+  final Session session;
+  final Environment environment;
+  final EnvironmentRuntime _runtime;
+  Future<EnvironmentMaterialization>? _materialization;
+
+  Future<EnvironmentMaterialization> materialize() async {
+    // Never retry this capture, including after a failed first materialization.
+    final materialization = await (_materialization ??= _runtime.materialize(
+      environment.id,
+    ));
+    final current = materialization.environment;
+    if (current.id != environment.id ||
+        current.taskId != environment.taskId ||
+        current.role != environment.role ||
+        current.providerId != environment.providerId) {
+      throw StateError('Materialization changed the captured Environment.');
+    }
+    materialization.validateBinding();
+    return materialization;
+  }
+}
+
 final class ResolvedEnvironmentProvider {
   const ResolvedEnvironmentProvider({
     required this.binding,

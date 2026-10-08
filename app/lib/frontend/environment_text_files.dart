@@ -7,39 +7,18 @@ import '../core/product_lifecycle.dart';
 /// User-initiated text-file access to one canonical Session's Environment.
 /// Capture before awaiting presentation work; construction is provider-free.
 final class CapturedEnvironmentTextFiles {
-  factory CapturedEnvironmentTextFiles({
+  CapturedEnvironmentTextFiles({
     required Session session,
     required EnvironmentRuntime environmentRuntime,
-  }) {
-    final store = environmentRuntime.store;
-    if (!identical(store.session(session.id), session)) {
-      throw ArgumentError('Text-file access requires the canonical Session.');
-    }
-    final authority = store.requireSessionAuthority(session.id);
-    final task = store.task(session.taskId);
-    final environment = store.environment(authority.environmentId);
-    if (task == null ||
-        store.project(task.projectId) == null ||
-        authority.sessionId != session.id ||
-        authority.taskId != task.id ||
-        environment == null ||
-        environment.taskId != task.id) {
-      throw StateError('Session Environment graph is not canonical.');
-    }
-    return CapturedEnvironmentTextFiles._(
-      session,
-      environment,
-      environmentRuntime,
-    );
-  }
+  }) : _captured = CapturedSessionEnvironment(
+         session: session,
+         environmentRuntime: environmentRuntime,
+       );
 
-  CapturedEnvironmentTextFiles._(this.session, this.environment, this._runtime);
+  final CapturedSessionEnvironment _captured;
 
-  final Session session;
-  final Environment environment;
-  final EnvironmentRuntime _runtime;
-  Future<EnvironmentMaterialization>? _materialization;
-
+  Session get session => _captured.session;
+  Environment get environment => _captured.environment;
   EnvironmentId get environmentId => environment.id;
 
   /// Identity for plugin context, not a caller-selectable authority token.
@@ -67,17 +46,7 @@ final class CapturedEnvironmentTextFiles {
     Future<T> Function(EnvironmentMaterialization) operation,
   ) async {
     try {
-      // Never re-materialize this capture, including after a failed first attempt.
-      final materialization = await (_materialization ??= _runtime.materialize(
-        environmentId,
-      ));
-      final current = materialization.environment;
-      if (current.id != environmentId ||
-          current.taskId != environment.taskId ||
-          current.role != environment.role ||
-          current.providerId != environment.providerId) {
-        throw StateError('Materialization changed the captured Environment.');
-      }
+      final materialization = await _captured.materialize();
       materialization.validateBinding();
       return await operation(materialization);
     } on ProviderUnavailable catch (error) {

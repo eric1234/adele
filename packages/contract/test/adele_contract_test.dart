@@ -262,6 +262,116 @@ void main() {
     }
   });
 
+  const association = <String, Object?>{
+    'capabilityId': 'dev.adele.fixture.environment',
+    'capabilityMajorVersion': 2,
+    'providerId': 'dev.adele.fixture.environment-a',
+  };
+  test('provider association is an immutable optional round-trip value', () {
+    final raw = {...association};
+    final value = AdeleCapabilityExposure.fromReady({
+      'capabilityExposures': [
+        {...exposure, 'association': raw},
+        exposure,
+      ],
+    });
+    raw['providerId'] = 'dev.adele.fixture.changed';
+    expect(value.first.association!.capabilityId, association['capabilityId']);
+    expect(value.first.association!.capabilityMajorVersion, 2);
+    expect(value.first.association!.providerId, association['providerId']);
+    expect(value.first.toMap(), {
+      ...exposure,
+      'rank': 0,
+      'association': association,
+    });
+    (value.first.toMap()['association']! as Map).clear();
+    expect(value.first.association!.toMap(), association);
+    expect(value.last.association, isNull);
+    expect(value.last.toMap().containsKey('association'), isFalse);
+    expect(
+      AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [value.first.toMap()],
+      }).single.association!.toMap(),
+      association,
+    );
+  });
+
+  test(
+    'provider association rejects malformed and non-sibling wire fields',
+    () {
+      for (final raw in <Object?>[
+        null,
+        false,
+        1,
+        'provider',
+        [],
+        {},
+        for (final key in association.keys) {...association}..remove(key),
+        for (final key in [
+          'pluginId',
+          'generation',
+          'configurationContext',
+          'association',
+          'unknown',
+        ])
+          {...association, key: 'forbidden'},
+        {...association, 1: true},
+        for (final key in ['capabilityId', 'providerId'])
+          for (final value in [
+            null,
+            1,
+            '',
+            'UPPER.invalid',
+            'dev.adele.bad_id',
+          ])
+            {...association, key: value},
+        for (final value in [null, 0, -1, 1.5, '1'])
+          {...association, 'capabilityMajorVersion': value},
+      ]) {
+        expect(
+          () => AdeleCapabilityExposure.fromReady({
+            'capabilityExposures': [
+              {...exposure, 'association': raw},
+            ],
+          }),
+          throwsFormatException,
+          reason: '$raw',
+        );
+      }
+    },
+  );
+
+  test('provider association validates direct construction', () {
+    for (final id in ['', 'UPPER.invalid', 'dev.adele.bad_id']) {
+      expect(
+        () => AdeleProviderAssociation(
+          capabilityId: id,
+          capabilityMajorVersion: 1,
+          providerId: association['providerId']! as String,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => AdeleProviderAssociation(
+          capabilityId: association['capabilityId']! as String,
+          capabilityMajorVersion: 1,
+          providerId: id,
+        ),
+        throwsFormatException,
+      );
+    }
+    for (final major in [0, -1]) {
+      expect(
+        () => AdeleProviderAssociation(
+          capabilityId: association['capabilityId']! as String,
+          capabilityMajorVersion: major,
+          providerId: association['providerId']! as String,
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   for (final entry in <String, List<Object?>>{
     'providerId': ['', 'UPPER.invalid', 'dev.adele.bad_id'],
     'capabilityId': ['', 'UPPER.invalid', 'dev.adele.bad_id'],

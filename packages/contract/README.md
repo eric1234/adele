@@ -9,6 +9,14 @@ with an optional declared failure type identifier, and
 Public [`AdeleCapabilityExposure`](lib/adele_contract.dart) defines and validates
 optional backend-ready `capabilityExposures`. Plugin identity belongs to the
 installation/connection, not this value; an omitted list means zero capabilities.
+Its optional `association` is an `AdeleProviderAssociation`, serialized as exactly
+`capabilityId`, positive `capabilityMajorVersion`, and `providerId`. Omitting it
+preserves unassociated behavior; explicit null, missing/extra nested fields, and
+invalid identities fail parsing. It names one same-activation sibling contribution,
+not a connection, configuration route, live registration handle, or authority token.
+The runtime validates ownership and captures the exact registration; the declaration
+alone is not eligibility evidence. See
+[provider associations](../../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
 `AdeleExtensionExposure` defines optional ready `extensionExposures`, with
 exactly `extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and
 `metadata`. Unknown keys are rejected; metadata is recursively copied into
