@@ -301,6 +301,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'payload': bootstrap['startupArgumentsOnly'],
       });
     }
+    if (message['method'] == 'forward-envelope') {
+      responsePort.send(<String, Object?>{
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': message,
+      });
+    }
     if (message['method'] == 'infrastructure-context') {
       responsePort.send({
         'kind': 'response',

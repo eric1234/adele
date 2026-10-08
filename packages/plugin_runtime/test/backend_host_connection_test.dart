@@ -2,11 +2,646 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('contextual unary channel', () {
+    late _FakeHost fake;
+    late PluginBackendHost host;
+    late PluginBackendConnection connection;
+    late AdeleStreamChannel configured;
+
+    setUpAll(() async {
+      fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  void send(Map<String, Object?> message) => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, ...message}));
+  void respond(Map<String, Object?> request, Object? payload, {bool fail = false}) => send({
+    'kind': 'response', 'requestId': request['requestId'], 'pluginId': request['pluginId'], 'ok': !fail,
+    if (fail) 'error': {'code': 'fixture_failure', 'message': 'Declared failure', 'declaredFailureType': 'FixtureFailure', 'details': {'value': 7}}
+    else 'payload': payload,
+  });
+  send({'kind': 'hostHello'});
+  final decoder = BackendHostFrameDecoder();
+  final counts = <String, int>{};
+  final generations = <String, String>{};
+  final reverse = <int, Map<String, Object?>>{};
+  final terminalReverseIds = <int>{};
+  Map<String, Object?>? terminalReverseResult;
+  Map<String, Object?>? pending;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final pluginId = message['pluginId'] as String?;
+      if (message['kind'] == 'startPlugin') {
+        counts[pluginId!] = 0;
+        generations[pluginId] = message['generation'] as String;
+        send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': pluginId});
+      } else if (message['kind'] == 'stopPlugin') {
+        send({'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': pluginId});
+      } else if (message['kind'] == 'request') {
+        if (message['method'] == 'count') {
+          respond(message, counts[pluginId]);
+        } else if (message['method'] == 'release') {
+          final original = pending!;
+          pending = null;
+          respond(original, original, fail: (message['payload'] as Map)['fail'] == true);
+          respond(message, null);
+        } else if (message['method'] == 'reverse') {
+          reverse[message['requestId'] as int] = message;
+          send({'kind': 'hostRequest', 'requestId': message['requestId'], 'pluginId': pluginId,
+            'generation': generations[pluginId], 'hostContextKind': 'invocation',
+            'hostContext': (message['payload'] as Map)['context'], 'serviceId': 'fixture',
+            'method': 'fixture.read', 'payload': {}});
+        } else if (message['method'] == 'terminal-reverse-result') {
+          respond(message, terminalReverseResult);
+        } else if (message['method'] == 'terminal-and-termination') {
+          stdout.add([
+            ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion,
+              'kind': 'response', 'requestId': message['requestId'], 'pluginId': pluginId,
+              'ok': true, 'payload': 'terminal success'}),
+            ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion,
+              'kind': 'pluginFailed', 'pluginId': pluginId, 'requestIds': [],
+              'error': {'code': 'plugin_exited', 'message': 'Terminated after response'}}),
+          ]);
+        } else if (message['method'] == 'terminal-and-reverse') {
+          final fail = (message['payload'] as Map)['fail'] == true;
+          terminalReverseIds.add(message['requestId'] as int);
+          terminalReverseResult = null;
+          stdout.add([
+            ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion,
+              'kind': 'response', 'requestId': message['requestId'], 'pluginId': pluginId, 'ok': !fail,
+              if (fail) 'error': {'code': 'fixture_failure', 'message': 'Terminal failure'}
+              else 'payload': 'terminal success'}),
+            ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion,
+              'kind': 'hostRequest', 'requestId': message['requestId'], 'pluginId': pluginId,
+              'generation': generations[pluginId], 'hostContextKind': 'invocation',
+              'hostContext': message['hostInvocationContext'], 'serviceId': 'fixture',
+              'method': 'fixture.read', 'payload': {}}),
+          ]);
+        } else {
+          counts[pluginId!] = counts[pluginId]! + 1;
+          if (message['method'] == 'hold') {
+            pending = message;
+          } else {
+            respond(message, message, fail: message['method'] == 'fail');
+          }
+        }
+      } else if (message['kind'] == 'hostResponse') {
+        if (terminalReverseIds.remove(message['requestId'])) {
+          terminalReverseResult = message;
+        } else {
+          respond(reverse.remove(message['requestId'])!, message);
+        }
+      } else if (message['kind'] == 'shutdownHost') {
+        send({'kind': 'hostStopped', 'requestId': message['requestId']});
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      host = await fake.start();
+      addTearDown(host.close);
+    });
+
+    setUp(() async {
+      connection = await host.startPlugin(
+        pluginId: 'dev.adele.contextual-owner',
+        artifactUri: Uri.file('/unused'),
+      );
+      addTearDown(connection.close);
+      configured = connection.channelFor(
+        connection.configurationContext('captured-context'),
+        'captured-service',
+      );
+    });
+
+    test(
+      'preserves exact route and payload without changing ordinary calls',
+      () async {
+        final invocation = connection.openHostInvocation({});
+        var validations = 0;
+        final contextual = connection.bindHostInvocation(
+          channel: configured,
+          invocation: invocation,
+          validate: () => validations++,
+        );
+        expect(contextual, isNot(isA<AdeleStreamChannel>()));
+        expect(
+          () => (contextual as dynamic).stream(
+            'observe',
+            const <String, Object?>{},
+          ),
+          throwsNoSuchMethodError,
+        );
+        final payload = <String, Object?>{
+          'configurationContext': 'payload-context',
+          'serviceId': 'payload-service',
+          'hostInvocationContext': 'payload-token',
+          'nested': {'value': 7},
+        };
+        final response =
+            await contextual.request('fixture.read', payload) as Map;
+        expect(response['pluginId'], 'dev.adele.contextual-owner');
+        expect(response['configurationContext'], 'captured-context');
+        expect(response['serviceId'], 'captured-service');
+        expect(response['method'], 'fixture.read');
+        expect(response['payload'], payload);
+        expect(response['hostInvocationContext'], invocation.id);
+        expect(validations, 3);
+        expect(invocation.isClosed, isTrue);
+        for (final ordinary in <AdeleRequestChannel>[configured, connection]) {
+          final response =
+              await ordinary.request('fixture.read', payload) as Map;
+          expect(response.containsKey('hostInvocationContext'), isFalse);
+          expect(response['payload'], payload);
+        }
+        expect(await connection.request('count', {}), 3);
+      },
+    );
+
+    test(
+      'allows only one request including while its response is pending',
+      () async {
+        final invocation = connection.openHostInvocation({});
+        var validations = 0;
+        final contextual = connection.bindHostInvocation(
+          channel: configured,
+          invocation: invocation,
+          validate: () => validations++,
+        );
+        final pending = contextual.request('hold', {});
+        expect(await connection.request('count', {}), 1);
+        expect(invocation.isClosed, isFalse);
+        await expectLater(contextual.request('again', {}), throwsStateError);
+        expect(invocation.isClosed, isFalse);
+        expect(validations, 1);
+        await connection.request('release', {});
+        expect((await pending as Map)['hostInvocationContext'], invocation.id);
+        expect(invocation.isClosed, isTrue);
+        await expectLater(contextual.request('again', {}), throwsStateError);
+        expect(validations, 3);
+        expect(await connection.request('count', {}), 1);
+      },
+    );
+
+    for (final fail in [false, true]) {
+      test(
+        'terminal receipt revokes before a batched reverse request, failure=$fail',
+        () async {
+          final dispatcher = _PendingHostDispatcher();
+          final invocation = connection.openHostInvocation({
+            'fixture': dispatcher,
+          });
+          final contextual = connection.bindHostInvocation(
+            channel: configured,
+            invocation: invocation,
+            validate: () {},
+          );
+          final result = contextual.request('terminal-and-reverse', {
+            'fail': fail,
+          });
+          if (fail) {
+            await expectLater(
+              result,
+              throwsA(
+                isA<PluginRemoteFailure>().having(
+                  (error) => error.code,
+                  'code',
+                  'fixture_failure',
+                ),
+              ),
+            );
+          } else {
+            expect(await result, 'terminal success');
+          }
+          final reverseResult =
+              await connection.request('terminal-reverse-result', {}) as Map;
+          dispatcher.result.complete({
+            'kind': 'response',
+            'requestId': dispatcher.requestId,
+            'ok': true,
+            'payload': 'late',
+          });
+          expect(
+            dispatcher.calls,
+            0,
+            reason:
+                'Even synchronous dispatcher entry must be fenced at terminal receipt.',
+          );
+          expect(
+            (reverseResult['error'] as Map)['code'],
+            'host_invocation_unavailable',
+          );
+          expect(invocation.isClosed, isTrue);
+          final ordinary = await configured.request('fixture.read', {}) as Map;
+          expect(ordinary.containsKey('hostInvocationContext'), isFalse);
+        },
+      );
+    }
+
+    test(
+      'selection validation survives synchronous receipt revocation',
+      () async {
+        for (final rejectAtReceipt in [true, false]) {
+          final invocation = connection.openHostInvocation({});
+          final failure = StateError('Captured selection retired.');
+          var valid = true;
+          var validations = 0;
+          final contextual = connection.bindHostInvocation(
+            channel: configured,
+            invocation: invocation,
+            validate: () {
+              validations++;
+              if (!valid) throw failure;
+              if (validations == 2) {
+                if (rejectAtReceipt) throw failure;
+                scheduleMicrotask(() => valid = false);
+              }
+            },
+          );
+          await expectLater(
+            contextual.request('fixture.read', {}),
+            throwsA(same(failure)),
+          );
+          expect(validations, 3);
+          expect(invocation.isClosed, isTrue);
+        }
+      },
+    );
+
+    test('checks generation after synchronous receipt revocation', () async {
+      final invocation = connection.openHostInvocation({});
+      final contextual = connection.bindHostInvocation(
+        channel: configured,
+        invocation: invocation,
+        validate: () {},
+      );
+      await expectLater(
+        contextual.request('terminal-and-termination', {}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(invocation.isClosed, isTrue);
+      expect(connection.isClosed, isTrue);
+    });
+
+    test(
+      'rejects foreign, unconfigured, rebound, and closed authority',
+      () async {
+        final foreign = await host.startPlugin(
+          pluginId: 'foreign',
+          artifactUri: Uri.file('/unused'),
+        );
+        addTearDown(foreign.close);
+        final invocation = connection.openHostInvocation({});
+        addTearDown(invocation.close);
+        final foreignInvocation = foreign.openHostInvocation({});
+        final foreignChannel = foreign.channelFor(
+          foreign.configurationContext('captured-context'),
+          'captured-service',
+        );
+        final contextual = connection.bindHostInvocation(
+          channel: configured,
+          invocation: invocation,
+          validate: () {},
+        );
+        for (final channel in [connection, foreignChannel, contextual]) {
+          expect(
+            () => connection.bindHostInvocation(
+              channel: channel,
+              invocation: invocation,
+              validate: () {},
+            ),
+            throwsArgumentError,
+          );
+        }
+        expect(
+          () => connection.bindHostInvocation(
+            channel: configured,
+            invocation: foreignInvocation,
+            validate: () {},
+          ),
+          throwsArgumentError,
+        );
+        expect(invocation.isClosed, isFalse);
+        expect(foreignInvocation.isClosed, isFalse);
+        invocation.close();
+        expect(
+          () => connection.bindHostInvocation(
+            channel: configured,
+            invocation: invocation,
+            validate: () {},
+          ),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(await connection.request('count', {}), 0);
+      },
+    );
+
+    test(
+      'validates before dispatch and consumes failed admission attempts',
+      () async {
+        for (final invalidation in [
+          'binding',
+          'invocation',
+          'during-validation',
+        ]) {
+          final invocation = connection.openHostInvocation({});
+          final failure = StateError('Captured binding retired.');
+          var validations = 0;
+          final contextual = connection.bindHostInvocation(
+            channel: configured,
+            invocation: invocation,
+            validate: () {
+              validations++;
+              if (invalidation == 'binding') throw failure;
+              if (invalidation == 'during-validation') invocation.close();
+            },
+          );
+          if (invalidation == 'invocation') invocation.close();
+          await expectLater(
+            contextual.request('fixture.read', {}),
+            throwsA(
+              invalidation == 'binding'
+                  ? same(failure)
+                  : isA<PluginConnectionClosed>(),
+            ),
+          );
+          expect(invocation.isClosed, isTrue);
+          await expectLater(contextual.request('again', {}), throwsStateError);
+          expect(validations, 1);
+        }
+        expect(await connection.request('count', {}), 0);
+      },
+    );
+
+    test(
+      'fences successful and failed settlement after authority retirement',
+      () async {
+        var calls = 0;
+        for (final invalidation in ['binding', 'invocation']) {
+          for (final fail in [false, true]) {
+            final invocation = connection.openHostInvocation({});
+            var valid = true;
+            var validations = 0;
+            final failure = StateError('Captured selection retired.');
+            final contextual = connection.bindHostInvocation(
+              channel: configured,
+              invocation: invocation,
+              validate: () {
+                validations++;
+                if (!valid) throw failure;
+              },
+            );
+            final pending = contextual.request('hold', {});
+            expect(await connection.request('count', {}), ++calls);
+            if (invalidation == 'binding') {
+              valid = false;
+            } else {
+              invocation.close();
+            }
+            final assertion = expectLater(
+              pending,
+              throwsA(
+                invalidation == 'binding'
+                    ? same(failure)
+                    : isA<PluginConnectionClosed>(),
+              ),
+            );
+            await connection.request('release', {'fail': fail});
+            await assertion;
+            expect(validations, 3);
+            expect(invocation.isClosed, isTrue);
+            await expectLater(
+              contextual.request('again', {}),
+              throwsStateError,
+            );
+          }
+        }
+        expect(await connection.request('count', {}), 4);
+      },
+    );
+
+    test(
+      'preserves remote failures and revokes after serialization failure',
+      () async {
+        final invocation = connection.openHostInvocation({});
+        var validations = 0;
+        final contextual = connection.bindHostInvocation(
+          channel: configured,
+          invocation: invocation,
+          validate: () => validations++,
+        );
+        await expectLater(
+          contextual.request('fail', {}),
+          throwsA(
+            isA<PluginRemoteFailure>()
+                .having((error) => error.code, 'code', 'fixture_failure')
+                .having(
+                  (error) => error.declaredFailureType,
+                  'type',
+                  'FixtureFailure',
+                )
+                .having((error) => error.details, 'details', {'value': 7}),
+          ),
+        );
+        expect(invocation.isClosed, isTrue);
+        expect(validations, 3);
+        final malformedInvocation = connection.openHostInvocation({});
+        final malformed = connection.bindHostInvocation(
+          channel: configured,
+          invocation: malformedInvocation,
+          validate: () => validations++,
+        );
+        await expectLater(
+          malformed.request('bad', {'value': Object()}),
+          throwsA(isA<BackendHostProtocolException>()),
+        );
+        expect(validations, 5);
+        expect(malformedInvocation.isClosed, isTrue);
+        await expectLater(malformed.request('again', {}), throwsStateError);
+        expect(await connection.request('count', {}), 1);
+      },
+    );
+
+    test(
+      'either exact registration retirement revokes pending host calls without stopping the backend',
+      () async {
+        for (final retiredIndex in [0, 1]) {
+          final registry = CapabilityRegistry();
+          final providers = [
+            for (final role in ['callable', 'environment'])
+              ProviderDescriptor(
+                id: ProviderId('dev.adele.fixture.$role.provider'),
+                capability: CapabilityKey(
+                  id: CapabilityId('dev.adele.fixture.$role'),
+                  majorVersion: 1,
+                ),
+                pluginId: connection.pluginId,
+                displayName: role,
+                serviceId: 'captured-service',
+              ),
+          ];
+          final endpoint = AdeleRequestChannelEndpoint(
+            channel: configured,
+            serviceId: 'captured-service',
+            isAvailable: () => !connection.isClosed,
+          );
+          final registrations = [
+            for (final provider in providers)
+              registry.register(provider: provider, endpoint: endpoint),
+          ];
+          for (final registration in registrations) {
+            addTearDown(registration.close);
+          }
+          final bindings = [
+            for (final provider in providers)
+              registry.resolve(provider.capability),
+          ];
+          final dispatcher = _PendingHostDispatcher();
+          final invocation = connection.openHostInvocation({
+            'fixture': dispatcher,
+          });
+          for (final binding in bindings) {
+            addTearDown(binding.onRetire(invocation.close));
+          }
+          final contextual = connection.bindHostInvocation(
+            channel: bindings.first.requestChannel,
+            invocation: invocation,
+            validate: () {
+              for (final binding in bindings) {
+                binding.endpointAs<AdeleRequestChannelEndpoint>();
+              }
+            },
+          );
+          final pending = contextual.request('hold', {});
+          final assertion = expectLater(
+            pending,
+            throwsA(isA<ProviderUnavailable>()),
+          );
+          final reverse = connection.request('reverse', {
+            'context': invocation.id,
+          });
+          await dispatcher.entered.future;
+          final retiring = registrations[retiredIndex].close();
+          expect(invocation.isClosed, isTrue);
+          expect(connection.isClosed, isFalse);
+          expect(registrations[1 - retiredIndex].isClosed, isFalse);
+          await retiring;
+          final revoked =
+              await reverse.timeout(const Duration(seconds: 1)) as Map;
+          expect(
+            (revoked['error'] as Map)['code'],
+            'host_invocation_unavailable',
+          );
+          dispatcher.result.complete({
+            'kind': 'response',
+            'requestId': dispatcher.requestId,
+            'ok': true,
+            'payload': 'late',
+          });
+          final replacement = registry.register(
+            provider: providers[retiredIndex],
+            endpoint: endpoint,
+          );
+          addTearDown(replacement.close);
+          expect(replacement.owns(bindings[retiredIndex]), isFalse);
+          await connection.request('release', {});
+          await assertion;
+          final replay =
+              await connection.request('reverse', {'context': invocation.id})
+                  as Map;
+          expect(
+            (replay['error'] as Map)['code'],
+            'host_invocation_unavailable',
+          );
+          expect(dispatcher.calls, 1);
+          final ordinary = await configured.request('fixture.read', {}) as Map;
+          expect(ordinary.containsKey('hostInvocationContext'), isFalse);
+          final freshBinding = registry.resolve(providers.first.capability);
+          final freshInvocation = connection.openHostInvocation({});
+          final fresh = connection.bindHostInvocation(
+            channel: freshBinding.requestChannel,
+            invocation: freshInvocation,
+            validate: () {
+              freshBinding.endpointAs<AdeleRequestChannelEndpoint>();
+            },
+          );
+          expect(
+            (await fresh.request('fixture.read', {})
+                as Map)['hostInvocationContext'],
+            freshInvocation.id,
+          );
+          for (final registration in registrations) {
+            await registration.close();
+          }
+          await replacement.close();
+        }
+      },
+    );
+
+    test(
+      'cannot migrate captured route or invocation to a same-ID replacement',
+      () async {
+        final invocation = connection.openHostInvocation({});
+        final contextual = connection.bindHostInvocation(
+          channel: configured,
+          invocation: invocation,
+          validate: () {},
+        );
+        await connection.close();
+        final replacement = await host.startPlugin(
+          pluginId: connection.pluginId,
+          artifactUri: Uri.file('/unused'),
+        );
+        addTearDown(replacement.close);
+        final replacementChannel = replacement.channelFor(
+          replacement.configurationContext('captured-context'),
+          'captured-service',
+        );
+        final replacementInvocation = replacement.openHostInvocation({});
+        expect(invocation.isClosed, isTrue);
+        await expectLater(
+          contextual.request('fixture.read', {}),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(
+          () => replacement.bindHostInvocation(
+            channel: configured,
+            invocation: replacementInvocation,
+            validate: () {},
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => replacement.bindHostInvocation(
+            channel: replacementChannel,
+            invocation: invocation,
+            validate: () {},
+          ),
+          throwsArgumentError,
+        );
+        expect(await replacement.request('count', {}), 0);
+        final fresh = replacement.bindHostInvocation(
+          channel: replacementChannel,
+          invocation: replacementInvocation,
+          validate: () {},
+        );
+        expect(
+          (await fresh.request('fixture.read', {})
+              as Map)['hostInvocationContext'],
+          replacementInvocation.id,
+        );
+        expect(replacementInvocation.isClosed, isTrue);
+      },
+    );
+  }, timeout: const Timeout(Duration(minutes: 1)));
+
   test(
     'runtime rejects wrong stamped generation and settles revoked host requests once',
     () async {

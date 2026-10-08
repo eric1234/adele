@@ -57,6 +57,17 @@ malformed responses. Generated dispatchers classify malformed request values as
 `invalid_request`; constructor failures are opaque at both boundaries, including
 when a contract constructor itself throws `AdeleProtocolException`.
 
+`AdeleConfigurationContextRouter` accepts optional top-level
+`hostInvocationContext` metadata only for unary requests whose dispatcher
+explicitly implements `AdeleContextualUnaryDispatcher`. The field must be a
+nonempty string; explicit null, streams, stream controls, and ordinary dispatchers
+reject it. The router removes configuration, service, and invocation metadata
+before `handleContextual(command, hostInvocationContext, send)`, leaving the
+generated envelope and semantic payload unchanged. Context-free dispatchers keep
+their existing behavior. The concrete operation-local adapter and host-call
+channel live in [`plugin_backend_support`](../plugin_backend_support/README.md),
+not generated contract code.
+
 Phase II contract source is an intentionally constrained IDL embedded in Dart,
 not arbitrary Dart API source. Every schema-participating declaration and member
 uses a public ASCII identifier matching `[A-Za-z][A-Za-z0-9_]*`; private,

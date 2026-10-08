@@ -124,6 +124,7 @@ final class EnvironmentCapabilitySelection {
   Environment get environment => _captured.environment;
 
   void validate() {
+    _captured.validate();
     materialization.validateBinding();
     binding.endpointAs<CapabilityEndpoint>();
     final associated = _associationFor(binding);

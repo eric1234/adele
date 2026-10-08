@@ -41,6 +41,13 @@ reuse prior development artifacts. See the
 Every `startPlugin` frame must supply a nonempty `hostInfrastructureContext`,
 forwarded unchanged in the backend bootstrap message even for an empty allowlist.
 The host does not mint this runtime-owned grant or infer one when omitted.
+Forward unary requests may carry a nonempty top-level `hostInvocationContext`.
+The host validates and forwards it unchanged, separately from the semantic
+payload, configuration context, and service route. Explicit null and non-unary
+forward commands reject the field; the backend configuration router separately
+requires dispatcher opt-in. This does not alter reverse framing or grant access
+to a host service. See the public
+[`contextual unary adapter`](../plugin_backend_support/README.md#contextual-unary-services).
 Unary `hostRequest`/`hostResponse` reuse the same response/command ports and framed
 transport. The host stamps PluginId and
 the host-issued connection generation from the owning isolate, correlates each

@@ -27,7 +27,8 @@ final class AdeleBackendHost {
 
   void noteStreamCancelRequested(Map<String, Object?> message) {
     if (message['protocolVersion'] != backendHostProtocolVersion ||
-        message['kind'] != 'streamCancel') {
+        message['kind'] != 'streamCancel' ||
+        message.containsKey('hostInvocationContext')) {
       return;
     }
     final Object? pluginId = message['pluginId'];
@@ -48,6 +49,17 @@ final class AdeleBackendHost {
       return true;
     }
     try {
+      if (message.containsKey('hostInvocationContext') &&
+          message['kind'] != 'hostResponse' &&
+          !(message['kind'] is String &&
+              (message['kind'] as String).startsWith('hostStream'))) {
+        if (message['kind'] != 'request') {
+          throw const FormatException(
+            'hostInvocationContext is only supported on unary requests.',
+          );
+        }
+        _requireString(message, 'hostInvocationContext');
+      }
       if (_shutDown &&
           message['kind'] != 'hostResponse' &&
           !(message['kind'] is String &&
@@ -664,6 +676,8 @@ final class _PluginIsolate {
       'requestId': pluginRequestId,
       'configurationContext': configurationContext,
       'serviceId': serviceId,
+      if (message.containsKey('hostInvocationContext'))
+        'hostInvocationContext': message['hostInvocationContext'],
       'method': method,
       'payload': payload,
     });
