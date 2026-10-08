@@ -5,6 +5,172 @@ import 'dart:async';
 
 import 'package:adele_contract/adele_contract.dart';
 
+/// One unary operation's explicit, request-only access to host services.
+///
+/// The host remains authoritative for service allowlists, generation and
+/// revocation. Retaining this context or a bound channel cannot extend its life.
+final class AdeleBackendOperationContext {
+  AdeleBackendOperationContext._(
+    this._hostRequests,
+    this._hostInvocationContext,
+  );
+
+  final AdeleHostRequestMultiplexer _hostRequests;
+  final String _hostInvocationContext;
+  bool _active = true;
+
+  /// Binds a generated unary client without exposing streaming or the token.
+  AdeleRequestChannel bind(String serviceId) {
+    _validate();
+    return _OperationRequestChannel(
+      this,
+      _hostRequests.bind(
+        hostInvocationContext: _hostInvocationContext,
+        serviceId: serviceId,
+      ),
+    );
+  }
+
+  void _validate() {
+    if (!_active) throw StateError('Backend operation context has expired.');
+  }
+}
+
+final class _OperationRequestChannel implements AdeleRequestChannel {
+  const _OperationRequestChannel(this._context, this._delegate);
+
+  final AdeleBackendOperationContext _context;
+  final AdeleRequestChannel _delegate;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    _context._validate();
+    final result = await _delegate.request(method, payload);
+    _context._validate();
+    return result;
+  }
+}
+
+/// Opt-in adapter for generated unary services with explicit operation context.
+///
+/// [createDispatcher] must construct a fresh implementation holding the supplied
+/// context and a fresh generated dispatcher for each admitted operation. Calls
+/// are independent and may overlap; there is no ambient/current context.
+final class AdeleContextualServiceDispatcher
+    implements AdeleContextualUnaryDispatcher {
+  AdeleContextualServiceDispatcher({
+    required AdeleHostRequestMultiplexer hostRequests,
+    required AdeleBackendDispatcher Function(
+      AdeleBackendOperationContext context,
+    )
+    createDispatcher,
+  }) : _hostRequests = hostRequests,
+       _createDispatcher = createDispatcher;
+
+  final AdeleHostRequestMultiplexer _hostRequests;
+  final AdeleBackendDispatcher Function(AdeleBackendOperationContext)
+  _createDispatcher;
+  final Map<AdeleBackendOperationContext, Completer<void>> _operations = {};
+  bool _closed = false;
+  Future<void>? _closing;
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async =>
+      _rejection(request);
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?> event) send,
+  ) async {
+    send(_rejection(command));
+  }
+
+  @override
+  Future<void> handleContextual(
+    Map<Object?, Object?> command,
+    String hostInvocationContext,
+    void Function(Map<String, Object?> event) send,
+  ) {
+    if (_closed ||
+        command['kind'] != 'request' ||
+        hostInvocationContext.isEmpty) {
+      return handle(command, send);
+    }
+    final context = AdeleBackendOperationContext._(
+      _hostRequests,
+      hostInvocationContext,
+    );
+    final settled = Completer<void>();
+    _operations[context] = settled;
+    return () async {
+      AdeleBackendDispatcher? dispatcher;
+      bool terminalSent = false;
+      try {
+        dispatcher = _createDispatcher(context);
+        await dispatcher.handle(command, (event) {
+          if (event['kind'] == 'response') context._active = false;
+          send(event);
+          if (event['kind'] == 'response') terminalSent = true;
+        });
+        if (!terminalSent) {
+          throw StateError(
+            'Contextual unary dispatch returned without a response.',
+          );
+        }
+      } on Object {
+        context._active = false;
+        // Settle the host grant before potentially unbounded delegate cleanup.
+        if (!terminalSent) {
+          send({
+            'kind': 'response',
+            'requestId': command['requestId'],
+            'ok': false,
+            'error': {
+              'code': 'internal_error',
+              'message': 'Contextual backend dispatch failed.',
+            },
+          });
+        }
+      } finally {
+        context._active = false;
+        try {
+          await dispatcher?.close();
+        } finally {
+          _operations.remove(context);
+          settled.complete();
+        }
+      }
+    }();
+  }
+
+  /// Fences new admission and expires every context synchronously, then drains
+  /// admitted operations and their delegate cleanup without interrupting work.
+  @override
+  Future<void> close() {
+    if (_closing != null) return _closing!;
+    _closed = true;
+    for (final context in _operations.keys) {
+      context._active = false;
+    }
+    return _closing = Future.wait<void>(
+      _operations.values.map((operation) => operation.future),
+    ).then((_) {});
+  }
+
+  Map<String, Object?> _rejection(Map<Object?, Object?> command) => {
+    'kind': command['kind'] == 'request' ? 'response' : 'streamFailure',
+    'requestId': command['requestId'],
+    if (command['kind'] == 'request') 'ok': false,
+    'error': {
+      'code': _closed ? 'dispatcher_closed' : 'invalid_host_invocation_context',
+      'message': _closed
+          ? 'Contextual service dispatcher is closed.'
+          : 'This service requires a contextual unary request.',
+    },
+  };
+}
+
 /// Multiplexes host calls over the backend's bootstrap response port.
 ///
 /// Keep one multiplexer per backend generation; bound channels share its IDs.

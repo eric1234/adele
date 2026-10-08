@@ -361,6 +361,29 @@ final class CapturedSessionEnvironment {
   final EnvironmentRuntime _runtime;
   Future<EnvironmentMaterialization>? _materialization;
 
+  /// Rechecks the captured canonical association without selecting a provider.
+  void validate() {
+    final store = _runtime.store;
+    final authority = store.sessionAuthority(session.id);
+    final task = store.task(session.taskId);
+    final current = store.environment(environment.id);
+    if (!identical(store.session(session.id), session) ||
+        authority == null ||
+        authority.sessionId != session.id ||
+        authority.taskId != session.taskId ||
+        authority.environmentId != environment.id ||
+        task == null ||
+        store.project(task.projectId) == null ||
+        current == null ||
+        current.taskId != environment.taskId ||
+        current.role != environment.role ||
+        current.providerId != environment.providerId) {
+      throw StateError(
+        'The captured Session Environment is no longer canonical.',
+      );
+    }
+  }
+
   Future<EnvironmentMaterialization> materialize() async {
     // Never retry this capture, including after a failed first materialization.
     final materialization = await (_materialization ??= _runtime.materialize(

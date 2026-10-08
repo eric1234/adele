@@ -212,6 +212,19 @@ The [activation integration](test/core/environment_capability_integration_test.d
 uses real shared-host/backend AOT, normal advertisements/bootstrap, and a gated
 canonical nonprimary Environment restore without a stock provenance plugin.
 
+[`invokeEnvironmentCapabilityWithRead`](lib/core/environment_capability_invocation.dart)
+is the separate native host authorization point for one generated unary call over
+that retained selection. The consumer supplies its generated client/method over a
+single-use channel; this production adapter knows only the public authorized-read
+contract. Its read implementation uses the selected materialization directly and
+observes exact callable, Environment-provider, and backend retirement before
+opening the operation grant. Grant revocation does not await provider cleanup.
+The [contextual AOT integration](test/core/environment_capability_invocation_integration_test.dart)
+exercises normal bootstrap and actual reverse host requests using a synthetic
+implementation of a plugin-owned contract. There is no prepared EVC contextual
+bridge. Authority, backend opt-in, and unary-only limitations belong to
+[contextual invocation architecture](../docs/architecture/contracts-and-capabilities.md#contextual-unary-capability-invocation).
+
 <a id="prepared-chat-frontend"></a>
 ### Prepared frontend artifacts
 

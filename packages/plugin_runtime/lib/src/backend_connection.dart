@@ -55,6 +55,7 @@ final class PluginBackendHost {
   final BackendHostFrameDecoder _decoder = BackendHostFrameDecoder();
   final Map<int, Completer<Map<String, Object?>>> _pending =
       <int, Completer<Map<String, Object?>>>{};
+  final Map<int, void Function()> _contextualResponseHooks = {};
   final Map<int, _PendingPluginStream> _streams = <int, _PendingPluginStream>{};
   final Map<int, _HostServiceStream> _hostStreams = {};
   int _lastHostRequestId = -1;
@@ -362,8 +363,10 @@ final class PluginBackendHost {
     String configurationContext,
     String serviceId,
     String method,
-    Map<String, Object?> payload,
-  ) async {
+    Map<String, Object?> payload, {
+    String? hostInvocationContext,
+    void Function()? onContextualResponse,
+  }) async {
     final String pluginId = owner.pluginId;
     if (owner.isClosed || _plugins[pluginId] != owner) {
       throw const PluginConnectionClosed(
@@ -373,11 +376,13 @@ final class PluginBackendHost {
     final Map<String, Object?> response = await _command(
       kind: 'request',
       pluginId: pluginId,
+      onContextualResponse: onContextualResponse,
       fields: <String, Object?>{
         'configurationContext': configurationContext,
         'serviceId': serviceId,
         'method': method,
         'payload': payload,
+        'hostInvocationContext': ?hostInvocationContext,
       },
     );
     if (response['ok'] == true) return response['payload'];
@@ -534,6 +539,7 @@ final class PluginBackendHost {
     String? pluginId,
     Map<String, Object?> fields = const <String, Object?>{},
     bool trackPluginRequest = true,
+    void Function()? onContextualResponse,
   }) {
     if (_closed) {
       return Future<Map<String, Object?>>.error(
@@ -544,6 +550,9 @@ final class PluginBackendHost {
     final Completer<Map<String, Object?>> completer =
         Completer<Map<String, Object?>>();
     _pending[requestId] = completer;
+    if (onContextualResponse != null) {
+      _contextualResponseHooks[requestId] = onContextualResponse;
+    }
     if (pluginId != null && trackPluginRequest) {
       _pendingPluginIds[requestId] = pluginId;
     }
@@ -559,6 +568,7 @@ final class PluginBackendHost {
     } on Object catch (error, stackTrace) {
       _pending.remove(requestId);
       _pendingPluginIds.remove(requestId);
+      _contextualResponseHooks.remove(requestId);
       completer.completeError(error, stackTrace);
     }
     return completer.future;
@@ -609,11 +619,20 @@ final class PluginBackendHost {
     final Completer<Map<String, Object?>>? completer = _pending.remove(
       rawRequestId,
     );
+    final onContextualResponse = _contextualResponseHooks.remove(rawRequestId);
     _pendingPluginIds.remove(rawRequestId);
     if (completer == null) {
       _onDiagnostic?.call(
         'Unknown or duplicate host response ID $rawRequestId.',
       );
+      return;
+    }
+    try {
+      // The decoder may deliver another reverse call in this same stdout batch.
+      // Revoke contextual authority before publishing an asynchronous result.
+      onContextualResponse?.call();
+    } on Object catch (error, stackTrace) {
+      completer.completeError(error, stackTrace);
       return;
     }
     completer.complete(message);
@@ -1188,6 +1207,7 @@ final class PluginBackendHost {
         final Completer<Map<String, Object?>>? completer = _pending.remove(
           rawRequestId,
         );
+        _contextualResponseHooks.remove(rawRequestId);
         _pendingPluginIds.remove(rawRequestId);
         if (completer != null && !completer.isCompleted) {
           completer.completeError(failure);
@@ -1203,6 +1223,7 @@ final class PluginBackendHost {
       final Completer<Map<String, Object?>>? completer = _pending.remove(
         requestId,
       );
+      _contextualResponseHooks.remove(requestId);
       _pendingPluginIds.remove(requestId);
       if (completer != null && !completer.isCompleted) {
         completer.completeError(failure);
@@ -1226,6 +1247,7 @@ final class PluginBackendHost {
       if (!completer.isCompleted) completer.completeError(error);
     }
     _pending.clear();
+    _contextualResponseHooks.clear();
     for (final int requestId in _streams.keys.toList(growable: false)) {
       _finishStream(requestId, error: error);
     }
@@ -1251,6 +1273,7 @@ final class PluginBackendHost {
       final Completer<Map<String, Object?>>? completer = _pending.remove(
         requestId,
       );
+      _contextualResponseHooks.remove(requestId);
       if (completer != null && !completer.isCompleted) {
         completer.completeError(error);
       }
@@ -1366,6 +1389,35 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return invocation;
   }
 
+  /// Binds one unary request to an existing exact configured route and grant.
+  /// [validate] checks caller-owned bindings before dispatch and on settlement.
+  /// A terminal response synchronously validates and closes [invocation] on
+  /// receipt, before later frames can call back. The caller still owns retirement
+  /// observation and finally-close if the channel is unused.
+  AdeleRequestChannel bindHostInvocation({
+    required AdeleRequestChannel channel,
+    required PluginHostInvocation invocation,
+    required void Function() validate,
+  }) {
+    if (channel is! _ConfigurationContextChannel ||
+        !identical(channel._connection, this)) {
+      throw ArgumentError.value(
+        channel,
+        'channel',
+        'Expected a configured channel from this exact plugin connection.',
+      );
+    }
+    if (!identical(invocation._owner, this)) {
+      throw ArgumentError.value(
+        invocation,
+        'invocation',
+        'Host invocation belongs to another plugin connection.',
+      );
+    }
+    invocation._validate();
+    return _HostInvocationChannel(channel, invocation, validate);
+  }
+
   void _revokeHostInvocations() {
     for (final invocation in _hostInvocations.values.toList()) {
       invocation.close();
@@ -1454,6 +1506,18 @@ final class PluginHostInvocation {
   final _HostServiceGrant _grant;
   String get id => _grant.id;
   bool get isClosed => _grant.isClosed;
+
+  void _validate({bool requireOpenGrant = true}) {
+    if (_owner.isClosed ||
+        _owner._host._shuttingDown ||
+        !identical(_owner._host._plugins[_owner.pluginId], _owner) ||
+        (requireOpenGrant &&
+            (isClosed || !identical(_owner._hostInvocations[id], this)))) {
+      throw const PluginConnectionClosed(
+        'The host invocation is not active for this connection generation.',
+      );
+    }
+  }
 
   /// Immediately revokes authority and settles pending responses, without waiting
   /// for arbitrary service code or taking ownership of dispatcher cleanup.
@@ -1571,6 +1635,52 @@ final class _ConfigurationContextChannel implements AdeleStreamChannel {
         method,
         payload,
       );
+}
+
+final class _HostInvocationChannel implements AdeleRequestChannel {
+  _HostInvocationChannel(this._channel, this._invocation, this._validate);
+
+  final _ConfigurationContextChannel _channel;
+  final PluginHostInvocation _invocation;
+  final void Function() _validate;
+  bool _used = false;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (_used) {
+      throw StateError('A contextual channel allows only one unary request.');
+    }
+    _used = true;
+    var responseSettled = false;
+    try {
+      _validate();
+      _invocation._validate();
+      try {
+        return await _channel._connection._host._request(
+          _channel._connection,
+          _channel._configurationContext,
+          _channel._serviceId,
+          method,
+          payload,
+          hostInvocationContext: _invocation.id,
+          onContextualResponse: () {
+            try {
+              _validate();
+              _invocation._validate();
+            } finally {
+              responseSettled = true;
+              _invocation.close();
+            }
+          },
+        );
+      } finally {
+        _validate();
+        _invocation._validate(requireOpenGrant: !responseSettled);
+      }
+    } finally {
+      _invocation.close();
+    }
+  }
 }
 
 final class _PendingPluginStream {

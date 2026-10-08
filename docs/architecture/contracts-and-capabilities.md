@@ -161,11 +161,12 @@ existing context-free `CapabilityRegistry.resolve` remains unchanged.
 Association validation proves live registration provenance and the backend's
 explicit declaration, not arbitrary native implementation semantics. It grants no
 Environment reads, mutations, processes, host-service access, or invocation token.
-Selected bindings support the existing generated service route without a new
-transport envelope. The interpreted Capability bridge remains context-free.
-Contextual invocation authority and a future adapter over another plugin's
-Environment require separate designs; an SCM provider is not inherently an
-Environment owner.
+Selected bindings support the existing context-free generated service route.
+The separate [contextual unary admission](#contextual-unary-capability-invocation)
+can authorize an exact eligible selection; selection alone never grants it.
+The interpreted Capability bridge remains context-free. A future adapter over
+another plugin's Environment requires a separate design; an SCM provider is not
+inherently an Environment owner.
 
 ## Live discovery and exact binding
 
@@ -310,8 +311,8 @@ negotiation, runtime reflection, or arbitrary Dart object transport.
 Capability discovery and invocation supply no contextual Session/Environment,
 process, storage, approval, or execution authority. No empty host-invocation token
 is manufactured. Native/host-side [association eligibility](#provider-associations-and-environment-eligibility)
-does not extend this interpreted route. Contextual invocation, delegated host grants,
-and backend-to-backend consumption remain separate future work. See the
+does not extend this interpreted route. Interpreted contextual admission, delegated
+host grants, and backend-to-backend consumption remain separate future work. See the
 [public bridge API](../../packages/ui/README.md#interpreted-bridges),
 [descriptor schema](../../packages/plugin_runtime/README.md#prepared-catalog), and
 [application hosting](../../app/README.md#prepared-capability-access).
@@ -480,6 +481,61 @@ The allowlist limits host-service access, not every possible effect of native
 plugin code. Process/isolate boundaries and scoped host APIs are not an OS sandbox.
 [ADR 0032](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md)
 records the authority decision and rationale.
+
+### Contextual unary Capability invocation
+
+Native host consumers may explicitly authorize one generated unary call over a
+retained `EnvironmentCapabilitySelection`. This is a different admission mode
+from ordinary selected Capability access, not a property automatically attached
+to advertisements or generated services. The contract-owning consumer supplies
+its existing generated client and method call over `AdeleRequestChannel`; the
+application imports no provider-specific semantic contract.
+
+The app's `invokeEnvironmentCapabilityWithRead` validates the canonical Session
+capture, both exact live registrations, their retained association, actual backend
+ownership, and the expected service identity. Its only grant is the existing
+`AuthorizedEnvironmentReadService`. Reads use the very Environment materialization
+that established eligibility, not another selection from an Environment ID. No
+mutation, process, storage, execution, or approval service is granted. This API is
+an explicit trusted host authorization point, not a plugin permission declaration
+or an interpreted bridge.
+
+The runtime binds a single-use, request-only channel to that actual configured
+channel and a fresh `PluginHostInvocation` on the same connection. The optional
+forward `hostInvocationContext` is envelope metadata, separate from method and
+payload. It cannot replace configuration context, service route, generation, or
+provider binding. The shared host forwards it only for unary requests. The backend
+configuration router requires an opted-in `AdeleContextualUnaryDispatcher` and
+removes the metadata before generated dispatch. Ordinary routes reject contextual
+metadata, while contextual-only routes reject missing context.
+
+Public backend support supplies `AdeleContextualServiceDispatcher`: a factory
+receives a distinct `AdeleBackendOperationContext` for each admitted request and
+constructs an operation-local implementation and ordinary generated dispatcher.
+The implementation retains that explicit context in its own object, not in a
+semantic method parameter, Zone, process-global token, or shared mutable current
+invocation. Its bound reverse client uses the existing host-request multiplexer;
+the host's exact-generation allowlist remains authoritative. Opting into this
+factory admits operations independently; overlapping calls must be safe for the
+backend's shared configured state. Retained
+context channels become unusable when their operation settles or the wrapper
+closes.
+
+Host authority is revoked synchronously when either exact provider registration or
+the backend retires, and on unary success or failure before publication to the
+consumer. The enclosing admission also revokes on callback failure or completion.
+Checks at actual host-service entry and read settlement fence queued or late
+work. Successful contextual publication requires the same selection to remain
+valid at settlement; no failed check triggers reselection or a same-ID replacement.
+Revocation precedes asynchronous dispatcher cleanup and does not cancel ordinary
+unary work or claim that already-admitted effects were rolled back. This stricter
+contextual settlement does not change context-free Capability or Command rules.
+
+Only unary admission is supported here. Contextual stream opens are rejected,
+and the contextual channel does not implement `AdeleStreamChannel`. Ordinary
+generated server streaming and existing domain-owned reverse-streaming grants
+retain their current behavior. Prepared EVC contextual resolution/admission,
+Main Content contextual bridging, and contextual streaming remain deferred.
 
 ### Reverse unary and streaming calls
 

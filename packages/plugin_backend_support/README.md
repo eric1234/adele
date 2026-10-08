@@ -51,3 +51,39 @@ replacement generation and grant no execution or other services implicitly.
 It supplies no client/bidirectional streaming, ambient callbacks, or general
 symmetric RPC and is not a sandbox.
 See [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+## Contextual Unary Services
+
+`AdeleContextualServiceDispatcher` opts a router service into optional top-level
+forward `hostInvocationContext` metadata without changing its generated contract:
+
+```dart
+final dispatcher = AdeleContextualServiceDispatcher(
+  hostRequests: hostRequests,
+  createDispatcher: (context) => ExampleServiceDispatcher(
+    ExampleServiceImpl(context),
+  ),
+);
+```
+
+Install the wrapper under the existing configuration-context/service router key.
+The factory must create a fresh implementation holding the supplied
+`AdeleBackendOperationContext` and a fresh generated dispatcher per admitted unary
+operation. These operations can overlap; any shared domain state remains the
+service owner's responsibility. `context.bind(serviceId)` returns a request-only
+`AdeleRequestChannel` for a generated host client, using the existing multiplexer
+and unchanged reverse protocol. It exposes neither the token nor a stream API,
+and checks context validity at every call and asynchronous response settlement.
+No Zone or ambient current context is used.
+
+Missing metadata fails closed, as do streaming openings and controls. A context
+expires before its response is sent, when dispatch returns or throws, and
+synchronously when the wrapper closes. Expiration precedes potentially slow
+delegate cleanup; close fences new admission and drains every admitted operation
+and its dispatcher cleanup rather than interrupting unary work. A factory/dispatch
+exception or a unary dispatcher returning without a response produces a correlated
+opaque failure before cleanup, so host grant settlement does not wait for cleanup.
+Retained contexts and channels cannot make new reverse calls after expiration.
+The wrapper does not
+own the shared multiplexer, revoke host grants, or replace host-side generation,
+service allowlist, and revocation checks.

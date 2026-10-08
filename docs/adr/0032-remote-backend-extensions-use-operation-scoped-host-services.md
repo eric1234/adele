@@ -105,6 +105,24 @@ registry or moving host authority into plugins.
     resolving an abandoned waiting approval. Cleanup cannot replace a primary
     failure or revive retired authority.
 
+### Refinement: contextual callable operations
+
+Decisions 4 and 8 also apply to explicitly admitted unary Capability operations,
+not only known remote extension adapters. The host may convey its invocation
+identity as out-of-band forward transport metadata to an opted-in backend
+dispatcher factory. Plugin-owned semantic methods and generated clients need no
+authority argument, and the application need not know their contract. The factory
+receives an explicit per-operation context; no ambient current invocation is
+installed. Exact provider association and canonical Environment materialization
+constrain the initial read-only admission.
+
+This refines how an authorized operation receives context, not who mints authority
+or how long it lasts. Decisions 5 through 9 remain intact, including the allowlist,
+exact generation, synchronous revocation before cleanup, and absence of rollback or
+an OS sandbox. It does not provide contextual Capability streaming or interpreted
+frontend admission. The current boundary is maintained in
+[contextual unary invocation](../architecture/contracts-and-capabilities.md#contextual-unary-capability-invocation).
+
 ## Alternatives considered
 
 A new statically linked `host` or `host-linked` plugin component type is not

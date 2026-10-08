@@ -380,6 +380,17 @@ abstract interface class AdeleBackendDispatcher {
   Future<void> close();
 }
 
+/// Explicit opt-in for unary requests carrying host-issued operation authority.
+/// Routing metadata is removed before [handleContextual] is called.
+abstract interface class AdeleContextualUnaryDispatcher
+    implements AdeleBackendDispatcher {
+  Future<void> handleContextual(
+    Map<Object?, Object?> command,
+    String hostInvocationContext,
+    void Function(Map<String, Object?> event) send,
+  );
+}
+
 final class AdeleConfigurationContextRouter {
   AdeleConfigurationContextRouter({
     required Map<String, Map<String, AdeleBackendDispatcher>> contexts,
@@ -429,6 +440,21 @@ final class AdeleConfigurationContextRouter {
   ) {
     final Object? kind = command['kind'];
     final Object? requestId = command['requestId'];
+    final Object? hostInvocationContext = command['hostInvocationContext'];
+    final bool contextual = command.containsKey('hostInvocationContext');
+    if (contextual &&
+        (kind != 'request' ||
+            hostInvocationContext is! String ||
+            hostInvocationContext.isEmpty)) {
+      _reject(
+        kind,
+        requestId,
+        'invalid_host_invocation_context',
+        'Host invocation context must be a nonempty string on a unary request.',
+        send,
+      );
+      return Future<void>.value();
+    }
     AdeleBackendDispatcher? dispatcher;
     if (kind == 'request' || kind == 'streamOpen') {
       final Object? configurationContext = command['configurationContext'];
@@ -466,6 +492,16 @@ final class AdeleConfigurationContextRouter {
         );
         return Future<void>.value();
       }
+      if (contextual && dispatcher is! AdeleContextualUnaryDispatcher) {
+        _reject(
+          kind,
+          requestId,
+          'host_invocation_context_unsupported',
+          'The service does not accept contextual unary requests.',
+          send,
+        );
+        return Future<void>.value();
+      }
       if (kind == 'streamOpen' && requestId is int) {
         _streamOwners[requestId] = dispatcher;
       }
@@ -479,27 +515,35 @@ final class AdeleConfigurationContextRouter {
     final Map<Object?, Object?> generatedCommand =
         Map<Object?, Object?>.of(command)
           ..remove('configurationContext')
-          ..remove('serviceId');
+          ..remove('serviceId')
+          ..remove('hostInvocationContext');
     bool terminalSent = false;
     void containFailure(Object _) {
       if (!terminalSent) _dispatchFailure(kind, requestId, send);
     }
 
+    void forward(Map<String, Object?> event) {
+      final bool terminal =
+          event['kind'] == 'response' ||
+          event['kind'] == 'streamDone' ||
+          event['kind'] == 'streamFailure' ||
+          event['kind'] == 'streamCancelled';
+      send(event);
+      if (terminal) {
+        terminalSent = true;
+        _streamOwners.remove(requestId);
+      }
+    }
+
     try {
-      return dispatcher
-          .handle(generatedCommand, (Map<String, Object?> event) {
-            final bool terminal =
-                event['kind'] == 'response' ||
-                event['kind'] == 'streamDone' ||
-                event['kind'] == 'streamFailure' ||
-                event['kind'] == 'streamCancelled';
-            send(event);
-            if (terminal) {
-              terminalSent = true;
-              _streamOwners.remove(requestId);
-            }
-          })
-          .catchError(containFailure);
+      final Future<void> handling = contextual
+          ? (dispatcher as AdeleContextualUnaryDispatcher).handleContextual(
+              generatedCommand,
+              hostInvocationContext as String,
+              forward,
+            )
+          : dispatcher.handle(generatedCommand, forward);
+      return handling.catchError(containFailure);
     } on Object catch (error) {
       containFailure(error);
       return Future<void>.value();
@@ -539,9 +583,9 @@ final class AdeleConfigurationContextRouter {
     void Function(Map<String, Object?> event) send,
   ) {
     send(<String, Object?>{
-      'kind': kind == 'streamOpen' ? 'streamFailure' : 'response',
+      'kind': kind == 'request' ? 'response' : 'streamFailure',
       'requestId': requestId,
-      if (kind != 'streamOpen') 'ok': false,
+      if (kind == 'request') 'ok': false,
       'error': <String, Object?>{'code': code, 'message': message},
     });
   }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/environment_capability_invocation.dart';
 import 'package:adele_desktop/core/environment_capability_selection.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -433,6 +434,31 @@ void main() {
       expect(fixture.resolutions, 1);
     },
   );
+
+  test('eligibility alone cannot authorize an unowned callable', () async {
+    final fixture = _Fixture();
+    final selection = await fixture.capture().resolve(_capability);
+    final backends = ApplicationPluginBootstrap(
+      fixture.registry,
+      ExtensionRegistry(),
+    );
+    addTearDown(backends.close);
+    await backends.start(installationRoot: '');
+    var invoked = false;
+    await expectLater(
+      invokeEnvironmentCapabilityWithRead<void>(
+        selection: selection,
+        backends: backends,
+        serviceId: selection.binding.provider.serviceId,
+        invoke: (_) async => invoked = true,
+      ),
+      throwsStateError,
+    );
+    expect(invoked, isFalse);
+    expect(fixture.resolutions, 1);
+    expect(fixture.selections, 1);
+    selection.validate();
+  });
 }
 
 final _stale = isA<ProviderUnavailable>().having(

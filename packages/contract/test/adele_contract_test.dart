@@ -654,6 +654,142 @@ void main() {
     },
   );
 
+  test(
+    'contextual unary routing is explicit and strips only metadata',
+    () async {
+      final contextual = _ContextualDispatcher();
+      final ordinary = _RecordingDispatcher('ordinary');
+      final router = AdeleConfigurationContextRouter(
+        contexts: {
+          'configured': {'contextual': contextual, 'ordinary': ordinary},
+        },
+      );
+      addTearDown(router.close);
+      final events = <Map<String, Object?>>[];
+      final command = <Object?, Object?>{
+        'kind': 'request',
+        'requestId': 1,
+        'configurationContext': 'configured',
+        'serviceId': 'contextual',
+        'hostInvocationContext': 'opaque',
+        'method': 'fixture.invoke',
+        'payload': {'hostInvocationContext': 'semantic-data'},
+      };
+      await router.handle(command, events.add);
+      expect(contextual.contexts, ['opaque']);
+      expect(contextual.commands.single, {
+        'kind': 'request',
+        'requestId': 1,
+        'method': 'fixture.invoke',
+        'payload': {'hostInvocationContext': 'semantic-data'},
+      });
+      expect(command['hostInvocationContext'], 'opaque');
+      await router.handle({...command, 'serviceId': 'ordinary'}, events.add);
+      expect(ordinary.commands, isEmpty);
+      expect(
+        (events.last['error'] as Map)['code'],
+        'host_invocation_context_unsupported',
+      );
+      await router.handle(
+        {...command}..remove('hostInvocationContext'),
+        events.add,
+      );
+      expect(contextual.ordinaryCalls, 1);
+      await router.handle(
+        {...command, 'serviceId': 'ordinary'}..remove('hostInvocationContext'),
+        events.add,
+      );
+      expect(ordinary.commands, hasLength(1));
+    },
+  );
+
+  test(
+    'router rejects malformed contexts and all contextual streams',
+    () async {
+      final dispatcher = _ContextualDispatcher();
+      final ordinary = _RecordingDispatcher('stream');
+      final router = AdeleConfigurationContextRouter(
+        contexts: {
+          'configured': {'contextual': dispatcher, 'ordinary': ordinary},
+        },
+      );
+      addTearDown(router.close);
+      final events = <Map<String, Object?>>[];
+      final command = <Object?, Object?>{
+        'kind': 'request',
+        'requestId': 1,
+        'configurationContext': 'configured',
+        'serviceId': 'contextual',
+        'method': 'fixture.invoke',
+        'payload': <String, Object?>{},
+      };
+      for (final value in <Object?>[null, '', 1, true, {}, []]) {
+        await router.handle({
+          ...command,
+          'hostInvocationContext': value,
+        }, events.add);
+        expect(events.last['kind'], 'response');
+        expect(
+          (events.last['error'] as Map)['code'],
+          'invalid_host_invocation_context',
+        );
+      }
+      await router.handle({
+        ...command,
+        'kind': 'streamOpen',
+        'serviceId': 'ordinary',
+      }, events.add);
+      for (final kind in ['streamOpen', 'streamCredit', 'streamCancel']) {
+        await router.handle({
+          ...command,
+          'kind': kind,
+          'hostInvocationContext': 'opaque',
+        }, events.add);
+        expect(events.last['kind'], 'streamFailure');
+        expect(
+          (events.last['error'] as Map)['code'],
+          'invalid_host_invocation_context',
+        );
+      }
+      expect(dispatcher.commands, isEmpty);
+      expect(dispatcher.ordinaryCalls, 0);
+      expect(ordinary.commands, hasLength(1));
+      await router.handle({
+        'kind': 'streamCredit',
+        'requestId': 1,
+        'credit': 1,
+      }, events.add);
+      expect(ordinary.commands.last['kind'], 'streamCredit');
+    },
+  );
+
+  test(
+    'router contains contextual synchronous and asynchronous failures',
+    () async {
+      for (final sync in [true, false]) {
+        final dispatcher = _ContextualDispatcher(failSynchronously: sync);
+        final router = AdeleConfigurationContextRouter.single(
+          configurationContext: 'configured',
+          serviceId: 'contextual',
+          dispatcher: dispatcher,
+        );
+        final events = <Map<String, Object?>>[];
+        await router.handle({
+          'kind': 'request',
+          'requestId': 1,
+          'configurationContext': 'configured',
+          'serviceId': 'contextual',
+          'hostInvocationContext': 'opaque',
+          'method': 'fixture.invoke',
+          'payload': <String, Object?>{},
+        }, events.add);
+        expect(events.single['kind'], 'response');
+        expect((events.single['error'] as Map)['code'], 'internal_error');
+        await router.close();
+      }
+    },
+  );
+
   test('configuration router rejects missing and unknown contexts', () async {
     final _RecordingDispatcher dispatcher = _RecordingDispatcher('default');
     final AdeleConfigurationContextRouter router =
@@ -804,6 +940,49 @@ void main() {
     expect((events.single['error']! as Map)['code'], 'internal_error');
     await router.close();
   });
+}
+
+final class _ContextualDispatcher implements AdeleContextualUnaryDispatcher {
+  _ContextualDispatcher({this.failSynchronously});
+
+  final bool? failSynchronously;
+  final contexts = <String>[];
+  final commands = <Map<Object?, Object?>>[];
+  int ordinaryCalls = 0;
+
+  @override
+  Future<void> handleContextual(
+    Map<Object?, Object?> command,
+    String hostInvocationContext,
+    void Function(Map<String, Object?> event) send,
+  ) {
+    if (failSynchronously == true) throw StateError('private');
+    if (failSynchronously == false) return Future.error(StateError('private'));
+    contexts.add(hostInvocationContext);
+    commands.add(command);
+    send({
+      'kind': 'response',
+      'requestId': command['requestId'],
+      'ok': true,
+      'payload': null,
+    });
+    return Future.value();
+  }
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?>) send,
+  ) async {
+    ordinaryCalls++;
+  }
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> close() async {}
 }
 
 final class _ThrowingDispatcher implements AdeleBackendDispatcher {

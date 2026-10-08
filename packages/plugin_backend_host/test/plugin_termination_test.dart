@@ -219,6 +219,99 @@ void main() {
   );
 
   test(
+    'shared host validates unary context metadata without changing payloads',
+    () async {
+      final events = StreamController<Map<String, Object?>>();
+      final host = AdeleBackendHost(
+        send: (message) {
+          events.add(message);
+          return true;
+        },
+        diagnostic: (_) {},
+      );
+      final iterator = StreamIterator(events.stream);
+      addTearDown(() async {
+        await host.shutdown(notify: false);
+        await iterator.cancel();
+        await events.close();
+      });
+      Future<Map<String, Object?>> next(String kind) async {
+        expect(
+          await iterator.moveNext().timeout(const Duration(seconds: 3)),
+          isTrue,
+        );
+        expect(iterator.current['kind'], kind);
+        return iterator.current;
+      }
+
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'contextual',
+        'generation': 'generation',
+        'hostInfrastructureContext': 'infrastructure',
+        'defaultConfigurationContext': 'default',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': ['wait'],
+      });
+      await next('pluginReady');
+      final request = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'request',
+        'requestId': 2,
+        'pluginId': 'contextual',
+        'configurationContext': 'configured',
+        'serviceId': 'fixture',
+        'method': 'forward-envelope',
+        'payload': {'hostInvocationContext': 'semantic-only'},
+      };
+      for (final metadata in <Map<String, Object?>>[
+        {},
+        {'hostInvocationContext': 'opaque'},
+      ]) {
+        await host.handle({...request, ...metadata});
+        final forwarded = (await next('response'))['payload'] as Map;
+        expect(forwarded, {
+          'kind': 'request',
+          'requestId': isA<int>(),
+          'configurationContext': 'configured',
+          'serviceId': 'fixture',
+          'method': 'forward-envelope',
+          'payload': {'hostInvocationContext': 'semantic-only'},
+          ...metadata,
+        });
+      }
+      for (final token in <Object?>[null, '', 1, true, {}, []]) {
+        await host.handle({...request, 'hostInvocationContext': token});
+        final error = (await next('error'))['error'] as Map;
+        expect(error['code'], 'host_command_failed');
+        expect(error['message'], contains('hostInvocationContext'));
+      }
+      for (final kind in [
+        'streamOpen',
+        'streamCredit',
+        'streamCancel',
+        'stopPlugin',
+        'shutdownHost',
+      ]) {
+        final command = {
+          ...request,
+          'kind': kind,
+          'hostInvocationContext': 'opaque',
+        };
+        host.noteStreamCancelRequested(command);
+        await host.handle(command);
+        final error = (await next('error'))['error'] as Map;
+        expect(error['code'], 'host_command_failed');
+        expect(error['message'], contains('only supported on unary requests'));
+      }
+      await host.handle({...request, 'method': 'ping'});
+      expect((await next('response'))['payload'], {'alive': true});
+    },
+  );
+
+  test(
     'real backend infrastructure uses exact bootstrap grant, not invocation authority',
     () async {
       final host = await _startHost(dartaotruntime, hostArtifact);

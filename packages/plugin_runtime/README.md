@@ -463,6 +463,34 @@ connection. `RemoteExtensionContext.invoke` brackets the operation and revokes i
 in `finally`, on registration retirement, and on connection shutdown/termination.
 Revocation settles pending host calls without awaiting arbitrary service code.
 
+`PluginBackendConnection.bindHostInvocation(channel: ..., invocation: ...,
+validate: ...)` returns a request-only `AdeleRequestChannel` for exactly one unary
+request attempt, including failed attempts. It accepts only an existing configured
+channel from that identical connection and an actual live `PluginHostInvocation`
+owned by it, never caller-supplied route strings or a token. The captured
+configuration context and service remain unchanged; only this request carries an
+optional top-level `hostInvocationContext`, outside the semantic payload. Ordinary
+channels carry no such metadata and retain their existing admission/settlement
+semantics. Streams and repeated use are not supported by the contextual channel.
+
+The caller proves activation ownership with `PluginBackendActivation.ownsProvider`
+and retains the binding's existing `requestChannel`, rather than joining semantic
+IDs. The supplied `validate` callback checks retained selection/registration state
+before dispatch, synchronously at terminal-response receipt, and on both successful
+and failed asynchronous settlement. Runtime checks invocation and connection
+liveness before dispatch and before revocation at receipt, and still checks
+connection liveness after awaiting the result. The caller
+owns exact registration-retirement subscriptions and synchronously closes the
+invocation on retirement and in `finally`, including when no request was made.
+A correlated terminal response closes its invocation synchronously before Future
+publication, fencing even a reverse request in the same decoded stdout batch.
+Consumed requests also close on failure paths without a response, so caller-side
+continuation cannot extend backend authority. Binding a
+channel does not transfer dispatcher cleanup, cancel admitted backend work, or
+re-resolve a replacement. The backend must explicitly opt its service into
+contextual unary dispatch; see
+[`adele_plugin_backend_support`](../plugin_backend_support/README.md).
+
 `RemoteExtensionContext.invokeStream` supplies the same operation ownership for a
 host-to-backend stream. It is single-subscription and lazy: neither the context nor
 the operation starts before listen. Authority is revoked on done, first error,

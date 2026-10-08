@@ -135,6 +135,9 @@ backend activation. The host captures the exact owned registrations, not a
 same-plugin or same-configuration inference. This enables native/host-side
 Environment eligibility without merging registries or granting invocation authority;
 see [provider associations](contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
+An explicit native host admission can separately authorize one contextual unary
+call over that selection, without importing the plugin-owned service contract;
+see [contextual invocation](contracts-and-capabilities.md#contextual-unary-capability-invocation).
 
 Events remain read-only fact notifications, not provider-selected calls or mutable
 lifecycle hooks. Observers cannot change whether the announced fact occurred;
