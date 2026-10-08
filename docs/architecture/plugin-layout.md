@@ -160,6 +160,13 @@ schemas belong to the [runtime catalog owner](../../packages/plugin_runtime/READ
 own-backend collaboration belongs to
 [contracts and capabilities](contracts-and-capabilities.md#own-backend-frontend-requests).
 
+Main Content descriptors can also request exact Capability ID/major pairs for
+mounted panes, independently of owning-backend services or provider availability.
+This data-only allowlist does not advertise providers or capture a live route;
+fresh discovery/resolution happens through the generic scoped consumer bridge.
+Other presentation roles and behavioral operations acquire no such access. See
+[prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
+
 Task Browser is a presentation descriptor, not a behavioral extension or Session
 strategy. Its frontend-only role requires no backend services or strategy affinity;
 the host supplies Project-scoped browser access through the public UI bridge.

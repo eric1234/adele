@@ -164,6 +164,33 @@ Descriptor details belong to [plugin layout](../docs/architecture/plugin-layout.
 and [plugin runtime](../packages/plugin_runtime/README.md#prepared-catalog);
 concrete frontend behavior belongs to each plugin.
 
+### Prepared Capability access
+
+[`CapabilityAccessBridge`](lib/frontend/capability_access_bridge.dart) mediates
+public callable Capability discovery/resolution for mounted Main Content panes.
+`ApplicationFrontendBootstrap` passes the existing backend bootstrap's registry
+to `PreparedMainContentHost`; each presentation receives a fresh bridge constrained
+by its descriptor's Capability ID/major allowlist. No owning backend or Session
+execution service is needed. Initializers and finite operations receive no bridge.
+
+The bridge captures `ProviderBinding.requestChannel`, rather than looking up
+connections or configuration by transported IDs. Its bounded local handle table
+owns release and exact registration-retirement observers. Shared
+[`BackendInvocationBridge`](lib/frontend/backend_invocation_bridge.dart) supplies
+structured copying, lazy streams, cancellation/backpressure, and safe eval
+settlement for this and `OwningBackendBridge`, with separate admission/settlement
+policies. Production hosting contains no plugin contract adapter. Public APIs
+belong to [UI](../packages/ui/README.md#interpreted-bridges); lifecycle and authority
+belong to [Capability architecture](../docs/architecture/contracts-and-capabilities.md#prepared-frontend-capability-consumption).
+
+[`prepared_capability_integration_test.dart`](test/prepared_capability_integration_test.dart)
+prepares one authoritative synthetic plugin contract's native/eval projections,
+separate backend AOT and frontend EVC artifacts, and ordinary installation metadata.
+It uses catalog discovery, backend-ready advertisements, frontend activation, and
+Main Content hosting, not a test-only native service adapter. The companion
+[`capability_access_bridge_test.dart`](test/capability_access_bridge_test.dart)
+isolates exact binding, bounded scope, admission/settlement, and stream lifetime.
+
 <a id="prepared-chat-frontend"></a>
 ### Prepared frontend artifacts
 

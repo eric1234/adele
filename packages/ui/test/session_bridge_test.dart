@@ -1,9 +1,29 @@
+import 'package:adele_ui/capability_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native imports grant no cross-plugin Capability access', () {
+    expect(
+      () => discoverCapabilityProviders('dev.example.probe', 1),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => resolveCapabilityProvider('dev.example.probe', 1, 'probe', null),
+      throwsUnsupportedError,
+    );
+    const channel = CapabilityRequestChannel('invented');
+    expect(() => channel.request('read', {}), throwsUnsupportedError);
+    expect(() => channel.stream('watch', {}), throwsUnsupportedError);
+    expect(() => releaseCapabilityProvider('invented'), throwsUnsupportedError);
+    expect(
+      () => settleCapabilityOperation(Future<dynamic>.value(null)),
+      throwsUnsupportedError,
+    );
+  });
+
   test('native imports grant neither backend nor Session execution access', () {
     expect(
       () => const OwningBackendRequestChannel('example').request('read', {}),

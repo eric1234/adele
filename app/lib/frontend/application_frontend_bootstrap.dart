@@ -348,6 +348,7 @@ final class InstalledFrontendActivation {
                 descriptor: descriptor,
                 isActive: isActive,
                 services: _sessionServices,
+                capabilityRegistry: _backends?.registry,
               ),
             );
             mainContents[descriptor] = (

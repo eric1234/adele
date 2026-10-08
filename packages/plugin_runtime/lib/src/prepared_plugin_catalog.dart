@@ -196,6 +196,7 @@ final class PreparedMainContentPresentation
     required this.entrypoint,
     this.sessionExecution = false,
     Iterable<String> backendServices = const [],
+    Iterable<CapabilityKey> capabilities = const [],
     this.strategyAffinity = PreparedStrategyAffinity.independent,
     Iterable<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
@@ -206,6 +207,7 @@ final class PreparedMainContentPresentation
     this.nativeCodeEditor = false,
     this.environmentTextFiles = false,
   }) : backendServices = List.unmodifiable(backendServices),
+       capabilities = List.unmodifiable(capabilities),
        actions = List.unmodifiable(actions),
        operations = Map.unmodifiable(operations) {
     _library(library, 'library');
@@ -219,6 +221,9 @@ final class PreparedMainContentPresentation
           'backendServices must not contain duplicates.',
         );
       }
+    }
+    if (this.capabilities.toSet().length != this.capabilities.length) {
+      throw const FormatException('capabilities must not contain duplicates.');
     }
     final actionIds = <String>{};
     for (final action in this.actions) {
@@ -255,6 +260,7 @@ final class PreparedMainContentPresentation
   final String entrypoint;
   final bool sessionExecution;
   final List<String> backendServices;
+  final List<CapabilityKey> capabilities;
   final PreparedStrategyAffinity strategyAffinity;
   final List<PreparedMainContentAction> actions;
 
@@ -749,6 +755,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'entrypoint',
         'sessionExecution',
         'backendServices',
+        'capabilities',
         'strategyAffinity',
         'actions',
         'operations',
@@ -775,6 +782,36 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
       if (services is! List<Object?> ||
           services.any((item) => item is! String)) {
         throw FormatException('$label.backendServices must be a string array.');
+      }
+      final capabilities = value.containsKey('capabilities')
+          ? value['capabilities']
+          : const <Object?>[];
+      if (capabilities is! List<Object?>) {
+        throw FormatException('$label.capabilities must be an array.');
+      }
+      final capabilityKeys = <CapabilityKey>[];
+      for (var index = 0; index < capabilities.length; index++) {
+        final capabilityLabel = '$label.capabilities[$index]';
+        final capability = _object(capabilities[index], capabilityLabel, {
+          'id',
+          'majorVersion',
+        });
+        final majorVersion = capability['majorVersion'];
+        if (majorVersion is! int) {
+          throw FormatException(
+            '$capabilityLabel.majorVersion must be an integer.',
+          );
+        }
+        try {
+          capabilityKeys.add(
+            CapabilityKey(
+              id: CapabilityId(_text(capability['id'], '$capabilityLabel.id')),
+              majorVersion: majorVersion,
+            ),
+          );
+        } on CapabilityException catch (error) {
+          throw FormatException('$capabilityLabel: ${error.message}');
+        }
       }
       final affinity = value.containsKey('strategyAffinity')
           ? switch (value['strategyAffinity']) {
@@ -832,6 +869,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         sessionExecution: execution,
         backendServices: services.cast<String>(),
+        capabilities: capabilityKeys,
         strategyAffinity: affinity,
         actions: actionDescriptors,
         operations: {

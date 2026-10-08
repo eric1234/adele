@@ -1,0 +1,306 @@
+import 'package:adele_ui/capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:capability_probe_contract/contract.dart';
+import 'package:flutter/material.dart';
+
+const capability = 'test.capability.read';
+
+void initialize() {
+  openMainContentPane('probe', 'Capability consumer', false);
+}
+
+Widget buildPane() => CapabilityProbe();
+
+class CapabilityProbe extends StatefulWidget {
+  @override
+  State<CapabilityProbe> createState() => CapabilityProbeState();
+}
+
+class CapabilityProbeState extends State<CapabilityProbe> {
+  String text = 'idle';
+  String streamText = 'stream:idle';
+  dynamic client;
+  dynamic savedA;
+  dynamic savedB;
+  dynamic subscription;
+  List<String> handles = [];
+  bool disposed = false;
+
+  void discover() {
+    final providers = discoverCapabilityProviders(capability, 1);
+    String result = 'providers';
+    if (providers == null) {
+      result = 'denied';
+    } else {
+      for (final provider in providers) {
+        result =
+            '$result|${provider['providerId']},${provider['pluginId']},${provider['displayName']},${provider['serviceId']}';
+      }
+    }
+    setState(() {
+      text = result;
+    });
+  }
+
+  void select(String? provider) {
+    final handle = resolveCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      provider,
+    );
+    if (disposed) return;
+    if (handle == null) {
+      setState(() {
+        text = 'selection:unavailable';
+      });
+      return;
+    }
+    handles.add(handle);
+    client = CapabilityProbeServiceClient(CapabilityRequestChannel(handle));
+    if (provider == 'test.provider.a') savedA = client;
+    if (provider == 'test.provider.b') savedB = client;
+    setState(() {
+      text = 'selected';
+    });
+  }
+
+  void read(dynamic selected, String scope) async {
+    if (selected == null) return;
+    final CapabilityProbeServiceClient typed = selected;
+    final result = await settleCapabilityOperation(typed.read(scope));
+    if (disposed) return;
+    if (result[0] == true) {
+      final ProbeValue value = result[1];
+      setState(() {
+        text =
+            '${value.provider}:${value.configuration}:${value.sequence}:${value.text}';
+      });
+    } else {
+      setState(() {
+        text = 'read:unavailable';
+      });
+    }
+  }
+
+  void watch(String scope) {
+    if (client == null) return;
+    final CapabilityProbeServiceClient selected = client;
+    setState(() {
+      streamText = 'stream';
+    });
+    subscription = selected
+        .watch(scope)
+        .listen(
+          (ProbeValue value) {
+            setState(() {
+              streamText =
+                  '$streamText|${value.provider}:${value.configuration}:${value.sequence}:${value.text}';
+            });
+          },
+          onError: (Object error) {
+            setState(() {
+              streamText = 'stream:error:$error';
+            });
+          },
+          onDone: () {
+            setState(() {
+              streamText = '$streamText:done';
+            });
+          },
+        );
+  }
+
+  void cancel() async {
+    if (subscription == null) return;
+    await subscription.cancel();
+    if (!disposed)
+      setState(() {
+        streamText = 'stream:cancelled';
+      });
+  }
+
+  void checkDenied() {
+    final missing = discoverCapabilityProviders('test.capability.missing', 1);
+    final version = discoverCapabilityProviders(capability, 2);
+    final private = discoverCapabilityProviders('test.capability.private', 1);
+    final undeclared = discoverCapabilityProviders(capability, 3);
+    final wrongService = resolveCapabilityProvider(
+      capability,
+      1,
+      'test.capability.private',
+      null,
+    );
+    final wrongProvider = resolveCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'test.provider.missing',
+    );
+    final wrongVersion = resolveCapabilityProvider(
+      capability,
+      2,
+      capabilityProbeServiceId,
+      null,
+    );
+    final undeclaredHandle = resolveCapabilityProvider(
+      capability,
+      3,
+      capabilityProbeServiceId,
+      null,
+    );
+    final privateHandle = resolveCapabilityProvider(
+      'test.capability.private',
+      1,
+      'test.capability.private',
+      null,
+    );
+    final pass =
+        missing != null &&
+        missing.isEmpty &&
+        version != null &&
+        version.isEmpty &&
+        private != null &&
+        private.isEmpty &&
+        undeclared == null &&
+        wrongService == null &&
+        wrongProvider == null &&
+        wrongVersion == null &&
+        undeclaredHandle == null &&
+        privateHandle == null;
+    setState(() {
+      text = pass ? 'denials:passed' : 'denials:failed';
+    });
+  }
+
+  void release() {
+    bool released = false;
+    for (final handle in handles) {
+      if (releaseCapabilityProvider(handle)) released = true;
+    }
+    setState(() {
+      text = released ? 'released' : 'already released';
+    });
+  }
+
+  void overrideRoute() async {
+    if (handles.isEmpty) return;
+    final channel = CapabilityRequestChannel(handles.last);
+    final result = await settleCapabilityOperation(
+      channel.request('$capabilityProbeServiceId.read', <String, Object?>{
+        'scope': 'normal',
+        'serviceId': 'test.capability.private',
+        'configurationContext': 'configured-b',
+        'hostInvocationContext': 'forged',
+      }),
+    );
+    if (disposed) return;
+    setState(() {
+      text = result[0] == false ? 'override:rejected' : 'override:accepted';
+    });
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    if (subscription != null) subscription.cancel();
+    for (final handle in handles) {
+      releaseCapabilityProvider(handle);
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(text),
+      Text(streamText),
+      Column(
+        children: [
+          TextButton(onPressed: discover, child: Text('Discover')),
+          TextButton(
+            onPressed: () {
+              select(null);
+            },
+            child: Text('Default'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.provider.a');
+            },
+            child: Text('Select A'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.provider.b');
+            },
+            child: Text('Select B'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'normal');
+            },
+            child: Text('Read'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(savedA, 'normal');
+            },
+            child: Text('Read saved A'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(savedB, 'normal');
+            },
+            child: Text('Read saved B'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'held');
+            },
+            child: Text('Held'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'fail');
+            },
+            child: Text('Fail'),
+          ),
+          TextButton(
+            onPressed: () {
+              watch('bounded');
+            },
+            child: Text('Watch bounded'),
+          ),
+          TextButton(
+            onPressed: () {
+              watch('gated');
+            },
+            child: Text('Watch gated'),
+          ),
+          TextButton(
+            onPressed: () {
+              watch('fail');
+            },
+            child: Text('Watch failure'),
+          ),
+          TextButton(onPressed: cancel, child: Text('Cancel')),
+          TextButton(onPressed: checkDenied, child: Text('Check denials')),
+          TextButton(
+            onPressed: () {
+              read(
+                CapabilityProbeServiceClient(
+                  CapabilityRequestChannel('test.provider.a'),
+                ),
+                'normal',
+              );
+            },
+            child: Text('Forged handle'),
+          ),
+          TextButton(onPressed: release, child: Text('Release')),
+          TextButton(onPressed: overrideRoute, child: Text('Override route')),
+        ],
+      ),
+    ],
+  );
+}

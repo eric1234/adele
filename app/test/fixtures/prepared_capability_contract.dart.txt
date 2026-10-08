@@ -1,0 +1,27 @@
+import 'package:adele_contract/adele_contract.dart';
+
+part 'prepared_capability_contract.g.dart';
+
+@AdeleValue('test.capability.value')
+final class ProbeValue {
+  const ProbeValue({
+    required this.provider,
+    required this.configuration,
+    required this.sequence,
+    required this.text,
+  });
+
+  final String provider;
+  final String configuration;
+  final int sequence;
+  final String text;
+}
+
+@AdeleService('test.capability.probe')
+abstract interface class CapabilityProbeService {
+  @AdeleMethod('read')
+  Future<ProbeValue> read(String scope);
+
+  @AdeleMethod('watch')
+  Stream<ProbeValue> watch(String scope);
+}
