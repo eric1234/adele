@@ -21,11 +21,13 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/task_browser_frontend_compiler.dart';
+import 'support/command_palette_shortcut.dart';
 import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
@@ -474,7 +476,12 @@ void main() {
                     title: name,
                     createPresentation: () {
                       presented.add(access.session);
-                      return Text('$name presentation');
+                      return Column(
+                        children: [
+                          Text('$name presentation'),
+                          const TextField(key: ValueKey('session-input')),
+                        ],
+                      );
                     },
                   ),
                 );
@@ -514,7 +521,7 @@ void main() {
       final commands = CommandResolver(runtime.extensions);
       final toggleConsole = commands.resolve(toggleConsoleCommandId);
       expect(toggleConsole.availability, CommandAvailability.hidden);
-      await tester.tap(find.byTooltip('Show Command Palette'));
+      await sendPaletteShortcut(tester);
       await tester.pumpAndSettle();
       expect(find.byType(CommandPalette), findsOneWidget);
       expect(find.text('Toggle Console'), findsNothing);
@@ -523,7 +530,21 @@ void main() {
       await tester.tap(find.text('New Task'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).last, 'Generic task');
+      await sendPaletteShortcut(tester);
       await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsOneWidget);
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('command-palette-search')),
+            )
+            .focusNode!
+            .hasPrimaryFocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('Generic task'), findsOneWidget);
       await tester.tap(find.text('Create Task'));
       await tester.pumpAndSettle();
       final task = tester.widget<AdeleShell>(find.byType(AdeleShell)).task!;
@@ -563,7 +584,20 @@ void main() {
           .controller;
       expect(toggleConsole.availability, CommandAvailability.enabled);
       expect(console.visible, isTrue);
-      await tester.tap(find.byTooltip('Show Command Palette'));
+      final input = find.byKey(const ValueKey('session-input'));
+      await tester.enterText(input, 'ordinary text');
+      final editable = tester.widget<EditableText>(
+        find.descendant(of: input, matching: find.byType(EditableText)),
+      );
+      expect(await sendPaletteShortcut(tester), isTrue);
+      await tester.pumpAndSettle();
+      expect(editable.controller.text, 'ordinary text');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(editable.focusNode.hasPrimaryFocus, isTrue);
+      await tester.enterText(input, 'ordinary text after dismissal');
+      expect(editable.controller.text, 'ordinary text after dismissal');
+      await sendPaletteShortcut(tester);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Toggle Console'));
       await tester.pumpAndSettle();
@@ -572,14 +606,22 @@ void main() {
       await toggleConsole.invoke();
       await tester.pumpAndSettle();
       expect(console.visible, isTrue);
-      // Departure synchronously fences actions before asynchronous settlement.
+      // Start departure on the trigger key, after both modifiers are down, to
+      // exercise the synchronous interaction fence before settlement/rebuild.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       tester.widget<AdeleShell>(find.byType(AdeleShell)).onTask!();
       expect(toggleConsole.availability, CommandAvailability.disabled);
+      expect(await tester.sendKeyDownEvent(LogicalKeyboardKey.keyP), isFalse);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await expectLater(
         toggleConsole.invoke(),
         throwsA(isA<CommandUnavailable>()),
       );
       await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
       expect(toggleConsole.availability, CommandAvailability.hidden);
       expect(console.visible, isTrue);
       expect(find.byType(WorkbenchConsole), findsNothing);

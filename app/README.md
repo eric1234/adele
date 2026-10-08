@@ -653,9 +653,23 @@ The [product model](../docs/architecture/product-model.md) owns their semantics.
 
 [`CommandPalette`](lib/ui/commands/command_palette.dart) is global shell chrome,
 available before Project opening, in Task Browser, and in the Session workbench.
-The AppBar button resolves and invokes the registered Show Command Palette
-Command through `CommandResolver`; it does not open a special hard-coded palette
-entry outside the Command system.
+The AppBar button and built-in desktop shortcut, **Ctrl+Shift+P** on Linux/Windows
+and **Command+Shift+P** on macOS, both use `_invokeShowCommandPalette()` to resolve
+the live `dev.adele.command.show-palette` Command through `CommandResolver` and
+admit it through `ResolvedCommand.invoke()`. Neither opens a separate palette
+outside the Command system.
+
+[`CommandPaletteShortcut`](lib/ui/commands/command_palette_shortcut.dart) owns
+the single fixed mapping at the application's home-route shell boundary, using
+Flutter `Shortcuts`/`Actions` and testable target-platform conventions. Its fallback
+focus supports the initially empty shell; ordinary text fields and native editors
+retain their own focus behavior. The terminal adapter yields only this scoped chord
+before enhanced terminal protocol encoding and suppresses its repeat/release events
+according to the initial press, even if modifiers change while P is held.
+The shortcut checks live availability and application interaction gates, ignores
+repeated activation, and does not consume an inadmissible Command. Dialog routes
+own their input independently; even a modal that leaves focus behind fences the
+underlying shortcut. Existing native IME ownership is unchanged.
 
 [`AdeleApplication`](lib/application.dart) owns two native Command contributions
 through an `ExtensionRegistrationGroup`, with Command IDs
@@ -691,7 +705,8 @@ frontend retirement refreshes membership identically. The palette has no transpo
 or descriptor-specific path. The explicit contextual adapters are described in
 [Session console](#session-console) and [Grouped Main Content](#grouped-main-content);
 general contextual authority,
-keybindings, configuration, and automatic Main Content/Console action projection
+plugin/default keybinding registration, configurable bindings and overrides,
+and automatic Main Content/Console action projection
 remain unimplemented.
 Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
 

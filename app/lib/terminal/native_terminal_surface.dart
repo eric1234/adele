@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:adele_desktop/ui/commands/command_palette_shortcut.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart' show Drag, GestureBinding;
 import 'package:flutter/scheduler.dart';
@@ -841,11 +842,13 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
       key: projection ? _projectionViewKey : null,
       controller: _controller,
       focusNode: _focusNode,
-      onKeyEvent: widget.captureInteraction == null
-          ? null
-          : (node, event) => interaction() && identical(node, focusNode)
-                ? KeyEventResult.ignored
-                : KeyEventResult.handled,
+      onKeyEvent: (node, event) {
+        if (widget.captureInteraction != null &&
+            (!interaction() || !identical(node, focusNode))) {
+          return KeyEventResult.handled;
+        }
+        return terminal.handlePaletteKeyEvent(event);
+      },
       readOnly: widget.surface.readOnly || !canInteract,
       autoResize: !projection,
       scrollController: projection
@@ -1169,6 +1172,7 @@ final class _ViewTerminal extends xterm.Terminal {
   final bool Function() _interaction;
   bool _disposed = false;
   bool _focused = false;
+  bool _yieldPaletteKey = false;
   (int, int)? _reportedSize;
   NativeTerminalSurface get _owner => _view._surface;
   bool get _available =>
@@ -1184,6 +1188,24 @@ final class _ViewTerminal extends xterm.Terminal {
     }, action);
   }
 
+  KeyEventResult handlePaletteKeyEvent(KeyEvent event) {
+    if (!_interactive || event.logicalKey != LogicalKeyboardKey.keyP) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyDownEvent) {
+      final shortcut = CommandPaletteShortcut.maybeOf(_view.context);
+      _yieldPaletteKey =
+          shortcut?.accepts(event, HardwareKeyboard.instance) ?? false;
+      // keyInput yields this press to the shell's ordinary Shortcuts handling.
+      return KeyEventResult.ignored;
+    }
+    if (!_yieldPaletteKey) return KeyEventResult.ignored;
+    if (event is KeyUpEvent) _yieldPaletteKey = false;
+    // Keep ownership through modifier changes. Consume tails before xterm's
+    // text fallback or successful-input scroll-to-bottom side effects.
+    return KeyEventResult.handled;
+  }
+
   @override
   bool keyInput(
     xterm.TerminalKey key, {
@@ -1195,9 +1217,9 @@ final class _ViewTerminal extends xterm.Terminal {
     bool numLock = false,
     xterm.TerminalKeyEventType type = xterm.TerminalKeyEventType.press,
     String? text,
-  }) => _input(
-    false,
-    () => _engine.keyInput(
+  }) => _input(false, () {
+    if (key == xterm.TerminalKey.keyP && _yieldPaletteKey) return false;
+    return _engine.keyInput(
       key,
       shift: shift,
       alt: alt,
@@ -1207,8 +1229,8 @@ final class _ViewTerminal extends xterm.Terminal {
       numLock: numLock,
       type: type,
       text: text,
-    ),
-  );
+    );
+  });
 
   @override
   void textInput(String text) =>
