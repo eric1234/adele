@@ -1192,7 +1192,24 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value == 'dev.adele.plugin.terminal',
         );
         expect(terminal.backendArtifactUri, isNull);
-        expect(terminal.frontend!.extensions, isEmpty);
+        final terminalCommand =
+            terminal.frontend!.extensions.single
+                as PreparedConsoleActionCommandExtension;
+        expect(
+          terminalCommand.extensionId.value,
+          'dev.adele.plugin.terminal.command.new-terminal',
+        );
+        expect(
+          terminalCommand.commandId.value,
+          'dev.adele.plugin.terminal.new-terminal',
+        );
+        expect(terminalCommand.toJson(), {
+          'kind': 'consoleActionCommand',
+          'extensionId': 'dev.adele.plugin.terminal.command.new-terminal',
+          'commandId': 'dev.adele.plugin.terminal.new-terminal',
+          'consoleExtensionId': 'dev.adele.plugin.terminal.console',
+          'actionId': 'new-terminal',
+        });
         expect(
           terminal.frontend!.artifactUri,
           installations.uri.resolve('terminal/frontend.evc'),
@@ -1210,6 +1227,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(console.actions.single.id, 'new-terminal');
         expect(console.actions.single.label, 'New Terminal');
         expect(console.actions.single.entrypoint, 'newTerminal');
+        expect(terminalCommand.consoleExtensionId, console.extensionId);
+        expect(terminalCommand.actionId, console.actions.single.id);
         final commandOutput = catalog.installations
             .singleWhere(
               (installation) =>

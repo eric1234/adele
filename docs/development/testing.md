@@ -179,6 +179,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Global Commands/Command Palette | [`test/command_palette_test.dart`](../../app/test/command_palette_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) (AppBar dispatch, focus/search/keyboard/empty states, live conflicts and exact stale selection, safe failures, Session-only console toggling/navigation fencing, and application retirement); pure-Dart identity/resolution/admission belongs to the maintained `adele_core_extensions` target and [`commands_test.dart`](../../packages/core_extensions/test/commands_test.dart) |
 | Context-free remote Commands | [`test/core/remote_command_integration_test.dart`](../../app/test/core/remote_command_integration_test.dart) (real shared-host/probe AOT, strict backend-ready metadata, local availability, exact route/generation, retirement and admitted completion, and backend-only prepared installation through the actual application palette before Project opening); generated client/dispatcher payload and completion tests belong to [`remote_command_test.dart`](../../packages/core_extensions/test/remote_command_test.dart) in `adele_core_extensions` |
 | Context-free prepared frontend Commands | [`test/prepared_command_palette_test.dart`](../../app/test/prepared_command_palette_test.dart) (actual compiled EVC, normal frontend-only/no-presentation startup before Project opening, safe invocation failure, and live palette retirement/replacement); [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) covers operation validation, no-authority invocation/return shape, rollback, exact retirement and evaluator lifetime; the remote integration suite above proves native/backend/frontend coexistence. Strict descriptor parsing belongs to the maintained `plugin_runtime` catalog tests. |
+| Contextual Console-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (same-component target validation before publication); [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (canonical authority, availability without EVC, shared creation/policy, safe warning, rollback, and asymmetric exact retirement); [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart) (fresh post-reveal admission and owner/action pending state across context changes); stock palette/PTY evidence is in the Terminal case of [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart). |
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
@@ -607,6 +608,7 @@ current contract generation, run the focused host checks from `app/`:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/console_controller_test.dart test/workbench_console_test.dart test/prepared_console_host_test.dart
+flutter test --no-pub --concurrency 1 test/prepared_frontend_activation_test.dart test/command_palette_test.dart test/prepared_command_palette_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 ```
 
@@ -623,7 +625,9 @@ dart tools/adele.dart test --target adele_tools
 The stock Terminal case reuses the normal application integration fixture: prepared
 Local Directory/Task Browser/Chat/Terminal EVC, real shared-host and Git AOT,
 SQLite, and the prepared Git PTY helper. It targets Session-only chrome (no Task
-Browser panel/toggle/actions), explicit creation without a Run, independent shells,
+Browser panel/toggle/actions), hidden New Terminal outside a Session, palette
+creation from a collapsed console followed by `+` creation through the same stock
+operation/numbering/Environment owners without a Run, independent shells,
 input/resize, hidden output/title changes, Session/Environment navigation, actual
 exit/removal, conservative close, and shutdown. It needs Linux x64/devpts and the
 native prerequisites above, not credentials or a paid model.

@@ -137,6 +137,15 @@ Registration retirement fences new admission; retiring the frontend generation
 also invalidates its active operations through existing evaluator lifetime rules.
 Captured bindings/callbacks never retarget a replacement, even when IDs are reused.
 
+`PreparedConsoleActionCommandExtension` instead declares one exact sibling Console
+creation action. Activation validates the same-component target before publication,
+then captures the registered Console binding through `ExtensionRegistration.owns`.
+`PreparedConsoleHost.createActionCommand` checks existing installation/generation
+metadata and captures the actual action, including its label; it does not evaluate
+a second operation or resolve another contribution by global IDs. The activation
+owns dependent registration retirement, including registry-observed individual
+Console removal. Command-only retirement does not remove Console participation.
+
 The app implements native bridges when authority is required, while public
 presentation semantics remain in [UI](../packages/ui/README.md) and Commands in
 [core extensions](../packages/core_extensions/README.md#commands). Component
@@ -481,6 +490,22 @@ navigation cannot retarget its admitted work or let a late result steal the new
 context's selection. Sessions sharing that Environment can show the same terminals;
 another Environment cannot.
 
+`PreparedConsoleHost.createActionCommand` supplies synchronous contextual
+availability over that existing lookup and the controller's exact owner/action
+liveness and pending state. Absence of a canonical Session or live target hides
+the Command; an unavailable canonical Environment association or pending action
+disables it. Visibility does not affect availability.
+`ConsoleController.invokeExactAction` reveals first,
+obtains a fresh UI binding, then delegates to ordinary `invoke`, which captures
+creation before notifying navigation-sensitive listeners. Pending creation is
+matched across UI-context changes by exact registration and action identity.
+The same `ConsoleCreationAccess`, operation, bridge, numbering, and normal
+selection/background-result rules serve both surfaces. Creation failure remains
+`The console could not be created.`; stale pre-admission targets may instead fail
+through ordinary Command containment. No Command concepts enter the public Console
+contract, and the application's existing global interaction gate still fences
+navigation and exit.
+
 [`EnvironmentTerminalBridge`](lib/frontend/environment_terminal_bridge.dart)
 copies validated `TerminalContentPolicy` from one short-lived EVC action into
 [`TerminalConsoleContent`](lib/terminal/terminal_console_content.dart). Retained
@@ -626,7 +651,7 @@ Dismissal returns an exact resolved Command to application dispatch, allowing th
 invoked operation to present its own input. Navigation and exit dismiss/fence the
 palette; application dispatch checks interaction again and the public domain
 revalidates admission. Failures use a bounded generic snackbar, not exception text.
-Native/in-process, context-free remote backend, and context-free prepared frontend
+Native/in-process, context-free remote backend, and prepared frontend
 Commands share this registry and palette path.
 [`RemoteCommandAdapter`](lib/core/remote_command_host.dart) adapts
 backend-ready advertisements through the existing remote adapter registry, without
@@ -634,8 +659,10 @@ requiring a frontend, presentation, or open Project. Backend retirement removes
 its registrations and refreshes an open palette through the existing registry stream.
 Prepared frontend activation adapts behavioral descriptors through that same point;
 frontend retirement refreshes membership identically. The palette has no transport
-or descriptor-specific path. Contextual plugin availability/authority, keybindings,
-configuration, and projection of Main Content/Console actions remain unimplemented.
+or descriptor-specific path. The explicit contextual Console-action adapter is
+described in [Session console](#session-console); general contextual authority,
+keybindings, configuration, and automatic Main Content/Console action projection
+remain unimplemented.
 Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
 
 <a id="b1-project-opening"></a>

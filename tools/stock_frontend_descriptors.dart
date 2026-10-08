@@ -118,6 +118,15 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
 /// Build-time non-presentation extension metadata, keyed by owning PluginId.
 const Map<String, List<Map<String, Object?>>>
 stockFrontendExtensionDescriptors = {
+  'dev.adele.plugin.terminal': [
+    {
+      'kind': 'consoleActionCommand',
+      'extensionId': 'dev.adele.plugin.terminal.command.new-terminal',
+      'commandId': 'dev.adele.plugin.terminal.new-terminal',
+      'consoleExtensionId': 'dev.adele.plugin.terminal.console',
+      'actionId': 'new-terminal',
+    },
+  ],
   'dev.adele.plugin.local-directory-project': [
     {
       'kind': 'projectSelector',

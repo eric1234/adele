@@ -104,8 +104,10 @@ composition, exact binding resolution, availability, and invocation admission in
 `adele_core_extensions`. The application hosts a global Command Palette over those
 contracts. Native/in-process registration works independently of presentation
 contributions, as do context-free backend Commands adapted from backend-ready
-advertisements and prepared frontend Commands adapted from behavioral descriptors.
-Contextual plugin availability/authority and keybindings remain future work.
+advertisements and context-free prepared frontend Commands adapted from behavioral descriptors.
+A narrow contextual prepared adapter also exposes an exact sibling Console
+creation action; stock Terminal uses it without a general Command context.
+Broader contextual plugin authority and keybindings remain future work.
 See [Commands and input](plugin-system.md#commands-and-input).
 
 UI presents and invokes functionality; displaying a control does not make it the

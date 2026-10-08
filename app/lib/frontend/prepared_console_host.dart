@@ -1,3 +1,4 @@
+import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -19,7 +20,7 @@ import 'terminal_projection_bridge.dart';
 
 /// Prepared operations admit content; presentations never own that content's
 /// resource or retained policy. No evaluator callback survives an operation.
-final class PreparedConsoleHost {
+base class PreparedConsoleHost {
   PreparedConsoleHost({
     required this.store,
     required this.terminals,
@@ -232,6 +233,54 @@ final class PreparedConsoleHost {
       identical(store.session(session.id), session) &&
       store.task(session.taskId) != null &&
       store.project(store.task(session.taskId)!.projectId) != null;
+
+  /// Adapts one captured sibling registration, not a global action-ID lookup.
+  CommandContribution createActionCommand({
+    required PreparedPluginInstallation installation,
+    required PreparedFrontend generation,
+    required PreparedConsoleActionCommandExtension descriptor,
+    required ExtensionBinding<ConsoleContribution> owner,
+    required bool Function() isActive,
+  }) {
+    final contribution = owner.value;
+    final metadata = _metadata[contribution];
+    if (metadata == null ||
+        !identical(metadata.$1, installation) ||
+        !identical(metadata.$2, generation) ||
+        owner.id != descriptor.consoleExtensionId) {
+      throw StateError('The Console action Command target is unavailable.');
+    }
+    final action = contribution.actions.singleWhere(
+      (action) => action.id == descriptor.actionId,
+    );
+    CommandAvailability availability() {
+      final session = controller.session;
+      if (_closed ||
+          !isActive() ||
+          !controller.isExactActionLive(owner, action) ||
+          session == null ||
+          !_canonical(session)) {
+        return CommandAvailability.hidden;
+      }
+      if (environmentForSession(session) == null ||
+          controller.isExactActionPending(owner, action)) {
+        return CommandAvailability.disabled;
+      }
+      return CommandAvailability.enabled;
+    }
+
+    return CommandContribution(
+      id: descriptor.commandId,
+      label: action.label,
+      availability: availability,
+      invoke: () {
+        if (availability() != CommandAvailability.enabled) {
+          throw CommandUnavailable(descriptor.commandId);
+        }
+        return controller.invokeExactAction(owner, action);
+      },
+    );
+  }
 
   /// Captures exact declared registrations at presentation creation. Retirement
   /// or replacement never changes what this presentation may open.

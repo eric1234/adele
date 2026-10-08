@@ -500,6 +500,278 @@ void main() {
   );
 
   test(
+    'exact action queries are passive without visibility or a Session',
+    () async {
+      var calls = 0;
+      await register((_) async => calls++);
+      final owner = registry.discover(consoleContributions).single;
+      final action = owner.value.actions.single;
+      controller.setVisible(false);
+      controller.setSession(null);
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      expect(controller.isExactActionLive(owner, action), isTrue);
+      expect(controller.isExactActionPending(owner, action), isFalse);
+      expect(controller.visible, isFalse);
+      expect(controller.session, isNull);
+      expect(controller.actions, isEmpty);
+      expect(controller.eligibleTabs, isEmpty);
+      expect(notifications, 0);
+      expect(calls, 0);
+      await expectLater(
+        controller.invokeExactAction(owner, action),
+        throwsStateError,
+      );
+      expect(controller.visible, isFalse);
+      expect(notifications, 0);
+      expect(calls, 0);
+      await controller.close();
+      expect(controller.isExactActionLive(owner, action), isFalse);
+      await expectLater(
+        controller.invokeExactAction(owner, action),
+        throwsStateError,
+      );
+    },
+  );
+
+  test('exact action reveals and selects only its created content', () async {
+    final content = _Content('Exact content');
+    late ConsoleCreationAccess captured;
+    final action = ConsoleCreationAction(
+      id: 'open',
+      label: 'Same label',
+      create: (access) async {
+        captured = access;
+        content.open(access);
+      },
+    );
+    await register(
+      (_) async {},
+      actions: [
+        ConsoleCreationAction(
+          id: 'decoy',
+          label: action.label,
+          create: (_) async => fail('Wrong action'),
+        ),
+        action,
+      ],
+    );
+    final owner = registry.discover(consoleContributions).single;
+    final stale = controller.actions.last;
+    controller.setVisible(false);
+    await controller.invokeExactAction(owner, action);
+    expect(controller.visible, isTrue);
+    expect(captured.session, same(first));
+    expect(controller.eligibleTabs.single, same(controller.selectedTab));
+    expect(controller.selectedTab!.metadata.title, content.title);
+    expect(content.mounts, isEmpty);
+    expect(stale.isActive, isFalse);
+    expect(controller.actions.last, isNot(same(stale)));
+    expect(controller.actions.last.isActive, isTrue);
+    await controller.invoke(stale);
+    expect(controller.eligibleTabs, hasLength(1));
+  });
+
+  test(
+    'exact action rejects wrong owners, registries and action objects',
+    () async {
+      var calls = 0;
+      Future<void> create(ConsoleCreationAccess _) async {
+        calls++;
+      }
+
+      await register(create);
+      await register(create, id: 'test.other');
+      final owners = registry.discover(consoleContributions);
+      final owner = owners.first;
+      final action = owner.value.actions.single;
+      final other = owners.last;
+      final foreignRegistry = ExtensionRegistry();
+      foreignRegistry.register(
+        point: consoleContributions,
+        id: owner.id,
+        value: owner.value,
+      );
+      final foreign = foreignRegistry.discover(consoleContributions).single;
+      final duplicate = ConsoleCreationAction(
+        id: action.id,
+        label: action.label,
+        create: create,
+      );
+      controller.setVisible(false);
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      for (final (candidateOwner, candidateAction) in [
+        (other, action),
+        (owner, other.value.actions.single),
+        (foreign, action),
+        (owner, duplicate),
+      ]) {
+        expect(
+          controller.isExactActionLive(candidateOwner, candidateAction),
+          isFalse,
+        );
+        expect(
+          controller.isExactActionPending(candidateOwner, candidateAction),
+          isFalse,
+        );
+        await expectLater(
+          controller.invokeExactAction(candidateOwner, candidateAction),
+          throwsStateError,
+        );
+      }
+      expect(calls, 0);
+      expect(notifications, 0);
+      expect(controller.visible, isFalse);
+      expect(controller.eligibleTabs, isEmpty);
+    },
+  );
+
+  test(
+    'pending lookup matches registration wrappers, not other actions or owners',
+    () async {
+      final gate = Completer<void>();
+      var calls = 0;
+      Future<void> create(ConsoleCreationAccess _) async {
+        calls++;
+        await gate.future;
+      }
+
+      final actions = [
+        ConsoleCreationAction(id: 'one', label: 'One', create: create),
+        ConsoleCreationAction(id: 'two', label: 'Two', create: create),
+      ];
+      await register(create, actions: actions);
+      final owner = registry.discover(consoleContributions).single;
+      registry.register(
+        point: consoleContributions,
+        id: ExtensionId('test.other'),
+        value: owner.value,
+      );
+      final owners = registry.discover(consoleContributions);
+      final sameOwner = owners.first;
+      final other = owners.last;
+      expect(sameOwner, isNot(same(owner)));
+      final pending = controller.invokeExactAction(owner, actions.first);
+      expect(controller.isExactActionPending(sameOwner, actions.first), isTrue);
+      expect(
+        controller.invokeExactAction(sameOwner, actions.first),
+        same(pending),
+      );
+      expect(controller.isExactActionPending(owner, actions.last), isFalse);
+      expect(controller.isExactActionPending(other, actions.first), isFalse);
+      final secondAction = controller.invokeExactAction(owner, actions.last);
+      final secondOwner = controller.invokeExactAction(other, actions.first);
+      expect(secondAction, isNot(same(pending)));
+      expect(secondOwner, isNot(same(pending)));
+      expect(secondOwner, isNot(same(secondAction)));
+      expect(calls, 3);
+      gate.complete();
+      await Future.wait([pending, secondAction, secondOwner]);
+      expect(controller.isExactActionPending(owner, actions.first), isFalse);
+      expect(controller.isExactActionPending(owner, actions.last), isFalse);
+      expect(controller.isExactActionPending(other, actions.first), isFalse);
+    },
+  );
+
+  test(
+    'pending creation cannot follow an identical replacement owner',
+    () async {
+      final gate = Completer<void>();
+      var calls = 0;
+      final registration = await register((_) async {
+        calls++;
+        await gate.future;
+      });
+      final owner = registry.discover(consoleContributions).single;
+      final value = owner.value;
+      final action = value.actions.single;
+      final stale = controller.actions.single;
+      final pending = controller.invokeExactAction(owner, action);
+      await registration.close();
+      registry.register(
+        point: consoleContributions,
+        id: owner.id,
+        value: value,
+      );
+      final replacement = registry.discover(consoleContributions).single;
+      controller.setVisible(false);
+      expect(controller.isExactActionLive(owner, action), isFalse);
+      expect(controller.isExactActionLive(replacement, action), isTrue);
+      expect(controller.isExactActionPending(owner, action), isTrue);
+      expect(controller.isExactActionPending(replacement, action), isFalse);
+      await expectLater(
+        controller.invokeExactAction(owner, action),
+        throwsStateError,
+      );
+      await controller.invoke(stale);
+      expect(controller.visible, isFalse);
+      expect(calls, 1);
+      final fresh = controller.invokeExactAction(replacement, action);
+      expect(fresh, isNot(same(pending)));
+      expect(controller.actions.single.isPending, isTrue);
+      expect(calls, 2);
+      gate.complete();
+      await Future.wait([pending, fresh]);
+      expect(controller.isExactActionPending(owner, action), isFalse);
+      expect(controller.isExactActionPending(replacement, action), isFalse);
+      expect(stale.isActive, isFalse);
+    },
+  );
+
+  for (final alreadyPending in [false, true]) {
+    test(
+      'exact reveal captures before reentrant navigation (pending: $alreadyPending)',
+      () async {
+        await open(title: 'Keep selected');
+        final selected = controller.selectedTab;
+        final gate = Completer<void>();
+        final content = _Content('Late');
+        late ConsoleCreationAccess captured;
+        final events = <String>[];
+        await register((access) async {
+          events.add('admitted');
+          captured = access;
+          await gate.future;
+          content.open(access);
+        }, id: 'test.reentrant');
+        final owner = registry
+            .discover(consoleContributions)
+            .singleWhere((entry) => entry.id.value == 'test.reentrant');
+        final action = owner.value.actions.single;
+        final pending = alreadyPending
+            ? controller.invoke(controller.actions.last)
+            : null;
+        controller.setVisible(false);
+        Future<void>? reentrant;
+        var revealed = false;
+        controller.addListener(() {
+          if (revealed || !controller.visible) return;
+          revealed = true;
+          events.add('revealed');
+          expect(captured.session, same(first));
+          expect(controller.isExactActionPending(owner, action), isTrue);
+          reentrant = controller.invokeExactAction(owner, action);
+          controller.setSession(second);
+          controller.setSession(first);
+        });
+        final opening = controller.invokeExactAction(owner, action);
+        expect(events, ['admitted', 'revealed']);
+        expect(reentrant, same(opening));
+        if (pending != null) expect(opening, same(pending));
+        expect(captured.session, same(first));
+        expect(captured.isActive, isTrue);
+        gate.complete();
+        await opening;
+        expect(content.registration.isActive, isTrue);
+        expect(controller.eligibleTabs, hasLength(2));
+        expect(controller.selectedTab, same(selected));
+        expect(content.releases, 0);
+      },
+    );
+  }
+
+  test(
     'completion updates metadata and retains generic read-only evidence',
     () async {
       final content = await open();
@@ -517,7 +789,7 @@ void main() {
   );
 
   test(
-    'creation coalesces per exact action/context and survives navigation',
+    'creation coalesces per exact action across visibility and Session contexts',
     () async {
       final gate = Completer<void>();
       final content = _Content('First only', eligible: (s) => s.id == first.id);
@@ -529,17 +801,42 @@ void main() {
         await gate.future;
         content.open(access);
       });
+      final owner = registry.discover(consoleContributions).single;
+      final action = owner.value.actions.single;
       final choice = controller.actions.single;
       final pending = controller.invoke(choice);
       expect(controller.invoke(choice), same(pending));
       expect(choice.isPending, isTrue);
+      controller.setVisible(false);
+      expect(controller.isExactActionLive(owner, action), isTrue);
+      expect(controller.isExactActionPending(owner, action), isTrue);
+      expect(choice.isActive, isFalse);
+      await controller.invoke(choice);
+      expect(controller.visible, isFalse);
+      expect(controller.invokeExactAction(owner, action), same(pending));
+      final revealed = controller.actions.single;
+      expect(revealed, isNot(same(choice)));
+      expect(revealed.isPending, isTrue);
+      expect(controller.invoke(revealed), same(pending));
       controller.setSession(second);
+      final navigated = controller.actions.single;
+      expect(navigated, isNot(same(revealed)));
+      expect(navigated.isPending, isTrue);
+      expect(controller.invoke(navigated), same(pending));
+      expect(controller.invokeExactAction(owner, action), same(pending));
+      controller.setSession(null);
+      expect(controller.isExactActionPending(owner, action), isTrue);
+      controller.setSession(second);
+      expect(controller.actions.single.isPending, isTrue);
       expect(captured.session, same(first));
       expect(captured.isActive, isTrue);
       expect(choice.isActive, isFalse);
       await controller.invoke(choice);
       gate.complete();
       await pending;
+      expect(controller.isExactActionPending(owner, action), isFalse);
+      expect(controller.actions.single.isPending, isFalse);
+      expect(choice.isPending, isFalse);
       expect(calls, 1);
       expect(content.registration.isActive, isTrue);
       expect(controller.eligibleTabs, isEmpty);
@@ -1864,28 +2161,39 @@ void main() {
     expect(controller.eligibleTabs, isEmpty);
   });
 
-  test(
-    'creation/factory failures show generic errors without changing evidence',
-    () async {
-      await register((access) async {
-        access.open(
-          ConsoleContent(
-            metadata: ConsoleMetadata(title: 'Kept'),
-            isEligible: (_) => true,
-            createPresentation: (_) => throw StateError('SECRET-FACTORY'),
-            release: () async => ConsoleCleanupResult(),
-          ),
-        );
-        throw StateError('SECRET-CREATE');
-      });
-      await controller.invoke(controller.actions.single);
-      final firstWidget = controller.selectedPresentation;
-      expect(firstWidget, isNotNull);
-      expect(controller.selectedPresentation, same(firstWidget));
-      expect(controller.eligibleTabs.single.metadata.title, 'Kept');
-      expect(controller.warning, 'The console could not be created.');
-    },
-  );
+  for (final exact in [false, true]) {
+    test(
+      'creation/factory failures show generic errors without changing evidence (exact: $exact)',
+      () async {
+        await register((access) async {
+          access.open(
+            ConsoleContent(
+              metadata: ConsoleMetadata(title: 'Kept'),
+              isEligible: (_) => true,
+              createPresentation: (_) => throw StateError('SECRET-FACTORY'),
+              release: () async => ConsoleCleanupResult(),
+            ),
+          );
+          throw StateError('SECRET-CREATE');
+        });
+        final owner = registry.discover(consoleContributions).single;
+        final action = owner.value.actions.single;
+        if (exact) {
+          controller.setVisible(false);
+          await controller.invokeExactAction(owner, action);
+        } else {
+          await controller.invoke(controller.actions.single);
+        }
+        final firstWidget = controller.selectedPresentation;
+        expect(firstWidget, isNotNull);
+        expect(controller.selectedPresentation, same(firstWidget));
+        expect(controller.eligibleTabs.single.metadata.title, 'Kept');
+        expect(controller.warning, 'The console could not be created.');
+        expect(controller.isExactActionPending(owner, action), isFalse);
+        expect(controller.actions.single.isPending, isFalse);
+      },
+    );
+  }
 }
 
 Session _session(String id) => Session(

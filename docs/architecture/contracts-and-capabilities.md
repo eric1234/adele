@@ -305,6 +305,16 @@ normally. The frontend generation owns operation revocation, while the
 unique enabled-state admission. This does not introduce a public Command bridge
 or an authority token.
 
+The contextual Console-action Command descriptor adds no operation or bridge.
+It delegates to an exact sibling creation action, whose existing Console admission
+captures canonical Session/Environment authority and supplies the existing Terminal
+bridge. Availability reads native owner state without evaluating plugin code.
+Neither a transported target ID nor semantic Command identity grants access to a
+foreign contribution or accepts caller-selected product context. See
+[Commands and input](plugin-system.md#commands-and-input) for exact binding and
+asymmetric retirement, and [Shared Console](plugin-system.md#shared-console) for
+creation ownership.
+
 Explicit user file operations are another narrow frontend grant, not model-tool
 execution. Session/Environment identity is separate provider-free data through the
 [Main Content context](plugin-system.md#grouped-main-content), not a file grant.

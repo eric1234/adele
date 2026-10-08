@@ -732,10 +732,15 @@ void main() {
           ],
         },
       ]);
-      expect(
-        stockFrontendExtensionDescriptors['dev.adele.plugin.terminal'],
-        isNull,
-      );
+      expect(stockFrontendExtensionDescriptors['dev.adele.plugin.terminal'], [
+        {
+          'kind': 'consoleActionCommand',
+          'extensionId': 'dev.adele.plugin.terminal.command.new-terminal',
+          'commandId': 'dev.adele.plugin.terminal.new-terminal',
+          'consoleExtensionId': 'dev.adele.plugin.terminal.console',
+          'actionId': 'new-terminal',
+        },
+      ]);
     });
 
     test(
@@ -915,19 +920,20 @@ void main() {
   });
 
   test(
-    'stock descriptors name existing frontend libraries and entrypoints',
+    'stock descriptors name existing frontend entrypoints and console actions',
     () {
       expect(stockFrontendDescriptors, hasLength(7));
-      expect(stockFrontendExtensionDescriptors, hasLength(1));
+      expect(stockFrontendExtensionDescriptors, hasLength(2));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
           (jsonDecode(config.readAsStringSync())
                   as Map<String, dynamic>)['packages']
               as List<dynamic>;
-      for (final descriptors in [
-        ...stockFrontendDescriptors.values,
-        ...stockFrontendExtensionDescriptors.values,
+      for (final entry in [
+        ...stockFrontendDescriptors.entries,
+        ...stockFrontendExtensionDescriptors.entries,
       ]) {
+        final descriptors = entry.value;
         expect(
           descriptors,
           hasLength(
@@ -940,6 +946,31 @@ void main() {
           ),
         );
         for (final descriptor in descriptors) {
+          if (descriptor['kind'] == 'consoleActionCommand') {
+            final console = stockFrontendDescriptors[entry.key]!.singleWhere(
+              (presentation) =>
+                  presentation['role'] == 'console' &&
+                  presentation['extensionId'] ==
+                      descriptor['consoleExtensionId'],
+            );
+            expect(console['readOnly'], isNot(true));
+            final actions = console['actions']! as List<Map<String, Object?>>;
+            expect(
+              actions.where((action) => action['id'] == descriptor['actionId']),
+              hasLength(1),
+            );
+            expect(
+              descriptor.keys,
+              unorderedEquals([
+                'kind',
+                'extensionId',
+                'commandId',
+                'consoleExtensionId',
+                'actionId',
+              ]),
+            );
+            continue;
+          }
           final library = Uri.parse(descriptor['library']! as String);
           expect(library.scheme, 'package');
           final package = packages.cast<Map<String, dynamic>>().singleWhere(

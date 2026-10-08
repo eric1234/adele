@@ -23,7 +23,7 @@ final class ConsoleActionBinding {
   String get id => _action.id;
   String get label => _action.label;
   bool get isActive => _controller._canInvoke(this);
-  bool get isPending => _controller._creating.containsKey(this);
+  bool get isPending => _controller.isExactActionPending(_owner, _action);
 }
 
 /// Native tab identity is deliberately distinct from either public access type.
@@ -103,6 +103,7 @@ final class ConsoleController extends ChangeNotifier {
   late final StreamSubscription<void> _changes;
   final List<ConsoleTab> _tabs = [];
   final Map<SessionId, ConsoleTab> _selections = {};
+  // Keep original admissions; pending lookup ignores later UI context changes.
   final Map<ConsoleActionBinding, Future<void>> _creating = {};
   final List<_PreparedOpening> _prepared = [];
   final Set<Future<void>> _cleaning = {};
@@ -191,9 +192,65 @@ final class ConsoleController extends ChangeNotifier {
     _notify();
   }
 
+  /// Exact contribution membership, independent of the current view or Session.
+  bool isExactActionLive(
+    ExtensionBinding<ConsoleContribution> owner,
+    ConsoleCreationAction action,
+  ) =>
+      !_closed &&
+      _isLive(owner) &&
+      _extensions
+          .discover(consoleContributions)
+          .any(owner.isSameRegistration) &&
+      owner.value.actions.any((candidate) => identical(candidate, action));
+
+  bool isExactActionPending(
+    ExtensionBinding<ConsoleContribution> owner,
+    ConsoleCreationAction action,
+  ) => _pendingCreation(owner, action) != null;
+
+  Future<void>? _pendingCreation(
+    ExtensionBinding<ConsoleContribution> owner,
+    ConsoleCreationAction action,
+  ) => _creating.entries
+      .where(
+        (entry) =>
+            entry.key._owner.isSameRegistration(owner) &&
+            identical(entry.key._action, action),
+      )
+      .firstOrNull
+      ?.value;
+
+  Future<void> invokeExactAction(
+    ExtensionBinding<ConsoleContribution> owner,
+    ConsoleCreationAction action,
+  ) {
+    final session = _session;
+    if (session == null || !isExactActionLive(owner, action)) {
+      return Future.error(StateError('Console action is unavailable.'));
+    }
+    // Reveal changes the UI context. Acquire its binding afterward, and enter
+    // invoke before publishing reveal so listeners cannot retarget admission.
+    final revealed = _changeVisibility(true);
+    if (!revealed) _refreshActions();
+    final binding = _actions
+        .where(
+          (binding) =>
+              binding._owner.isSameRegistration(owner) &&
+              identical(binding._action, action),
+        )
+        .firstOrNull;
+    final invocation =
+        binding != null && identical(session, _session) && binding.isActive
+        ? invoke(binding)
+        : Future<void>.error(StateError('Console action is unavailable.'));
+    if (revealed) _notify();
+    return invocation;
+  }
+
   Future<void> invoke(ConsoleActionBinding action) {
     if (!_canInvoke(action)) return Future.value();
-    final pending = _creating[action];
+    final pending = _pendingCreation(action._owner, action._action);
     if (pending != null) return pending;
     final completion = Completer<void>();
     _creating[action] = completion.future;

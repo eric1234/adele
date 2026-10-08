@@ -175,6 +175,16 @@ adapts them to the shared public Command contract. Supported descriptor kinds ar
 additive under the version-1 envelope. See
 [Commands and input](plugin-system.md#commands-and-input).
 
+The additive `consoleActionCommand` behavioral variant instead identifies a
+semantic `commandId`, its registration `extensionId`, and an exact sibling
+`consoleExtensionId` / local `actionId` target. It has no library, entrypoint,
+label, or contextual authority fields: the existing Console action owns those
+operation details. Activation validates the same-component descriptor relationship
+before registering anything, then captures the exact live sibling registration.
+Catalog parsing validates the descriptor's own data, not a global registry target.
+The [catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog) owns
+the exact shape; this is deliberate adaptation, not automatic action projection.
+
 ### Artifact references and confinement
 
 Artifact references are installation-relative and must remain confined to their

@@ -106,6 +106,31 @@ bridge operations, host context, or authority; declaration is not a grant. Local
 availability and generation-owned execution belong to the
 [application adapter](../../app/README.md#prepared-frontend-activation), not this catalog.
 
+`PreparedConsoleActionCommandExtension` is an additive behavioral descriptor with
+exactly these required fields:
+
+```json
+{
+  "kind": "consoleActionCommand",
+  "extensionId": "dev.adele.plugin.terminal.command.new-terminal",
+  "commandId": "dev.adele.plugin.terminal.new-terminal",
+  "consoleExtensionId": "dev.adele.plugin.terminal.console",
+  "actionId": "new-terminal"
+}
+```
+
+The catalog validates public registration/Command identities and the same bounded
+local action-ID grammar used by prepared Console actions. No `library`,
+`entrypoint`, `label`, backend service, Session, or Environment field is accepted.
+Unlike operation descriptors, this variant executes no independent EVC operation.
+Frontend activation validates the target before publishing any registrations:
+exactly one action-based Console presentation in this same prepared component must
+declare that local action. A global ID match cannot authorize a foreign
+installation/generation. The app captures that sibling's exact live registration
+and action, derives the Command label from the action, and delegates creation to
+the Console owner. Context and lifetime belong to the
+[application adapter](../../app/README.md#session-console), not catalog parsing.
+
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
 integer `order`, `library`, `initialize`, and `entrypoint`. Optional
 `sessionExecution` defaults to false, `backendServices` is a duplicate-free

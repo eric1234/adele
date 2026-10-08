@@ -56,7 +56,9 @@ lifetimes still apply; failures propagate to the invoking surface for safe conta
 
 Registration supports native/in-process, context-free remote backend, and
 context-free prepared frontend contributions, independently of Main Content,
-Console, or other presentation. Prepared metadata reuses `CommandId` and
+Console, or other presentation. A narrow prepared Console-action adapter also
+uses this same contract, without extending its context or authority API.
+Prepared metadata reuses `CommandId` and
 `CommandContribution.validateLabel`; adaptation and evaluator lifetime belong to
 the [application frontend owner](../../app/README.md#prepared-frontend-activation).
 The [application palette](../../app/README.md#command-palette) is one consumer;
@@ -92,7 +94,7 @@ service/configuration channel, without host context or services. It never retrie
 through a replacement or rejects successful completion merely because registration
 retired after admission; transport termination can still fail in-flight requests.
 
-Dynamic contextual plugin availability/authority and keybindings remain
+Dynamic contextual backend availability/authority and keybindings remain
 unimplemented. No stock backend needs to advertise a Command;
 the app's real-AOT probe tests the production adapter without inventing a stock
 context-free operation.
