@@ -680,7 +680,10 @@ void main() {
     expect(files.calls, isEmpty);
 
     final tools = await compose();
-    expect(tools.tools, hasLength(1));
+    expect(tools.tools.map((tool) => tool.modelDefinition.alias), [
+      'search',
+      'glob',
+    ]);
     final search = tools.byAlias('search')!;
     expect(search.definition.id.value, '$_searchId.search');
     expect(search.modelDefinition.argumentsSchema, {
@@ -1033,7 +1036,7 @@ void main() {
       final oldTools = await compose();
       files.stale = true;
       expect(
-        oldTools.tools.single.executable.validateBinding,
+        oldTools.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       final rejected = await _resolution(oldTools, context.sessionId, {
@@ -1054,7 +1057,7 @@ void main() {
       expect(outcome.modelContent, contains('needle.* replacement'));
       expect(files.calls, isEmpty);
       expect(
-        oldTools.tools.single.executable.validateBinding,
+        oldTools.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(context.requested, [
@@ -1087,7 +1090,7 @@ void main() {
         'file:src/nested/b.txt',
       ]);
       expect(
-        tools.tools.single.executable.validateBinding,
+        tools.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
     },
@@ -1242,7 +1245,7 @@ void main() {
       await searchA.connection.terminated.timeout(_bound);
       expect(extensions.discover(modelToolContributions), isEmpty);
       expect(
-        toolsA.tools.single.executable.validateBinding,
+        toolsA.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       expect((await sessionTools()).tools, isEmpty);
@@ -1264,13 +1267,13 @@ void main() {
         result.hostData['matches'],
       );
       expect(
-        toolsA.tools.single.executable.validateBinding,
+        toolsA.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
 
       await gitA.close();
       expect(
-        toolsB.tools.single.executable.validateBinding,
+        toolsB.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(searchB.connection.isClosed, isFalse);
@@ -1285,11 +1288,11 @@ void main() {
         result.hostData['matches'],
       );
       expect(
-        toolsB.tools.single.executable.validateBinding,
+        toolsB.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(
-        toolsA.tools.single.executable.validateBinding,
+        toolsA.byAlias('search')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(

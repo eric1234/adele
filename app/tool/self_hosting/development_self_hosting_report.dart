@@ -14,6 +14,7 @@ const int developmentSelfHostingReportSchemaVersion = 1;
 const List<String> developmentSelfHostingToolAliases = <String>[
   'run_command',
   'search',
+  'glob',
   'read_file',
   'apply_patch',
   'create_file',
@@ -1412,6 +1413,15 @@ Map<String, Object?> _attemptEvidence(
   final Map<String, Object?> hostData =
       outcome?.hostData ?? const <String, Object?>{};
   return switch (alias) {
+    'glob' => <String, Object?>{
+      'pattern': arguments['pattern'],
+      'matchCount': switch (hostData['matches']) {
+        final List<Object?> matches => matches.length,
+        _ => null,
+      },
+      'incomplete': hostData['incomplete'],
+      'truncated': hostData['truncated'],
+    },
     'search' => <String, Object?>{
       'pattern': arguments['pattern'],
       'path': arguments['path'] ?? hostData['path'] ?? hostData['scope'],

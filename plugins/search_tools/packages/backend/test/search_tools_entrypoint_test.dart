@@ -36,7 +36,16 @@ void main() {
       });
       final materialized = await backend.next();
       expect(materialized['ok'], isTrue);
-      final descriptor = (materialized['payload']! as List).single! as Map;
+      final descriptors = materialized['payload']! as List;
+      expect(descriptors.map((d) => (d as Map)['modelAlias']), [
+        'search',
+        'glob',
+      ]);
+      expect(
+        (descriptors.last! as Map)['modelDescription'],
+        const GlobExecutable.unbound().registration.modelDefinition.description,
+      );
+      final descriptor = descriptors.first! as Map;
       expect(descriptor['toolId'], searchToolId.value);
       expect(descriptor['modelAlias'], 'search');
       expect(descriptor['routeId'], searchToolId.value);
@@ -81,6 +90,48 @@ void main() {
       await backend.shutdown();
     },
   );
+
+  for (final pattern in ['build/**', '*']) {
+    test('Glob streams read certainty for "$pattern"', () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      backend.execute(
+        payload: {
+          ..._operationPayload(execute: true),
+          'routeId': globToolId.value,
+          'arguments': {
+            'snapshot': {'pattern': pattern},
+          },
+        },
+      );
+      if (pattern == '*') {
+        final directory = await backend.next();
+        _expectHostRequest(
+          directory,
+          authorizedEnvironmentReadServiceReadDirectoryId,
+          {'relativePath': ''},
+        );
+        backend.respond(directory, {
+          'relativePath': '',
+          'entries': <Object?>[],
+        });
+      }
+      // The excluded prefix emits a terminal without any host read request.
+      final event = await backend.next();
+      expect(event['kind'], 'streamItem');
+      final payload = event['payload']! as Map;
+      expect(payload['kind'], 'terminal');
+      final outcome = payload['outcome']! as Map;
+      expect(outcome['disposition'], 'success');
+      expect((outcome['hostData']! as Map)['matches'], isEmpty);
+      expect(
+        outcome['effectCertainty'],
+        pattern == '*' ? 'knownOccurred' : 'knownNotOccurred',
+      );
+      expect(await backend.next(), {'kind': 'streamDone', 'requestId': 7});
+      await backend.shutdown();
+    });
+  }
 
   for (final cancel in [false, true]) {
     test(

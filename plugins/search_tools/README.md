@@ -1,14 +1,17 @@
 # Search Tools
 
-Search Tools owns the stock model-facing `search` operation over a
-Session-authorized Environment. It contributes one semantic model tool:
+Search Tools owns two stock read-only discovery operations over a
+Session-authorized Environment: regex content `search`, then pathname `glob`.
+The contribution materializes them in that deterministic order:
 
 | Identity | Value |
 | --- | --- |
 | Plugin, `searchToolsPluginId` | `dev.adele.plugin.search-tools` |
 | Contribution, `searchToolsExtensionId` | `dev.adele.plugin.search-tools.model-tools` |
 | Tool, `searchToolId` | `dev.adele.plugin.search-tools.search` |
-| Model alias | `search` |
+| Search model alias | `search` |
+| Tool, `globToolId` | `dev.adele.plugin.search-tools.glob` |
+| Glob model alias | `glob` |
 
 Search owns argument validation, regular-expression matching, traversal, stock exclusions,
 budgets, and result diagnostics. It does not own Environment identity/lifecycle,
@@ -102,10 +105,53 @@ Source and semantic tests below define the exact limits, validation rules, and
 failure behavior; the backend reuses that implementation rather than maintaining
 a second search algorithm.
 
+## Glob Semantics
+
+- `glob` accepts exactly one required string `pattern`, bounded to 512 UTF-16
+  code units. Empty, absolute, NUL-containing, malformed Unicode, parent `..`
+  segments, invalid glob syntax, and additional arguments are rejected before reads.
+- Parsing and matching use the maintained Dart `package:glob`, with an explicit
+  POSIX context, `/` separators, and case-sensitive matching on every host.
+  Validation initializes the pinned matcher before any reads, rejecting
+  expressions it cannot evaluate even if its parser accepts them.
+  Syntax is preserved rather than rewritten. Backslash is glob escaping, not a
+  Windows separator. In the pinned matcher, `**/` requires a slash: use
+  `xyz/{*,**/*}_test.rb` to include both immediate and deeper test paths.
+- `*` discovers immediate root entries, `xyz/*` immediate children of `xyz`,
+  `**` recursive entries, and `plugins/*/pubspec.yaml` structurally scoped manifests.
+  The root itself is never returned. Results contain `relativePath` and generic
+  Environment `kind`: `file`, `directory`, or `other`. Directories may match and
+  be traversed; `other` entries are returned but never traversed.
+- Pure Dart traversal obtains candidates exclusively through authorized
+  `readDirectory`, never file-content reads, local-host glob enumeration, or a
+  process. A plain literal directory prefix narrows traversal: ancestor listings
+  establish that each prefix component is a directory before it is read, without
+  walking unrelated subtrees. Absent, file, or `other` prefix entries yield no
+  descendants; unreadable required directories remain failures. Prefix resolution
+  counts toward the entry budget. Nonrecursive patterns have a finite structural
+  depth. Syntax-bearing prefixes are handled
+  conservatively, with package:glob alone deciding matches.
+- The same stock directory exclusions as Search apply case-insensitively:
+  `.git`, `.dart_tool`, `build`, and `node_modules`. Excluded directories and all
+  descendants are neither returned nor traversed, even for explicit patterns.
+  This is not Git/ignore-file interpretation. No-match output discloses exclusions.
+- Traversal is deterministic; retained matches are sorted lexically by relative
+  path. At most 100 matches are retained and 10,000 entries visited. A further
+  match/entry stops discovery with `truncated`, `stopReason` (`max_matches` or
+  `max_entries`), `stopLimit`, `entriesVisited`, and `retainedMatchCount`.
+  Nested directory read failures set `incomplete` and `failedDirectoryReads`,
+  with model-visible diagnostics. Initial required-root failures remain failures;
+  discovery never falls back to another root. Binding/infrastructure failures abort.
+- Host results also retain the canonical `pattern`, `matches`, and `environmentId`.
+  Glob describes `sourceRead`, capturing the same exact Session Environment binding
+  as Search. Metadata, validation, and description perform no reads; only execution
+  receives operation-scoped `authorizedEnvironmentRead`. No mutation/process
+  authority, new Environment capability, or application filesystem layer is added.
+
 ## Boundaries And Dependencies
 
-The [root package](pubspec.yaml) depends only on public Environment, model-tool,
-and plugin APIs. The [backend](packages/backend/pubspec.yaml) depends on the root
+The [root package](pubspec.yaml) depends on public Environment, model-tool,
+and plugin APIs, plus direct `glob` and `path` dependencies for portable pathname matching. The [backend](packages/backend/pubspec.yaml) depends on the root
 semantics and public contract, Environment, model-tool, product, and backend-support
 APIs. Neither imports Flutter, application code, internal host implementations, or
 another stock plugin's implementation. Search consumes authorized Environment
@@ -117,6 +163,7 @@ See [dependency rules](../../docs/architecture/dependency-rules.md).
 | Anchor | Responsibility |
 | --- | --- |
 | [`lib/search_tools_plugin.dart`](lib/search_tools_plugin.dart): `SearchToolsPlugin`, `SearchExecutable` | Identities, contribution, shared validation/effects, search, and results. |
+| [`lib/src/glob.dart`](lib/src/glob.dart): `GlobExecutable` | Shared Glob validation, effects, bounded directory discovery, and results. |
 | [`test/search_tools_plugin_test.dart`](test/search_tools_plugin_test.dart) | Semantic behavior, scope/confinement validation, ordering, bounds, partial results, and liveness. |
 | [`packages/backend/lib/search_tools_backend.dart`](packages/backend/lib/search_tools_backend.dart): `SearchToolsBackend` | Remote service adaptation and operation-scoped generated reads. |
 | [`packages/backend/bin/search_tools_backend.dart`](packages/backend/bin/search_tools_backend.dart): `main` | Ready advertisement, routing, host-response multiplexing, and shutdown. |

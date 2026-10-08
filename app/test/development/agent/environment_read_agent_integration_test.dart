@@ -181,12 +181,69 @@ void main() {
         <String>[
           'run_command',
           'search',
+          'glob',
           'read_file',
           'apply_patch',
           'create_file',
           'delete_file',
         ],
       );
+
+      final discoveryRoot = '${topology.taskWorktreePath}/glob-fixture';
+      await Directory('$discoveryRoot/nested').create(recursive: true);
+      await File('$discoveryRoot/source.dart').writeAsString('source');
+      await File('$discoveryRoot/nested/child.dart').writeAsString('child');
+      await Link('$discoveryRoot/link').create('nested');
+      final glob = tools.byAlias('glob')!;
+      var discoveryInvocation = 0;
+      Future<ToolOutcome> discover(String pattern) async {
+        final arguments = await glob.executable.validateAndNormalize({
+          'pattern': pattern,
+        });
+        return (await glob.executable
+                    .execute(
+                      arguments,
+                      ToolExecutionContext(
+                        runId: RunId('run-glob'),
+                        sessionId: topology.sessionId,
+                        toolInvocationId:
+                            'glob-discovery-${++discoveryInvocation}',
+                      ),
+                    )
+                    .single
+                as ToolExecutionTerminal)
+            .outcome;
+      }
+
+      final globOutcome = await discover('glob-fixture/*');
+      expect(globOutcome.disposition, ToolOutcomeDisposition.success);
+      expect(globOutcome.hostData['matches'], [
+        {'relativePath': 'glob-fixture/link', 'kind': 'other'},
+        {'relativePath': 'glob-fixture/nested', 'kind': 'directory'},
+        {'relativePath': 'glob-fixture/source.dart', 'kind': 'file'},
+      ]);
+      expect(globOutcome.hostData['incomplete'], false);
+      expect(globOutcome.hostData['truncated'], false);
+      final aliasListing = await topology.environmentMaterialization.provider
+          .readDirectory(topology.environment.id, 'glob-fixture/link');
+      expect(
+        aliasListing.entries.single.relativePath,
+        'glob-fixture/link/child.dart',
+      );
+      for (final pattern in ['glob-fixture/link/*', 'glob-fixture/link/**']) {
+        final blocked = await discover(pattern);
+        expect(blocked.disposition, ToolOutcomeDisposition.success);
+        expect(blocked.hostData['matches'], isEmpty);
+        expect(blocked.hostData['incomplete'], false);
+        expect(blocked.hostData['truncated'], false);
+      }
+      final recursive = await discover('glob-fixture/**');
+      expect(recursive.hostData['matches'], [
+        {'relativePath': 'glob-fixture/link', 'kind': 'other'},
+        {'relativePath': 'glob-fixture/nested', 'kind': 'directory'},
+        {'relativePath': 'glob-fixture/nested/child.dart', 'kind': 'file'},
+        {'relativePath': 'glob-fixture/source.dart', 'kind': 'file'},
+      ]);
 
       const String taskGuidance = 'Use the Session-authorized Task source.\n';
       await File(

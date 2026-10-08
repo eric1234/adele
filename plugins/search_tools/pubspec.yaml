@@ -12,6 +12,8 @@ dependencies:
   adele_environment: ^0.1.0
   adele_model_tool: ^0.1.0
   adele_plugin_api: ^0.1.0
+  glob: ^2.1.2
+  path: ^1.9.1
 
 dev_dependencies:
   adele_product: ^0.1.0

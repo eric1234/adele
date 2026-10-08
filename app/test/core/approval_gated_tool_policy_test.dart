@@ -14,6 +14,7 @@ import '../support/orchestration_test_lifecycle.dart';
 const Map<String, Map<String, Object?>> _stockArguments = {
   'read_file': {'relativePath': 'source.dart'},
   'search': {'pattern': 'needle'},
+  'glob': {'pattern': '**/*.dart'},
   'apply_patch': {
     'relativePath': 'source.dart',
     'expectedRevision': 'observed-revision',
@@ -65,6 +66,7 @@ void main() {
   for (final entry in <String, ToolEffect>{
     'read_file': ToolEffect.sourceRead,
     'search': ToolEffect.sourceRead,
+    'glob': ToolEffect.sourceRead,
     'apply_patch': ToolEffect.sourceMutation,
     'create_file': ToolEffect.sourceMutation,
     'delete_file': ToolEffect.sourceMutation,

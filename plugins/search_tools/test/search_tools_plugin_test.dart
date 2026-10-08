@@ -9,6 +9,7 @@ import 'package:search_tools_plugin/search_tools_plugin.dart';
 import 'package:test/test.dart';
 
 void main() {
+  _globTests();
   group('activation and contract', () {
     test(
       'unbound executable shares metadata and validation, not authority',
@@ -39,16 +40,22 @@ void main() {
       },
     );
 
-    test('contributes one independently bound search tool', () async {
+    test('contributes Search and Glob in deterministic order', () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ExtensionRegistration generationA = const SearchToolsPlugin()
           .activate(extensions);
       final ExtensionBinding<ModelToolContribution> bindingA = extensions
           .discover(modelToolContributions)
           .single;
-      final ToolRegistration tool = (await bindingA.value.materialize(
+      final tools = (await bindingA.value.materialize(
         _Context(_FileSystem()),
-      )).single;
+      )).toList();
+      expect(tools.map((tool) => tool.modelDefinition.alias), [
+        'search',
+        'glob',
+      ]);
+      expect(tools.last.definition.id, globToolId);
+      final ToolRegistration tool = tools.first;
 
       expect(tool.definition.id.value, 'dev.adele.plugin.search-tools.search');
       expect(tool.modelDefinition.alias, 'search');
@@ -1103,6 +1110,408 @@ void main() {
   });
 }
 
+void _globTests() {
+  Future<ToolOutcome> run(
+    _FileSystem fs,
+    String pattern, {
+    SessionId? session,
+  }) {
+    final tool = GlobExecutable(fs);
+    return _execute(
+      tool,
+      tool.validateAndNormalize({'pattern': pattern}),
+      session ?? fs.sessionId,
+    );
+  }
+
+  List<String> paths(ToolOutcome outcome) => [
+    for (final match in outcome.hostData['matches']! as List)
+      (match as Map)['relativePath'] as String,
+  ];
+  test('Glob discloses and preserves pinned **/ zero-depth behavior', () async {
+    final fs = _FileSystem(
+      directories: {
+        '': [_file('foo.dart'), _directory('src', 'src')],
+        'src': [_file('src/nested.dart')],
+      },
+    );
+    final description =
+        const GlobExecutable.unbound().registration.modelDefinition.description;
+    expect(description, contains('** recurses'));
+    expect(description, contains('**/ requires a directory level'));
+    expect(description, contains('**/*.dart omits root-level Dart files'));
+    expect(description, contains('{*.dart,**/*.dart}'));
+    expect(paths(await run(fs, '**/*.dart')), ['src/nested.dart']);
+    expect(paths(await run(fs, '{*.dart,**/*.dart}')), [
+      'foo.dart',
+      'src/nested.dart',
+    ]);
+    expect(fs.fileReads, isEmpty);
+  });
+  test(
+    'Glob success certainty distinguishes skipped and completed reads',
+    () async {
+      final fs = _FileSystem();
+      for (final pattern in [
+        'build/**',
+        '.GiT/**',
+        '.dart_tool/*',
+        'node_modules/*',
+        'src/BUILD/**',
+      ]) {
+        final result = await run(fs, pattern);
+        expect(result.disposition, ToolOutcomeDisposition.success);
+        expect(paths(result), isEmpty);
+        expect(result.effectCertainty, EffectCertainty.knownNotOccurred);
+      }
+      expect(fs.directoryReads, isEmpty);
+      final result = await run(fs, '*');
+      expect(result.disposition, ToolOutcomeDisposition.success);
+      expect(paths(result), isEmpty);
+      expect(result.effectCertainty, EffectCertainty.knownOccurred);
+      expect(fs.directoryReads, ['']);
+      expect(fs.fileReads, isEmpty);
+    },
+  );
+  test(
+    'Glob validates before reads, with no extra arguments or malformed patterns',
+    () {
+      final fs = _FileSystem();
+      final tool = GlobExecutable(fs);
+      for (final args in <Map<String, Object?>>[
+        {},
+        {'pattern': 1},
+        {'pattern': '*', 'path': ''},
+        for (final pattern in [
+          '',
+          'x' * 513,
+          'a\u0000b',
+          'bad\ud800',
+          'bad\udfff',
+          '[',
+          '{a,b',
+          '{,src/}*.dart',
+          '{/,}',
+          '/abs',
+          '../x',
+          'x/../y',
+          r'C:\foo',
+        ])
+          {'pattern': pattern},
+      ]) {
+        expect(
+          () => tool.validateAndNormalize(args),
+          throwsA(isA<ToolArgumentValidationException>()),
+          reason: '$args',
+        );
+      }
+      expect(fs.directoryReads, isEmpty);
+      expect(fs.fileReads, isEmpty);
+    },
+  );
+  test(
+    'Glob POSIX matching, kinds, recursion, lexical order and shallow reads',
+    () async {
+      final fs = _FileSystem(
+        directories: {
+          '': [
+            _directory('xyz', 'xyz'),
+            _file('Z'),
+            _file('a'),
+            const EnvironmentDirectoryEntry(
+              name: 'other',
+              relativePath: 'other',
+              kind: EnvironmentDirectoryEntryKind.other,
+            ),
+            _directory('plugins', 'plugins'),
+          ],
+          'xyz': [
+            _directory('nested', 'xyz/nested'),
+            _file('xyz/a_test.rb'),
+            _file('xyz/A_TEST.RB'),
+          ],
+          'xyz/nested': [_file('xyz/nested/b_test.rb')],
+          'plugins': [_directory('one', 'plugins/one')],
+          'plugins/one': [_file('plugins/one/pubspec.yaml')],
+          'other': [_file('other/hidden')],
+        },
+      );
+      final immediate = await run(fs, '*');
+      expect(paths(immediate), ['Z', 'a', 'other', 'plugins', 'xyz']);
+      expect(
+        (immediate.hostData['matches'] as List).map((m) => (m as Map)['kind']),
+        ['file', 'file', 'other', 'directory', 'directory'],
+      );
+      expect(fs.directoryReads, ['']);
+      fs.directoryReads.clear();
+      expect(paths(await run(fs, 'xyz/*')), [
+        'xyz/A_TEST.RB',
+        'xyz/a_test.rb',
+        'xyz/nested',
+      ]);
+      expect(fs.directoryReads, contains('xyz'));
+      expect(fs.directoryReads, isNot(contains('xyz/nested')));
+      expect(fs.directoryReads, isNot(contains('plugins')));
+      fs.directoryReads.clear();
+      // package:glob treats the slash after ** as required.
+      expect(paths(await run(fs, 'xyz/**/*_test.rb')), [
+        'xyz/nested/b_test.rb',
+      ]);
+      expect(fs.directoryReads, containsAll(['xyz', 'xyz/nested']));
+      expect(fs.directoryReads, isNot(contains('plugins')));
+      expect(paths(await run(fs, 'xyz/*_test.rb')), ['xyz/a_test.rb']);
+      expect(paths(await run(fs, 'plugins/*/pubspec.yaml')), [
+        'plugins/one/pubspec.yaml',
+      ]);
+      final recursive = paths(await run(fs, '**'));
+      expect(
+        recursive,
+        containsAll(['xyz', 'xyz/nested', 'xyz/nested/b_test.rb', 'other']),
+      );
+      expect(fs.directoryReads, isNot(contains('other')));
+      expect(recursive, isNot(contains('other/hidden')));
+      expect(fs.fileReads, isEmpty);
+      expect(paths(await run(fs, 'xyz\\\\*')), isEmpty);
+    },
+  );
+  for (final kind in [
+    EnvironmentDirectoryEntryKind.file,
+    EnvironmentDirectoryEntryKind.other,
+  ]) {
+    test('Glob never traverses ${kind.name} in a literal prefix', () async {
+      final fs = _FileSystem(
+        directories: {
+          '': [
+            EnvironmentDirectoryEntry(
+              name: 'alias',
+              relativePath: 'alias',
+              kind: kind,
+            ),
+            _directory('scope', 'scope'),
+            _directory('unrelated', 'unrelated'),
+          ],
+          'scope': [
+            EnvironmentDirectoryEntry(
+              name: 'alias',
+              relativePath: 'scope/alias',
+              kind: kind,
+            ),
+          ],
+          for (final prefix in ['alias', 'scope/alias']) ...{
+            prefix: [_directory('nested', '$prefix/nested')],
+            '$prefix/nested': [_file('$prefix/nested/hidden')],
+          },
+        },
+      );
+      for (final prefix in ['alias', 'scope/alias']) {
+        // The provider can resolve this path; its entry kind must stop Glob.
+        expect((await fs.readDirectory(prefix)).entries, isNotEmpty);
+        fs.directoryReads.clear();
+        for (final pattern in ['$prefix/*', '$prefix/**', '$prefix/nested/*']) {
+          final result = await run(fs, pattern);
+          expect(result.disposition, ToolOutcomeDisposition.success);
+          expect(paths(result), isEmpty, reason: pattern);
+          expect(result.hostData['truncated'], false);
+          expect(result.hostData['incomplete'], false);
+        }
+        expect(fs.directoryReads, isNot(contains(prefix)));
+        expect(fs.directoryReads, isNot(contains('$prefix/nested')));
+        expect(fs.directoryReads, isNot(contains('unrelated')));
+      }
+      expect(fs.fileReads, isEmpty);
+    });
+  }
+  test(
+    'Glob stops at absent literal-prefix components without broadening',
+    () async {
+      final fs = _FileSystem(
+        directories: {
+          '': [
+            _directory('scope', 'scope'),
+            _directory('unrelated', 'unrelated'),
+          ],
+          'scope': [],
+          'missing': [_file('missing/hidden')],
+          'scope/missing': [_file('scope/missing/hidden')],
+        },
+      );
+      for (final pattern in ['missing/*', 'scope/missing/*']) {
+        final result = await run(fs, pattern);
+        expect(result.disposition, ToolOutcomeDisposition.success);
+        expect(paths(result), isEmpty);
+        expect(result.hostData['incomplete'], false);
+      }
+      expect(fs.directoryReads, isNot(contains('missing')));
+      expect(fs.directoryReads, isNot(contains('scope/missing')));
+      expect(fs.directoryReads, isNot(contains('unrelated')));
+      expect(fs.fileReads, isEmpty);
+    },
+  );
+  test(
+    'Glob hides stock excluded directories and descendants case insensitively',
+    () async {
+      final fs = _FileSystem(
+        directories: {
+          '': [
+            for (final name in ['.GiT', '.DART_TOOL', 'BuIlD', 'NODE_MODULES'])
+              _directory(name, name),
+          ],
+        },
+      );
+      for (final pattern in ['*', '**', 'BuIlD/**']) {
+        final result = await run(fs, pattern);
+        expect(paths(result), isEmpty);
+        expect(result.hostData['truncated'], false);
+        expect(result.modelContent, contains('stock directory exclusions'));
+      }
+      expect(fs.directoryReads, ['', '']);
+    },
+  );
+  test(
+    'Glob bounds matches and visited entries with explicit diagnostics',
+    () async {
+      final matches = await run(
+        _FileSystem(
+          directories: {
+            '': [for (var i = 0; i < 101; i++) _file('f$i')],
+          },
+        ),
+        '*',
+      );
+      expect(paths(matches), hasLength(100));
+      expect(matches.hostData, containsPair('stopReason', 'max_matches'));
+      expect(matches.hostData, containsPair('stopLimit', 100));
+      expect(matches.hostData, containsPair('entriesVisited', 101));
+      final entries = await run(
+        _FileSystem(
+          directories: {
+            '': [for (var i = 0; i < 10001; i++) _file('f$i')],
+          },
+        ),
+        'missing',
+      );
+      expect(entries.hostData, containsPair('stopReason', 'max_entries'));
+      expect(entries.hostData, containsPair('stopLimit', 10000));
+      expect(entries.hostData, containsPair('entriesVisited', 10000));
+      expect(entries.hostData, containsPair('truncated', true));
+      final scopedEntries = await run(
+        _FileSystem(
+          directories: {
+            '': [_directory('scope', 'scope')],
+            'scope': [for (var i = 0; i < 10000; i++) _file('scope/f$i')],
+          },
+        ),
+        'scope/missing',
+      );
+      expect(scopedEntries.hostData, containsPair('stopReason', 'max_entries'));
+      expect(scopedEntries.hostData, containsPair('entriesVisited', 10000));
+      expect(scopedEntries.hostData, containsPair('retainedMatchCount', 0));
+    },
+  );
+  test(
+    'Glob nested failure is incomplete but required root failure never broadens',
+    () async {
+      final fs = _FileSystem(
+        directories: {
+          '': [_directory('bad', 'bad'), _file('ok')],
+        },
+        directoryErrors: {'bad': _environmentFailure},
+      );
+      final partial = await run(fs, '**');
+      expect(partial.disposition, ToolOutcomeDisposition.success);
+      expect(partial.effectCertainty, EffectCertainty.knownOccurred);
+      expect(partial.hostData, containsPair('incomplete', true));
+      expect(partial.hostData, containsPair('failedDirectoryReads', 1));
+      expect(partial.modelContent, contains('could not be inspected'));
+      for (final pattern in ['bad/*', 'bad/deeper/*']) {
+        fs.directoryReads.clear();
+        final failed = await run(fs, pattern);
+        expect(failed.failureKind, ToolFailureKind.domain);
+        expect(failed.effectCertainty, EffectCertainty.uncertain);
+        expect(fs.directoryReads, contains('bad'));
+        expect(failed.hostData['failedDirectoryReads'], 0);
+      }
+      final rootFailure = await run(
+        _FileSystem(directoryErrors: {'': _environmentFailure}),
+        'bad/*',
+      );
+      expect(rootFailure.failureKind, ToolFailureKind.domain);
+      expect(rootFailure.effectCertainty, EffectCertainty.uncertain);
+    },
+  );
+  test(
+    'Glob preserves binding failures, Session authority and read-free description',
+    () async {
+      final fs = _FileSystem();
+      final tool = GlobExecutable(fs);
+      final args = tool.validateAndNormalize({'pattern': '**'});
+      expect((await tool.describe(args, _execution(fs.sessionId))).effects, {
+        ToolEffect.sourceRead,
+      });
+      expect(fs.directoryReads, isEmpty);
+      final wrongSession = await run(fs, '*', session: SessionId('other'));
+      expect(wrongSession.failureKind, ToolFailureKind.infrastructure);
+      expect(wrongSession.effectCertainty, EffectCertainty.knownNotOccurred);
+      fs.stale = true;
+      expect(tool.validateBinding, throwsA(isA<StaleToolBindingException>()));
+      final stale = await run(fs, '*');
+      expect(stale.failureKind, ToolFailureKind.staleBinding);
+      expect(stale.effectCertainty, EffectCertainty.knownNotOccurred);
+      fs.stale = false;
+      fs.available = false;
+      expect(
+        tool.validateBinding,
+        throwsA(isA<ToolBindingUnavailableException>()),
+      );
+      final unavailable = await run(fs, '*');
+      expect(unavailable.failureKind, ToolFailureKind.infrastructure);
+      expect(unavailable.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(fs.directoryReads, isEmpty);
+      expect(fs.fileReads, isEmpty);
+    },
+  );
+  for (final (failure, kind, readDependent) in [
+    (
+      const AuthorizedEnvironmentBindingStale('stale generation'),
+      ToolFailureKind.staleBinding,
+      true,
+    ),
+    (
+      const AuthorizedEnvironmentBindingUnavailable('unavailable'),
+      ToolFailureKind.infrastructure,
+      true,
+    ),
+    (StateError('read failed'), ToolFailureKind.infrastructure, false),
+  ]) {
+    for (final failedPath in ['', 'nested']) {
+      test(
+        'Glob ${failure.runtimeType} certainty after failing read "$failedPath"',
+        () async {
+          final fs = _FileSystem(
+            directories: {
+              '': [_directory('nested', 'nested')],
+            },
+            directoryErrors: {failedPath: failure},
+          );
+          final result = await run(fs, '**');
+          expect(result.disposition, ToolOutcomeDisposition.failure);
+          expect(result.failureKind, kind);
+          expect(
+            result.effectCertainty,
+            !readDependent
+                ? EffectCertainty.uncertain
+                : failedPath.isEmpty
+                ? EffectCertainty.knownNotOccurred
+                : EffectCertainty.knownOccurred,
+          );
+          expect(fs.directoryReads, ['', if (failedPath.isNotEmpty) 'nested']);
+          expect(fs.fileReads, isEmpty);
+        },
+      );
+    }
+  }
+}
+
 const EnvironmentFailure _environmentFailure = EnvironmentFailure(
   code: 'denied',
   message: 'Denied.',
@@ -1130,7 +1539,7 @@ Future<ToolExecutable> _search(_FileSystem fileSystem) async {
           .single
           .value
           .materialize(_Context(fileSystem)))
-      .single
+      .first
       .executable;
 }
 
