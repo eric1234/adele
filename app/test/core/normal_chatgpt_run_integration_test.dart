@@ -160,6 +160,26 @@ void main() {
               .map((entry) => entry.id),
           [ExtensionId('$_sourceEditorPluginId.main-content')],
         );
+        final sourceCommand = CommandResolver(
+          runtime.extensions,
+        ).resolve(CommandId('$_sourceEditorPluginId.open-source'));
+        expect(sourceCommand.label, 'Open Source...');
+
+        Future<void> expectHiddenOpenSource() async {
+          expect(sourceCommand.availability, CommandAvailability.hidden);
+          await _terminalTap(
+            tester,
+            find.byKey(const ValueKey('command-palette-button')),
+          );
+          expect(find.byType(CommandPalette), findsOneWidget);
+          expect(find.widgetWithText(ListTile, 'Open Source...'), findsNothing);
+          expect(find.text(sourceCommand.id.value), findsNothing);
+          await _terminalTap(tester, find.byTooltip('Close Command Palette'));
+          expect(find.byType(CommandPalette), findsNothing);
+        }
+
+        expect(fixture.shell(tester).project, isNull);
+        await expectHiddenOpenSource();
 
         // Canonical Sessions need a strategy identity, not Chat or a materialized Run.
         final strategyId = OrchestrationStrategyId(
@@ -176,6 +196,7 @@ void main() {
         );
         addTearDown(strategy.close);
         await fixture.openTask(tester);
+        await expectHiddenOpenSource();
         final project = fixture.shell(tester).project!;
         final taskA = fixture.shell(tester).task!;
         final environmentA = fixture.shell(tester).environment!;
@@ -204,7 +225,13 @@ void main() {
         await _breadcrumb(tester, 'project-breadcrumb');
         await _terminalTap(tester, find.text(taskA.title));
         await _terminalTap(tester, _sessionRow(sessionA.id));
-        await _openSourceInput(tester, _sourcePath);
+        await _terminalUntil(
+          tester,
+          () => sourceCommand.availability == CommandAvailability.enabled,
+          'stock Source Command in the canonical Session',
+        );
+        expect(runtime.store.session(sessionA.id), same(sessionA));
+        await _openSourceInput(tester, _sourcePath, fromPalette: true);
         final ownerA = _sourceOwner(tester, _sourcePath);
         final nativeA = _sourceNative(tester, _sourcePath);
         expect(ownerA.snapshot()['text'], _taskText);
@@ -281,6 +308,7 @@ void main() {
         expect(ownerSecond.isDisposed, isFalse);
         expect(find.byType(CodeForge), findsNothing);
         expect(find.byType(AlertDialog), findsNothing);
+        await expectHiddenOpenSource();
         await _terminalTap(tester, _sessionRow(siblingA.id));
         await _terminalUntil(
           tester,
@@ -6275,8 +6303,35 @@ Future<void> _sourceKey(
   await tester.pump();
 }
 
-Future<void> _openSourceInput(WidgetTester tester, String path) async {
-  await _terminalTap(tester, find.widgetWithText(TextButton, 'Open Source...'));
+Future<void> _openSourceInput(
+  WidgetTester tester,
+  String path, {
+  bool fromPalette = false,
+}) async {
+  if (fromPalette) {
+    final editorCount = find.byType(CodeForge).evaluate().length;
+    await _terminalTap(
+      tester,
+      find.byKey(const ValueKey('command-palette-button')),
+    );
+    expect(find.byType(CommandPalette), findsOneWidget);
+    final action = find.widgetWithText(ListTile, 'Open Source...');
+    expect(tester.widget<ListTile>(action).enabled, isTrue);
+    expect(find.text('$_sourceEditorPluginId.open-source'), findsOneWidget);
+    await _terminalTap(tester, action);
+    await _terminalUntil(
+      tester,
+      () => find.text('Open Source File').evaluate().isNotEmpty,
+      'palette opens the existing Source input',
+    );
+    expect(find.byType(CommandPalette), findsNothing);
+    expect(find.byType(CodeForge).evaluate(), hasLength(editorCount));
+  } else {
+    await _terminalTap(
+      tester,
+      find.widgetWithText(TextButton, 'Open Source...'),
+    );
+  }
   final dialog = find.byType(Dialog);
   await tester.enterText(
     find.descendant(of: dialog, matching: find.byType(TextField)),

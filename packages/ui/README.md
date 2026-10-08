@@ -46,6 +46,12 @@ opening receives the exact attachment's access, not a dummy pane or execution
 grant. Optional `detach(MainContentAccess)` ends transient attachment references;
 it is not a document-close request or permission to reuse revoked access.
 
+A prepared host may deliberately expose one exact action through a semantic
+Command, as well as its button. This does not add Command concepts to the public
+action/access contract: Main Content still owns current attachment, input
+presentation, and retirement. See the
+[contextual adapter](../../docs/architecture/plugin-system.md#commands-and-input).
+
 `MainContentAccess` exposes the captured `session`, `isActive`, and immutable local
 `panes` snapshots, plus `open(MainContentPane)`, `setTitle(id, title)`,
 `setOrder(ids)`, `remove(id)`, and `focus(id, keyboardFocus: false)`. Reordering must

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -9,6 +10,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/product_lifecycle.dart';
 import '../core/resource_cleanup.dart';
+import '../ui/main_content/main_content_host.dart';
 import 'code_editor_bridge.dart';
 import 'contribution_bridge.dart';
 import 'environment_access_bridge.dart';
@@ -42,10 +44,13 @@ final class PreparedMainContentHost {
     this.createBinding,
     this.environmentRuntime,
     this.confirm,
-  });
+    MainContentActionCoordinator? actionCoordinator,
+  }) : actionCoordinator = actionCoordinator ?? MainContentActionCoordinator();
 
+  final MainContentActionCoordinator actionCoordinator;
   final EnvironmentRuntime? environmentRuntime;
   final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final _metadata = Expando<(PreparedPluginInstallation, PreparedFrontend)>();
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
       {};
   final Set<Future<Map<String, Object?>>> _operations = {};
@@ -368,8 +373,56 @@ final class PreparedMainContentHost {
         await initialize();
       },
     );
+    _metadata[contribution] = (installation, generation);
     services?.registerMetadata(contribution, installation, descriptor);
     return contribution;
+  }
+
+  /// Delegates to the mounted input host using the captured sibling, not IDs.
+  CommandContribution createActionCommand({
+    required PreparedPluginInstallation installation,
+    required PreparedFrontend generation,
+    required PreparedMainContentActionCommandExtension descriptor,
+    required ExtensionBinding<MainContentContribution> owner,
+    required bool Function() isActive,
+  }) {
+    final contribution = owner.value;
+    final metadata = _metadata[contribution];
+    if (metadata == null ||
+        !identical(metadata.$1, installation) ||
+        !identical(metadata.$2, generation) ||
+        owner.id != descriptor.mainContentExtensionId) {
+      throw StateError(
+        'The Main Content action Command target is unavailable.',
+      );
+    }
+    final action = contribution.actions.singleWhere(
+      (action) => action.id == descriptor.actionId,
+    );
+    CommandAvailability availability() {
+      if (_closed || !isActive()) return CommandAvailability.hidden;
+      try {
+        owner.validate();
+      } on StaleExtensionBinding {
+        return CommandAvailability.hidden;
+      }
+      if (!actionCoordinator.hasSession) return CommandAvailability.hidden;
+      return actionCoordinator.canOpen(owner, action)
+          ? CommandAvailability.enabled
+          : CommandAvailability.disabled;
+    }
+
+    return CommandContribution(
+      id: descriptor.commandId,
+      label: action.label,
+      availability: availability,
+      invoke: () {
+        if (availability() != CommandAvailability.enabled) {
+          throw CommandUnavailable(descriptor.commandId);
+        }
+        actionCoordinator.open(owner, action);
+      },
+    );
   }
 
   ContributionBridge _dataBridge(

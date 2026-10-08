@@ -185,6 +185,24 @@ Catalog parsing validates the descriptor's own data, not a global registry targe
 The [catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog) owns
 the exact shape; this is deliberate adaptation, not automatic action projection.
 
+The additive `mainContentActionCommand` variant similarly identifies a Command
+registration and an exact sibling `mainContentExtensionId` / local `actionId`.
+Its target is an existing Main Content input action, not a Console creation action
+or a new finite operation. It declares no label, library, entrypoint, context, or
+authority: the existing action owns its display and entrypoint metadata, while
+the Main Content host owns context and admission. Catalog parsing validates only
+the descriptor's own fields, using the owning Main Content action-ID semantics
+rather than Console's grammar.
+Before publishing registrations, activation requires exactly one Main Content
+presentation in the same prepared frontend component that declares the named
+action. A different role, installation, or generation cannot satisfy that sibling
+reference through a global ID match. The captured live registration/action stays
+exact across retirement and replacement. Command invocation opens the existing
+input path with Main Content-owned admission and lifetime, without projecting all
+actions automatically or granting broader Command context. The
+[catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog) owns
+the exact five-field shape.
+
 ### Artifact references and confinement
 
 Artifact references are installation-relative and must remain confined to their

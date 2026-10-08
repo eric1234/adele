@@ -315,6 +315,14 @@ foreign contribution or accepts caller-selected product context. See
 asymmetric retirement, and [Shared Console](plugin-system.md#shared-console) for
 creation ownership.
 
+The Main Content input-action Command adapter also adds no operation or bridge.
+It presents its captured sibling action through the current mounted Main Content
+host. Input presentation retains the existing attachment's identity context, not a
+Command-specific file grant. Stock Source's later path submission alone invokes
+its existing finite `display` operation and the file authority described below.
+Command availability is a synchronous native attachment/route check, without eval
+or Environment access. The Command cannot select an Environment or native editor.
+
 Explicit user file operations are another narrow frontend grant, not model-tool
 execution. Session/Environment identity is separate provider-free data through the
 [Main Content context](plugin-system.md#grouped-main-content), not a file grant.

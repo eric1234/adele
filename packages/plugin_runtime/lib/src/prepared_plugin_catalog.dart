@@ -100,6 +100,33 @@ final class PreparedConsoleActionCommandExtension
   };
 }
 
+/// Names an existing Main Content input action without a separate operation.
+final class PreparedMainContentActionCommandExtension
+    extends PreparedFrontendExtension {
+  PreparedMainContentActionCommandExtension({
+    required this.extensionId,
+    required this.commandId,
+    required this.mainContentExtensionId,
+    required this.actionId,
+  }) {
+    _text(actionId, 'actionId');
+  }
+
+  final ExtensionId extensionId;
+  final CommandId commandId;
+  final ExtensionId mainContentExtensionId;
+  final String actionId;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'mainContentActionCommand',
+    'extensionId': extensionId.value,
+    'commandId': commandId.value,
+    'mainContentExtensionId': mainContentExtensionId.value,
+    'actionId': actionId,
+  };
+}
+
 final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
   const PreparedProjectSelectorExtension({
     required this.extensionId,
@@ -662,6 +689,20 @@ PreparedFrontendExtension _extension(Object? value, String label) {
         commandId: CommandId(text('commandId')),
         consoleExtensionId: ExtensionId(text('consoleExtensionId')),
         actionId: _consoleActionId(value['actionId'], '$label.actionId'),
+      );
+    case 'mainContentActionCommand':
+      _object(value, label, {
+        'kind',
+        'extensionId',
+        'commandId',
+        'mainContentExtensionId',
+        'actionId',
+      });
+      return PreparedMainContentActionCommandExtension(
+        extensionId: ExtensionId(text('extensionId')),
+        commandId: CommandId(text('commandId')),
+        mainContentExtensionId: ExtensionId(text('mainContentExtensionId')),
+        actionId: text('actionId'),
       );
     case 'projectSelector':
       _object(value, label, {

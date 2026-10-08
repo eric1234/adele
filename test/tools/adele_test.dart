@@ -824,10 +824,15 @@ void main() {
             'environmentTextFiles': true,
           },
         ]);
-        expect(
-          stockFrontendExtensionDescriptors['dev.adele.source-editor'],
-          isNull,
-        );
+        expect(stockFrontendExtensionDescriptors['dev.adele.source-editor'], [
+          {
+            'kind': 'mainContentActionCommand',
+            'extensionId': 'dev.adele.source-editor.command.open-source',
+            'commandId': 'dev.adele.source-editor.open-source',
+            'mainContentExtensionId': 'dev.adele.source-editor.main-content',
+            'actionId': 'open',
+          },
+        ]);
         final compiler = File(
           'app/tool/source_editor_frontend_compiler.dart',
         ).readAsStringSync();
@@ -920,10 +925,10 @@ void main() {
   });
 
   test(
-    'stock descriptors name existing frontend entrypoints and console actions',
+    'stock descriptors name existing frontend entrypoints and sibling actions',
     () {
       expect(stockFrontendDescriptors, hasLength(7));
-      expect(stockFrontendExtensionDescriptors, hasLength(2));
+      expect(stockFrontendExtensionDescriptors, hasLength(3));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
           (jsonDecode(config.readAsStringSync())
@@ -946,15 +951,20 @@ void main() {
           ),
         );
         for (final descriptor in descriptors) {
-          if (descriptor['kind'] == 'consoleActionCommand') {
-            final console = stockFrontendDescriptors[entry.key]!.singleWhere(
+          if (descriptor['kind'] == 'consoleActionCommand' ||
+              descriptor['kind'] == 'mainContentActionCommand') {
+            final console = descriptor['kind'] == 'consoleActionCommand';
+            final targetField = console
+                ? 'consoleExtensionId'
+                : 'mainContentExtensionId';
+            final target = stockFrontendDescriptors[entry.key]!.singleWhere(
               (presentation) =>
-                  presentation['role'] == 'console' &&
-                  presentation['extensionId'] ==
-                      descriptor['consoleExtensionId'],
+                  presentation['role'] ==
+                      (console ? 'console' : 'mainContent') &&
+                  presentation['extensionId'] == descriptor[targetField],
             );
-            expect(console['readOnly'], isNot(true));
-            final actions = console['actions']! as List<Map<String, Object?>>;
+            if (console) expect(target['readOnly'], isNot(true));
+            final actions = target['actions']! as List<Map<String, Object?>>;
             expect(
               actions.where((action) => action['id'] == descriptor['actionId']),
               hasLength(1),
@@ -965,7 +975,7 @@ void main() {
                 'kind',
                 'extensionId',
                 'commandId',
-                'consoleExtensionId',
+                targetField,
                 'actionId',
               ]),
             );

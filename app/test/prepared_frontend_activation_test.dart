@@ -874,6 +874,204 @@ Future<void> delayedCommand() async {
     },
   );
 
+  for (final invalid in [
+    'missing target',
+    'non-Main-Content target',
+    'missing action',
+    'no-action target',
+    'ambiguous target',
+    'foreign registered target',
+  ]) {
+    test('Main Content action $invalid fails before any publication', () async {
+      ExtensionRegistration? foreign;
+      if (invalid == 'foreign registered target') {
+        foreign = extensions.register(
+          point: mainContentContributions,
+          id: ExtensionId('dev.example.target.session'),
+          value: MainContentContribution(
+            order: 100,
+            attach: (_) {},
+            actions: [
+              MainContentAction(
+                id: 'open',
+                label: 'Foreign input',
+                createPresentation: (_) => fail('Cannot open foreign input.'),
+              ),
+            ],
+          ),
+        );
+        addTearDown(foreign.close);
+      }
+      final publications = <ExtensionId>[];
+      final subscription = extensions.changes.listen((_) {
+        publications.addAll([
+          ...extensions
+              .discover(mainContentContributions)
+              .where((entry) => !(foreign?.owns(entry) ?? false))
+              .map((entry) => entry.id),
+          ...extensions.discover(commandContributions).map((entry) => entry.id),
+          ...extensions
+              .discover(taskBrowserContributions)
+              .map((entry) => entry.id),
+        ]);
+      });
+      addTearDown(subscription.cancel);
+      await install(
+        'invalid',
+        [
+          _sessionDescriptor('not-published'),
+          if (invalid == 'non-Main-Content target')
+            {
+              'role': 'taskBrowser',
+              'extensionId': 'dev.example.target.session',
+              'displayName': 'Not Main Content',
+              'library': _library,
+              'entrypoint': 'customPane',
+            },
+          if (invalid == 'missing action' || invalid == 'ambiguous target')
+            _mainContentActionDescriptor('target'),
+          if (invalid == 'ambiguous target')
+            _mainContentActionDescriptor('target'),
+          if (invalid == 'no-action target') _sessionDescriptor('target'),
+        ],
+        extensionDescriptors: [
+          _commandDescriptor('not-published', 'voidCommand'),
+          {
+            ..._mainContentCommandDescriptor('target'),
+            if (invalid == 'missing action') 'actionId': 'not-an-action',
+          },
+        ],
+      );
+      await owner.start(await discover());
+      await Future<void>.delayed(Duration.zero);
+      final generation = owner.generations.single;
+      expect(generation.state, InstalledFrontendState.failed);
+      expect(generation.failure, isA<StateError>());
+      expect(generation.registrations, isEmpty);
+      expect(publications, isEmpty);
+      expect(extensions.discover(commandContributions), isEmpty);
+      expect(extensions.discover(taskBrowserContributions), isEmpty);
+      expect(
+        extensions.discover(mainContentContributions),
+        hasLength(foreign == null ? 0 : 1),
+      );
+      expect(foreign?.isClosed, foreign == null ? isNull : isFalse);
+    });
+  }
+
+  test(
+    'Main Content action cannot bind another installation with the same IDs',
+    () async {
+      await install('a-owner', [_mainContentActionDescriptor('target')]);
+      await install(
+        'b-command',
+        [_sessionDescriptor('not-published')],
+        extensionDescriptors: [
+          _commandDescriptor('not-published', 'voidCommand'),
+          _mainContentCommandDescriptor('target'),
+        ],
+      );
+      final publications = <ExtensionId>[];
+      final subscription = extensions.changes.listen((_) {
+        publications.addAll([
+          ...extensions.discover(commandContributions).map((entry) => entry.id),
+          ...extensions
+              .discover(mainContentContributions)
+              .where(
+                (entry) => !owner.generations.first.registrations.any(
+                  (registration) => registration.owns(entry),
+                ),
+              )
+              .map((entry) => entry.id),
+        ]);
+      });
+      addTearDown(subscription.cancel);
+      await owner.start(await discover());
+      await Future<void>.delayed(Duration.zero);
+      expect(owner.generations.first.state, InstalledFrontendState.active);
+      expect(owner.generations.last.state, InstalledFrontendState.failed);
+      expect(owner.generations.last.failure, isA<StateError>());
+      expect(owner.generations.last.registrations, isEmpty);
+      expect(publications, isEmpty);
+      expect(extensions.discover(commandContributions), isEmpty);
+      final retained = extensions.discover(mainContentContributions).single;
+      expect(retained.id, ExtensionId('dev.example.target.session'));
+      expect(retained.value.actions.single.id, 'open');
+      expect(retained.validate, returnsNormally);
+      expect(
+        owner.generations.first.registrations.single.owns(retained),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'Main Content action collision synchronously rolls back only its generation',
+    () async {
+      var calls = 0;
+      final unrelated = extensions.register(
+        point: commandContributions,
+        id: ExtensionId('dev.example.conflict.registration'),
+        value: CommandContribution(
+          id: CommandId('dev.example.unrelated'),
+          label: 'Unrelated',
+          availability: () => CommandAvailability.enabled,
+          invoke: () => calls++,
+        ),
+      );
+      addTearDown(unrelated.close);
+      final visibleFailedBindings = <ExtensionId>[];
+      final subscription = extensions.changes.listen((_) {
+        for (final generation in owner.generations) {
+          if (generation.state != InstalledFrontendState.failed) continue;
+          for (final binding in <ExtensionBinding<Object>>[
+            ...extensions.discover(commandContributions),
+            ...extensions.discover(mainContentContributions),
+          ]) {
+            if (generation.registrations.any((entry) => entry.owns(binding))) {
+              visibleFailedBindings.add(binding.id);
+            }
+          }
+        }
+      });
+      addTearDown(subscription.cancel);
+      await install(
+        'a-conflict',
+        [
+          _sessionDescriptor('rolled-back'),
+          _mainContentActionDescriptor('target'),
+        ],
+        extensionDescriptors: [
+          _mainContentCommandDescriptor('target'),
+          {
+            ..._mainContentCommandDescriptor('target'),
+            'extensionId': 'dev.example.conflict.registration',
+            'commandId': 'dev.example.conflict',
+          },
+        ],
+      );
+      await install('b-healthy', [_sessionDescriptor('healthy')]);
+      await owner.start(await discover());
+      await Future<void>.delayed(Duration.zero);
+      final failed = owner.generations.first;
+      expect(failed.state, InstalledFrontendState.failed);
+      expect(failed.failure, isA<ExtensionRegistrationException>());
+      expect(failed.registrations, hasLength(3));
+      expect(failed.registrations.every((entry) => entry.isClosed), isTrue);
+      expect(visibleFailedBindings, isEmpty);
+      expect(unrelated.isClosed, isFalse);
+      final retained = CommandResolver(extensions).discover().single;
+      expect(unrelated.owns(retained.binding), isTrue);
+      await retained.invoke();
+      expect(calls, 1);
+      expect(
+        extensions.discover(mainContentContributions).single.id,
+        ExtensionId('dev.example.healthy.session'),
+      );
+      expect(owner.generations.last.state, InstalledFrontendState.active);
+    },
+  );
+
   test('prepared duplicate Command IDs use ordinary ambiguity', () async {
     await install(
       'commands',
@@ -1486,6 +1684,21 @@ Map<String, Object?> _consoleCommandDescriptor(String name) =>
       commandId: CommandId('dev.example.$name'),
       consoleExtensionId: ExtensionId('dev.example.$name.console'),
       actionId: 'create',
+    ).toJson();
+
+Map<String, Object?> _mainContentActionDescriptor(String name) => {
+  ..._sessionDescriptor(name),
+  'actions': [
+    {'id': 'open', 'label': 'Open prepared input', 'entrypoint': 'customPane'},
+  ],
+};
+
+Map<String, Object?> _mainContentCommandDescriptor(String name) =>
+    PreparedMainContentActionCommandExtension(
+      extensionId: ExtensionId('dev.example.$name.command'),
+      commandId: CommandId('dev.example.$name'),
+      mainContentExtensionId: ExtensionId('dev.example.$name.session'),
+      actionId: 'open',
     ).toJson();
 
 final class _PendingPicker extends FileSelectorPlatform {

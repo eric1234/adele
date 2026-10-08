@@ -3,12 +3,54 @@ import 'dart:math' as math;
 
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../frontend/prepared_frontend.dart';
 import 'main_content_controller.dart';
+
+/// Window-local admission to exact contributed input in the current Session.
+/// No discovery, reconciliation, or contribution code runs during availability.
+final class MainContentActionCoordinator {
+  _MainContentHostState? _host;
+
+  bool get hasSession => _host?._hasSession ?? false;
+
+  bool canOpen(
+    ExtensionBinding<MainContentContribution> owner,
+    MainContentAction action,
+  ) {
+    final host = _host;
+    if (host == null || !host._hasSession) return false;
+    final entry = host._controller.findAction(owner, action);
+    return entry != null && host._canOpenInput(entry);
+  }
+
+  /// Completes on admission, not when the contributed input is closed.
+  void open(
+    ExtensionBinding<MainContentContribution> owner,
+    MainContentAction action,
+  ) {
+    final host = _host;
+    final entry = host?._controller.findAction(owner, action);
+    if (host == null || entry == null || !host._openInput(entry)) {
+      throw StateError('Main Content action is unavailable.');
+    }
+  }
+
+  void _mount(_MainContentHostState host) {
+    if (identical(_host, host)) return;
+    final previous = _host;
+    _host = host;
+    previous?._dismissInput();
+  }
+
+  void _unmount(_MainContentHostState host) {
+    if (identical(_host, host)) _host = null;
+  }
+}
 
 /// One bounded row of equally sized panes from registered contributions.
 /// All panes remain mounted, even outside the horizontal viewport.
@@ -18,10 +60,12 @@ class MainContentHost extends StatefulWidget {
     required this.session,
     required this.extensions,
     this.isCurrent,
+    this.actionCoordinator,
   });
 
   final Session session;
   final ExtensionRegistry extensions;
+  final MainContentActionCoordinator? actionCoordinator;
 
   /// Optional composition-root guard for departure before the next widget frame.
   /// Once observed false, that attachment cannot become active again.
@@ -37,6 +81,8 @@ class _MainContentHostState extends State<MainContentHost> {
   final Map<MainContentEntry, _PaneViewState> _views = {};
   DialogRoute<void>? _inputRoute;
   MainContentActionEntry? _inputAction;
+  bool _attached = true;
+  bool _openingInput = false;
   bool _building = false;
   bool _rebuildScheduled = false;
 
@@ -44,6 +90,7 @@ class _MainContentHostState extends State<MainContentHost> {
   void initState() {
     super.initState();
     _createController();
+    widget.actionCoordinator?._mount(this);
   }
 
   void _createController() {
@@ -60,6 +107,10 @@ class _MainContentHostState extends State<MainContentHost> {
   @override
   void didUpdateWidget(MainContentHost oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.actionCoordinator, widget.actionCoordinator)) {
+      oldWidget.actionCoordinator?._unmount(this);
+      widget.actionCoordinator?._mount(this);
+    }
     if (!identical(oldWidget.session, widget.session) ||
         !identical(oldWidget.extensions, widget.extensions)) {
       _controller.dispose();
@@ -70,7 +121,7 @@ class _MainContentHostState extends State<MainContentHost> {
 
   void _changed() {
     if (_inputAction?.isActive == false) _dismissInput();
-    if (!mounted || _building) return;
+    if (!mounted || !_attached || _building) return;
     if (SchedulerBinding.instance.schedulerPhase !=
         SchedulerPhase.persistentCallbacks) {
       setState(() {});
@@ -80,75 +131,92 @@ class _MainContentHostState extends State<MainContentHost> {
     _rebuildScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _rebuildScheduled = false;
-      if (mounted) setState(() {});
+      if (mounted && _attached) setState(() {});
     });
   }
 
-  void _openInput(MainContentActionEntry action) {
-    if (!action.isActive || _inputRoute != null) return;
-    Widget presentation;
+  bool get _hasSession =>
+      mounted &&
+      _attached &&
+      (widget.actionCoordinator == null ||
+          identical(widget.actionCoordinator!._host, this)) &&
+      _controller.hasSession;
+
+  bool _canOpenInput(MainContentActionEntry action) =>
+      _hasSession && !_openingInput && _inputRoute == null && action.isActive;
+
+  bool _openInput(MainContentActionEntry action) {
+    if (!_canOpenInput(action)) return false;
+    // Reserve admission before calling the factory, which may invoke host code.
+    _openingInput = true;
     try {
-      presentation = action.createPresentation();
-    } on Object {
-      // A failed input factory must not disturb existing pane presentations.
-      presentation = const Center(
-        child: Text('Main Content input is unavailable.'),
-      );
-    }
-    if (!mounted || !action.isActive) return;
-    final navigator = Navigator.of(context, rootNavigator: true);
-    final route = DialogRoute<void>(
-      context: context,
-      themes: InheritedTheme.capture(from: context, to: navigator.context),
-      builder: (_) => Dialog(
-        insetPadding: const EdgeInsets.all(16),
-        constraints: const BoxConstraints(maxWidth: 480, maxHeight: 260),
-        child: SizedBox(
-          width: 480,
-          height: 260,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      action.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+      Widget presentation;
+      try {
+        presentation = action.createPresentation();
+      } on Object {
+        // A failed input factory must not disturb existing pane presentations.
+        presentation = const Center(
+          child: Text('Main Content input is unavailable.'),
+        );
+      }
+      if (!_hasSession || !action.isActive) return false;
+      final navigator = Navigator.of(context, rootNavigator: true);
+      final route = DialogRoute<void>(
+        context: context,
+        themes: InheritedTheme.capture(from: context, to: navigator.context),
+        builder: (_) => Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          constraints: const BoxConstraints(maxWidth: 480, maxHeight: 260),
+          child: SizedBox(
+            width: 480,
+            height: 260,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        action.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Close input',
-                    onPressed: _dismissInput,
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              Expanded(child: presentation),
-            ],
+                    IconButton(
+                      tooltip: 'Close input',
+                      onPressed: _dismissInput,
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                Expanded(child: presentation),
+              ],
+            ),
           ),
         ),
-      ),
-    );
-    _inputAction = action;
-    _inputRoute = route;
-    unawaited(
-      navigator.push(route).whenComplete(() {
-        if (identical(_inputRoute, route)) {
-          _inputRoute = null;
-          _inputAction = null;
-        }
-      }),
-    );
+      );
+      _inputAction = action;
+      _inputRoute = route;
+      unawaited(
+        navigator.push(route).whenComplete(() {
+          if (identical(_inputRoute, route)) {
+            _inputRoute = null;
+            _inputAction = null;
+            _changed();
+          }
+        }),
+      );
+      return true;
+    } finally {
+      _openingInput = false;
+      _changed();
+    }
   }
 
   void _dismissInput() {
     final route = _inputRoute;
     if (route == null) return;
-    _inputRoute = null;
-    _inputAction = null;
     // Departure may happen during build or teardown. Remove only the captured
     // route after that frame, never whichever route happens to be current later.
     void remove() {
@@ -225,7 +293,9 @@ class _MainContentHostState extends State<MainContentHost> {
                           for (final action in actions)
                             TextButton(
                               key: ObjectKey(action),
-                              onPressed: () => _openInput(action),
+                              onPressed: _canOpenInput(action)
+                                  ? () => _openInput(action)
+                                  : null,
                               child: Text(action.label),
                             ),
                         ],
@@ -292,7 +362,24 @@ class _MainContentHostState extends State<MainContentHost> {
   }
 
   @override
+  void deactivate() {
+    _attached = false;
+    widget.actionCoordinator?._unmount(this);
+    _dismissInput();
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _attached = true;
+    widget.actionCoordinator?._mount(this);
+  }
+
+  @override
   void dispose() {
+    _attached = false;
+    widget.actionCoordinator?._unmount(this);
     _controller.dispose();
     _dismissInput();
     _scroll.dispose();
