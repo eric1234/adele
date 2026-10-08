@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -11,6 +12,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../core/product_lifecycle.dart';
 import '../core/resource_cleanup.dart';
 import '../ui/main_content/main_content_host.dart';
+import 'capability_access_bridge.dart';
 import 'code_editor_bridge.dart';
 import 'contribution_bridge.dart';
 import 'environment_access_bridge.dart';
@@ -81,6 +83,7 @@ final class PreparedMainContentHost {
     required PreparedMainContentPresentation descriptor,
     required bool Function() isActive,
     PreparedSessionServices? services,
+    CapabilityRegistry? capabilityRegistry,
   }) {
     final retained =
         descriptor.retainedData ||
@@ -236,6 +239,11 @@ final class PreparedMainContentHost {
                     final acquired = <PreparedFrontendBridge>[
                       collection,
                       lifecycle,
+                      CapabilityAccessBridge(
+                        registry: capabilityRegistry,
+                        capabilities: descriptor.capabilities,
+                        isActive: () => collection.isActive,
+                      ),
                       EnvironmentAccessBridge(isActive: paneActive),
                       if (retained != null)
                         _dataBridge(retained, attachment, isActive: paneActive),

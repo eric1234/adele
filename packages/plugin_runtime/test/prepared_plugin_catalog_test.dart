@@ -217,8 +217,10 @@ void main() {
       expect(session.initialize, _session['initialize']);
       expect(session.sessionExecution, isFalse);
       expect(session.backendServices, isEmpty);
+      expect(session.capabilities, isEmpty);
       expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
       expect(() => session.backendServices.clear(), throwsUnsupportedError);
+      expect(() => session.capabilities.clear(), throwsUnsupportedError);
       expect(session.actions, isEmpty);
       expect(session.operations, isEmpty);
       expect(session.closeOperation, isNull);
@@ -417,6 +419,55 @@ void main() {
     'close': 'closeSource',
     'exit': 'closeSources',
   };
+  const mainContentCapability = {'id': 'org.example.read', 'majorVersion': 1};
+
+  for (final capabilities in [
+    <Map<String, Object?>>[],
+    [
+      mainContentCapability,
+      {'id': 'org.example.read', 'majorVersion': 2},
+      {'id': 'org.example.write', 'majorVersion': 1},
+    ],
+  ]) {
+    test(
+      'Main Content accepts ${capabilities.length} Capability keys without backend or providers',
+      () async {
+        await install(
+          'capability-consumer',
+          _manifest(
+            components: {
+              'frontend': _frontend(
+                presentations: [
+                  {..._mainContent, 'capabilities': capabilities},
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        final descriptor =
+            installation.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(descriptor.capabilities, [
+          for (final capability in capabilities)
+            CapabilityKey(
+              id: CapabilityId(capability['id']! as String),
+              majorVersion: capability['majorVersion']! as int,
+            ),
+        ]);
+        expect(() => descriptor.capabilities.clear(), throwsUnsupportedError);
+        expect(descriptor.sessionExecution, isFalse);
+        expect(descriptor.backendServices, isEmpty);
+        expect(
+          descriptor.strategyAffinity,
+          PreparedStrategyAffinity.independent,
+        );
+      },
+    );
+  }
 
   test(
     'Main Content decodes explicit actions, operations and permissions',
@@ -469,6 +520,7 @@ void main() {
   );
 
   PreparedMainContentPresentation mainContent({
+    Iterable<CapabilityKey> capabilities = const [],
     List<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
     String? closeOperation,
@@ -483,6 +535,7 @@ void main() {
     library: 'package:example_frontend/main_content.dart',
     initialize: 'initializePanes',
     entrypoint: 'buildPane',
+    capabilities: capabilities,
     actions: actions,
     operations: operations,
     closeOperation: closeOperation,
@@ -492,6 +545,38 @@ void main() {
     nativeCodeEditor: nativeCodeEditor,
     environmentTextFiles: environmentTextFiles,
   );
+
+  test('Main Content constructor snapshots distinct Capability keys', () {
+    final empty = mainContent();
+    expect(empty.capabilities, isEmpty);
+    expect(() => empty.capabilities.clear(), throwsUnsupportedError);
+    final keys = [
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 2),
+      CapabilityKey(id: CapabilityId('org.example.write'), majorVersion: 1),
+    ];
+    final descriptor = mainContent(capabilities: keys);
+    expect(descriptor.capabilities, keys);
+    keys.clear();
+    expect(descriptor.capabilities, hasLength(3));
+    expect(() => descriptor.capabilities.clear(), throwsUnsupportedError);
+    expect(
+      () => descriptor.capabilities[0] = descriptor.capabilities[1],
+      throwsUnsupportedError,
+    );
+    expect(descriptor.sessionExecution, isFalse);
+    expect(descriptor.backendServices, isEmpty);
+    expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
+    expect(
+      () => mainContent(
+        capabilities: [
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+        ],
+      ),
+      throwsFormatException,
+    );
+  });
 
   test(
     'Main Content snapshots actions and operations without implicit grants',
@@ -626,6 +711,51 @@ void main() {
     'environment access without operations': {
       ..._mainContent,
       'environmentTextFiles': true,
+    },
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'invalid capabilities ${jsonEncode(value)}': {
+        ..._mainContent,
+        'capabilities': value,
+      },
+    for (final value in <Object?>[
+      null,
+      false,
+      '',
+      1,
+      [],
+      {},
+      for (final field in mainContentCapability.keys)
+        {...mainContentCapability}..remove(field),
+      for (final id in <Object?>[
+        null,
+        1,
+        false,
+        [],
+        {},
+        '',
+        '  ',
+        'read',
+        'Org.example.read',
+        'org.example.read ',
+        'org.example..read',
+        'org.example.r\u00e9ad',
+      ])
+        {...mainContentCapability, 'id': id},
+      for (final version in <Object?>[null, false, '1', 1.0, [], {}, 0, -1])
+        {...mainContentCapability, 'majorVersion': version},
+      for (final field in ['unknown', 'providerId', 'serviceId'])
+        {...mainContentCapability, field: 'org.example.provider'},
+    ])
+      'invalid capability ${jsonEncode(value)}': {
+        ..._mainContent,
+        'capabilities': [value],
+      },
+    'duplicate Capability keys': {
+      ..._mainContent,
+      'capabilities': [
+        mainContentCapability,
+        {...mainContentCapability},
+      ],
     },
     for (final value in <Object?>[null, false, '', 1, {}])
       'invalid actions ${jsonEncode(value)}': {
@@ -1129,6 +1259,33 @@ void main() {
     'library': 'package:example/browser.dart',
     'entrypoint': 'createTaskBrowser',
   };
+
+  for (final descriptor in [
+    _console,
+    browser,
+    _toolActivity,
+    _modelNativeActivity,
+  ]) {
+    test('${descriptor['role']} rejects Capability grants', () async {
+      await install(
+        'invalid-role-grant',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': _frontend(
+              presentations: [
+                {...descriptor, 'capabilities': <Object?>[]},
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
 
   test('Task Browser is frontend-only and has no backend metadata', () async {
     await install(

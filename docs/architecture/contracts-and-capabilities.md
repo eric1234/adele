@@ -225,6 +225,57 @@ Separately configured backend infrastructure access is not enlarged by implement
 a Command. Exact contract and metadata shape belong to
 [core extensions](../../packages/core_extensions/README.md#remote-commands).
 
+## Prepared frontend Capability consumption
+
+An independently prepared frontend can discover and resolve callable Capabilities
+through the public `adele_ui/capability_bridge.dart` facade. Prepared Main Content
+panes opt in with data-only Capability ID/major declarations; the default grants
+none. Initializers, input actions, finite operations, and other presentation roles
+do not receive this access. Missing providers do not prevent frontend preparation
+or activation. This is callable Capability consumption, not participation in
+arbitrary plugin-owned Extension Points or a merger of the two registries.
+
+Discovery returns current provider metadata, separately from resolution. Resolution
+delegates to `CapabilityRegistry`, including its default order and explicit-provider
+failure behavior, then checks the consumer's expected generated service identity
+and supported request-channel endpoint. An incompatible selected provider fails;
+the bridge does not search for a substitute decoder or lower-ranked provider.
+The plugin-owned generated client receives an ordinary `AdeleStreamChannel` facade.
+The app neither imports the semantic contract nor adapts its methods or DTOs.
+
+The host retains the exact provider registration and its already-captured backend
+connection, configuration context, and service. A presentation-local opaque handle
+indexes that access, not a semantic ID or another global registry. Subsequent calls
+never resolve again. Handles cannot cross presentations, select configuration
+contexts, or name private services; request data cannot override the route.
+Explicit release and presentation retirement dispose handle bookkeeping and
+observations. Retained handles have a fixed per-presentation bound.
+
+Every new call validates the captured registration and presentation. Registration
+retirement alone does not reject an already-admitted unary completion: the captured
+transport may finish while that same presentation remains live. Backend termination
+may instead fail pending work. Streams open lazily and preserve existing transport
+pause/resume/cancellation; provider retirement cancels observations, including idle
+or paused ones, and fences queued items. Handle release, frontend retirement, pane
+departure, or presentation replacement fences late publication and new admissions,
+without stopping independently owned backend work. Reusing semantic IDs never
+revives old access; only a fresh resolution can see a replacement.
+
+This route shares structured-data transport and safe evaluator settlement with
+owning-backend access, not its provider-selection or ownership policy. Interpreted
+unary settlement preserves generated DTOs or reports failure without reconstructing
+native exceptions or disclosing diagnostics. Stream failures use safe generic text.
+The supported generated eval projection remains bounded; there is no schema
+negotiation, runtime reflection, or arbitrary Dart object transport.
+
+Capability discovery and invocation supply no contextual Session/Environment,
+process, storage, approval, or execution authority. No empty host-invocation token
+is manufactured. Contextual selection, provider provenance, delegated host grants,
+and backend-to-backend consumption remain separate future work. See the
+[public bridge API](../../packages/ui/README.md#interpreted-bridges),
+[descriptor schema](../../packages/plugin_runtime/README.md#prepared-catalog), and
+[application hosting](../../app/README.md#prepared-capability-access).
+
 ## Own-backend frontend requests
 
 Prepared frontends can use generated unary and server-streaming clients to call

@@ -72,16 +72,23 @@ second contract source or hand-written application adapter.
 
 `evalContractSupportSource` supplies the minimal interpreted request/stream-channel
 and protocol-error types. A frontend combines its generated client with `adele_ui`'s
-owning-backend channel. Generic native hosting still enforces the prepared role's
-service allowlist, bounded structured data, exact backend generation, and
-presentation liveness. Native backend dispatchers continue using the normal
-generated part file. Channel failures remain failed Futures across the bounded
+owning-backend channel or exact-bound Capability channel. Generic native hosting
+enforces the prepared role's explicit access declarations, bounded structured data,
+exact backend generation, and presentation liveness. Native backend dispatchers
+use the normal generated part file. Channel failures remain failed Futures across the bounded
 eval client path; native generated clients retain declared-failure reconstruction.
-Generated stream methods use the same strict DTO decoder for each item. The
-owning-backend bridge supplies the pin-local generic stream callback adapter;
+Invoke generated methods through statically typed client variables under the pin;
+dynamic client dispatch can misbox scalar arguments. Stream subscriptions instead
+use the documented `dynamic` workaround in the
+[UI bridge API](../ui/README.md#interpreted-bridges).
+Generated stream methods use the same strict DTO decoder for each item. Shared
+backend invocation plumbing supplies the pin-local generic stream callback adapter;
 neither generator nor app imports a plugin-specific native client. The prepared
 EVC fixture in `app/test/owning_backend_stream_bridge_test.dart` exercises actual
 generation, compilation, loading, data/error/done, and subscription control.
+`app/test/prepared_capability_integration_test.dart` adds independent prepared
+frontend-only EVC consumption of ready-advertised AOT providers from the same
+authored contract's native and eval projections, without a native semantic adapter.
 
 The generated part owns stable identifiers, codecs, typed clients, and backend
 dispatcher interfaces/implementations. Supported values are strings, booleans,

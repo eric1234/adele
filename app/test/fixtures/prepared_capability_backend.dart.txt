@@ -1,0 +1,189 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:isolate';
+
+import 'package:adele_contract/adele_contract.dart';
+
+import 'prepared_capability_contract.dart';
+
+const _bound = Duration(seconds: 10);
+
+Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
+  final bootstrap = bootstrapMessage! as Map;
+  final responses = bootstrap['responsePort'] as SendPort;
+  final options = jsonDecode(arguments.single) as Map;
+  final probe = _Probe(
+    options['identity'] as String,
+    options['context'] as String,
+  );
+  final exposure = AdeleCapabilityExposure(
+    providerId: options['providerId'] as String,
+    capabilityId: 'test.capability.read',
+    capabilityMajorVersion: 1,
+    serviceId: capabilityProbeServiceId,
+    displayName: 'Provider ${probe.identity}',
+    configurationContext: probe.configuration,
+    rank: options['rank'] as int,
+  );
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      probe.configuration: {
+        capabilityProbeServiceId: CapabilityProbeServiceDispatcher(
+          probe,
+          concurrent: true,
+        ),
+        // A routed service is not a public Capability advertisement.
+        'test.capability.private': CapabilityProbeServiceDispatcher(probe),
+      },
+    },
+  );
+  final commands = ReceivePort();
+  (bootstrap['bootstrapPort'] as SendPort).send({
+    'kind': 'ready',
+    'commandPort': commands.sendPort,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    'capabilityExposures': [exposure.toMap()],
+  });
+  try {
+    await for (final Object? message in commands) {
+      if (message is! Map) continue;
+      if (message['kind'] == 'request' && message['method'] == 'shutdown') {
+        probe.release();
+        responses.send({
+          'kind': 'response',
+          'requestId': message['requestId'],
+          'ok': true,
+          'payload': {'stopping': true},
+        });
+        break;
+      }
+      // Native test synchronization only. The EVC never imports or calls this.
+      if (message['kind'] == 'request' && message['serviceId'] == 'probe') {
+        if (message['method'] == 'terminate') Isolate.exit();
+        unawaited(probe.control(message, responses));
+        continue;
+      }
+      if (message['kind'] == 'request' || message['kind'] == 'streamOpen') {
+        if (probe.requests.length >= 64) throw StateError('Request limit.');
+        probe.requests.add({
+          'configurationContext': message['configurationContext'],
+          'serviceId': message['serviceId'],
+          'method': message['method'],
+          'payload': message['payload'],
+          'hostInvocationContext': message['hostInvocationContext'],
+        });
+      }
+      unawaited(router.handle(message, responses.send));
+    }
+  } finally {
+    probe.release();
+    commands.close();
+    await router.close();
+  }
+}
+
+final class _Probe implements CapabilityProbeService {
+  _Probe(this.identity, this.configuration);
+
+  final String identity;
+  final String configuration;
+  final requests = <Map<String, Object?>>[];
+  final counts = <String, int>{};
+  final gates = <String, Map<int, Completer<void>>>{};
+  final held = Completer<void>();
+  StreamController<ProbeValue>? events;
+
+  void mark(String key) {
+    final count = counts.update(key, (value) => value + 1, ifAbsent: () => 1);
+    gates[key]?.remove(count)?.complete();
+  }
+
+  Future<void> wait(String key, int count) async {
+    if (count < 1 || count > 64) throw ArgumentError.value(count);
+    if ((counts[key] ?? 0) >= count) return;
+    await ((gates[key] ??= {})[count] ??= Completer<void>()).future.timeout(
+      _bound,
+    );
+  }
+
+  void release() {
+    if (!held.isCompleted) held.complete();
+  }
+
+  ProbeValue value(int sequence, String text) => ProbeValue(
+    provider: identity,
+    configuration: configuration,
+    sequence: sequence,
+    text: text,
+  );
+
+  @override
+  Future<ProbeValue> read(String scope) async {
+    mark('read:$scope');
+    if (scope == 'held') await held.future.timeout(_bound);
+    if (scope == 'fail') throw StateError('SECRET provider failure');
+    return value(0, scope);
+  }
+
+  @override
+  Stream<ProbeValue> watch(String scope) {
+    late StreamController<ProbeValue> controller;
+    controller = StreamController<ProbeValue>(
+      onListen: () {
+        mark('watch:$scope');
+        if (scope == 'bounded') {
+          controller.add(value(1, 'first'));
+          controller.add(value(2, 'last'));
+          unawaited(controller.close());
+        }
+        if (scope == 'fail') {
+          controller.addError(StateError('SECRET stream failure'));
+          unawaited(controller.close());
+        }
+      },
+      onCancel: () => mark('cancel:$scope'),
+    );
+    events = controller;
+    return controller.stream;
+  }
+
+  Future<void> control(
+    Map<Object?, Object?> request,
+    SendPort responses,
+  ) async {
+    try {
+      final payload = request['payload'] as Map;
+      final Object? result = switch (request['method']) {
+        'snapshot' => {'requests': requests, 'counts': counts},
+        'wait' => await wait(
+          payload['key'] as String,
+          payload['count'] as int,
+        ).then((_) => true),
+        'release' => (() {
+          release();
+          return true;
+        })(),
+        'emit' => (() {
+          events!.add(
+            value(payload['sequence'] as int, payload['text'] as String),
+          );
+          return true;
+        })(),
+        _ => throw StateError('Unknown probe control.'),
+      };
+      responses.send({
+        'kind': 'response',
+        'requestId': request['requestId'],
+        'ok': true,
+        'payload': jsonDecode(jsonEncode(result)),
+      });
+    } on Object catch (error) {
+      responses.send({
+        'kind': 'response',
+        'requestId': request['requestId'],
+        'ok': false,
+        'error': {'code': 'probe_control_failed', 'message': '$error'},
+      });
+    }
+  }
+}

@@ -216,6 +216,26 @@ native implementations supply their behavior; calling a stub natively throws
   originating operations still enforce their captured lifetime. Rich Inspection
   and read-only console hosting do not resolve a strategy or acquire Session
   execution access merely to use an allowlisted backend service.
+- `capability_bridge.dart` supplies generic callable Capability consumption to
+  opted-in prepared Main Content panes. `discoverCapabilityProviders(id, major)`
+  returns copied `{providerId, pluginId, displayName, serviceId}` metadata in
+  registry order: an empty list means no provider, null means unavailable or denied
+  access. `resolveCapabilityProvider(id, major, serviceId, providerId)` accepts the
+  generated contract's expected service ID and a nullable explicit provider ID;
+  it returns an opaque handle or null, never a substitute provider. A
+  `CapabilityRequestChannel(handle)` implements `AdeleStreamChannel` for ordinary
+  generated clients. `releaseCapabilityProvider(handle)` releases its access and
+  observations, not backend-owned work. Handles are private to one presentation,
+  with at most 64 retained at once; consumers must release unused handles, including
+  stale ones. `settleCapabilityOperation(Future<dynamic>)` has the same safe
+  `[true, interpretedValue]` / `[false, null]` result as owning-backend settlement.
+  Generated eval DTO/stream restrictions and subscription callback limitations
+  above apply unchanged. New requests through stale handles fail; admitted unary
+  work may complete after registration-only retirement, while provider retirement
+  cancels stream observations. Frontend/presentation retirement fences both.
+  This supplies neither arbitrary backend services nor contextual host authority;
+  see [Capability consumption](../../docs/architecture/contracts-and-capabilities.md#prepared-frontend-capability-consumption)
+  for the exact cross-system lifetime and authority rules.
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.
