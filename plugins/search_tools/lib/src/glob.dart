@@ -29,6 +29,8 @@ final class GlobExecutable implements ToolExecutable {
           'Discover files, directories, and other entries using package:glob pathname syntax. '
           'Required pattern is Environment-relative, case-sensitive, with POSIX / separators. '
           '* lists root entries; xyz/* lists immediate children; ** recurses. '
+          'Pinned **/ requires a directory level: **/*.dart omits root-level Dart files; '
+          'use {*.dart,**/*.dart} for root and nested files. '
           'Stock exclusions: .git, .dart_tool, build, node_modules (directory names, case-insensitive). '
           'At most 100 matches and 10000 visited entries. Check truncation and incompleteness; '
           'results do not include file contents.',
@@ -128,13 +130,16 @@ final class GlobExecutable implements ToolExecutable {
       final plan = _GlobTraversal(pattern);
       if (!plan.root.split('/').any(SearchExecutable._isExcludedDirectory)) {
         final listing = await _fileSystem.readDirectory('');
+        state.readOccurred = true;
         await _walk(listing, state, plan);
       }
       state.matches.sort((a, b) => a.relativePath.compareTo(b.relativePath));
       yield ToolExecutionTerminal(
         ToolOutcome(
           disposition: ToolOutcomeDisposition.success,
-          effectCertainty: EffectCertainty.knownOccurred,
+          effectCertainty: state.readOccurred
+              ? EffectCertainty.knownOccurred
+              : EffectCertainty.knownNotOccurred,
           modelContent: [
             'Glob results (stock directory exclusions: .git, .dart_tool, build, node_modules):',
             if (state.matches.isEmpty) 'No matches.',
@@ -160,7 +165,15 @@ final class GlobExecutable implements ToolExecutable {
               : error is EnvironmentFailure
               ? ToolFailureKind.domain
               : ToolFailureKind.infrastructure,
-          effectCertainty: EffectCertainty.uncertain,
+          effectCertainty: switch (error) {
+            _SessionAuthorityViolation() => EffectCertainty.knownNotOccurred,
+            AuthorizedEnvironmentBindingStale() ||
+            AuthorizedEnvironmentBindingUnavailable() =>
+              state.readOccurred
+                  ? EffectCertainty.knownOccurred
+                  : EffectCertainty.knownNotOccurred,
+            _ => EffectCertainty.uncertain,
+          },
           modelContent:
               'Environment glob failed: ${error is EnvironmentFailure
                   ? error.message
@@ -234,11 +247,9 @@ final class GlobExecutable implements ToolExecutable {
           continue;
         }
         try {
-          await _walk(
-            await _fileSystem.readDirectory(entry.relativePath),
-            state,
-            plan,
-          );
+          final nested = await _fileSystem.readDirectory(entry.relativePath);
+          state.readOccurred = true;
+          await _walk(nested, state, plan);
         } on EnvironmentFailure {
           if (requiredPrefix) rethrow;
           state.failedDirectoryReads++;
@@ -277,6 +288,7 @@ final class _GlobState {
   final matches = <EnvironmentDirectoryEntry>[];
   int entriesVisited = 0;
   int failedDirectoryReads = 0;
+  bool readOccurred = false;
   String? stopReason;
   int? stopLimit;
   void stop(String reason, int limit) {

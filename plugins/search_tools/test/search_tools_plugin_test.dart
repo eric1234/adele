@@ -1128,6 +1128,51 @@ void _globTests() {
     for (final match in outcome.hostData['matches']! as List)
       (match as Map)['relativePath'] as String,
   ];
+  test('Glob discloses and preserves pinned **/ zero-depth behavior', () async {
+    final fs = _FileSystem(
+      directories: {
+        '': [_file('foo.dart'), _directory('src', 'src')],
+        'src': [_file('src/nested.dart')],
+      },
+    );
+    final description =
+        const GlobExecutable.unbound().registration.modelDefinition.description;
+    expect(description, contains('** recurses'));
+    expect(description, contains('**/ requires a directory level'));
+    expect(description, contains('**/*.dart omits root-level Dart files'));
+    expect(description, contains('{*.dart,**/*.dart}'));
+    expect(paths(await run(fs, '**/*.dart')), ['src/nested.dart']);
+    expect(paths(await run(fs, '{*.dart,**/*.dart}')), [
+      'foo.dart',
+      'src/nested.dart',
+    ]);
+    expect(fs.fileReads, isEmpty);
+  });
+  test(
+    'Glob success certainty distinguishes skipped and completed reads',
+    () async {
+      final fs = _FileSystem();
+      for (final pattern in [
+        'build/**',
+        '.GiT/**',
+        '.dart_tool/*',
+        'node_modules/*',
+        'src/BUILD/**',
+      ]) {
+        final result = await run(fs, pattern);
+        expect(result.disposition, ToolOutcomeDisposition.success);
+        expect(paths(result), isEmpty);
+        expect(result.effectCertainty, EffectCertainty.knownNotOccurred);
+      }
+      expect(fs.directoryReads, isEmpty);
+      final result = await run(fs, '*');
+      expect(result.disposition, ToolOutcomeDisposition.success);
+      expect(paths(result), isEmpty);
+      expect(result.effectCertainty, EffectCertainty.knownOccurred);
+      expect(fs.directoryReads, ['']);
+      expect(fs.fileReads, isEmpty);
+    },
+  );
   test(
     'Glob validates before reads, with no extra arguments or malformed patterns',
     () {
@@ -1374,6 +1419,7 @@ void _globTests() {
       );
       final partial = await run(fs, '**');
       expect(partial.disposition, ToolOutcomeDisposition.success);
+      expect(partial.effectCertainty, EffectCertainty.knownOccurred);
       expect(partial.hostData, containsPair('incomplete', true));
       expect(partial.hostData, containsPair('failedDirectoryReads', 1));
       expect(partial.modelContent, contains('could not be inspected'));
@@ -1381,6 +1427,7 @@ void _globTests() {
         fs.directoryReads.clear();
         final failed = await run(fs, pattern);
         expect(failed.failureKind, ToolFailureKind.domain);
+        expect(failed.effectCertainty, EffectCertainty.uncertain);
         expect(fs.directoryReads, contains('bad'));
         expect(failed.hostData['failedDirectoryReads'], 0);
       }
@@ -1389,6 +1436,7 @@ void _globTests() {
         'bad/*',
       );
       expect(rootFailure.failureKind, ToolFailureKind.domain);
+      expect(rootFailure.effectCertainty, EffectCertainty.uncertain);
     },
   );
   test(
@@ -1401,23 +1449,67 @@ void _globTests() {
         ToolEffect.sourceRead,
       });
       expect(fs.directoryReads, isEmpty);
-      expect(
-        (await run(fs, '*', session: SessionId('other'))).failureKind,
-        ToolFailureKind.infrastructure,
-      );
+      final wrongSession = await run(fs, '*', session: SessionId('other'));
+      expect(wrongSession.failureKind, ToolFailureKind.infrastructure);
+      expect(wrongSession.effectCertainty, EffectCertainty.knownNotOccurred);
       fs.stale = true;
       expect(tool.validateBinding, throwsA(isA<StaleToolBindingException>()));
-      expect((await run(fs, '*')).failureKind, ToolFailureKind.staleBinding);
+      final stale = await run(fs, '*');
+      expect(stale.failureKind, ToolFailureKind.staleBinding);
+      expect(stale.effectCertainty, EffectCertainty.knownNotOccurred);
       fs.stale = false;
       fs.available = false;
       expect(
         tool.validateBinding,
         throwsA(isA<ToolBindingUnavailableException>()),
       );
-      expect((await run(fs, '*')).failureKind, ToolFailureKind.infrastructure);
+      final unavailable = await run(fs, '*');
+      expect(unavailable.failureKind, ToolFailureKind.infrastructure);
+      expect(unavailable.effectCertainty, EffectCertainty.knownNotOccurred);
       expect(fs.directoryReads, isEmpty);
+      expect(fs.fileReads, isEmpty);
     },
   );
+  for (final (failure, kind, readDependent) in [
+    (
+      const AuthorizedEnvironmentBindingStale('stale generation'),
+      ToolFailureKind.staleBinding,
+      true,
+    ),
+    (
+      const AuthorizedEnvironmentBindingUnavailable('unavailable'),
+      ToolFailureKind.infrastructure,
+      true,
+    ),
+    (StateError('read failed'), ToolFailureKind.infrastructure, false),
+  ]) {
+    for (final failedPath in ['', 'nested']) {
+      test(
+        'Glob ${failure.runtimeType} certainty after failing read "$failedPath"',
+        () async {
+          final fs = _FileSystem(
+            directories: {
+              '': [_directory('nested', 'nested')],
+            },
+            directoryErrors: {failedPath: failure},
+          );
+          final result = await run(fs, '**');
+          expect(result.disposition, ToolOutcomeDisposition.failure);
+          expect(result.failureKind, kind);
+          expect(
+            result.effectCertainty,
+            !readDependent
+                ? EffectCertainty.uncertain
+                : failedPath.isEmpty
+                ? EffectCertainty.knownNotOccurred
+                : EffectCertainty.knownOccurred,
+          );
+          expect(fs.directoryReads, ['', if (failedPath.isNotEmpty) 'nested']);
+          expect(fs.fileReads, isEmpty);
+        },
+      );
+    }
+  }
 }
 
 const EnvironmentFailure _environmentFailure = EnvironmentFailure(
