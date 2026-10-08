@@ -1424,10 +1424,20 @@ void main() {
       _manifest(
         components: {
           'frontend': {
-            ..._frontend(presentations: [_session, _console]),
+            ..._frontend(
+              presentations: [
+                _session,
+                _console,
+                {
+                  ..._mainContent,
+                  'actions': [_mainContentAction],
+                },
+              ],
+            ),
             'extensions': [
               _command,
               _consoleActionCommand,
+              _mainContentActionCommand,
               _projectSelector,
               _command,
             ],
@@ -1442,10 +1452,18 @@ void main() {
       frontend.presentations.first,
       isA<PreparedMainContentPresentation>(),
     );
-    expect(frontend.presentations.last, isA<PreparedConsolePresentation>());
+    expect(frontend.presentations[1], isA<PreparedConsolePresentation>());
+    expect(
+      (frontend.presentations.last as PreparedMainContentPresentation)
+          .actions
+          .single
+          .id,
+      _mainContentActionCommand['actionId'],
+    );
     expect(frontend.extensions.map((extension) => extension.toJson()), [
       _command,
       _consoleActionCommand,
+      _mainContentActionCommand,
       _projectSelector,
       _command,
     ]);
@@ -1562,6 +1580,253 @@ void main() {
         if (entry.key.startsWith('invalid actionId')) {
           expect(issue.message, contains('frontend.extensions[1].actionId'));
         }
+      },
+    );
+  }
+
+  PreparedMainContentActionCommandExtension mainContentActionCommand({
+    String actionId = 'open',
+  }) => PreparedMainContentActionCommandExtension(
+    extensionId: ExtensionId(_mainContentActionCommand['extensionId']!),
+    commandId: CommandId(_mainContentActionCommand['commandId']!),
+    mainContentExtensionId: ExtensionId(
+      _mainContentActionCommand['mainContentExtensionId']!,
+    ),
+    actionId: actionId,
+  );
+
+  test(
+    'round-trips Main Content action Commands without resolving targets',
+    () async {
+      final PreparedFrontendExtension descriptor = mainContentActionCommand();
+      expect(descriptor.toJson(), _mainContentActionCommand);
+      final directory = await install(
+        'main-content-command',
+        _manifest(
+          components: {
+            'frontend': {
+              ..._frontend(),
+              'extensions': [descriptor],
+            },
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      final frontend = installation.frontend!;
+      expect(frontend.artifactUri, directory.uri.resolve('frontend.evc'));
+      expect(frontend.presentations, isEmpty);
+      final decoded =
+          frontend.extensions.single
+              as PreparedMainContentActionCommandExtension;
+      expect(
+        decoded.extensionId,
+        ExtensionId(_mainContentActionCommand['extensionId']!),
+      );
+      expect(
+        decoded.commandId,
+        CommandId(_mainContentActionCommand['commandId']!),
+      );
+      expect(
+        decoded.mainContentExtensionId,
+        ExtensionId('org.example.main-content'),
+      );
+      expect(decoded.actionId, 'open');
+      expect(decoded.toJson(), _mainContentActionCommand);
+      expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'Main Content action Command IDs retain owning action semantics',
+    () async {
+      final ids = [
+        'open',
+        ' open source ',
+        '_open/source:1',
+        'open\nsource',
+        '\u00e9',
+        '\u0000',
+        'a' * 129,
+      ];
+      final descriptors = [
+        for (final id in ids) mainContentActionCommand(actionId: id),
+      ];
+      for (final id in ids) {
+        expect(
+          PreparedMainContentAction(
+            id: id,
+            label: 'Open',
+            entrypoint: 'openInput',
+          ).id,
+          id,
+        );
+      }
+      for (final id in ['', ' ', '\t\n', '\u00a0']) {
+        expect(
+          () => mainContentActionCommand(actionId: id),
+          throwsFormatException,
+        );
+        expect(
+          () => PreparedMainContentAction(
+            id: id,
+            label: 'Open',
+            entrypoint: 'openInput',
+          ),
+          throwsFormatException,
+        );
+      }
+      await install(
+        'main-content-action-ids',
+        _manifest(
+          components: {
+            'frontend': {..._frontend(), 'extensions': descriptors},
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(
+        catalog.installations.single.frontend!.extensions
+            .cast<PreparedMainContentActionCommandExtension>()
+            .map((descriptor) => descriptor.actionId),
+        ids,
+      );
+    },
+  );
+
+  test(
+    'Main Content action Command target semantics remain activation-owned',
+    () async {
+      final target = {
+        ..._mainContent,
+        'actions': [_mainContentAction],
+      };
+      final cases = [
+        [
+          {...target, 'extensionId': 'org.example.other-main-content'},
+        ],
+        [_mainContent],
+        [target, target],
+        [
+          {..._console, 'extensionId': _mainContent['extensionId']},
+        ],
+      ];
+      for (final (index, presentations) in cases.indexed) {
+        await install(
+          'unresolved-$index',
+          _manifest(
+            id: 'org.example.unresolved-$index',
+            components: {
+              'frontend': {
+                ..._frontend(presentations: presentations),
+                'extensions': [_mainContentActionCommand],
+              },
+            },
+          ),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(cases.length));
+      expect(
+        catalog.installations.map((item) => item.frontend!.extensions.single),
+        everyElement(isA<PreparedMainContentActionCommandExtension>()),
+      );
+    },
+  );
+
+  final invalidMainContentActionCommands = <String, Object?>{
+    'case-sensitive kind': {
+      ..._mainContentActionCommand,
+      'kind': 'MainContentActionCommand',
+    },
+    for (final field in [
+      'unknown',
+      'role',
+      'library',
+      'entrypoint',
+      'initialize',
+      'label',
+      'displayName',
+      'consoleExtensionId',
+      'projectProviderId',
+      'backendServices',
+      'strategyAffinity',
+      'sessionExecution',
+      'retainedData',
+      'nativeCodeEditor',
+      'environmentTextFiles',
+      'operations',
+      'hostAdapter',
+      'configuration',
+      'availability',
+      'arguments',
+      'context',
+      'projectId',
+      'taskId',
+      'sessionId',
+      'environmentId',
+      'environmentKey',
+      'authority',
+      'hostServices',
+      'hostContext',
+      'hostInvocationContext',
+      'hostInfrastructureContext',
+    ])
+      'unsupported $field': {
+        ..._mainContentActionCommand,
+        field: 'unsupported',
+      },
+    for (final field in ['extensionId', 'commandId', 'mainContentExtensionId'])
+      for (final id in [
+        'main-content',
+        'not namespaced',
+        'org.Example.main-content',
+        'org.example..main-content',
+        'org.example.main-content-',
+        'org.example.-main-content',
+        'org.example_main-content',
+        'org.ex\u00e4mple.main-content',
+        ' org.example.main-content',
+        'org.example.main-content ',
+        'org.example.main-content\n',
+      ])
+        'invalid $field ${jsonEncode(id)}': {
+          ..._mainContentActionCommand,
+          field: id,
+        },
+  };
+  for (final entry in invalidMainContentActionCommands.entries) {
+    test(
+      'Main Content action Command ${entry.key} invalidates only frontend',
+      () async {
+        final directory = await install(
+          'main-content-commands',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': {
+                ..._frontend(presentations: [_mainContent]),
+                'extensions': [_command, entry.value, _projectSelector],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final installation = catalog.installations.single;
+        expect(installation.frontend, isNull);
+        expect(
+          installation.backendArtifactUri,
+          directory.uri.resolve('backend.aot'),
+        );
+        final issue = catalog.issues.single;
+        expect(issue.component, PreparedPluginComponent.frontend);
+        expect(issue.pluginId, installation.metadata.id);
+        expect(issue.installationDirectory.uri, directory.uri);
+        expect(issue.message, isNotEmpty);
       },
     );
   }
@@ -1912,6 +2177,7 @@ void main() {
     _projectSelector,
     _command,
     _consoleActionCommand,
+    _mainContentActionCommand,
   ]) {
     final list = descriptor.containsKey('kind')
         ? 'extensions'
@@ -1986,6 +2252,12 @@ void main() {
     'console action command presentation role': {
       ..._consoleActionCommand,
       'role': 'consoleActionCommand',
+    }..remove('kind'),
+    'main content action command extension in presentations':
+        _mainContentActionCommand,
+    'main content action command presentation role': {
+      ..._mainContentActionCommand,
+      'role': 'mainContentActionCommand',
     }..remove('kind'),
     'command presentation role': {..._command, 'role': 'command'}
       ..remove('kind'),
@@ -2770,6 +3042,12 @@ const _mainContent = <String, Object?>{
   'entrypoint': 'buildPane',
 };
 
+const _mainContentAction = {
+  'id': 'open',
+  'label': 'Open',
+  'entrypoint': 'openInput',
+};
+
 const _console = {
   'role': 'console',
   'extensionId': 'org.example.console',
@@ -2802,6 +3080,14 @@ const _consoleActionCommand = {
   'commandId': 'org.example.new-console',
   'consoleExtensionId': 'org.example.console',
   'actionId': 'new-console',
+};
+
+const _mainContentActionCommand = {
+  'kind': 'mainContentActionCommand',
+  'extensionId': 'org.example.main-content-command-extension',
+  'commandId': 'org.example.open',
+  'mainContentExtensionId': 'org.example.main-content',
+  'actionId': 'open',
 };
 
 const _toolActivity = {

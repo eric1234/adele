@@ -155,6 +155,154 @@ void main() {
   );
 
   test(
+    'exact action lookup never discovers, invokes, or matches foreign actions',
+    () {
+      var attachments = 0;
+      var factories = 0;
+      MainContentAction action() => MainContentAction(
+        id: 'input',
+        label: 'Choose resource',
+        createPresentation: (_) {
+          factories++;
+          return const SizedBox.shrink();
+        },
+      );
+
+      final exact = action();
+      final foreign = action();
+      register('test.owner', (_) => attachments++, actions: [exact]);
+      register('test.foreign', (_) => attachments++, actions: [foreign]);
+      final bindings = extensions.discover(mainContentContributions);
+      final owner = bindings.singleWhere(
+        (item) => item.id.value == 'test.owner',
+      );
+      final other = bindings.singleWhere(
+        (item) => item.id.value == 'test.foreign',
+      );
+      expect(controller.hasSession, isTrue);
+      expect(controller.findAction(owner, exact), isNull);
+      expect(attachments, 0);
+      controller.reconcile();
+      final entry = controller.findAction(owner, exact);
+      expect(entry, isNotNull);
+      expect(controller.findAction(owner, foreign), isNull);
+      expect(controller.findAction(other, exact), isNull);
+      expect(controller.findAction(owner, action()), isNull);
+      final freshWrapper = extensions
+          .discover(mainContentContributions)
+          .singleWhere((item) => item.id == owner.id);
+      expect(controller.findAction(freshWrapper, exact), same(entry));
+      expect(attachments, 2);
+      expect(factories, 0);
+      controller.retainForShutdown();
+      expect(controller.hasSession, isFalse);
+      expect(controller.findAction(owner, exact), isNull);
+      expect(entry!.createPresentation, throwsStateError);
+    },
+  );
+
+  test(
+    'actions wait for successful attachment while pane access remains usable',
+    () async {
+      final ready = Completer<void>();
+      final failed = Completer<void>();
+      late MainContentAccess pendingAccess;
+      var attachments = 0;
+      final action = MainContentAction(
+        id: 'input',
+        label: 'Choose resource',
+        createPresentation: (_) => const SizedBox.shrink(),
+      );
+      register('test.pending', (access) {
+        attachments++;
+        pendingAccess = access;
+        access.open(pane('pending'));
+        return ready.future;
+      }, actions: [action]);
+      register('test.failed', (access) {
+        attachments++;
+        access.open(pane('failed'));
+        return failed.future;
+      }, actions: [action]);
+      final bindings = extensions.discover(mainContentContributions);
+      final owner = bindings.singleWhere(
+        (item) => item.id.value == 'test.pending',
+      );
+      final failing = bindings.singleWhere(
+        (item) => item.id.value == 'test.failed',
+      );
+      controller.reconcile();
+      expect(controller.findAction(owner, action), isNull);
+      expect(controller.findAction(failing, action), isNull);
+      expect(controller.actions.every((entry) => !entry.isActive), isTrue);
+      expect(controller.actions.first.createPresentation, throwsStateError);
+      expect(pendingAccess.isActive, isTrue);
+      pendingAccess.open(pane('while-pending'));
+      expect(controller.entries, hasLength(3));
+      failed.completeError(StateError('fixture attachment failure'));
+      ready.complete();
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.findAction(owner, action), isNotNull);
+      expect(controller.findAction(failing, action), isNull);
+      expect(controller.entries.map((entry) => entry.info.id), [
+        'pending',
+        'while-pending',
+      ]);
+      controller.reconcile();
+      expect(attachments, 2);
+    },
+  );
+
+  test(
+    'exact action follows fresh Session attachment but never replacement binding',
+    () async {
+      final inputs = <MainContentAccess>[];
+      final action = MainContentAction(
+        id: 'input',
+        label: 'Choose resource',
+        createPresentation: (access) {
+          inputs.add(access);
+          return const SizedBox.shrink();
+        },
+      );
+      final registration = register('test.owner', (_) {}, actions: [action]);
+      final owner = extensions.discover(mainContentContributions).single;
+      controller.reconcile();
+      final original = controller.findAction(owner, action)!;
+      original.createPresentation();
+      controller.dispose();
+      expect(controller.hasSession, isFalse);
+      final next = Session(
+        id: session.id,
+        taskId: session.taskId,
+        strategyId: session.strategyId,
+      );
+      controller = MainContentController(session: next, extensions: extensions);
+      expect(controller.findAction(owner, action), isNull);
+      controller.reconcile();
+      final fresh = controller.findAction(owner, action)!;
+      expect(fresh, isNot(same(original)));
+      fresh.createPresentation();
+      expect(inputs.first.isActive, isFalse);
+      expect(inputs.last.session, same(next));
+      final retirement = registration.close();
+      expect(controller.findAction(owner, action), isNull);
+      register('test.owner', (_) {}, actions: [action]);
+      controller.reconcile();
+      expect(controller.findAction(owner, action), isNull);
+      expect(
+        controller.findAction(
+          extensions.discover(mainContentContributions).single,
+          action,
+        ),
+        isNotNull,
+      );
+      expect(fresh.createPresentation, throwsStateError);
+      await retirement;
+    },
+  );
+
+  test(
     'detach runs once for empty and failed groups without blocking cleanup',
     () async {
       final detached = <MainContentAccess>[];

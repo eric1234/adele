@@ -224,8 +224,8 @@ final class InstalledFrontendActivation {
   final PreparedConsoleHost? _consoleHost;
   final PreparedMainContentHost _mainContentHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
-  final List<(ExtensionRegistration, ExtensionRegistration)> _consoleCommands =
-      [];
+  final List<(ExtensionRegistration, ExtensionRegistration)>
+  _dependentCommands = [];
   StreamSubscription<void>? _registrationChanges;
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -258,6 +258,11 @@ final class InstalledFrontendActivation {
             PreparedConsoleActionCommandExtension,
             PreparedConsolePresentation
           >{};
+      final mainContentTargets =
+          <
+            PreparedMainContentActionCommandExtension,
+            PreparedMainContentPresentation
+          >{};
       for (final descriptor in component.extensions) {
         switch (descriptor) {
           case PreparedProjectSelectorExtension(
@@ -288,12 +293,35 @@ final class InstalledFrontendActivation {
               );
             }
             consoleTargets[descriptor] = targets.single;
+          case PreparedMainContentActionCommandExtension():
+            final targets = component.presentations
+                .whereType<PreparedMainContentPresentation>()
+                .where(
+                  (target) =>
+                      target.extensionId == descriptor.mainContentExtensionId,
+                )
+                .toList();
+            if (targets.length != 1 ||
+                targets.single.actions
+                        .where((action) => action.id == descriptor.actionId)
+                        .length !=
+                    1) {
+              throw StateError(
+                'A Main Content action Command requires one exact sibling action.',
+              );
+            }
+            mainContentTargets[descriptor] = targets.single;
         }
       }
       final consoles =
           <
             PreparedConsolePresentation,
             (ExtensionRegistration, ExtensionBinding<ConsoleContribution>)
+          >{};
+      final mainContents =
+          <
+            PreparedMainContentPresentation,
+            (ExtensionRegistration, ExtensionBinding<MainContentContribution>)
           >{};
       for (final descriptor in component.presentations) {
         if (_closed) return;
@@ -310,7 +338,7 @@ final class InstalledFrontendActivation {
                 entrypoint: entrypoint,
               );
             }
-            _register(
+            final registration = _register(
               point: mainContentContributions,
               id: descriptor.extensionId,
               contribution: (isActive) => _mainContentHost.createContribution(
@@ -321,6 +349,12 @@ final class InstalledFrontendActivation {
                 isActive: isActive,
                 services: _sessionServices,
               ),
+            );
+            mainContents[descriptor] = (
+              registration,
+              _extensions
+                  .discover(mainContentContributions)
+                  .singleWhere(registration.owns),
             );
             if (descriptor.displaySourceFileOperation != null) {
               _register(
@@ -548,12 +582,22 @@ final class InstalledFrontendActivation {
                 isActive: isActive,
               ),
             );
-            _consoleCommands.add((consoleRegistration, registration));
-            _registrationChanges ??= _extensions.changes.listen((_) {
-              for (final (console, command) in _consoleCommands) {
-                if (console.isClosed) unawaited(command.close());
-              }
-            });
+            _dependOn(consoleRegistration, registration);
+          case PreparedMainContentActionCommandExtension():
+            final (mainContentRegistration, binding) =
+                mainContents[mainContentTargets[descriptor]]!;
+            final registration = _register(
+              point: commandContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => _mainContentHost.createActionCommand(
+                installation: installation,
+                generation: generation,
+                descriptor: descriptor,
+                owner: binding,
+                isActive: isActive,
+              ),
+            );
+            _dependOn(mainContentRegistration, registration);
           case PreparedCommandExtension():
             _register(
               point: commandContributions,
@@ -664,10 +708,19 @@ final class InstalledFrontendActivation {
     }
   }
 
+  void _dependOn(ExtensionRegistration owner, ExtensionRegistration command) {
+    _dependentCommands.add((owner, command));
+    _registrationChanges ??= _extensions.changes.listen((_) {
+      for (final (owner, command) in _dependentCommands) {
+        if (owner.isClosed) unawaited(command.close());
+      }
+    });
+  }
+
   /// Retires the captured point/ID registration, never a replacement binding.
   /// IDs are scoped to a point. A descriptor-derived display adapter is owned
-  /// by its Main Content contribution; Console action Commands depend on their
-  /// exact Console registration, never the other way around.
+  /// by its Main Content contribution; contextual Commands depend on their exact
+  /// Main Content or Console registration, never the other way around.
   Future<void> retire<T extends Object>(
     ExtensionPoint<T> point,
     ExtensionId id,
@@ -690,8 +743,8 @@ final class InstalledFrontendActivation {
           registration,
     ];
     await Future.wait([
-      for (final (console, command) in _consoleCommands)
-        if (retiring.contains(console)) command.close(),
+      for (final (owner, command) in _dependentCommands)
+        if (retiring.contains(owner)) command.close(),
       for (final registration in retiring) registration.close(),
     ]);
     if (point.value == mainContentContributions.value) {

@@ -282,7 +282,8 @@ failures rather than exposing arbitrary exception text as user-facing output.
 The current implementation accepts native/in-process contributions, context-free
 backend Commands through ordinary backend-ready extension exposures, and prepared
 frontend Commands through behavioral `frontend.extensions` descriptors, including
-context-free operations and explicit contextual Console-action adapters.
+context-free operations and explicit contextual Console-action and Main Content
+input-action adapters.
 Application adapters register the same public contribution; the palette
 does not distinguish its origin. Context-free backend-only and frontend-only
 Commands need no Main Content, Console, Task Browser, or other presentation contribution.
@@ -328,10 +329,32 @@ diagnostic model. Retiring the target Console retires its dependent Command;
 Command-only retirement leaves Console participation intact. Replacement requires
 fresh bindings and never revives captured callbacks.
 
+The Main Content adapter likewise captures one exact sibling contribution and
+action, deriving its label without duplicating presentation metadata. The mounted
+Session host owns current attachment and its single bounded input route. A narrow
+window-local coordinator admits that exact action through the same method as its
+visible button; it supplies no general Command context or widget service. The
+Command is hidden when no current Session host exists or its target is retired. A missing, pending, or
+failed attachment or occupied input route disables it. Admission revalidates the
+exact action and completes after opening, without waiting for user input.
+Factory failures retain Main Content's local unavailable presentation. Departure
+or action retirement dismisses the captured input; returning may use fresh access
+for the same contribution, never a replacement generation. Target retirement also
+retires dependent Commands, including raw registration closure; Command-only
+retirement leaves panes and buttons usable.
+
+Stock Source Editor deliberately declares `dev.adele.source-editor.open-source`.
+It and the existing button present the same `openSourceInput()` form. The Command
+accepts no path and performs no file access; only the user's subsequent submission
+invokes the existing `display` operation. Main Content retains captured
+Session/Environment identity, Source retained state, and finite-operation file
+authority. Neither availability nor input opening executes an Environment read,
+and later display failures remain in the Source input UI.
+
 Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
 reevaluate availability when presenting/refreshing and at admission, without
 polling or a general state-notification/context-expression protocol. General
-contextual frontend authority, Source Editor Open Source, and automatic projection
+contextual frontend authority, Command arguments, and automatic projection
 of presentation actions remain deferred.
 Keybinding registration, suggested/default bindings, overrides, and configuration
 remain future work. See the [public API map](../../packages/core_extensions/README.md#commands)

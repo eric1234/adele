@@ -118,6 +118,15 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
 /// Build-time non-presentation extension metadata, keyed by owning PluginId.
 const Map<String, List<Map<String, Object?>>>
 stockFrontendExtensionDescriptors = {
+  'dev.adele.source-editor': [
+    {
+      'kind': 'mainContentActionCommand',
+      'extensionId': 'dev.adele.source-editor.command.open-source',
+      'commandId': 'dev.adele.source-editor.open-source',
+      'mainContentExtensionId': 'dev.adele.source-editor.main-content',
+      'actionId': 'open',
+    },
+  ],
   'dev.adele.plugin.terminal': [
     {
       'kind': 'consoleActionCommand',

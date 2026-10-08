@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
@@ -55,6 +56,8 @@ void main() {
             'artifact': 'frontend.evc',
             'presentations':
                 stockFrontendDescriptors['dev.adele.source-editor'],
+            'extensions':
+                stockFrontendExtensionDescriptors['dev.adele.source-editor'],
           },
         },
       }),
@@ -84,12 +87,166 @@ void main() {
       fixture.extensions.discover(displaySourceFileContributions),
       hasLength(1),
     );
+    expect(fixture.openSource.availability, CommandAvailability.hidden);
     await fixture.mount(tester, fixture.session);
+    await _until(
+      tester,
+      () => fixture.openSource.availability == CommandAvailability.enabled,
+    );
     expect(find.text('Open Source...'), findsOneWidget);
     expect(find.byType(CodeForge), findsNothing);
     expect(fixture.provider.restored, isEmpty);
     return fixture;
   }
+
+  testWidgets(
+    'actual Source Command presents input without reads and retains the normalized native owner',
+    (tester) => tester.runAsync(() async {
+      final fixture = await start(tester);
+      final command = fixture.openSource;
+      expect(command.id, CommandId('dev.adele.source-editor.open-source'));
+      expect(
+        command.binding.id,
+        ExtensionId('dev.adele.source-editor.command.open-source'),
+      );
+      expect(command.label, 'Open Source...');
+      expect(fixture.store.session(fixture.session.id), same(fixture.session));
+      expect(
+        fixture.store.requireSessionAuthority(fixture.session.id).environmentId,
+        fixture.additional.id,
+      );
+
+      await command.invoke();
+      await _until(
+        tester,
+        () => find.text('Open Source File').evaluate().isNotEmpty,
+      );
+      expect(find.byType(Dialog), findsOneWidget);
+      expect(
+        find.text('Existing path relative to the Session Environment'),
+        findsOneWidget,
+      );
+      expect(fixture.provider.restored, isEmpty);
+      expect(fixture.provider.reads, isEmpty);
+      expect(find.byType(CodeForge), findsNothing);
+      await tester.enterText(find.byType(TextField), './lib//source.dart');
+      await tester.pump();
+      expect(fixture.provider.reads, isEmpty);
+      _press(tester, 'Open');
+      await _until(
+        tester,
+        () => find.text('Source Document opened.').evaluate().isNotEmpty,
+      );
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, [
+        (fixture.additional.id, './lib//source.dart'),
+      ]);
+      await tester.tap(find.byTooltip('Close input'));
+      await _until(tester, () => find.byType(Dialog).evaluate().isEmpty);
+      final native = _editor(tester);
+      final element = tester.element(find.byType(CodeForge));
+      expect(native.controller!.text, _original);
+      expect(find.text(_path), findsWidgets);
+      await _deleteFirst(tester, native);
+
+      await command.invoke();
+      await _until(
+        tester,
+        () => find.text('Open Source File').evaluate().isNotEmpty,
+      );
+      await tester.enterText(find.byType(TextField), _path);
+      await tester.pump();
+      _press(tester, 'Open');
+      await _until(
+        tester,
+        () => find.text('Source Document opened.').evaluate().isNotEmpty,
+      );
+      await tester.tap(find.byTooltip('Close input'));
+      await _until(tester, () => find.byType(Dialog).evaluate().isEmpty);
+      expect(fixture.provider.reads, hasLength(1));
+      expect(find.byType(CodeForge), findsOneWidget);
+      expect(tester.element(find.byType(CodeForge)), same(element));
+      expect(_editor(tester).controller, same(native.controller));
+      expect(_editor(tester).undoController, same(native.undoController));
+      expect(native.controller!.text, _original.substring(1));
+      native.focusNode!.requestFocus();
+      await tester.pump();
+      await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+      expect(native.controller!.text, _original);
+      expect(fixture.provider.replacements, isEmpty);
+      expect(fixture.store.runsForSession(fixture.session.id), isEmpty);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
+  testWidgets(
+    'actual Source Command input cannot retarget its captured Environment after navigation',
+    (tester) => tester.runAsync(() async {
+      final fixture = await start(tester);
+      final reading = Completer<EnvironmentTextFile>();
+      addTearDown(() {
+        if (!reading.isCompleted) reading.complete(_file(_original));
+      });
+      fixture.provider.reading = reading.future;
+      await fixture.openSource.invoke();
+      await _until(
+        tester,
+        () => find.text('Open Source File').evaluate().isNotEmpty,
+      );
+      await tester.enterText(find.byType(TextField), _path);
+      await tester.pump();
+      final oldSubmit = tester
+          .widget<TextField>(find.byType(TextField))
+          .onSubmitted!;
+      _press(tester, 'Open');
+      await _until(tester, () => fixture.provider.reads.isNotEmpty);
+      expect(fixture.provider.reads, [(fixture.additional.id, _path)]);
+
+      await fixture.mount(tester, fixture.otherSession);
+      await _until(tester, () => find.byType(Dialog).evaluate().isEmpty);
+      oldSubmit(_path);
+      reading.complete(_file(_original));
+      await fixture.host.drainOperations();
+      await tester.pump();
+      expect(find.byType(CodeForge), findsNothing);
+      expect(fixture.provider.restored, [fixture.additional.id]);
+      expect(fixture.provider.reads, [(fixture.additional.id, _path)]);
+
+      fixture.provider.reading = null;
+      await fixture.openSource.invoke();
+      await _until(
+        tester,
+        () => find.text('Open Source File').evaluate().isNotEmpty,
+      );
+      await tester.enterText(find.byType(TextField), _path);
+      await tester.pump();
+      _press(tester, 'Open');
+      await _until(
+        tester,
+        () => find.text('Source Document opened.').evaluate().isNotEmpty,
+      );
+      await tester.tap(find.byTooltip('Close input'));
+      await _until(tester, () => find.byType(Dialog).evaluate().isEmpty);
+      final other = _editor(tester);
+      expect(other.controller!.text, _otherText);
+      expect(fixture.provider.reads, [
+        (fixture.additional.id, _path),
+        (fixture.primary.id, _path),
+      ]);
+
+      await fixture.mount(tester, fixture.session);
+      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
+      oldSubmit(_path);
+      await tester.pump();
+      expect(_editor(tester).controller, isNot(same(other.controller)));
+      expect(_editor(tester).controller!.text, _original);
+      expect(fixture.provider.reads, hasLength(2));
+      expect(fixture.provider.replacements, isEmpty);
+      expect(fixture.store.runsForSession(fixture.session.id), isEmpty);
+      expect(fixture.store.runsForSession(fixture.otherSession.id), isEmpty);
+      expect(tester.takeException(), isNull);
+    }),
+  );
 
   testWidgets(
     'actual Source EVC deduplicates concurrent normalized opens and preserves native undo',
@@ -929,6 +1086,10 @@ final class _Fixture {
   Future<Map<String, Object?>> display(String path) =>
       DisplaySourceFileResolver(extensions).display(path);
 
+  ResolvedCommand get openSource => CommandResolver(
+    extensions,
+  ).resolve(CommandId('dev.adele.source-editor.open-source'));
+
   Future<void> mount(WidgetTester tester, Session selected) async {
     if (current case final previous?) {
       await frontends.prepareToDeactivate(previous);
@@ -938,7 +1099,11 @@ final class _Fixture {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: MainContentHost(session: selected, extensions: extensions),
+          body: MainContentHost(
+            session: selected,
+            extensions: extensions,
+            actionCoordinator: host.actionCoordinator,
+          ),
         ),
       ),
     );

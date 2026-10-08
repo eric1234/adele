@@ -137,14 +137,16 @@ Registration retirement fences new admission; retiring the frontend generation
 also invalidates its active operations through existing evaluator lifetime rules.
 Captured bindings/callbacks never retarget a replacement, even when IDs are reused.
 
-`PreparedConsoleActionCommandExtension` instead declares one exact sibling Console
-creation action. Activation validates the same-component target before publication,
-then captures the registered Console binding through `ExtensionRegistration.owns`.
-`PreparedConsoleHost.createActionCommand` checks existing installation/generation
-metadata and captures the actual action, including its label; it does not evaluate
-a second operation or resolve another contribution by global IDs. The activation
-owns dependent registration retirement, including registry-observed individual
-Console removal. Command-only retirement does not remove Console participation.
+`PreparedConsoleActionCommandExtension` and
+`PreparedMainContentActionCommandExtension` instead declare one exact sibling
+Console creation action or Main Content input action. Activation validates the
+same-component target before publication, then captures its registered binding
+through `ExtensionRegistration.owns`. The corresponding prepared host's
+`createActionCommand` checks installation/generation metadata and captures the actual
+action, including its label; it does not evaluate a second operation or resolve
+another contribution by global IDs. Shared owner/dependent registration tracking
+retires Commands when their exact target retires, including raw registration
+closure. Command-only retirement leaves the target contribution intact.
 
 The app implements native bridges when authority is required, while public
 presentation semantics remain in [UI](../packages/ui/README.md) and Commands in
@@ -659,8 +661,9 @@ requiring a frontend, presentation, or open Project. Backend retirement removes
 its registrations and refreshes an open palette through the existing registry stream.
 Prepared frontend activation adapts behavioral descriptors through that same point;
 frontend retirement refreshes membership identically. The palette has no transport
-or descriptor-specific path. The explicit contextual Console-action adapter is
-described in [Session console](#session-console); general contextual authority,
+or descriptor-specific path. The explicit contextual adapters are described in
+[Session console](#session-console) and [Grouped Main Content](#grouped-main-content);
+general contextual authority,
 keybindings, configuration, and automatic Main Content/Console action projection
 remain unimplemented.
 Semantic boundaries belong to [Commands and input](../docs/architecture/plugin-system.md#commands-and-input).
@@ -903,6 +906,19 @@ over that attachment's access; departure/retirement closes it. The host renders
 contributed labels and widgets rather than special-casing Source or creating a
 dummy editor pane to expose Open.
 
+The window-local `MainContentActionCoordinator`, defined alongside the host, is
+shared by `AdeleApplication` and `PreparedMainContentHost`. It exposes only current
+host presence and exact action admission, not Session objects or arbitrary widget
+presentation. `MainContentController` matches both registration identity and the
+actual `MainContentAction` object after attachment succeeds. Command and button
+open through the same host input method, including local factory-failure text
+(`Main Content input is unavailable.`), action-label chrome, and exact-route
+dismissal. Invocation finishes when the dialog opens, not when the user closes it.
+The Command is hidden when no current Session host exists or its target is retired;
+an unavailable/unfinished attachment or occupied input route disables it. Availability
+does not reconcile, run eval, or acquire providers. Returning to a Session uses a
+fresh current attachment of the same captured contribution, never its replacement.
+
 The controller sorts whole groups by ascending integer order, then lexical
 ExtensionId, preserving each group's contiguous local sequence. It flattens their
 panes before the widget calculates widths. Every pane, not every group, receives
@@ -1003,6 +1019,12 @@ actions/panes and the public `DisplaySourceFile` resolver; bootstrap registers t
 display adapter from the descriptor's declared operation. No Source backend, Chat
 presentation, model configuration, or Run is required to open/edit/save a file in
 an existing canonical Session.
+
+The stock `Open Source...` Command and retained Main Content button present the
+same `openSourceInput()` form. Opening it performs no Environment read. Only path
+submission invokes the existing `display` operation, with its captured Session
+Environment and normal Source document/native-editor flow; later operation errors
+stay in that input UI rather than becoming Command failures.
 
 [`ContributionBridge`](lib/frontend/contribution_bridge.dart) and
 `RetainedContribution` retain copied primitive plugin data and `NativeCodeEditor`

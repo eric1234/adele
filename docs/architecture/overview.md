@@ -105,8 +105,9 @@ composition, exact binding resolution, availability, and invocation admission in
 contracts. Native/in-process registration works independently of presentation
 contributions, as do context-free backend Commands adapted from backend-ready
 advertisements and context-free prepared frontend Commands adapted from behavioral descriptors.
-A narrow contextual prepared adapter also exposes an exact sibling Console
-creation action; stock Terminal uses it without a general Command context.
+Narrow contextual prepared adapters also expose exact sibling Console creation
+and Main Content input actions; stock Terminal and Source Editor use them without
+a general Command context.
 Broader contextual plugin authority and keybindings remain future work.
 See [Commands and input](plugin-system.md#commands-and-input).
 

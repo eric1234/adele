@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -9,9 +11,11 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   late ExtensionRegistry extensions;
   late Session session;
+  late MainContentActionCoordinator coordinator;
 
   setUp(() {
     extensions = ExtensionRegistry();
+    coordinator = MainContentActionCoordinator();
     session = Session(
       id: SessionId('session'),
       taskId: TaskId('task'),
@@ -21,7 +25,7 @@ void main() {
 
   ExtensionRegistration register(
     String id,
-    void Function(MainContentAccess) attach, {
+    FutureOr<void> Function(MainContentAccess) attach, {
     int order = 0,
     List<MainContentAction> actions = const [],
   }) => extensions.register(
@@ -38,6 +42,7 @@ void main() {
     double width = 1200,
     Session? current,
     bool Function()? isCurrent,
+    MainContentActionCoordinator? actionCoordinator,
   }) => MaterialApp(
     home: Scaffold(
       body: Align(
@@ -49,6 +54,7 @@ void main() {
             session: current ?? session,
             extensions: extensions,
             isCurrent: isCurrent,
+            actionCoordinator: actionCoordinator ?? coordinator,
           ),
         ),
       ),
@@ -115,7 +121,7 @@ void main() {
   });
 
   testWidgets(
-    'zero-pane actions use contributed labels and fresh bounded input',
+    'button and coordinator share fresh bounded input and close reenables admission',
     (tester) async {
       late MainContentAccess attached;
       final inputs = <MainContentAccess>[];
@@ -133,7 +139,14 @@ void main() {
           ),
         ],
       );
+      final owner = extensions.discover(mainContentContributions).single;
+      final action = owner.value.actions.single;
+      expect(coordinator.hasSession, isFalse);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(() => coordinator.open(owner, action), throwsStateError);
       await tester.pumpWidget(host(width: 700));
+      expect(coordinator.hasSession, isTrue);
+      expect(coordinator.canOpen(owner, action), isTrue);
       expect(find.text('Choose resource'), findsOneWidget);
       expect(
         find.text('No Main Content is available for this Session.'),
@@ -146,6 +159,16 @@ void main() {
       await tester.tap(find.text('Choose resource'));
       await tester.pumpAndSettle();
       expect(inputs, [same(attached)]);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(() => coordinator.open(owner, action), throwsStateError);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.widgetWithText(TextButton, 'Choose resource'),
+            )
+            .onPressed,
+        isNull,
+      );
       expect(inputs.single.session, same(session));
       expect(attached.panes, isEmpty);
       expect(find.byType(Dialog), findsOneWidget);
@@ -165,18 +188,31 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsNothing);
       expect(first.disposed, isTrue);
+      expect(coordinator.canOpen(owner, action), isTrue);
       expect(attached.panes.single.id, 'opened');
       final opened = tester.state(probe('opened'));
 
-      await tester.tap(find.text('Choose resource'));
+      coordinator.open(owner, action);
+      expect(inputs, [same(attached), same(attached)]);
+      expect(coordinator.canOpen(owner, action), isFalse);
       await tester.pumpAndSettle();
       expect(inputs, [same(attached), same(attached)]);
       final second = tester.state<_ProbeState>(probe('input'));
       expect(second, isNot(same(first)));
       expect(second.text.text, isEmpty);
+      expect(tester.getSize(box), const Size(480, 260));
       await tester.tap(find.byTooltip('Close input'));
       await tester.pumpAndSettle();
       expect(tester.state(probe('opened')), same(opened));
+      expect(coordinator.canOpen(owner, action), isTrue);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.widgetWithText(TextButton, 'Choose resource'),
+            )
+            .onPressed,
+        isNotNull,
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -200,14 +236,21 @@ void main() {
           ),
         ],
       );
+      final owner = extensions.discover(mainContentContributions).single;
+      final action = owner.value.actions.single;
       await tester.pumpWidget(host(isCurrent: () => current));
       await tester.tap(find.text('Choose resource'));
       await tester.pumpAndSettle();
       final original = tester.state<_ProbeState>(probe('input'));
       final old = inputs.single;
       current = false;
+      expect(coordinator.hasSession, isFalse);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(() => coordinator.open(owner, action), throwsStateError);
       expect(old.isActive, isFalse);
       expect(() => old.open(pane('late')), throwsStateError);
+      current = true;
+      expect(coordinator.hasSession, isFalse);
       final other = Session(
         id: session.id,
         taskId: session.taskId,
@@ -219,7 +262,9 @@ void main() {
       expect(find.byType(_Probe), findsNothing);
       expect(original.disposed, isTrue);
       expect(inputs, hasLength(1));
-      await tester.tap(find.text('Choose resource'));
+      expect(coordinator.hasSession, isTrue);
+      expect(coordinator.canOpen(owner, action), isTrue);
+      coordinator.open(owner, action);
       await tester.pumpAndSettle();
       expect(inputs.last, isNot(same(old)));
       expect(inputs.last.session, same(other));
@@ -228,6 +273,8 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       expect(inputs.last.isActive, isFalse);
+      expect(coordinator.hasSession, isFalse);
+      expect(coordinator.canOpen(owner, action), isFalse);
       expect(tester.takeException(), isNull);
     },
   );
@@ -249,19 +296,31 @@ void main() {
         (_) {},
         actions: [action],
       );
+      final owner = extensions
+          .discover(mainContentContributions)
+          .singleWhere((item) => item.id.value == 'test.resources');
       await tester.pumpAndSettle();
       expect(tester.state(probe('chat')), same(chat));
       expect(tester.getSize(probe('chat')).width, originalSize.width);
-      await tester.tap(find.text('Choose resource'));
+      coordinator.open(owner, action);
       await tester.pumpAndSettle();
       final input = tester.state<_ProbeState>(probe('input'));
       await registration.close();
+      expect(coordinator.hasSession, isTrue);
+      expect(coordinator.canOpen(owner, action), isFalse);
       final replacement = register('test.resources', (_) {}, actions: [action]);
+      final replacementOwner = extensions
+          .discover(mainContentContributions)
+          .singleWhere((item) => item.id.value == 'test.resources');
+      expect(coordinator.canOpen(replacementOwner, action), isFalse);
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsNothing);
       expect(input.disposed, isTrue);
       expect(tester.state(probe('chat')), same(chat));
       expect(find.text('Choose resource'), findsOneWidget);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(() => coordinator.open(owner, action), throwsStateError);
+      expect(coordinator.canOpen(replacementOwner, action), isTrue);
       await replacement.close();
       await tester.pumpAndSettle();
       expect(tester.state(probe('chat')), same(chat));
@@ -286,6 +345,8 @@ void main() {
           ),
         ],
       );
+      final owner = extensions.discover(mainContentContributions).single;
+      final action = owner.value.actions.single;
       await tester.pumpWidget(host(width: 300));
       await tester.tap(find.text('Choose resource'));
       await tester.pumpAndSettle();
@@ -305,9 +366,269 @@ void main() {
       await tester.tap(find.byTooltip('Close input'));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsNothing);
+      expect(coordinator.canOpen(owner, action), isTrue);
+      coordinator.open(owner, action);
+      await tester.pumpAndSettle();
+      expect(find.text('Main Content input is unavailable.'), findsOneWidget);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(coordinator.canOpen(owner, action), isTrue);
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'coordinator rejects foreign matching actions without calling factories',
+    (tester) async {
+      var factories = 0;
+      MainContentAction action() => MainContentAction(
+        id: 'choose',
+        label: 'Choose resource',
+        createPresentation: (_) {
+          factories++;
+          return const SizedBox.shrink();
+        },
+      );
+
+      final exact = action();
+      final foreign = action();
+      register('test.owner', (_) {}, actions: [exact]);
+      register('test.foreign', (_) {}, actions: [foreign]);
+      final bindings = extensions.discover(mainContentContributions);
+      final owner = bindings.singleWhere(
+        (item) => item.id.value == 'test.owner',
+      );
+      final other = bindings.singleWhere(
+        (item) => item.id.value == 'test.foreign',
+      );
+      await tester.pumpWidget(host());
+      for (final (binding, candidate) in [
+        (owner, foreign),
+        (other, exact),
+        (owner, action()),
+      ]) {
+        expect(coordinator.canOpen(binding, candidate), isFalse);
+        expect(() => coordinator.open(binding, candidate), throwsStateError);
+      }
+      expect(coordinator.canOpen(owner, exact), isTrue);
+      expect(coordinator.canOpen(other, foreign), isTrue);
+      expect(factories, 0);
+      coordinator.open(owner, exact);
+      expect(factories, 1);
+      expect(coordinator.canOpen(other, foreign), isFalse);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(coordinator.canOpen(other, foreign), isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Session remains present while unattached and failed actions stay disabled',
+    (tester) async {
+      final ready = Completer<void>();
+      final failed = Completer<void>();
+      var attachments = 0;
+      var factories = 0;
+      final action = MainContentAction(
+        id: 'choose',
+        label: 'Choose resource',
+        createPresentation: (_) {
+          factories++;
+          return const SizedBox.shrink();
+        },
+      );
+      await tester.pumpWidget(host());
+      expect(coordinator.hasSession, isTrue);
+      register('test.pending', (_) {
+        attachments++;
+        return ready.future;
+      }, actions: [action]);
+      register('test.failed', (_) {
+        attachments++;
+        return failed.future;
+      }, actions: [action]);
+      final bindings = extensions.discover(mainContentContributions);
+      final owner = bindings.singleWhere(
+        (item) => item.id.value == 'test.pending',
+      );
+      final failing = bindings.singleWhere(
+        (item) => item.id.value == 'test.failed',
+      );
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(() => coordinator.open(owner, action), throwsStateError);
+      expect(attachments, 0);
+      await tester.pumpAndSettle();
+      expect(coordinator.hasSession, isTrue);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(coordinator.canOpen(failing, action), isFalse);
+      expect(attachments, 2);
+      expect(factories, 0);
+      expect(
+        tester
+            .widgetList<TextButton>(find.byType(TextButton))
+            .every((button) => button.onPressed == null),
+        isTrue,
+      );
+      failed.completeError(StateError('fixture attachment failure'));
+      ready.complete();
+      await tester.pumpAndSettle();
+      expect(coordinator.hasSession, isTrue);
+      expect(coordinator.canOpen(owner, action), isTrue);
+      expect(coordinator.canOpen(failing, action), isFalse);
+      expect(() => coordinator.open(failing, action), throwsStateError);
+      expect(factories, 0);
+      expect(attachments, 2);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('input factory cannot admit a reentrant input route', (
+    tester,
+  ) async {
+    late ExtensionBinding<MainContentContribution> owner;
+    late MainContentAction action;
+    var factories = 0;
+    action = MainContentAction(
+      id: 'choose',
+      label: 'Choose resource',
+      createPresentation: (_) {
+        factories++;
+        expect(coordinator.canOpen(owner, action), isFalse);
+        expect(() => coordinator.open(owner, action), throwsStateError);
+        return _Probe('input');
+      },
+    );
+    register('test.owner', (_) {}, actions: [action]);
+    owner = extensions.discover(mainContentContributions).single;
+    await tester.pumpWidget(host());
+    coordinator.open(owner, action);
+    await tester.pumpAndSettle();
+    expect(factories, 1);
+    expect(find.byType(Dialog), findsOneWidget);
+    expect(probe('input'), findsOneWidget);
+    await tester.tap(find.byTooltip('Close input'));
+    await tester.pumpAndSettle();
+    expect(coordinator.canOpen(owner, action), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final staleByRetirement in [false, true]) {
+    testWidgets(
+      'input factory stale before or after admission by ${staleByRetirement ? 'retirement' : 'Session guard'} never mounts',
+      (tester) async {
+        var current = true;
+        var factories = 0;
+        late ExtensionRegistration registration;
+        final action = MainContentAction(
+          id: 'choose',
+          label: 'Choose resource',
+          createPresentation: (_) {
+            factories++;
+            if (staleByRetirement) {
+              unawaited(registration.close());
+            } else {
+              current = false;
+            }
+            return _Probe('input');
+          },
+        );
+        registration = register('test.owner', (_) {}, actions: [action]);
+        final owner = extensions.discover(mainContentContributions).single;
+        await tester.pumpWidget(host(isCurrent: () => current));
+        expect(coordinator.canOpen(owner, action), isTrue);
+        expect(() => coordinator.open(owner, action), throwsStateError);
+        expect(factories, 1);
+        expect(coordinator.canOpen(owner, action), isFalse);
+        expect(() => coordinator.open(owner, action), throwsStateError);
+        expect(factories, 1);
+        await tester.pumpAndSettle();
+        expect(coordinator.hasSession, staleByRetirement);
+        expect(find.byType(Dialog), findsNothing);
+        expect(find.byType(_Probe), findsNothing);
+        expect(find.text('Main Content input is unavailable.'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'old host teardown cannot unmount the current coordinator attachment',
+    (tester) async {
+      final inputs = <MainContentAccess>[];
+      final action = MainContentAction(
+        id: 'choose',
+        label: 'Choose resource',
+        createPresentation: (access) {
+          inputs.add(access);
+          return _Probe('input');
+        },
+      );
+      register('test.owner', (_) {}, actions: [action]);
+      final owner = extensions.discover(mainContentContributions).single;
+      final next = Session(
+        id: session.id,
+        taskId: session.taskId,
+        strategyId: session.strategyId,
+      );
+      Widget hosts({required bool old, required bool current}) => MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              for (final value in [if (old) session, if (current) next])
+                SizedBox(
+                  key: ObjectKey(value),
+                  width: 350,
+                  height: 400,
+                  child: MainContentHost(
+                    session: value,
+                    extensions: extensions,
+                    actionCoordinator: coordinator,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(hosts(old: true, current: false));
+      coordinator.open(owner, action);
+      await tester.pumpAndSettle();
+      final original = tester.state<_ProbeState>(probe('input'));
+      await tester.pumpWidget(hosts(old: true, current: true));
+      await tester.pumpAndSettle();
+      expect(original.disposed, isTrue);
+      expect(coordinator.hasSession, isTrue);
+      await tester.pumpWidget(hosts(old: false, current: true));
+      expect(coordinator.canOpen(owner, action), isTrue);
+      coordinator.open(owner, action);
+      await tester.pumpAndSettle();
+      expect(inputs.last.session, same(next));
+      expect(inputs.first.isActive, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(coordinator.hasSession, isFalse);
+      expect(coordinator.canOpen(owner, action), isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('changing coordinators removes the old window bridge', (
+    tester,
+  ) async {
+    final replacement = MainContentActionCoordinator();
+    await tester.pumpWidget(host());
+    expect(coordinator.hasSession, isTrue);
+    expect(replacement.hasSession, isFalse);
+    await tester.pumpWidget(host(actionCoordinator: replacement));
+    expect(coordinator.hasSession, isFalse);
+    expect(replacement.hasSession, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(replacement.hasSession, isFalse);
+    expect(tester.takeException(), isNull);
+  });
 
   for (final chatOrder in [100, 400]) {
     testWidgets(
@@ -614,18 +935,33 @@ void main() {
     late MainContentAccess access;
     var releases = 0;
     var replacements = 0;
+    final action = MainContentAction(
+      id: 'choose',
+      label: 'Choose resource',
+      createPresentation: (_) => _Probe('input'),
+    );
     final registration = register('test.group', (value) {
       access = value;
       access.open(pane('a', release: () => releases++));
-    });
+    }, actions: [action]);
+    final owner = extensions
+        .discover(mainContentContributions)
+        .singleWhere((item) => item.id.value == 'test.group');
     await tester.pumpWidget(
       PreparedFrontendRetention(notifier: retaining, child: host(width: 700)),
     );
     final original = tester.state(probe('a'));
+    coordinator.open(owner, action);
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsOneWidget);
     retaining.value = true;
     await registration.close();
     register('test.group', (_) => replacements++);
     await tester.pumpAndSettle();
+    expect(coordinator.hasSession, isFalse);
+    expect(coordinator.canOpen(owner, action), isFalse);
+    expect(() => coordinator.open(owner, action), throwsStateError);
+    expect(find.byType(Dialog), findsNothing);
     expect(access.isActive, isFalse);
     expect(() => access.remove('a'), throwsStateError);
     expect(tester.state(probe('a')), same(original));

@@ -39,6 +39,25 @@ final class MainContentController extends ChangeNotifier {
 
   void Function(MainContentEntry entry, bool keyboardFocus)? onFocus;
 
+  bool get hasSession => !_closed && !_retaining && _hasContext;
+
+  /// Finds only an already attached exact registration and action object.
+  /// This is an admission check, never discovery or contribution initialization.
+  MainContentActionEntry? findAction(
+    ExtensionBinding<MainContentContribution> owner,
+    MainContentAction action,
+  ) {
+    if (!hasSession) return null;
+    for (final group in _groups) {
+      if (!group.binding.isSameRegistration(owner)) continue;
+      for (final entry in group.actions) {
+        if (identical(entry._action, action) && entry.isActive) return entry;
+      }
+      return null;
+    }
+    return null;
+  }
+
   /// Each exact registration owns one contiguous group in declared order.
   List<MainContentEntry> get entries {
     if (_closed) return const [];
@@ -99,7 +118,14 @@ final class MainContentController extends ChangeNotifier {
         unawaited(
           Future<void>.sync(() {
             group._validate();
-            return contribution.attach(group);
+            final attachment = contribution.attach(group);
+            if (attachment is Future<void>) {
+              return attachment.then<void>((_) {
+                group._attached = true;
+                _notify();
+              });
+            }
+            group._attached = true;
           }).then<void>(
             (_) {},
             onError: (Object error, StackTrace stack) {
@@ -151,13 +177,13 @@ final class MainContentActionEntry {
 
   String get id => _action.id;
   String get label => _action.label;
-  bool get isActive => _owner.isActive;
+  bool get isActive => _owner._attached && _owner.isActive;
 
   /// Unlike pane content, each explicit opening receives a fresh presentation.
   Widget createPresentation() {
-    _owner._validate();
+    if (!isActive) throw StateError('Main Content action is unavailable.');
     final presentation = _action.createPresentation(_owner);
-    _owner._validate();
+    if (!isActive) throw StateError('Main Content action is unavailable.');
     return presentation;
   }
 }
@@ -249,6 +275,7 @@ final class _MainContentAccess implements MainContentAccess {
   final void Function(MainContentAccess)? _detach;
   late final List<MainContentActionEntry> actions;
   final List<MainContentEntry> _entries = [];
+  bool _attached = false;
   bool _retired = false;
   bool _detached = false;
 

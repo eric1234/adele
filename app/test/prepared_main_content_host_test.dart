@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
@@ -25,6 +26,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 const _library = 'package:prepared_panes/main.dart';
 final _extensionId = ExtensionId('test.prepared-panes');
+final _commandId = CommandId('test.open-prepared-input');
 
 void main() {
   late Directory temporary;
@@ -82,6 +84,8 @@ void main() {
     PreparedMainContentHost? host,
     String initialize = 'initializePanes',
     String entrypoint = 'buildPane',
+    bool actionCommand = false,
+    String actionEntrypoint = 'buildInput',
   }) async {
     final root = await Directory(
       '${temporary.path}/case-${sequence++}',
@@ -109,8 +113,25 @@ void main() {
                 'library': _library,
                 'initialize': initialize,
                 'entrypoint': entrypoint,
+                if (actionCommand)
+                  'actions': [
+                    {
+                      'id': 'open',
+                      'label': 'Open prepared input',
+                      'entrypoint': actionEntrypoint,
+                    },
+                  ],
               },
             ],
+            if (actionCommand)
+              'extensions': [
+                PreparedMainContentActionCommandExtension(
+                  extensionId: ExtensionId('test.prepared-input-command'),
+                  commandId: _commandId,
+                  mainContentExtensionId: _extensionId,
+                  actionId: 'open',
+                ).toJson(),
+              ],
           },
         },
       }),
@@ -126,12 +147,18 @@ void main() {
     return bootstrap;
   }
 
-  Widget host({Session? current, bool Function()? isCurrent}) => MaterialApp(
+  Widget host({
+    Session? current,
+    bool Function()? isCurrent,
+    ExtensionRegistry? registry,
+    MainContentActionCoordinator? actionCoordinator,
+  }) => MaterialApp(
     home: Scaffold(
       body: MainContentHost(
         session: current ?? session,
-        extensions: extensions,
+        extensions: registry ?? extensions,
         isCurrent: isCurrent,
+        actionCoordinator: actionCoordinator,
       ),
     ),
   );
@@ -291,6 +318,287 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'Main Content Command availability follows its exact mounted input host',
+    (tester) async {
+      final prepared = PreparedMainContentHost();
+      final bootstrap = await tester.runAsync(
+        () => activate(host: prepared, actionCommand: true),
+      );
+      expect(
+        bootstrap!.generations.single.state,
+        InstalledFrontendState.active,
+      );
+      final command = CommandResolver(extensions).resolve(_commandId);
+      final availability = command.binding.value.availability;
+      final callback = command.binding.value.invoke;
+      expect(command.label, 'Open prepared input');
+      expect(prepared.actionCoordinator.hasSession, isFalse);
+      expect(command.availability, CommandAvailability.hidden);
+      expect(availability(), CommandAvailability.hidden);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await expectLater(
+        Future<void>.sync(callback),
+        throwsA(isA<CommandUnavailable>()),
+      );
+
+      await tester.pumpWidget(
+        host(
+          registry: ExtensionRegistry(),
+          actionCoordinator: prepared.actionCoordinator,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(prepared.actionCoordinator.hasSession, isTrue);
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      expect(find.text('Prepared input session'), findsNothing);
+
+      await tester.pumpWidget(
+        host(actionCoordinator: prepared.actionCoordinator),
+      );
+      await tester.pumpAndSettle();
+      final pane = tester.element(find.text('body a'));
+      for (var i = 0; i < 3; i++) {
+        expect(command.availability, CommandAvailability.enabled);
+        expect(availability(), CommandAvailability.enabled);
+      }
+      expect(find.text('Prepared input session'), findsNothing);
+      await command.invoke();
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await expectLater(
+        Future<void>.sync(callback),
+        throwsA(isA<CommandUnavailable>()),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Prepared input session'), findsOneWidget);
+      expect(find.byType(Dialog), findsOneWidget);
+      expect(tester.element(find.text('body a')), same(pane));
+
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(command.availability, CommandAvailability.enabled);
+      _press(tester, 'Open prepared input');
+      await tester.pumpAndSettle();
+      expect(find.text('Prepared input session'), findsOneWidget);
+      expect(command.availability, CommandAvailability.disabled);
+      await tester.tap(find.byTooltip('Close input'));
+      await tester.pumpAndSettle();
+      expect(command.availability, CommandAvailability.enabled);
+      expect(tester.element(find.text('body a')), same(pane));
+      expect(find.text('Independent content'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(prepared.actionCoordinator.hasSession, isFalse);
+      expect(command.availability, CommandAvailability.hidden);
+      await expectLater(
+        Future<void>.sync(callback),
+        throwsA(isA<CommandUnavailable>()),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed prepared attachment disables its Command without failing activation',
+    (tester) async {
+      final coordinator = MainContentActionCoordinator();
+      final prepared = PreparedMainContentHost(actionCoordinator: coordinator);
+      expect(prepared.actionCoordinator, same(coordinator));
+      final bootstrap = await tester.runAsync(
+        () => activate(
+          host: prepared,
+          initialize: 'initializeFailure',
+          actionCommand: true,
+        ),
+      );
+      final command = CommandResolver(extensions).resolve(_commandId);
+      await tester.pumpWidget(host(actionCoordinator: coordinator));
+      await tester.pumpAndSettle();
+      expect(
+        bootstrap!.generations.single.state,
+        InstalledFrontendState.active,
+      );
+      expect(bootstrap.generations.single.failure, isNull);
+      expect(command.binding.validate, returnsNormally);
+      expect(coordinator.hasSession, isTrue);
+      expect(command.availability, CommandAvailability.disabled);
+      expect(
+        command.binding.value.availability(),
+        CommandAvailability.disabled,
+      );
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await expectLater(
+        Future<void>.sync(command.binding.value.invoke),
+        throwsA(isA<CommandUnavailable>()),
+      );
+      expect(find.text('Open prepared input'), findsNothing);
+      expect(find.text('Prepared input session'), findsNothing);
+      expect(find.text('Independent content'), findsOneWidget);
+      await tester.pumpWidget(host(actionCoordinator: coordinator));
+      await tester.pumpAndSettle();
+      expect(command.availability, CommandAvailability.disabled);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final retirement in ['command', 'target', 'raw target', 'frontend']) {
+    testWidgets(
+      'Main Content $retirement retirement fences Commands without retargeting',
+      (tester) async {
+        final prepared = PreparedMainContentHost();
+        final bootstrap = (await tester.runAsync(
+          () => activate(host: prepared, actionCommand: true),
+        ))!;
+        await tester.pumpWidget(
+          host(actionCoordinator: prepared.actionCoordinator),
+        );
+        await tester.pumpAndSettle();
+        final commands = CommandResolver(extensions);
+        final captured = commands.resolve(_commandId);
+        final callback = captured.binding.value.invoke;
+        final availability = captured.binding.value.availability;
+        final target = extensions
+            .discover(mainContentContributions)
+            .singleWhere((entry) => entry.id == _extensionId);
+        final activation = bootstrap.generations.single;
+        final targetRegistration = activation.registrations.singleWhere(
+          (registration) => registration.owns(target),
+        );
+        final pane = tester.element(find.text('body a'));
+        await captured.invoke();
+        await tester.pumpAndSettle();
+        expect(find.text('Prepared input session'), findsOneWidget);
+
+        switch (retirement) {
+          case 'command':
+            await activation.retire(commandContributions, captured.binding.id);
+            await tester.pumpAndSettle();
+            expect(target.validate, returnsNormally);
+            expect(find.text('Prepared input session'), findsOneWidget);
+            expect(tester.element(find.text('body a')), same(pane));
+            await tester.tap(find.byTooltip('Close input'));
+            await tester.pumpAndSettle();
+            _press(tester, 'Open prepared input');
+            await tester.pumpAndSettle();
+            expect(find.text('Prepared input session'), findsOneWidget);
+            expect(tester.element(find.text('body a')), same(pane));
+          case 'target':
+            await activation.retire(mainContentContributions, target.id);
+          case 'raw target':
+            final retiring = targetRegistration.close();
+            // Closure fences callbacks before registry listeners can reconcile.
+            var replacementCalls = 0;
+            final nativeReplacement = extensions.register(
+              point: mainContentContributions,
+              id: target.id,
+              value: MainContentContribution(
+                order: 200,
+                attach: (_) {},
+                actions: [
+                  MainContentAction(
+                    id: 'open',
+                    label: 'Native replacement',
+                    createPresentation: (_) {
+                      replacementCalls++;
+                      return const Text('Foreign input');
+                    },
+                  ),
+                ],
+              ),
+            );
+            addTearDown(nativeReplacement.close);
+            expect(availability(), CommandAvailability.hidden);
+            await expectLater(
+              Future<void>.sync(callback),
+              throwsA(isA<CommandUnavailable>()),
+            );
+            expect(replacementCalls, 0);
+            await retiring;
+            await tester.pumpAndSettle();
+            expect(commands.discover(), isEmpty);
+            await activation.retire(mainContentContributions, target.id);
+            expect(nativeReplacement.isClosed, isFalse);
+            await nativeReplacement.close();
+          case 'frontend':
+            await tester.runAsync(activation.close);
+        }
+        await tester.pumpAndSettle();
+        expect(commands.discover(), isEmpty);
+        expect(
+          captured.binding.validate,
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(captured.availability, CommandAvailability.disabled);
+        expect(availability(), CommandAvailability.hidden);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        await expectLater(
+          Future<void>.sync(callback),
+          throwsA(isA<CommandUnavailable>()),
+        );
+        if (retirement == 'command') {
+          await activation.retire(mainContentContributions, target.id);
+          await tester.pumpAndSettle();
+        }
+        expect(target.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(find.text('body a'), findsNothing);
+        expect(find.text('Prepared input session'), findsNothing);
+        expect(find.text('Open prepared input'), findsNothing);
+        expect(find.text('Independent content'), findsOneWidget);
+
+        final replacement = await tester.runAsync(
+          () => activate(
+            host: prepared,
+            actionCommand: true,
+            actionEntrypoint: 'buildReplacementInput',
+          ),
+        );
+        expect(
+          replacement!.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        await tester.pumpAndSettle();
+        final fresh = commands.resolve(captured.id);
+        expect(fresh.binding.id, captured.binding.id);
+        expect(fresh.binding.isSameRegistration(captured.binding), isFalse);
+        final freshTarget = extensions
+            .discover(mainContentContributions)
+            .singleWhere((entry) => entry.id == target.id);
+        expect(freshTarget.isSameRegistration(target), isFalse);
+        expect(identical(tester.element(find.text('body a')), pane), isFalse);
+        await tester.runAsync(activation.close);
+        expect(fresh.binding.validate, returnsNormally);
+        expect(freshTarget.validate, returnsNormally);
+        expect(availability(), CommandAvailability.hidden);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        await expectLater(
+          Future<void>.sync(callback),
+          throwsA(isA<CommandUnavailable>()),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(Dialog), findsNothing);
+        expect(fresh.availability, CommandAvailability.enabled);
+        await fresh.invoke();
+        await tester.pumpAndSettle();
+        expect(find.text('Replacement input session'), findsOneWidget);
+        expect(find.text('Prepared input session'), findsNothing);
+        expect(find.text('Independent content'), findsOneWidget);
+        await tester.tap(find.byTooltip('Close input'));
+        await tester.pumpAndSettle();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'prepared requests validate data and fence removed same-ID panes immediately',
@@ -780,6 +1088,9 @@ import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
+void initializeFailure() { throw StateError('private attachment failure'); }
+Widget buildInput() => Text('Prepared input ' + readMainContentContext()['sessionId']);
+Widget buildReplacementInput() => Text('Replacement input ' + readMainContentContext()['sessionId']);
 void initializeContextPane() {
   final context = readMainContentContext();
   final environment = context['environmentKey'];

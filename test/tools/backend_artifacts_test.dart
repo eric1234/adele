@@ -1147,7 +1147,16 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value == 'dev.adele.source-editor',
         );
         expect(source.backendArtifactUri, isNull);
-        expect(source.frontend!.extensions, isEmpty);
+        final sourceCommand =
+            source.frontend!.extensions.single
+                as PreparedMainContentActionCommandExtension;
+        expect(sourceCommand.toJson(), {
+          'kind': 'mainContentActionCommand',
+          'extensionId': 'dev.adele.source-editor.command.open-source',
+          'commandId': 'dev.adele.source-editor.open-source',
+          'mainContentExtensionId': 'dev.adele.source-editor.main-content',
+          'actionId': 'open',
+        });
         expect(
           source.frontend!.artifactUri,
           installations.uri.resolve('source-editor/frontend.evc'),
@@ -1169,6 +1178,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(sourceDescriptor.actions.single.id, 'open');
         expect(sourceDescriptor.actions.single.label, 'Open Source...');
         expect(sourceDescriptor.actions.single.entrypoint, 'openSourceInput');
+        expect(
+          sourceCommand.mainContentExtensionId,
+          sourceDescriptor.extensionId,
+        );
+        expect(sourceCommand.actionId, sourceDescriptor.actions.single.id);
         expect(sourceDescriptor.operations, {
           'display': 'displaySource',
           'save': 'saveSource',

@@ -131,6 +131,37 @@ and action, derives the Command label from the action, and delegates creation to
 the Console owner. Context and lifetime belong to the
 [application adapter](../../app/README.md#session-console), not catalog parsing.
 
+`PreparedMainContentActionCommandExtension` is another additive behavioral
+descriptor under the same version-1 `frontend.extensions` list, with exactly these
+required fields:
+
+```json
+{
+  "kind": "mainContentActionCommand",
+  "extensionId": "dev.adele.source-editor.command.open-source",
+  "commandId": "dev.adele.source-editor.open-source",
+  "mainContentExtensionId": "dev.adele.source-editor.main-content",
+  "actionId": "open"
+}
+```
+
+Registration and Command identities use their public identity types. `actionId`
+uses the owning `PreparedMainContentAction.id` semantics: a nonblank string,
+preserved without trimming, with no additional ASCII grammar or length bound.
+Missing, extra, or wrongly typed fields invalidate only the frontend component.
+There is no `label`, `library`, `entrypoint`, context, or authority field, including
+Session, Environment, backend-service, execution, retained-data, or file grants.
+The catalog validates this descriptor's own syntax, not its target relationship.
+Frontend activation requires exactly one Main Content presentation in the same
+prepared component with the named `mainContentExtensionId` and local `actionId`,
+before publishing any registrations. Another role, installation, or generation
+with a matching ID cannot satisfy the reference. The app captures the exact live
+sibling registration and action, derives the label from that action, and opens its
+existing input presentation rather than executing a separate operation. Input
+context, admission, and lifetime remain with the
+[Main Content host](../../app/README.md#grouped-main-content); declaration creates
+no authority and captured targets never migrate to replacement registrations.
+
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
 integer `order`, `library`, `initialize`, and `entrypoint`. Optional
 `sessionExecution` defaults to false, `backendServices` is a duplicate-free
@@ -211,7 +242,9 @@ no separate Session presentation descriptor or reserved strategy slot.
 Stock [Source Editor](../../plugins/source_editor/README.md) is a frontend-only
 `mainContent` installation with retained data, native editor, and finite Environment
 operations explicitly enabled, without execution or owning-backend grants. Its
-descriptor remains in the build-side
+`mainContentActionCommand` references its existing `open` input action; it does not
+invoke `display` directly or duplicate the action label/entrypoint. Its descriptors
+remain in the build-side
 [`stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart),
 not a runtime Source policy table.
 

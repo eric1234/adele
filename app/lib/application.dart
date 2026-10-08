@@ -86,6 +86,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Session? _session;
   late final ConsoleController _console;
   late final PreparedConsoleHost _consoleHost;
+  late final PreparedMainContentHost _mainContentHost;
   late final ApplicationFrontendBootstrap _frontends;
   bool _frontendsStarted = false;
   String? _sessionLabel;
@@ -152,6 +153,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       controller: _console,
       backends: _runtime.plugins,
     );
+    _mainContentHost =
+        widget.mainContentHost ??
+        PreparedMainContentHost(
+          environmentRuntime: _runtime.lifecycle.environmentRuntime,
+          confirm: _confirmContribution,
+        );
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
@@ -170,12 +177,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
             identical(_session, session),
       ),
       consoleHost: _consoleHost,
-      mainContentHost:
-          widget.mainContentHost ??
-          PreparedMainContentHost(
-            environmentRuntime: _runtime.lifecycle.environmentRuntime,
-            confirm: _confirmContribution,
-          ),
+      mainContentHost: _mainContentHost,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -877,8 +879,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     child: MainContentHost(
                       session: session,
                       extensions: _runtime.extensions,
+                      actionCoordinator: _mainContentHost.actionCoordinator,
                       isCurrent: () =>
-                          _closing == null && identical(_session, session),
+                          _closing == null &&
+                          workbench != null &&
+                          identical(_workbench, workbench) &&
+                          identical(_session, session),
                     ),
                   ),
                 ),

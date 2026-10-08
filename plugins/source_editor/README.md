@@ -4,7 +4,9 @@ Source Editor is a frontend-only stock plugin. Its
 `packages/frontend` package, `source_editor_frontend`, imports Flutter and the
 public UI bridges in production, not application code, filesystem I/O, native controllers, or
 CodeForge. It contributes ordinary Main Content panes and an Open Source File
-path form. It has no backend, autosave, file watcher, or new-file operation.
+path form. The stock `dev.adele.source-editor.open-source` Command exposes that
+same form through the global Command Palette. It has no backend, autosave, file
+watcher, or new-file operation.
 
 ## Ownership
 
@@ -29,6 +31,16 @@ provider normalization and again after asynchronous initialization; a losing
 provisional editor is released without replacing the winner. Display results ask
 the host to focus an ID only if the original captured Environment is still shown.
 The form calls the same `display` operation as the public DisplaySourceFile path.
+
+The palette Command targets the exact prepared Main Content contribution's `open`
+input action, deriving its `Open Source...` label from that action. It is hidden
+before Project opening and in Task Browser, and is enabled in a ready canonical
+Session workspace when no Main Content input is already open. Invocation presents
+`openSourceInput()` only: it does not read a file, create an editor, or start a Run.
+The user submits a relative path through the existing form to invoke `display`.
+The button remains another entry to that same input, not a second file-opening
+implementation. Input and operations retain their host-captured Environment;
+navigation cannot retarget an old input callback or an admitted read.
 
 Save captures one native text snapshot and the last accepted provider revision,
 then conditionally replaces the existing file. Only one Save can be pending per
@@ -100,9 +112,15 @@ through an explicit in-memory implementation of the public port shape. It does
 not substitute for prepared-EVC/native integration, authority, or catalog checks.
 `packages/frontend/test/source_editor_host_test.dart` owns the real compiled
 Source EVC/native integration suite, including retained documents, native undo,
-provider recovery, conditional Save/conflicts, and Close/exit lifecycle races.
+Command-to-input invocation without reads, submitted display with captured
+Environment authority, provider recovery, conditional Save/conflicts, and
+Close/exit lifecycle races.
 Both suites run through `dart tools/adele.dart test --target source_editor_frontend`
 from the repository root, including maintained native editor preparation.
+The Source cases in `app/test/core/normal_chatgpt_run_integration_test.dart` cover
+the stock Command through the actual application palette and real Git worktrees,
+including hidden pre-Project/Task Browser availability, enabled Session input,
+the retained button path, and document ownership without Chat or a Run.
 The app-side compiler and native/host bridges remain outside this plugin and are
 used through development-only integration dependencies; descriptors and repository
 discovery also remain with repository tooling. Follow the
