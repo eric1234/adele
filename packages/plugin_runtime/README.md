@@ -180,7 +180,8 @@ Additional Main Content fields are explicit opt-ins:
 
 | Field | Meaning / default |
 | --- | --- |
-| `capabilities` | Empty by default; immutable, duplicate-free `CapabilityKey` allowlist, encoded as `[{"id": "org.example.read", "majorVersion": 1}]`. Each entry accepts only those fields and uses the public Capability identity and positive-integer major-version validation. Different majors of the same ID are distinct keys. |
+| `capabilities` | Empty by default; immutable, duplicate-free `CapabilityKey` allowlist for context-free calls, encoded as `[{"id": "org.example.read", "majorVersion": 1}]`. Each entry accepts only those fields and uses the public Capability identity and positive-integer major-version validation. Different majors of the same ID are distinct keys. |
+| `environmentReadCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist, with the same encoding and strict validation as `capabilities`. Requests pane-only contextual unary calls with an operation-scoped Environment read grant; it does not enable context-free access or any other Environment service. |
 | `actions` | Empty by default; unique local `id`, `label`, and widget `entrypoint` for each host-chrome input action. |
 | `operations` | Empty by default; finite operation keys mapped to top-level entrypoints in the same `library`. |
 | `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
@@ -188,10 +189,20 @@ Additional Main Content fields are explicit opt-ins:
 | `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
 | `environmentTextFiles` | False by default; requires nonempty `operations` and requests the separate Environment read/replace bridge only for finite operations with captured Session context. |
 
-Capability declarations require neither an owning backend nor a currently present
-provider, including for frontend-only installations. They are data-only requests,
-not provider advertisements or live bindings; other presentation roles reject this
-field.
+Both Capability allowlists require neither an owning backend nor a currently
+present provider, including for frontend-only installations. They are independent
+data-only requests, not provider advertisements or live bindings; the same key may
+appear once in each list. Other presentation roles and behavioral extensions reject
+these fields. Initializers, input actions, and finite operations receive neither
+path, even when the Main Content descriptor requests them. Contextual resolution
+and per-request authority validation belong to the application host, not catalog
+parsing; the [public UI bridge](../ui/README.md#interpreted-bridges) exposes only
+presentation-local handles and unary calls, with no host tokens or routes.
+
+`PreparedMainContentPresentation.toJson()` serializes both allowlists separately,
+preserving declared order and copying mutable collections. It includes explicit
+defaults and omits absent operation hooks, so the installed descriptor roundtrips
+through the same strict parser without granting additional access.
 
 Hooks cannot name undeclared operations. Actions and operations are immutable
 metadata, not stored evaluator callbacks. Exit operations need no mounted pane and
@@ -345,6 +356,13 @@ after activation, so retirement and replacement cannot revive an association.
 Context-free source invocation is not disabled merely because its association
 becomes unusable. These are host-side eligibility APIs, not invocation grants; see
 the [architectural boundary](../../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
+
+`retireProvider(binding)` on the capability/composite activation closes one exact
+live owned registration through its existing registration group. It rejects foreign
+and stale bindings, fences retirement observers synchronously, and preserves the
+connection, generation infrastructure grant, and sibling registrations. Associated
+selections become stale if either side retires; this API never looks up replacement
+providers by ID.
 
 `extensionExposures` follows the same path using public `AdeleExtensionExposure`;
 omission means zero extensions. `PluginExtensionActivation.registerAdvertised`

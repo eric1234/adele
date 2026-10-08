@@ -1,0 +1,281 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
+
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+
+import 'prepared_capability_contract.dart';
+
+// Uses the C1 authored contract unchanged. Both generated hops carry real reads.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
+  final bootstrap = bootstrapMessage! as Map;
+  final responses = bootstrap['responsePort'] as SendPort;
+  final options = jsonDecode(arguments.single) as Map;
+  final exposures = AdeleCapabilityExposure.fromReady({
+    'capabilityExposures': options['exposures'],
+  });
+  final hostRequests = AdeleHostRequestMultiplexer(send: responses.send);
+  final state = _State(hostRequests);
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      'shared': {
+        environmentProviderServiceId: EnvironmentProviderServiceDispatcher(
+          _EnvironmentService(state),
+          concurrent: true,
+        ),
+      },
+      'callable-shared': {
+        capabilityProbeServiceId: AdeleContextualServiceDispatcher(
+          hostRequests: hostRequests,
+          createDispatcher: (context) => CapabilityProbeServiceDispatcher(
+            _Probe(state, context),
+            concurrent: true,
+          ),
+        ),
+      },
+      'context-free': {
+        capabilityProbeServiceId: CapabilityProbeServiceDispatcher(
+          _Probe(state, null),
+        ),
+      },
+    },
+  );
+  final commands = ReceivePort();
+  (bootstrap['bootstrapPort'] as SendPort).send({
+    'kind': 'ready',
+    'commandPort': commands.sendPort,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    'capabilityExposures': exposures.map((e) => e.toMap()).toList(),
+  });
+  try {
+    await for (final Object? message in commands) {
+      if (hostRequests.handleResponse(message)) continue;
+      if (message is! Map) continue;
+      if (message['kind'] == 'request' && message['method'] == 'shutdown') {
+        state.releaseAll();
+        hostRequests.close();
+        await router.close();
+        responses.send({
+          'kind': 'response',
+          'requestId': message['requestId'],
+          'ok': true,
+          'payload': {'stopping': true},
+        });
+        break;
+      }
+      if (message['kind'] == 'request' && message['serviceId'] == 'probe') {
+        if (message['method'] == 'terminate') Isolate.exit();
+        unawaited(state.control(message, responses.send));
+        continue;
+      }
+      if (message['kind'] == 'request') {
+        state.requests.add({
+          'configurationContext': message['configurationContext'],
+          'serviceId': message['serviceId'],
+          'method': message['method'],
+          'hostInvocationContext': message['hostInvocationContext'],
+          'payload': message['payload'],
+        });
+      }
+      unawaited(router.handle(message, responses.send));
+    }
+  } finally {
+    state.releaseAll();
+    hostRequests.close();
+    commands.close();
+    await router.close();
+  }
+}
+
+final class _State {
+  _State(this.hostRequests);
+  final AdeleHostRequestMultiplexer hostRequests;
+  final requests = <Map<String, Object?>>[];
+  final reads = <Map<String, Object?>>[];
+  final environments = <String, String>{};
+  final roots = <String, String>{};
+  final clients = <String, AuthorizedEnvironmentReadServiceClient>{};
+  final _arrived = <String, Completer<void>>{};
+  final _gates = <String, Completer<void>>{};
+
+  Future<void> checkpoint(String key) async {
+    final arrived = _arrived.putIfAbsent(key, Completer<void>.new);
+    if (!arrived.isCompleted) arrived.complete();
+    await _gates[key]?.future;
+  }
+
+  void releaseAll() {
+    for (final gate in _gates.values) {
+      if (!gate.isCompleted) gate.complete();
+    }
+  }
+
+  Future<void> control(
+    Map command,
+    void Function(Map<String, Object?>) send,
+  ) async {
+    try {
+      final payload = command['payload'] as Map;
+      final key = payload['key'] as String?;
+      Object? result;
+      switch (command['method']) {
+        case 'hold':
+          _gates.putIfAbsent(key!, Completer<void>.new);
+        case 'wait':
+          await _arrived
+              .putIfAbsent(key!, Completer<void>.new)
+              .future
+              .timeout(const Duration(seconds: 10));
+        case 'release':
+          final gate = _gates[key]!;
+          if (!gate.isCompleted) gate.complete();
+        case 'snapshot':
+          result = {'requests': requests, 'reads': reads};
+        case 'retained':
+          try {
+            await clients[key]!.readFile('retained');
+            result = {'ok': true};
+          } on Object {
+            result = {'ok': false};
+          }
+        case 'attack':
+          try {
+            await hostRequests
+                .bind(
+                  hostInvocationContext: payload['token'] as String,
+                  serviceId:
+                      payload['service'] as String? ??
+                      authorizedEnvironmentReadServiceId,
+                )
+                .request(
+                  authorizedEnvironmentReadServiceReadFileId,
+                  Map<String, Object?>.from(
+                    payload['arguments'] as Map? ?? {'relativePath': 'attack'},
+                  ),
+                );
+            result = {'ok': true};
+          } on Object {
+            result = {'ok': false};
+          }
+        default:
+          throw StateError('Unknown probe command.');
+      }
+      send({
+        'kind': 'response',
+        'requestId': command['requestId'],
+        'ok': true,
+        'payload': jsonDecode(jsonEncode(result)),
+      });
+    } on Object catch (error) {
+      send({
+        'kind': 'response',
+        'requestId': command['requestId'],
+        'ok': false,
+        'error': {'code': 'probe_failure', 'message': error.toString()},
+      });
+    }
+  }
+}
+
+final class _Probe implements CapabilityProbeService {
+  const _Probe(this.state, this.context);
+  final _State state;
+  final AdeleBackendOperationContext? context;
+
+  @override
+  Future<ProbeValue> read(String scope) async {
+    if (context == null) {
+      return ProbeValue(
+        provider: 'context-free',
+        configuration: 'context-free',
+        sequence: 0,
+        text: scope,
+      );
+    }
+    final read = AuthorizedEnvironmentReadServiceClient(
+      context!.bind(authorizedEnvironmentReadServiceId),
+    );
+    state.clients[scope] = read;
+    try {
+      await state.checkpoint('before:$scope');
+      final authority = await read.authority();
+      final file = await read.readFile(scope);
+      await state.checkpoint('after:$scope');
+      if (scope == 'backend-failure')
+        throw StateError('SECRET backend failure');
+      return ProbeValue(
+        provider: 'callable-shared',
+        configuration: '${authority.sessionId}:${authority.environmentId}',
+        sequence: file.sizeBytes,
+        text: file.text,
+      );
+    } finally {
+      await state.checkpoint('settled:$scope');
+    }
+  }
+
+  @override
+  Stream<ProbeValue> watch(String scope) =>
+      throw UnsupportedError('Unary only.');
+}
+
+final class _EnvironmentService implements EnvironmentProviderService {
+  const _EnvironmentService(this.state);
+  final _State state;
+
+  @override
+  Future<EnvironmentProviderResult> establish(
+    EnvironmentTransportContext environment,
+  ) => restore(environment);
+
+  @override
+  Future<EnvironmentProviderResult> restore(
+    EnvironmentTransportContext environment,
+  ) async {
+    state.environments[environment.environmentId] = environment.providerId;
+    state.roots[environment.environmentId] =
+        environment.providerState['root'] as String;
+    await state.checkpoint('restore:${environment.environmentId}');
+    return EnvironmentProviderResult(providerState: environment.providerState);
+  }
+
+  @override
+  Future<EnvironmentTextFile> readFile(
+    String environmentId,
+    String relativePath,
+  ) async {
+    final provider = state.environments[environmentId]!;
+    state.reads.add({
+      'environmentId': environmentId,
+      'providerId': provider,
+      'path': relativePath,
+    });
+    await state.checkpoint('read:$relativePath');
+    if (relativePath == 'host-failure') {
+      throw EnvironmentFailure(
+        code: 'read_failure',
+        message: 'SECRET read failure',
+        details: const {},
+      );
+    }
+    final bytes = await File('${state.roots[environmentId]}/$relativePath')
+        .openRead(0, 1025)
+        .fold<List<int>>([], (buffer, chunk) => buffer..addAll(chunk));
+    if (bytes.length > 1024)
+      throw StateError('Fixture file exceeds its bound.');
+    final text = utf8.decode(bytes);
+    return EnvironmentTextFile(
+      relativePath: relativePath,
+      text: text,
+      sizeBytes: bytes.length,
+      revision: '$environmentId-revision',
+    );
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('Read only.');
+}

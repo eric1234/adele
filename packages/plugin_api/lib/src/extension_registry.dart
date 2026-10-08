@@ -110,7 +110,20 @@ final class ExtensionRegistry {
     if (identical(registrations?[active.id], active)) {
       registrations!.remove(active.id);
     }
+    final listeners = active.retirementListeners.values.toList();
     _changes.add(null);
+    active.retirementListeners.clear();
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final listener in listeners) {
+      try {
+        listener();
+      } catch (error, stack) {
+        firstError ??= error;
+        firstStack ??= stack;
+      }
+    }
+    if (firstError != null) Error.throwWithStackTrace(firstError, firstStack!);
   }
 
   _ExtensionBucket _requireBucket<T extends Object>(ExtensionPoint<T> point) {
@@ -141,6 +154,17 @@ final class ExtensionBinding<T extends Object> {
   /// This does not establish liveness; use [validate] before using a binding.
   bool isSameRegistration(ExtensionBinding<Object> other) =>
       identical(_active, other._active);
+
+  /// Observes retirement of this exact registration, synchronously after it is
+  /// fenced and removed, before asynchronous [ExtensionRegistry.changes] listeners.
+  /// Returns an idempotent detach callback. Already-retired bindings reject
+  /// subscription with [StaleExtensionBinding].
+  void Function() onRetire(void Function() listener) {
+    validate();
+    final token = Object();
+    _active.retirementListeners[token] = listener;
+    return () => _active.retirementListeners.remove(token);
+  }
 
   T get value {
     if (!_active.active) throw StaleExtensionBinding(id);
@@ -189,9 +213,17 @@ final class ExtensionRegistrationGroup {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    Object? firstError;
+    StackTrace? firstStack;
     for (final ExtensionRegistration registration in _registrations.reversed) {
-      await registration.close();
+      try {
+        await registration.close();
+      } catch (error, stack) {
+        firstError ??= error;
+        firstStack ??= stack;
+      }
     }
+    if (firstError != null) Error.throwWithStackTrace(firstError, firstStack!);
   }
 }
 
@@ -241,4 +273,5 @@ final class _ActiveExtension<T extends Object> {
   final ExtensionId id;
   final T value;
   bool active = true;
+  final Map<Object, void Function()> retirementListeners = {};
 }

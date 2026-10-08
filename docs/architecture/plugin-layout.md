@@ -162,8 +162,13 @@ own-backend collaboration belongs to
 
 Main Content descriptors can also request exact Capability ID/major pairs for
 mounted panes, independently of owning-backend services or provider availability.
-This data-only allowlist does not advertise providers or capture a live route;
-fresh discovery/resolution happens through the generic scoped consumer bridge.
+The default-empty `capabilities` allowlist enables context-free access; the separate
+default-empty `environmentReadCapabilities` allowlist permits contextual unary
+Environment reads. Neither declaration implies the other. Entries use `id` and
+`majorVersion`, reject duplicates and unknown fields, and carry no Session,
+Environment, backend, configuration, or host-service selectors.
+These data-only allowlists do not advertise providers or capture a live route;
+fresh resolution happens through the appropriate scoped consumer bridge.
 Other presentation roles and behavioral operations acquire no such access. See
 [prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 

@@ -197,6 +197,7 @@ final class PreparedMainContentPresentation
     this.sessionExecution = false,
     Iterable<String> backendServices = const [],
     Iterable<CapabilityKey> capabilities = const [],
+    Iterable<CapabilityKey> environmentReadCapabilities = const [],
     this.strategyAffinity = PreparedStrategyAffinity.independent,
     Iterable<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
@@ -208,6 +209,9 @@ final class PreparedMainContentPresentation
     this.environmentTextFiles = false,
   }) : backendServices = List.unmodifiable(backendServices),
        capabilities = List.unmodifiable(capabilities),
+       environmentReadCapabilities = List.unmodifiable(
+         environmentReadCapabilities,
+       ),
        actions = List.unmodifiable(actions),
        operations = Map.unmodifiable(operations) {
     _library(library, 'library');
@@ -224,6 +228,12 @@ final class PreparedMainContentPresentation
     }
     if (this.capabilities.toSet().length != this.capabilities.length) {
       throw const FormatException('capabilities must not contain duplicates.');
+    }
+    if (this.environmentReadCapabilities.toSet().length !=
+        this.environmentReadCapabilities.length) {
+      throw const FormatException(
+        'environmentReadCapabilities must not contain duplicates.',
+      );
     }
     final actionIds = <String>{};
     for (final action in this.actions) {
@@ -261,6 +271,10 @@ final class PreparedMainContentPresentation
   final bool sessionExecution;
   final List<String> backendServices;
   final List<CapabilityKey> capabilities;
+
+  /// Pane-only contextual unary requests, separate from [capabilities].
+  /// Initializers, input actions, and finite operations receive no such access.
+  final List<CapabilityKey> environmentReadCapabilities;
   final PreparedStrategyAffinity strategyAffinity;
   final List<PreparedMainContentAction> actions;
 
@@ -272,6 +286,42 @@ final class PreparedMainContentPresentation
   final bool retainedData;
   final bool nativeCodeEditor;
   final bool environmentTextFiles;
+
+  Map<String, Object?> toJson() => {
+    'role': 'mainContent',
+    'extensionId': extensionId.value,
+    'order': order,
+    'library': library,
+    'initialize': initialize,
+    'entrypoint': entrypoint,
+    'sessionExecution': sessionExecution,
+    'backendServices': [...backendServices],
+    'capabilities': [
+      for (final key in capabilities)
+        {'id': key.id.value, 'majorVersion': key.majorVersion},
+    ],
+    'environmentReadCapabilities': [
+      for (final key in environmentReadCapabilities)
+        {'id': key.id.value, 'majorVersion': key.majorVersion},
+    ],
+    'strategyAffinity': strategyAffinity.name,
+    'actions': [
+      for (final action in actions)
+        {
+          'id': action.id,
+          'label': action.label,
+          'entrypoint': action.entrypoint,
+        },
+    ],
+    'operations': {...operations},
+    if (closeOperation != null) 'closeOperation': closeOperation,
+    if (exitOperation != null) 'exitOperation': exitOperation,
+    if (displaySourceFileOperation != null)
+      'displaySourceFileOperation': displaySourceFileOperation,
+    'retainedData': retainedData,
+    'nativeCodeEditor': nativeCodeEditor,
+    'environmentTextFiles': environmentTextFiles,
+  };
 }
 
 final class PreparedConsoleAction {
@@ -756,6 +806,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'sessionExecution',
         'backendServices',
         'capabilities',
+        'environmentReadCapabilities',
         'strategyAffinity',
         'actions',
         'operations',
@@ -783,35 +834,40 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
           services.any((item) => item is! String)) {
         throw FormatException('$label.backendServices must be a string array.');
       }
-      final capabilities = value.containsKey('capabilities')
-          ? value['capabilities']
-          : const <Object?>[];
-      if (capabilities is! List<Object?>) {
-        throw FormatException('$label.capabilities must be an array.');
-      }
-      final capabilityKeys = <CapabilityKey>[];
-      for (var index = 0; index < capabilities.length; index++) {
-        final capabilityLabel = '$label.capabilities[$index]';
-        final capability = _object(capabilities[index], capabilityLabel, {
-          'id',
-          'majorVersion',
-        });
-        final majorVersion = capability['majorVersion'];
-        if (majorVersion is! int) {
-          throw FormatException(
-            '$capabilityLabel.majorVersion must be an integer.',
-          );
+      List<CapabilityKey> capabilityKeys(String field) {
+        final capabilities = value.containsKey(field)
+            ? value[field]
+            : const <Object?>[];
+        if (capabilities is! List<Object?>) {
+          throw FormatException('$label.$field must be an array.');
         }
-        try {
-          capabilityKeys.add(
-            CapabilityKey(
-              id: CapabilityId(_text(capability['id'], '$capabilityLabel.id')),
-              majorVersion: majorVersion,
-            ),
-          );
-        } on CapabilityException catch (error) {
-          throw FormatException('$capabilityLabel: ${error.message}');
+        final keys = <CapabilityKey>[];
+        for (var index = 0; index < capabilities.length; index++) {
+          final capabilityLabel = '$label.$field[$index]';
+          final capability = _object(capabilities[index], capabilityLabel, {
+            'id',
+            'majorVersion',
+          });
+          final majorVersion = capability['majorVersion'];
+          if (majorVersion is! int) {
+            throw FormatException(
+              '$capabilityLabel.majorVersion must be an integer.',
+            );
+          }
+          try {
+            keys.add(
+              CapabilityKey(
+                id: CapabilityId(
+                  _text(capability['id'], '$capabilityLabel.id'),
+                ),
+                majorVersion: majorVersion,
+              ),
+            );
+          } on CapabilityException catch (error) {
+            throw FormatException('$capabilityLabel: ${error.message}');
+          }
         }
+        return keys;
       }
       final affinity = value.containsKey('strategyAffinity')
           ? switch (value['strategyAffinity']) {
@@ -869,7 +925,10 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         sessionExecution: execution,
         backendServices: services.cast<String>(),
-        capabilities: capabilityKeys,
+        capabilities: capabilityKeys('capabilities'),
+        environmentReadCapabilities: capabilityKeys(
+          'environmentReadCapabilities',
+        ),
         strategyAffinity: affinity,
         actions: actionDescriptors,
         operations: {

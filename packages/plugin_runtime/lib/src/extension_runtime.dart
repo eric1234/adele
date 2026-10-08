@@ -313,6 +313,12 @@ final class PluginBackendActivation {
     return _capabilities.owns(binding);
   }
 
+  /// Retires one exact provider without retiring this backend generation.
+  Future<void> retireProvider(ProviderBinding binding) {
+    validate();
+    return _capabilities.retireProvider(binding);
+  }
+
   ProviderBinding? associationFor(ProviderBinding binding) {
     validate();
     return _capabilities.associationFor(binding);

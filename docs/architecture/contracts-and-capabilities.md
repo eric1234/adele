@@ -164,9 +164,11 @@ Environment reads, mutations, processes, host-service access, or invocation toke
 Selected bindings support the existing context-free generated service route.
 The separate [contextual unary admission](#contextual-unary-capability-invocation)
 can authorize an exact eligible selection; selection alone never grants it.
-The interpreted Capability bridge remains context-free. A future adapter over
-another plugin's Environment requires a separate design; an SCM provider is not
-inherently an Environment owner.
+The ordinary interpreted Capability bridge remains context-free; the separate
+[prepared contextual bridge](#prepared-contextual-environment-reads) explicitly
+authorizes eligible unary requests. A future adapter over another plugin's
+Environment requires a separate design; an SCM provider is not inherently an
+Environment owner.
 
 ## Live discovery and exact binding
 
@@ -308,14 +310,62 @@ native exceptions or disclosing diagnostics. Stream failures use safe generic te
 The supported generated eval projection remains bounded; there is no schema
 negotiation, runtime reflection, or arbitrary Dart object transport.
 
-Capability discovery and invocation supply no contextual Session/Environment,
-process, storage, approval, or execution authority. No empty host-invocation token
-is manufactured. Native/host-side [association eligibility](#provider-associations-and-environment-eligibility)
-does not extend this interpreted route. Interpreted contextual admission, delegated
-host grants, and backend-to-backend consumption remain separate future work. See the
+The context-free `capabilities` declaration and its discovery/invocation supply no
+contextual Session/Environment, process, storage, approval, or execution authority.
+No empty host-invocation token
+is manufactured. [Association eligibility](#provider-associations-and-environment-eligibility)
+does not extend this route. See the
 [public bridge API](../../packages/ui/README.md#interpreted-bridges),
 [descriptor schema](../../packages/plugin_runtime/README.md#prepared-catalog), and
 [application hosting](../../app/README.md#prepared-capability-access).
+
+### Prepared contextual Environment reads
+
+Mounted prepared Main Content panes may separately declare
+`environmentReadCapabilities`, a default-empty allowlist of exact Capability
+ID/major pairs. This is an explicit prepared access boundary, not a consent UI,
+Profile, general permission system, or OS sandbox. It neither implies nor follows
+from the context-free `capabilities` allowlist. Provider absence never blocks
+preparation or activation. Initializers, input actions, finite operations, other
+presentation roles, and unmounted/background code receive no contextual access.
+
+The public `adele_ui/environment_capability_bridge.dart` API resolves an optional
+explicit Provider ID asynchronously to an opaque presentation-local handle. The
+host captures the actual mounted pane's canonical Session, not caller-supplied
+identifiers. Each explicit resolution creates a fresh `CapturedEnvironmentCapabilities`
+before asynchronous provider work. It selects only providers associated with the
+actual materialized Environment provider, preserving ordering among eligible
+candidates; explicit ineligible/unavailable providers fail without fallback.
+Nonprimary Session Environments work identically. Resolution validates the expected
+generated service identity and never exposes a backend, configuration context,
+native authority object, or invocation token to interpreted code.
+
+The handle retains that exact selection. A generated client receives an ordinary
+request-only `AdeleRequestChannel`; the app does not import the plugin's contract,
+decode its DTOs, or recognize its methods. Each unary request reuses
+`invokeEnvironmentCapabilityWithRead` and receives a fresh read-only grant.
+Concurrent requests have independent operation contexts, including requests through
+the same handle. Neither payload identifiers nor forged invocation metadata can
+change the captured route or authority. Only the existing authorized Environment
+read service is supplied; mutation, process, storage, approval, model execution,
+and arbitrary host services are not granted.
+
+Handle release, pane departure/replacement, frontend retirement, and shutdown
+synchronously revoke outstanding grants through the helper's external retirement
+observer, before asynchronous backend cleanup. Exact callable, Environment-provider,
+and backend retirement retain the same revocation semantics. New admission and
+late successful publication fail closed. Revocation does not cancel or roll back
+already-admitted backend effects. Results belong only to the originating live
+presentation; repeated semantic IDs never revive a handle. Fresh explicit resolution
+may see replacement registrations without repairing earlier captures.
+
+The bounded handle table also reserves capacity for pending resolutions. Failed
+resolution releases its slot, while explicit release or presentation teardown
+discards retained selections and operation observers. Shared `BackendInvocationBridge`
+owns structured copying and safe evaluator settlement, as for C1; there is no
+second transport or provider registry. Contextual streaming, backend-to-backend
+consumers, cross-backend Environment delegation, and portable arbitrary plugin-owned
+Extension Point contributions remain outside this boundary.
 
 ## Own-backend frontend requests
 
@@ -497,8 +547,10 @@ ownership, and the expected service identity. Its only grant is the existing
 `AuthorizedEnvironmentReadService`. Reads use the very Environment materialization
 that established eligibility, not another selection from an Environment ID. No
 mutation, process, storage, execution, or approval service is granted. This API is
-an explicit trusted host authorization point, not a plugin permission declaration
-or an interpreted bridge.
+an explicit trusted host authorization point, not itself a plugin permission
+declaration or an interpreted bridge. Native host callers can use it directly;
+the prepared contextual bridge calls it only after its distinct declaration and
+mounted-presentation admission checks.
 
 The runtime binds a single-use, request-only channel to that actual configured
 channel and a fresh `PluginHostInvocation` on the same connection. The optional
@@ -522,8 +574,9 @@ context channels become unusable when their operation settles or the wrapper
 closes.
 
 Host authority is revoked synchronously when either exact provider registration or
-the backend retires, and on unary success or failure before publication to the
-consumer. The enclosing admission also revokes on callback failure or completion.
+the backend retires, on an optional enclosing domain retirement observation, and
+on unary success or failure before publication to the consumer. The enclosing
+admission also revokes on callback failure or completion.
 Checks at actual host-service entry and read settlement fence queued or late
 work. Successful contextual publication requires the same selection to remain
 valid at settlement; no failed check triggers reselection or a same-ID replacement.
@@ -534,8 +587,9 @@ contextual settlement does not change context-free Capability or Command rules.
 Only unary admission is supported here. Contextual stream opens are rejected,
 and the contextual channel does not implement `AdeleStreamChannel`. Ordinary
 generated server streaming and existing domain-owned reverse-streaming grants
-retain their current behavior. Prepared EVC contextual resolution/admission,
-Main Content contextual bridging, and contextual streaming remain deferred.
+retain their current behavior. Prepared Main Content consumption is the separate
+[declaration-controlled adapter](#prepared-contextual-environment-reads) over this
+native helper; contextual streaming remains deferred.
 
 ### Reverse unary and streaming calls
 

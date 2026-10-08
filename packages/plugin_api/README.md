@@ -46,10 +46,16 @@ bound to exact registrations, not merely their semantic IDs.
 Closing an `ExtensionRegistration` retires only that registration and immediately
 makes its bindings stale. Access through `value` or `validate()` throws
 `StaleExtensionBinding`; reusing the ID or contribution object never retargets
-them to a replacement. `ExtensionRegistrationGroup` provides idempotent,
-reverse-order cleanup, not transactional activation. The asynchronous `changes`
-stream signals registration/retirement changes so consumers can rediscover;
-it is not a replay log or automatic binding refresh.
+them to a replacement. `ExtensionBinding.onRetire` observes that exact retirement
+synchronously after fencing and removal, before asynchronous `changes` observers.
+It returns an idempotent detach callback and rejects already-stale subscriptions.
+Observer failures do not prevent sibling callbacks or removal; the unchanged
+`Future<void>` close API reports the first error with its original stack.
+`ExtensionRegistrationGroup` provides idempotent, reverse-order cleanup that
+attempts every registration despite observer errors, not transactional activation.
+The asynchronous `changes` stream signals registration/retirement changes so
+consumers can rediscover; it is not a replay log or automatic binding refresh.
+Retirement observation does not dispose contributions or cancel admitted work.
 
 The generic registry does not define a point's cardinality, priority, selection,
 composition, ordering, applicability, or failure policy. Those semantics belong

@@ -9,6 +9,7 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../core/application_plugin_bootstrap.dart';
 import '../core/product_lifecycle.dart';
 import '../core/resource_cleanup.dart';
 import '../ui/main_content/main_content_host.dart';
@@ -16,6 +17,7 @@ import 'capability_access_bridge.dart';
 import 'code_editor_bridge.dart';
 import 'contribution_bridge.dart';
 import 'environment_access_bridge.dart';
+import 'environment_capability_access_bridge.dart';
 import 'environment_text_files.dart';
 import 'main_content_bridge.dart';
 import 'prepared_frontend.dart';
@@ -56,6 +58,11 @@ final class PreparedMainContentHost {
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
       {};
   final Set<Future<Map<String, Object?>>> _operations = {};
+  final Map<
+    PreparedMainContentPresentation,
+    Set<EnvironmentCapabilityAccessBridge>
+  >
+  _contextualAccess = {};
   bool _accepting = true;
   bool _preflighting = false;
 
@@ -84,6 +91,7 @@ final class PreparedMainContentHost {
     required bool Function() isActive,
     PreparedSessionServices? services,
     CapabilityRegistry? capabilityRegistry,
+    ApplicationPluginBootstrap? backends,
   }) {
     final retained =
         descriptor.retainedData ||
@@ -236,9 +244,26 @@ final class PreparedMainContentHost {
                         }
                       },
                     );
+                    late final EnvironmentCapabilityAccessBridge contextual;
+                    contextual = EnvironmentCapabilityAccessBridge(
+                      session: access.session,
+                      environmentRuntime: environmentRuntime,
+                      backends: backends,
+                      capabilities: descriptor.environmentReadCapabilities,
+                      isActive: () => collection.isActive,
+                      onInvalidate: () {
+                        final active = _contextualAccess[descriptor];
+                        active?.remove(contextual);
+                        if (active?.isEmpty ?? false) {
+                          _contextualAccess.remove(descriptor);
+                        }
+                      },
+                    );
+                    (_contextualAccess[descriptor] ??= {}).add(contextual);
                     final acquired = <PreparedFrontendBridge>[
                       collection,
                       lifecycle,
+                      contextual,
                       CapabilityAccessBridge(
                         registry: capabilityRegistry,
                         capabilities: descriptor.capabilities,
@@ -613,10 +638,18 @@ final class PreparedMainContentHost {
   }
 
   void retire(PreparedMainContentPresentation descriptor) {
+    revokeContextualAccess(descriptor);
     final retained = _retained.remove(descriptor);
     if (retained == null) return;
     retained.attachment = null;
     retained.owner.dispose();
+  }
+
+  /// Revocation precedes asynchronous frontend registration/view cleanup.
+  void revokeContextualAccess(PreparedMainContentPresentation descriptor) {
+    for (final bridge in _contextualAccess.remove(descriptor) ?? const {}) {
+      bridge.invalidate();
+    }
   }
 
   /// Settle only hooks belonging to currently mounted contributed panes. A
@@ -664,6 +697,9 @@ final class PreparedMainContentHost {
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
+    for (final descriptor in _contextualAccess.keys.toList()) {
+      revokeContextualAccess(descriptor);
+    }
     return _closing = closeResources([
       for (final release in _releases.keys.toList()) () async => release(),
       for (final retained in _retained.values)

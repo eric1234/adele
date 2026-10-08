@@ -42,8 +42,10 @@ Resolution captures one exact registration in a `ProviderBinding`.
 `endpointAs<T>()` checks registration liveness, endpoint availability, and type.
 Closing its `CapabilityRegistration` makes the binding stale even if the same
 provider ID is registered again. `CapabilityRegistrationGroup` supports grouped
-retirement. Closing a registration does not dispose its endpoint or universally
-revoke already extracted channels; consumers/adapters must retain and validate
+retirement and `retire(binding)` for one exact live owned registration, rejecting
+foreign or stale bindings without touching a same-ID replacement. Closing a
+registration does not dispose its endpoint or universally revoke already extracted
+channels; consumers/adapters must retain and validate
 the exact binding at invocation and relevant asynchronous settlement boundaries.
 Long-lived native owners can additionally use `ProviderBinding.onRetire` to fence
 idle resources synchronously when that exact registration retires. It returns an
