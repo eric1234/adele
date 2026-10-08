@@ -231,9 +231,14 @@ workflow's source/evidence owners and deterministic-versus-live distinction.
 After bootstrap/current generation, run from `app/` with the pinned SDK:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/command_palette_test.dart test/application_test.dart test/adele_shell_test.dart
+flutter test --no-pub --concurrency 1 test/command_search_test.dart test/command_palette_test.dart test/prepared_command_palette_test.dart test/application_test.dart test/adele_shell_test.dart
 ```
 
+The pure-Dart search tests cover matching tiers, ordered label subsequences,
+word/ID boundaries, deterministic ties and empty-query order, and long valid inputs.
+Palette fixtures also exercise ranked keyboard navigation, disabled relevance,
+registry reranking, and exact Tab-focus/selection/replacement identity. These files
+are discovered by the existing unrestricted `adele_desktop` target.
 The application fixtures cover the keyboard-to-Command boundary without adding a
 backend or new integration harness. Platform variants verify modifier policy,
 not physical macOS/Windows execution. The native editor and terminal suites also

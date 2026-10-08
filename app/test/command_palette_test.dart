@@ -79,6 +79,11 @@ void main() {
 
   final search = find.byKey(const ValueKey('command-palette-search'));
 
+  List<String> resultIds(WidgetTester tester) => tester
+      .widgetList<ListTile>(find.byType(ListTile))
+      .map((tile) => (tile.subtitle! as Text).data!)
+      .toList();
+
   for (final platform in [
     TargetPlatform.linux,
     TargetPlatform.windows,
@@ -391,21 +396,24 @@ void main() {
       contribute('alpha', 'Alpha');
       await mount(tester);
       await open(tester);
-      List<String> resultIds() => tester
-          .widgetList<ListTile>(find.byType(ListTile))
-          .map((tile) => (tile.subtitle! as Text).data!)
-          .toList();
-      expect(resultIds(), [
+      expect(resultIds(tester), [
         'test.command.alpha',
         'test.command.beta',
         'test.command.zebra',
       ]);
       await tester.enterText(search, 'ALPHA');
       await tester.pump();
-      expect(resultIds(), ['test.command.alpha', 'test.command.beta']);
+      expect(resultIds(tester), ['test.command.alpha', 'test.command.beta']);
       await tester.enterText(search, 'TEST.COMMAND.BETA');
       await tester.pump();
-      expect(resultIds(), ['test.command.beta']);
+      expect(resultIds(tester), ['test.command.beta']);
+      await tester.enterText(search, '   ');
+      await tester.pump();
+      expect(resultIds(tester), [
+        'test.command.alpha',
+        'test.command.beta',
+        'test.command.zebra',
+      ]);
       await tester.enterText(search, 'no-such-operation');
       await tester.pump();
       expect(find.text('No matching commands.'), findsOneWidget);
@@ -415,6 +423,179 @@ void main() {
       await unmount(tester);
     },
   );
+
+  testWidgets('ranked results drive Up/Down and invoke the selected binding', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    for (final (id, label) in [
+      ('terminal', 'New Terminal'),
+      ('substring', 'Antelope'),
+      ('word', 'A NT workspace'),
+      ('prefix', 'NT tools'),
+      ('exact', 'NT'),
+    ]) {
+      contribute(id, label, invoke: () => calls.add(id));
+    }
+    await mount(tester);
+    await open(tester);
+    final baseOrder = resultIds(tester);
+    await tester.enterText(search, ' NT ');
+    await tester.pumpAndSettle();
+    expect(resultIds(tester), [
+      'test.command.exact',
+      'test.command.prefix',
+      'test.command.word',
+      'test.command.substring',
+      'test.command.terminal',
+    ]);
+    expect(
+      tester.widget<ListTile>(find.widgetWithText(ListTile, 'NT')).selected,
+      isTrue,
+    );
+    await tester.enterText(search, '');
+    await tester.pumpAndSettle();
+    expect(resultIds(tester), baseOrder);
+    await tester.enterText(search, 'nt');
+    await tester.pumpAndSettle();
+    for (var index = 0; index < 4; index++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+    }
+    expect(
+      tester
+          .widget<ListTile>(find.widgetWithText(ListTile, 'New Terminal'))
+          .selected,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pump();
+    expect(
+      tester
+          .widget<ListTile>(find.widgetWithText(ListTile, 'Antelope'))
+          .selected,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(calls, ['terminal']);
+    expect(find.byType(CommandPalette), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets('search accepts label abbreviations but never fuzzy IDs', (
+    tester,
+  ) async {
+    contribute('terminal', 'New Terminal');
+    contribute('source', 'Open Source...');
+    contribute('remote-source', 'Open Remote Source...');
+    contribute('n-e-w-t-e-r-m-i-n-a-l', 'Zebra');
+    await mount(tester);
+    await open(tester);
+    for (final (query, ids) in [
+      ('nt', ['test.command.terminal', 'test.command.remote-source']),
+      ('ntrm', ['test.command.terminal']),
+      ('  N  TRM  ', ['test.command.terminal']),
+      ('os', ['test.command.remote-source', 'test.command.source']),
+      ('  op   so  ', ['test.command.remote-source', 'test.command.source']),
+      ('mrtn', <String>[]),
+    ]) {
+      await tester.enterText(search, query);
+      await tester.pump();
+      expect(resultIds(tester), unorderedEquals(ids), reason: 'Query: $query');
+    }
+    expect(find.text('No matching commands.'), findsOneWidget);
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'disabled exact match ranks above enabled fuzzy and omits hidden',
+    (tester) async {
+      final calls = <String>[];
+      contribute(
+        'terminal',
+        'New Terminal',
+        invoke: () => calls.add('terminal'),
+      );
+      contribute(
+        'disabled',
+        'NT',
+        availability: () => CommandAvailability.disabled,
+        invoke: () => calls.add('disabled'),
+      );
+      contribute(
+        'hidden',
+        'NT hidden',
+        availability: () => CommandAvailability.hidden,
+        invoke: () => calls.add('hidden'),
+      );
+      await mount(tester);
+      await open(tester);
+      await tester.enterText(search, 'nt');
+      await tester.pump();
+      expect(resultIds(tester), [
+        'test.command.disabled',
+        'test.command.terminal',
+      ]);
+      final disabled = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'NT'),
+      );
+      expect(disabled.selected, isTrue);
+      expect(disabled.enabled, isFalse);
+      expect(disabled.onTap, isNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(calls, isEmpty);
+      expect(find.byType(CommandPalette), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(calls, ['terminal']);
+      expect(find.byType(CommandPalette), findsNothing);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets('ranked registry changes retain the exact keyboard selection', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    contribute('substring', 'Antelope', invoke: () => calls.add('substring'));
+    contribute('terminal', 'New Terminal', invoke: () => calls.add('terminal'));
+    await mount(tester);
+    await open(tester);
+    await tester.enterText(search, 'nt');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    final row = find.widgetWithText(ListTile, 'New Terminal');
+    final element = tester.element(row);
+    expect(tester.widget<ListTile>(row).selected, isTrue);
+    final earlier = contribute('exact', 'NT', invoke: () => calls.add('exact'));
+    await tester.pumpAndSettle();
+    expect(resultIds(tester), [
+      'test.command.exact',
+      'test.command.substring',
+      'test.command.terminal',
+    ]);
+    expect(tester.element(row), same(element));
+    expect(tester.widget<ListTile>(row).selected, isTrue);
+    await earlier.close();
+    await tester.pumpAndSettle();
+    expect(resultIds(tester), [
+      'test.command.substring',
+      'test.command.terminal',
+    ]);
+    expect(tester.element(row), same(element));
+    expect(tester.widget<ListTile>(row).selected, isTrue);
+    expect(tester.widget<TextField>(search).focusNode!.hasPrimaryFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(calls, ['terminal']);
+    expect(find.byType(CommandPalette), findsNothing);
+    await unmount(tester);
+  });
 
   testWidgets('hidden omitted; disabled and failed evaluation cannot invoke', (
     tester,
@@ -484,74 +665,99 @@ void main() {
     await unmount(tester);
   });
 
-  testWidgets(
-    'registration refresh omits conflicts without an arbitrary winner',
-    (tester) async {
-      var calls = 0;
-      contribute('shared', 'First side', invoke: () => calls++);
-      await mount(tester);
-      await open(tester);
-      final staleTap = tester
-          .widget<ListTile>(find.widgetWithText(ListTile, 'First side'))
-          .onTap!;
-      final duplicate = contribute(
-        'shared',
-        'Other side',
-        registrationId: 'test.other-registration',
-        invoke: () => calls++,
-      );
-      staleTap();
-      await tester.pumpAndSettle();
-      expect(find.text('First side'), findsNothing);
-      expect(find.text('Other side'), findsNothing);
-      expect(find.text('No commands are available.'), findsOneWidget);
-      expect(calls, 0);
-      await duplicate.close();
-      await tester.pumpAndSettle();
-      expect(find.text('First side'), findsOneWidget);
-      await tester.tap(find.text('First side'));
-      await tester.pumpAndSettle();
-      expect(calls, 1);
-      await unmount(tester);
-    },
-  );
+  for (final query in ['', 'sd']) {
+    testWidgets(
+      'registration refresh omits conflicts without an arbitrary winner (query: "$query")',
+      (tester) async {
+        var calls = 0;
+        contribute('shared', 'First side', invoke: () => calls++);
+        await mount(tester);
+        await open(tester);
+        if (query.isNotEmpty) {
+          await tester.enterText(search, query);
+          await tester.pump();
+        }
+        final staleTap = tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'First side'))
+            .onTap!;
+        final duplicate = contribute(
+          'shared',
+          'Other side',
+          registrationId: 'test.other-registration',
+          invoke: () => calls++,
+        );
+        staleTap();
+        await tester.pumpAndSettle();
+        expect(find.text('First side'), findsNothing);
+        expect(find.text('Other side'), findsNothing);
+        expect(
+          find.text(
+            query.isEmpty
+                ? 'No commands are available.'
+                : 'No matching commands.',
+          ),
+          findsOneWidget,
+        );
+        expect(calls, 0);
+        await duplicate.close();
+        await tester.pumpAndSettle();
+        expect(find.text('First side'), findsOneWidget);
+        await tester.tap(find.text('First side'));
+        await tester.pumpAndSettle();
+        expect(calls, 1);
+        await unmount(tester);
+      },
+    );
+  }
 
-  testWidgets(
-    'retirement never retargets a stale callback or selected command',
-    (tester) async {
-      var oldCalls = 0;
-      var newCalls = 0;
-      final old = contribute(
-        'reused',
-        'Old operation',
-        invoke: () => oldCalls++,
-      );
-      await mount(tester);
-      await open(tester);
-      final staleTap = tester
-          .widget<ListTile>(find.widgetWithText(ListTile, 'Old operation'))
-          .onTap!;
-      await old.close();
-      contribute('reused', 'New operation', invoke: () => newCalls++);
-      staleTap();
-      await tester.pumpAndSettle();
-      expect(find.text('Old operation'), findsNothing);
-      expect(find.text('New operation'), findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
-      expect(oldCalls, 0);
-      expect(newCalls, 0);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
-      expect(newCalls, 1);
-      staleTap();
-      await tester.pumpAndSettle();
-      expect(oldCalls, 0);
-      expect(newCalls, 1);
-      await unmount(tester);
-    },
-  );
+  for (final query in ['', 'oprt']) {
+    testWidgets(
+      'retirement never retargets a stale callback or selected command (query: "$query")',
+      (tester) async {
+        var oldCalls = 0;
+        var newCalls = 0;
+        final old = contribute(
+          'reused',
+          'Old operation',
+          invoke: () => oldCalls++,
+        );
+        await mount(tester);
+        await open(tester);
+        if (query.isNotEmpty) {
+          await tester.enterText(search, query);
+          await tester.pump();
+        }
+        final staleTap = tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Old operation'))
+            .onTap!;
+        await old.close();
+        contribute('reused', 'New operation', invoke: () => newCalls++);
+        staleTap();
+        await tester.pumpAndSettle();
+        expect(find.text('Old operation'), findsNothing);
+        expect(find.text('New operation'), findsOneWidget);
+        expect(
+          tester
+              .widget<ListTile>(find.widgetWithText(ListTile, 'New operation'))
+              .selected,
+          isFalse,
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(oldCalls, 0);
+        expect(newCalls, 0);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(newCalls, 1);
+        staleTap();
+        await tester.pumpAndSettle();
+        expect(oldCalls, 0);
+        expect(newCalls, 1);
+        await unmount(tester);
+      },
+    );
+  }
 
   testWidgets('invocation re-evaluates availability without a notification', (
     tester,
@@ -576,66 +782,91 @@ void main() {
     await unmount(tester);
   });
 
-  testWidgets('a replacement cannot inherit the retired result row focus', (
-    tester,
-  ) async {
-    var calls = 0;
-    final old = contribute('focused', 'Focused operation');
-    await mount(tester);
-    await open(tester);
-    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-    await tester.pump();
-    final row = find.widgetWithText(ListTile, 'Focused operation');
-    final oldElement = tester.element(row);
-    final oldFocus = FocusManager.instance.primaryFocus!;
-    expect(
-      find.ancestor(
-        of: find.byElementPredicate((element) => element == oldFocus.context),
-        matching: row,
-      ),
-      findsOneWidget,
-    );
-    contribute('earlier', 'Earlier operation');
-    await tester.pumpAndSettle();
-    expect(tester.element(row), same(oldElement));
-    expect(FocusManager.instance.primaryFocus, same(oldFocus));
-    await old.close();
-    contribute('focused', 'Focused operation', invoke: () => calls++);
-    await tester.pumpAndSettle();
-    expect(tester.element(row), isNot(same(oldElement)));
-    expect(FocusManager.instance.primaryFocus, isNot(same(oldFocus)));
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pumpAndSettle();
-    expect(calls, 0);
-    await tester.tap(row);
-    await tester.pumpAndSettle();
-    expect(calls, 1);
-    await unmount(tester);
-  });
-
-  for (final removeEarlier in [false, true]) {
+  for (final query in ['', 'fop']) {
     testWidgets(
-      'Tab-focused exact row survives sorted ${removeEarlier ? 'removal' : 'insertion'}',
+      'a replacement cannot inherit the retired result row focus (query: "$query")',
+      (tester) async {
+        var calls = 0;
+        final old = contribute('focused', 'Focused operation');
+        await mount(tester);
+        await open(tester);
+        if (query.isNotEmpty) {
+          await tester.enterText(search, query);
+          await tester.pump();
+        }
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        final row = find.widgetWithText(ListTile, 'Focused operation');
+        final oldElement = tester.element(row);
+        final oldFocus = FocusManager.instance.primaryFocus!;
+        expect(
+          find.ancestor(
+            of: find.byElementPredicate(
+              (element) => element == oldFocus.context,
+            ),
+            matching: row,
+          ),
+          findsOneWidget,
+        );
+        contribute(
+          'earlier',
+          query.isEmpty ? 'Earlier operation' : 'Fop earlier',
+        );
+        await tester.pumpAndSettle();
+        expect(tester.element(row), same(oldElement));
+        expect(FocusManager.instance.primaryFocus, same(oldFocus));
+        await old.close();
+        contribute('focused', 'Focused operation', invoke: () => calls++);
+        await tester.pumpAndSettle();
+        expect(tester.element(row), isNot(same(oldElement)));
+        expect(FocusManager.instance.primaryFocus, isNot(same(oldFocus)));
+        expect(tester.widget<ListTile>(row).selected, isFalse);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(calls, 0);
+        await tester.tap(row);
+        await tester.pumpAndSettle();
+        expect(calls, 1);
+        await unmount(tester);
+      },
+    );
+  }
+
+  for (final (removeEarlier, query) in [
+    (false, ''),
+    (true, ''),
+    (false, 'nt'),
+    (true, 'nt'),
+  ]) {
+    testWidgets(
+      'Tab-focused exact row survives ${query.isEmpty ? 'sorted' : 'ranked'} ${removeEarlier ? 'removal' : 'insertion'}',
       (tester) async {
         final calls = <String>[];
+        final earlierLabel = query.isEmpty ? 'A earlier' : 'NT';
+        final firstLabel = query.isEmpty ? 'B first' : 'Antelope';
+        final focusedLabel = query.isEmpty ? 'C focused' : 'New Terminal';
         final earlier = removeEarlier
             ? contribute(
                 'earlier',
-                'A earlier',
+                earlierLabel,
                 invoke: () => calls.add('earlier'),
               )
             : null;
-        contribute('first', 'B first', invoke: () => calls.add('first'));
-        contribute('focused', 'C focused', invoke: () => calls.add('focused'));
+        contribute('first', firstLabel, invoke: () => calls.add('first'));
+        contribute('focused', focusedLabel, invoke: () => calls.add('focused'));
         await mount(tester);
         try {
           await open(tester);
+          if (query.isNotEmpty) {
+            await tester.enterText(search, query);
+            await tester.pump();
+          }
           final oldIndex = removeEarlier ? 2 : 1;
           for (var index = 0; index <= oldIndex; index++) {
             await tester.sendKeyEvent(LogicalKeyboardKey.tab);
           }
           await tester.pump();
-          final row = find.widgetWithText(ListTile, 'C focused');
+          final row = find.widgetWithText(ListTile, focusedLabel);
           final element = tester.element(row);
           final focus = FocusManager.instance.primaryFocus!;
           expect(
@@ -657,7 +888,7 @@ void main() {
           } else {
             contribute(
               'earlier',
-              'A earlier',
+              earlierLabel,
               invoke: () => calls.add('earlier'),
             );
           }
@@ -671,6 +902,19 @@ void main() {
           expect(FocusManager.instance.primaryFocus, same(focus));
           expect(focus.hasPrimaryFocus, isTrue);
           expect(tester.widget<ListTile>(row).selected, isFalse);
+
+          if (query.isNotEmpty) {
+            // Drive the field callback without taking focus from the result row.
+            final field = tester.widget<TextField>(search);
+            field.controller!.text = 't';
+            field.onChanged!('t');
+            await tester.pumpAndSettle();
+            expect(find.byType(ListTile).evaluate().first, same(element));
+            expect(tester.element(row), same(element));
+            expect(FocusManager.instance.primaryFocus, same(focus));
+            expect(focus.hasPrimaryFocus, isTrue);
+            expect(field.focusNode!.hasFocus, isFalse);
+          }
 
           await tester.sendKeyEvent(LogicalKeyboardKey.enter);
           await tester.pumpAndSettle();

@@ -682,12 +682,25 @@ or Session/Environment authority. Registrations retire during application close;
 disposal starts the same cleanup, and graceful exit awaits it. Captured bindings
 never revive on remount or ID reuse.
 
-The modal focuses search, filters labels/IDs case-insensitively, and consumes the
-domain's deterministic unique catalog. Hidden entries are omitted, disabled
-entries cannot be invoked, and conflicts have no arbitrarily selected row.
+The modal focuses search and consumes `CommandResolver.discover()`'s unique catalog.
+App-local pure-Dart [search policy](lib/ui/commands/command_search.dart) ranks
+case-insensitive exact labels/IDs first, then label prefixes, ordered word prefixes,
+and substrings. ID prefixes/segment prefixes remain useful; ordered label fuzzy
+matches prefer consecutive characters, word starts, early positions, and fewer
+gaps. Weak ID substrings rank last, and IDs do not use fuzzy subsequence matching.
+Whitespace is normalized; multiple terms can skip intervening words, and label
+fuzzy matching ignores spaces (`nt` or `ntrm` finds New Terminal, `os` finds Open
+Source...). Equal relevance retains the resolver's case-insensitive label/ID order;
+empty or whitespace-only search preserves that unfiltered order. Search returns
+the original resolved bindings, not new Command identities or composition decisions.
+
+Hidden entries are omitted, disabled entries cannot be invoked, and conflicts have
+no arbitrarily selected row. Availability does not affect relevance.
 Up/Down and Enter work from search, ordinary Tab focus activates its own control,
-and Escape dismisses the dialog. Registry changes refresh membership while
-preserving only exact selections; a replacement requires fresh user selection.
+and Escape dismisses the dialog. Query edits select the best result; registry
+changes rerank membership while preserving only exact selections. Keyed rows
+retain Tab-focus identity across reordering; a replacement requires fresh user
+selection and cannot inherit the retired row's callback authority.
 Availability is reevaluated on build and before invocation, not polled.
 
 Dismissal returns an exact resolved Command to application dispatch, allowing the
