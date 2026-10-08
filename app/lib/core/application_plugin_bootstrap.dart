@@ -72,6 +72,24 @@ final class InstalledBackendActivation {
     }
   }
 
+  ProviderBinding? associationFor(ProviderBinding binding) {
+    validate();
+    return _activation!.associationFor(binding);
+  }
+
+  ProviderBinding resolveAssociatedProvider(
+    CapabilityKey capability, {
+    required ProviderBinding associatedWith,
+    ProviderId? providerId,
+  }) {
+    validate();
+    return _activation!.resolveAssociatedProvider(
+      capability,
+      associatedWith: associatedWith,
+      providerId: providerId,
+    );
+  }
+
   /// Binds this presentation to the owning installation's exact ready backend.
   /// Owning affinity also captures the strategy's advertised configuration route.
   OwningBackendChannel openChannel({
@@ -173,6 +191,21 @@ final class ApplicationPluginBootstrap {
       if (identical(backend.installation, installation) &&
           backend.state == InstalledBackendState.active &&
           !(backend.connection?.isClosed ?? true)) {
+        backend.validate();
+        return backend;
+      }
+    }
+    return null;
+  }
+
+  /// Finds the active owner of this exact registration, not its advertised IDs.
+  InstalledBackendActivation? backendForProvider(ProviderBinding binding) {
+    binding.endpointAs<CapabilityEndpoint>();
+    if (_state != ApplicationPluginState.ready) return null;
+    for (final backend in _backends) {
+      if (backend.state == InstalledBackendState.active &&
+          !(backend.connection?.isClosed ?? true) &&
+          backend._activation!.ownsProvider(binding)) {
         backend.validate();
         return backend;
       }

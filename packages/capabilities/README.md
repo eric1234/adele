@@ -56,6 +56,14 @@ does not invoke those observers again or touch replacement registrations.
 See the [registry source](lib/src/capability_registry.dart) and
 [tests](test/capability_registry_test.dart) for exact failure distinctions.
 
+`ProviderBinding.isSameRegistration` and registration `.owns` compare exact
+registration occurrences, including when resolution wrappers differ. The host
+runtime uses these primitives for explicit advertised
+[provider associations](../plugin_runtime/README.md#ready-registrations).
+Association metadata and generation ownership stay outside `ProviderDescriptor`
+and this registry. Environment-eligible selection is a separate host constraint;
+ordinary `resolve` ordering, availability, and context-free behavior are unchanged.
+
 Rank/ID ordering is the current deterministic default, not the final preference
 model or a provider declaration of global primacy. Default selection remains
 host-owned; future user/Profile/Project preferences belong to

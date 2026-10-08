@@ -128,6 +128,45 @@ See [`capabilities`](../../packages/capabilities/README.md) for registry behavio
 and [profiles and configuration](profiles-and-configuration.md) for the separate
 configuration/preference model.
 
+### Provider associations and Environment eligibility
+
+An advertised callable provider may explicitly associate with one direct sibling
+provider in the same backend activation. The declaration names a Capability ID,
+exact major, and Provider ID; it is a claim about the backend's own implementations,
+not host authority. During activation the host resolves that declaration once and
+checks actual registration ownership. Both direct host registration and ready
+advertisements use the same activation bookkeeping. Forward references are allowed;
+missing, incompatible, foreign, self, and chained references fail with activation
+rollback. No cross-backend delegation or association graph is supported.
+
+The retained relationship joins two exact live registrations, not their semantic
+descriptors, configuration contexts, or endpoint values. Multiple providers can
+share one configuration context without becoming associated; explicitly associated
+providers can use different contexts. Retirement of either registration makes the
+relationship unusable, and replacement with identical IDs never repairs it. Ordinary
+context-free calls remain independent of association eligibility.
+
+The host can use this evidence for Environment-scoped selection. The app's
+`CapturedEnvironmentCapabilities` captures the canonical Session's authoritative
+Environment association synchronously, validates its product graph, then acquires
+that Environment through `EnvironmentRuntime`. It retains one materialization
+attempt, including failure, and its exact provider binding. It never substitutes
+Task primary, follows later navigation, or re-resolves a retired captured binding.
+Only callable providers explicitly associated with that exact Environment provider
+are eligible. Selection preserves existing rank/Provider ID ordering within the
+eligible set; an explicit unavailable or ineligible provider fails without fallback.
+The result retains both bindings and validates the exact relationship, while the
+existing context-free `CapabilityRegistry.resolve` remains unchanged.
+
+Association validation proves live registration provenance and the backend's
+explicit declaration, not arbitrary native implementation semantics. It grants no
+Environment reads, mutations, processes, host-service access, or invocation token.
+Selected bindings support the existing generated service route without a new
+transport envelope. The interpreted Capability bridge remains context-free.
+Contextual invocation authority and a future adapter over another plugin's
+Environment require separate designs; an SCM provider is not inherently an
+Environment owner.
+
 ## Live discovery and exact binding
 
 ```text
@@ -270,7 +309,8 @@ negotiation, runtime reflection, or arbitrary Dart object transport.
 
 Capability discovery and invocation supply no contextual Session/Environment,
 process, storage, approval, or execution authority. No empty host-invocation token
-is manufactured. Contextual selection, provider provenance, delegated host grants,
+is manufactured. Native/host-side [association eligibility](#provider-associations-and-environment-eligibility)
+does not extend this interpreted route. Contextual invocation, delegated host grants,
 and backend-to-backend consumption remain separate future work. See the
 [public bridge API](../../packages/ui/README.md#interpreted-bridges),
 [descriptor schema](../../packages/plugin_runtime/README.md#prepared-catalog), and

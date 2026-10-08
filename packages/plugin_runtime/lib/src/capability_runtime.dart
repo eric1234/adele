@@ -24,10 +24,12 @@ final class PluginCapabilityExposure {
   const PluginCapabilityExposure({
     required this.provider,
     required this.configurationContext,
+    this.association,
   });
 
   final ProviderDescriptor provider;
   final ConfigurationContextId configurationContext;
+  final AdeleProviderAssociation? association;
 }
 
 extension ProviderBindingRequestChannel on ProviderBinding {
@@ -47,10 +49,15 @@ final class PluginCapabilityActivation {
   PluginCapabilityActivation._({
     required this.connection,
     required this.registrations,
-  });
+    required CapabilityRegistry registry,
+    required Map<ProviderBinding, ProviderBinding> associations,
+  }) : _registry = registry,
+       _associations = Map.unmodifiable(associations);
 
   final PluginBackendConnection connection;
   final CapabilityRegistrationGroup registrations;
+  final CapabilityRegistry _registry;
+  final Map<ProviderBinding, ProviderBinding> _associations;
   Future<void>? _retiring;
 
   bool owns(ProviderBinding binding) {
@@ -58,6 +65,56 @@ final class PluginCapabilityActivation {
     return _retiring == null &&
         !connection.isClosed &&
         registrations.owns(binding);
+  }
+
+  /// Returns an exact live sibling, or null for an unassociated/foreign binding.
+  /// Retirement fails validation; semantic IDs never re-resolve the target.
+  ProviderBinding? associationFor(ProviderBinding binding) {
+    if (!owns(binding)) return null;
+    for (final entry in _associations.entries) {
+      if (entry.key.isSameRegistration(binding)) {
+        if (!owns(entry.value)) return null;
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  /// Uses registry ordering only among exact siblings of [associatedWith].
+  ProviderBinding resolveAssociatedProvider(
+    CapabilityKey capability, {
+    required ProviderBinding associatedWith,
+    ProviderId? providerId,
+  }) {
+    if (!owns(associatedWith)) {
+      throw const InvalidProviderRegistration(
+        'The associated binding is not owned by this activation.',
+      );
+    }
+    final eligible = <ProviderBinding>[];
+    for (final provider in _registry.providersFor(capability)) {
+      final binding = _registry.resolve(capability, providerId: provider.id);
+      for (final entry in _associations.entries) {
+        if (entry.key.isSameRegistration(binding) &&
+            entry.value.isSameRegistration(associatedWith) &&
+            associationFor(binding) != null) {
+          eligible.add(binding);
+          break;
+        }
+      }
+    }
+    if (providerId != null) {
+      for (final binding in eligible) {
+        if (binding.provider.id == providerId) return binding;
+      }
+      throw ProviderUnavailable(
+        capability: capability,
+        providerId: providerId,
+        availableProviderIds: eligible.map((binding) => binding.provider.id),
+      );
+    }
+    if (eligible.isEmpty) throw CapabilityUnavailable(capability);
+    return eligible.first;
   }
 
   static Future<PluginCapabilityActivation> registerAdvertised({
@@ -84,6 +141,7 @@ final class PluginCapabilityActivation {
         configurationContext: connection.configurationContext(
           exposure.configurationContext,
         ),
+        association: exposure.association,
       ),
     ),
   );
@@ -103,6 +161,15 @@ final class PluginCapabilityActivation {
     }
     final CapabilityRegistrationGroup registrations =
         CapabilityRegistrationGroup();
+    final acquired =
+        <
+          ({
+            PluginCapabilityExposure exposure,
+            CapabilityRegistration registration,
+            ProviderBinding binding,
+          })
+        >[];
+    final associations = <ProviderBinding, ProviderBinding>{};
     try {
       for (final PluginCapabilityExposure exposure in exposures) {
         final ProviderDescriptor provider = exposure.provider;
@@ -112,19 +179,65 @@ final class PluginCapabilityActivation {
             '${connection.pluginId}.',
           );
         }
-        registrations.add(
-          registry.register(
-            provider: provider,
-            endpoint: AdeleRequestChannelEndpoint(
-              channel: connection.channelFor(
-                exposure.configurationContext,
-                provider.serviceId,
-              ),
-              serviceId: provider.serviceId,
-              isAvailable: () => !connection.isClosed,
+        final registration = registry.register(
+          provider: provider,
+          endpoint: AdeleRequestChannelEndpoint(
+            channel: connection.channelFor(
+              exposure.configurationContext,
+              provider.serviceId,
             ),
+            serviceId: provider.serviceId,
+            isAvailable: () => !connection.isClosed,
           ),
         );
+        registrations.add(registration);
+        final binding = registry.resolve(
+          provider.capability,
+          providerId: provider.id,
+        );
+        if (!registration.owns(binding)) {
+          throw InvalidProviderRegistration(
+            'Provider ${provider.id} registration was replaced.',
+          );
+        }
+        acquired.add((
+          exposure: exposure,
+          registration: registration,
+          binding: binding,
+        ));
+      }
+      // Keep exposure iteration lazy, then allow forward sibling references.
+      for (final source in acquired) {
+        final declaration = source.exposure.association;
+        if (declaration == null) continue;
+        late final ProviderBinding target;
+        try {
+          target = registry.resolve(
+            CapabilityKey(
+              id: CapabilityId(declaration.capabilityId),
+              majorVersion: declaration.capabilityMajorVersion,
+            ),
+            providerId: ProviderId(declaration.providerId),
+          );
+          source.binding.endpointAs<CapabilityEndpoint>();
+          target.endpointAs<CapabilityEndpoint>();
+        } on CapabilityException {
+          throw InvalidProviderRegistration(
+            'Provider ${source.binding.provider.id} association is unavailable.',
+          );
+        }
+        final targets = acquired.where(
+          (entry) => entry.registration.owns(target),
+        );
+        if (targets.isEmpty ||
+            source.registration.owns(target) ||
+            targets.single.exposure.association != null) {
+          throw InvalidProviderRegistration(
+            'Provider ${source.binding.provider.id} association must name an '
+            'unassociated direct sibling owned by this activation.',
+          );
+        }
+        associations[source.binding] = target;
       }
     } on Object {
       try {
@@ -141,6 +254,8 @@ final class PluginCapabilityActivation {
     final PluginCapabilityActivation activation = PluginCapabilityActivation._(
       connection: connection,
       registrations: registrations,
+      registry: registry,
+      associations: associations,
     );
     unawaited(
       connection.terminated
@@ -150,7 +265,15 @@ final class PluginCapabilityActivation {
     return activation;
   }
 
-  Future<void> retire() => _retiring ??= registrations.close();
+  Future<void> retire() {
+    final retiring = _retiring;
+    if (retiring != null) return retiring;
+    final completion = Completer<void>();
+    // Fence selection and join reentrant calls before synchronous observers run.
+    _retiring = completion.future;
+    completion.complete(registrations.close());
+    return completion.future;
+  }
 
   Future<void> close() async {
     connection.revokeInfrastructureContext();

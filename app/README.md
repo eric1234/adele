@@ -191,6 +191,27 @@ Main Content hosting, not a test-only native service adapter. The companion
 [`capability_access_bridge_test.dart`](test/capability_access_bridge_test.dart)
 isolates exact binding, bounded scope, admission/settlement, and stream lifetime.
 
+### Environment-eligible Capability selection
+
+[`CapturedEnvironmentCapabilities`](lib/core/environment_capability_selection.dart)
+is a native/host-only selection helper, separate from the interpreted bridge.
+It reuses `CapturedSessionEnvironment` from
+[`product_lifecycle.dart`](lib/core/product_lifecycle.dart), also used by text-file
+operations, to capture canonical authority before lazy materialization.
+`ApplicationPluginBootstrap.backendForProvider` finds the actual activation owner
+of that materialization's exact binding. The runtime's explicit sibling association
+then constrains selection. Each requested Capability/provider selection, including
+failure, is retained within that capture; the result's `validate()` checks both
+bindings and their relationship without replacing either.
+
+The selected `ProviderBinding` works with existing generated clients, but this
+helper grants no Environment access or contextual invocation authority. See the
+[association architecture](../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility)
+and the [host selection tests](test/core/environment_capability_selection_test.dart).
+The [activation integration](test/core/environment_capability_integration_test.dart)
+uses real shared-host/backend AOT, normal advertisements/bootstrap, and a gated
+canonical nonprimary Environment restore without a stock provenance plugin.
+
 <a id="prepared-chat-frontend"></a>
 ### Prepared frontend artifacts
 

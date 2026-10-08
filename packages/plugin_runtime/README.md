@@ -325,6 +325,27 @@ stale-binding semantics remain unchanged; installed metadata never registers a
 provider. See
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
+`AdeleCapabilityExposure.association` optionally names one direct sibling provider.
+`PluginCapabilityExposure` carries the same declaration into `register`; both paths
+register normally, then resolve references once against actual owned registrations.
+The target must be live, match the declared Capability/major/Provider ID, and belong
+to this activation attempt. Forward references work; missing, foreign, self, or
+already-associated targets fail `InvalidProviderRegistration` with existing rollback.
+The resulting exact binding pairs remain private to `PluginCapabilityActivation`,
+not a second registry or additions to semantic descriptors.
+
+`associationFor(binding)` checks exact ownership and both registrations' liveness,
+returning the captured target or null for a live foreign/unassociated binding.
+`resolveAssociatedProvider(capability, associatedWith: binding, providerId: ...)`
+requires a live owned anchor and selects only exact-associated registrations using
+the registry's existing order. Explicit ineligible/unavailable selection fails with
+`ProviderUnavailable`; no default candidates means `CapabilityUnavailable`.
+`PluginBackendActivation` delegates both APIs. No target is looked up again by ID
+after activation, so retirement and replacement cannot revive an association.
+Context-free source invocation is not disabled merely because its association
+becomes unusable. These are host-side eligibility APIs, not invocation grants; see
+the [architectural boundary](../../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
+
 `extensionExposures` follows the same path using public `AdeleExtensionExposure`;
 omission means zero extensions. `PluginExtensionActivation.registerAdvertised`
 selects a host `RemoteExtensionAdapter` by extension-point ID and registers its

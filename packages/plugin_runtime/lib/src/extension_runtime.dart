@@ -313,6 +313,24 @@ final class PluginBackendActivation {
     return _capabilities.owns(binding);
   }
 
+  ProviderBinding? associationFor(ProviderBinding binding) {
+    validate();
+    return _capabilities.associationFor(binding);
+  }
+
+  ProviderBinding resolveAssociatedProvider(
+    CapabilityKey capability, {
+    required ProviderBinding associatedWith,
+    ProviderId? providerId,
+  }) {
+    validate();
+    return _capabilities.resolveAssociatedProvider(
+      capability,
+      associatedWith: associatedWith,
+      providerId: providerId,
+    );
+  }
+
   void validate() {
     if (_retired || connection.isClosed) {
       throw const PluginConnectionClosed('The backend activation is retired.');

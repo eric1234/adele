@@ -99,6 +99,51 @@ Object? _adeleTransportJsonValue(Object? value) => switch (value) {
   _ => value,
 };
 
+/// A declaration naming one direct sibling provider in the same activation.
+/// The host resolves this once to an exact binding; it grants no authority.
+final class AdeleProviderAssociation {
+  AdeleProviderAssociation({
+    required this.capabilityId,
+    required this.capabilityMajorVersion,
+    required this.providerId,
+  }) {
+    try {
+      validateAdelePublicId(capabilityId, label: 'capability ID');
+      validateAdelePublicId(providerId, label: 'provider ID');
+    } on FormatException {
+      throw const FormatException('Invalid provider association identity.');
+    }
+    if (capabilityMajorVersion <= 0) {
+      throw const FormatException('Capability major version must be positive.');
+    }
+  }
+
+  final String capabilityId;
+  final int capabilityMajorVersion;
+  final String providerId;
+
+  static AdeleProviderAssociation _fromMap(Object? value) {
+    if (value is! Map ||
+        value.length != 3 ||
+        value['capabilityId'] is! String ||
+        value['capabilityMajorVersion'] is! int ||
+        value['providerId'] is! String) {
+      throw const FormatException('Malformed provider association.');
+    }
+    return AdeleProviderAssociation(
+      capabilityId: value['capabilityId'] as String,
+      capabilityMajorVersion: value['capabilityMajorVersion'] as int,
+      providerId: value['providerId'] as String,
+    );
+  }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'capabilityId': capabilityId,
+    'capabilityMajorVersion': capabilityMajorVersion,
+    'providerId': providerId,
+  };
+}
+
 /// One callable provider advertised by a ready backend generation.
 /// Plugin identity is deliberately absent: the host owns that identity.
 final class AdeleCapabilityExposure {
@@ -110,6 +155,7 @@ final class AdeleCapabilityExposure {
     required this.displayName,
     required this.configurationContext,
     this.rank = 0,
+    this.association,
   }) {
     try {
       validateAdelePublicId(providerId, label: 'provider ID');
@@ -137,6 +183,7 @@ final class AdeleCapabilityExposure {
   final String displayName;
   final String configurationContext;
   final int rank;
+  final AdeleProviderAssociation? association;
 
   static List<AdeleCapabilityExposure> fromReady(Map<Object?, Object?> ready) {
     if (!ready.containsKey('capabilityExposures')) return const [];
@@ -164,6 +211,9 @@ final class AdeleCapabilityExposure {
           displayName: value['displayName'] as String,
           configurationContext: value['configurationContext'] as String,
           rank: value.containsKey('rank') ? value['rank'] as int : 0,
+          association: value.containsKey('association')
+              ? AdeleProviderAssociation._fromMap(value['association'])
+              : null,
         );
       }),
     );
@@ -177,6 +227,7 @@ final class AdeleCapabilityExposure {
     'displayName': displayName,
     'configurationContext': configurationContext,
     'rank': rank,
+    if (association != null) 'association': association!.toMap(),
   };
 }
 

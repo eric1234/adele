@@ -130,6 +130,12 @@ host-owned, not a provider's declaration that it is globally primary. Provider
 resolution, generated transport, and remote invocation belong to
 [contracts and capabilities](contracts-and-capabilities.md).
 
+Callable providers can explicitly declare a direct sibling association within one
+backend activation. The host captures the exact owned registrations, not a
+same-plugin or same-configuration inference. This enables native/host-side
+Environment eligibility without merging registries or granting invocation authority;
+see [provider associations](contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
+
 Events remain read-only fact notifications, not provider-selected calls or mutable
 lifecycle hooks. Observers cannot change whether the announced fact occurred;
 subscriber failures normally do not retroactively fail its producer. Events do
