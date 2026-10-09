@@ -14,6 +14,7 @@ coverage/
 /packages/model_tool/lib/remote_model_tool.g.dart
 /packages/orchestration/lib/remote_inference_context.g.dart
 /packages/orchestration/lib/remote_orchestration.g.dart
+/packages/plugin_backend_support/lib/capability_consumer.g.dart
 /packages/project_storage/lib/adele_project_storage.g.dart
 /plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.g.dart
 /plugins/command_tools/packages/contract/lib/command_tools_contract.g.dart

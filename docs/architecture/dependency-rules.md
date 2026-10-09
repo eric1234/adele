@@ -156,6 +156,8 @@ Depending on a public interface is not requiring one implementation to be active
 Discover compatible registrations at runtime; missing participation follows the
 owning extension point's semantics, not hidden activation dependencies. A package
 being accessible in the repository does not make it a public interface.
+For the implemented public-facade path, see
+[backend Capability consumption](contracts-and-capabilities.md#prepared-backend-capability-consumption).
 
 Plugin tests may use internal host packages under `dev_dependencies` for
 integration testing. Production plugin libraries and entrypoints must not import

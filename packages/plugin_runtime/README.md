@@ -67,7 +67,8 @@ reads a deterministic startup snapshot of immediate child directories'
 The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
 `metadata` supplies `PluginMetadata`; the required `components` object may be
 empty, retaining an inert metadata-only installation. A backend component supplies
-an `artifact` path; a frontend supplies an `artifact` path and descriptors.
+an `artifact` path and optional `consumesCapabilities`; a frontend supplies an
+`artifact` path and descriptors.
 The in-memory catalog captures parsed metadata and validated locations, not an
 atomic filesystem snapshot or artifact bytes. Later component loading can fail
 even after discovery succeeds.
@@ -85,6 +86,35 @@ The separate sealed `PreparedFrontendExtension` includes
 `extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list. Manifest version remains 1.
+
+`components.backend.consumesCapabilities` is a backend-only consumption allowlist,
+not a provider advertisement or dependency on an active implementation. For example,
+the backend component object can be:
+
+```json
+{
+  "artifact": "backend.aot",
+  "consumesCapabilities": [{"id": "org.example.read", "majorVersion": 1}]
+}
+```
+
+Omission means empty. Each entry accepts exactly `id` and `majorVersion`, using
+public Capability identity and positive-integer major validation. Duplicate keys,
+unknown fields, wrong types (including null), and more than 128 entries are rejected;
+different majors of one ID are distinct keys. A malformed backend declaration
+invalidates only that component, clearing its artifact and declarations while
+preserving a healthy frontend. The field is not accepted at installation, metadata,
+frontend, or frontend-descriptor scope. No provider lookup occurs during parsing.
+
+`PreparedPluginInstallation.backendConsumedCapabilities` is an immutable snapshot
+of those `CapabilityKey` values. Programmatic construction applies the same bound
+and duplicate validation and rejects nonempty declarations without a backend.
+`maxBackendConsumedCapabilities` owns the limit;
+`backendConsumedCapabilitiesToJson()` serializes only that array, preserving order
+and returning fresh maps/lists. It is not a complete installation serializer or a
+source-builder manifest field. The app owns mediation and normal bootstrap wiring;
+plugins use the [public consumer facade](../plugin_backend_support/README.md#capability-consumption),
+not this internal package. See the [architectural boundary](../../docs/architecture/contracts-and-capabilities.md#prepared-backend-capability-consumption).
 
 `PreparedCommandExtension` uses `kind: 'command'` and exactly these required fields:
 
@@ -608,6 +638,15 @@ retarget. Tokens are live authority, not serializable durable identity or reusab
 configuration, and must not be persisted. Plugins bind them through
 `AdeleHostRequestMultiplexer.bindInfrastructure`, not a symmetric RPC or ambient
 callback system.
+
+`connection.onInfrastructureRevoked(observer)` lets a supplied service synchronously
+retire its own generation-local bookkeeping after the exact grant has been fenced,
+before asynchronous cleanup. Registration requires a live infrastructure context;
+the returned detach callback is idempotent. Revocation drains observers once, and
+observer failures report to their registration Zone without interrupting remaining
+observers or transport cleanup. This does not transfer dispatcher ownership to the
+runtime. The app's [backend Capability mediator](../../app/README.md#backend-capability-consumption)
+uses it to release consumer handles, separately from provider registration lifetime.
 
 ## Maintenance And Limits
 

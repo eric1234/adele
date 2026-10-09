@@ -5,6 +5,9 @@ import 'dart:async';
 
 import 'package:adele_contract/adele_contract.dart';
 
+export 'adele_capability_consumer.dart';
+export 'capability_consumer.dart';
+
 /// One unary operation's explicit, request-only access to host services.
 ///
 /// The host remains authoritative for service allowlists, generation and

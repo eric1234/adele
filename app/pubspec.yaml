@@ -19,6 +19,7 @@ dependencies:
   adele_model_provider: ^0.1.0
   adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
+  adele_plugin_backend_support: ^0.1.0
   adele_product: ^0.1.0
   adele_project_storage: ^0.1.0
   adele_ui: ^0.1.0
@@ -35,7 +36,6 @@ dependencies:
   xterm2: 5.2.0
 
 dev_dependencies:
-  adele_plugin_backend_support: ^0.1.0
   chat_strategy_backend: ^0.1.0
   chat_strategy_contract: ^0.1.0
   command_tools_plugin: ^0.1.0

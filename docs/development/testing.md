@@ -182,6 +182,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Contextual Console-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (same-component target validation before publication); [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (canonical authority, availability without EVC, shared creation/policy, safe warning, rollback, and asymmetric exact retirement); [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart) (fresh post-reveal admission and owner/action pending state across context changes); stock palette/PTY evidence is in the Terminal case of [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart). |
 | Contextual Main Content input-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (exact sibling targets and synchronous rollback); [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (availability and asymmetric registration/replacement lifetime); [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart) and [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart) (exact action/current attachment, single input route, shared button/Command presentation, safe factory failure, and navigation). Stock Source EVC/no-read-before-submit belongs to the Source frontend target; normal global palette behavior belongs to the Source cases in the normal application suite. |
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
+| Prepared backend callable Capability consumption | [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) owns independent prepared consumer/provider AOT through normal catalog/bootstrap and the public generated semantic client; [`test/core/backend_capability_host_test.dart`](../../app/test/core/backend_capability_host_test.dart) owns exact binding, handle bounds, release/retirement, and admitted unary settlement. Public facade/mediation contract tests belong to `adele_plugin_backend_support`; strict backend declarations and generation infrastructure belong to `plugin_runtime`. See [focused checks](#focused-backend-capability-checks). |
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
@@ -228,6 +229,44 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused backend Capability checks
+
+These commands identify validation owners, not passing outcomes. After bootstrap
+and current generation, run affected public API, catalog/runtime, generation, and
+dependency-boundary targets from the repository root:
+
+```sh
+dart tools/adele.dart test --target adele_plugin_backend_support
+dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart generate --check
+dart test test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
+```
+
+The backend-support suite owns the request-only facade, structured values/failures,
+and local release fencing. Catalog tests own the backend-only default-empty
+`consumesCapabilities` allowlist, strict validation, bounds, immutable roundtrip,
+and healthy-sibling preservation. Runtime tests own exact configured-channel
+provenance and generation-infrastructure revocation, not semantic plugin services.
+
+From `app/`, serialize this compiler-heavy integration run with other Flutter invocations:
+
+```sh
+flutter test --no-pub --concurrency 1 test/core/backend_capability_integration_test.dart test/core/backend_capability_host_test.dart test/core/application_plugin_bootstrap_test.dart
+```
+
+The integration boundary requires actual separately prepared consumer and provider
+artifacts, normal catalog/bootstrap, and plugin-owned generated transport, not a
+native consumer stand-in or application semantic-contract adapter. The host suite
+uses a command-gated scripted transport peer with actual connections and advertised
+activations to isolate ownership, retirement/replacement, and release/admitted-publication
+semantics. Missing providers remain a runtime discovery outcome, not a startup
+dependency. The existing unrestricted `adele_desktop` target discovers these files;
+no new test target or CI concurrency policy is needed. Retain nearby frontend
+Capability, contextual Environment, Project storage, and remote-extension
+regressions when their shared infrastructure is changed. This unary context-free
+coverage does not establish backend streaming, contextual authority propagation,
+general recursive composition, or OS sandboxing.
 
 ### Focused Command checks
 

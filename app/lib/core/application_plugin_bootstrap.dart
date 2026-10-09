@@ -6,8 +6,10 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_plugin_backend_support/capability_consumer.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'backend_capability_host.dart';
 import 'remote_inference_context_host.dart';
 import 'resource_cleanup.dart';
 
@@ -296,15 +298,39 @@ final class ApplicationPluginBootstrap {
         if (_failure != null) throw _failure!;
         backend._state = InstalledBackendState.starting;
         try {
-          final PluginBackendConnection connection = backend._connection =
-              await host.startPlugin(
-                pluginId: backend.installation.metadata.id.value,
-                artifactUri: backend.installation.backendArtifactUri!,
-                arguments:
-                    startup[backend.installation.metadata.id.value] ?? const [],
-                startupArgumentsOnly: true,
-                createInfrastructureServices: createInfrastructureServices,
-              );
+          final PluginBackendConnection
+          connection = backend._connection = await host.startPlugin(
+            pluginId: backend.installation.metadata.id.value,
+            artifactUri: backend.installation.backendArtifactUri!,
+            arguments:
+                startup[backend.installation.metadata.id.value] ?? const [],
+            startupArgumentsOnly: true,
+            createInfrastructureServices: (connection) {
+              final services = <String, AdeleBackendDispatcher>{
+                ...?createInfrastructureServices?.call(connection),
+              };
+              final allowed = backend.installation.backendConsumedCapabilities;
+              if (services.containsKey(backendCapabilityConsumerServiceId)) {
+                throw StateError(
+                  'Capability mediation service is already configured.',
+                );
+              }
+              if (allowed.isNotEmpty) {
+                final consumer = BackendCapabilityHost(
+                  connection: connection,
+                  registry: registry,
+                  allowedCapabilities: allowed,
+                  ownerForProvider: _capabilityOwner,
+                );
+                services[backendCapabilityConsumerServiceId] =
+                    BackendCapabilityConsumerServiceDispatcher(
+                      consumer,
+                      concurrent: true,
+                    );
+              }
+              return services;
+            },
+          );
           final PluginBackendActivation activation = backend._activation =
               await PluginBackendActivation.registerAdvertised(
                 connection: connection,
@@ -386,6 +412,21 @@ final class ApplicationPluginBootstrap {
           ),
         },
     };
+  }
+
+  PluginBackendActivation? _capabilityOwner(ProviderBinding binding) {
+    if (_state != ApplicationPluginState.starting &&
+        _state != ApplicationPluginState.ready) {
+      return null;
+    }
+    for (final backend in _backends) {
+      if (backend.state == InstalledBackendState.active &&
+          !(backend.connection?.isClosed ?? true) &&
+          backend._activation!.ownsProvider(binding)) {
+        return backend._activation;
+      }
+    }
+    return null;
   }
 
   Future<void> _pluginTerminated(
