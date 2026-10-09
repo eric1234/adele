@@ -3,6 +3,7 @@ library;
 
 export 'package:adele_environment/adele_environment.dart'
     show EnvironmentProviderServiceDispatcher;
+export 'src/git_change_set_source.dart' show GitChangeSetSourceService;
 export 'src/git_worktree_environment_provider.dart';
 export 'src/ids.dart';
 export 'src/worktree_environment.dart';

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_environment_backend/git_environment_backend.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
@@ -39,6 +40,136 @@ void main() {
       ),
     ]);
   });
+
+  test(
+    'stock AOT advertises associated changes and routes only authorized live identities',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final connection = await host.startPlugin(
+        pluginId: gitEnvironmentPluginId,
+        artifactUri: pluginArtifact.uri,
+      );
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      final environmentBinding = registry.resolve(
+        environmentProviderCapability,
+        providerId: ProviderId(gitWorktreeEnvironmentProviderId),
+      );
+      final changes = registry.resolve(
+        changeSetSourceCapability,
+        providerId: ProviderId(gitChangeSetSourceProviderId),
+      );
+      expect(connection.capabilityExposures, hasLength(2));
+      expect(changes.provider.serviceId, changeSetSourceServiceId);
+      expect(
+        activation
+            .associationFor(changes)!
+            .isSameRegistration(environmentBinding),
+        isTrue,
+      );
+      final provider = GeneratedEnvironmentProvider(
+        providerId: environmentBinding.provider.id,
+        service: EnvironmentProviderServiceClient(
+          environmentBinding.requestChannel,
+        ),
+      );
+      final project = Project(
+        id: ProjectId('diff-project'),
+        sourceLocation: fixture.projectSourceA.uri,
+      );
+      final task = Task(
+        id: TaskId('diff-task'),
+        projectId: project.id,
+        title: 'Diff',
+      );
+      for (final name in ['primary', 'additional']) {
+        final environment = Environment(
+          id: EnvironmentId(name),
+          taskId: task.id,
+          role: name == 'primary'
+              ? EnvironmentRole.primary
+              : EnvironmentRole.additional,
+          providerId: provider.providerId,
+          providerState: null,
+        );
+        await provider.establish(
+          LocalEnvironment(project: project, task: task, value: environment),
+        );
+        await provider.createTextFile(
+          environment.id,
+          'same.txt',
+          '$name content\n',
+        );
+      }
+      await expectLater(
+        ChangeSetSourceServiceClient(changes.requestChannel).snapshotUnstaged(),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'invalid_host_invocation_context',
+          ),
+        ),
+      );
+      Future<ChangeSetSnapshot> snapshot(String environmentId) async {
+        final read = AuthorizedEnvironmentReadServiceDispatcher(
+          _DiffAuthority(environmentId),
+        );
+        final invocation = connection.openHostInvocation({
+          authorizedEnvironmentReadServiceId: read,
+        });
+        try {
+          return await ChangeSetSourceServiceClient(
+            connection.bindHostInvocation(
+              channel: changes.requestChannel,
+              invocation: invocation,
+              validate: () {},
+            ),
+          ).snapshotUnstaged();
+        } finally {
+          invocation.close();
+          await read.close();
+        }
+      }
+
+      final results = await Future.wait([
+        snapshot('primary'),
+        snapshot('additional'),
+      ]);
+      expect(
+        results[0].files.single.hunks.single.lines.single.text,
+        'primary content',
+      );
+      expect(
+        results[1].files.single.hunks.single.lines.single.text,
+        'additional content',
+      );
+      await expectLater(
+        snapshot('not-materialized'),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'environment_not_live',
+          ),
+        ),
+      );
+      await activation.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
 
   test(
     'AOT foreground paused transport retains output across normal exit',
@@ -793,6 +924,24 @@ exec ${_shellQuote(git)} "\$@"
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
+final class _DiffAuthority implements AuthorizedEnvironmentReadService {
+  const _DiffAuthority(this.environmentId);
+  final String environmentId;
+  @override
+  Future<AuthorizedEnvironmentIdentity> authority() async =>
+      AuthorizedEnvironmentIdentity(
+        sessionId: 'session-$environmentId',
+        environmentId: environmentId,
+      );
+  @override
+  Future<EnvironmentTextFile> readFile(String relativePath) async =>
+      throw StateError('Only authority may be read.');
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(
+    String relativePath,
+  ) async => throw StateError('Only authority may be read.');
+}
 
 Future<PluginCapabilityActivation> _register(
   PluginBackendConnection connection,

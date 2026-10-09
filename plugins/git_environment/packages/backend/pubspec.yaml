@@ -13,8 +13,10 @@ dependencies:
   adele_contract: ^0.1.0
   adele_environment: ^0.1.0
   adele_plugin_api: ^0.1.0
+  adele_plugin_backend_support: ^0.1.0
   adele_product: ^0.1.0
   crypto: ^3.0.6
+  diff_viewer_contract: ^0.1.0
 
 dev_dependencies:
   plugin_runtime: ^0.1.0

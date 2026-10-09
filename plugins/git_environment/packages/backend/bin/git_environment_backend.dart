@@ -4,6 +4,8 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_environment_backend/git_environment_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
@@ -38,12 +40,25 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       EnvironmentProviderServiceDispatcher(
         EnvironmentProviderServiceAdapter(provider),
       );
-  final AdeleConfigurationContextRouter router =
-      AdeleConfigurationContextRouter.single(
-        configurationContext: defaultConfigurationContext,
-        serviceId: environmentProviderServiceId,
-        dispatcher: dispatcher,
-      );
+  final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      defaultConfigurationContext: {
+        environmentProviderServiceId: dispatcher,
+        changeSetSourceServiceId: AdeleContextualServiceDispatcher(
+          hostRequests: hostRequests,
+          createDispatcher: (context) => ChangeSetSourceServiceDispatcher(
+            GitChangeSetSourceService(
+              provider: provider,
+              authorizedRead: AuthorizedEnvironmentReadServiceClient(
+                context.bind(authorizedEnvironmentReadServiceId),
+              ),
+            ),
+          ),
+        ),
+      },
+    },
+  );
   final ReceivePort requests = ReceivePort();
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
@@ -58,14 +73,29 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         displayName: 'Git Worktree Environment',
         configurationContext: defaultConfigurationContext,
       ).toMap(),
+      AdeleCapabilityExposure(
+        providerId: gitChangeSetSourceProviderId,
+        capabilityId: changeSetSourceCapability.id.value,
+        capabilityMajorVersion: changeSetSourceCapability.majorVersion,
+        serviceId: changeSetSourceServiceId,
+        displayName: 'Git Unstaged Changes',
+        configurationContext: defaultConfigurationContext,
+        association: AdeleProviderAssociation(
+          capabilityId: environmentProviderCapability.id.value,
+          capabilityMajorVersion: environmentProviderCapability.majorVersion,
+          providerId: gitWorktreeEnvironmentProviderId,
+        ),
+      ).toMap(),
     ],
   });
 
   await for (final Object? request in requests) {
+    if (hostRequests.handleResponse(request)) continue;
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
       // Fence lazy starts before router cancellation or queued dispatch can run.
       final Future<void> closingProvider = provider.close();
+      hostRequests.close();
       await Future.wait<void>([closingProvider, router.close()]);
       responsePort.send(<String, Object?>{
         'kind': 'response',

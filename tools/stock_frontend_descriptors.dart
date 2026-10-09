@@ -1,6 +1,19 @@
 /// Build-time stock presentation metadata, keyed by owning PluginId.
 /// Keep this SDK-only so the launcher and prepared-installation fixtures share it.
 const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
+  'dev.adele.diff-viewer': [
+    {
+      'role': 'mainContent',
+      'extensionId': 'dev.adele.diff-viewer.main-content',
+      'library': 'package:diff_viewer_frontend/main.dart',
+      'initialize': 'initializeDiff',
+      'entrypoint': 'buildDiffPane',
+      'order': 200,
+      'environmentReadCapabilities': [
+        {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
+      ],
+    },
+  ],
   'dev.adele.source-editor': [
     {
       'role': 'mainContent',
