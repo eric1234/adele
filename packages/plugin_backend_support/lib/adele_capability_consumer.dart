@@ -57,6 +57,11 @@ final class AdeleCapabilityConsumer {
         provider.majorVersion != majorVersion ||
         provider.serviceId != expectedServiceId ||
         (providerId != null && provider.providerId != providerId)) {
+      try {
+        await _service.release(access.handle);
+      } on Object {
+        // Cleanup failure must not replace the protocol error being reported.
+      }
       throw const AdeleProtocolException('Mismatched resolved capability.');
     }
     return AdeleResolvedCapability._(_service, access);

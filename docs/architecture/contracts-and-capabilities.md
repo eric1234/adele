@@ -324,8 +324,11 @@ reverse responses while their forward dispatchers await results. Calls belong af
 the consumer's ready handshake: backend initialization and shutdown must not wait
 for new peer invocations, since the shared host serializes lifecycle commands.
 Self-selection is rejected, but arbitrary recursive/cyclic peer composition has no
-scheduler or deadlock guarantee; existing transport deadlines remain the failure
-bound rather than a new cancellation or retry mechanism.
+scheduler or deadlock guarantee. There is no unary transport deadline: an
+unresponsive provider or unsupported cycle can remain pending indefinitely while
+the connections and consumer grant stay live. Backend/host termination or consumer
+grant revocation settles the relevant transport; releasing a handle fences
+publication but does not cancel already-admitted provider work.
 
 This infrastructure grant supplies no operation-scoped host token, canonical
 Session/Environment, Environment service, execution, or approval authority. An

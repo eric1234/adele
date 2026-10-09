@@ -336,16 +336,54 @@ void main() {
       {'serviceId': 'test.other'},
       {'providerId': 'test.other'},
     ]) {
-      wire.reply = (_) => {
-        'handle': 'opaque-access',
-        'provider': {..._providerMap(), ...mismatch},
-      };
+      wire.reply = (message) =>
+          message['method'] == backendCapabilityConsumerServiceReleaseId
+          ? null
+          : {
+              'handle': 'opaque-access',
+              'provider': {..._providerMap(), ...mismatch},
+            };
       await expectLater(
         wire.resolve(providerId: 'test.provider'),
         throwsA(isA<AdeleProtocolException>()),
       );
+      expect(
+        wire.sent.last['method'],
+        backendCapabilityConsumerServiceReleaseId,
+      );
+      expect(wire.sent.last['payload'], {'handle': 'opaque-access'});
     }
   });
+
+  for (final failRelease in [false, true]) {
+    test(
+      'mismatched resolution cleans up its handle with failing cleanup=$failRelease',
+      () async {
+        final wire = _Wire();
+        wire.broker.failRelease = failRelease;
+        for (var attempt = 0; attempt < 65; attempt++) {
+          await expectLater(
+            wire.consumer.resolve(
+              'test.capability',
+              1,
+              expectedServiceId: 'test.other',
+            ),
+            throwsA(
+              isA<AdeleProtocolException>().having(
+                (error) => error.message,
+                'message',
+                'Mismatched resolved capability.',
+              ),
+            ),
+          );
+          expect(wire.broker.releaseCalls, attempt + 1);
+          expect(wire.sent.last['payload'], {'handle': 'opaque-access'});
+        }
+        expect(await wire.resolve(), isNotNull);
+        expect(wire.broker.releaseCalls, 65);
+      },
+    );
+  }
 
   test(
     'invoke strictly validates success and failure envelope shapes',
@@ -564,6 +602,7 @@ final class _Broker implements BackendCapabilityConsumerService {
   Completer<void>? releasing;
   final invoked = Completer<void>();
   int releaseCalls = 0;
+  bool failRelease = false;
   int calls = 0;
 
   @override
@@ -601,6 +640,7 @@ final class _Broker implements BackendCapabilityConsumerService {
   Future<void> release(String handle) async {
     calls++;
     releaseCalls++;
+    if (failRelease) throw StateError('private release diagnostic');
     await releasing?.future;
   }
 }
