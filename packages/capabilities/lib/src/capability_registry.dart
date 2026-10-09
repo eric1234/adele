@@ -176,6 +176,7 @@ final class CapabilityRegistrationGroup {
   }
 
   /// Retires one exact live owned registration, not a same-ID replacement.
+  /// Endpoint availability does not gate registration retirement.
   /// Its retirement listeners run synchronously before this method returns.
   Future<void> retire(ProviderBinding binding) {
     if (_closed) {
@@ -185,7 +186,14 @@ final class CapabilityRegistrationGroup {
     }
     for (final registration in _registrations) {
       if (registration.owns(binding)) {
-        binding.endpointAs<CapabilityEndpoint>();
+        if (registration.isClosed) {
+          throw ProviderUnavailable(
+            capability: binding.provider.capability,
+            providerId: binding.provider.id,
+            availableProviderIds: const <Object>[],
+            stale: true,
+          );
+        }
         return registration.close();
       }
     }

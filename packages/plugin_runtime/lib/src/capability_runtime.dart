@@ -68,8 +68,11 @@ final class PluginCapabilityActivation {
   }
 
   /// Retires only this exact owned provider; the connection and siblings survive.
+  /// Unlike executable access, retirement does not require a healthy endpoint.
   Future<void> retireProvider(ProviderBinding binding) {
-    if (!owns(binding)) {
+    if (_retiring != null ||
+        connection.isClosed ||
+        !registrations.owns(binding)) {
       throw const InvalidProviderRegistration(
         'The provider is not owned by this live activation.',
       );
