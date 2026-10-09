@@ -1,0 +1,266 @@
+import 'package:adele_ui/capability_bridge.dart';
+import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:capability_probe_contract/contract.dart';
+import 'package:flutter/material.dart';
+
+const capability = 'test.capability.read';
+
+void initialize() {
+  openMainContentPane('probe', 'Environment capability consumer', false);
+}
+
+Widget buildPane() => EnvironmentCapabilityProbe();
+
+class EnvironmentCapabilityProbe extends StatefulWidget {
+  @override
+  State<EnvironmentCapabilityProbe> createState() =>
+      EnvironmentCapabilityProbeState();
+}
+
+class EnvironmentCapabilityProbeState
+    extends State<EnvironmentCapabilityProbe> {
+  String selection = 'idle';
+  String text = 'read:idle';
+  dynamic client;
+  List<String> handles = [];
+  bool disposed = false;
+
+  void select(String? provider) async {
+    final handle = await resolveEnvironmentCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      provider,
+    );
+    if (disposed) return;
+    if (handle == null) {
+      setState(() {
+        selection = 'selection:unavailable';
+      });
+      return;
+    }
+    handles.add(handle);
+    client = CapabilityProbeServiceClient(
+      EnvironmentCapabilityRequestChannel(handle),
+    );
+    setState(() {
+      selection = 'selected';
+    });
+  }
+
+  void read(dynamic selected, String scope) async {
+    if (selected == null) return;
+    final CapabilityProbeServiceClient typed = selected;
+    final result = await settleEnvironmentCapabilityOperation(
+      typed.read(scope),
+    );
+    if (disposed) return;
+    if (result[0] == true) {
+      final ProbeValue value = result[1];
+      setState(() {
+        text =
+            '${value.provider}|${value.configuration}|${value.sequence}|${value.text}';
+      });
+    } else {
+      setState(() {
+        text = 'read:unavailable';
+      });
+    }
+  }
+
+  void contextFree(String? provider) {
+    final handle = resolveCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      provider,
+    );
+    if (handle == null) {
+      setState(() {
+        text = 'context-free:unavailable';
+      });
+      return;
+    }
+    read(
+      CapabilityProbeServiceClient(CapabilityRequestChannel(handle)),
+      'ordinary',
+    );
+  }
+
+  void checkDenied() async {
+    final wrongProvider = await resolveEnvironmentCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'test.callable.b',
+    );
+    final unassociated = await resolveEnvironmentCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'test.callable.context-free',
+    );
+    final missing = await resolveEnvironmentCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'test.missing',
+    );
+    final service = await resolveEnvironmentCapabilityProvider(
+      capability,
+      1,
+      'test.private',
+      null,
+    );
+    final version = await resolveEnvironmentCapabilityProvider(
+      capability,
+      2,
+      capabilityProbeServiceId,
+      null,
+    );
+    final undeclared = await resolveEnvironmentCapabilityProvider(
+      'test.undeclared',
+      1,
+      capabilityProbeServiceId,
+      null,
+    );
+    if (disposed) return;
+    final passed =
+        wrongProvider == null &&
+        unassociated == null &&
+        missing == null &&
+        service == null &&
+        version == null &&
+        undeclared == null;
+    setState(() {
+      text = passed ? 'denials:passed' : 'denials:failed';
+    });
+  }
+
+  void forge() async {
+    if (handles.isEmpty) return;
+    final result = await settleEnvironmentCapabilityOperation(
+      EnvironmentCapabilityRequestChannel(
+        handles.last,
+      ).request('$capabilityProbeServiceId.read', <String, Object?>{
+        'scope': 'forged',
+        'sessionId': 'primary-session',
+        'environmentId': 'primary',
+        'providerId': 'test.callable.b',
+        'configurationContext': 'context-free',
+        'serviceId': 'authorizedEnvironmentMutation',
+        'hostInvocationContext': 'forged',
+      }),
+    );
+    if (disposed) return;
+    setState(() {
+      text = result[0] == false ? 'forgery:rejected' : 'forgery:accepted';
+    });
+  }
+
+  void release() {
+    bool released = false;
+    for (final handle in handles) {
+      if (releaseEnvironmentCapabilityProvider(handle)) released = true;
+    }
+    setState(() {
+      selection = released ? 'released' : 'already released';
+    });
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    for (final handle in handles) {
+      releaseEnvironmentCapabilityProvider(handle);
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(selection),
+      Text(text),
+      Column(
+        children: [
+          TextButton(
+            onPressed: () {
+              select(null);
+            },
+            child: Text('Default'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.callable.a');
+            },
+            child: Text('Select A'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.callable.b');
+            },
+            child: Text('Select B'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'A');
+            },
+            child: Text('Read A'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'B');
+            },
+            child: Text('Read B'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'held');
+            },
+            child: Text('Held'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'backend-failure');
+            },
+            child: Text('Fail backend'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(client, 'host-failure');
+            },
+            child: Text('Fail host'),
+          ),
+          TextButton(onPressed: checkDenied, child: Text('Check denials')),
+          TextButton(onPressed: forge, child: Text('Forge payload')),
+          TextButton(
+            onPressed: () {
+              contextFree(null);
+            },
+            child: Text('Context free'),
+          ),
+          TextButton(
+            onPressed: () {
+              contextFree('test.callable.a');
+            },
+            child: Text('Context free A'),
+          ),
+          TextButton(
+            onPressed: () {
+              read(
+                CapabilityProbeServiceClient(
+                  EnvironmentCapabilityRequestChannel('test.callable.a'),
+                ),
+                'forged-handle',
+              );
+            },
+            child: Text('Forged handle'),
+          ),
+          TextButton(onPressed: release, child: Text('Release')),
+        ],
+      ),
+    ],
+  );
+}

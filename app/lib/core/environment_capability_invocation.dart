@@ -9,11 +9,15 @@ import 'environment_capability_selection.dart';
 
 /// Explicit host authorization for one selected unary call, with read access only.
 /// The consumer owns its generated client; neither IDs nor payload select authority.
+/// [onRetire] optionally observes an additional host-owned lifetime. It must call
+/// its listener synchronously on retirement, including when already retired, and
+/// return a detach callback. It does not replace exact selection validation.
 Future<T> invokeEnvironmentCapabilityWithRead<T>({
   required EnvironmentCapabilitySelection selection,
   required ApplicationPluginBootstrap backends,
   required String serviceId,
   required Future<T> Function(AdeleRequestChannel channel) invoke,
+  void Function() Function(void Function())? onRetire,
 }) async {
   selection.validate();
   final owner = backends.backendForProvider(selection.binding);
@@ -62,6 +66,7 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     detach.add(selection.binding.onRetire(revoke));
     detach.add(selection.materialization.binding.onRetire(revoke));
     detach.add(owner.onRetire(revoke));
+    if (onRetire != null) detach.add(onRetire(revoke));
     validateSelection();
     final opened = invocation = connection.openHostInvocation({
       authorizedEnvironmentReadServiceId: dispatcher,

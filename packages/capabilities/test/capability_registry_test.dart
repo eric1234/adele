@@ -494,6 +494,116 @@ void main() {
   });
 
   test(
+    'individual retirement checks registration state, not endpoint health',
+    () async {
+      final registry = CapabilityRegistry();
+      final group = CapabilityRegistrationGroup();
+      addTearDown(group.close);
+      final provider = _provider(capability, 'dev.adele.inspector.alpha');
+      final endpoint = _Endpoint();
+      final registration = registry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      group.add(registration);
+      final binding = registry.resolve(capability);
+      final siblingEndpoint = _Endpoint();
+      final sibling = registry.register(
+        provider: _provider(capability, 'dev.adele.inspector.beta'),
+        endpoint: siblingEndpoint,
+      );
+      group.add(sibling);
+      final siblingBinding = registry.resolve(
+        capability,
+        providerId: ProviderId('dev.adele.inspector.beta'),
+      );
+      final foreignRegistry = CapabilityRegistry();
+      final foreign = foreignRegistry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      addTearDown(foreign.close);
+      final foreignBinding = foreignRegistry.resolve(capability);
+      final stale = isA<ProviderUnavailable>().having(
+        (error) => error.stale,
+        'stale',
+        isTrue,
+      );
+      var retirements = 0;
+      var siblingRetirements = 0;
+      siblingBinding.onRetire(() => siblingRetirements++);
+      binding.onRetire(() {
+        retirements++;
+        expect(registration.isClosed, isTrue);
+        expect(() => group.retire(binding), throwsA(stale));
+      });
+
+      endpoint.isAvailable = false;
+      expect(registration.isClosed, isFalse);
+      expect(retirements, 0);
+      expect(
+        () => binding.endpointAs<CapabilityEndpoint>(),
+        throwsA(isA<ProviderEndpointUnavailable>()),
+      );
+      expect(
+        () => registry.resolve(capability, providerId: provider.id),
+        throwsA(
+          isA<ProviderUnavailable>().having(
+            (error) => error.stale,
+            'stale',
+            isFalse,
+          ),
+        ),
+      );
+      expect(
+        registry.resolve(capability).isSameRegistration(siblingBinding),
+        isTrue,
+      );
+      expect(registry.providersFor(capability), [
+        same(siblingBinding.provider),
+      ]);
+      expect(
+        () => group.retire(foreignBinding),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(foreign.isClosed, isFalse);
+
+      final retiring = group.retire(binding);
+      expect(registration.isClosed, isTrue);
+      expect(retirements, 1);
+      expect(siblingRetirements, 0);
+      expect(sibling.isClosed, isFalse);
+      expect(siblingBinding.endpointAs<_Endpoint>(), same(siblingEndpoint));
+      expect(() => binding.endpointAs<CapabilityEndpoint>(), throwsA(stale));
+      await retiring;
+
+      final replacementEndpoint = _Endpoint();
+      final replacement = registry.register(
+        provider: provider,
+        endpoint: replacementEndpoint,
+      );
+      addTearDown(replacement.close);
+      final fresh = registry.resolve(capability, providerId: provider.id);
+      expect(fresh.isSameRegistration(binding), isFalse);
+      expect(() => group.retire(binding), throwsA(stale));
+      expect(
+        () => group.retire(fresh),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(replacement.isClosed, isFalse);
+      expect(fresh.endpointAs<_Endpoint>(), same(replacementEndpoint));
+      expect(retirements, 1);
+      expect(siblingRetirements, 0);
+      await group.close();
+      expect(
+        () => group.retire(binding),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(replacement.isClosed, isFalse);
+    },
+  );
+
+  test(
     'group retires every registration before reporting observer failure',
     () async {
       final registry = CapabilityRegistry();
@@ -609,5 +719,5 @@ final class _Endpoint implements CapabilityEndpoint {
   final String serviceId;
 
   @override
-  bool get isAvailable => true;
+  bool isAvailable = true;
 }

@@ -72,6 +72,12 @@ final class InstalledBackendActivation {
     }
   }
 
+  /// Synchronously fences one exact owned provider, preserving its live siblings.
+  Future<void> retireProvider(ProviderBinding binding) {
+    validate();
+    return _activation!.retireProvider(binding);
+  }
+
   ProviderBinding? associationFor(ProviderBinding binding) {
     validate();
     return _activation!.associationFor(binding);

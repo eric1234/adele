@@ -109,7 +109,18 @@ void main() {
       expect(first, <int>[1]);
       expect(second, <int>[1]);
 
+      var retired = 0;
+      binding.onRetire(() {
+        expect(registration.isClosed, isTrue);
+        expect(registry.discover(point), isEmpty);
+        expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(() => binding.value, throwsA(isA<StaleExtensionBinding>()));
+        expect(first, <int>[1]);
+        expect(second, <int>[1]);
+        retired++;
+      });
       final Future<void> closing = registration.close();
+      expect(retired, 1);
       expect(() => binding.validate(), throwsA(isA<StaleExtensionBinding>()));
       expect(first, <int>[1]);
       expect(second, <int>[1]);
@@ -117,6 +128,207 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(first, <int>[1, 0]);
       expect(second, <int>[1, 0]);
+      await registration.close();
+      expect(retired, 1);
+    },
+  );
+
+  test('retirement detachment is idempotent and subscription-local', () async {
+    final registry = ExtensionRegistry();
+    final registration = registry.register(
+      point: point,
+      id: ExtensionId('dev.adele.test.detached-greeting'),
+      value: const _Greeting('one'),
+    );
+    final binding = registry.discover(point).single;
+    var retired = 0;
+    void listener() => retired++;
+    final detachFirst = binding.onRetire(listener);
+    final detachSecond = binding.onRetire(listener);
+    detachFirst();
+    detachFirst();
+
+    final closing = registration.close();
+    expect(retired, 1);
+    detachFirst();
+    detachSecond();
+    detachSecond();
+    await closing;
+    await registration.close();
+    expect(retired, 1);
+  });
+
+  test('already-retired bindings reject subscription without replay', () async {
+    final registry = ExtensionRegistry();
+    final id = ExtensionId('dev.adele.test.stale-greeting');
+    final registration = registry.register(
+      point: point,
+      id: id,
+      value: const _Greeting('one'),
+    );
+    final binding = registry.discover(point).single;
+    final closing = registration.close();
+    var retired = 0;
+    expect(
+      () => binding.onRetire(() => retired++),
+      throwsA(
+        isA<StaleExtensionBinding>().having((error) => error.id, 'id', id),
+      ),
+    );
+    await closing;
+    final replacement = registry.register(
+      point: point,
+      id: id,
+      value: const _Greeting('two'),
+    );
+    expect(
+      () => binding.onRetire(() => retired++),
+      throwsA(isA<StaleExtensionBinding>()),
+    );
+    await replacement.close();
+    expect(retired, 0);
+  });
+
+  test(
+    'observer errors preserve sibling retirement and change notification',
+    () async {
+      final registry = ExtensionRegistry();
+      final registration = registry.register(
+        point: point,
+        id: ExtensionId('dev.adele.test.failing-greeting'),
+        value: const _Greeting('one'),
+      );
+      final binding = registry.discover(point).single;
+      final changed = Completer<void>();
+      final observed = <int>[];
+      final subscription = registry.changes.listen((_) {
+        observed.add(registry.discover(point).length);
+        changed.complete();
+      });
+      addTearDown(subscription.cancel);
+      final failure = StateError('First observer failed.');
+      final stack = StackTrace.fromString('original retirement observer stack');
+      final retired = <int>[];
+      binding.onRetire(() {
+        retired.add(1);
+        Error.throwWithStackTrace(failure, stack);
+      });
+      binding.onRetire(() {
+        retired.add(2);
+        throw StateError('Second observer failed.');
+      });
+      binding.onRetire(() => retired.add(3));
+
+      final closing = registration.close();
+      expect(retired, <int>[1, 2, 3]);
+      expect(registration.isClosed, isTrue);
+      expect(registry.discover(point), isEmpty);
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(observed, isEmpty);
+      try {
+        await closing;
+        fail('The first observer error must remain observable.');
+      } catch (error, actualStack) {
+        expect(error, same(failure));
+        expect(actualStack.toString(), stack.toString());
+      }
+      await changed.future;
+      expect(observed, <int>[0]);
+      await registration.close();
+      expect(retired, <int>[1, 2, 3]);
+    },
+  );
+
+  test('retirement observers never migrate to a same-ID replacement', () async {
+    final registry = ExtensionRegistry();
+    final id = ExtensionId('dev.adele.test.observed-replacement');
+    const value = _Greeting('shared');
+    final registration = registry.register(point: point, id: id, value: value);
+    final binding = registry.discover(point).single;
+    final rediscovered = registry.discover(point).single;
+    late ExtensionRegistration replacement;
+    late ExtensionBinding<_Greeting> replacementBinding;
+    var retired = 0;
+    var rediscoveredRetired = 0;
+    var replacementRetired = 0;
+    final detach = binding.onRetire(() {
+      retired++;
+      replacement = registry.register(point: point, id: id, value: value);
+      replacementBinding = registry.discover(point).single;
+      replacementBinding.onRetire(() => replacementRetired++);
+    });
+    rediscovered.onRetire(() => rediscoveredRetired++);
+
+    final closing = registration.close();
+    expect(retired, 1);
+    expect(rediscoveredRetired, 1);
+    expect(replacementRetired, 0);
+    expect(binding.isSameRegistration(replacementBinding), isFalse);
+    expect(replacementBinding.value, same(value));
+    expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+    detach();
+    detach();
+    await closing;
+    await registration.close();
+    expect(replacement.isClosed, isFalse);
+    expect(replacementRetired, 0);
+    final replacementClosing = replacement.close();
+    expect(replacementRetired, 1);
+    await replacementClosing;
+    expect(retired, 1);
+    expect(rediscoveredRetired, 1);
+  });
+
+  test(
+    'group retirement attempts every registration despite observer errors',
+    () async {
+      final registry = ExtensionRegistry();
+      final group = ExtensionRegistrationGroup();
+      final bindings = <ExtensionBinding<_Greeting>>[];
+      final retired = <int>[];
+      final failure = StateError('Last registered observer failed.');
+      final stack = StackTrace.fromString('original grouped retirement stack');
+      for (var index = 0; index < 3; index++) {
+        group.add(
+          registry.register(
+            point: point,
+            id: ExtensionId('dev.adele.test.grouped-greeting-$index'),
+            value: _Greeting('$index'),
+          ),
+        );
+        final binding = registry.discover(point).last;
+        bindings.add(binding);
+        binding.onRetire(() {
+          retired.add(index);
+          if (index == 2) Error.throwWithStackTrace(failure, stack);
+          if (index == 1) throw StateError('A later observer failed.');
+        });
+      }
+
+      try {
+        await group.close();
+        fail('The first observer error must remain observable.');
+      } catch (error, actualStack) {
+        expect(error, same(failure));
+        expect(actualStack.toString(), stack.toString());
+      }
+      expect(retired, <int>[2, 1, 0]);
+      expect(registry.discover(point), isEmpty);
+      for (final binding in bindings) {
+        expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      }
+      final replacement = registry.register(
+        point: point,
+        id: bindings.last.id,
+        value: const _Greeting('replacement'),
+      );
+      registry
+          .discover(point)
+          .single
+          .onRetire(() => fail('Replacement retired.'));
+      await group.close();
+      expect(retired, <int>[2, 1, 0]);
+      expect(replacement.isClosed, isFalse);
     },
   );
 

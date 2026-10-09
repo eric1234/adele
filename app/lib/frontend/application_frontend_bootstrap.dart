@@ -349,14 +349,16 @@ final class InstalledFrontendActivation {
                 isActive: isActive,
                 services: _sessionServices,
                 capabilityRegistry: _backends?.registry,
+                backends: _backends,
               ),
             );
-            mainContents[descriptor] = (
-              registration,
-              _extensions
-                  .discover(mainContentContributions)
-                  .singleWhere(registration.owns),
+            final binding = _extensions
+                .discover(mainContentContributions)
+                .singleWhere(registration.owns);
+            binding.onRetire(
+              () => _mainContentHost.revokeContextualAccess(descriptor),
             );
+            mainContents[descriptor] = (registration, binding);
             if (descriptor.displaySourceFileOperation != null) {
               _register(
                 point: displaySourceFileContributions,
@@ -762,6 +764,11 @@ final class InstalledFrontendActivation {
     if (_closing != null) return _closing!;
     _closed = true;
     _state = InstalledFrontendState.closing;
+    for (final descriptor in installation.frontend!.presentations) {
+      if (descriptor is PreparedMainContentPresentation) {
+        _mainContentHost.revokeContextualAccess(descriptor);
+      }
+    }
     return _closing = _close();
   }
 

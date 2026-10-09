@@ -218,9 +218,14 @@ void main() {
       expect(session.sessionExecution, isFalse);
       expect(session.backendServices, isEmpty);
       expect(session.capabilities, isEmpty);
+      expect(session.environmentReadCapabilities, isEmpty);
       expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
       expect(() => session.backendServices.clear(), throwsUnsupportedError);
       expect(() => session.capabilities.clear(), throwsUnsupportedError);
+      expect(
+        () => session.environmentReadCapabilities.clear(),
+        throwsUnsupportedError,
+      );
       expect(session.actions, isEmpty);
       expect(session.operations, isEmpty);
       expect(session.closeOperation, isNull);
@@ -421,52 +426,61 @@ void main() {
   };
   const mainContentCapability = {'id': 'org.example.read', 'majorVersion': 1};
 
-  for (final capabilities in [
-    <Map<String, Object?>>[],
-    [
-      mainContentCapability,
-      {'id': 'org.example.read', 'majorVersion': 2},
-      {'id': 'org.example.write', 'majorVersion': 1},
-    ],
-  ]) {
-    test(
-      'Main Content accepts ${capabilities.length} Capability keys without backend or providers',
-      () async {
-        await install(
-          'capability-consumer',
-          _manifest(
-            components: {
-              'frontend': _frontend(
-                presentations: [
-                  {..._mainContent, 'capabilities': capabilities},
-                ],
-              ),
-            },
-          ),
-        );
-        final catalog = await PreparedPluginCatalog.discover(root.path);
-        expect(catalog.issues, isEmpty);
-        final installation = catalog.installations.single;
-        expect(installation.backendArtifactUri, isNull);
-        final descriptor =
-            installation.frontend!.presentations.single
-                as PreparedMainContentPresentation;
-        expect(descriptor.capabilities, [
-          for (final capability in capabilities)
-            CapabilityKey(
-              id: CapabilityId(capability['id']! as String),
-              majorVersion: capability['majorVersion']! as int,
+  for (final field in ['capabilities', 'environmentReadCapabilities']) {
+    for (final capabilities in [
+      <Map<String, Object?>>[],
+      [
+        mainContentCapability,
+        {'id': 'org.example.read', 'majorVersion': 2},
+        {'id': 'org.example.write', 'majorVersion': 1},
+      ],
+    ]) {
+      test(
+        'Main Content accepts ${capabilities.length} $field keys without backend or providers',
+        () async {
+          await install(
+            'capability-consumer',
+            _manifest(
+              components: {
+                'frontend': _frontend(
+                  presentations: [
+                    {..._mainContent, field: capabilities},
+                  ],
+                ),
+              },
             ),
-        ]);
-        expect(() => descriptor.capabilities.clear(), throwsUnsupportedError);
-        expect(descriptor.sessionExecution, isFalse);
-        expect(descriptor.backendServices, isEmpty);
-        expect(
-          descriptor.strategyAffinity,
-          PreparedStrategyAffinity.independent,
-        );
-      },
-    );
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.issues, isEmpty);
+          final installation = catalog.installations.single;
+          expect(installation.backendArtifactUri, isNull);
+          final descriptor =
+              installation.frontend!.presentations.single
+                  as PreparedMainContentPresentation;
+          final keys = field == 'capabilities'
+              ? descriptor.capabilities
+              : descriptor.environmentReadCapabilities;
+          final otherKeys = field == 'capabilities'
+              ? descriptor.environmentReadCapabilities
+              : descriptor.capabilities;
+          expect(otherKeys, isEmpty);
+          expect(keys, [
+            for (final capability in capabilities)
+              CapabilityKey(
+                id: CapabilityId(capability['id']! as String),
+                majorVersion: capability['majorVersion']! as int,
+              ),
+          ]);
+          expect(() => keys.clear(), throwsUnsupportedError);
+          expect(descriptor.sessionExecution, isFalse);
+          expect(descriptor.backendServices, isEmpty);
+          expect(
+            descriptor.strategyAffinity,
+            PreparedStrategyAffinity.independent,
+          );
+        },
+      );
+    }
   }
 
   test(
@@ -521,6 +535,7 @@ void main() {
 
   PreparedMainContentPresentation mainContent({
     Iterable<CapabilityKey> capabilities = const [],
+    Iterable<CapabilityKey> environmentReadCapabilities = const [],
     List<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
     String? closeOperation,
@@ -536,6 +551,7 @@ void main() {
     initialize: 'initializePanes',
     entrypoint: 'buildPane',
     capabilities: capabilities,
+    environmentReadCapabilities: environmentReadCapabilities,
     actions: actions,
     operations: operations,
     closeOperation: closeOperation,
@@ -565,6 +581,7 @@ void main() {
       throwsUnsupportedError,
     );
     expect(descriptor.sessionExecution, isFalse);
+    expect(descriptor.environmentReadCapabilities, isEmpty);
     expect(descriptor.backendServices, isEmpty);
     expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
     expect(
@@ -577,6 +594,157 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('Main Content snapshots separate Environment read Capability keys', () {
+    final empty = mainContent();
+    expect(empty.environmentReadCapabilities, isEmpty);
+    expect(
+      () => empty.environmentReadCapabilities.clear(),
+      throwsUnsupportedError,
+    );
+    final keys = [
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 2),
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+      CapabilityKey(id: CapabilityId('org.example.inspect'), majorVersion: 1),
+    ];
+    final descriptor = mainContent(environmentReadCapabilities: keys);
+    expect(descriptor.environmentReadCapabilities, keys);
+    final both = mainContent(
+      capabilities: keys,
+      environmentReadCapabilities: keys,
+    );
+    expect(both.capabilities, both.environmentReadCapabilities);
+    expect(both.capabilities, isNot(same(both.environmentReadCapabilities)));
+    keys.clear();
+    expect(descriptor.environmentReadCapabilities, hasLength(3));
+    expect(
+      () => descriptor.environmentReadCapabilities.clear(),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => descriptor.environmentReadCapabilities[0] =
+          descriptor.environmentReadCapabilities[1],
+      throwsUnsupportedError,
+    );
+    expect(descriptor.capabilities, isEmpty);
+    expect(descriptor.sessionExecution, isFalse);
+    expect(descriptor.backendServices, isEmpty);
+    expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
+    expect(descriptor.environmentTextFiles, isFalse);
+    expect(
+      () => mainContent(
+        environmentReadCapabilities: [
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+        ],
+      ),
+      throwsFormatException,
+    );
+  });
+
+  for (final populated in [false, true]) {
+    test(
+      'Main Content serializes and roundtrips populated=$populated',
+      () async {
+        final contextFree = CapabilityKey(
+          id: CapabilityId('org.example.context-free'),
+          majorVersion: 1,
+        );
+        final contextual = [
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 2),
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+        ];
+        final descriptor = populated
+            ? PreparedMainContentPresentation(
+                extensionId: ExtensionId('org.example.main-content'),
+                order: -10,
+                library: 'package:example_frontend/main_content.dart',
+                initialize: 'initializePanes',
+                entrypoint: 'buildPane',
+                sessionExecution: true,
+                backendServices: ['org.example.session'],
+                capabilities: [contextFree, contextual.first],
+                environmentReadCapabilities: contextual,
+                strategyAffinity: PreparedStrategyAffinity.owningBackend,
+                actions: [
+                  PreparedMainContentAction(
+                    id: 'open',
+                    label: 'Open Source...',
+                    entrypoint: 'openSourceInput',
+                  ),
+                ],
+                operations: mainContentOperations,
+                closeOperation: 'close',
+                exitOperation: 'exit',
+                displaySourceFileOperation: 'display',
+                retainedData: true,
+                nativeCodeEditor: true,
+                environmentTextFiles: true,
+              )
+            : mainContent();
+        final json = descriptor.toJson();
+        expect(json, {
+          ..._mainContent,
+          'order': populated ? -10 : 200,
+          'sessionExecution': populated,
+          'backendServices': populated ? ['org.example.session'] : <String>[],
+          'capabilities': populated
+              ? [
+                  {'id': contextFree.id.value, 'majorVersion': 1},
+                  {'id': 'org.example.read', 'majorVersion': 2},
+                ]
+              : <Object?>[],
+          'environmentReadCapabilities': populated
+              ? [
+                  {'id': 'org.example.read', 'majorVersion': 2},
+                  {'id': 'org.example.read', 'majorVersion': 1},
+                ]
+              : <Object?>[],
+          'strategyAffinity': populated ? 'owningBackend' : 'independent',
+          'actions': populated ? [mainContentAction] : <Object?>[],
+          'operations': populated ? mainContentOperations : <String, String>{},
+          if (populated) 'closeOperation': 'close',
+          if (populated) 'exitOperation': 'exit',
+          if (populated) 'displaySourceFileOperation': 'display',
+          'retainedData': populated,
+          'nativeCodeEditor': populated,
+          'environmentTextFiles': populated,
+        });
+        expect(jsonEncode(descriptor.toJson()), jsonEncode(json));
+        await install(
+          'roundtrip',
+          _manifest(
+            components: {
+              'frontend': _frontend(presentations: [json]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final parsed =
+            catalog.installations.single.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(parsed.toJson(), json);
+        expect(parsed.capabilities, descriptor.capabilities);
+        expect(
+          parsed.environmentReadCapabilities,
+          descriptor.environmentReadCapabilities,
+        );
+        if (populated) {
+          (json['capabilities']! as List).clear();
+          (json['environmentReadCapabilities']! as List).clear();
+          (json['backendServices']! as List).clear();
+          (json['actions']! as List).clear();
+          (json['operations']! as Map).clear();
+          expect(descriptor.capabilities, hasLength(2));
+          expect(descriptor.environmentReadCapabilities, hasLength(2));
+          expect(descriptor.backendServices, hasLength(1));
+          expect(descriptor.actions, hasLength(1));
+          expect(descriptor.operations, mainContentOperations);
+        }
+      },
+    );
+  }
 
   test(
     'Main Content snapshots actions and operations without implicit grants',
@@ -712,51 +880,51 @@ void main() {
       ..._mainContent,
       'environmentTextFiles': true,
     },
-    for (final value in <Object?>[null, false, '', 1, {}])
-      'invalid capabilities ${jsonEncode(value)}': {
-        ..._mainContent,
-        'capabilities': value,
-      },
-    for (final value in <Object?>[
-      null,
-      false,
-      '',
-      1,
-      [],
-      {},
-      for (final field in mainContentCapability.keys)
-        {...mainContentCapability}..remove(field),
-      for (final id in <Object?>[
+    for (final field in ['capabilities', 'environmentReadCapabilities'])
+      for (final value in <Object?>[null, false, '', 1, {}])
+        'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
+    for (final field in ['capabilities', 'environmentReadCapabilities'])
+      for (final value in <Object?>[
         null,
-        1,
         false,
+        '',
+        1,
         [],
         {},
-        '',
-        '  ',
-        'read',
-        'Org.example.read',
-        'org.example.read ',
-        'org.example..read',
-        'org.example.r\u00e9ad',
+        for (final field in mainContentCapability.keys)
+          {...mainContentCapability}..remove(field),
+        for (final id in <Object?>[
+          null,
+          1,
+          false,
+          [],
+          {},
+          '',
+          '  ',
+          'read',
+          'Org.example.read',
+          'org.example.read ',
+          'org.example..read',
+          'org.example.r\u00e9ad',
+        ])
+          {...mainContentCapability, 'id': id},
+        for (final version in <Object?>[null, false, '1', 1.0, [], {}, 0, -1])
+          {...mainContentCapability, 'majorVersion': version},
+        for (final field in ['unknown', 'providerId', 'serviceId'])
+          {...mainContentCapability, field: 'org.example.provider'},
       ])
-        {...mainContentCapability, 'id': id},
-      for (final version in <Object?>[null, false, '1', 1.0, [], {}, 0, -1])
-        {...mainContentCapability, 'majorVersion': version},
-      for (final field in ['unknown', 'providerId', 'serviceId'])
-        {...mainContentCapability, field: 'org.example.provider'},
-    ])
-      'invalid capability ${jsonEncode(value)}': {
+        'invalid $field entry ${jsonEncode(value)}': {
+          ..._mainContent,
+          field: [value],
+        },
+    for (final field in ['capabilities', 'environmentReadCapabilities'])
+      'duplicate $field keys': {
         ..._mainContent,
-        'capabilities': [value],
+        field: [
+          mainContentCapability,
+          {...mainContentCapability},
+        ],
       },
-    'duplicate Capability keys': {
-      ..._mainContent,
-      'capabilities': [
-        mainContentCapability,
-        {...mainContentCapability},
-      ],
-    },
     for (final value in <Object?>[null, false, '', 1, {}])
       'invalid actions ${jsonEncode(value)}': {
         ..._mainContent,
@@ -777,6 +945,10 @@ void main() {
       {...mainContentAction, 'label': 'L' * 129},
       {...mainContentAction, 'entrypoint': 'Source.open'},
       {...mainContentAction, 'unknown': true},
+      {
+        ...mainContentAction,
+        'environmentReadCapabilities': [mainContentCapability],
+      },
     ])
       'invalid action ${jsonEncode(value)}': {
         ..._mainContent,
@@ -1266,25 +1438,64 @@ void main() {
     _toolActivity,
     _modelNativeActivity,
   ]) {
-    test('${descriptor['role']} rejects Capability grants', () async {
-      await install(
-        'invalid-role-grant',
-        _manifest(
-          components: {
-            'backend': {'artifact': 'backend.aot'},
-            'frontend': _frontend(
-              presentations: [
-                {...descriptor, 'capabilities': <Object?>[]},
-              ],
-            ),
-          },
-        ),
-      );
-      final catalog = await PreparedPluginCatalog.discover(root.path);
-      expect(catalog.installations.single.frontend, isNull);
-      expect(catalog.installations.single.backendArtifactUri, isNotNull);
-      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
-    });
+    for (final field in ['capabilities', 'environmentReadCapabilities']) {
+      test('${descriptor['role']} rejects $field grants', () async {
+        await install(
+          'invalid-role-grant',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(
+                presentations: [
+                  {...descriptor, field: <Object?>[]},
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+      });
+    }
+  }
+
+  for (final descriptor in [
+    _projectSelector,
+    _command,
+    _consoleActionCommand,
+    _mainContentActionCommand,
+  ]) {
+    test(
+      '${descriptor['kind']} rejects Environment read Capability grants',
+      () async {
+        await install(
+          'invalid-extension-grant',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': {
+                ..._frontend(),
+                'extensions': [
+                  {...descriptor, 'environmentReadCapabilities': <Object?>[]},
+                ],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+      },
+    );
   }
 
   test('Task Browser is frontend-only and has no backend metadata', () async {

@@ -138,6 +138,10 @@ see [provider associations](contracts-and-capabilities.md#provider-associations-
 An explicit native host admission can separately authorize one contextual unary
 call over that selection, without importing the plugin-owned service contract;
 see [contextual invocation](contracts-and-capabilities.md#contextual-unary-capability-invocation).
+Mounted prepared Main Content consumers can use the same admission through a
+separate explicit Environment-read declaration and presentation-bound bridge;
+ordinary context-free Capability access remains unchanged. See
+[prepared contextual reads](contracts-and-capabilities.md#prepared-contextual-environment-reads).
 
 Events remain read-only fact notifications, not provider-selected calls or mutable
 lifecycle hooks. Observers cannot change whether the announced fact occurred;
@@ -188,6 +192,10 @@ captured binding stale; replacement registration never silently retargets it.
 Reusing semantic IDs, registration IDs, or even a contribution object cannot make
 an old binding live again. Cleanup likewise retires only owned registrations,
 not replacements. Retirement does not promise rollback of effects already started.
+`ExtensionBinding.onRetire` supplies synchronous exact-registration observation,
+separately from asynchronous registry rediscovery, so presentation-owned authority
+can be revoked before view reconciliation. This signal grants no cancellation or
+rollback semantics to unrelated unary work.
 
 Immutable capture has a different lifetime from executable binding. For example,
 inference-source bindings are validated through capture; safely copied and
@@ -475,6 +483,17 @@ origin, not matching IDs. Declared affinity alone is insufficient; missing or
 incompatible services fail the requesting pane rather than selecting a substitute.
 `PreparedSessionServices` binds these existing services; it is not a renderer
 resolver or execution owner.
+
+Cross-plugin Capability access is independent of owning-backend affinity. The
+context-free `capabilities` descriptor grants no Environment authority. The separate
+`environmentReadCapabilities` declaration permits only contextual unary reads from
+an exactly associated backend provider. Native hosting captures the mounted pane's
+canonical Session; each request receives its own grant and cannot follow later
+navigation. Handle release and presentation retirement synchronously revoke those
+grants without cancelling independently owned backend work. Initializers, input
+actions, and finite operations receive neither Capability bridge. Selection,
+settlement, and limitations belong to
+[prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 
 Core retains Session execution controllers, Run lifecycle, policy, and approval
 authority. Plugins choose where to place controls, including the existing native

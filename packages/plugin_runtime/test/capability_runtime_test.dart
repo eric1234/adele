@@ -332,6 +332,167 @@ void main() {
     },
   );
 
+  test(
+    'individual retirement uses exact registration ownership, not endpoint health',
+    () async {
+      final fake = _FakeHost.create(
+        contextEcho: true,
+        readyFields: {
+          'capabilityExposures': [firstExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      addTearDown(activation.close);
+      final sibling = registry.resolve(capability);
+      final provider = _provider(capability, 'dev.adele.provider.dynamic');
+      var available = true;
+      final endpoint = AdeleRequestChannelEndpoint(
+        channel: sibling.requestChannel,
+        serviceId: provider.serviceId,
+        isAvailable: () => available,
+      );
+      final registration = registry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      // Advertised endpoints track connection closure. Adopt a dynamic endpoint
+      // through the existing public owner group, without a production testing seam.
+      activation.registrations.add(registration);
+      final binding = registry.resolve(capability, providerId: provider.id);
+      final foreignRegistry = CapabilityRegistry();
+      final foreign = foreignRegistry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      addTearDown(foreign.close);
+      final foreignBinding = foreignRegistry.resolve(capability);
+      final stale = isA<ProviderUnavailable>().having(
+        (error) => error.stale,
+        'stale',
+        isTrue,
+      );
+      var retirements = 0;
+      var siblingRetirements = 0;
+      sibling.onRetire(() => siblingRetirements++);
+      binding.onRetire(() {
+        retirements++;
+        expect(registration.isClosed, isTrue);
+        expect(() => activation.retireProvider(binding), throwsA(stale));
+      });
+      expect(activation.owns(binding), isTrue);
+
+      available = false;
+      expect(registration.isClosed, isFalse);
+      expect(retirements, 0);
+      expect(
+        () => binding.requestChannel,
+        throwsA(isA<ProviderEndpointUnavailable>()),
+      );
+      expect(
+        () => activation.owns(binding),
+        throwsA(isA<ProviderEndpointUnavailable>()),
+      );
+      expect(
+        () => registry.resolve(capability, providerId: provider.id),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(
+        () => activation.retireProvider(foreignBinding),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(foreign.isClosed, isFalse);
+
+      final retiring = activation.retireProvider(binding);
+      expect(registration.isClosed, isTrue);
+      expect(retirements, 1);
+      expect(siblingRetirements, 0);
+      expect(() => binding.requestChannel, throwsA(stale));
+      expect(activation.owns(sibling), isTrue);
+      expect(connection.isClosed, isFalse);
+      expect(connection.validateInfrastructureContext, returnsNormally);
+      await retiring;
+      expect(await sibling.requestChannel.request('inspect', const {}), {
+        'configurationContext': 'opaque-first',
+        'serviceId': 'resourceInspector',
+        'payload': <String, Object?>{},
+      });
+
+      final replacement = registry.register(
+        provider: provider,
+        endpoint: sibling.endpointAs<AdeleRequestChannelEndpoint>(),
+      );
+      addTearDown(replacement.close);
+      final fresh = registry.resolve(capability, providerId: provider.id);
+      expect(fresh.isSameRegistration(binding), isFalse);
+      expect(() => activation.retireProvider(binding), throwsA(stale));
+      expect(
+        () => activation.retireProvider(fresh),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(replacement.isClosed, isFalse);
+      expect(retirements, 1);
+      expect(siblingRetirements, 0);
+      await activation.registrations.close();
+      expect(
+        () => activation.retireProvider(sibling),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(replacement.isClosed, isFalse);
+      expect(connection.isClosed, isFalse);
+    },
+  );
+
+  test(
+    'individual retirement rejects a closing backend with a live registration',
+    () async {
+      final fake = _FakeHost.create(
+        readyFields: {
+          'capabilityExposures': [firstExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      addTearDown(activation.close);
+      final binding = registry.resolve(capability);
+      var retirements = 0;
+      binding.onRetire(() => retirements++);
+      final closing = connection.close();
+      expect(connection.isClosed, isTrue);
+      expect(retirements, 0);
+      final detach = binding.onRetire(() {});
+      detach();
+      expect(
+        () => activation.retireProvider(binding),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(retirements, 0);
+      await closing;
+      await activation.retire();
+      expect(retirements, 1);
+    },
+  );
+
   for (final closeConnection in [false, true]) {
     test(
       'retirement fences reentrant association selection, close=$closeConnection',
@@ -399,6 +560,10 @@ void main() {
           expect(() => target.requestChannel, returnsNormally);
           expect(activation.owns(source), isFalse);
           expect(activation.owns(target), isFalse);
+          expect(
+            () => activation.retireProvider(source),
+            throwsA(isA<InvalidProviderRegistration>()),
+          );
           expect(activation.associationFor(source), isNull);
           expect(
             () => activation.resolveAssociatedProvider(

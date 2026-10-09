@@ -67,6 +67,19 @@ final class PluginCapabilityActivation {
         registrations.owns(binding);
   }
 
+  /// Retires only this exact owned provider; the connection and siblings survive.
+  /// Unlike executable access, retirement does not require a healthy endpoint.
+  Future<void> retireProvider(ProviderBinding binding) {
+    if (_retiring != null ||
+        connection.isClosed ||
+        !registrations.owns(binding)) {
+      throw const InvalidProviderRegistration(
+        'The provider is not owned by this live activation.',
+      );
+    }
+    return registrations.retire(binding);
+  }
+
   /// Returns an exact live sibling, or null for an unassociated/foreign binding.
   /// Retirement fails validation; semantic IDs never re-resolve the target.
   ProviderBinding? associationFor(ProviderBinding binding) {

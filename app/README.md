@@ -191,10 +191,31 @@ Main Content hosting, not a test-only native service adapter. The companion
 [`capability_access_bridge_test.dart`](test/capability_access_bridge_test.dart)
 isolates exact binding, bounded scope, admission/settlement, and stream lifetime.
 
+[`EnvironmentCapabilityAccessBridge`](lib/frontend/environment_capability_access_bridge.dart)
+is the separate contextual policy over the same `BackendInvocationBridge` transport.
+`PreparedMainContentHost` supplies the actual mounted pane's Session and the
+descriptor's `environmentReadCapabilities`, independently of ordinary `capabilities`.
+Explicit resolution freshly captures canonical Environment eligibility; handles
+retain the selected registrations without re-resolution. Each request calls the
+native helper below for its own read grant. The request-only public channel cannot
+open a contextual stream. Handle release and bridge invalidation synchronously
+notify all outstanding operations; the host also revokes contextual access before
+asynchronous frontend retirement cleanup. An exact `ExtensionBinding.onRetire`
+subscription covers direct registration closure too, without requiring a frame or
+registry-change delivery.
+
+[`prepared_environment_capability_integration_test.dart`](test/prepared_environment_capability_integration_test.dart)
+uses the same authored scalar/value-DTO proof contract with independently prepared
+frontend-only EVC and backend-only AOT installations. Normal catalog/activation and
+Main Content attachment lead to genuine reverse reads from captured Environment
+materializations, with typed decoding in the interpreted frontend. Native bridge
+lifetime/bounds coverage shares the contextual AOT suite below. None of these proof
+contracts is imported by production application code.
+
 ### Environment-eligible Capability selection
 
 [`CapturedEnvironmentCapabilities`](lib/core/environment_capability_selection.dart)
-is a native/host-only selection helper, separate from the interpreted bridge.
+is a native selection helper used by trusted host callers and the contextual bridge.
 It reuses `CapturedSessionEnvironment` from
 [`product_lifecycle.dart`](lib/core/product_lifecycle.dart), also used by text-file
 operations, to capture canonical authority before lazy materialization.
@@ -203,6 +224,9 @@ of that materialization's exact binding. The runtime's explicit sibling associat
 then constrains selection. Each requested Capability/provider selection, including
 failure, is retained within that capture; the result's `validate()` checks both
 bindings and their relationship without replacing either.
+`InstalledBackendActivation.retireProvider(binding)` can retire one exact owned
+registration without closing its generation or siblings; contextual grants observe
+both callable and Environment registration retirement independently.
 
 The selected `ProviderBinding` works with existing generated clients, but this
 helper grants no Environment access or contextual invocation authority. See the
@@ -221,8 +245,10 @@ observes exact callable, Environment-provider, and backend retirement before
 opening the operation grant. Grant revocation does not await provider cleanup.
 The [contextual AOT integration](test/core/environment_capability_invocation_integration_test.dart)
 exercises normal bootstrap and actual reverse host requests using a synthetic
-implementation of a plugin-owned contract. There is no prepared EVC contextual
-bridge. Authority, backend opt-in, and unary-only limitations belong to
+implementation of a plugin-owned contract. Its optional `onRetire` observer lets
+the prepared bridge synchronously revoke a handle's outstanding operations; it does
+not add universal unary cancellation or change existing native callers. Authority,
+backend opt-in, and unary-only limitations belong to
 [contextual invocation architecture](../docs/architecture/contracts-and-capabilities.md#contextual-unary-capability-invocation).
 
 <a id="prepared-chat-frontend"></a>
