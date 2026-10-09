@@ -144,6 +144,23 @@ make the installation unusable. Component-local activation failure likewise need
 not retire a healthy sibling; this is not a promise to isolate shared-host failure.
 An operation requiring both components still needs its exact live counterparts.
 
+### Prepared backend consumption declarations
+
+A backend component may declare `consumesCapabilities`, a default-empty list of
+exact public Capability ID/major pairs. It describes requested consumption, not
+the providers this backend advertises, a configured route, or an activation
+dependency graph. The host supplies only the declared, generation-scoped consumer
+service; neither installation nor a declaration establishes a live provider binding.
+Missing providers do not invalidate preparation or consumer activation.
+
+The declaration is backend-local and independent of all frontend descriptors.
+Malformed declarations omit the backend component under the same component-local
+failure policy, preserving a healthy frontend sibling. Backend-only consumers,
+frontend-only installations, and metadata-only installations retain their existing
+optional-component semantics. The [catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog)
+owns exact fields, bounds, and validation; [backend Capability consumption](contracts-and-capabilities.md#prepared-backend-capability-consumption)
+owns resolution, lifetime, and the lack of operation authority.
+
 ### Prepared frontend descriptors
 
 Prepared frontend metadata tells the host which supported interpreted entrypoints
@@ -234,7 +251,7 @@ Backend exposures cross a later boundary than installed metadata:
 
 | Boundary | Information established |
 | --- | --- |
-| Prepared backend component | An artifact is available for a backend activation attempt. |
+| Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability consumption requests. |
 | Backend ready handshake | This live backend generation advertises its current public capability/extension contributions, possibly none. |
 | Host activation | Validated/adapted contributions enter the existing registries with exact-generation lifetime. |
 

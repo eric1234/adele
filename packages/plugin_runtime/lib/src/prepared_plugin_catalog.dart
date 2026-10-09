@@ -9,17 +9,39 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 /// One prepared installation, without activation, configuration, or source data.
 final class PreparedPluginInstallation {
-  const PreparedPluginInstallation({
+  PreparedPluginInstallation({
     required this.metadata,
     required this.installationDirectory,
     required this.backendArtifactUri,
+    Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     this.frontend,
-  });
+  }) : backendConsumedCapabilities = _backendConsumedCapabilityKeys(
+         backendConsumedCapabilities,
+       ) {
+    if (backendArtifactUri == null &&
+        this.backendConsumedCapabilities.isNotEmpty) {
+      throw const FormatException(
+        'consumesCapabilities requires a backend component.',
+      );
+    }
+  }
+
+  static const maxBackendConsumedCapabilities = 128;
 
   final PluginMetadata metadata;
   final Directory installationDirectory;
   final Uri? backendArtifactUri;
+
+  /// Backend-only consumption declarations, not provider advertisements,
+  /// activation dependencies, or authority grants.
+  final List<CapabilityKey> backendConsumedCapabilities;
   final PreparedFrontendComponent? frontend;
+
+  /// Encodes the backend's consumesCapabilities array, copying mutable data.
+  List<Map<String, Object?>> backendConsumedCapabilitiesToJson() => [
+    for (final key in backendConsumedCapabilities)
+      {'id': key.id.value, 'majorVersion': key.majorVersion},
+  ];
 }
 
 /// Prepared locations and descriptors, without reading or decoding bytecode.
@@ -577,6 +599,7 @@ final class PreparedPluginCatalog {
           'frontend',
         });
         Uri? backendArtifactUri;
+        List<CapabilityKey> backendConsumedCapabilities = const [];
         PreparedFrontendComponent? frontend;
         for (final component in PreparedPluginComponent.values) {
           if (!components.containsKey(component.name)) continue;
@@ -586,13 +609,24 @@ final class PreparedPluginCatalog {
                 final backend = _object(
                   components['backend'],
                   'components.backend',
-                  {'artifact'},
+                  {'artifact', 'consumesCapabilities'},
+                );
+                final consumedCapabilities = _backendConsumedCapabilityKeys(
+                  _capabilityKeys(
+                    backend.containsKey('consumesCapabilities')
+                        ? backend['consumesCapabilities']
+                        : const <Object?>[],
+                    'backend.consumesCapabilities',
+                    maxEntries: PreparedPluginInstallation
+                        .maxBackendConsumedCapabilities,
+                  ),
                 );
                 backendArtifactUri = await _artifact(
                   backend['artifact'],
                   'backend.artifact',
                   resolvedDirectory,
                 );
+                backendConsumedCapabilities = consumedCapabilities;
               case PreparedPluginComponent.frontend:
                 frontend = await _frontend(
                   components['frontend'],
@@ -624,6 +658,7 @@ final class PreparedPluginCatalog {
             metadata: pluginMetadata,
             installationDirectory: directory,
             backendArtifactUri: backendArtifactUri,
+            backendConsumedCapabilities: backendConsumedCapabilities,
             frontend: frontend,
           ),
         );
@@ -834,41 +869,10 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
           services.any((item) => item is! String)) {
         throw FormatException('$label.backendServices must be a string array.');
       }
-      List<CapabilityKey> capabilityKeys(String field) {
-        final capabilities = value.containsKey(field)
-            ? value[field]
-            : const <Object?>[];
-        if (capabilities is! List<Object?>) {
-          throw FormatException('$label.$field must be an array.');
-        }
-        final keys = <CapabilityKey>[];
-        for (var index = 0; index < capabilities.length; index++) {
-          final capabilityLabel = '$label.$field[$index]';
-          final capability = _object(capabilities[index], capabilityLabel, {
-            'id',
-            'majorVersion',
-          });
-          final majorVersion = capability['majorVersion'];
-          if (majorVersion is! int) {
-            throw FormatException(
-              '$capabilityLabel.majorVersion must be an integer.',
-            );
-          }
-          try {
-            keys.add(
-              CapabilityKey(
-                id: CapabilityId(
-                  _text(capability['id'], '$capabilityLabel.id'),
-                ),
-                majorVersion: majorVersion,
-              ),
-            );
-          } on CapabilityException catch (error) {
-            throw FormatException('$capabilityLabel: ${error.message}');
-          }
-        }
-        return keys;
-      }
+      List<CapabilityKey> capabilityKeys(String field) => _capabilityKeys(
+        value.containsKey(field) ? value[field] : const <Object?>[],
+        '$label.$field',
+      );
       final affinity = value.containsKey('strategyAffinity')
           ? switch (value['strategyAffinity']) {
               'independent' => PreparedStrategyAffinity.independent,
@@ -1085,6 +1089,67 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
     default:
       throw FormatException('$label.role is unsupported.');
   }
+}
+
+List<CapabilityKey> _backendConsumedCapabilityKeys(
+  Iterable<CapabilityKey> capabilities,
+) {
+  final keys = <CapabilityKey>[];
+  final seen = <CapabilityKey>{};
+  for (final key in capabilities) {
+    if (keys.length ==
+        PreparedPluginInstallation.maxBackendConsumedCapabilities) {
+      throw const FormatException(
+        'backend.consumesCapabilities must not exceed '
+        '${PreparedPluginInstallation.maxBackendConsumedCapabilities} entries.',
+      );
+    }
+    if (!seen.add(key)) {
+      throw const FormatException(
+        'backend.consumesCapabilities must not contain duplicates.',
+      );
+    }
+    keys.add(key);
+  }
+  return List.unmodifiable(keys);
+}
+
+List<CapabilityKey> _capabilityKeys(
+  Object? value,
+  String label, {
+  int? maxEntries,
+}) {
+  if (value is! List<Object?>) {
+    throw FormatException('$label must be an array.');
+  }
+  if (maxEntries != null && value.length > maxEntries) {
+    throw FormatException('$label must not exceed $maxEntries entries.');
+  }
+  final keys = <CapabilityKey>[];
+  for (var index = 0; index < value.length; index++) {
+    final capabilityLabel = '$label[$index]';
+    final capability = _object(value[index], capabilityLabel, {
+      'id',
+      'majorVersion',
+    });
+    final majorVersion = capability['majorVersion'];
+    if (majorVersion is! int) {
+      throw FormatException(
+        '$capabilityLabel.majorVersion must be an integer.',
+      );
+    }
+    try {
+      keys.add(
+        CapabilityKey(
+          id: CapabilityId(_text(capability['id'], '$capabilityLabel.id')),
+          majorVersion: majorVersion,
+        ),
+      );
+    } on CapabilityException catch (error) {
+      throw FormatException('$capabilityLabel: ${error.message}');
+    }
+  }
+  return keys;
 }
 
 Future<Uri> _artifact(Object? value, String label, Directory directory) async {

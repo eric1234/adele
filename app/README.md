@@ -22,6 +22,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git Environment](../plugins/git_environment/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
 | Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
+| Declared backend Capability consumption and exact-generation handles | Public [backend consumer API](../packages/plugin_backend_support/README.md#capability-consumption); provider selection: [capabilities](../packages/capabilities/README.md); semantic generated contracts remain plugin-owned. |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
@@ -95,6 +96,14 @@ plugin identity and exact-generation validation, not caller-selected ownership.
 Bootstrap supplies the distinct infrastructure context; operation tokens do not
 grant this storage service. See [infrastructure access](../docs/architecture/contracts-and-capabilities.md#generation-scoped-infrastructure-access).
 
+For installations with nonempty `backendConsumedCapabilities`, normal bootstrap
+also appends the generated Capability-consumer mediator to that connection's
+infrastructure map. It preserves the supplied services, including Project storage,
+and rejects a collision with the mediation service ID rather than replacing a
+dispatcher. Bootstrap adds no consumer service for undeclared backends. Missing
+providers do not prevent consumer startup; declarations are not activation
+dependencies.
+
 The bootstrap owns per-backend startup rollback, termination observation, and
 registration retirement. Local startup failures are isolated to that attempt;
 shared-host failure affects all its backends. `ready` means bootstrap settled,
@@ -117,6 +126,39 @@ Exact formats and transport belong to [plugin layout](../docs/architecture/plugi
 The [bootstrap tests](test/core/application_plugin_bootstrap_test.dart) and
 [real-host integration](test/core/normal_task_git_integration_test.dart) map local
 ownership and failure boundaries.
+
+### Backend Capability consumption
+
+[`BackendCapabilityHost`](lib/core/backend_capability_host.dart) implements the
+public `BackendCapabilityConsumerService` for one actual consumer connection and
+its prepared Capability allowlist. It uses the existing `CapabilityRegistry`, then
+checks the selected service and actual `PluginBackendActivation.ownsProvider`
+provenance. That activation owns the configured channel built from its exact
+provider connection; matching endpoint or PluginId metadata cannot substitute for
+it. Owner lookup includes already active peers while bootstrap is still starting.
+The application supplies routing and lifetime policy only; the independent AOT
+consumer owns its semantic generated client and the app imports no plugin-specific
+service contract.
+
+`BackendCapabilityHost.maxHandles` bounds retention to 64 handles per consumer
+generation without reselection or per-target retirement observers. Retired target
+handles stay in the bounded table until release or consumer close, so release can
+still fence an admitted result. Each call checks the captured binding at admission;
+provider registration retirement does not generically invalidate an admitted unary
+completion. One detachable `connection.onInfrastructureRevoked(close)` observation
+clears the table synchronously. The mediation dispatcher admits requests concurrently
+so release is not queued behind a pending invocation. This path has no streams or
+operation-scoped host grants and does not propagate an enclosing operation's
+authority. The [canonical boundary](../docs/architecture/contracts-and-capabilities.md#prepared-backend-capability-consumption)
+owns these selection, lifetime, and authority rules; the [public facade](../packages/plugin_backend_support/README.md#capability-consumption)
+owns plugin usage and generated mediation transport.
+
+The [AOT integration suite](test/core/backend_capability_integration_test.dart)
+owns independent prepared consumer/provider composition through normal
+catalog/bootstrap and the public generated contract. The [host suite](test/core/backend_capability_host_test.dart)
+owns lower-level exact-binding and handle lifetime cases using a scripted transport
+peer with real connections and advertised activations. These are validation
+owners, not claims of passing results; use the [focused checks](../docs/development/testing.md#focused-backend-capability-checks).
 
 ### Prepared frontend activation
 
@@ -1443,6 +1485,7 @@ repository-wide deferred-feature ledger here.
 | Prepared console and retained terminal content | [`lib/frontend/prepared_console_host.dart`](lib/frontend/prepared_console_host.dart), [`lib/frontend/environment_terminal_bridge.dart`](lib/frontend/environment_terminal_bridge.dart), [`lib/terminal/terminal_console_content.dart`](lib/terminal/terminal_console_content.dart) |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
+| Backend Capability mediation | [`lib/core/backend_capability_host.dart`](lib/core/backend_capability_host.dart): `BackendCapabilityHost` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Task Browser projection/actions | [`lib/frontend/window_task_browser_source.dart`](lib/frontend/window_task_browser_source.dart), [`lib/frontend/task_browser_bridge.dart`](lib/frontend/task_browser_bridge.dart): `WindowTaskBrowserSource`, `TaskBrowserSource`, `TaskBrowserBridge` |
 | Task Browser presentation hosting | [`lib/frontend/prepared_task_browser_host.dart`](lib/frontend/prepared_task_browser_host.dart), [`lib/ui/task_browser/task_browser_presentation_host.dart`](lib/ui/task_browser/task_browser_presentation_host.dart) |

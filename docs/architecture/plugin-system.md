@@ -225,6 +225,15 @@ every future plugin-defined interface. Activation owns registration rollback and
 retirement. A failed backend does not imply a built-in substitute implementation;
 shared-host failure can affect all backends it hosts.
 
+Prepared backends may also explicitly declare context-free unary consumption of
+public callable Capabilities. The host mediates discovery and exact resolution
+through the consumer generation's infrastructure grant; plugin code uses public
+backend support and its semantic generated client, not runtime internals or another
+plugin's implementation. Provider absence does not prevent consumer activation.
+This is a narrow callable composition path, not general recursive Extension Point
+transport or authority delegation. Selection, lifetime, and limits belong to
+[backend Capability consumption](contracts-and-capabilities.md#prepared-backend-capability-consumption).
+
 ### Frontend and collaboration
 
 Prepared plugin frontends execute through the interpreted Flutter path in the
@@ -802,8 +811,9 @@ Execution services remain appropriate to the current operation and exact
 generation. Separately, an explicit
 [generation-scoped infrastructure grant](contracts-and-capabilities.md#generation-scoped-infrastructure-access)
 allows plugin storage outside execution, including snapshot and configuration
-calls. It grants no orchestration, model, tool, Environment-facet, or filesystem
-authority. A Session ID selects storage backing through the live product graph,
+calls, and declared context-free backend Capability consumption. Neither service
+grants orchestration, model, tool, Environment-facet, or filesystem host authority.
+A Session ID selects storage backing through the live product graph,
 not execution authority. Revocation ends access, not effects already committed or
 in flight. These are host-service boundaries, not an OS or malicious-plugin SQL
 sandbox. [Operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls)

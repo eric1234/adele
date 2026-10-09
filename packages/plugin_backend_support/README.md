@@ -4,7 +4,8 @@
 only `adele_contract` as a production dependency. It provides
 `AdeleHostRequestMultiplexer` for generated unary and server-streaming clients
 calling explicitly scoped host services. It imports neither Flutter nor internal
-host implementations.
+host implementations. Its public Capability consumer facade lets generated plugin
+clients use declared context-free unary access without importing runtime packages.
 
 Construct one `AdeleHostRequestMultiplexer(send: responsePort.send)` per backend
 generation with the existing response port. Its bound channels share the
@@ -51,6 +52,57 @@ replacement generation and grant no execution or other services implicitly.
 It supplies no client/bidirectional streaming, ambient callbacks, or general
 symmetric RPC and is not a sandbox.
 See [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+## Capability Consumption
+
+[`AdeleCapabilityConsumer`](lib/adele_capability_consumer.dart) is the public facade
+for declared context-free unary calls to another prepared backend's Capability.
+Import it from `package:adele_plugin_backend_support/adele_plugin_backend_support.dart`
+or its facade library. Construct it with the generation's existing `hostRequests`
+multiplexer and bootstrap `hostInfrastructureContext`; binding alone grants no
+access. The host checks the installation's backend-only
+[`consumesCapabilities` declaration](../plugin_runtime/README.md#prepared-catalog).
+Send the backend ready handshake before awaiting consumer calls, and keep handling
+`hostRequests.handleResponse` while forward dispatch is pending. Do not make
+initialization or shutdown depend on new peer work; the
+[shared-host scheduling boundary](../../docs/architecture/contracts-and-capabilities.md#prepared-backend-capability-consumption)
+does not support arbitrary recursive composition.
+
+| API | Purpose |
+| --- | --- |
+| `AdeleCapabilityConsumer(hostRequests: ..., hostInfrastructureContext: ...)` | Bind the generated infrastructure consumer service using the existing reverse transport. |
+| `discover(capabilityId, majorVersion)` | Return current `BackendCapabilityProvider` metadata in host selection order; no compatible providers returns an empty list. |
+| `resolve(capabilityId, majorVersion, expectedServiceId: ..., providerId: ...)` | Resolve once to `AdeleResolvedCapability?`; omit `providerId` for host default selection. No provider returns null; denied, incompatible, or unsupported selection fails, never substitutes. |
+| `AdeleResolvedCapability.provider` | Selected metadata: Capability ID/major, provider/plugin IDs, display name, and service ID, not a backend route. |
+| `AdeleResolvedCapability.requestChannel` | Request-only `AdeleRequestChannel` for the consumer's own generated semantic client. It does not implement `AdeleStreamChannel`. |
+| `AdeleResolvedCapability.release()` | Synchronously fence local admission and late publication, then release host bookkeeping; repeated calls join the same cleanup. |
+
+The facade does not depend on a particular semantic contract. The caller passes
+the expected service identity from its generated contract and retains/releases the
+resolved access around that client's use. It exposes no configuration-context,
+target-backend, or invocation-token selector, and never re-resolves a retired handle.
+
+[`capability_consumer.dart`](lib/capability_consumer.dart) owns the authored
+`BackendCapabilityConsumerService` and provider/access DTOs; the package root exports
+both it and the facade. Generated discover/resolve/invoke/release requests use
+`bindInfrastructure` and service ID `adele.capabilityConsumer`. The invoke envelope
+preserves structured success values and `AdeleRemoteFailure` fields for the plugin's
+generated decoder to reconstruct declared failures, not a second semantic codec.
+The facade bounds and snapshots request data and control responses before generated
+decoding, and rejects malformed envelopes.
+
+Selection policy, exact activation/channel ownership, the bounded handle table,
+and diagnostic sanitization belong to the [application mediator](../../app/README.md#backend-capability-consumption).
+Provider registration retirement prevents new calls but need not reject admitted
+unary settlement; release or consumer retirement fences publication without
+cancelling provider effects. This route supplies no operation token or Environment
+grant. See [backend Capability architecture](../../docs/architecture/contracts-and-capabilities.md#prepared-backend-capability-consumption)
+for authority, lifetime, and intentionally unsupported composition.
+
+[`capability_consumer_test.dart`](test/capability_consumer_test.dart) owns generated
+control roundtrips, request-only access, structured values/failures, malformed
+envelopes, and local release fencing. It is discovered by the existing
+`adele_plugin_backend_support` test target.
 
 ## Contextual Unary Services
 

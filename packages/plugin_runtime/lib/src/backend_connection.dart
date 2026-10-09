@@ -1331,6 +1331,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
   List<AdeleExtensionExposure> _extensionExposures = const [];
   List<AdeleExtensionExposure> get extensionExposures => _extensionExposures;
   final Map<String, PluginHostInvocation> _hostInvocations = {};
+  final Set<void Function()> _infrastructureRevocationObservers = {};
   late final _HostServiceGrant _infrastructure = _HostServiceGrant(
     this,
     const {},
@@ -1359,9 +1360,29 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     }
   }
 
+  /// Observes this exact grant's revocation synchronously, once authority is fenced
+  /// and without waiting for cleanup. Registration requires an active grant; the
+  /// returned callback detaches idempotently without retaining the observer here.
+  /// Observer errors are reported to their registration zone, not thrown through
+  /// revocation or other observers. Dispatchers remain caller-owned.
+  void Function() onInfrastructureRevoked(void Function() observer) {
+    validateInfrastructureContext();
+    final guarded = Zone.current.bindCallbackGuarded(observer);
+    _infrastructureRevocationObservers.add(guarded);
+    return () => _infrastructureRevocationObservers.remove(guarded);
+  }
+
   /// Permanently revokes infrastructure before any asynchronous cleanup. Pending
   /// calls and streams settle without waiting for caller-owned service code.
-  void revokeInfrastructureContext() => _infrastructure.close();
+  void revokeInfrastructureContext() {
+    if (_infrastructure.isClosed) return;
+    _infrastructure.close();
+    final observers = _infrastructureRevocationObservers.toList();
+    _infrastructureRevocationObservers.clear();
+    for (final observer in observers) {
+      observer();
+    }
+  }
 
   _HostServiceGrant? _hostGrant(Map<String, Object?> message) =>
       switch (message['hostContextKind']) {

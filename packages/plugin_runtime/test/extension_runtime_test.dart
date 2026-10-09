@@ -91,6 +91,58 @@ void main() {
     }
 
     test(
+      'revocation observers detach and run once on their exact grant',
+      () async {
+        var revocations = 0;
+        var detachedCalls = 0;
+        late void Function() detach;
+        final connection = await connect(
+          {},
+          createInfrastructureServices: (owner) {
+            detach = owner.onInfrastructureRevoked(() {
+              revocations++;
+              expect(
+                owner.validateInfrastructureContext,
+                throwsA(isA<PluginConnectionClosed>()),
+              );
+              expect(
+                () => owner.onInfrastructureRevoked(() => revocations++),
+                throwsA(isA<PluginConnectionClosed>()),
+              );
+              owner.revokeInfrastructureContext();
+              detach();
+              detach();
+            });
+            return {};
+          },
+        );
+        final detachUnused = connection.onInfrastructureRevoked(
+          () => detachedCalls++,
+        );
+        detachUnused();
+        detachUnused();
+        expect(revocations, 0);
+        connection.revokeInfrastructureContext();
+        expect(revocations, 1);
+        expect(detachedCalls, 0);
+        connection.revokeInfrastructureContext();
+        await connection.close();
+        expect(revocations, 1);
+        final replacement = await connect({});
+        var replacementRevocations = 0;
+        replacement.onInfrastructureRevoked(() => replacementRevocations++);
+        detach();
+        detachUnused();
+        connection.revokeInfrastructureContext();
+        expect(replacementRevocations, 0);
+        await replacement.close();
+        expect(replacementRevocations, 1);
+        expect(revocations, 1);
+        expect(detachedCalls, 0);
+      },
+    );
+
+    test(
       'factory captures exact connection with zero exposures and strict separate allowlists',
       () async {
         late PluginBackendConnection captured;
@@ -198,6 +250,8 @@ void main() {
           adapters: RemoteExtensionAdapterRegistry([_Adapter()]),
         );
         final context = extensions.discover(_point).single.value.context;
+        var revocations = 0;
+        connection.onInfrastructureRevoked(() => revocations++);
         await context.invoke({}, (_) async {});
         expect((await reverse(connection))['payload'], 'live');
         await expectLater(
@@ -214,6 +268,7 @@ void main() {
         await activation.retire();
         expect(connection.validateInfrastructureContext, returnsNormally);
         expect((await reverse(connection))['payload'], 'live');
+        expect(revocations, 0);
       },
     );
 
@@ -238,12 +293,23 @@ void main() {
           if (!cleanup.isCompleted) cleanup.complete();
         });
         var cleanupStarted = false;
+        var revocations = 0;
+        connection.onInfrastructureRevoked(() {
+          revocations++;
+          expect(cleanupStarted, isFalse);
+          expect(
+            connection.validateInfrastructureContext,
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+        });
         extensions.discover(_point).single.value.context.onRetire(() {
+          expect(revocations, 1);
           cleanupStarted = true;
           return cleanup.future;
         });
         expect((await reverse(connection))['payload'], 'live');
         final closing = activation.close();
+        expect(revocations, 1);
         expect(cleanupStarted, isTrue);
         expect(connection.isClosed, isFalse);
         expect(
@@ -259,6 +325,7 @@ void main() {
         cleanup.complete();
         await closing;
         expect(connection.isClosed, isTrue);
+        expect(revocations, 1);
       },
     );
 
@@ -356,6 +423,8 @@ void main() {
       'stop',
       'failure',
       'host-close',
+      'host-force-close',
+      'host-exit',
     ]) {
       test(
         '$action settles pending infrastructure independently of service cleanup',
@@ -367,6 +436,32 @@ void main() {
             createInfrastructureServices: (_) => {'fixture': dispatcher},
           );
           final activation = await activate(connection);
+          final observerFailure = StateError('Observer failed');
+          final observerErrors = <Object>[];
+          late Zone registrationZone;
+          Zone? callbackZone;
+          runZonedGuarded(() {
+            registrationZone = Zone.current;
+            connection.onInfrastructureRevoked(() {
+              callbackZone = Zone.current;
+              throw observerFailure;
+            });
+          }, (error, _) => observerErrors.add(error));
+          var revocations = 0;
+          var terminationObserved = false;
+          unawaited(
+            connection.terminated.then((_) => terminationObserved = true),
+          );
+          connection.onInfrastructureRevoked(() {
+            revocations++;
+            expect(terminationObserved, isFalse);
+            expect(release.isCompleted, isFalse);
+            expect(dispatcher.closed, isFalse);
+            expect(
+              connection.validateInfrastructureContext,
+              throwsA(isA<PluginConnectionClosed>()),
+            );
+          });
           final pending = reverse(connection);
           final settled = pending.then<Object>(
             (value) => value,
@@ -376,8 +471,10 @@ void main() {
           switch (action) {
             case 'revoke':
               connection.revokeInfrastructureContext();
+              expect(revocations, 1);
             case 'retire':
               final retiring = activation.retire();
+              expect(revocations, 1);
               expect(
                 connection.validateInfrastructureContext,
                 throwsA(isA<PluginConnectionClosed>()),
@@ -385,26 +482,41 @@ void main() {
               await retiring;
             case 'close':
               final closing = connection.close();
+              expect(revocations, 1);
               expect(
                 connection.validateInfrastructureContext,
                 throwsA(isA<PluginConnectionClosed>()),
               );
               await closing;
             case 'stop':
-              await host.stopPlugin(connection.pluginId);
+              final stopping = host.stopPlugin(connection.pluginId);
+              expect(revocations, 1);
+              await stopping;
             case 'failure':
               await expectLater(
                 connection.request('terminate', {}),
                 throwsA(isA<PluginRemoteFailure>()),
               );
             case 'host-close':
-              final closing = host.close();
+            case 'host-force-close':
+              final closing = host.close(graceful: action == 'host-close');
+              expect(revocations, 1);
               expect(
                 connection.validateInfrastructureContext,
                 throwsA(isA<PluginConnectionClosed>()),
               );
               await closing;
+            case 'host-exit':
+              expect(Process.killPid(host.processId), isTrue);
+              await host.terminated;
           }
+          expect(revocations, 1);
+          expect(callbackZone, same(registrationZone));
+          expect(observerErrors, [same(observerFailure)]);
+          expect(
+            () => connection.onInfrastructureRevoked(() => revocations++),
+            throwsA(isA<PluginConnectionClosed>()),
+          );
           final result = await settled.timeout(const Duration(seconds: 1));
           if (action == 'revoke' || action == 'retire') {
             expectFailure(
@@ -422,6 +534,11 @@ void main() {
           if (!connection.isClosed) {
             expect(await connection.request('hostResponseCount', {}), 1);
           }
+          connection.revokeInfrastructureContext();
+          await connection.close();
+          expect(revocations, 1);
+          expect(observerErrors, [same(observerFailure)]);
+          expect(dispatcher.closed, isFalse);
         },
       );
     }
@@ -452,7 +569,10 @@ void main() {
         );
         final activation = await activate(connection);
         final cleanup = Completer<void>();
+        var revocations = 0;
+        connection.onInfrastructureRevoked(() => revocations++);
         extensions.discover(_point).single.value.context.onRetire(() {
+          expect(revocations, 1);
           expect(
             connection.validateInfrastructureContext,
             throwsA(isA<PluginConnectionClosed>()),
@@ -463,6 +583,7 @@ void main() {
         final second = reverse(connection);
         await queued.future;
         final retiring = activation.retire();
+        expect(revocations, 1);
         expect(connection.isClosed, isFalse);
         expect(
           connection.validateInfrastructureContext,
@@ -475,6 +596,7 @@ void main() {
         expect(effects, 1);
         cleanup.complete();
         await retiring;
+        expect(revocations, 1);
       },
     );
 
@@ -489,6 +611,8 @@ void main() {
         });
         final entered = Completer<void>();
         final cleanup = Completer<void>();
+        var revocations = 0;
+        connection.onInfrastructureRevoked(() => revocations++);
         final failed = PluginBackendActivation.registerAdvertised(
           connection: connection,
           capabilities: capabilities,
@@ -497,6 +621,7 @@ void main() {
             _Adapter(
               onCreate: (context) {
                 context.onRetire(() {
+                  expect(revocations, 1);
                   expect(
                     connection.validateInfrastructureContext,
                     throwsA(isA<PluginConnectionClosed>()),
@@ -521,6 +646,7 @@ void main() {
         cleanup.complete();
         await check;
         expect(connection.isClosed, isTrue);
+        expect(revocations, 1);
       },
     );
 
@@ -534,11 +660,19 @@ void main() {
           'readiness',
         ]) {
           late PluginBackendConnection captured;
+          var revocations = 0;
           await expectLater(
             connect(
               failure == 'readiness' ? {'extensionExposures': null} : {},
               createInfrastructureServices: (owner) {
                 captured = owner;
+                owner.onInfrastructureRevoked(() {
+                  revocations++;
+                  expect(
+                    owner.validateInfrastructureContext,
+                    throwsA(isA<PluginConnectionClosed>()),
+                  );
+                });
                 if (failure == 'factory') throw StateError('Factory failed');
                 if (failure == 'revocation') {
                   owner.revokeInfrastructureContext();
@@ -550,11 +684,19 @@ void main() {
             ),
             throwsA(isA<Object>()),
           );
+          expect(revocations, 1);
           expect(captured.isClosed, isTrue);
           expect(
             captured.validateInfrastructureContext,
             throwsA(isA<PluginConnectionClosed>()),
           );
+          expect(
+            () => captured.onInfrastructureRevoked(() => revocations++),
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+          captured.revokeInfrastructureContext();
+          await captured.close();
+          expect(revocations, 1);
         }
         final replacement = await connect({});
         expect(replacement.validateInfrastructureContext, returnsNormally);

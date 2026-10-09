@@ -154,6 +154,11 @@ void main() {
           installation.backendArtifactUri,
           backend ? directory.uri.resolve('backend.aot') : isNull,
         );
+        expect(installation.backendConsumedCapabilities, isEmpty);
+        expect(
+          () => installation.backendConsumedCapabilities.clear(),
+          throwsUnsupportedError,
+        );
         if (frontend) {
           expect(
             installation.frontend!.artifactUri,
@@ -166,6 +171,298 @@ void main() {
         }
       });
     }
+  }
+
+  const consumedCapability = {'id': 'org.example.read', 'majorVersion': 1};
+
+  PreparedPluginInstallation backendConsumer({
+    Iterable<CapabilityKey> capabilities = const [],
+    bool backend = true,
+  }) => PreparedPluginInstallation(
+    metadata: PluginMetadata(
+      id: PluginId('org.example.consumer'),
+      version: '1',
+      displayName: 'Consumer',
+    ),
+    installationDirectory: root,
+    backendArtifactUri: backend ? root.uri.resolve('backend.aot') : null,
+    backendConsumedCapabilities: capabilities,
+  );
+
+  test('backend consumption snapshots and serializes distinct keys', () async {
+    final keys = [
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 2),
+      CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+      CapabilityKey(id: CapabilityId('org.example.write'), majorVersion: 1),
+    ];
+    final installation = backendConsumer(capabilities: keys);
+    expect(installation.backendConsumedCapabilities, keys);
+    keys.clear();
+    expect(installation.backendConsumedCapabilities, hasLength(3));
+    expect(
+      () => installation.backendConsumedCapabilities.clear(),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => installation.backendConsumedCapabilities[0] =
+          installation.backendConsumedCapabilities[1],
+      throwsUnsupportedError,
+    );
+    final json = installation.backendConsumedCapabilitiesToJson();
+    expect(json, [
+      {'id': 'org.example.read', 'majorVersion': 2},
+      consumedCapability,
+      {'id': 'org.example.write', 'majorVersion': 1},
+    ]);
+    expect(
+      jsonEncode(installation.backendConsumedCapabilitiesToJson()),
+      jsonEncode(json),
+    );
+    await install(
+      'consumer-only',
+      _manifest(
+        components: {
+          'backend': {'artifact': 'backend.aot', 'consumesCapabilities': json},
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final parsed = catalog.installations.single;
+    expect(parsed.frontend, isNull);
+    expect(parsed.backendArtifactUri, isNotNull);
+    expect(
+      parsed.backendConsumedCapabilities,
+      installation.backendConsumedCapabilities,
+    );
+    expect(parsed.backendConsumedCapabilitiesToJson(), json);
+    json.first['majorVersion'] = 0;
+    json.clear();
+    expect(installation.backendConsumedCapabilities.first.majorVersion, 2);
+    expect(installation.backendConsumedCapabilities, hasLength(3));
+    expect(parsed.backendConsumedCapabilitiesToJson(), hasLength(3));
+  });
+
+  test('backend consumption constructor rejects duplicates and no backend', () {
+    final key = CapabilityKey(
+      id: CapabilityId('org.example.read'),
+      majorVersion: 1,
+    );
+    expect(
+      () => backendConsumer(
+        capabilities: [
+          key,
+          CapabilityKey(id: CapabilityId('org.example.read'), majorVersion: 1),
+        ],
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => backendConsumer(capabilities: [key], backend: false),
+      throwsFormatException,
+    );
+    for (final backend in [false, true]) {
+      final empty = backendConsumer(backend: backend);
+      expect(empty.backendConsumedCapabilities, isEmpty);
+      expect(empty.backendConsumedCapabilitiesToJson(), isEmpty);
+      expect(
+        () => empty.backendConsumedCapabilities.add(key),
+        throwsUnsupportedError,
+      );
+    }
+  });
+
+  for (final count in [
+    0,
+    PreparedPluginInstallation.maxBackendConsumedCapabilities,
+    PreparedPluginInstallation.maxBackendConsumedCapabilities + 1,
+  ]) {
+    test(
+      'backend consumption enforces $count keys at both boundaries',
+      () async {
+        final keys = [
+          for (var index = 0; index < count; index++)
+            CapabilityKey(
+              id: CapabilityId('org.example.read'),
+              majorVersion: index + 1,
+            ),
+        ];
+        final allowed =
+            count <= PreparedPluginInstallation.maxBackendConsumedCapabilities;
+        if (allowed) {
+          expect(
+            backendConsumer(capabilities: keys).backendConsumedCapabilities,
+            keys,
+          );
+        } else {
+          expect(
+            () => backendConsumer(capabilities: keys),
+            throwsFormatException,
+          );
+        }
+        await install(
+          'bounded',
+          _manifest(
+            components: {
+              'backend': {
+                'artifact': 'backend.aot',
+                'consumesCapabilities': [
+                  for (final key in keys)
+                    {'id': key.id.value, 'majorVersion': key.majorVersion},
+                ],
+              },
+              'frontend': _frontend(),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final installation = catalog.installations.single;
+        expect(installation.frontend, isNotNull);
+        if (allowed) {
+          expect(catalog.issues, isEmpty);
+          expect(installation.backendArtifactUri, isNotNull);
+          expect(installation.backendConsumedCapabilities, keys);
+        } else {
+          expect(
+            catalog.issues.single.component,
+            PreparedPluginComponent.backend,
+          );
+          expect(catalog.issues.single.message, contains('must not exceed'));
+          expect(installation.backendArtifactUri, isNull);
+          expect(installation.backendConsumedCapabilities, isEmpty);
+        }
+      },
+    );
+  }
+
+  final invalidBackendConsumption = <String, Object?>{
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'non-array ${jsonEncode(value)}': value,
+    for (final value in <Object?>[
+      null,
+      false,
+      '',
+      1,
+      [],
+      {},
+      for (final field in consumedCapability.keys)
+        {...consumedCapability}..remove(field),
+      for (final id in <Object?>[
+        null,
+        1,
+        false,
+        [],
+        {},
+        '',
+        '  ',
+        'read',
+        'Org.example.read',
+        'org.example.read ',
+        'org.example..read',
+        'org.example.r\u00e9ad',
+      ])
+        {...consumedCapability, 'id': id},
+      for (final version in <Object?>[null, false, '1', 1.0, [], {}, 0, -1])
+        {...consumedCapability, 'majorVersion': version},
+      for (final field in [
+        'unknown',
+        'providerId',
+        'serviceId',
+        'pluginId',
+        'configuration',
+        'environmentId',
+        'permissions',
+      ])
+        {...consumedCapability, field: 'org.example.value'},
+    ])
+      'invalid entry ${jsonEncode(value)}': [value],
+    'duplicate keys': [
+      consumedCapability,
+      {...consumedCapability},
+    ],
+  };
+  for (final entry in invalidBackendConsumption.entries) {
+    test('backend consumption rejects ${entry.key} in backend only', () async {
+      await install(
+        'invalid-consumer',
+        _manifest(
+          components: {
+            'backend': {
+              'artifact': 'backend.aot',
+              'consumesCapabilities': entry.value,
+            },
+            'frontend': _frontend(),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.backendConsumedCapabilities, isEmpty);
+      expect(installation.frontend, isNotNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.backend);
+      expect(catalog.issues.single.message, contains('consumesCapabilities'));
+    });
+  }
+
+  test('missing backend artifact drops consumption metadata with it', () async {
+    await install(
+      'missing-backend',
+      _manifest(
+        components: {
+          'backend': {
+            'artifact': 'missing.aot',
+            'consumesCapabilities': [consumedCapability],
+          },
+          'frontend': _frontend(),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.installations.single.backendArtifactUri, isNull);
+    expect(catalog.installations.single.backendConsumedCapabilities, isEmpty);
+    expect(catalog.installations.single.frontend, isNotNull);
+    expect(catalog.issues.single.component, PreparedPluginComponent.backend);
+  });
+
+  test('invalid frontend does not drop valid backend consumption', () async {
+    await install(
+      'invalid-frontend',
+      _manifest(
+        components: {
+          'backend': {
+            'artifact': 'backend.aot',
+            'consumesCapabilities': [consumedCapability],
+          },
+          'frontend': {..._frontend(), 'consumesCapabilities': <Object?>[]},
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.installations.single.backendArtifactUri, isNotNull);
+    expect(catalog.installations.single.backendConsumedCapabilitiesToJson(), [
+      consumedCapability,
+    ]);
+    expect(catalog.installations.single.frontend, isNull);
+    expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+  });
+
+  for (final location in ['manifest', 'metadata', 'components']) {
+    test('backend consumption is rejected at $location level', () async {
+      final manifest = _manifest();
+      final target = location == 'manifest'
+          ? manifest
+          : Map<String, Object?>.of(
+              manifest[location]! as Map<String, Object?>,
+            );
+      target['consumesCapabilities'] = <Object?>[];
+      if (location != 'manifest') manifest[location] = target;
+      await install('misplaced', manifest);
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations, isEmpty);
+      expect(catalog.issues.single.component, isNull);
+      expect(catalog.issues.single.message, contains('unsupported fields'));
+    });
   }
 
   test(
@@ -844,6 +1141,7 @@ void main() {
       'strategyId',
       'panes',
       'displayName',
+      'consumesCapabilities',
       'unknown',
     ])
       'unsupported $field': {..._mainContent, field: 'unsupported'},
@@ -1438,7 +1736,11 @@ void main() {
     _toolActivity,
     _modelNativeActivity,
   ]) {
-    for (final field in ['capabilities', 'environmentReadCapabilities']) {
+    for (final field in [
+      'capabilities',
+      'environmentReadCapabilities',
+      'consumesCapabilities',
+    ]) {
       test('${descriptor['role']} rejects $field grants', () async {
         await install(
           'invalid-role-grant',
@@ -1470,9 +1772,11 @@ void main() {
     _consoleActionCommand,
     _mainContentActionCommand,
   ]) {
-    test(
-      '${descriptor['kind']} rejects Environment read Capability grants',
-      () async {
+    for (final field in [
+      'environmentReadCapabilities',
+      'consumesCapabilities',
+    ]) {
+      test('${descriptor['kind']} rejects $field declarations', () async {
         await install(
           'invalid-extension-grant',
           _manifest(
@@ -1481,7 +1785,7 @@ void main() {
               'frontend': {
                 ..._frontend(),
                 'extensions': [
-                  {...descriptor, 'environmentReadCapabilities': <Object?>[]},
+                  {...descriptor, field: <Object?>[]},
                 ],
               },
             },
@@ -1494,8 +1798,8 @@ void main() {
           catalog.issues.single.component,
           PreparedPluginComponent.frontend,
         );
-      },
-    );
+      });
+    }
   }
 
   test('Task Browser is frontend-only and has no backend metadata', () async {

@@ -267,6 +267,79 @@ Separately configured backend infrastructure access is not enlarged by implement
 a Command. Exact contract and metadata shape belong to
 [core extensions](../../packages/core_extensions/README.md#remote-commands).
 
+## Prepared backend Capability consumption
+
+An independently prepared native AOT backend can consume another backend's public
+callable Capability through `AdeleCapabilityConsumer` in
+`adele_plugin_backend_support`. The backend component declares the exact Capability
+ID/major pairs it may consume; the default permits none. These declarations are
+separate from ready-time provider advertisements and from frontend permissions.
+They require neither a frontend nor an available provider. Missing providers do not
+create startup dependencies, trigger activation, or supply a built-in substitute;
+a later explicit discovery/resolution may see newly available registrations.
+Unlike owning-backend frontend access, no sibling configuration context supplies
+the peer route. Unlike prepared frontend Capability access, authorization and
+handles belong to the consumer backend generation, not a presentation scope.
+
+The host mediates this context-free, unary-only route through the generated
+`BackendCapabilityConsumerService`, bound to the consumer generation's existing
+infrastructure context. It reuses `bindInfrastructure` and the reverse transport,
+not direct peer ports, general symmetric RPC, or a second provider registry.
+Normal application bootstrap adds the service only for declared consumers while
+preserving separately configured infrastructure services, including Project storage.
+Conflicting service entries fail rather than replacing an existing dispatcher.
+
+Discovery returns compatible peer-backend metadata in registry order, not a live
+executable binding or a replacement selection policy. Resolution uses the registry's
+normal exact-major/default or explicit-provider semantics, then validates the
+selected generated service identity, actual activation ownership, and exact
+configured connection. Matching PluginId, ProviderId, or endpoint metadata is not
+provenance. An unsupported, in-process, self, or mismatched selected target fails
+without searching for a lower-ranked provider or alternate decoder. No provider
+is a normal unavailable result, not permission to call a private service.
+
+Successful resolution captures one exact provider registration, connection,
+configuration context, and service behind an opaque consumer-generation-local
+handle. The plugin supplies its own generated semantic client over the returned
+request-only `AdeleRequestChannel`, never an `AdeleStreamChannel`. The app does not
+import that semantic contract, recognize its methods, or decode its DTOs. Method
+payloads cannot override the captured route, select private services, or transport
+host authority. Relay requires a generated method identity in the captured service's
+namespace; bare backend lifecycle controls are rejected before transport.
+Structured values and declared failures cross the existing
+generated boundary; unexpected failures do not disclose native diagnostics.
+
+Handles have a fixed per-generation bound and require explicit release when no
+longer needed. Each new invocation validates the retained registration and consumer
+access, without re-resolution. Provider registration retirement fences new calls,
+but an admitted unary operation may settle through its original live transport
+while the consumer and handle remain valid. Release and consumer-generation
+retirement fence new admission and late publication; they neither cancel nor roll
+back already-admitted provider effects. Backend termination may fail pending work.
+Same-ID replacement never repairs captured access; only fresh resolution can see it.
+
+The mediator admits control operations concurrently so a pending unary call cannot
+block release or independent peer work. Backend receive loops must continue handling
+reverse responses while their forward dispatchers await results. Calls belong after
+the consumer's ready handshake: backend initialization and shutdown must not wait
+for new peer invocations, since the shared host serializes lifecycle commands.
+Self-selection is rejected, but arbitrary recursive/cyclic peer composition has no
+scheduler or deadlock guarantee; existing transport deadlines remain the failure
+bound rather than a new cancellation or retry mechanism.
+
+This infrastructure grant supplies no operation-scoped host token, canonical
+Session/Environment, Environment service, execution, or approval authority. An
+enclosing operation's authority is not propagated to the selected provider.
+Providers retain only their separately established access. These host API checks
+do not sandbox native AOT code at the OS level. Streaming consumption, contextual
+backend calls, authority propagation, and cyclic/recursive backend composition
+remain outside this route; it is not arbitrary plugin-owned Extension Point
+transport.
+
+Exact declaration shape belongs to the [runtime catalog](../../packages/plugin_runtime/README.md#prepared-catalog),
+the public facade to [backend support](../../packages/plugin_backend_support/README.md#capability-consumption),
+and application ownership to [backend Capability hosting](../../app/README.md#backend-capability-consumption).
+
 ## Prepared frontend Capability consumption
 
 An independently prepared frontend can discover and resolve callable Capabilities
@@ -363,7 +436,7 @@ The bounded handle table also reserves capacity for pending resolutions. Failed
 resolution releases its slot, while explicit release or presentation teardown
 discards retained selections and operation observers. Shared `BackendInvocationBridge`
 owns structured copying and safe evaluator settlement, as for C1; there is no
-second transport or provider registry. Contextual streaming, backend-to-backend
+second transport or provider registry. Contextual streaming, contextual backend
 consumers, cross-backend Environment delegation, and portable arbitrary plugin-owned
 Extension Point contributions remain outside this boundary.
 
@@ -669,8 +742,9 @@ transport contracts, and their tests.
 
 ## Generation-scoped infrastructure access
 
-Storage must serve Session snapshots, configuration, and lazy initialization
-outside a Run operation. `PluginBackendHost.startPlugin` accepts a generic
+Infrastructure services support non-execution access outside a Run operation,
+including Session storage and declared [backend Capability consumption](#prepared-backend-capability-consumption).
+`PluginBackendHost.startPlugin` accepts a generic
 `createInfrastructureServices` factory called with the actual connection, not a
 plugin ID detached from its generation. Bootstrap carries one required opaque
 `hostInfrastructureContext` string for that exact generation. Only the supplied
