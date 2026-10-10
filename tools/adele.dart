@@ -235,6 +235,18 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'session_evaluator_contract',
+    path: 'plugins/session_evaluator/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'session_evaluator_backend',
+    path: 'plugins/session_evaluator/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'local_directory_project_backend',
     path: 'plugins/local_directory_project/packages/backend',
     executable: 'dart',
@@ -446,6 +458,16 @@ analysisTargets = <({String name, String path, bool flutter})>[
     name: 'chat_strategy_frontend',
     path: 'plugins/chat_strategy/packages/frontend',
     flutter: true,
+  ),
+  (
+    name: 'session_evaluator_contract',
+    path: 'plugins/session_evaluator/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'session_evaluator_backend',
+    path: 'plugins/session_evaluator/packages/backend',
+    flutter: false,
   ),
   (
     name: 'local_directory_project_backend',

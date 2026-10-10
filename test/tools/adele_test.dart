@@ -489,6 +489,71 @@ void main() {
       },
     );
 
+    test('discovers the opt-in evaluator without stock startup or Flutter', () {
+      const root = 'plugins/session_evaluator/packages';
+      for (final component in ['contract', 'backend']) {
+        final name = 'session_evaluator_$component';
+        final path = '$root/$component';
+        final target = lookupTestTarget(name);
+        expect(target.path, path);
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: true), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.nativeCodeEditor, isFalse);
+        final analysis = analysisTargets.singleWhere(
+          (target) => target.name == name,
+        );
+        expect(analysis.path, path);
+        expect(analysis.flutter, isFalse);
+        expect(
+          File('pubspec.yaml').readAsStringSync(),
+          contains('  - $path\n'),
+        );
+        final manifest =
+            loadYaml(File('$path/pubspec.yaml').readAsStringSync()) as YamlMap;
+        expect(manifest['resolution'], 'workspace');
+        final dependencies = manifest['dependencies'] as YamlMap;
+        for (final forbidden in [
+          'flutter',
+          'adele_desktop',
+          'agent_kernel',
+          'plugin_runtime',
+          'plugin_backend_host',
+          'sqlite3',
+        ]) {
+          expect(dependencies.containsKey(forbidden), isFalse, reason: path);
+        }
+      }
+      const source = '$root/contract/lib/session_evaluator_contract';
+      expect(
+        File('contract_codegen.yaml').readAsStringSync(),
+        contains('  - $source.dart\n'),
+      );
+      expect(
+        File('.gitignore').readAsStringSync(),
+        contains('/$source.g.dart\n'),
+      );
+      expect(
+        File('tools/backend_artifacts.dart').readAsStringSync(),
+        isNot(contains('session_evaluator')),
+      );
+      expect(Directory('$root/frontend').existsSync(), isFalse);
+      final app =
+          loadYaml(File('app/pubspec.yaml').readAsStringSync()) as YamlMap;
+      for (final name in [
+        'session_evaluator_contract',
+        'session_evaluator_backend',
+      ]) {
+        expect((app['dependencies'] as YamlMap).containsKey(name), isFalse);
+      }
+      expect(
+        (app['dev_dependencies'] as YamlMap).containsKey(
+          'session_evaluator_contract',
+        ),
+        isTrue,
+      );
+    });
+
     test(
       'discovers AGENTS.md as a pure-Dart target with default CI policy',
       () {
@@ -1448,6 +1513,8 @@ void main() {
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
         'chat_strategy_frontend|flutter|plugins/chat_strategy/packages/frontend|test',
+        'session_evaluator_contract|dart|plugins/session_evaluator/packages/contract|test',
+        'session_evaluator_backend|dart|plugins/session_evaluator/packages/backend|test',
         'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',

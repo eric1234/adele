@@ -45,6 +45,8 @@ workspace:
   - plugins/chat_strategy/packages/contract
   - plugins/chat_strategy/packages/backend
   - plugins/chat_strategy/packages/frontend
+  - plugins/session_evaluator/packages/contract
+  - plugins/session_evaluator/packages/backend
   - plugins/local_directory_project/packages/backend
   - plugins/local_directory_project/packages/frontend
   - plugins/task_browser/packages/frontend
