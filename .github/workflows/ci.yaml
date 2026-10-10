@@ -93,7 +93,7 @@ jobs:
 
   test-target:
     needs: discover-test-targets
-    name: test / ${{ matrix.name }}
+    name: test / ${{ matrix.displayName }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -130,7 +130,15 @@ jobs:
         run: dart tools/adele.dart bootstrap
 
       - name: Run test target
-        run: dart tools/adele.dart test --target "${{ matrix.name }}" --ci
+        env:
+          TEST_TARGET: ${{ matrix.name }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          args=(test --target "$TEST_TARGET" --ci)
+          if [[ -n "$TEST_SHARD" ]]; then
+            args+=(--shard "$TEST_SHARD")
+          fi
+          dart tools/adele.dart "${args[@]}"
 
   test:
     name: test

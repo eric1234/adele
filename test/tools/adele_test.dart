@@ -178,14 +178,37 @@ void main() {
           expect(separated.target, target.name);
           expect(separated.jobs, 1);
           expect(separated.ci, ci);
+          expect(separated.shard, isNull);
           expect(equals.target, separated.target);
           expect(equals.jobs, separated.jobs);
           expect(equals.ci, separated.ci);
+          expect(equals.shard, isNull);
           expect(lookupTestTarget(separated.target!), same(target));
           expect(lookupTestTarget(equals.target!), same(target));
         }
       }
       expect(parseTestOptions(['--ci', '--target=adele_tools']).ci, isTrue);
+    });
+
+    test('accepts each 1-based desktop shard in either option form', () {
+      for (var shard = 1; shard <= 4; shard++) {
+        for (final option in [
+          ['--shard', '$shard'],
+          ['--shard=$shard'],
+        ]) {
+          final options = parseTestOptions([
+            ...option,
+            '--ci',
+            '--target=adele_desktop',
+          ]);
+          expect(options.target, 'adele_desktop');
+          expect(options.ci, isTrue);
+          expect(options.jobs, 1);
+          expect(options.shard, shard);
+        }
+      }
+      expect(parseTestOptions([]).shard, isNull);
+      expect(parseTestOptions([]).target, isNull);
     });
 
     final invalidOptions = <List<String>>[
@@ -202,6 +225,28 @@ void main() {
       ['--target', 'one', '--ci', '--ci'],
       ['--target=one', '--ci', '--ci'],
       ['--other'],
+      ['--shard', '1'],
+      ['--target=adele_desktop', '--shard=1'],
+      ['--target=adele_tools', '--ci', '--shard=1'],
+      ['--target=missing', '--ci', '--shard=1'],
+      ['--jobs=2', '--ci', '--shard=1'],
+      for (final shard in [
+        ['--shard'],
+        ['--shard='],
+        ['--shard', '--ci'],
+        ['--shard', '0'],
+        ['--shard=-1'],
+        ['--shard=5'],
+        ['--shard=01'],
+        ['--shard=1/4'],
+        ['--shard=1.0'],
+        ['--shard=one'],
+        ['--shard=9999999999999999999999999'],
+        ['--shard=1', '--shard=2'],
+        ['--shard', '1', '--shard=1'],
+        ['--shard=1', '--shard', '1'],
+      ])
+        ['--target=adele_desktop', '--ci', ...shard],
       for (final target in [
         ['--target', 'adele_tools'],
         ['--target=adele_tools'],
@@ -323,78 +368,122 @@ void main() {
       },
     );
 
-    test('contains every unique target exactly once with setup metadata', () {
-      final Map<String, Object?> plan =
-          jsonDecode(testPlanJson())! as Map<String, Object?>;
-      final List<Object?> include = plan['include']! as List<Object?>;
-      final Iterable<Map<String, Object?>> entries = include.cast();
-      final List<String> names = <String>[
-        for (final Map<String, Object?> item in entries)
-          item['name']! as String,
-      ];
-
-      expect(include, hasLength(testTargets.length));
-      expect(names, <String>[
-        for (final TestTarget target in testTargets) target.name,
-      ]);
-      expect(names.toSet(), hasLength(testTargets.length));
-      expect(
-        testTargets
-            .where((target) => target.nativeCodeEditor)
-            .map((target) => target.name),
-        ['source_editor_frontend', 'adele_desktop'],
-      );
-      expect(
-        testTargets
-            .where((target) => target.nativeToml)
-            .map((target) => target.name),
-        ['adele_toml_document'],
-      );
-      for (final entry in entries) {
-        expect(
-          entry['nativeCodeEditor'],
-          ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
-        );
-        expect(entry['nativeToml'], entry['name'] == 'adele_toml_document');
-      }
-      expect(
-        include,
-        everyElement(
-          isA<Map<String, Object?>>().having(
-            (Map<String, Object?> item) => item.keys,
-            'keys',
-            unorderedEquals(<String>[
-              'name',
-              'linuxDesktopDeps',
-              'nativeCodeEditor',
-              'nativeToml',
-              'ciTestConcurrency',
-            ]),
-          ),
-        ),
-      );
-      expect(
-        <String>[
-          for (final TestTarget target in testTargets)
-            if (target.linuxDesktopDeps) target.name,
-        ],
-        <String>['adele_desktop'],
-      );
-      expect(
-        <String, Object?>{
+    test(
+      'expands only desktop into four early CI entries with setup metadata',
+      () {
+        final Map<String, Object?> plan =
+            jsonDecode(testPlanJson())! as Map<String, Object?>;
+        final List<Object?> include = plan['include']! as List<Object?>;
+        final Iterable<Map<String, Object?>> entries = include.cast();
+        final List<String> names = <String>[
           for (final Map<String, Object?> item in entries)
-            item['name']! as String: item['ciTestConcurrency'],
-        },
-        <String, Object?>{
+            item['name']! as String,
+        ];
+
+        expect(
+          testTargets.map((target) => target.name).toSet(),
+          hasLength(testTargets.length),
+        );
+        expect(include, hasLength(testTargets.length + 3));
+        expect(names, <String>[
+          for (var shard = 1; shard <= 4; shard++) 'adele_desktop',
           for (final TestTarget target in testTargets)
-            target.name: switch (target.name) {
-              'contract_codegen' => 4,
-              'git_environment_backend' || 'adele_desktop' => 1,
-              _ => null,
-            },
-        },
-      );
-    });
+            if (target.name != 'adele_desktop') target.name,
+        ]);
+        expect(names.toSet(), hasLength(testTargets.length));
+        expect(
+          entries.map((entry) => entry['displayName']).toSet(),
+          hasLength(include.length),
+        );
+        for (final target in testTargets) {
+          final selected = entries
+              .where((entry) => entry['name'] == target.name)
+              .toList();
+          final desktop = target.name == 'adele_desktop';
+          expect(selected, hasLength(desktop ? 4 : 1));
+          expect(target.ciShards, desktop ? 4 : 1);
+          for (var index = 0; index < selected.length; index++) {
+            final entry = selected[index];
+            expect(
+              entry['displayName'],
+              desktop ? 'adele_desktop (${index + 1}/4)' : target.name,
+            );
+            expect(entry['shard'], desktop ? index + 1 : null);
+            expect(entry['shardCount'], target.ciShards);
+            expect(entry['linuxDesktopDeps'], target.linuxDesktopDeps);
+            expect(entry['nativeCodeEditor'], target.nativeCodeEditor);
+            expect(entry['nativeToml'], target.nativeToml);
+            expect(entry['ciTestConcurrency'], target.ciTestConcurrency);
+            final options = parseTestOptions([
+              '--target',
+              entry['name']! as String,
+              '--ci',
+              if (entry['shard'] != null) '--shard=${entry['shard']}',
+            ]);
+            expect(options.shard, entry['shard']);
+          }
+        }
+        expect(
+          testTargets
+              .where((target) => target.nativeCodeEditor)
+              .map((target) => target.name),
+          ['source_editor_frontend', 'adele_desktop'],
+        );
+        expect(
+          testTargets
+              .where((target) => target.nativeToml)
+              .map((target) => target.name),
+          ['adele_toml_document'],
+        );
+        for (final entry in entries) {
+          expect(
+            entry['nativeCodeEditor'],
+            ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
+          );
+          expect(entry['nativeToml'], entry['name'] == 'adele_toml_document');
+        }
+        expect(
+          include,
+          everyElement(
+            isA<Map<String, Object?>>().having(
+              (Map<String, Object?> item) => item.keys,
+              'keys',
+              unorderedEquals(<String>[
+                'name',
+                'displayName',
+                'shard',
+                'shardCount',
+                'linuxDesktopDeps',
+                'nativeCodeEditor',
+                'nativeToml',
+                'ciTestConcurrency',
+              ]),
+            ),
+          ),
+        );
+        expect(
+          <String>[
+            for (final TestTarget target in testTargets)
+              if (target.linuxDesktopDeps) target.name,
+          ],
+          <String>['adele_desktop'],
+        );
+        expect(
+          <String, Object?>{
+            for (final Map<String, Object?> item in entries)
+              item['name']! as String: item['ciTestConcurrency'],
+          },
+          <String, Object?>{
+            for (final TestTarget target in testTargets)
+              target.name: switch (target.name) {
+                'contract_codegen' => 4,
+                'git_environment_backend' || 'adele_desktop' => 1,
+                _ => null,
+              },
+          },
+        );
+      },
+    );
 
     test('CI installs the pinned compiler for either native requirement', () {
       final workflow =
@@ -416,6 +505,324 @@ void main() {
         '--target x86_64-unknown-linux-gnu',
       );
     });
+
+    test(
+      'CI runs selected shards and propagates failures to the aggregate gate',
+      () async {
+        final workflow =
+            loadYaml(File('.github/workflows/ci.yaml').readAsStringSync())
+                as YamlMap;
+        final jobs = workflow['jobs'] as YamlMap;
+        final targetJob = jobs['test-target'] as YamlMap;
+        expect(targetJob['name'], r'test / ${{ matrix.displayName }}');
+        expect(targetJob['needs'], 'discover-test-targets');
+        expect(targetJob['continue-on-error'], isNull);
+        final strategy = targetJob['strategy'] as YamlMap;
+        expect(strategy['fail-fast'], isFalse);
+        expect(
+          strategy['matrix'],
+          r'${{ fromJSON(needs.discover-test-targets.outputs.matrix) }}',
+        );
+        final steps = (targetJob['steps'] as YamlList).cast<YamlMap>();
+        expect(
+          steps.singleWhere(
+            (step) => step['name'] == 'Bootstrap workspace',
+          )['run'],
+          'dart tools/adele.dart bootstrap',
+        );
+        expect(
+          steps.singleWhere(
+            (step) => step['name'] == 'Install Linux desktop dependencies',
+          )['if'],
+          r'${{ matrix.linuxDesktopDeps }}',
+        );
+        expect(
+          steps.singleWhere(
+            (step) => step['name'] == 'Install Linux PTY test prerequisites',
+          )['if'],
+          r"${{ matrix.name == 'git_environment_backend' || matrix.name == 'adele_desktop' }}",
+        );
+        final run = steps.singleWhere(
+          (step) => step['name'] == 'Run test target',
+        );
+        expect(run['continue-on-error'], isNull);
+        expect(run['env'], {
+          'TEST_TARGET': r'${{ matrix.name }}',
+          'TEST_SHARD': r'${{ matrix.shard }}',
+        });
+        // Execute the actual workflow shell with a failing stand-in for Dart.
+        for (final shard in ['', '1', '2', '3', '4']) {
+          final result = await Process.run(
+            'bash',
+            [
+              '-e',
+              '-c',
+              'dart() { printf "%s\\n" "\$@"; return 7; }\n${run['run']}',
+            ],
+            environment: {'TEST_TARGET': 'adele_desktop', 'TEST_SHARD': shard},
+          );
+          expect(result.exitCode, 7);
+          expect((result.stdout as String).trim().split('\n'), [
+            'tools/adele.dart',
+            'test',
+            '--target',
+            'adele_desktop',
+            '--ci',
+            if (shard.isNotEmpty) ...['--shard', shard],
+          ]);
+        }
+        final gate = jobs['test'] as YamlMap;
+        expect(gate['if'], 'always()');
+        expect(gate['needs'], ['discover-test-targets', 'test-target']);
+        final require = (gate['steps'] as YamlList).single as YamlMap;
+        expect(require['env'], {
+          'DISCOVERY_RESULT': r'${{ needs.discover-test-targets.result }}',
+          'TEST_TARGET_RESULT': r'${{ needs.test-target.result }}',
+        });
+        for (final discovery in [
+          'success',
+          'failure',
+          'cancelled',
+          'skipped',
+        ]) {
+          for (final target in ['success', 'failure', 'cancelled', 'skipped']) {
+            final result = await Process.run(
+              'bash',
+              ['-e', '-c', require['run'] as String],
+              environment: {
+                'DISCOVERY_RESULT': discovery,
+                'TEST_TARGET_RESULT': target,
+              },
+            );
+            expect(
+              result.exitCode == 0,
+              discovery == 'success' && target == 'success',
+            );
+          }
+        }
+      },
+      skip: Platform.isWindows ? 'CI uses Bash on Linux.' : false,
+    );
+  });
+
+  group('test file partitions', () {
+    late Directory fixture;
+    setUp(() {
+      fixture = Directory.systemTemp.createTempSync('adele-shards-');
+      Directory('${fixture.path}/test').createSync();
+    });
+    tearDown(() => fixture.deleteSync(recursive: true));
+
+    void addFile(String path) {
+      final file = File('${fixture.path}/$path');
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('');
+    }
+
+    test(
+      'complete, disjoint, ordered and stable across discovery and additions',
+      () {
+        final expected = [
+          for (var index = 0; index < 20; index++)
+            'test/nested path/file_${index}_test.dart',
+          'test/root_test.dart',
+        ]..sort();
+        for (final path in expected.reversed) {
+          addFile(path);
+        }
+        addFile('test/helper.dart');
+        addFile('test/fixtures/source.dart');
+        addFile('tool/outside_test.dart');
+        Directory('${fixture.path}/test/directory_test.dart').createSync();
+        final shards = partitionTestFiles(fixture, 4);
+        final flattened = shards.expand((files) => files).toList();
+        expect(flattened.toSet(), hasLength(expected.length));
+        expect(flattened, unorderedEquals(expected));
+        for (final files in shards) {
+          expect(files, isNotEmpty);
+          expect(files, [...files]..sort());
+        }
+        expect(partitionTestFiles(fixture, 4), shards);
+        // Recreate in another order and absolute location, with the same paths.
+        final copy = Directory.systemTemp.createTempSync('adele-shards-copy-');
+        addTearDown(() => copy.deleteSync(recursive: true));
+        for (final path in expected) {
+          final file = File('${copy.path}/$path');
+          file.parent.createSync(recursive: true);
+          file.writeAsStringSync('');
+        }
+        expect(partitionTestFiles(copy, 4), shards);
+        const added = 'test/new/deep/automatic_test.dart';
+        addFile(added);
+        final updated = partitionTestFiles(fixture, 4);
+        expect(
+          updated.expand((files) => files).where((path) => path == added),
+          hasLength(1),
+        );
+        for (var index = 0; index < shards.length; index++) {
+          expect(updated[index].where((path) => path != added), shards[index]);
+        }
+      },
+    );
+
+    test(
+      'matches Flutter file-link but not directory-link discovery',
+      () {
+        addFile('test/normal_test.dart');
+        addFile('support/linked.dart');
+        addFile('support/directory/hidden_test.dart');
+        Link(
+          '${fixture.path}/test/link_test.dart',
+        ).createSync('${fixture.path}/support/linked.dart');
+        Link(
+          '${fixture.path}/test/linked_directory',
+        ).createSync('${fixture.path}/support/directory');
+        Link(
+          '${fixture.path}/test/broken_test.dart',
+        ).createSync('${fixture.path}/missing.dart');
+        expect(partitionTestFiles(fixture, 1).single, [
+          'test/link_test.dart',
+          'test/normal_test.dart',
+        ]);
+      },
+      skip: Platform.isWindows
+          ? 'Symlink creation requires Windows privileges.'
+          : false,
+    );
+
+    test(
+      'rejects invalid counts, missing discovery roots and empty shards',
+      () {
+        expect(() => partitionTestFiles(fixture, 0), throwsArgumentError);
+        expect(() => partitionTestFiles(fixture, -1), throwsArgumentError);
+        expect(
+          () => partitionTestFiles(Directory('${fixture.path}/missing'), 4),
+          throwsA(isA<FileSystemException>()),
+        );
+        expect(() => partitionTestFiles(fixture, 4), throwsStateError);
+        addFile('test/only_test.dart');
+        expect(() => partitionTestFiles(fixture, 4), throwsStateError);
+        expect(
+          () => lookupTestTarget(
+            'adele_desktop',
+          ).argumentsFor(ci: true, testFiles: []),
+          throwsArgumentError,
+        );
+      },
+    );
+
+    test('CLI refuses an empty partition before native preparation', () async {
+      Directory('${fixture.path}/app/test').createSync(recursive: true);
+      final result = await Process.run(Platform.resolvedExecutable, [
+        File('tools/adele.dart').absolute.path,
+        'test',
+        '--target=adele_desktop',
+        '--ci',
+        '--shard=1',
+      ], workingDirectory: fixture.path);
+      expect(result.exitCode, 1);
+      expect(result.stderr, contains('Test shard 1/4 is empty'));
+      expect(result.stdout, isEmpty);
+      expect(Directory('${fixture.path}/.adele').existsSync(), isFalse);
+    });
+
+    test(
+      'actual checkout partitions cover every file and separate expensive suites',
+      () {
+        final target = lookupTestTarget('adele_desktop');
+        final shards = partitionTestFiles(
+          Directory(target.path),
+          target.ciShards,
+        );
+        final expected =
+            Directory('app/test')
+                .listSync(recursive: true, followLinks: false)
+                .where(
+                  (file) =>
+                      file.path.endsWith('_test.dart') &&
+                      FileSystemEntity.isFileSync(file.path),
+                )
+                .map(
+                  (file) => file.path
+                      .replaceAll(Platform.pathSeparator, '/')
+                      .substring('app/'.length),
+                )
+                .toList()
+              ..sort();
+        final selected = shards.expand((files) => files).toList();
+        expect(shards, hasLength(4));
+        expect(selected.toSet(), hasLength(expected.length));
+        expect(selected, unorderedEquals(expected));
+        expect(
+          partitionTestFiles(Directory(target.path), target.ciShards),
+          shards,
+        );
+        expect(
+          shards[2],
+          contains('test/core/normal_chatgpt_run_integration_test.dart'),
+        );
+        expect(
+          shards[1],
+          contains('test/core/command_output_capture_integration_test.dart'),
+        );
+        expect(shards[0], contains('test/prepared_console_host_test.dart'));
+        for (final files in shards) {
+          expect(files, [...files]..sort());
+          expect(target.argumentsFor(ci: true, testFiles: files), [
+            'test',
+            '--concurrency',
+            '1',
+            ...files,
+          ]);
+        }
+      },
+    );
+
+    test(
+      'selected file argv and test process failures reach the runner summary',
+      () async {
+        final script = File('${fixture.path}/failing_runner.dart')
+          ..writeAsStringSync(
+            "import 'dart:io';\nvoid main(List<String> args) { stdout.write(args.join('\\n')); exitCode = 7; }\n",
+          );
+        final target = TestTarget(
+          name: 'adele_desktop (1/4)',
+          path: fixture.path,
+          executable: Platform.resolvedExecutable,
+          arguments: [script.path, 'test'],
+          ciTestConcurrency: 1,
+        );
+        const files = ['test/nested path/a_test.dart', 'test/b_test.dart'];
+        final summary = await runTestTargets(
+          targets: [target],
+          jobs: 1,
+          execute: (target) async {
+            final process = await Process.run(
+              target.executable,
+              target.argumentsFor(ci: true, testFiles: files),
+              workingDirectory: target.path,
+            );
+            expect((process.stdout as String).split('\n'), [
+              'test',
+              '--concurrency',
+              '1',
+              ...files,
+            ]);
+            return process.exitCode;
+          },
+        );
+        expect(summary.succeeded, isFalse);
+        expect(summary.failures.single.exitCode, 7);
+        expect(summary.failures.single.target.name, 'adele_desktop (1/4)');
+        final source = File('tools/adele.dart').readAsStringSync();
+        expect(
+          source,
+          contains(
+            'return summary.succeeded ? 0 : summary.failures.first.exitCode;',
+          ),
+        );
+      },
+    );
   });
 
   group('target lookup', () {
