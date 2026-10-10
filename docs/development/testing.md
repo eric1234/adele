@@ -204,6 +204,7 @@ After bootstrap with the [native TOML prerequisites](toolchain.md#native-toml-do
 ```sh
 dart tools/adele.dart test --target adele_platform_storage
 dart tools/adele.dart test --target adele_toml_document
+dart tools/adele.dart test --target adele_configuration_store
 dart test test/tools/adele_test.dart
 ```
 
@@ -218,12 +219,23 @@ there is no native CodeForge build or loader environment variable. Tests cover
 parsing, scalar reads/updates/insertion/removal, comments/layout, Unicode, exact
 no-ops, and invalid-operation isolation. CRLF normalization on edits is an asserted
 upstream limitation, not silently treated as lossless preservation. The tooling
-suite owns workspace/analysis/target discovery and CI compiler metadata.
+suite owns workspace/analysis/target discovery and CI compiler metadata, including
+the persistence target's transitive native TOML requirement.
+
+The configuration-store target uses temporary configuration/state/data/cache roots
+and real native TOML to check loading, no-op preservation, conditional replacement,
+stale and external writes, permissions, symlinks, artifact cleanup, and storage-domain
+separation. Its process test uses pipe-gated writers and a nonblocking lock probe,
+not timing delays, to verify that the stable local-state lock spans publication.
+Staging faults are injected through Dart I/O overrides without a production fault
+API. Run as an unprivileged Linux user for the actual permission-denied assertions;
+the target uses coreutils `chmod` and `stat`. Linux x64 is the validated persistence
+path, not macOS/Windows or unconditional power-loss durability evidence.
 
 For package-specific analysis, run `dart analyze --fatal-infos` in each package.
 The small native ABI suite can be run from `packages/toml_document/native/` with
 `cargo test --locked`, and its formatting with `cargo fmt --check`, using that
-directory's pinned toolchain. No Settings/Profile UI or persistence integration
+directory's pinned toolchain. No Settings/Profile declaration, resolution, or UI
 is implied by these foundation checks.
 
 ## Application validation map
