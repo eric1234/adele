@@ -13,4 +13,5 @@ sources:
   - plugins/diff_viewer/packages/contract/lib/diff_viewer_contract.dart
   - plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.dart
   - plugins/scripted_model/packages/contract/lib/scripted_model_contract.dart
+  - plugins/session_evaluator/packages/contract/lib/session_evaluator_contract.dart
   - plugins/workspace_demo/packages/contract/lib/workspace_demo_contract.dart
