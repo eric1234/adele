@@ -2,8 +2,9 @@
 
 Role: Canonical architecture
 
-Implementation status: Storage-location and native TOML document foundations;
-general Settings and Profiles remain unimplemented.
+Implementation status: Storage-location, native TOML documents, and conditional
+global configuration-file persistence; general Settings and Profiles remain
+unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -247,9 +248,30 @@ configuration API simply because they share location-resolution infrastructure.
 [`adele_toml_document`](../../packages/toml_document/README.md) independently owns
 validation and narrow immutable scalar document edits. It provides no filesystem
 service, setting declarations, effective-value resolution, or Profile semantics.
-Atomic file writes, concurrent-editor conflict handling, file watching, and
-portable/local overlays remain later work. Neither foundation grants plugins
-direct access to global host files or changes Project storage ownership.
+
+[`adele_configuration_store`](../../packages/configuration_store/README.md) owns
+the narrow host persistence boundary for `settings.toml` under the configuration
+root. Loading validates existing TOML or represents absence as an empty document,
+without creating directories or artifacts. Malformed content and I/O failures
+remain distinct errors; neither causes repair or substitution with defaults.
+Snapshots retain content/existence baselines. Saves reject stale whole-document
+edits, skip unchanged content, and return an updated baseline after publication.
+
+Cooperating host writers use a stable advisory lock under the **local-state** root,
+not inside potentially Git-managed configuration. Each process routes operations
+through one owning isolate; the synchronous API serializes that isolate while OS
+locks coordinate processes. Complete staged content is flushed and replaced on
+the same filesystem. Linux is the maintained write path; other platforms reject
+changed saves pending validation. Symlinked configuration directories work, but
+changed saves reject file-level symlinks rather than destroying their arrangement.
+External editors/Git can race the final content check, so this is not unconditional
+compare-and-swap against uncooperative writers. The local README owns the exact
+placement, permission, crash-durability, and coordination limits.
+
+This host-only boundary grants plugins no arbitrary filesystem service and does
+not implement general Settings or Profiles. File watching, automatic merging,
+and portable/local overlays remain later work; Project storage ownership is
+unchanged.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
@@ -338,8 +360,9 @@ or lifecycle objects.
 
 Implemented foundations and current limits:
 
-- Distinct platform storage locations and native TOML scalar document operations
-  exist independently of Settings/Profile semantics and filesystem persistence.
+- Distinct platform storage locations, native TOML scalar document operations,
+  and conditional global configuration-file persistence exist independently of
+  Settings/Profile semantics.
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
@@ -370,9 +393,9 @@ profile-aware provider routing, or production workbench-state persistence.
 - Remembered workbench-state keying and garbage collection.
 
 These deferrals do not reopen ordered flat Profile composition or the product
-identities accepted by ADRs 0029 and 0031. Beyond the global roots and TOML document
-boundary above, configuration file layouts, schemas, migration protocols, and
-settings APIs remain open; ADRs
+identities accepted by ADRs 0029 and 0031. Beyond the global roots, TOML document
+boundary, and initial `settings.toml` persistence above, broader configuration file
+layouts, schemas, migration protocols, and settings APIs remain open; ADRs
 [0033](../adr/0033-durable-project-storage-and-provider-backing.md) and
 [0034](../adr/0034-plugin-owned-relational-session-storage.md) separately settle
 Project backing and plugin-owned relational Session storage, not these domains.

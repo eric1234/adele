@@ -1,0 +1,17 @@
+name: adele_configuration_store
+description: Internal host-owned conditional persistence for global TOML configuration.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_platform_storage: ^0.1.0
+  adele_toml_document: ^0.1.0
+  path: ^1.9.1
+
+dev_dependencies:
+  test: ^1.26.3

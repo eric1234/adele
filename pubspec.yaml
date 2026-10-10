@@ -10,6 +10,7 @@ workspace:
   - app
   - packages/agent_kernel
   - packages/capabilities
+  - packages/configuration_store
   - packages/contract
   - packages/contract_codegen
   - packages/core_extensions

@@ -152,6 +152,11 @@ source, manifests, and `Cargo.lock` are committed; generated libraries are not.
 Loading never substitutes a Dart parser. CI's `nativeToml` target metadata selects
 the compiler prerequisite independently of `nativeCodeEditor`.
 
+The host-only [`adele_configuration_store`](../../packages/configuration_store/README.md)
+uses that same transitive hook and compiler requirement, not another native build.
+Its Linux write path uses coreutils `chmod`; its filesystem tests also use GNU
+`stat` and require an unprivileged user for permission-denied coverage.
+
 The hook maps native-host Linux/macOS/Windows x64 and arm64, rejecting unsupported
 targets, cross-compilation, static-only linking, and sanitizers. Only Linux x64 is
 validated; this is not cross-platform release-packaging evidence. Flutter desktop
