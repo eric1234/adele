@@ -36,3 +36,20 @@ bool removeMainContentPane(String id) =>
 
 bool focusMainContentPane(String id, bool keyboardFocus) =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
+
+/// Side-effect-free source-display discovery for this mounted pane. Returns
+/// available, unavailable (no provider/current attachment), ambiguous, denied
+/// (no consumer declaration), or retired. This does not reserve a provider.
+String sourceDisplayAvailability() =>
+    throw UnsupportedError('Main Content requires a prepared contribution.');
+
+/// Requests source display through one exact public extension registration.
+/// Only mounted panes declaring canRequestSourceDisplay receive access. The host
+/// captures the canonical Session; the caller supplies only the unchanged
+/// Environment-relative path, never Session or Environment authority.
+///
+/// Returns a map with status: success, unavailable, ambiguous, failed, denied, or
+/// retired. Native diagnostics and provider payloads are not exposed. Departure
+/// fences publication, not an already-admitted finite provider operation's effects.
+Future<Map<String, dynamic>> displaySourceFile(String relativePath) =>
+    throw UnsupportedError('Main Content requires a prepared contribution.');

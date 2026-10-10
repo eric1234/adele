@@ -214,12 +214,13 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared backend callable Capability consumption | [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) owns independent prepared consumer/provider AOT through normal catalog/bootstrap and the public generated semantic client; [`test/core/backend_capability_host_test.dart`](../../app/test/core/backend_capability_host_test.dart) owns exact binding, handle bounds, release/retirement, and admitted unary settlement. Public facade/mediation contract tests belong to `adele_plugin_backend_support`; strict backend declarations and generation infrastructure belong to `plugin_runtime`. See [focused checks](#focused-backend-capability-checks). |
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
-| Stock Diff/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds the actual stock Git/shared-host AOT and independently prepared Diff EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It covers working-tree/index separation, untracked additions, deletion, nested source confinement, manual refresh, clean/unavailable/failure states, and Linux FIFO-gated admitted snapshot navigation/retirement. Focused enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated interpreted presentation belong to the Diff targets. |
+| Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns working-tree/index separation, snapshot states/refresh, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
 | Grouped Main Content ownership/layout | [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart), [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart), [`test/adele_shell_test.dart`](../../app/test/adele_shell_test.dart) (registered groups only, ordinary ordering including Chat, zero-pane geometry, contiguous groups, stable panes, equal individual widths/minima, local reveal/focus, departure/retirement, and canonical Session context independent of view availability) |
 | Prepared Main Content/catalog composition | [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart), [`test/main_content_editor_test.dart`](../../app/test/main_content_editor_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (provider-free canonical Session/Environment context without grants, explicit per-pane services/native bindings, scoped operations, independent editor text/undo, and direct contributed Chat coexistence); see [focused commands](#focused-main-content-checks) |
+| Main Content source-display consumers | [`test/main_content_source_display_test.dart`](../../app/test/main_content_source_display_test.dart) owns focused native and compiled authority checks: default denial, pane-only access, canonical Session validation before resolution, status-only settlement, exact provider retirement/replacement, and late attachment refresh/focus fencing without cancellation of admitted finite work. Public resolver behavior belongs to [`display_source_file_test.dart`](../../packages/ui/test/display_source_file_test.dart); strict consumer/provider declaration separation belongs to `plugin_runtime`. |
 | Source retained data/native owners and captured file authority | [`source_editor_frontend/test/source_editor_host_test.dart`](../../plugins/source_editor/packages/frontend/test/source_editor_host_test.dart), [`test/environment_text_files_test.dart`](../../app/test/environment_text_files_test.dart), [`test/environment_access_bridge_test.dart`](../../app/test/environment_access_bridge_test.dart) (actual Source EVC, explicit-operation recovery without same-capture retry/migration, unchanged expected revisions, finite Save/Close, hidden exit, denied grants, and structured failures); see [focused Source checks](#focused-source-checks) |
 | Normal Source workflow and exit cancellation | Source cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (stock catalog/EVC and real Git worktrees, Session/Environment retention without Chat or Run, conditional Save/conflict/Close, and hidden unsaved exit cancellation without closing an active Run) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
@@ -262,30 +263,59 @@ workflow's source/evidence owners and deterministic-versus-live distinction.
 
 ### Focused Diff checks
 
-After bootstrap/current generation, run from the repository root:
+These commands map validation ownership, not passing outcomes. After
+bootstrap/current generation, select affected targets from the repository root:
 
 ```sh
 dart tools/adele.dart test --target diff_viewer_contract
 dart tools/adele.dart test --target diff_viewer_frontend
+dart tools/adele.dart test --target source_editor_frontend
+dart tools/adele.dart test --target adele_ui
+dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target git_environment_backend --ci
 dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
 dart tools/adele.dart generate --check
 ```
 
-From `app/`, serialize the compiler-heavy integration files:
+The owning [Diff frontend suite](../../plugins/diff_viewer/packages/frontend/test/diff_viewer_frontend_test.dart)
+compiles real EVC and covers eligible/ineligible headers, unchanged unusual paths,
+availability, duplicate suppression, safe errors, and stale callbacks alongside
+snapshot rendering. Its injected provider is not cross-plugin authority evidence
+and does not instantiate a native editor. The existing
+[Source host suite](../../plugins/source_editor/packages/frontend/test/source_editor_host_test.dart)
+owns Source document policy and native text/undo across admitted operations.
+
+From `app/`, focused native/compiled consumer authority checks need no native editor
+library. Serialize Flutter invocations sharing its build directory:
+
+```sh
+flutter test --no-pub --concurrency 1 test/main_content_source_display_test.dart test/prepared_main_content_host_test.dart
+```
+
+For the real Diff+Source integration, first run
+`dart tools/adele.dart build-code-editor-tests` from the repository root and set
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the absolute directory it prints.
+Then, from `app/`, serialize the compiler-heavy integration files:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/prepared_diff_git_integration_test.dart test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
 ```
 
-Use the pinned explicit `FLUTTER_ROOT`. The Diff integration needs Git and, for its
-deterministic in-flight lifecycle cases on Linux, `mkfifo` and a POSIX shell. Its
-test-only PATH launcher forwards unchanged arguments to real Git and acknowledges
-arrival before releasing an actual snapshot; it adds no production testing hook.
-These text-only tests do not instantiate the native Source editor or PTY. The
-ordinary desktop target discovers the cross-plugin fixture without a separate CI
-target. This is prepared-artifact evidence, not human desktop or non-Linux process
-acceptance. No live model, credentials, staging UI, or review submission is used.
+Use the pinned explicit `FLUTTER_ROOT` and the
+[native editor prerequisites](toolchain.md#native-editor-preparation). The integration
+uses independent Diff and Source EVC installations with real Git AOT and native
+Source editing, unlike the standalone text-only Diff tests. It checks actual Diff
+actions against the canonical nonprimary Environment, normalized document
+deduplication without rereading, dirty text/undo preservation, focus, and captured
+read completion across navigation. Snapshot lifecycle gates on Linux additionally
+need `mkfifo` and a POSIX shell: the test-only PATH launcher forwards unchanged
+arguments to real Git and acknowledges arrival before releasing an actual snapshot.
+The Source read gate holds a real provider response, not substituted file contents;
+neither gate adds a production testing hook. These tests do not need a PTY.
+The ordinary `adele_desktop` target discovers both app files and prepares the native
+library/environment without a separate CI target. This is prepared-artifact
+coverage, not human desktop or non-Linux process acceptance. No live model,
+credentials, staging UI, or review submission is used.
 
 ### Focused backend Capability checks
 
@@ -371,7 +401,7 @@ build directory:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/main_content_controller_test.dart test/main_content_host_test.dart test/adele_shell_test.dart test/inspection_stack_test.dart
-flutter test --no-pub --concurrency 1 test/prepared_main_content_host_test.dart test/prepared_session_services_test.dart test/session_presentation_lifecycle_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/prepared_main_content_host_test.dart test/main_content_source_display_test.dart test/prepared_session_services_test.dart test/session_presentation_lifecycle_bridge_test.dart
 flutter test --no-pub --concurrency 1 test/window_task_browser_source_test.dart test/session_execution_bridge_test.dart
 (cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
 ```
@@ -382,9 +412,12 @@ identity across title/order/width changes, local scroll/focus, bounded geometry,
 and failure isolation. Prepared-host tests use actual EVC through the generic
 catalog/bootstrap path, including readiness and stale callback boundaries. Service
 tests keep exact backend/installation/controller validation separate from renderer
-selection. Chat's initializer uses only captured identities; applicability mismatch
-must not acquire execution or backend services. Navigation checks distinguish
-canonical `canOpen` from `executionAvailable` and retained status, and creation
+selection. The source-display consumer suite keeps native and compiled authority
+checks separate from the [real Diff/Source/Git integration](#focused-diff-checks)
+and from the existing Source host's document behavior. Chat's initializer uses only
+captured identities; applicability mismatch must not acquire execution or backend
+services. Navigation checks distinguish canonical `canOpen` from
+`executionAvailable` and retained status, and creation
 choices from UI availability.
 
 For native editor ownership and stock Chat integration, first run

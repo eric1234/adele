@@ -92,14 +92,43 @@ native bindings. Focused checks are mapped in
 
 [`display_source_file.dart`](lib/display_source_file.dart) defines
 `displaySourceFileContributions` and `DisplaySourceFileContribution(display)`.
-`DisplaySourceFileResolver.display(relativePath, select: ...)` captures one exact
-registration: zero is unavailable, multiple are ambiguous, and explicit selection
+`DisplaySourceFileResolver.resolve(select: ...)` returns one exact binding;
+`display(relativePath, select: ...)` invokes it and validates it on completion.
+Zero registrations are unavailable, multiple are ambiguous, and explicit selection
 never falls back. Retirement rejects a late result without retrying or cancelling
 already admitted work. The caller supplies a path, not Session/Environment
 authority; prepared hosting captures the current approved Session attachment.
 The stock [Source Editor](../../plugins/source_editor/README.md) uses the same
-finite operation for this route and its Open Source input. Resolver checks live in
-[`test/display_source_file_test.dart`](test/display_source_file_test.dart).
+finite operation for this route and its Open Source input, without changing its
+document identity, deduplication, or native text/undo ownership.
+
+Prepared consumers use two interpreted-only functions in
+[`main_content_bridge.dart`](lib/main_content_bridge.dart):
+
+| Function | Result |
+| --- | --- |
+| `sourceDisplayAvailability()` | A synchronous string: `available`, `unavailable`, `ambiguous`, `denied`, or `retired`. Side-effect-free discovery does not reserve a provider. |
+| `displaySourceFile(String relativePath)` | `Future<Map<String, dynamic>>` containing only `status`: `success`, `unavailable`, `ambiguous`, `failed`, `denied`, or `retired`. Provider payloads, structured provider errors, and native diagnostics do not cross this bridge. |
+
+Only an actual mounted pane declaring `canRequestSourceDisplay` receives the host
+resolver callback. Initializers, input actions, and finite operations receive none,
+even when their descriptor opts in. This consumer declaration is separate from
+the provider's `displaySourceFileOperation` hook and grants no file or editor
+access; see the [catalog schema](../plugin_runtime/README.md#prepared-catalog).
+The path passes unchanged, with no caller-selected provider, Session, or
+Environment. Each request resolves afresh, then invokes only that captured binding;
+availability is not an invocation guarantee. Missing provider/current attachment
+is `unavailable`, absent permission is `denied`, and stale access is `retired`.
+Provider failure is reduced to `failed`, not exposed as a native exception.
+
+The host validates native canonical Session authority before resolution and gates
+late display refresh/focus to the captured attachment and live display registration.
+Admitted finite work may finish and retain data without reviving presentation;
+see [Main Content source display](../../docs/architecture/plugin-system.md#main-content-source-display)
+for the cross-system boundary. Public resolver checks live in
+[`test/display_source_file_test.dart`](test/display_source_file_test.dart); native
+and compiled consumer checks are mapped in
+[application validation](../../docs/development/testing.md#application-validation-map).
 
 ## Shared Console
 
@@ -376,7 +405,10 @@ native implementations supply their behavior; calling a stub natively throws
   entrypoints, not hidden residency. A fresh Session attachment may initialize
   again over explicitly retained data/native owners.
   Native editor access, when supplied, is a separate per-pane binding, not an
-  editor lookup through these local IDs.
+  editor lookup through these local IDs. The separate pane-only
+  `sourceDisplayAvailability()` and `displaySourceFile(relativePath)` operations
+  request public source display without acquiring that provider's file/editor
+  services; their status-only API is described in [Source File Display](#source-file-display).
 - `terminal_projection_bridge.dart` is a separate, presentation-owned read-only
   projection API: request/build, bounded feed/reset, revocable replay yields, immutable observation,
   follow/local scroll, and change subscriptions. Each rich Inspection or read-only

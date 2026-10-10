@@ -8,6 +8,8 @@ import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
@@ -22,6 +24,8 @@ void main() {
   late PreparedFrontend frontend;
   late _Port port;
   late SessionPresentationLifecycleBridge lifecycle;
+  late ExtensionRegistry sourceRegistry;
+  late _Source source;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('diff-viewer-eval-');
@@ -37,11 +41,23 @@ void main() {
     frontend = await PreparedFrontend.load(artifact);
     port = _Port();
     lifecycle = SessionPresentationLifecycleBridge(isActive: () => true);
+    sourceRegistry = ExtensionRegistry();
+    source = _Source();
   });
   tearDown(() async {
     frontend.invalidate();
     await port.dispatcher.close();
   });
+
+  ExtensionRegistration registerSource({String id = 'test.source'}) {
+    final registration = sourceRegistry.register(
+      point: displaySourceFileContributions,
+      id: ExtensionId(id),
+      value: DisplaySourceFileContribution(display: source.display),
+    );
+    addTearDown(registration.close);
+    return registration;
+  }
 
   Future<void> mount(WidgetTester tester, {Key? key}) async {
     await tester.pumpWidget(
@@ -55,6 +71,9 @@ void main() {
               MainContentBridge(
                 context: const {'sessionId': 'canonical'},
                 isActive: () => true,
+                resolveSourceDisplay: DisplaySourceFileResolver(
+                  sourceRegistry,
+                ).resolve,
               ),
               lifecycle,
               port,
@@ -85,6 +104,219 @@ void main() {
       expect(find.byType(TextField), findsNothing);
     },
   );
+
+  testWidgets(
+    'Open in Source passes raw unusual paths and Refresh never displays source',
+    (tester) async {
+      registerSource();
+      final paths = [
+        'dir/file with spaces.txt',
+        'dir/name  [deleted] [modified].txt',
+        'dir/quote" tab\t unicode-\u03bb\nname.txt',
+      ];
+      port.service.value = _snapshot(path: paths.first);
+      await mount(tester);
+      expect(source.paths, isEmpty);
+      for (final path in paths) {
+        port.service.value = _snapshot(path: path);
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(source.paths.length, paths.indexOf(path));
+        expect(find.text('$path  [modified]'), findsOneWidget);
+        await tester.tap(find.text('Open in Source'));
+        await tester.pumpAndSettle();
+        expect(source.paths.last, path);
+        expect(find.text('Unable to open file in Source.'), findsNothing);
+      }
+      expect(source.paths, paths);
+      expect(port.service.calls, 4);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('only known existing text file headers offer Open in Source', (
+    tester,
+  ) async {
+    registerSource();
+    await mount(tester);
+    for (final entry in [
+      ('modified', 'text', true),
+      ('added', 'text', true),
+      ('typeChanged', 'text', true),
+      ('deleted', 'text', false),
+      ('unsupported', 'text', false),
+      ('conflicted', 'text', false),
+      ('modified', 'binary', false),
+      ('modified', 'oversized', false),
+      ('modified', 'unsupported', false),
+      ('modified', 'conflicted', false),
+    ]) {
+      port.service.value = ChangeSetSnapshot(
+        files: [
+          ChangedFile(
+            relativePath: 'file.txt',
+            changeKind: entry.$1,
+            contentStatus: entry.$2,
+            detail: null,
+            hunks: [],
+          ),
+        ],
+      );
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(find.text('file.txt  [${entry.$1}]'), findsOneWidget);
+      expect(
+        find.text('Open in Source'),
+        entry.$3 ? findsOneWidget : findsNothing,
+        reason: '${entry.$1}/${entry.$2}',
+      );
+    }
+    expect(source.paths, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'missing and multiple Source providers stay explicit without choosing one',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      port.service.value = _snapshot();
+      await mount(tester);
+      expect(find.text('Source is unavailable.'), findsOneWidget);
+      expect(find.text('Open in Source'), findsNothing);
+      final first = registerSource();
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      final button = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Open in Source'),
+      );
+      final second = registerSource(id: 'test.second-source');
+      // A previously rendered callback must recheck current availability.
+      button.onPressed!();
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Multiple Source providers are available.'),
+        findsWidgets,
+      );
+      expect(find.text('Open in Source'), findsNothing);
+      expect(source.paths, isEmpty);
+      await first.close();
+      await second.close();
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(find.text('Source is unavailable.'), findsOneWidget);
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'pending source display suppresses duplicates and failure is nonfatal and retryable',
+    (tester) async {
+      registerSource();
+      final held = Completer<Map<String, Object?>>();
+      source.pending = held.future;
+      port.service.value = _snapshot();
+      await mount(tester);
+      final button = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Open in Source'),
+      );
+      button.onPressed!();
+      button.onPressed!();
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt']);
+      expect(find.text('Opening in Source...'), findsOneWidget);
+      expect(find.text('Open in Source'), findsNothing);
+      held.complete({'ok': false, 'message': 'private source diagnostic'});
+      await tester.pumpAndSettle();
+      expect(find.text('Unable to open file in Source.'), findsOneWidget);
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      expect(find.text('   4      -before'), findsOneWidget);
+      expect(find.textContaining('private source diagnostic'), findsNothing);
+      expect(port.service.calls, 1);
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt', 'notes.txt']);
+      expect(find.text('Unable to open file in Source.'), findsNothing);
+      expect(port.service.calls, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('source exceptions become generic errors, not a failed Diff', (
+    tester,
+  ) async {
+    registerSource();
+    source.failure = true;
+    port.service.value = _snapshot();
+    await mount(tester);
+    await tester.tap(find.text('Open in Source'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unable to open file in Source.'), findsOneWidget);
+    expect(find.text('notes.txt  [modified]'), findsOneWidget);
+    expect(find.text('Unable to load unstaged changes.'), findsNothing);
+    expect(find.textContaining('private source diagnostic'), findsNothing);
+    expect(port.service.calls, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'refresh fences old source feedback and callbacks but retains pending suppression',
+    (tester) async {
+      registerSource();
+      final held = Completer<Map<String, Object?>>();
+      source.pending = held.future;
+      port.service.value = _snapshot();
+      await mount(tester);
+      final oldButton = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Open in Source'),
+      );
+      oldButton.onPressed!();
+      await tester.pumpAndSettle();
+      port.service.value = _snapshot(path: 'current.txt');
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(find.text('current.txt  [modified]'), findsOneWidget);
+      expect(find.text('Opening in Source...'), findsOneWidget);
+      expect(source.paths, ['notes.txt']);
+      held.complete({'ok': false});
+      await tester.pumpAndSettle();
+      expect(find.text('Unable to open file in Source.'), findsNothing);
+      oldButton.onPressed!();
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt']);
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt', 'current.txt']);
+      expect(port.service.calls, 2);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final departing in [true, false]) {
+    testWidgets('late source completion cannot update departed=$departing UI', (
+      tester,
+    ) async {
+      registerSource();
+      final held = Completer<Map<String, Object?>>();
+      source.pending = held.future;
+      port.service.value = _snapshot();
+      await mount(tester);
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      if (departing) {
+        await lifecycle.prepareToDeactivate();
+      } else {
+        await tester.pumpWidget(const SizedBox());
+      }
+      held.complete({'ok': false});
+      await tester.pumpAndSettle();
+      expect(find.text('Unable to open file in Source.'), findsNothing);
+      expect(find.text('notes.txt  [modified]'), findsNothing);
+      expect(source.paths, ['notes.txt']);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'loading, clean, unavailable, error and manual retry are truthful',
@@ -352,6 +584,21 @@ class _Service implements ChangeSetSourceService {
       throw const ChangeSetFailure(code: 'failed', message: 'private failure');
     }
     return value;
+  }
+}
+
+class _Source {
+  final List<String> paths = [];
+  Future<Map<String, Object?>>? pending;
+  bool failure = false;
+
+  Future<Map<String, Object?>> display(String path) async {
+    paths.add(path);
+    final held = pending;
+    pending = null;
+    if (held != null) return held;
+    if (failure) throw StateError('private source diagnostic');
+    return {'ok': true, 'private': 'private source diagnostic'};
   }
 }
 
