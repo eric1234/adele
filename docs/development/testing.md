@@ -106,7 +106,7 @@ The local two-process default does not limit CI matrix parallelism.
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.
 `chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
-`openai_frontend`, and `source_editor_frontend` run
+`openai_frontend`, `source_editor_frontend`, and `diff_viewer_frontend` run
 that coverage independently with development-only host dependencies and shared
 app-side compiler support. Generic desktop/native infrastructure and whole-product
 multi-plugin integration remain in `adele_desktop`.
@@ -214,6 +214,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared backend callable Capability consumption | [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) owns independent prepared consumer/provider AOT through normal catalog/bootstrap and the public generated semantic client; [`test/core/backend_capability_host_test.dart`](../../app/test/core/backend_capability_host_test.dart) owns exact binding, handle bounds, release/retirement, and admitted unary settlement. Public facade/mediation contract tests belong to `adele_plugin_backend_support`; strict backend declarations and generation infrastructure belong to `plugin_runtime`. See [focused checks](#focused-backend-capability-checks). |
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
+| Stock Diff/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds the actual stock Git/shared-host AOT and independently prepared Diff EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It covers working-tree/index separation, untracked additions, deletion, nested source confinement, manual refresh, clean/unavailable/failure states, and Linux FIFO-gated admitted snapshot navigation/retirement. Focused enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated interpreted presentation belong to the Diff targets. |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
@@ -258,6 +259,33 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused Diff checks
+
+After bootstrap/current generation, run from the repository root:
+
+```sh
+dart tools/adele.dart test --target diff_viewer_contract
+dart tools/adele.dart test --target diff_viewer_frontend
+dart tools/adele.dart test --target git_environment_backend --ci
+dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
+dart tools/adele.dart generate --check
+```
+
+From `app/`, serialize the compiler-heavy integration files:
+
+```sh
+flutter test --no-pub --concurrency 1 test/prepared_diff_git_integration_test.dart test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
+```
+
+Use the pinned explicit `FLUTTER_ROOT`. The Diff integration needs Git and, for its
+deterministic in-flight lifecycle cases on Linux, `mkfifo` and a POSIX shell. Its
+test-only PATH launcher forwards unchanged arguments to real Git and acknowledges
+arrival before releasing an actual snapshot; it adds no production testing hook.
+These text-only tests do not instantiate the native Source editor or PTY. The
+ordinary desktop target discovers the cross-plugin fixture without a separate CI
+target. This is prepared-artifact evidence, not human desktop or non-Linux process
+acceptance. No live model, credentials, staging UI, or review submission is used.
 
 ### Focused backend Capability checks
 

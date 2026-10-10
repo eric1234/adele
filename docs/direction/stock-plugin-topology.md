@@ -336,7 +336,12 @@ Task/environment/worktree/branch names may match by convention but are not one i
 
 ### Review/change provider
 
-Git is the expected stock implementation of whatever typed interface Diff/Review uses to obtain change sets and change content. That interface may initially belong to the Diff ecosystem rather than core.
+Git implements the Diff-owned public `ChangeSetSource` Capability in its existing
+Environment backend. The initial read-only implementation supplies Unstaged
+snapshots for its exactly associated canonical Environment. The contract remains
+in the Diff ecosystem rather than core; see the
+[accepted ownership boundary](../architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots)
+and [Git implementation scope](../../plugins/git_environment/README.md).
 
 ### Approval/unapproval provider
 
@@ -682,10 +687,11 @@ Expected functionality includes plan read/write/update tools, Session-associated
 
 Likely provides a Diff/Review Main Content contribution, review scope controls, hunk rendering, comments, and plugin-defined interfaces for reviewable changes and review operations. The word "Review" here names the Diff plugin's workflow; it is not a separate core Review domain identity.
 
-Possible provisional contracts:
+The initial public change-source contract is implemented; approval and feedback
+interfaces remain provisional:
 
 ```text
-DiffSource / ChangeSetSource
+ChangeSetSource
 ReviewApprovalHandler
 ReviewCommentReceiver / ReviewFeedbackTarget
 ```
@@ -707,6 +713,12 @@ Graceful degradation:
 - no approval provider: review is display/comment only;
 - no feedback target: comment-to-agent affordance is absent;
 - no Git but another compatible change provider: Diff can still work.
+
+The current [Diff Viewer](../../plugins/diff_viewer/README.md) is the modest
+read-only subset: unified Unstaged hunks, explicit content limitations, clean and
+unavailable/error states, and manual Refresh. The broader review controls described
+here remain intended future behavior, not capabilities implied by the initial
+change-source contract.
 
 ## 9.2 Internal Source Editor
 
@@ -968,7 +980,7 @@ agent calls TODO tools
 ## 12.10 Review changes
 
 ```text
-Diff asks DiffSource -> Git provides changes
+Diff asks ChangeSetSource -> Git provides changes
 filename action -> DisplaySourceFile -> Internal Source Editor by default
 manual edit -> Environment filesystem -> Git/Diff observe normal change state
 Approve -> review approval interface -> Git stages hunk

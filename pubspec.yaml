@@ -50,6 +50,8 @@ workspace:
   - plugins/task_browser/packages/frontend
   - plugins/terminal/packages/frontend
   - plugins/source_editor/packages/frontend
+  - plugins/diff_viewer/packages/contract
+  - plugins/diff_viewer/packages/frontend
   - plugins/git_environment
 
 dependency_overrides:

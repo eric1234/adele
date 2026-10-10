@@ -956,6 +956,93 @@ void main() {
       },
     );
 
+    test(
+      'discovers Diff contract and frontend-only contextual presentation',
+      () {
+        for (final component in ['contract', 'frontend']) {
+          final name = 'diff_viewer_$component';
+          final path = 'plugins/diff_viewer/packages/$component';
+          final target = lookupTestTarget(name);
+          expect(target.path, path);
+          expect(
+            target.executable,
+            component == 'frontend' ? 'flutter' : 'dart',
+          );
+          expect(target.nativeCodeEditor, isFalse);
+          expect(target.linuxDesktopDeps, isFalse);
+          expect(target.arguments, ['test']);
+          final analysis = analysisTargets.singleWhere(
+            (entry) => entry.name == name,
+          );
+          expect(analysis.path, path);
+          expect(analysis.flutter, component == 'frontend');
+          expect(
+            File('pubspec.yaml').readAsStringSync(),
+            contains('  - $path\n'),
+          );
+          expect(
+            Directory('$path/test').listSync().whereType<File>(),
+            isNotEmpty,
+          );
+        }
+        expect(
+          Directory('plugins/diff_viewer/packages/backend').existsSync(),
+          isFalse,
+        );
+        final manifest =
+            loadYaml(
+                  File(
+                    'plugins/diff_viewer/packages/frontend/pubspec.yaml',
+                  ).readAsStringSync(),
+                )
+                as YamlMap;
+        expect(manifest['dependencies'], {
+          'adele_ui': '^0.1.0',
+          'diff_viewer_contract': '^0.1.0',
+          'flutter': {'sdk': 'flutter'},
+        });
+        expect(stockFrontendDescriptors['dev.adele.diff-viewer'], [
+          {
+            'role': 'mainContent',
+            'extensionId': 'dev.adele.diff-viewer.main-content',
+            'library': 'package:diff_viewer_frontend/main.dart',
+            'initialize': 'initializeDiff',
+            'entrypoint': 'buildDiffPane',
+            'order': 200,
+            'environmentReadCapabilities': [
+              {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
+            ],
+          },
+        ]);
+        expect(
+          stockFrontendExtensionDescriptors['dev.adele.diff-viewer'],
+          isNull,
+        );
+        final compiler = File(
+          'app/tool/diff_viewer_frontend_compiler.dart',
+        ).readAsStringSync();
+        expect(compiler, contains('generateEvalClient'));
+        expect(
+          compiler,
+          contains(
+            '..addPlugin(const EnvironmentCapabilityAccessDeclarations())',
+          ),
+        );
+        expect(
+          compiler,
+          isNot(contains('..addPlugin(const CapabilityAccessDeclarations())')),
+        );
+        for (final library in Directory(
+          'plugins/diff_viewer/packages/frontend/lib',
+        ).listSync().whereType<File>()) {
+          final source = library.readAsStringSync();
+          expect(source, isNot(contains('package:adele_desktop/')));
+          expect(source, isNot(contains('package:git_environment')));
+          expect(source, isNot(contains("import 'dart:io'")));
+        }
+      },
+    );
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -999,6 +1086,10 @@ void main() {
             name: 'source_editor_frontend',
             path: 'plugins/source_editor/packages/frontend',
           ),
+          (
+            name: 'diff_viewer_frontend',
+            path: 'plugins/diff_viewer/packages/frontend',
+          ),
         ]) {
       final target = analysisTargets.singleWhere(
         (package) => package.name == expected.name,
@@ -1012,6 +1103,7 @@ void main() {
       'filesystem_tools_plugin',
       'command_tools_plugin',
       'command_tools_contract',
+      'diff_viewer_contract',
       'openai_contract',
     ]) {
       expect(
@@ -1025,7 +1117,7 @@ void main() {
   test(
     'stock descriptors name existing frontend entrypoints and sibling actions',
     () {
-      expect(stockFrontendDescriptors, hasLength(7));
+      expect(stockFrontendDescriptors, hasLength(8));
       expect(stockFrontendExtensionDescriptors, hasLength(3));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
@@ -1360,6 +1452,8 @@ void main() {
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
         'terminal_frontend|flutter|plugins/terminal/packages/frontend|test',
+        'diff_viewer_contract|dart|plugins/diff_viewer/packages/contract|test',
+        'diff_viewer_frontend|flutter|plugins/diff_viewer/packages/frontend|test',
         'source_editor_frontend|flutter|plugins/source_editor/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',

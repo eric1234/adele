@@ -178,6 +178,7 @@ Future<List<String>> prepareDesktopPluginDefines({
   );
   // Publish each installation once, only after all components are prepared.
   for (final plugin in <({File? backend, String id, String displayName})>[
+    (backend: null, id: 'dev.adele.diff-viewer', displayName: 'Diff'),
     (backend: null, id: 'dev.adele.source-editor', displayName: 'Source'),
     (backend: null, id: 'dev.adele.plugin.terminal', displayName: 'Terminal'),
     (

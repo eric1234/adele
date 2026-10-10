@@ -504,6 +504,14 @@ actions, and finite operations receive neither Capability bridge. Selection,
 settlement, and limitations belong to
 [prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 
+Stock [Diff Viewer](../../plugins/diff_viewer/README.md) uses this existing path as
+a frontend-only singleton contribution at order 200, between stock Chat and Source.
+It keeps its pane available without a compatible source, and loads read-only
+Unstaged snapshots on opening and manual Refresh through its own public contract.
+The initializer opens the pane; provider resolution and the contextual handle
+belong to its mounted presentation. There is no Diff-specific host registration,
+renderer, or Git adapter.
+
 Core retains Session execution controllers, Run lifecycle, policy, and approval
 authority. Plugins choose where to place controls, including the existing native
 Run status/approval UI exposed through `buildSessionExecutionStatus()`. Removing a
