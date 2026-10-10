@@ -2,9 +2,9 @@
 
 Role: Canonical architecture
 
-Implementation status: Storage-location, native TOML documents, and conditional
-global configuration-file persistence; general Settings and Profiles remain
-unimplemented.
+Implementation status: Declarative ordinary scalar settings, immutable catalogs,
+default/global resolution, and conditional global TOML persistence are implemented.
+Prepared-plugin discovery, Settings UI, and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -95,6 +95,24 @@ distinct from absence. Effective values should retain provenance so Settings and
 diagnostics can explain their contributing layers and overridden values. This
 resolution model does not prescribe a configuration storage or API schema.
 
+The implemented boundary in [`adele_settings`](../../packages/settings/README.md)
+supports exactly **declared default -> optional global override**. Boolean,
+signed 64-bit integer (optional bounds), ordinary string, and string-enumeration
+definitions are immutable data, not executable validators/default factories.
+Defaults must satisfy their declaration. Definitions carry stable setting and
+declaration-owner IDs using ADELE's public-ID grammar; each setting lives beneath
+its owner's namespace. This is declaration consistency, not live plugin identity,
+activation, or proof of trust. An immutable catalog rejects duplicate IDs,
+including collisions across owners, and enumerates in stable setting-ID order.
+
+Effective results carry a typed value, source, and explicit global-override
+presence. A default-equal explicit override still has global provenance. A known
+invalid override fails with its setting ID and violation; it never silently
+falls back. Unknown persisted IDs do not invalidate known settings or disappear
+when owners are unavailable. Reset removes the global entry and restores default
+provenance. No null, Profile/Project layer, compound merge, or named configuration
+record model is supplied by this scalar contract.
+
 ## Shared context, distinct composition
 
 Profiles and product/resource context can supply inputs to several systems.
@@ -158,10 +176,11 @@ Technical setting ownership identifies a stable ID/schema owner. Settings UX
 organization follows user/product concepts, not a plugin list. Common settings
 should be declarative so ADELE can provide consistent native editing.
 
-A future declaration may describe a stable ID, value type, label/description,
-default, category/search metadata, allowed scopes, validation, merge/apply behavior,
-and portability/sensitivity metadata. These are illustrative categories, not an
-API specification.
+Current scalar declarations include stable setting/owner identity, type, default,
+type-specific validation, label, optional description, and product category/section.
+Category and section need not follow plugin ownership. Future declarations may add
+search metadata, allowed scopes, merge/apply behavior, and portability/sensitivity
+metadata; these remain illustrative categories, not implemented API fields.
 
 Plugins may supply custom editors where generic editing is inadequate. Such UI
 must use host-owned configuration and persistence APIs, not establish a separate
@@ -269,9 +288,29 @@ compare-and-swap against uncooperative writers. The local README owns the exact
 placement, permission, crash-durability, and coordination limits.
 
 This host-only boundary grants plugins no arbitrary filesystem service and does
-not implement general Settings or Profiles. File watching, automatic merging,
+not itself implement Settings or Profiles. File watching, automatic merging,
 and portable/local overlays remain later work; Project storage ownership is
 unchanged.
+
+[`adele_settings_host`](../../packages/settings_host/README.md) is the separate,
+narrow adapter over these store/document APIs and the public scalar catalog.
+Global overrides use root-level quoted fully qualified setting IDs in
+`settings.toml`; each ID is **one literal key**, not dotted table traversal:
+
+```toml
+"dev.adele.example.enabled" = true
+"dev.adele.example.output-limit" = 5000
+"dev.adele.example.mode" = "detailed"
+```
+
+Loading and resolution never materialize defaults. Host snapshots retain the
+conditional-save baseline while edits produce new immutable documents; save
+propagates whole-document conflicts without retry or merge. Unknown values are
+not scanned or rewritten. Unsupported known TOML values fail explicitly instead
+of causing structural repair, and no syntax/type coercion is performed. Ordinary
+scalar edits and explicit reset use the existing document operations and their
+preservation limits. The adapter remains synchronous on the owning host isolate,
+with no desktop UI wiring and no implied adoption by active runtime consumers.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
@@ -363,6 +402,9 @@ Implemented foundations and current limits:
 - Distinct platform storage locations, native TOML scalar document operations,
   and conditional global configuration-file persistence exist independently of
   Settings/Profile semantics.
+- A public immutable scalar declaration/catalog/resolution contract and a separate
+  internal global settings adapter support standalone host consumers without
+  plugin activation or Flutter. Only default/global resolution is implemented.
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
@@ -375,16 +417,18 @@ Implemented foundations and current limits:
   do not implement this architecture; operational details belong in the
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
-Not implemented: Profile manager/persistence, profile-aware activation, a generic
-settings declaration/resolution service, configured-instance management UI,
+Not implemented: Profile manager/persistence, profile-aware activation, prepared
+settings discovery, Settings UI, configured-instance management UI,
 profile-aware provider routing, or production workbench-state persistence.
 
 ## Deferred decisions
 
 - Profile CRUD/import/export UX and storage.
 - Optional named stack presets and non-remembering Profile switches.
-- Configuration file schemas, local state/data store technologies, and portable/local overlays.
-- Setting declaration/migration APIs and specific non-default merge semantics.
+- Broader configuration file schemas, local state/data store technologies, and
+  portable/local overlays.
+- Setting migration APIs, richer value types, and specific non-default merge
+  semantics.
 - Exact narrower subject scopes and their override semantics.
 - Security/policy/approval composition.
 - Credential storage and account-management APIs.
@@ -394,8 +438,9 @@ profile-aware provider routing, or production workbench-state persistence.
 
 These deferrals do not reopen ordered flat Profile composition or the product
 identities accepted by ADRs 0029 and 0031. Beyond the global roots, TOML document
-boundary, and initial `settings.toml` persistence above, broader configuration file
-layouts, schemas, migration protocols, and settings APIs remain open; ADRs
+boundary, and scalar global `settings.toml` representation above, broader
+configuration file layouts, record schemas, migration protocols, and settings APIs
+remain open; ADRs
 [0033](../adr/0033-durable-project-storage-and-provider-backing.md) and
 [0034](../adr/0034-plugin-owned-relational-session-storage.md) separately settle
 Project backing and plugin-owned relational Session storage, not these domains.

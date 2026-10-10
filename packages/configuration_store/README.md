@@ -10,6 +10,9 @@ Settings declarations/resolution, Profiles, credentials, provider records, local
 application-state persistence, and Project storage are not implemented here. See
 [configuration ownership](../../docs/architecture/profiles-and-configuration.md)
 and [dependency rules](../../docs/architecture/dependency-rules.md).
+The separate [`adele_settings_host`](../settings_host/README.md) adapter combines
+this store with public scalar declarations and effective global resolution without
+changing this package's low-level transaction responsibilities.
 
 ## Host API
 
