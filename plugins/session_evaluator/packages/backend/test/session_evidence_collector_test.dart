@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:session_evaluator_backend/session_evaluator_backend.dart';
 import 'package:session_evaluator_backend/src/evidence_tables.dart';
@@ -79,6 +80,91 @@ void main() {
       (document['coverage'] as _Row)['run_order'],
       'lexical_id_not_chronology',
     );
+  });
+
+  for (final field in [
+    'project_id',
+    'task_id',
+    'session_id',
+    'environment_id',
+    'environment_task_id',
+    'strategy_id',
+  ]) {
+    test('malformed retained $field rejects without publishing', () async {
+      final original = storage.identity[field];
+      for (final value in ['', ' $original\t']) {
+        storage.identity[field] = value;
+        await _expectUnpublishedFailure(collector, 'malformed_data');
+      }
+    });
+  }
+
+  test('Environment provider identity uses the public ID grammar', () async {
+    for (final value in [
+      '',
+      'provider',
+      'Dev.adele.provider',
+      'dev..provider',
+      'dev.adele.provider_name',
+      ' dev.adele.provider ',
+    ]) {
+      storage.identity['environment_provider_id'] = value;
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+    }
+    storage.identity['environment_provider_id'] = 'dev.adele.provider-2';
+    expect((await read())['identity'], storage.identity);
+  });
+
+  test(
+    'valid graph metadata is preserved without identity normalization',
+    () async {
+      storage.identity.addAll({
+        'project_id': 'Project 1',
+        'task_id': 'Task 1',
+        'environment_task_id': 'Task 1',
+        'environment_id': 'Environment 1',
+        'strategy_id': 'Strategy 1',
+        'task_title': '  Exact title\t\n',
+        'source_location': 'file:///old%20location/does-not-need-to-exist',
+        'environment_role': 'additional',
+      });
+      final document = await read();
+      expect(document['identity'], storage.identity);
+      expect(
+        (document['conversation'] as _Row)['status'],
+        'unsupported_strategy',
+      );
+    },
+  );
+
+  test('title and role retain their distinct metadata constraints', () async {
+    storage.identity['task_title'] = ' \t';
+    await _expectUnpublishedFailure(collector, 'malformed_data');
+    storage.identity['task_title'] = 'Valid title';
+    for (final role in [' primary ', 'unknown']) {
+      storage.identity['environment_role'] = role;
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+    }
+  });
+
+  test('retained Project source follows durable URI constraints', () async {
+    for (final source in [
+      '',
+      'relative/path',
+      'https://example.test/project',
+      'file://remote/project',
+      'file:///project?query',
+      'file:///project#fragment',
+      'file:////project',
+      'file:///project/%00',
+      'file:///project/%5C',
+      'file:///project/%2F',
+      'file:///project/%FF',
+      'file:///invalid%escape',
+    ]) {
+      storage.identity['source_location'] = source;
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+    }
   });
 
   for (final status in [
@@ -385,6 +471,146 @@ void main() {
     });
   }
 
+  test(
+    'ToolId and provider-native IDs preserve permitted outer whitespace',
+    () async {
+      storage.detailedRun();
+      final tool = storage.rows[_tools.name]!.first;
+      tool['tool_id'] = ToolId(' \ttest.inspect\n').value;
+      final proposal = ProviderToolProposal(
+        providerCallId: ' call-5\t',
+        alias: 'inspect',
+        arguments: const {},
+      );
+      tool['provider_call_id'] = proposal.providerCallId;
+      storage.rows[_outputs.name]!.singleWhere(
+        (r) => r['sequence'] == 5,
+      )['provider_call_id'] = proposal.providerCallId;
+      storage.rows[_outputs.name]!.first['provider_item_id'] = ModelTextOutput(
+        'Text',
+        providerItemId: ' item\n',
+      ).providerItemId;
+      final metadata = ModelTerminalMetadata(
+        providerRequestId: ' request ',
+        providerResponseId: '\tresponse ',
+      );
+      storage.rows[_models.name]!.single.addAll({
+        'provider_request_id': metadata.providerRequestId,
+        'provider_response_id': metadata.providerResponseId,
+      });
+      final evidence = _evidence(await read());
+      expect(evidence['tool_invocations'], storage.rows[_tools.name]);
+      expect(evidence['model_invocations'], storage.rows[_models.name]);
+      expect(evidence['model_outputs'], storage.rows[_outputs.name]);
+    },
+  );
+
+  test('blank Tool IDs remain malformed', () async {
+    storage.detailedRun();
+    for (final value in ['', ' \t\n']) {
+      expect(() => ToolId(value), throwsFormatException);
+      storage.rows[_tools.name]!.first['tool_id'] = value;
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+    }
+  });
+
+  test(
+    'deep canonical arguments, outcome data and failure details are valid',
+    () async {
+      storage.detailedRun();
+      final deep = _nestedData(80);
+      final outcome = ToolOutcome(
+        disposition: ToolOutcomeDisposition.success,
+        effectCertainty: EffectCertainty.knownOccurred,
+        modelContent: 'Retained outcome',
+        hostData: deep,
+      );
+      final failure = ActivityFailure(
+        kind: 'FixtureFailure',
+        message: 'Retained failure',
+        providerDetails: deep,
+      );
+      final encoded = jsonEncode(deep);
+      storage.rows[_tools.name]!.first['canonical_arguments_json'] = encoded;
+      storage.rows[_changes.name]!.firstWhere(
+        (r) => r['kind'] == 'completed',
+      )['host_data_json'] = jsonEncode(
+        outcome.hostData,
+      );
+      final failureFields = {
+        'failure_kind': failure.kind,
+        'failure_message': failure.message,
+        'failure_provider_details_json': jsonEncode(failure.providerDetails),
+      };
+      storage.rows[productRuns.name]!.single['terminal_state'] = 'failed';
+      storage.rows[executionTables['lifecycle']!.name]!.last['state'] =
+          'failed';
+      storage.rows[executionTables['root']!.name]!.single.addAll(failureFields);
+      storage.rows[_models.name]!.add(
+        _model('run', 'failed-model', 24, 25, {
+          'settlement': null,
+          'metadata_present': 0,
+          ...failureFields,
+        }),
+      );
+      final evidence = _evidence(await read());
+      expect(evidence['tool_invocations'], storage.rows[_tools.name]);
+      expect(evidence['tool_changes'], storage.rows[_changes.name]);
+      expect(
+        evidence['root'],
+        storage.rows[executionTables['root']!.name]!.single,
+      );
+      expect(evidence['model_invocations'], storage.rows[_models.name]);
+    },
+  );
+
+  for (final owner in ['proposal', 'usage', 'presentation']) {
+    test('$owner depth bound counts containers, not scalar leaves', () async {
+      storage.detailedRun();
+      _Row snapshot(_Row data) => switch (owner) {
+        'proposal' => ProviderToolProposal(
+          providerCallId: 'call',
+          alias: 'tool',
+          arguments: data,
+        ).arguments,
+        'usage' => ModelUsage(providerDetails: data).providerDetails,
+        _ => ModelNativePresentation(
+          kind: 'summary',
+          compactText: 'Safe',
+          data: data,
+        ).data,
+      };
+      final field = switch (owner) {
+        'proposal' => 'arguments_json',
+        'usage' => 'usage_provider_details_json',
+        _ => 'presentation_data_json',
+      };
+      final row = switch (owner) {
+        'proposal' => storage.rows[_outputs.name]!.last,
+        'usage' => storage.rows[_models.name]!.single,
+        _ => storage.rows[_outputs.name]!.singleWhere(
+          (r) => r['kind'] == 'native',
+        ),
+      };
+      if (owner == 'usage') row['usage_present'] = 1;
+      // Root is depth 0: 64 containers with a scalar at depth 64 is valid.
+      row[field] = jsonEncode(snapshot(_nestedData(64)));
+      final evidence = _evidence(await read());
+      expect(
+        evidence[owner == 'usage' ? 'model_invocations' : 'model_outputs'],
+        storage.rows[owner == 'usage' ? _models.name : _outputs.name],
+      );
+      for (final data in [
+        _nestedData(65),
+        _nestedData(64, leaf: <String, Object?>{}),
+      ]) {
+        expect(() => snapshot(data), throwsFormatException);
+        row[field] = jsonEncode(data);
+        await _expectUnpublishedFailure(collector, 'malformed_data');
+      }
+    });
+  }
+
   for (final corruption in <String, void Function(_QueryFixture)>{
     'malformed JSON': (s) =>
         s.rows[_tools.name]!.first['canonical_arguments_json'] = '{bad',
@@ -393,9 +619,10 @@ void main() {
     'nonfinite JSON number': (s) =>
         s.rows[_tools.name]!.first['canonical_arguments_json'] =
             '{"value":1e999}',
-    'overdeep JSON': (s) =>
-        s.rows[_tools.name]!.first['canonical_arguments_json'] =
-            '{"value":${'[' * 65}0${']' * 65}}',
+    'overdeep proposal JSON': (s) =>
+        s.rows[_outputs.name]!.last['arguments_json'] = jsonEncode(
+          _nestedData(65),
+        ),
     'string token count': (s) =>
         s.rows[_models.name]!.single['input_tokens'] = '0',
     'contradictory usage flag': (s) =>
@@ -474,6 +701,14 @@ void main() {
 
 Matcher _failure(String code) =>
     isA<SessionEvidenceFailure>().having((e) => e.code, 'code', code);
+
+_Row _nestedData(int containers, {Object? leaf = 0}) {
+  Object? value = leaf;
+  for (var i = 0; i < containers; i++) {
+    value = <String, Object?>{'nested': value};
+  }
+  return value! as _Row;
+}
 
 Future<void> _expectUnpublishedFailure(
   SessionEvaluatorService collector,

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 
 import 'evidence_tables.dart';
@@ -13,6 +14,59 @@ void evidenceRequire(bool valid, String message) {
 bool _nonblank(Object? value) => value is String && value.trim().isNotEmpty;
 bool _identity(Object? value) =>
     _nonblank(value) && value == (value as String).trim();
+
+void validateSessionIdentity(Map<String, Object?> identity) {
+  // These product-domain IDs share the nonempty/no-outer-whitespace invariant.
+  for (final key in [
+    'project_id',
+    'task_id',
+    'session_id',
+    'strategy_id',
+    'environment_id',
+    'environment_task_id',
+  ]) {
+    evidenceRequire(
+      _identity(identity[key]),
+      'Invalid Session graph identity $key.',
+    );
+  }
+  final provider = identity['environment_provider_id'];
+  evidenceRequire(provider is String, 'Missing Environment provider identity.');
+  try {
+    // ProviderId delegates to this public grammar, unlike product-domain IDs.
+    validateAdelePublicId(provider as String, label: 'Environment provider ID');
+  } on FormatException {
+    evidenceRequire(false, 'Invalid Environment provider identity.');
+  }
+  evidenceRequire(_nonblank(identity['task_title']), 'Invalid Task title.');
+  evidenceRequire(
+    const ['primary', 'additional'].contains(identity['environment_role']),
+    'Invalid Environment role.',
+  );
+
+  // Match retained Project storage URI semantics, without requiring the old
+  // location to exist or be usable on this host. Preserve the stored spelling.
+  final source = identity['source_location'];
+  try {
+    final uri = source is String ? Uri.parse(source) : null;
+    evidenceRequire(
+      uri != null &&
+          uri.toString() == source &&
+          uri.scheme == 'file' &&
+          uri.authority.isEmpty &&
+          !uri.hasQuery &&
+          !uri.hasFragment &&
+          uri.path.startsWith('/') &&
+          !uri.path.startsWith('//') &&
+          !uri.pathSegments.any(
+            (segment) => segment.contains(RegExp(r'[\x00-\x1f\x7f\\/]')),
+          ),
+      'Invalid retained Project source URI.',
+    );
+  } on FormatException {
+    evidenceRequire(false, 'Malformed retained Project source URI.');
+  }
+}
 
 void validateEvidenceRow(EvidenceTable table, Map<String, Object?> row) {
   evidenceRequire(
@@ -33,14 +87,27 @@ void validateEvidenceRow(EvidenceTable table, Map<String, Object?> row) {
           : (integer ? value is int && value >= 0 : value is String),
       'Invalid ${table.name}.$key.',
     );
-    if (value != null && (key.endsWith('_id') || key == 'id')) {
-      evidenceRequire(
-        key.startsWith('provider_') ? _nonblank(value) : _identity(value),
-        'Invalid identity ${table.name}.$key.',
-      );
+    if (value != null &&
+        const [
+          'id',
+          'session_id',
+          'run_id',
+          'entry_id',
+          'invocation_id',
+          'model_invocation_id',
+          'tool_invocation_id',
+          'interruption_id',
+        ].contains(key)) {
+      evidenceRequire(_identity(value), 'Invalid identity ${table.name}.$key.');
     }
     if (value != null &&
         const [
+          // ToolId and provider-native identifiers are nonblank, not trimmed.
+          'tool_id',
+          'provider_item_id',
+          'provider_call_id',
+          'provider_request_id',
+          'provider_response_id',
           'alias',
           'effective_model',
           'provider_stop_reason',
@@ -63,20 +130,31 @@ void validateEvidenceRow(EvidenceTable table, Map<String, Object?> row) {
         decoded is Map<String, dynamic>,
         'Expected JSON object in ${table.name}.$key.',
       );
-      _jsonValue(decoded, 0);
+      // Only these selected orchestration-owned fields impose depth 64.
+      // Canonical arguments, outcome host data, and ActivityFailure details
+      // use model-tool structured values, which have no explicit depth bound.
+      _jsonValue(
+        decoded,
+        0,
+        depthBounded: const [
+          'arguments_json',
+          'usage_provider_details_json',
+          'presentation_data_json',
+        ].contains(key),
+      );
     }
   }
 }
 
-void _jsonValue(Object? value, int depth) {
-  evidenceRequire(depth <= 64, 'Structured evidence exceeds supported depth.');
-  if (value is Map) {
-    for (final child in value.values) {
-      _jsonValue(child, depth + 1);
-    }
-  } else if (value is List) {
-    for (final child in value) {
-      _jsonValue(child, depth + 1);
+void _jsonValue(Object? value, int depth, {required bool depthBounded}) {
+  if (value is Map || value is List) {
+    // Owners limit containers, allowing scalar leaves at depth 64.
+    evidenceRequire(
+      !depthBounded || depth < 64,
+      'Structured evidence exceeds its owner-defined depth.',
+    );
+    for (final child in value is Map ? value.values : value as List) {
+      _jsonValue(child, depth + 1, depthBounded: depthBounded);
     }
   } else if (value is double) {
     evidenceRequire(value.isFinite, 'Nonfinite structured evidence number.');

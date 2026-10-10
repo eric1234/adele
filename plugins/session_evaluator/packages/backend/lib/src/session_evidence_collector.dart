@@ -223,21 +223,10 @@ WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
       'Missing or ambiguous Session graph.',
     );
     final identity = identityRows.single;
-    for (final key in identity.keys) {
-      evidenceRequire(
-        identity[key] is String && (identity[key] as String).trim().isNotEmpty,
-        'Missing or malformed identity field $key.',
-      );
-    }
+    validateSessionIdentity(identity);
     evidenceRequire(
       identity['session_id'] == sessionId &&
-          identity['task_id'] == identity['environment_task_id'] &&
-          (Uri.tryParse(identity['source_location'] as String)?.hasScheme ??
-              false) &&
-          const [
-            'primary',
-            'additional',
-          ].contains(identity['environment_role']),
+          identity['task_id'] == identity['environment_task_id'],
       'Inconsistent Session Environment association.',
     );
     for (final owner in ['dev.adele.product', 'dev.adele.execution']) {

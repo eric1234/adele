@@ -155,8 +155,9 @@ void main() {
     String id,
     _Model model, {
     ToolPolicyDecision decision = ToolPolicyDecision.allow,
+    ToolId? toolId,
+    _Tool? tool,
   }) async {
-    final tool = _Tool();
     final run = await createSessionOrchestrationRun(
       lifecycle: runtime.lifecycle,
       sessionId: owner.id,
@@ -167,7 +168,7 @@ void main() {
         ..register(
           ToolRegistration(
             definition: ToolDefinition(
-              id: ToolId('dev.adele.test.evidence-tool'),
+              id: toolId ?? ToolId('dev.adele.test.evidence-tool'),
               description: 'Deterministic evidence tool',
             ),
             modelDefinition: ModelToolDefinition(
@@ -175,7 +176,7 @@ void main() {
               description: 'Deterministic evidence tool',
               argumentsSchema: const {},
             ),
-            executable: tool,
+            executable: tool ?? _Tool(),
           ),
         ),
       policy: _Policy(decision),
@@ -218,6 +219,86 @@ void main() {
       expect(_inspect(source, _snapshot), before);
     },
   );
+
+  test('exports source-valid padded ToolId and deep tool values from a '
+      'normally retained failed Chat Run without writes', () async {
+    Map<String, Object?> nested = {'value': 7};
+    for (var depth = 0; depth < 80; depth++) {
+      nested = {'nested': nested};
+    }
+    final toolId = ToolId(' \tdev.adele.test.evidence-tool\n ');
+    final canonicalArguments = CanonicalToolArguments({'normalized': nested});
+    final hostData = {'result': nested};
+    await chat.appendUserMessage(session.id.value, 'Retain deep tool values.');
+    final model = _Model(
+      'Not reached after transport failure.',
+      withTools: true,
+    );
+    final run = await createRun(
+      session,
+      'deep-tool-run',
+      model,
+      toolId: toolId,
+      tool: _Tool(canonicalArguments: canonicalArguments, hostData: hostData),
+    );
+    // Chat's reverse transport has a separate depth bound. The successful tool
+    // outcome is journaled before that transport fails and the Run is retained.
+    await expectLater(
+      run.start(),
+      throwsA(
+        isA<PluginRemoteFailure>().having(
+          (failure) => failure.code,
+          'code',
+          'internal_error',
+        ),
+      ),
+    );
+    expect(run.run.state, RunState.failed);
+    expect(model.calls, 1);
+    expect(runtime.store.runRecord(run.run.id)!.state, RunTerminalState.failed);
+    final before = _inspect(source, _snapshot);
+    final document = await collect(session);
+    expect(document['identity'], {
+      'session_id': session.id.value,
+      'task_id': task.task.id.value,
+      'project_id': project.id.value,
+      'source_location': project.sourceLocation.toString(),
+      'task_title': task.task.title,
+      'strategy_id': chatStrategyId.value,
+      'environment_id': task.environment.id.value,
+      'environment_task_id': task.task.id.value,
+      'environment_role': 'primary',
+      'environment_provider_id': _environmentProvider.value,
+    });
+    final retained = _maps(document['runs']).single;
+    expect(retained['id'], run.run.id.value);
+    expect(retained['session_id'], session.id.value);
+    expect(retained['terminal_state'], 'failed');
+    final evidence = _map(retained['evidence']);
+    expect(
+      evidence,
+      _inspect(source, (database) => _evidence(database, run.run.id.value)),
+    );
+    final tool = _maps(evidence['tool_invocations']).single;
+    expect(tool['tool_id'], toolId.value);
+    expect(
+      tool['canonical_arguments_json'],
+      jsonEncode(canonicalArguments.snapshot),
+    );
+    final outcome = _maps(evidence['tool_changes']).last;
+    expect(outcome['tool_invocation_id'], tool['invocation_id']);
+    expect(outcome['outcome_disposition'], 'success');
+    expect(outcome['host_data_json'], jsonEncode(hostData));
+    // Deep canonical arguments come from normalization, not the bounded proposal.
+    expect(
+      _maps(evidence['model_outputs']).singleWhere(
+        (row) => row['sequence'] == tool['proposal_sequence'],
+      )['arguments_json'],
+      jsonEncode({'value': 7}),
+    );
+    expect(_map(document['coverage'])['status'], 'complete_retained_evidence');
+    expect(_inspect(source, _snapshot), before);
+  });
 
   test('exports exact retained Chat and Run evidence, isolates Sessions, and '
       'does not retarget a retired generated route', () async {
@@ -510,6 +591,37 @@ void main() {
       expect(_inspect(source, _snapshot), before);
     }
 
+    final original = _inspect(source, _snapshot);
+    final validDocument = await collect(session);
+    for (final (sql, invalidValue, originalValue, id) in [
+      (
+        'UPDATE adele_product_sessions SET strategy_id = ? WHERE id = ?',
+        ' ${chatStrategyId.value} ',
+        chatStrategyId.value,
+        session.id.value,
+      ),
+      (
+        'UPDATE adele_product_environments SET provider_id = ? WHERE id = ?',
+        'invalid provider id',
+        _environmentProvider.value,
+        task.environment.id.value,
+      ),
+    ]) {
+      _inspect(
+        source,
+        (database) => database.execute(sql, [invalidValue, id]),
+        write: true,
+      );
+      await failure('malformed_data');
+      _inspect(
+        source,
+        (database) => database.execute(sql, [originalValue, id]),
+        write: true,
+      );
+      expect(await collect(session), validDocument);
+      expect(_inspect(source, _snapshot), original);
+    }
+
     _inspect(
       source,
       (database) => database.execute(
@@ -783,11 +895,16 @@ final class _Model implements ModelPort {
 }
 
 final class _Tool implements ToolExecutable {
+  _Tool({this.canonicalArguments, this.hostData = const {'value': 7}});
+
+  final CanonicalToolArguments? canonicalArguments;
+  final Map<String, Object?> hostData;
+
   @override
   void validateBinding() {}
   @override
   CanonicalToolArguments validateAndNormalize(Map<String, Object?> arguments) =>
-      CanonicalToolArguments(arguments);
+      canonicalArguments ?? CanonicalToolArguments(arguments);
   @override
   Future<EffectDescription> describe(
     CanonicalToolArguments arguments,
@@ -808,7 +925,7 @@ final class _Tool implements ToolExecutable {
         disposition: ToolOutcomeDisposition.success,
         effectCertainty: EffectCertainty.knownOccurred,
         modelContent: 'Tool result.',
-        hostData: {'value': 7},
+        hostData: hostData,
       ),
     );
   }
