@@ -325,6 +325,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     executable: 'flutter',
     arguments: <String>['test'],
     ciTestConcurrency: 1,
+    ciShards: 4,
     linuxDesktopDeps: true,
     nativeCodeEditor: true,
   ),
@@ -818,11 +819,17 @@ int parseTestJobs(List<String> arguments, {int? numberOfProcessors}) {
 }
 
 final class TestOptions {
-  const TestOptions({required this.jobs, required this.ci, this.target});
+  const TestOptions({
+    required this.jobs,
+    required this.ci,
+    this.target,
+    this.shard,
+  });
 
   final bool ci;
   final int jobs;
   final String? target;
+  final int? shard;
 }
 
 TestOptions parseTestOptions(
@@ -831,6 +838,7 @@ TestOptions parseTestOptions(
 }) {
   int? jobs;
   String? target;
+  int? shard;
   bool ci = false;
   for (int index = 0; index < arguments.length; index++) {
     final String argument = arguments[index];
@@ -859,6 +867,24 @@ TestOptions parseTestOptions(
         throw const TestUsageException('--target requires a target name.');
       }
       target = value;
+    } else if (argument == '--shard' || argument.startsWith('--shard=')) {
+      if (shard != null) {
+        throw const TestUsageException('--shard may only be specified once.');
+      }
+      if (argument == '--shard' && index + 1 >= arguments.length) {
+        throw const TestUsageException('--shard requires a positive integer.');
+      }
+      final value = argument == '--shard'
+          ? arguments[++index]
+          : argument.substring('--shard='.length);
+      shard = RegExp(r'^[1-9][0-9]*$').hasMatch(value)
+          ? int.tryParse(value)
+          : null;
+      if (shard == null) {
+        throw TestUsageException(
+          'Invalid --shard value "$value"; expected a positive integer.',
+        );
+      }
     } else if (argument == '--ci') {
       if (ci) {
         throw const TestUsageException('--ci may only be specified once.');
@@ -874,10 +900,25 @@ TestOptions parseTestOptions(
   if (ci && target == null) {
     throw const TestUsageException('--ci requires --target.');
   }
+  if (shard != null) {
+    if (target == null || !ci) {
+      throw const TestUsageException('--shard requires --target and --ci.');
+    }
+    final selected = lookupTestTarget(target);
+    if (selected.ciShards <= 1) {
+      throw TestUsageException('Target $target does not support --shard.');
+    }
+    if (shard > selected.ciShards) {
+      throw TestUsageException(
+        'Invalid --shard $shard for $target; expected 1..${selected.ciShards}.',
+      );
+    }
+  }
   return TestOptions(
     jobs: jobs ?? (target == null ? defaultTestJobs(numberOfProcessors) : 1),
     ci: ci,
     target: target,
+    shard: shard,
   );
 }
 
@@ -906,14 +947,25 @@ TestTarget lookupTestTarget(
 String testPlanJson([List<TestTarget> targets = testTargets]) {
   return jsonEncode(<String, Object>{
     'include': <Map<String, Object?>>[
-      for (final TestTarget target in targets)
-        <String, Object?>{
-          'name': target.name,
-          'linuxDesktopDeps': target.linuxDesktopDeps,
-          'nativeCodeEditor': target.nativeCodeEditor,
-          'nativeToml': target.nativeToml,
-          'ciTestConcurrency': target.ciTestConcurrency,
-        },
+      // Prefer early admission of long-running shards without reordering the
+      // local registry. GitHub runner launch order is not guaranteed.
+      for (final TestTarget target in [
+        ...targets.where((target) => target.ciShards > 1),
+        ...targets.where((target) => target.ciShards == 1),
+      ])
+        for (var shard = 1; shard <= target.ciShards; shard++)
+          <String, Object?>{
+            'name': target.name,
+            'displayName': target.ciShards > 1
+                ? '${target.name} ($shard/${target.ciShards})'
+                : target.name,
+            'shard': target.ciShards > 1 ? shard : null,
+            'shardCount': target.ciShards,
+            'linuxDesktopDeps': target.linuxDesktopDeps,
+            'nativeCodeEditor': target.nativeCodeEditor,
+            'nativeToml': target.nativeToml,
+            'ciTestConcurrency': target.ciTestConcurrency,
+          },
     ],
   });
 }
@@ -922,6 +974,22 @@ Future<int> _runTests(TestOptions options) async {
   final List<TestTarget> targets = options.target == null
       ? testTargets
       : <TestTarget>[lookupTestTarget(options.target!)];
+  // Validate discovery before source preparation, generation, or native builds.
+  final List<String>? testFiles = options.shard == null
+      ? null
+      : partitionTestFiles(
+          Directory(targets.single.path),
+          targets.single.ciShards,
+        )[options.shard! - 1];
+  final String? shardLabel = options.shard == null
+      ? null
+      : '${targets.single.name} (${options.shard}/${targets.single.ciShards})';
+  if (testFiles != null) {
+    stdout.writeln('==> SELECT test: $shardLabel (${testFiles.length} files)');
+    for (final file in testFiles) {
+      stdout.writeln('  $file');
+    }
+  }
   await prepareCodeEditorSource(Directory.current);
   await runContractCodegen(repositoryRoot: Directory.current);
   final Directory? codeEditorLibrary =
@@ -955,7 +1023,7 @@ Future<int> _runTests(TestOptions options) async {
       execute: (TestTarget target) async {
         final Process process = await Process.start(
           target.executable,
-          target.argumentsFor(ci: options.ci),
+          target.argumentsFor(ci: options.ci, testFiles: testFiles),
           mode: ProcessStartMode.inheritStdio,
           runInShell: Platform.isWindows,
           workingDirectory: target.path,
@@ -969,15 +1037,17 @@ Future<int> _runTests(TestOptions options) async {
         return process.exitCode;
       },
       onStart: (TestTarget target) {
-        stdout.writeln('==> START test: ${target.name}');
+        stdout.writeln('==> START test: ${shardLabel ?? target.name}');
       },
       onComplete: (TestTargetResult result) {
         final String elapsed = formatTestDuration(result.elapsed);
         if (result.passed) {
-          stdout.writeln('==> PASS test: ${result.target.name} ($elapsed)');
+          stdout.writeln(
+            '==> PASS test: ${shardLabel ?? result.target.name} ($elapsed)',
+          );
         } else {
           stdout.writeln(
-            '==> FAIL test: ${result.target.name} '
+            '==> FAIL test: ${shardLabel ?? result.target.name} '
             '($elapsed, exit ${result.exitCode})',
           );
           if (result.error case final Object error) stderr.writeln(error);
@@ -988,7 +1058,9 @@ Future<int> _runTests(TestOptions options) async {
     if (summary.failures.isNotEmpty) {
       stderr.writeln('FAILED TEST TARGETS:');
       for (final TestTargetResult failure in summary.failures) {
-        stderr.writeln('  ${failure.target.name} (exit ${failure.exitCode})');
+        stderr.writeln(
+          '  ${shardLabel ?? failure.target.name} (exit ${failure.exitCode})',
+        );
       }
     }
     stdout.writeln(
@@ -1108,9 +1180,11 @@ Commands:
   clean-contracts    Remove ADELE native contract outputs, including marked orphans.
   analyze            Analyze every package and identify failures.
   test [--jobs N]    Run tests with at most N package processes (default: up to 2).
-  test --target NAME [--ci]
+  test --target NAME [--ci] [--shard N]
                       Run exactly one named test target; --ci applies CI policy.
                       --target=NAME is also supported.
+                      --shard N (or --shard=N) selects a 1-based CI shard;
+                      requires --ci and a target declaring multiple CI shards.
   test-plan --json   Print the CI test matrix without resolving dependencies.
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]

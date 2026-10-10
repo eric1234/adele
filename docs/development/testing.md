@@ -88,8 +88,9 @@ machine-readable target/matrix view with:
 dart tools/adele.dart test-plan --json
 ```
 
-This exports the maintained registry, including target names, Linux desktop
-dependency requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
+This exports the CI expansion of the maintained registry, including logical target
+names, distinct job display names, shard identity/count, Linux desktop dependency
+requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
 without resolving dependencies or generating artifacts. It is not automatic
 discovery of every package containing tests.
 
@@ -98,10 +99,36 @@ discovery of every package containing tests.
 | `--jobs N` | Positive integer controlling concurrent target processes; `--jobs=N` also works. Cannot be combined with `--target`. An explicit value may exceed the default of two. |
 | `--target NAME` | Runs exactly one named maintained target. Unknown names fail; `--target=NAME` also works, including with `--ci`. |
 | `--ci` | Valid only with `--target`. Applies that target's CI runner arguments/concurrency policy. It is not a generic credential/environment scrub. |
+| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--target adele_desktop --ci`, with `N` from 1 through 4. Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
-runs each matrix entry with `test --target NAME --ci` after independent bootstrap.
-The local two-process default does not limit CI matrix parallelism.
+runs each matrix entry with `test --target NAME --ci` after independent bootstrap,
+adding `--shard N` for the four desktop entries. Each gets an independent runner
+and the desktop target's normal native preparation and setup metadata. Shards are
+emitted first to encourage early scheduling, not to guarantee runner launch order.
+The local two-process default does not limit CI matrix parallelism. The aggregate
+`test` gate requires every matrix entry to pass; `fail-fast: false` lets other
+entries continue after a failure.
+
+Desktop shards recursively discover `*_test.dart` files under `app/test/`, including
+nested directories, using Flutter's file discovery convention. Sorted paths relative
+to `app/`, with `/` separators, are assigned by unsigned 32-bit FNV-1a of their UTF-8
+bytes modulo four. Every file belongs to exactly one shard; new files are included
+automatically without moving existing paths between shards. No duration inventory
+or separately maintained test lists are used. Empty partitions fail rather than
+falling back to full-suite execution. Normal test annotations, skips, environment
+gates, timeouts, and assertions remain in effect.
+
+To reproduce a single CI selection locally:
+
+```sh
+dart tools/adele.dart test --target adele_desktop --ci --shard 1
+```
+
+Logs list the shard identity, selected file count and paths before preparation,
+then the existing START/PASS/FAIL and elapsed-time summary. Omitting `--shard`
+still runs the complete desktop suite, with or without `--ci`. The ordinary
+`test` and `check` commands retain one logical desktop target, not four extra runs.
 
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.
@@ -129,11 +156,13 @@ dart tools/adele.dart test --target command_tools_frontend
 flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart
 ```
 
-The `adele_desktop` CI target runs Flutter test files with one worker. Its real-AOT
+Each `adele_desktop` CI shard runs Flutter test files with one worker. Its real-AOT
 and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
 unchanged activity timing and full-capture deadlines through resource contention.
-Serial CI execution preserves those assertions, full transcript volumes, and all
-test selection. The non-CI target retains Flutter's normal worker default.
+Serial execution within each runner preserves those assertions and full transcript
+volumes; parallelism comes only from the four independent CI jobs, retaining all
+test files. Full-suite `--ci` execution also uses one worker. The non-CI target
+retains Flutter's normal worker default.
 The app and Source Editor targets require Rust 1.93.0 for their shared CodeForge
 library; Source Editor does not require Linux desktop or PTY prerequisites.
 Source-only bootstrap
