@@ -93,6 +93,111 @@ materialization restores the live checkout. See the
 [product model](../../docs/architecture/product-model.md#environment) for the
 core-owned lifecycle boundary.
 
+## Unstaged change snapshots
+
+The same stock AOT backend advertises the Diff-owned
+`adele.diff.change-set-source` v1 Capability through
+`diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`.
+Its separate `dev.adele.git.change-set-source` provider is explicitly associated
+with this generation's actual Git Environment provider. The contextual dispatcher
+uses `AuthorizedEnvironmentReadService.authority()` to select only an existing
+live `WorktreeEnvironment`; it never accepts caller-selected Environment IDs,
+repository paths, or a fallback to the Task's primary Environment. Ordinary
+context-free calls are rejected. The host read grant is revalidated before success.
+Establish/restore also bind the canonical Git directory and actual worktree root to
+that live object. Inspection supplies both explicitly to Git, so a newly created
+nested `.git` or `core.worktree` setting cannot substitute another repository.
+
+`git ls-files --cached --stage --debug -z` supplies the bounded index inventory,
+not HEAD; `git ls-files --others --exclude-standard -z` adds nonignored untracked
+files. Direct bounded reads are hashed as Git blobs (SHA-1 or SHA-256 according to
+the index identity), omitting byte-equal tracked files without Git subprocesses
+per clean file. Staged-only ordinary files are absent. Both commands are scoped
+to the live root,
+including a nested Project source. Returned paths are Environment-relative,
+strictly decoded UTF-8, and sorted; NUL framing preserves spaces, punctuation,
+tabs, and newlines without treating filenames as pathspec expressions. Renames
+are represented as deletion/addition, not similarity detection.
+The stage/debug parser preserves intent-to-add, including empty additions, and
+rejects unexpected metadata layouts. Sparse/skip-worktree and assume-unchanged
+index entries have explicit unsupported state, not fabricated deletions or clean
+claims. The inventory adds every gitlink as an explicitly
+unsupported entry with unknown change state, even when its submodule is clean.
+Git is never asked to recurse into child repositories with independent executable
+filters/hooks, and an uninspected submodule is never silently presented as clean.
+Untracked nested repository directory markers are normalized to relative paths
+and retained as unsupported entries; their contents are not recursively inspected.
+
+Text patches are actual deterministic Git unified hunks over bounded index-blob
+and direct working-file snapshots. A private temporary directory outside the
+worktree supplies `git diff --no-index` with fixed literal filenames; Git does not
+run repository clean filters, textconv, external diff, or attribute-selected diff
+drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
+used: both can execute clean filters while checking stat-racy files, even without
+requesting patches. Cached-only enumeration avoids that execution path, including
+when another process adds a new filter after the snapshot has begun.
+Custom conversion/diff attributes and effective `core.autocrlf`/`core.eol`
+conversion are unsupported placeholders, and `-diff` attributes are binary
+placeholders. Binary data, invalid
+UTF-8, symbolic links, submodules, unmerged entries, type/mode changes, and oversized
+files likewise have explicit status/detail and no fabricated text hunks. Equal
+raw content, including binary/invalid UTF-8 with stale index stat metadata, is
+omitted before content classification. Newline absence is
+retained on the corresponding hunk line; line text otherwise preserves CR and LF
+semantics rather than normalizing file content. Effective `core.filemode=false`
+suppresses executable-bit-only differences; repository settings override lower
+configuration scopes. Git executable state uses only the owner-execute bit.
+
+The snapshot subprocess path is separate from Environment foreground execution.
+`git_process_environment.dart` shares the existing placement isolation boundary,
+with an explicitly stricter read-only inspection policy rather than changing the
+placement/repair environment.
+It starts Git directly with argument lists and `includeParentEnvironment: false`,
+retains absolute PATH entries and normal HOME/XDG configuration discovery (plus
+Windows profile/SystemRoot/TEMP/TMP), and rejects an empty filtered search path
+rather than executing a worktree-local `git`. Source inspection preserves effective
+repository/global ignore and conversion settings; private patch generation alone
+disables system/global configuration and attributes. Inherited Git routing,
+fsmonitor, external diff/textconv, optional index locks, replacement objects, and
+lazy fetch where supported by Git are disabled. This feature never refreshes or
+writes the index, edits Git configuration,
+or writes the source worktree; only its temporary snapshot copies are written and
+removed. Git executable selection through PATH is trusted, not sandboxed.
+
+Default per-operation limits are 4,096 retained tracked/untracked inventory entries
+(index records are also bounded), 256 returned files,
+1 MiB per file side, 2 MiB collected stdout per command/patch, 64 KiB stderr counted
+without retaining diagnostics,
+8 MiB total text inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
+escaped-text/DTO transport budget below the host frame limit. Each Git process has
+a 10-second deadline including pipe completion; the entire operation has a
+30-second deadline. Output is bounded during collection, not after an unbounded
+`Process.run`. Per-file size/patch excess is an oversized placeholder; enumeration,
+file-count, aggregate, process, and malformed-output failures reject the whole
+snapshot rather than returning a deceptively complete truncated result. An
+oversized tracked working file has explicitly unknown change state because its
+bytes cannot be compared within the bound, even if an external observer knows it
+is unchanged. Equal inspected files do not consume the changed-result byte budget.
+
+Line-ending configuration, enumeration and direct-path/stat observations are checked
+again before publication. Inspected tracked symlinks, including clean ones omitted
+from the result, are rechecked for direct-path safety, link type, and target text;
+their referenced files are never opened.
+Detected concurrent changes fail explicitly, but these checks are not an atomic
+filesystem/index transaction or an OS sandbox: another same-user process can race
+path or configuration replacement, preserve timestamps, or change and restore state
+between checks.
+Private copies freeze the compared bytes, not the entire repository at one instant.
+Process termination kills the directly started Git process; deliberately detached
+children of a substituted Git executable are not contained. Linux is the validated
+platform for this snapshot path; other platforms remain unvalidated.
+
+Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
+`backend_host_integration_test.dart` additionally compiles the actual shared host
+and stock Git AOT, checks both ready advertisements and their exact association,
+and exercises generated contextual requests for independent live Environments.
+The existing `git_environment_backend` maintained target discovers both files.
+
 ## Filesystem and processes
 
 The current filesystem surface is bounded UTF-8 `readFile` with opaque

@@ -11,9 +11,22 @@ const int maximumEnvironmentDirectoryEntries = 2048;
 const int _maximumInitialReadBufferBytes = 64 * 1024;
 
 final class WorktreeEnvironment {
-  WorktreeEnvironment(Directory root) : root = _canonicalRoot(root);
+  WorktreeEnvironment(
+    Directory root, {
+    Directory? gitWorktreeRoot,
+    Directory? gitDirectory,
+  }) : root = _canonicalRoot(root),
+       gitWorktreeRoot = gitWorktreeRoot == null
+           ? null
+           : _canonicalRoot(gitWorktreeRoot),
+       gitDirectory = gitDirectory == null
+           ? null
+           : _canonicalRoot(gitDirectory);
 
   final Directory root;
+  // Provider-established repository identity, never inferred from caller paths.
+  final Directory? gitWorktreeRoot;
+  final Directory? gitDirectory;
   Future<void> _pendingMutation = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {

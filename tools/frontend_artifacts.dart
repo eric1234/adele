@@ -49,6 +49,11 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
       directory: 'source-editor',
       pluginId: 'dev.adele.source-editor',
     ),
+    (
+      name: 'diff-viewer',
+      directory: 'diff-viewer',
+      pluginId: 'dev.adele.diff-viewer',
+    ),
   ]) {
     final File artifact = File.fromUri(
       installationRoot.absolute.uri.resolve(
@@ -62,6 +67,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final bool taskBrowser = frontend.name == 'task-browser';
     final bool terminal = frontend.name == 'terminal';
     final bool sourceEditor = frontend.name == 'source-editor';
+    final bool diffViewer = frontend.name == 'diff-viewer';
     final bool localDirectoryProject =
         frontend.name == 'local-directory-project';
     final List<String> arguments = <String>[
@@ -81,6 +87,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_terminal_frontend.dart'
           : sourceEditor
           ? 'tool/compile_source_editor_frontend.dart'
+          : diffViewer
+          ? 'tool/compile_diff_viewer_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
     stdout.writeln('==> $stage');
@@ -98,6 +106,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           if (terminal) 'ADELE_TERMINAL_FRONTEND_OUTPUT': artifact.path,
           if (sourceEditor)
             'ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT': artifact.path,
+          if (diffViewer) 'ADELE_DIFF_VIEWER_FRONTEND_OUTPUT': artifact.path,
           if (localDirectoryProject)
             'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
           if (!chat &&
@@ -105,7 +114,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
               !localDirectoryProject &&
               !taskBrowser &&
               !terminal &&
-              !sourceEditor) ...{
+              !sourceEditor &&
+              !diffViewer) ...{
             'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
             'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
           },

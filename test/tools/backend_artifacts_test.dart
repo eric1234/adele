@@ -56,6 +56,8 @@ const String _taskBrowserFrontendHarness =
 const String _terminalFrontendHarness = 'tool/compile_terminal_frontend.dart';
 const String _sourceEditorFrontendHarness =
     'tool/compile_source_editor_frontend.dart';
+const String _diffViewerFrontendHarness =
+    'tool/compile_diff_viewer_frontend.dart';
 
 void main() {
   late Directory root;
@@ -113,6 +115,9 @@ void main() {
     File(
       '${root.path}/app/$_sourceEditorFrontendHarness',
     ).writeAsStringSync('void main() {}');
+    final diffHarness = File('${root.path}/app/$_diffViewerFrontendHarness');
+    diffHarness.parent.createSync(recursive: true);
+    diffHarness.writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _codegenEntrypoint,
       ..._backendEntrypoints,
@@ -228,6 +233,10 @@ elif [ "\$1" = test ]; then
     kind=source-editor
     output="\$ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT"
     label='$_sourceEditorFrontendHarness'
+  elif [ "\$5" = '$_diffViewerFrontendHarness' ]; then
+    kind=diff-viewer
+    output="\$ADELE_DIFF_VIEWER_FRONTEND_OUTPUT"
+    label='$_diffViewerFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -794,7 +803,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare frontend-only browser, Terminal and Source installations',
+    'Linux run and builds prepare frontend-only browser, Terminal, Source and Diff installations',
     () async {
       for (final path in [
         _localDirectoryProjectEntrypoint,
@@ -811,6 +820,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'app/$_sourceEditorFrontendHarness',
         'app/tool/source_editor_frontend_compiler.dart',
         'plugins/source_editor/packages/frontend/lib/main.dart',
+        'app/$_diffViewerFrontendHarness',
+        'app/tool/diff_viewer_frontend_compiler.dart',
+        'plugins/diff_viewer/packages/frontend/lib/main.dart',
       ]) {
         expect(File(path).existsSync(), isTrue, reason: path);
       }
@@ -823,6 +835,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       environment['ADELE_TERMINAL_FRONTEND_OUTPUT'] = '/wrong-terminal';
       environment['ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT'] =
           '/wrong-source-editor';
+      environment['ADELE_DIFF_VIEWER_FRONTEND_OUTPUT'] = '/wrong-diff-viewer';
       environment['ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT'] =
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
@@ -874,6 +887,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_terminalFrontendHarness',
           'compile|$_sourceEditorFrontendHarness',
           'compiled|$_sourceEditorFrontendHarness',
+          'compile|$_diffViewerFrontendHarness',
+          'compiled|$_diffViewerFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -995,6 +1010,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'task-browser',
             'terminal',
             'source-editor',
+            'diff-viewer',
           ]),
         );
         final installedIds = <String>{};
@@ -1065,6 +1081,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             name: 'Source',
             backend: false,
           ),
+          (
+            directory: 'diff-viewer',
+            id: 'dev.adele.diff-viewer',
+            name: 'Diff',
+            backend: false,
+          ),
         ]) {
           final directory = Directory.fromUri(
             installations.uri.resolve('${plugin.directory}/'),
@@ -1119,7 +1141,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(11));
+        expect(installedIds, hasLength(12));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -1140,8 +1162,33 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(8),
+          hasLength(9),
         );
+        final diff = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value == 'dev.adele.diff-viewer',
+        );
+        expect(diff.backendArtifactUri, isNull);
+        expect(diff.frontend!.extensions, isEmpty);
+        expect(
+          diff.frontend!.artifactUri,
+          installations.uri.resolve('diff-viewer/frontend.evc'),
+        );
+        final diffDescriptor =
+            diff.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(diffDescriptor.toJson(), {
+          ...stockFrontendDescriptors['dev.adele.diff-viewer']!.single,
+          'sessionExecution': false,
+          'backendServices': <String>[],
+          'capabilities': <Object?>[],
+          'strategyAffinity': 'independent',
+          'actions': <Object?>[],
+          'operations': <String, Object?>{},
+          'retainedData': false,
+          'nativeCodeEditor': false,
+          'environmentTextFiles': false,
+        });
         final source = catalog.installations.singleWhere(
           (installation) =>
               installation.metadata.id.value == 'dev.adele.source-editor',
@@ -1389,7 +1436,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(11));
+        expect(catalog.installations, hasLength(12));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -1414,7 +1461,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(missing == PreparedPluginComponent.frontend ? 7 : 8),
+          hasLength(missing == PreparedPluginComponent.frontend ? 8 : 9),
         );
       },
     );
@@ -1431,7 +1478,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(11));
+    expect(catalog.installations, hasLength(12));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -1444,7 +1491,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       catalog.installations.where(
         (installation) => installation.frontend != null,
       ),
-      hasLength(7),
+      hasLength(8),
     );
   });
 
@@ -1517,7 +1564,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(11));
+        expect(manifests, hasLength(12));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -1653,6 +1700,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     'task-browser': _taskBrowserFrontendHarness,
     'terminal': _terminalFrontendHarness,
     'source-editor': _sourceEditorFrontendHarness,
+    'diff-viewer': _diffViewerFrontendHarness,
   };
   for (final String command in <String>['run', 'build']) {
     for (final kind in frontendCompilations.keys) {

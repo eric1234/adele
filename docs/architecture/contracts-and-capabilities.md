@@ -443,6 +443,33 @@ second transport or provider registry. Contextual streaming, contextual backend
 consumers, cross-backend Environment delegation, and portable arbitrary plugin-owned
 Extension Point contributions remain outside this boundary.
 
+### Plugin-owned change snapshots
+
+The stock [Diff Viewer](../../plugins/diff_viewer/README.md) owns the public
+`ChangeSetSourceService` contract and its immutable file/hunk/line DTOs. The
+application neither imports that contract nor decodes review data. Git's existing
+Environment backend implements it as a separate contextual-only service, explicitly
+associated with its exact Environment provider. It obtains the authorized
+Environment identity through `AuthorizedEnvironmentReadService.authority()` and
+resolves only its own live worktree state; the request contains no caller-selected
+Environment, repository, or path.
+
+Diff's mounted Main Content pane declares only the corresponding
+`environmentReadCapabilities` entry. Each initial load or deliberate refresh
+resolves fresh eligible access, invokes one finite generated unary snapshot, then
+releases the handle. It uses the contextual settlement and retirement rules above,
+not context-free discovery, backend affinity, automatic activation, or a second
+review registry. Provider absence is unavailable, distinct from a successful empty
+snapshot. Unsupported files remain represented; bounds or inspection failure must
+not be published as a complete clean result.
+
+The initial service describes only Unstaged changes: working tree relative to the
+index plus nonignored untracked additions, scoped to the canonical Environment.
+Review semantics belong to Diff, while Git-specific enumeration and limitations
+belong to the [Git provider](../../plugins/git_environment/README.md). This read-only
+boundary grants no staging, approval, mutation, process, or execution authority to
+the frontend and does not establish arbitrary portable Extension Point transport.
+
 ## Own-backend frontend requests
 
 Prepared frontends can use generated unary and server-streaming clients to call

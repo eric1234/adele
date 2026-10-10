@@ -88,8 +88,9 @@ machine-readable target/matrix view with:
 dart tools/adele.dart test-plan --json
 ```
 
-This exports the maintained registry, including target names, Linux desktop
-dependency requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
+This exports the CI expansion of the maintained registry, including logical target
+names, distinct job display names, shard identity/count, Linux desktop dependency
+requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
 without resolving dependencies or generating artifacts. It is not automatic
 discovery of every package containing tests.
 
@@ -98,15 +99,41 @@ discovery of every package containing tests.
 | `--jobs N` | Positive integer controlling concurrent target processes; `--jobs=N` also works. Cannot be combined with `--target`. An explicit value may exceed the default of two. |
 | `--target NAME` | Runs exactly one named maintained target. Unknown names fail; `--target=NAME` also works, including with `--ci`. |
 | `--ci` | Valid only with `--target`. Applies that target's CI runner arguments/concurrency policy. It is not a generic credential/environment scrub. |
+| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--target adele_desktop --ci`, with `N` from 1 through 4. Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
-runs each matrix entry with `test --target NAME --ci` after independent bootstrap.
-The local two-process default does not limit CI matrix parallelism.
+runs each matrix entry with `test --target NAME --ci` after independent bootstrap,
+adding `--shard N` for the four desktop entries. Each gets an independent runner
+and the desktop target's normal native preparation and setup metadata. Shards are
+emitted first to encourage early scheduling, not to guarantee runner launch order.
+The local two-process default does not limit CI matrix parallelism. The aggregate
+`test` gate requires every matrix entry to pass; `fail-fast: false` lets other
+entries continue after a failure.
+
+Desktop shards recursively discover `*_test.dart` files under `app/test/`, including
+nested directories, using Flutter's file discovery convention. Sorted paths relative
+to `app/`, with `/` separators, are assigned by unsigned 32-bit FNV-1a of their UTF-8
+bytes modulo four. Every file belongs to exactly one shard; new files are included
+automatically without moving existing paths between shards. No duration inventory
+or separately maintained test lists are used. Empty partitions fail rather than
+falling back to full-suite execution. Normal test annotations, skips, environment
+gates, timeouts, and assertions remain in effect.
+
+To reproduce a single CI selection locally:
+
+```sh
+dart tools/adele.dart test --target adele_desktop --ci --shard 1
+```
+
+Logs list the shard identity, selected file count and paths before preparation,
+then the existing START/PASS/FAIL and elapsed-time summary. Omitting `--shard`
+still runs the complete desktop suite, with or without `--ci`. The ordinary
+`test` and `check` commands retain one logical desktop target, not four extra runs.
 
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.
 `chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
-`openai_frontend`, and `source_editor_frontend` run
+`openai_frontend`, `source_editor_frontend`, and `diff_viewer_frontend` run
 that coverage independently with development-only host dependencies and shared
 app-side compiler support. Generic desktop/native infrastructure and whole-product
 multi-plugin integration remain in `adele_desktop`.
@@ -129,11 +156,13 @@ dart tools/adele.dart test --target command_tools_frontend
 flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart
 ```
 
-The `adele_desktop` CI target runs Flutter test files with one worker. Its real-AOT
+Each `adele_desktop` CI shard runs Flutter test files with one worker. Its real-AOT
 and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
 unchanged activity timing and full-capture deadlines through resource contention.
-Serial CI execution preserves those assertions, full transcript volumes, and all
-test selection. The non-CI target retains Flutter's normal worker default.
+Serial execution within each runner preserves those assertions and full transcript
+volumes; parallelism comes only from the four independent CI jobs, retaining all
+test files. Full-suite `--ci` execution also uses one worker. The non-CI target
+retains Flutter's normal worker default.
 The app and Source Editor targets require Rust 1.93.0 for their shared CodeForge
 library; Source Editor does not require Linux desktop or PTY prerequisites.
 Source-only bootstrap
@@ -226,6 +255,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared backend callable Capability consumption | [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) owns independent prepared consumer/provider AOT through normal catalog/bootstrap and the public generated semantic client; [`test/core/backend_capability_host_test.dart`](../../app/test/core/backend_capability_host_test.dart) owns exact binding, handle bounds, release/retirement, and admitted unary settlement. Public facade/mediation contract tests belong to `adele_plugin_backend_support`; strict backend declarations and generation infrastructure belong to `plugin_runtime`. See [focused checks](#focused-backend-capability-checks). |
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
+| Stock Diff/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds the actual stock Git/shared-host AOT and independently prepared Diff EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It covers working-tree/index separation, untracked additions, deletion, nested source confinement, manual refresh, clean/unavailable/failure states, and Linux FIFO-gated admitted snapshot navigation/retirement. Focused enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated interpreted presentation belong to the Diff targets. |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
@@ -270,6 +300,33 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused Diff checks
+
+After bootstrap/current generation, run from the repository root:
+
+```sh
+dart tools/adele.dart test --target diff_viewer_contract
+dart tools/adele.dart test --target diff_viewer_frontend
+dart tools/adele.dart test --target git_environment_backend --ci
+dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
+dart tools/adele.dart generate --check
+```
+
+From `app/`, serialize the compiler-heavy integration files:
+
+```sh
+flutter test --no-pub --concurrency 1 test/prepared_diff_git_integration_test.dart test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
+```
+
+Use the pinned explicit `FLUTTER_ROOT`. The Diff integration needs Git and, for its
+deterministic in-flight lifecycle cases on Linux, `mkfifo` and a POSIX shell. Its
+test-only PATH launcher forwards unchanged arguments to real Git and acknowledges
+arrival before releasing an actual snapshot; it adds no production testing hook.
+These text-only tests do not instantiate the native Source editor or PTY. The
+ordinary desktop target discovers the cross-plugin fixture without a separate CI
+target. This is prepared-artifact evidence, not human desktop or non-Linux process
+acceptance. No live model, credentials, staging UI, or review submission is used.
 
 ### Focused backend Capability checks
 

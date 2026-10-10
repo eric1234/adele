@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 final class TestTarget {
@@ -8,6 +10,7 @@ final class TestTarget {
     required this.arguments,
     this.testConcurrency,
     this.ciTestConcurrency,
+    this.ciShards = 1,
     this.linuxDesktopDeps = false,
     this.nativeCodeEditor = false,
     this.nativeToml = false,
@@ -15,6 +18,7 @@ final class TestTarget {
 
   final List<String> arguments;
   final int? ciTestConcurrency;
+  final int ciShards;
   final String executable;
   final bool linuxDesktopDeps;
   final bool nativeCodeEditor;
@@ -23,15 +27,62 @@ final class TestTarget {
   final String path;
   final int? testConcurrency;
 
-  List<String> argumentsFor({bool ci = false}) {
+  List<String> argumentsFor({bool ci = false, List<String>? testFiles}) {
+    if (testFiles != null && testFiles.isEmpty) {
+      throw ArgumentError('An explicit test file selection must not be empty.');
+    }
     final int? concurrency = ci
         ? ciTestConcurrency ?? testConcurrency
         : testConcurrency;
     return <String>[
       ...arguments,
       if (concurrency != null) ...<String>['--concurrency', '$concurrency'],
+      ...?testFiles,
     ];
   }
+}
+
+/// Matches Flutter's recursive test/ discovery, returning sorted, package-relative
+/// paths with '/' separators. Hashing paths keeps existing assignments stable when
+/// files are added; it deliberately does not use Dart's unspecified String hash.
+List<List<String>> partitionTestFiles(Directory packageRoot, int shardCount) {
+  if (shardCount < 1) {
+    throw ArgumentError.value(shardCount, 'shardCount', 'must be positive');
+  }
+  final root = packageRoot.absolute;
+  final files =
+      Directory.fromUri(root.uri.resolve('test/'))
+          // Flutter does not traverse linked directories, but accepts file symlinks.
+          .listSync(recursive: true, followLinks: false)
+          .where(
+            (file) =>
+                file.path.endsWith('_test.dart') &&
+                FileSystemEntity.isFileSync(file.path),
+          )
+          .map(
+            (file) => file.uri.pathSegments
+                .skip(root.uri.pathSegments.length - 1)
+                .join('/'),
+          )
+          .toList()
+        ..sort();
+  final shards = List.generate(shardCount, (_) => <String>[]);
+  for (final path in files) {
+    // FNV-1a, unsigned 32-bit, over the UTF-8 package-relative path.
+    var hash = 0x811c9dc5;
+    for (final byte in utf8.encode(path)) {
+      hash = ((hash ^ byte) * 0x01000193) & 0xffffffff;
+    }
+    shards[hash % shardCount].add(path);
+  }
+  for (var index = 0; index < shards.length; index++) {
+    if (shards[index].isEmpty) {
+      throw StateError(
+        'Test shard ${index + 1}/$shardCount is empty under ${root.path}/test.',
+      );
+    }
+  }
+  return shards;
 }
 
 final class TestTargetResult {

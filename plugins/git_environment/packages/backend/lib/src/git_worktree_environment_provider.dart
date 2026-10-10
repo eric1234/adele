@@ -6,32 +6,12 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 
 import 'foreground_process.dart';
+import 'git_process_environment.dart';
 import 'ids.dart';
 import 'terminal_resources.dart';
 import 'worktree_environment.dart';
 
 const int gitEnvironmentProviderStateSchemaVersion = 1;
-
-// Git documents repository-local entries through `rev-parse --local-env-vars`.
-const Set<String> _gitEnvironmentVariablesToClear = <String>{
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_COMMON_DIR',
-  'GIT_CONFIG',
-  'GIT_CONFIG_COUNT',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_DIR',
-  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
-  'GIT_GRAFT_FILE',
-  'GIT_IMPLICIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_NO_REPLACE_OBJECTS',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_PREFIX',
-  'GIT_REPLACE_REF_BASE',
-  'GIT_SHALLOW_FILE',
-  'GIT_WORK_TREE',
-};
 
 final class GitWorktreeEnvironmentProvider
     implements EnvironmentProvider, EnvironmentTerminalProvider {
@@ -123,7 +103,7 @@ final class GitWorktreeEnvironmentProvider
         source.scope,
         resources.worktreeRelativePath,
       );
-      final WorktreeEnvironment live = _scopedWorktreeEnvironment(
+      final WorktreeEnvironment live = await _scopedWorktreeEnvironment(
         environmentId: environment.id,
         worktreeRoot: worktreeRoot,
         relativePath: source.relativePath,
@@ -252,7 +232,7 @@ final class GitWorktreeEnvironmentProvider
         environmentId: environment.id,
       );
     }
-    final WorktreeEnvironment live = _scopedWorktreeEnvironment(
+    final WorktreeEnvironment live = await _scopedWorktreeEnvironment(
       environmentId: environment.id,
       worktreeRoot: worktreeRoot,
       relativePath: source.relativePath,
@@ -724,20 +704,30 @@ Future<Directory> _providerDirectory(
   }
 }
 
-WorktreeEnvironment _scopedWorktreeEnvironment({
+Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
   required EnvironmentId environmentId,
   required Directory worktreeRoot,
   required String relativePath,
   required String failureCode,
   required String failureMessage,
-}) {
+}) async {
   final Directory expectedScope = _scopeWithinWorktree(
     worktreeRoot,
     relativePath,
   );
   final WorktreeEnvironment live;
   try {
-    live = WorktreeEnvironment(expectedScope);
+    final gitDirectory = await _gitOutput(
+      worktreeRoot,
+      const ['rev-parse', '--absolute-git-dir'],
+      code: failureCode,
+      message: failureMessage,
+    );
+    live = WorktreeEnvironment(
+      expectedScope,
+      gitWorktreeRoot: worktreeRoot,
+      gitDirectory: Directory(gitDirectory),
+    );
   } on ArgumentError catch (error) {
     throw _environmentFailure(
       failureCode,
@@ -1368,23 +1358,10 @@ Future<ProcessResult> _runGit(
   Directory workingDirectory,
   List<String> arguments,
 ) {
-  final Map<String, String> environment = Map<String, String>.of(
-    Platform.environment,
-  );
-  if (Platform.isWindows) {
-    environment.removeWhere(
-      (String name, String _) =>
-          _gitEnvironmentVariablesToClear.contains(name.toUpperCase()),
-    );
-  } else {
-    for (final String name in _gitEnvironmentVariablesToClear) {
-      environment.remove(name);
-    }
-  }
   return Process.run(
     'git',
     <String>['-C', workingDirectory.path, ...arguments],
-    environment: environment,
+    environment: gitProcessEnvironment(),
     includeParentEnvironment: false,
   );
 }

@@ -296,7 +296,8 @@ backend opt-in, and unary-only limitations belong to
 <a id="prepared-chat-frontend"></a>
 ### Prepared frontend artifacts
 
-Source-checkout EVC compilation lives under `tool/`, not the runtime import graph.
+Source-checkout EVC compiler implementations live under `tool/`, not the runtime
+import graph. Their Flutter test harnesses are selected explicitly below.
 [`prepareDesktopFrontendArtifacts`](../tools/frontend_artifacts.dart) chooses the
 compiler harnesses; [`stock_frontend_descriptors.dart`](../tools/stock_frontend_descriptors.dart)
 is the stock build-side descriptor source. Flutter/eval compilation is development
@@ -307,6 +308,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
 | [`tool/compile_task_browser_frontend.dart`](tool/compile_task_browser_frontend.dart) | `ADELE_TASK_BROWSER_FRONTEND_OUTPUT` |
 | [`tool/compile_source_editor_frontend.dart`](tool/compile_source_editor_frontend.dart) | `ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT` |
+| [`tool/compile_diff_viewer_frontend.dart`](tool/compile_diff_viewer_frontend.dart) | `ADELE_DIFF_VIEWER_FRONTEND_OUTPUT` |
 | [`tool/compile_terminal_frontend.dart`](tool/compile_terminal_frontend.dart) | `ADELE_TERMINAL_FRONTEND_OUTPUT` |
 | [`tool/compile_local_directory_project_frontend.dart`](tool/compile_local_directory_project_frontend.dart) | `ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT` |
 | [`tool/compile_tool_inspection_frontends.dart`](tool/compile_tool_inspection_frontends.dart) | `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or `command`), `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` |
