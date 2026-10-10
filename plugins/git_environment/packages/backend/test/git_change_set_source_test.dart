@@ -225,6 +225,167 @@ void main() {
     skip: Platform.isWindows,
   );
 
+  for (final (initialMode, workingMode, indexMode, modeChanged) in [
+    ('0644', '0645', '100644', false),
+    ('0755', '0655', '100755', true),
+  ]) {
+    test(
+      'Git owner-execute semantics for $initialMode to $workingMode',
+      () async {
+        await _git(repository, ['config', 'core.filemode', 'true']);
+        final file = File('${repository.path}/permissions');
+        await file.writeAsString('unchanged content\n');
+        expect(
+          (await Process.run('chmod', [initialMode, file.path])).exitCode,
+          0,
+        );
+        await _git(repository, ['add', 'permissions']);
+        await _git(repository, ['commit', '-m', 'Tracked mode']);
+        expect(
+          await _git(repository, ['ls-files', '--stage', '--', 'permissions']),
+          startsWith('$indexMode '),
+        );
+        expect(
+          (await Process.run('chmod', [workingMode, file.path])).exitCode,
+          0,
+        );
+        final raw = await _git(repository, [
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--raw',
+          '--',
+          'permissions',
+        ]);
+        expect(raw, modeChanged ? startsWith(':100755 100644 ') : isEmpty);
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        final result = await snapshot();
+        if (modeChanged) {
+          expect(result.files.single.relativePath, 'permissions');
+          expect(result.files.single.changeKind, 'typeChanged');
+          expect(result.files.single.contentStatus, 'unsupported');
+          expect(result.files.single.hunks, isEmpty);
+        } else {
+          expect(result.files, isEmpty);
+          await file.writeAsString('changed content\n');
+          final text = (await snapshot()).files.single;
+          expect(text.changeKind, 'modified');
+          expect(text.contentStatus, 'text');
+          expect(text.hunks.single.lines.last.text, 'changed content');
+        }
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+      },
+      skip: Platform.isWindows,
+    );
+  }
+
+  test(
+    'stable tracked symlinks omit clean links and preserve dirty placeholders without following targets',
+    () async {
+      final original = '${container.path}/missing-original-target';
+      final changed = '${container.path}/missing-changed-target';
+      final link = Link('${repository.path}/a-link');
+      await link.create(original);
+      await _git(repository, ['add', 'a-link']);
+      await _git(repository, ['commit', '-m', 'Tracked link']);
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+      final config = await File('${repository.path}/.git/config').readAsBytes();
+      expect((await snapshot()).files, isEmpty);
+      await link.update(changed);
+      final dirty = (await snapshot()).files.single;
+      expect(dirty.relativePath, 'a-link');
+      expect(dirty.contentStatus, 'unsupported');
+      expect(dirty.hunks, isEmpty);
+      expect(await link.target(), changed);
+      expect(await File(original).exists(), isFalse);
+      expect(await File(changed).exists(), isFalse);
+      expect(authority.fileReads, 0);
+      expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+      expect(
+        await File('${repository.path}/.git/config').readAsBytes(),
+        config,
+      );
+    },
+    skip: Platform.isWindows,
+  );
+
+  for (final mutation in ['target', 'dirty target', 'missing', 'file']) {
+    test(
+      'observed tracked symlink $mutation race rejects the whole snapshot',
+      () async {
+        final original = '${container.path}/missing-original-target';
+        final changed = '${container.path}/missing-changed-target';
+        final link = Link('${repository.path}/a-link');
+        final later = File('${repository.path}/z-later');
+        await link.create(original);
+        await later.writeAsString('before\n');
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Snapshot observations']);
+        if (mutation == 'dirty target') {
+          await link.update('${container.path}/missing-dirty-target');
+        }
+        await later.writeAsString('later edit\n');
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        final config = await File(
+          '${repository.path}/.git/config',
+        ).readAsBytes();
+        final checkpoint = File('${container.path}/patch-observed');
+        final action = switch (mutation) {
+          'target' || 'dirty target' =>
+            '/usr/bin/ln -sfn ${_quote(changed)} ${_quote(link.path)}',
+          'missing' => '/usr/bin/rm -- ${_quote(link.path)}',
+          'file' =>
+            '/usr/bin/rm -- ${_quote(link.path)}; /usr/bin/printf %s ${_quote(original)} > ${_quote(link.path)}',
+          _ => throw StateError('Unknown mutation'),
+        };
+        final shim = await _shim(container, '''
+case " \$* " in
+  *" --no-index "*)
+    $action
+    /usr/bin/printf 'observed\\n' > ${_quote(checkpoint.path)} ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+        ChangeSetSnapshot? published;
+        await expectLater(
+          snapshot(
+            parentEnvironment: {'PATH': shim.path},
+          ).then((result) => published = result),
+          throwsA(_code('snapshot_changed')),
+        );
+        expect(published, isNull);
+        expect(await checkpoint.exists(), isTrue);
+        expect(
+          await FileSystemEntity.type(link.path, followLinks: false),
+          switch (mutation) {
+            'missing' => FileSystemEntityType.notFound,
+            'file' => FileSystemEntityType.file,
+            _ => FileSystemEntityType.link,
+          },
+        );
+        if (mutation == 'target' || mutation == 'dirty target') {
+          expect(await link.target(), changed);
+        }
+        expect(await File(original).exists(), isFalse);
+        expect(await File(changed).exists(), isFalse);
+        expect(authority.fileReads, 0);
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+        expect(
+          await File('${repository.path}/.git/config').readAsBytes(),
+          config,
+        );
+        expect(await later.readAsString(), 'later edit\n');
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
   test(
     'binary encoding symlink type and conflicts are explicit placeholders',
     () async {

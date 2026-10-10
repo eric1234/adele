@@ -146,7 +146,7 @@ omitted before content classification. Newline absence is
 retained on the corresponding hunk line; line text otherwise preserves CR and LF
 semantics rather than normalizing file content. Effective `core.filemode=false`
 suppresses executable-bit-only differences; repository settings override lower
-configuration scopes.
+configuration scopes. Git executable state uses only the owner-execute bit.
 
 The snapshot subprocess path is separate from Environment foreground execution.
 `git_process_environment.dart` shares the existing placement isolation boundary,
@@ -180,7 +180,9 @@ bytes cannot be compared within the bound, even if an external observer knows it
 is unchanged. Equal inspected files do not consume the changed-result byte budget.
 
 Line-ending configuration, enumeration and direct-path/stat observations are checked
-again before publication.
+again before publication. Inspected tracked symlinks, including clean ones omitted
+from the result, are rechecked for direct-path safety, link type, and target text;
+their referenced files are never opened.
 Detected concurrent changes fail explicitly, but these checks are not an atomic
 filesystem/index transaction or an OS sandbox: another same-user process can race
 path or configuration replacement, preserve timestamps, or change and restore state

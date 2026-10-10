@@ -137,6 +137,7 @@ final class _SnapshotOperation {
   final Set<StreamSubscription<List<int>>> _pipes = {};
   final Set<void Function()> _abortProcesses = {};
   final Map<String, FileStat> _observed = {};
+  final Map<String, String> _observedLinks = {};
   Directory? _temporary;
   late Directory _gitDirectory;
   late Directory _worktreeRoot;
@@ -265,6 +266,14 @@ final class _SnapshotOperation {
         );
       }
     }
+    for (final entry in _observedLinks.entries) {
+      if (await _directLinkTarget(root, entry.key) != entry.value) {
+        throw _failure(
+          'snapshot_changed',
+          'A symbolic link changed before snapshot completion.',
+        );
+      }
+    }
     await _validateRoot(root);
     await _validateRoot(_gitDirectory);
     await _validateRoot(_worktreeRoot);
@@ -360,11 +369,10 @@ final class _SnapshotOperation {
       );
     }
     if (change.oldMode == '120000' || change.newMode == '120000') {
-      try {
-        await _directState(root, path);
-      } on ChangeSetFailure catch (error) {
-        if (error.code != 'symlink_path') rethrow;
-        final target = utf8.encode(await Link('${root.path}/$path').target());
+      final linkTarget = await _directLinkTarget(root, path);
+      if (linkTarget != null) {
+        _observedLinks[path] = linkTarget;
+        final target = utf8.encode(linkTarget);
         final hash = change.oid.length == 64 ? sha256 : sha1;
         if (hash.convert([
               ...utf8.encode('blob ${target.length}\u0000'),
@@ -429,7 +437,7 @@ final class _SnapshotOperation {
         change.kind == 'modified' &&
         _fileMode &&
         !Platform.isWindows &&
-        ((state.mode & 0x49) != 0) != (change.oldMode == '100755')) {
+        ((state.mode & 0x40) != 0) != (change.oldMode == '100755')) {
       change = (
         oldMode: change.oldMode,
         newMode: change.newMode,
@@ -643,6 +651,24 @@ final class _SnapshotOperation {
       return null;
     } finally {
       await file.close();
+    }
+  }
+
+  Future<String?> _directLinkTarget(Directory root, String path) async {
+    try {
+      try {
+        await _directState(root, path);
+        return null;
+      } on ChangeSetFailure catch (error) {
+        if (error.code != 'symlink_path') rethrow;
+      }
+      // Read link text only, after validating its root and direct parents.
+      return await Link('${root.path}/$path').target();
+    } on FileSystemException {
+      throw _failure(
+        'snapshot_changed',
+        'A symbolic link could not be inspected consistently.',
+      );
     }
   }
 
