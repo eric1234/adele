@@ -1,0 +1,336 @@
+Third-party notices for the toml_document native Rust library
+
+This file attributes the third-party Cargo dependencies of
+adele_toml_document 0.1.0 in native/Cargo.lock. Coverage is the current
+default-feature runtime/build dependency closure, checked with cargo tree
+--locked and cargo tree --locked --edges normal,build from native/. The same
+14 crate/version entries resolve for all targets configured in hook/build.dart:
+x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin,
+aarch64-apple-darwin, x86_64-pc-windows-msvc, and aarch64-pc-windows-msvc.
+
+Cargo dependencies are not automatically covered by Flutter's Dart package
+license collection. These native dependency notices must accompany a
+distribution containing this library; this file alone does not register them
+with Flutter or establish that they are included in a packaged application.
+This is not a complete application, toolchain, system-library, or native binary
+redistribution clearance. Review the actual release artifacts separately and
+refresh these notices when dependency versions, features, or targets change.
+
+All covered crates are available under MIT. MIT is selected where upstream
+offers MIT OR Apache-2.0 (including the reversed order) or Unlicense OR MIT;
+the alternative license texts are not reproduced. MIT-only crates use MIT.
+
+All sources below are published crates.io releases, pinned by version and
+checksum in native/Cargo.lock, from:
+registry+https://github.com/rust-lang/crates.io-index
+License source paths are relative to the extracted crates.io archives.
+The full LICENSE-MIT texts are reproduced verbatim, grouped only where the
+complete texts are identical. Differing copyright notices remain separate.
+Where upstream omits a copyright line or holder name, none is invented here;
+author metadata is identified separately from the license text.
+
+================================================================================
+
+equivalent 1.0.2
+https://crates.io/crates/equivalent/1.0.2
+https://github.com/indexmap-rs/equivalent
+Upstream license: Apache-2.0 OR MIT. Selected: MIT.
+License source: equivalent-1.0.2/LICENSE-MIT
+
+Copyright (c) 2016--2023
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+hashbrown 0.17.1
+https://crates.io/crates/hashbrown/0.17.1
+https://github.com/rust-lang/hashbrown
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: hashbrown-0.17.1/LICENSE-MIT
+
+Copyright (c) 2016 Amanieu d'Antras
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+indexmap 2.14.2
+https://crates.io/crates/indexmap/2.14.2
+https://github.com/indexmap-rs/indexmap
+Upstream license: Apache-2.0 OR MIT. Selected: MIT.
+License source: indexmap-2.14.2/LICENSE-MIT
+
+Copyright (c) 2016--2017
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+itoa 1.0.18
+https://crates.io/crates/itoa/1.0.18
+https://github.com/dtolnay/itoa
+Cargo author metadata: David Tolnay <dtolnay@gmail.com>
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: itoa-1.0.18/LICENSE-MIT
+
+serde_core 1.0.229
+https://crates.io/crates/serde_core/1.0.229
+https://github.com/serde-rs/serde
+Cargo author metadata: Erick Tryzelaar <erick.tryzelaar@gmail.com>,
+David Tolnay <dtolnay@gmail.com>
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: serde_core-1.0.229/LICENSE-MIT
+
+serde_json 1.0.149
+https://crates.io/crates/serde_json/1.0.149
+https://github.com/serde-rs/json
+Cargo author metadata: Erick Tryzelaar <erick.tryzelaar@gmail.com>,
+David Tolnay <dtolnay@gmail.com>
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: serde_json-1.0.149/LICENSE-MIT
+
+zmij 1.0.23
+https://crates.io/crates/zmij/1.0.23
+https://github.com/dtolnay/zmij
+Cargo author metadata: David Tolnay <dtolnay@gmail.com>
+Upstream license: MIT.
+License source: zmij-1.0.23/LICENSE-MIT
+
+The following full LICENSE-MIT text is identical for these four crates:
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Additional source attribution retained from
+serde_json-1.0.149/src/lexical/mod.rs (the float_roundtrip feature is not
+enabled in the current build; MIT is selected for this source as well):
+
+// The code in this module is derived from the `lexical` crate by @Alexhuszagh
+// which the author condensed into this minimal subset for use in serde_json.
+// For the serde_json use case we care more about reliably round tripping all
+// possible floating point values than about parsing any arbitrarily long string
+// of digits with perfect accuracy, as the latter would take a high cost in
+// compile time and performance.
+//
+// Dual licensed as MIT and Apache 2.0 just like the rest of serde_json, but
+// copyright Alexander Huszagh.
+
+================================================================================
+
+memchr 2.8.3
+https://crates.io/crates/memchr/2.8.3
+https://github.com/BurntSushi/memchr
+Upstream license: Unlicense OR MIT. Selected: MIT.
+License source: memchr-2.8.3/LICENSE-MIT
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+================================================================================
+
+toml_datetime 0.7.5+spec-1.1.0
+https://crates.io/crates/toml_datetime/0.7.5+spec-1.1.0
+https://github.com/toml-rs/toml
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: toml_datetime-0.7.5+spec-1.1.0/LICENSE-MIT
+
+toml_edit 0.23.10+spec-1.0.0
+https://crates.io/crates/toml_edit/0.23.10+spec-1.0.0
+https://github.com/toml-rs/toml
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: toml_edit-0.23.10+spec-1.0.0/LICENSE-MIT
+
+toml_parser 1.1.5+spec-1.1.0
+https://crates.io/crates/toml_parser/1.1.5+spec-1.1.0
+https://github.com/toml-rs/toml
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: toml_parser-1.1.5+spec-1.1.0/LICENSE-MIT
+
+toml_writer 1.1.3+spec-1.1.0
+https://crates.io/crates/toml_writer/1.1.3+spec-1.1.0
+https://github.com/toml-rs/toml
+Upstream license: MIT OR Apache-2.0. Selected: MIT.
+License source: toml_writer-1.1.3+spec-1.1.0/LICENSE-MIT
+
+The following full LICENSE-MIT text is identical for these four crates:
+
+Copyright (c) Individual contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+winnow 0.7.15
+https://crates.io/crates/winnow/0.7.15
+https://github.com/winnow-rs/winnow
+Upstream license: MIT.
+License source: winnow-0.7.15/LICENSE-MIT
+
+winnow 1.0.4
+https://crates.io/crates/winnow/1.0.4
+https://github.com/winnow-rs/winnow
+Upstream license: MIT.
+License source: winnow-1.0.4/LICENSE-MIT
+
+The following full LICENSE-MIT text is identical for both versions:
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+Lockfile-only packages outside the current runtime/build closure
+
+native/Cargo.lock also records serde 1.0.229, serde_derive 1.0.229,
+proc-macro2 1.0.107, quote 1.0.47, syn 3.0.7, and unicode-ident 1.0.26.
+They are not active dependencies in the current default-feature native build.
+The published serde_json and serde_core manifests contain cfg(any()) dependency
+entries for serde and serde_derive respectively. That condition is always false;
+cargo tree --target all includes these entries and their transitive dependencies
+without establishing that they are compiled or linked for a real target.
+
+These six packages are not included in the MIT license coverage above, and no
+license election is made for them here. If future features or dependencies
+activate them, review their license texts and additional obligations separately;
+do not infer their licensing from the MIT selection for the current closure.
+
+End of third-party notices.

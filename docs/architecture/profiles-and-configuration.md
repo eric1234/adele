@@ -2,7 +2,8 @@
 
 Role: Canonical architecture
 
-Implementation status: Mostly unimplemented
+Implementation status: Storage-location and native TOML document foundations;
+general Settings and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -218,11 +219,37 @@ identities, validation, migration, and deprecation therefore matter. ADELE must 
 casually discard persisted or unrecognized configuration merely because its owning
 plugin is inactive or unavailable.
 
-Shareable/Project configuration should support a stable human-readable
-representation suitable for ordinary tooling and version control where appropriate.
-Machine-local operational state may use a different store; not every persistence
-domain needs the same representation. Portable/local overlays and exact storage
-mechanics remain deferred.
+Human-editable persistent configuration uses **TOML**, with Rust **`toml_edit`**
+behind a Flutter-free Dart document boundary. Ordinary Dart values and document
+operations are the consumer interface, not Rust types, foreign-memory handles,
+or editor controllers. Edits preserve comments and unrelated formatting on a
+best-effort basis. This choice does not replace internal JSON transports or
+prepared installation formats, nor settle configuration schemas or precedence.
+
+Global persistence has separate ownership and lifetime domains:
+
+| Domain | Boundary |
+| --- | --- |
+| Configuration | User-managed preferences and definitions, potentially Git/dotfile-managed. |
+| Local application state | Frequently changing machine-local state, such as remembered layouts and recent Projects. Not portable configuration. |
+| Local application data | Other durable application-managed global data. |
+| Cache | Disposable, rebuildable data. |
+| Secrets | Separate from ordinary configuration; credential infrastructure remains deferred. |
+| Project/Session data | Existing per-Project product and plugin-owned storage, not a global settings store. |
+
+[`adele_platform_storage`](../../packages/platform_storage/README.md) resolves
+distinct global roots using Linux XDG, macOS Application Support/Caches, and
+Windows Roaming versus Local AppData conventions. It accepts injected platform
+inputs or explicit roots, performs no directory creation, and owns no consumers
+or persistence APIs. Global state/data locations do not belong to a future public
+configuration API simply because they share location-resolution infrastructure.
+
+[`adele_toml_document`](../../packages/toml_document/README.md) independently owns
+validation and narrow immutable scalar document edits. It provides no filesystem
+service, setting declarations, effective-value resolution, or Profile semantics.
+Atomic file writes, concurrent-editor conflict handling, file watching, and
+portable/local overlays remain later work. Neither foundation grants plugins
+direct access to global host files or changes Project storage ownership.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
@@ -311,6 +338,8 @@ or lifecycle objects.
 
 Implemented foundations and current limits:
 
+- Distinct platform storage locations and native TOML scalar document operations
+  exist independently of Settings/Profile semantics and filesystem persistence.
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
@@ -331,7 +360,7 @@ profile-aware provider routing, or production workbench-state persistence.
 
 - Profile CRUD/import/export UX and storage.
 - Optional named stack presets and non-remembering Profile switches.
-- Exact configuration serialization/local-store technology and portable/local overlays.
+- Configuration file schemas, local state/data store technologies, and portable/local overlays.
 - Setting declaration/migration APIs and specific non-default merge semantics.
 - Exact narrower subject scopes and their override semantics.
 - Security/policy/approval composition.
@@ -341,8 +370,9 @@ profile-aware provider routing, or production workbench-state persistence.
 - Remembered workbench-state keying and garbage collection.
 
 These deferrals do not reopen ordered flat Profile composition or the product
-identities accepted by ADRs 0029 and 0031. Configuration storage layouts, schemas,
-migration protocols, and APIs remain open; ADRs
+identities accepted by ADRs 0029 and 0031. Beyond the global roots and TOML document
+boundary above, configuration file layouts, schemas, migration protocols, and
+settings APIs remain open; ADRs
 [0033](../adr/0033-durable-project-storage-and-provider-backing.md) and
 [0034](../adr/0034-plugin-owned-relational-session-storage.md) separately settle
 Project backing and plugin-owned relational Session storage, not these domains.

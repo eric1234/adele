@@ -1,0 +1,17 @@
+name: adele_toml_document
+description: Flutter-free TOML document operations backed by Rust toml_edit.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  code_assets: 1.2.1
+  ffi: 2.2.0
+  hooks: 2.0.2
+
+dev_dependencies:
+  test: ^1.26.3

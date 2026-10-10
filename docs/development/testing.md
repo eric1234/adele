@@ -89,7 +89,7 @@ dart tools/adele.dart test-plan --json
 ```
 
 This exports the maintained registry, including target names, Linux desktop
-dependency requirements, native Code Editor requirements, and CI concurrency metadata. It can run before bootstrap
+dependency requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
 without resolving dependencies or generating artifacts. It is not automatic
 discovery of every package containing tests.
 
@@ -167,6 +167,35 @@ after declaration changes. Repository `analyze` has no focused `--target` option
 Direct editor tests also need the separately built native library and loader
 environment described in [focused editor checks](#focused-editor-checks); a direct
 Flutter test invocation does not perform that preparation.
+
+## Configuration foundation checks
+
+After bootstrap with the [native TOML prerequisites](toolchain.md#native-toml-documents):
+
+```sh
+dart tools/adele.dart test --target adele_platform_storage
+dart tools/adele.dart test --target adele_toml_document
+dart test test/tools/adele_test.dart
+```
+
+The storage suite injects OS/environment/home inputs and explicit roots, testing
+Linux XDG defaults/overrides, macOS/Windows path conventions, domain separation,
+invalid inputs, and absence of directory creation without using real user roots.
+These are cross-platform path-policy tests, not executed macOS/Windows acceptance.
+
+The TOML target runs ordinary standalone Dart tests against real Rust `toml_edit`.
+The package build hook prepares and bundles its native library automatically;
+there is no native CodeForge build or loader environment variable. Tests cover
+parsing, scalar reads/updates/insertion/removal, comments/layout, Unicode, exact
+no-ops, and invalid-operation isolation. CRLF normalization on edits is an asserted
+upstream limitation, not silently treated as lossless preservation. The tooling
+suite owns workspace/analysis/target discovery and CI compiler metadata.
+
+For package-specific analysis, run `dart analyze --fatal-infos` in each package.
+The small native ABI suite can be run from `packages/toml_document/native/` with
+`cargo test --locked`, and its formatting with `cargo fmt --check`, using that
+directory's pinned toolchain. No Settings/Profile UI or persistence integration
+is implied by these foundation checks.
 
 ## Application validation map
 

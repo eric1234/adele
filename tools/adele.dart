@@ -65,6 +65,19 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_platform_storage',
+    path: 'packages/platform_storage',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_toml_document',
+    path: 'packages/toml_document',
+    executable: 'dart',
+    arguments: <String>['test'],
+    nativeToml: true,
+  ),
+  TestTarget(
     name: 'adele_ui',
     path: 'packages/ui',
     executable: 'flutter',
@@ -320,6 +333,12 @@ analysisTargets = <({String name, String path, bool flutter})>[
     path: 'packages/project_storage',
     flutter: false,
   ),
+  (
+    name: 'adele_platform_storage',
+    path: 'packages/platform_storage',
+    flutter: false,
+  ),
+  (name: 'adele_toml_document', path: 'packages/toml_document', flutter: false),
   (
     name: 'adele_core_extensions',
     path: 'packages/core_extensions',
@@ -870,6 +889,7 @@ String testPlanJson([List<TestTarget> targets = testTargets]) {
           'name': target.name,
           'linuxDesktopDeps': target.linuxDesktopDeps,
           'nativeCodeEditor': target.nativeCodeEditor,
+          'nativeToml': target.nativeToml,
           'ciTestConcurrency': target.ciTestConcurrency,
         },
     ],
