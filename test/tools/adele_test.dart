@@ -1445,6 +1445,7 @@ void main() {
             'initialize': 'initializeDiff',
             'entrypoint': 'buildDiffPane',
             'order': 200,
+            'canRequestSourceDisplay': true,
             'environmentReadCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
             ],
@@ -1453,6 +1454,16 @@ void main() {
         expect(
           stockFrontendExtensionDescriptors['dev.adele.diff-viewer'],
           isNull,
+        );
+        expect(
+          stockFrontendDescriptors.entries
+              .where(
+                (entry) => entry.value.any(
+                  (descriptor) => descriptor['canRequestSourceDisplay'] == true,
+                ),
+              )
+              .map((entry) => entry.key),
+          ['dev.adele.diff-viewer'],
         );
         final compiler = File(
           'app/tool/diff_viewer_frontend_compiler.dart',

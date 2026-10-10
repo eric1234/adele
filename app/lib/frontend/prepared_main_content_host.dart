@@ -55,6 +55,7 @@ final class PreparedMainContentHost {
   final EnvironmentRuntime? environmentRuntime;
   final Future<bool> Function(Map<String, Object?> request)? confirm;
   final _metadata = Expando<(PreparedPluginInstallation, PreparedFrontend)>();
+  final _sourceDisplays = Expando<PreparedMainContentPresentation>();
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
       {};
   final Set<Future<Map<String, Object?>>> _operations = {};
@@ -231,6 +232,9 @@ final class PreparedMainContentHost {
                       isActive: paneActive,
                       open: open,
                       paneId: id,
+                      resolveSourceDisplay: descriptor.canRequestSourceDisplay
+                          ? () => _resolveSourceDisplay(extensions, access)
+                          : null,
                     );
                     late final SessionPresentationLifecycleBridge lifecycle;
                     lifecycle = SessionPresentationLifecycleBridge(
@@ -488,19 +492,63 @@ final class PreparedMainContentHost {
     });
   }
 
-  /// Called by the public provider-neutral display registration, not a global
-  /// command service. Only the current host-approved attachment can admit work.
-  Future<Map<String, Object?>> displaySourceFile(
-    PreparedMainContentPresentation descriptor,
-    String relativePath,
+  ExtensionBinding<DisplaySourceFileContribution> _resolveSourceDisplay(
+    ExtensionRegistry extensions,
+    MainContentAccess origin,
   ) {
-    final retained = _retained[descriptor];
-    final attachment = retained?.attachment;
-    final operation = descriptor.displaySourceFileOperation;
-    if (retained == null || attachment == null || operation == null) {
-      throw StateError('Source display is unavailable in the current context.');
+    final store = environmentRuntime?.store;
+    if (!_accepting ||
+        _preflighting ||
+        _closed ||
+        !origin.isActive ||
+        store == null ||
+        !identical(store.session(origin.session.id), origin.session)) {
+      throw const DisplaySourceFileUnavailable();
     }
-    return _invoke(retained, attachment, operation, {'path': relativePath});
+    store.requireSessionAuthority(origin.session.id);
+    final binding = DisplaySourceFileResolver(extensions).resolve();
+    final descriptor = _sourceDisplays[binding.value];
+    if (descriptor != null) {
+      final target = _retained[descriptor]?.attachment;
+      if (target == null ||
+          !target.access.isActive ||
+          !identical(target.access.session, origin.session)) {
+        throw const DisplaySourceFileUnavailable();
+      }
+    }
+    return binding;
+  }
+
+  /// The adapter captures its own approved attachment. Native metadata lets a
+  /// prepared consumer reject a foreign attachment before invoking the resolver's
+  /// exact binding; no Session selector crosses the interpreted API.
+  DisplaySourceFileContribution createSourceDisplayContribution(
+    PreparedMainContentPresentation descriptor,
+    bool Function() isActive,
+  ) {
+    final contribution = DisplaySourceFileContribution(
+      display: (relativePath) {
+        final retained = _retained[descriptor];
+        final attachment = retained?.attachment;
+        final operation = descriptor.displaySourceFileOperation;
+        if (!isActive() ||
+            retained == null ||
+            attachment == null ||
+            operation == null) {
+          throw const DisplaySourceFileUnavailable();
+        }
+        return _invoke(
+          retained,
+          attachment,
+          operation,
+          {'path': relativePath},
+          canPresent: () =>
+              isActive() && identical(retained.attachment, attachment),
+        );
+      },
+    );
+    _sourceDisplays[contribution] = descriptor;
+    return contribution;
   }
 
   Future<Map<String, Object?>> _invoke(
@@ -509,6 +557,7 @@ final class PreparedMainContentHost {
     String operation,
     Map<String, Object?> arguments, {
     bool preflight = false,
+    bool Function()? canPresent,
   }) {
     if (!_accepting ||
         (_preflighting && !preflight) ||
@@ -574,7 +623,8 @@ final class PreparedMainContentHost {
           final current = retained.attachment;
           if (current != null &&
               current.access.isActive &&
-              retained.isActive()) {
+              retained.isActive() &&
+              (canPresent?.call() ?? true)) {
             try {
               await current.refresh();
             } on Object {
@@ -583,6 +633,7 @@ final class PreparedMainContentHost {
             final focus = result['focus'];
             if (focus is String &&
                 current.access.isActive &&
+                (canPresent?.call() ?? true) &&
                 current.context['environmentKey'] ==
                     context['environmentKey'] &&
                 current.access.panes.any((pane) => pane.id == focus)) {

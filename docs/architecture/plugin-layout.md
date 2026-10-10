@@ -189,6 +189,14 @@ fresh resolution happens through the appropriate scoped consumer bridge.
 Other presentation roles and behavioral operations acquire no such access. See
 [prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 
+Main Content also distinguishes source-display consumption from provision.
+`canRequestSourceDisplay` requests mounted-pane access; `displaySourceFileOperation`
+names a provider's finite operation. These independent declarations neither grant
+direct file/editor access to consumers nor require a particular Source plugin to
+be installed. The [catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog)
+owns defaults and strict field validation; [Main Content source display](plugin-system.md#main-content-source-display)
+owns canonical authority, exact resolution, and presentation lifetime.
+
 Task Browser is a presentation descriptor, not a behavioral extension or Session
 strategy. Its frontend-only role requires no backend services or strategy affinity;
 the host supplies Project-scoped browser access through the public UI bridge.

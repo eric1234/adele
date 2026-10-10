@@ -229,6 +229,7 @@ final class PreparedMainContentPresentation
     this.retainedData = false,
     this.nativeCodeEditor = false,
     this.environmentTextFiles = false,
+    this.canRequestSourceDisplay = false,
   }) : backendServices = List.unmodifiable(backendServices),
        capabilities = List.unmodifiable(capabilities),
        environmentReadCapabilities = List.unmodifiable(
@@ -309,6 +310,10 @@ final class PreparedMainContentPresentation
   final bool nativeCodeEditor;
   final bool environmentTextFiles;
 
+  /// Pane-only requests through the public source-display extension point.
+  /// This grants no Environment file access to the requesting contribution.
+  final bool canRequestSourceDisplay;
+
   Map<String, Object?> toJson() => {
     'role': 'mainContent',
     'extensionId': extensionId.value,
@@ -343,6 +348,7 @@ final class PreparedMainContentPresentation
     'retainedData': retainedData,
     'nativeCodeEditor': nativeCodeEditor,
     'environmentTextFiles': environmentTextFiles,
+    'canRequestSourceDisplay': canRequestSourceDisplay,
   };
 }
 
@@ -851,6 +857,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'retainedData',
         'nativeCodeEditor',
         'environmentTextFiles',
+        'canRequestSourceDisplay',
       });
       final order = value['order'];
       if (order is! int) {
@@ -955,6 +962,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         retainedData: permission('retainedData'),
         nativeCodeEditor: permission('nativeCodeEditor'),
         environmentTextFiles: permission('environmentTextFiles'),
+        canRequestSourceDisplay: permission('canRequestSourceDisplay'),
       );
     case 'console':
       _object(value, label, {

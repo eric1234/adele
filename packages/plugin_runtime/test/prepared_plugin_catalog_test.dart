@@ -531,6 +531,7 @@ void main() {
       expect(session.retainedData, isFalse);
       expect(session.nativeCodeEditor, isFalse);
       expect(session.environmentTextFiles, isFalse);
+      expect(session.canRequestSourceDisplay, isFalse);
       expect(() => session.actions.clear(), throwsUnsupportedError);
       expect(() => session.operations.clear(), throwsUnsupportedError);
       final native =
@@ -841,6 +842,7 @@ void main() {
     bool retainedData = false,
     bool nativeCodeEditor = false,
     bool environmentTextFiles = false,
+    bool canRequestSourceDisplay = false,
   }) => PreparedMainContentPresentation(
     extensionId: ExtensionId('org.example.main-content'),
     order: 200,
@@ -857,7 +859,44 @@ void main() {
     retainedData: retainedData,
     nativeCodeEditor: nativeCodeEditor,
     environmentTextFiles: environmentTextFiles,
+    canRequestSourceDisplay: canRequestSourceDisplay,
   );
+
+  for (final granted in [false, true]) {
+    test(
+      'Main Content source-display request is an independent opt-in $granted',
+      () async {
+        final descriptor = mainContent(canRequestSourceDisplay: granted);
+        expect(descriptor.canRequestSourceDisplay, granted);
+        await install(
+          'source-consumer',
+          _manifest(
+            components: {
+              'frontend': _frontend(presentations: [descriptor.toJson()]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        final parsed =
+            installation.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(parsed.canRequestSourceDisplay, granted);
+        expect(parsed.toJson()['canRequestSourceDisplay'], granted);
+        expect(parsed.displaySourceFileOperation, isNull);
+        expect(parsed.operations, isEmpty);
+        expect(parsed.backendServices, isEmpty);
+        expect(parsed.capabilities, isEmpty);
+        expect(parsed.environmentReadCapabilities, isEmpty);
+        expect(parsed.environmentTextFiles, isFalse);
+        expect(parsed.sessionExecution, isFalse);
+        expect(parsed.nativeCodeEditor, isFalse);
+        expect(parsed.retainedData, isFalse);
+      },
+    );
+  }
 
   test('Main Content constructor snapshots distinct Capability keys', () {
     final empty = mainContent();
@@ -977,6 +1016,7 @@ void main() {
                 retainedData: true,
                 nativeCodeEditor: true,
                 environmentTextFiles: true,
+                canRequestSourceDisplay: true,
               )
             : mainContent();
         final json = descriptor.toJson();
@@ -1006,6 +1046,7 @@ void main() {
           'retainedData': populated,
           'nativeCodeEditor': populated,
           'environmentTextFiles': populated,
+          'canRequestSourceDisplay': populated,
         });
         expect(jsonEncode(descriptor.toJson()), jsonEncode(json));
         await install(
@@ -1167,6 +1208,7 @@ void main() {
       'retainedData',
       'nativeCodeEditor',
       'environmentTextFiles',
+      'canRequestSourceDisplay',
     ])
       for (final value in <Object?>[null, 'true', 1, [], {}])
         'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
@@ -1740,6 +1782,7 @@ void main() {
       'capabilities',
       'environmentReadCapabilities',
       'consumesCapabilities',
+      'canRequestSourceDisplay',
     ]) {
       test('${descriptor['role']} rejects $field grants', () async {
         await install(
@@ -1749,7 +1792,12 @@ void main() {
               'backend': {'artifact': 'backend.aot'},
               'frontend': _frontend(
                 presentations: [
-                  {...descriptor, field: <Object?>[]},
+                  {
+                    ...descriptor,
+                    field: field == 'canRequestSourceDisplay'
+                        ? true
+                        : <Object?>[],
+                  },
                 ],
               ),
             },
@@ -1775,6 +1823,7 @@ void main() {
     for (final field in [
       'environmentReadCapabilities',
       'consumesCapabilities',
+      'canRequestSourceDisplay',
     ]) {
       test('${descriptor['kind']} rejects $field declarations', () async {
         await install(
@@ -1785,7 +1834,12 @@ void main() {
               'frontend': {
                 ..._frontend(),
                 'extensions': [
-                  {...descriptor, field: <Object?>[]},
+                  {
+                    ...descriptor,
+                    field: field == 'canRequestSourceDisplay'
+                        ? true
+                        : <Object?>[],
+                  },
                 ],
               },
             },
