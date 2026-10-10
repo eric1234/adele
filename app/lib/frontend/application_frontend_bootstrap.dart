@@ -363,12 +363,8 @@ final class InstalledFrontendActivation {
               _register(
                 point: displaySourceFileContributions,
                 id: descriptor.extensionId,
-                contribution: (isActive) => DisplaySourceFileContribution(
-                  display: (path) {
-                    _requireActive(isActive);
-                    return _mainContentHost.displaySourceFile(descriptor, path);
-                  },
-                ),
+                contribution: (isActive) => _mainContentHost
+                    .createSourceDisplayContribution(descriptor, isActive),
               );
             }
           case PreparedConsolePresentation():

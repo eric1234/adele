@@ -470,11 +470,43 @@ Environment or focus an unrelated workspace. Native construction from supplied
 text grants no filesystem authority; explicit user Environment access follows the
 [narrow frontend grant](contracts-and-capabilities.md#frontend-behavioral-operations).
 
+<a id="main-content-source-display"></a>
+
 The public source-file display point resolves one exact registration, with absent,
-ambiguous, and explicit-selection outcomes and no native fallback. Stock Source
-uses it and its input action to reach the same plugin-owned operation. Window-local
-retention is not durable workbench persistence. Pane close requests owner policy;
-application-exit preflight also consults opted-in retained collections without
+ambiguous, and explicit-selection outcomes and no native fallback. An opted-in
+prepared Main Content pane can request display through the public
+[`main_content_bridge.dart` API](../../packages/ui/README.md#source-file-display).
+Its `canRequestSourceDisplay` consumer declaration is distinct from a provider's
+`displaySourceFileOperation` hook; neither implies the other or grants the consumer
+file/editor services. Only an actual mounted pane receives the host resolver
+callback. Initialization, input actions, and finite operations do not receive it.
+
+Before calling `DisplaySourceFileResolver.resolve`, the host validates the native
+canonical Session from the originating `MainContentAccess` and its canonical
+Environment association. Copied interpreted context and path strings cannot choose
+authority. A prepared provider must have a live approved attachment to that same
+Session. The consumer supplies only the unchanged Environment-relative path; its
+availability query reserves nothing and accepts no provider selector. Invocation
+calls the exact resolved registration and validates it again on completion, with
+no fallback, retry, or replacement lookup. The interpreted result contains only a
+safe status, not provider payloads, errors, or native diagnostics.
+
+The prepared provider adapter captures its own approved attachment before admitting
+its finite operation. Display-triggered refresh and focus require that exact
+attachment and a still-live display registration, not merely a matching Session or
+Environment ID. Navigation, reattachment, or display-registration retirement fences
+late presentation; it does not cancel admitted finite work, which may finish and
+retain data under its captured owner. A later fresh attachment may project that
+data without reviving old access. Stock Source uses this route and its input action
+to reach the same plugin-owned operation; its document model, deduplication, dirty
+text, and native undo ownership remain unchanged.
+
+Native admission and presentation gating live in `PreparedMainContentHost` in
+[`app/lib/frontend/prepared_main_content_host.dart`](../../app/lib/frontend/prepared_main_content_host.dart),
+not in a Diff- or Source-specific host route.
+
+Window-local retention is not durable workbench persistence. Pane close requests
+owner policy; application-exit preflight also consults opted-in retained collections without
 mounting hidden views, including while Task Browser is shown. Cancellation or
 failure precedes irreversible frontend/execution revocation and leaves retained
 documents available. Acceptance is not early disposal if another participant can

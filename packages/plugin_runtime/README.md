@@ -201,9 +201,10 @@ stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
 and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
 data-only and remains Flutter/eval-independent. The initializer reads captured
 Session/Environment identity data and may open an initial collection; it receives
-no execution, backend, or file services, including when the descriptor requests
-them. Identity context is independent of descriptor grants and provider readiness;
-its API belongs to the [UI bridge map](../ui/README.md#interpreted-bridges).
+no execution, backend, file, or source-display consumer services, including when
+the descriptor requests them. Identity context is independent of descriptor grants
+and provider readiness; its API belongs to the
+[UI bridge map](../ui/README.md#interpreted-bridges).
 The content entrypoint renders each admitted pane in its own runtime.
 
 Additional Main Content fields are explicit opt-ins:
@@ -215,6 +216,7 @@ Additional Main Content fields are explicit opt-ins:
 | `actions` | Empty by default; unique local `id`, `label`, and widget `entrypoint` for each host-chrome input action. |
 | `operations` | Empty by default; finite operation keys mapped to top-level entrypoints in the same `library`. |
 | `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
+| `canRequestSourceDisplay` | Strict boolean, false by default; requests pane-only consumption of the public source-display point, not a provider registration or direct file/editor access. |
 | `retainedData` | False by default; requests copied contribution-owned records retained independently of attachment. |
 | `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
 | `environmentTextFiles` | False by default; requires nonempty `operations` and requests the separate Environment read/replace bridge only for finite operations with captured Session context. |
@@ -228,6 +230,19 @@ path, even when the Main Content descriptor requests them. Contextual resolution
 and per-request authority validation belong to the application host, not catalog
 parsing; the [public UI bridge](../ui/README.md#interpreted-bridges) exposes only
 presentation-local handles and unary calls, with no host tokens or routes.
+
+`canRequestSourceDisplay` is independent of `displaySourceFileOperation`: the former
+requests consumer access, while the latter names the provider's declared finite
+operation. Neither implies the other. Consumer access requires no operations,
+retained data, native editor, Environment-file permission, Capability allowlist,
+execution, or owning backend. Omission means false; null and nonboolean values are
+rejected, as is the field on other roles or behavioral extensions. Serialization
+includes its explicit boolean value. Stock [Diff Viewer](../../plugins/diff_viewer/README.md)
+opts in as a consumer; Source remains the separately registered provider.
+Only a mounted pane receives the host resolver callback, never initialization,
+input actions, or finite operations. The declaration grants no authority by itself;
+canonical context, resolution, and completion checks belong to
+[Main Content hosting](../../docs/architecture/plugin-system.md#main-content-source-display).
 
 `PreparedMainContentPresentation.toJson()` serializes both allowlists separately,
 preserving declared order and copying mutable collections. It includes explicit

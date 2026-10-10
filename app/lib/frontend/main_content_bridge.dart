@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -43,6 +44,14 @@ class MainContentDeclarations implements EvalPlugin {
         const <BridgeParameter>[],
       ),
       ('readMainContentPaneId', string, const <BridgeParameter>[]),
+      ('sourceDisplayAvailability', string, const <BridgeParameter>[]),
+      (
+        'displaySourceFile',
+        const BridgeTypeAnnotation(
+          BridgeTypeRef(CoreTypes.future, [structuredBridgeMapType]),
+        ),
+        const [BridgeParameter('relativePath', string, false)],
+      ),
       (
         'openMainContentPane',
         boolean,
@@ -86,17 +95,22 @@ final class MainContentBridge extends MainContentDeclarations
     required bool Function() isActive,
     void Function(String id, String title, bool canClose)? open,
     String paneId = '',
+    ExtensionBinding<DisplaySourceFileContribution> Function()?
+    resolveSourceDisplay,
   }) : _access = access,
        _context = Map.unmodifiable(context),
        _isActive = isActive,
        _open = open,
-       _paneId = paneId;
+       _paneId = paneId,
+       _resolveSourceDisplay = resolveSourceDisplay;
 
   final MainContentAccess? _access;
   final Map<String, Object?> _context;
   final bool Function() _isActive;
   final void Function(String, String, bool)? _open;
   final String _paneId;
+  final ExtensionBinding<DisplaySourceFileContribution> Function()?
+  _resolveSourceDisplay;
   final Zone _nativeZone = Zone.current;
   bool _active = true;
   bool _configured = false;
@@ -137,6 +151,46 @@ final class MainContentBridge extends MainContentDeclarations
     return _context;
   }
 
+  String sourceDisplayAvailability() => _nativeZone.run(() {
+    if (!isActive) return 'retired';
+    if (_resolveSourceDisplay == null) return 'denied';
+    try {
+      _resolveSourceDisplay().validate();
+      return 'available';
+    } on DisplaySourceFileUnavailable {
+      return 'unavailable';
+    } on AmbiguousDisplaySourceFile {
+      return 'ambiguous';
+    } on StaleExtensionBinding {
+      return 'retired';
+    } on Object {
+      return 'unavailable';
+    }
+  });
+
+  Future<Map<String, Object?>> displaySourceFile(String relativePath) =>
+      _nativeZone.run(() async {
+        if (!isActive) return const {'status': 'retired'};
+        if (_resolveSourceDisplay == null) return const {'status': 'denied'};
+        try {
+          // Resolve and admit synchronously against the captured attachment. No
+          // re-resolution, including after a selected registration is replaced.
+          final binding = _resolveSourceDisplay();
+          final result = await binding.value.display(relativePath);
+          binding.validate();
+          if (!isActive) return const {'status': 'retired'};
+          return {'status': result['ok'] == false ? 'failed' : 'success'};
+        } on DisplaySourceFileUnavailable {
+          return {'status': isActive ? 'unavailable' : 'retired'};
+        } on AmbiguousDisplaySourceFile {
+          return {'status': isActive ? 'ambiguous' : 'retired'};
+        } on StaleExtensionBinding {
+          return const {'status': 'retired'};
+        } on Object {
+          return {'status': isActive ? 'failed' : 'retired'};
+        }
+      });
+
   bool _request(void Function() action) {
     try {
       return _nativeZone.run(() {
@@ -171,6 +225,22 @@ final class MainContentBridge extends MainContentDeclarations
         _library,
         'readMainContentPaneId',
         (_, _, _) => $String(readPaneId()),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'sourceDisplayAvailability',
+        (_, _, _) => $String(sourceDisplayAvailability()),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'displaySourceFile',
+        (_, _, args) => _nativeZone.run(
+          () => $Future<$Value>.wrap(
+            displaySourceFile(
+              args.single!.$value as String,
+            ).then(wrapStructuredBridgeData),
+          ),
+        ),
       )
       ..registerBridgeFunc(
         _library,

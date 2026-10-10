@@ -33,9 +33,11 @@ of the frontend.
 
 `packages/frontend/lib/main.dart` supplies `initializeDiff()` and
 `buildDiffPane()`. Initialization opens only local pane ID `diff`; reinitializing
-does not duplicate it. The descriptor declares only `environmentReadCapabilities`
-for the Diff capability. There is no context-free capability grant, own-backend
-service, file mutation, process, terminal, editor, or execution grant.
+does not duplicate it. The descriptor declares `environmentReadCapabilities`
+for the Diff capability and `canRequestSourceDisplay` for pane-only requests
+through the public source-display point. There is no context-free capability
+grant, own-backend service, direct file access, process, terminal, editor, or
+execution grant.
 
 The mounted pane requests a snapshot immediately. Each explicit Refresh or Retry
 performs fresh contextual resolution, then invokes the typed generated client over
@@ -55,8 +57,25 @@ diff. An `unsupported` change kind can indicate uninspected change state, not a
 confirmed modification: for example a provider may decline recursive submodule
 inspection and supply that explanation in `detail`. Such a snapshot is not a
 claim that the entire Environment was inspected or clean.
-There is no automatic refresh, watcher, staging, apply/revert, editing,
-side-by-side mode, or Source navigation.
+
+Eligible file headers offer **Open in Source** through the public
+[`main_content_bridge.dart` source-display API](../../packages/ui/README.md#source-file-display),
+not a Source implementation import. Eligibility requires existing text content:
+`contentStatus: 'text'` with `added`, `modified`, or a text-bearing `typeChanged`
+change. Deleted, binary, oversized, unsupported, conflicted, and type-only entries
+without text offer no action. The raw `relativePath` is retained separately from
+the displayed header and forwarded unchanged, including spaces and punctuation;
+Diff neither parses its label nor normalizes the path.
+
+One pane-wide pending request suppresses duplicate openings. Missing or ambiguous
+Source providers remain explicit, and failed display shows a safe, nonfatal error
+without discarding the Diff. Refresh does not open Source; refresh/departure
+invalidate old callbacks and feedback, not an admitted provider operation.
+Source owns document normalization, deduplication, dirty text, and native undo
+through its [existing document model](../source_editor/README.md#ownership).
+The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
+There is no automatic refresh, watcher, staging, apply/revert, editing within Diff,
+or side-by-side mode.
 
 ## Preparation And Tests
 
@@ -79,10 +98,17 @@ The contract suite checks native nested transport, strict decoding, empty reques
 payloads, declared failures, and list immutability. The frontend suite compiles
 and mounts real EVC with generated native/eval codecs through a test-only
 contextual port, covering states, manual recovery, handle cleanup, held operation
-races, and lazy display. It does not substitute for authority validation:
-`app/test/prepared_diff_git_integration_test.dart` owns real stock Git AOT plus
-Diff EVC through normal catalog/Main Content hosting and canonical nonprimary
-Environment selection, including gated retirement/navigation.
+races, lazy display, and Source action eligibility, raw paths, pending suppression,
+safe failures, and stale callbacks. It does not substitute for authority validation:
+`app/test/main_content_source_display_test.dart` owns focused native and compiled
+consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
+real stock Git AOT plus independently prepared Diff and Source EVC through normal
+catalog/Main Content hosting, including canonical nonprimary content, deduplication,
+dirty text/undo, focus, and gated retirement/navigation. That cross-plugin suite
+requires the native CodeForge library; the isolated Diff frontend suite does not.
+The existing Source host suite remains the owner of Source document/operation
+behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)
+for prerequisites and test ownership, not recorded passing outcomes.
 
 Global boundaries belong to the [plugin architecture](../../docs/architecture/plugin-system.md),
 [contracts and capabilities](../../docs/architecture/contracts-and-capabilities.md),

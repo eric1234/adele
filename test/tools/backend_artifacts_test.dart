@@ -1177,6 +1177,21 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final diffDescriptor =
             diff.frontend!.presentations.single
                 as PreparedMainContentPresentation;
+        expect(diffDescriptor.canRequestSourceDisplay, isTrue);
+        expect(
+          catalog.installations
+              .where(
+                (installation) =>
+                    installation.frontend?.presentations
+                        .whereType<PreparedMainContentPresentation>()
+                        .any(
+                          (descriptor) => descriptor.canRequestSourceDisplay,
+                        ) ??
+                    false,
+              )
+              .map((installation) => installation.metadata.id.value),
+          ['dev.adele.diff-viewer'],
+        );
         expect(diffDescriptor.toJson(), {
           ...stockFrontendDescriptors['dev.adele.diff-viewer']!.single,
           'sessionExecution': false,

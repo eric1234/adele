@@ -454,7 +454,7 @@ Environment identity through `AuthorizedEnvironmentReadService.authority()` and
 resolves only its own live worktree state; the request contains no caller-selected
 Environment, repository, or path.
 
-Diff's mounted Main Content pane declares only the corresponding
+For snapshot reads, Diff's mounted Main Content pane declares the corresponding
 `environmentReadCapabilities` entry. Each initial load or deliberate refresh
 resolves fresh eligible access, invokes one finite generated unary snapshot, then
 releases the handle. It uses the contextual settlement and retirement rules above,

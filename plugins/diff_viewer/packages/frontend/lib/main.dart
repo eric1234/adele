@@ -24,6 +24,8 @@ class DiffPaneState extends State<DiffPane> {
   String handle = '';
   String status = 'loading';
   List<List<String>> rows = [];
+  bool sourcePending = false;
+  String sourceMessage = '';
   Future<bool> Function() departure = () async => true;
 
   @override
@@ -44,6 +46,7 @@ class DiffPaneState extends State<DiffPane> {
 
   void abandon() {
     revision++;
+    sourceMessage = '';
     if (handle != '') {
       releaseEnvironmentCapabilityProvider(handle);
       handle = '';
@@ -93,7 +96,18 @@ class DiffPaneState extends State<DiffPane> {
     final snapshot = result[1] as ChangeSetSnapshot;
     final List<List<String>> next = [];
     for (final file in snapshot.files) {
-      next.add(['file', '${file.relativePath}  [${file.changeKind}]']);
+      final List<String> header = [
+        'file',
+        '${file.relativePath}  [${file.changeKind}]',
+      ];
+      if (file.contentStatus == 'text' &&
+          (file.changeKind == 'added' ||
+              file.changeKind == 'modified' ||
+              file.changeKind == 'typeChanged')) {
+        // Keep the typed path separate from the human-readable header.
+        header.add(file.relativePath);
+      }
+      next.add(header);
       if (file.contentStatus != 'text') {
         next.add(['status', file.contentStatus]);
       }
@@ -136,6 +150,65 @@ class DiffPaneState extends State<DiffPane> {
     });
   }
 
+  String sourceStatusMessage(String state) {
+    if (state == 'success' || state == 'available') return '';
+    if (state == 'ambiguous') return 'Multiple Source providers are available.';
+    if (state == 'unavailable' || state == 'denied' || state == 'retired') {
+      return 'Source is unavailable.';
+    }
+    return 'Unable to open file in Source.';
+  }
+
+  void openSource(String path, int captured) async {
+    if (disposed ||
+        captured != revision ||
+        status != 'ready' ||
+        sourcePending) {
+      return;
+    }
+    final availability = sourceDisplayAvailability();
+    if (availability != 'available') {
+      final message = sourceStatusMessage(availability);
+      setState(() {
+        sourceMessage = message;
+      });
+      return;
+    }
+    setState(() {
+      sourcePending = true;
+      sourceMessage = '';
+    });
+    final result = await displaySourceFile(path);
+    if (disposed) return;
+    // Read bridged maps before entering a captured evaluator setState closure.
+    final state = result['status'];
+    final message = sourceStatusMessage(state is String ? state : 'failed');
+    setState(() {
+      sourcePending = false;
+      if (captured == revision) sourceMessage = message;
+    });
+  }
+
+  Widget sourceAction(String path, int captured) {
+    final availability = sourceDisplayAvailability();
+    if (availability == 'available' && !sourcePending) {
+      return TextButton(
+        onPressed: () => openSource(path, captured),
+        child: Text('Open in Source'),
+      );
+    }
+    // The evaluator pin uses a non-null callback for native TextButton bindings.
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Text(
+        sourcePending
+            ? 'Opening in Source...'
+            : sourceStatusMessage(availability),
+        style: TextStyle(color: Colors.grey),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     disposed = true;
@@ -161,12 +234,18 @@ class DiffPaneState extends State<DiffPane> {
       if (status == 'error') Text('Unable to load unstaged changes.'),
       if (status == 'error' || status == 'unavailable')
         TextButton(onPressed: refresh, child: Text('Retry')),
+      if (sourceMessage != '') Text(sourceMessage),
       Expanded(
         flex: 1,
         child: ListView.builder(
           itemCount: rows.length,
           itemBuilder: (context, index) {
             final row = rows[index];
+            final captured = revision;
+            final label = Text(
+              row[1],
+              style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+            );
             Color background = Colors.transparent;
             if (row[0] == 'addition') background = Color(0x1822aa55);
             if (row[0] == 'deletion') background = Color(0x18dd3344);
@@ -174,10 +253,17 @@ class DiffPaneState extends State<DiffPane> {
             return Container(
               color: background,
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              child: Text(
-                row[1],
-                style: TextStyle(fontFamily: 'monospace', fontSize: 12),
-              ),
+              child: row.length > 2
+                  ? Row(
+                      children: [
+                        Expanded(flex: 2, child: label),
+                        Expanded(
+                          flex: 1,
+                          child: sourceAction(row[2], captured),
+                        ),
+                      ],
+                    )
+                  : label,
             );
           },
         ),
