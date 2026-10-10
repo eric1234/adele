@@ -554,6 +554,134 @@ exec /usr/bin/git "\$@"
   );
 
   test(
+    'tracked and untracked paths share a complete-or-error inventory bound',
+    () async {
+      // The unchanged tracked baseline still consumes one inventory entry.
+      await File('${repository.path}/z-last').writeAsString('last addition\n');
+      await File(
+        '${repository.path}/a-first',
+      ).writeAsString('first addition\n');
+      const limits = GitChangeSetLimits(inventoryEntries: 3, files: 2);
+      for (var i = 0; i < 2; i++) {
+        final result = await snapshot(limits: limits);
+        expect(result.files.map((file) => file.relativePath), [
+          'a-first',
+          'z-last',
+        ]);
+        expect(
+          result.files.map((file) => file.hunks.single.lines.single.text),
+          ['first addition', 'last addition'],
+        );
+      }
+      await expectLater(
+        snapshot(
+          limits: const GitChangeSetLimits(inventoryEntries: 3, files: 1),
+        ),
+        throwsA(_code('too_many_files')),
+      );
+      await File(
+        '${repository.path}/middle',
+      ).writeAsString('overflow addition\n');
+      ChangeSetSnapshot? published;
+      await expectLater(
+        snapshot(
+          limits: const GitChangeSetLimits(inventoryEntries: 3, files: 3),
+        ).then((result) => published = result),
+        throwsA(_code('inventory_too_large')),
+      );
+      expect(published, isNull);
+    },
+  );
+
+  for (final ordinaryChanges in [false, true]) {
+    test(
+      'untracked nested repository is unsupported with ordinary changes=$ordinaryChanges',
+      () async {
+        const nestedPath = 'vendor/repo with spaces';
+        final nested = await Directory(
+          '${repository.path}/$nestedPath',
+        ).create(recursive: true);
+        await _git(nested, ['init']);
+        final inner = File('${nested.path}/inner.txt');
+        await inner.writeAsString('nested tracked content\n');
+        await _git(nested, ['add', '.']);
+        await _git(nested, [
+          '-c',
+          'user.name=ADELE Test',
+          '-c',
+          'user.email=adele@example.invalid',
+          'commit',
+          '-m',
+          'Nested fixture',
+        ]);
+        final untrackedInner = File('${nested.path}/untracked.txt');
+        await untrackedInner.writeAsString('nested untracked content\n');
+        final baseline = File('${repository.path}/baseline');
+        final outer = File('${repository.path}/outer.txt');
+        if (ordinaryChanges) {
+          await baseline.writeAsString('outer tracked edit\n');
+          await outer.writeAsString('outer addition\n');
+        }
+        expect(
+          await _git(repository, [
+            'ls-files',
+            '--others',
+            '--exclude-standard',
+            '-z',
+            '--',
+            '.',
+          ]),
+          '${ordinaryChanges ? 'outer.txt\u0000' : ''}$nestedPath/\u0000',
+        );
+        final before = <String, List<int>>{};
+        for (final file in [
+          File('${repository.path}/.git/index'),
+          File('${repository.path}/.git/config'),
+          File('${nested.path}/.git/index'),
+          File('${nested.path}/.git/config'),
+          baseline,
+          inner,
+          untrackedInner,
+          if (ordinaryChanges) outer,
+        ]) {
+          before[file.path] = await file.readAsBytes();
+        }
+        final result = await snapshot();
+        expect(result.files.map((file) => file.relativePath), [
+          if (ordinaryChanges) ...['baseline', 'outer.txt'],
+          nestedPath,
+        ]);
+        final unsupported = result.files.last;
+        expect(unsupported.changeKind, 'unsupported');
+        expect(unsupported.contentStatus, 'unsupported');
+        expect(
+          unsupported.detail,
+          'Nested repository contents were not inspected.',
+        );
+        expect(unsupported.hunks, isEmpty);
+        if (ordinaryChanges) {
+          expect(result.files.first.contentStatus, 'text');
+          expect(
+            result.files.first.hunks.single.lines.last.text,
+            'outer tracked edit',
+          );
+          expect(
+            result.files[1].hunks.single.lines.single.text,
+            'outer addition',
+          );
+        }
+        for (final entry in before.entries) {
+          expect(
+            await File(entry.key).readAsBytes(),
+            entry.value,
+            reason: entry.key,
+          );
+        }
+      },
+    );
+  }
+
+  test(
     'isolated Git environment omits credentials routing and config overrides',
     () async {
       final log = File('${container.path}/environment');
@@ -741,6 +869,7 @@ exec /usr/bin/git "\$@"
       '$header\t../escape\u0000$metadata',
       '$header\t/absolute\u0000$metadata',
       '$header\ta//b\u0000$metadata',
+      '$header\tdirectory/\u0000$metadata',
       '$header\tfile\u0000${metadata.replaceFirst('flags: 0', 'flags: nope')}',
     ]) {
       expect(
@@ -749,6 +878,89 @@ exec /usr/bin/git "\$@"
       );
     }
   });
+
+  test(
+    'untracked parser bounds retained entries before scanning the remaining records',
+    () {
+      final entries = <String, GitIndexEntry>{};
+      addGitUntrackedEntries(
+        'first\u0000second\u0000',
+        entries,
+        maximumEntries: 2,
+      );
+      expect(entries.keys, ['first', 'second']);
+      expect(
+        () => addGitUntrackedEntries('third\u0000', entries, maximumEntries: 2),
+        throwsA(_code('inventory_too_large')),
+      );
+      expect(entries.keys, ['first', 'second']);
+      entries.clear();
+      final many = Iterable.generate(1000, (i) => 'n$i\u0000').join();
+      expect(
+        () => addGitUntrackedEntries(
+          '$many../invalid-tail\u0000',
+          entries,
+          maximumEntries: 3,
+        ),
+        throwsA(_code('inventory_too_large')),
+      );
+      expect(entries.keys, ['n0', 'n1', 'n2']);
+    },
+  );
+
+  test(
+    'untracked directory normalization preserves path and collision checks',
+    () {
+      final entries = <String, GitIndexEntry>{};
+      addGitUntrackedEntries('vendor/repo with spaces/\u0000', entries);
+      expect(entries.keys, ['vendor/repo with spaces']);
+      expect(entries.values.single.kind, 'untrackedRepository');
+      expect(entries.values.single.newMode, '040000');
+      for (final malformed in [
+        'unterminated',
+        '\u0000',
+        '/\u0000',
+        '/absolute/\u0000',
+        '../escape/\u0000',
+        './relative/\u0000',
+        'a/../b/\u0000',
+        'a/./b/\u0000',
+        'a//b/\u0000',
+        'a//\u0000',
+      ]) {
+        expect(
+          () => addGitUntrackedEntries(malformed, {}),
+          throwsA(_code('invalid_git_output')),
+          reason: malformed,
+        );
+      }
+      for (final records in [
+        'same\u0000same\u0000',
+        'same/\u0000same/\u0000',
+        'same\u0000same/\u0000',
+        'same/\u0000same\u0000',
+      ]) {
+        expect(
+          () => addGitUntrackedEntries(records, {}, maximumEntries: 1),
+          throwsA(_code('snapshot_changed')),
+        );
+      }
+      final tracked = <String, GitIndexEntry>{
+        'tracked': (
+          oldMode: '100644',
+          newMode: '100644',
+          oid: 'a' * 40,
+          kind: 'modified',
+        ),
+      };
+      for (final record in ['tracked\u0000', 'tracked/\u0000']) {
+        expect(
+          () => addGitUntrackedEntries(record, tracked, maximumEntries: 1),
+          throwsA(_code('snapshot_changed')),
+        );
+      }
+    },
+  );
 
   test('patch parser validates ranges counts ordering and newline markers', () {
     const prefix =

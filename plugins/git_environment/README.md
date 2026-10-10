@@ -125,6 +125,8 @@ claims. The inventory adds every gitlink as an explicitly
 unsupported entry with unknown change state, even when its submodule is clean.
 Git is never asked to recurse into child repositories with independent executable
 filters/hooks, and an uninspected submodule is never silently presented as clean.
+Untracked nested repository directory markers are normalized to relative paths
+and retained as unsupported entries; their contents are not recursively inspected.
 
 Text patches are actual deterministic Git unified hunks over bounded index-blob
 and direct working-file snapshots. A private temporary directory outside the
@@ -162,7 +164,8 @@ writes the index, edits Git configuration,
 or writes the source worktree; only its temporary snapshot copies are written and
 removed. Git executable selection through PATH is trusted, not sandboxed.
 
-Default per-operation limits are 4,096 index entries, 256 returned files,
+Default per-operation limits are 4,096 retained tracked/untracked inventory entries
+(index records are also bounded), 256 returned files,
 1 MiB per file side, 2 MiB collected stdout per command/patch, 64 KiB stderr counted
 without retaining diagnostics,
 8 MiB total text inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB

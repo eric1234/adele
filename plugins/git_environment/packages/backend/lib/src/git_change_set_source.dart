@@ -317,21 +317,11 @@ final class _SnapshotOperation {
       '--',
       '.',
     ]);
-    for (final path in _nulRecords(_decode(untracked.bytes))) {
-      _validatePath(path);
-      if (changes.containsKey(path)) {
-        throw _failure(
-          'snapshot_changed',
-          'A path changed index membership during enumeration.',
-        );
-      }
-      changes[path] = (
-        oldMode: '000000',
-        newMode: '100644',
-        oid: '',
-        kind: 'added',
-      );
-    }
+    addGitUntrackedEntries(
+      _decode(untracked.bytes),
+      changes,
+      maximumEntries: limits.inventoryEntries,
+    );
     final paths = changes.keys.toList()..sort();
     return {for (final path in paths) path: changes[path]!};
   }
@@ -348,6 +338,15 @@ final class _SnapshotOperation {
       detail: detail,
       hunks: const [],
     );
+    if (change.kind == 'untrackedRepository') {
+      return ChangedFile(
+        relativePath: path,
+        changeKind: 'unsupported',
+        contentStatus: 'unsupported',
+        detail: 'Nested repository contents were not inspected.',
+        hunks: const [],
+      );
+    }
     if (change.kind == 'conflicted') {
       return placeholder(
         'conflicted',
@@ -920,6 +919,43 @@ Map<String, GitIndexEntry> parseGitIndex(
     );
   }
   return changes;
+}
+
+/// Adds ls-files --others -z records without collecting an unbounded record list.
+/// Only this untracked output permits a nested repository's trailing slash.
+void addGitUntrackedEntries(
+  String raw,
+  Map<String, GitIndexEntry> changes, {
+  int maximumEntries = 4096,
+}) {
+  var offset = 0;
+  while (offset < raw.length) {
+    final nul = raw.indexOf('\u0000', offset);
+    if (nul < 0) throw _malformed();
+    final record = raw.substring(offset, nul);
+    offset = nul + 1;
+    final directory = record.endsWith('/');
+    final path = directory ? record.substring(0, record.length - 1) : record;
+    _validatePath(path);
+    if (changes.containsKey(path)) {
+      throw _failure(
+        'snapshot_changed',
+        'A path changed index membership during enumeration.',
+      );
+    }
+    if (changes.length >= maximumEntries) {
+      throw _failure(
+        'inventory_too_large',
+        'The tracked and untracked inventory exceeds the supported entry count.',
+      );
+    }
+    changes[path] = (
+      oldMode: '000000',
+      newMode: directory ? '040000' : '100644',
+      oid: '',
+      kind: directory ? 'untrackedRepository' : 'added',
+    );
+  }
 }
 
 /// Strict unified-hunk parser. Header path strings never establish path identity.
