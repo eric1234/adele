@@ -2,6 +2,7 @@ import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
+import 'package:dart_eval/src/eval/runtime/class.dart' show $InstanceImpl;
 
 import 'support/contract_generator_support.dart';
 
@@ -76,6 +77,102 @@ final class SessionFailure implements Exception {
     },
     // Repeated native/eval generation and analysis use fresh analyzer contexts.
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'eval DTO constructors retain immutable nonnullable list storage after boxing',
+    () async {
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.entry')
+final class Entry {
+  Entry({required List<String> lines}) : lines = List<String>.unmodifiable(lines);
+  final List<String> lines;
+}
+@AdeleValue('fixture.snapshot')
+final class Snapshot {
+  const Snapshot({required this.entries, required this.optional});
+  final List<Entry> entries;
+  final List<String>? optional;
+}
+@AdeleService('fixture.snapshotService')
+abstract interface class SnapshotService {
+  @AdeleMethod('echo') Future<Snapshot> echo(Snapshot snapshot);
+}
+''');
+      final output = await const ContractGenerator().generateEvalClient(
+        fixture.source,
+      );
+      expect(output, contains('required this.optional'));
+      final compiler = Compiler()
+        ..entrypoints.addAll([
+          'package:adele_contract/adele_contract.dart',
+          'package:fixture/fixture.dart',
+          'package:runner/main.dart',
+        ]);
+      final program = compiler.compile({
+        'adele_contract': {'adele_contract.dart': evalContractSupportSource},
+        'fixture': {'fixture.dart': output},
+        'runner': {
+          'main.dart': r'''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:fixture/fixture.dart';
+class Channel implements AdeleRequestChannel {
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    return payload['snapshot'];
+  }
+}
+Future<Snapshot> run(bool absent) {
+  final lines = <String>['original'];
+  final entries = <Entry>[Entry(lines: lines)];
+  final snapshot = absent
+      ? Snapshot(entries: entries, optional: null)
+      : Snapshot(entries: entries, optional: <String>['optional']);
+  lines[0] = 'changed';
+  entries[0] = Entry(lines: <String>['changed']);
+  if (snapshot.entries[0].lines[0] != 'original') {
+    throw StateError('Aliased constructor input');
+  }
+  final SnapshotServiceClient client = SnapshotServiceClient(Channel());
+  return client.echo(snapshot);
+}
+''',
+        },
+      });
+      for (final absent in [false, true]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        final decoded = await runtime.executeLib(
+          'package:runner/main.dart',
+          'run',
+          [absent],
+        );
+        var lists = 0;
+        void verify(Object? value) {
+          if (value is $InstanceImpl) {
+            for (final field in value.values) {
+              verify(field);
+            }
+          } else if (value is List) {
+            lists++;
+            expect(() => value[0] = value[0], throwsUnsupportedError);
+            expect(() => value.clear(), throwsUnsupportedError);
+            for (final item in value) {
+              verify(item);
+            }
+          } else if (value is $Value && value.$value is List) {
+            verify(value.$value);
+          }
+        }
+
+        final fields = (decoded as $InstanceImpl).values;
+        expect((fields[1] as $Value).$reified, absent ? null : ['optional']);
+        // Getter boxing exposes copies, so inspect stored nonnullable lists.
+        // Nullable list constructor behavior is deliberately unchanged.
+        verify(fields[0]);
+        expect(lists, 2);
+      }
+    },
   );
 
   test(

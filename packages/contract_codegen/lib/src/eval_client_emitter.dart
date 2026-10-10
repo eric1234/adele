@@ -56,8 +56,17 @@ import 'package:adele_contract/adele_contract.dart';
 ''');
     for (final value in model.values) {
       out.writeln('class ${value.name} {');
+      final lists = value.fields
+          .where((f) => f.type.kind == TypeKind.list && !f.type.nullable)
+          .toList();
+      // The eval pin boxes typed constructor arguments into mutable list copies.
+      // Freeze at the storage boundary, after argument boxing, not only decoding.
+      // Nullable collection construction keeps its existing pin-compatible shape.
+      final initializers = lists.map(
+        (f) => '${f.name} = ${f.type.dart}.unmodifiable(${f.name})',
+      );
       out.writeln(
-        '${value.name}({${value.fields.map((f) => 'required this.${f.name}').join(',')}});',
+        '${value.name}({${value.fields.map((f) => lists.contains(f) ? 'required ${f.type.dart} ${f.name}' : 'required this.${f.name}').join(',')}})${lists.isEmpty ? '' : ' : ${initializers.join(',')}'};',
       );
       for (final field in value.fields) {
         _codec(field.type);

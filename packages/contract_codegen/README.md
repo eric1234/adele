@@ -70,6 +70,14 @@ contract shapes fail generation; there is no native plugin-specific codec fallba
 The projection is generated during EVC compilation rather than maintained as a
 second contract source or hand-written application adapter.
 
+Generated eval DTO constructors copy nonnullable list fields into unmodifiable
+storage after the pin's typed-argument boxing. Decoder-only wrapping is insufficient:
+boxing can otherwise replace an unmodifiable list with a mutable backing copy.
+The Diff nested snapshot tests verify stored lists and detached constructor inputs,
+not just getter results (some getter operations box copies). Nullable list fields
+retain their existing field-formal behavior; this narrow fix does not claim general
+nullable-collection or JSON-map immutability under the evaluator.
+
 `evalContractSupportSource` supplies the minimal interpreted request/stream-channel
 and protocol-error types. A frontend combines its generated client with `adele_ui`'s
 owning-backend channel or exact-bound Capability channel. Generic native hosting

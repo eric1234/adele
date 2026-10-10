@@ -22,6 +22,7 @@ class DiffPaneState extends State<DiffPane> {
   bool disposed = false;
   int revision = 0;
   String handle = '';
+  String scope = 'unstaged';
   String status = 'loading';
   List<List<String>> rows = [];
   bool sourcePending = false;
@@ -57,6 +58,7 @@ class DiffPaneState extends State<DiffPane> {
     if (disposed) return;
     abandon();
     final captured = revision;
+    final uncommitted = scope == 'uncommitted';
     setState(() {
       status = 'loading';
       rows = [];
@@ -82,7 +84,7 @@ class DiffPaneState extends State<DiffPane> {
       EnvironmentCapabilityRequestChannel(selected),
     );
     final result = await settleEnvironmentCapabilityOperation(
-      client.snapshotUnstaged(),
+      uncommitted ? client.snapshotUncommitted() : client.snapshotUnstaged(),
     );
     releaseEnvironmentCapabilityProvider(selected);
     if (disposed || captured != revision) return;
@@ -93,14 +95,56 @@ class DiffPaneState extends State<DiffPane> {
       });
       return;
     }
-    final snapshot = result[1] as ChangeSetSnapshot;
     final List<List<String>> next = [];
-    for (final file in snapshot.files) {
+    bool clean = false;
+    if (uncommitted) {
+      final snapshot = result[1] as UncommittedChangeSetSnapshot;
+      next.add(['section', 'Staged changes']);
+      appendFiles(next, snapshot.staged.files, false);
+      if (snapshot.staged.files.isEmpty) {
+        next.add(['status', 'No staged changes.']);
+      }
+      next.add(['section', 'Unstaged changes']);
+      appendFiles(next, snapshot.unstaged.files, true);
+      if (snapshot.unstaged.files.isEmpty) {
+        next.add(['status', 'No unstaged changes.']);
+      }
+      next.add(['section', 'Conflicts']);
+      appendFiles(next, snapshot.conflicts, false);
+      if (snapshot.conflicts.isEmpty) next.add(['status', 'No conflicts.']);
+      clean =
+          snapshot.staged.files.isEmpty &&
+          snapshot.unstaged.files.isEmpty &&
+          snapshot.conflicts.isEmpty;
+    } else {
+      final snapshot = result[1] as ChangeSetSnapshot;
+      appendFiles(next, snapshot.files, true);
+      clean = snapshot.files.isEmpty;
+    }
+    setState(() {
+      rows = next;
+      status = clean ? 'clean' : 'ready';
+    });
+  }
+
+  void selectScope(String selected) {
+    if (disposed || scope == selected) return;
+    scope = selected;
+    refresh();
+  }
+
+  void appendFiles(
+    List<List<String>> next,
+    List<ChangedFile> files,
+    bool currentWorking,
+  ) {
+    for (final file in files) {
       final List<String> header = [
         'file',
         '${file.relativePath}  [${file.changeKind}]',
       ];
-      if (file.contentStatus == 'text' &&
+      if (currentWorking &&
+          file.contentStatus == 'text' &&
           (file.changeKind == 'added' ||
               file.changeKind == 'modified' ||
               file.changeKind == 'typeChanged')) {
@@ -144,10 +188,6 @@ class DiffPaneState extends State<DiffPane> {
         }
       }
     }
-    setState(() {
-      rows = next;
-      status = snapshot.files.isEmpty ? 'clean' : 'ready';
-    });
   }
 
   String sourceStatusMessage(String state) {
@@ -223,15 +263,42 @@ class DiffPaneState extends State<DiffPane> {
     children: [
       Row(
         children: [
-          Expanded(flex: 1, child: Text('Unstaged changes')),
+          Expanded(
+            flex: 1,
+            child: TextButton(
+              onPressed: () => selectScope('unstaged'),
+              child: Text(
+                'Unstaged changes',
+                style: TextStyle(
+                  fontWeight: scope == 'unstaged'
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 1,
+            child: TextButton(
+              onPressed: () => selectScope('uncommitted'),
+              child: Text(
+                'Uncommitted changes',
+                style: TextStyle(
+                  fontWeight: scope == 'uncommitted'
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
+          ),
           TextButton(onPressed: refresh, child: Text('Refresh')),
         ],
       ),
-      if (status == 'loading') Text('Loading unstaged changes...'),
+      if (status == 'loading') Text('Loading $scope changes...'),
       if (status == 'unavailable')
         Text('Diff unavailable for this Environment.'),
-      if (status == 'clean') Text('No unstaged changes.'),
-      if (status == 'error') Text('Unable to load unstaged changes.'),
+      if (status == 'clean') Text('No $scope changes.'),
+      if (status == 'error') Text('Unable to load $scope changes.'),
       if (status == 'error' || status == 'unavailable')
         TextButton(onPressed: refresh, child: Text('Retry')),
       if (sourceMessage != '') Text(sourceMessage),
@@ -244,12 +311,15 @@ class DiffPaneState extends State<DiffPane> {
             final captured = revision;
             final label = Text(
               row[1],
-              style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+              style: row[0] == 'section'
+                  ? TextStyle(fontSize: 14, fontWeight: FontWeight.bold)
+                  : TextStyle(fontFamily: 'monospace', fontSize: 12),
             );
             Color background = Colors.transparent;
             if (row[0] == 'addition') background = Color(0x1822aa55);
             if (row[0] == 'deletion') background = Color(0x18dd3344);
             if (row[0] == 'file') background = Color(0x18888888);
+            if (row[0] == 'section') background = Color(0x28888888);
             return Container(
               color: background,
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),

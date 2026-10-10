@@ -93,6 +93,7 @@ void main() {
         projectId: project.id,
         title: 'Diff',
       );
+      final roots = <String, Directory>{};
       for (final name in ['primary', 'additional']) {
         final environment = Environment(
           id: EnvironmentId(name),
@@ -103,8 +104,11 @@ void main() {
           providerId: provider.providerId,
           providerState: null,
         );
-        await provider.establish(
+        final established = await provider.establish(
           LocalEnvironment(project: project, task: task, value: environment),
+        );
+        roots[name] = Directory(
+          '${fixture.projectSourceA.path}/${established.providerState['worktreeRelativePath']}/${established.providerState['sourceRelativePath']}',
         );
         await provider.createTextFile(
           environment.id,
@@ -122,7 +126,22 @@ void main() {
           ),
         ),
       );
-      Future<ChangeSetSnapshot> snapshot(String environmentId) async {
+      await expectLater(
+        ChangeSetSourceServiceClient(
+          changes.requestChannel,
+        ).snapshotUncommitted(),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'invalid_host_invocation_context',
+          ),
+        ),
+      );
+      Future<T> invoke<T>(
+        String environmentId,
+        Future<T> Function(ChangeSetSourceServiceClient) call,
+      ) async {
         final read = AuthorizedEnvironmentReadServiceDispatcher(
           _DiffAuthority(environmentId),
         );
@@ -130,18 +149,25 @@ void main() {
           authorizedEnvironmentReadServiceId: read,
         });
         try {
-          return await ChangeSetSourceServiceClient(
-            connection.bindHostInvocation(
-              channel: changes.requestChannel,
-              invocation: invocation,
-              validate: () {},
+          return await call(
+            ChangeSetSourceServiceClient(
+              connection.bindHostInvocation(
+                channel: changes.requestChannel,
+                invocation: invocation,
+                validate: () {},
+              ),
             ),
-          ).snapshotUnstaged();
+          );
         } finally {
           invocation.close();
           await read.close();
         }
       }
+
+      Future<ChangeSetSnapshot> snapshot(String id) =>
+          invoke(id, (client) => client.snapshotUnstaged());
+      Future<UncommittedChangeSetSnapshot> uncommitted(String id) =>
+          invoke(id, (client) => client.snapshotUncommitted());
 
       final results = await Future.wait([
         snapshot('primary'),
@@ -154,6 +180,69 @@ void main() {
       expect(
         results[1].files.single.hunks.single.lines.single.text,
         'additional content',
+      );
+      for (final name in roots.keys) {
+        await _git(roots[name]!, ['add', 'same.txt']);
+        final current = await provider.readFile(
+          EnvironmentId(name),
+          'same.txt',
+        );
+        await provider.replaceExistingTextFile(
+          EnvironmentId(name),
+          'same.txt',
+          '$name working\n',
+          current.revision,
+        );
+      }
+      final layered = await Future.wait([
+        uncommitted('primary'),
+        uncommitted('additional'),
+      ]);
+      for (var i = 0; i < layered.length; i++) {
+        final name = i == 0 ? 'primary' : 'additional';
+        final result = layered[i];
+        expect(result.staged.files.single.relativePath, 'same.txt');
+        expect(result.staged.files.single.changeKind, 'added');
+        expect(
+          result.staged.files.single.hunks.single.lines.single.text,
+          '$name content',
+        );
+        expect(result.unstaged.files.single.relativePath, 'same.txt');
+        expect(result.unstaged.files.single.changeKind, 'modified');
+        expect(
+          result.unstaged.files.single.hunks.single.lines.map(
+            (line) => '${line.kind}:${line.text}',
+          ),
+          ['deletion:$name content', 'addition:$name working'],
+        );
+        expect(result.conflicts, isEmpty);
+      }
+      // The retained establishment baseline remains valid but is not the live
+      // staged comparison base once this worktree's HEAD has advanced.
+      await _git(roots['additional']!, [
+        '-c',
+        'user.name=ADELE Test',
+        '-c',
+        'user.email=adele@example.invalid',
+        'commit',
+        '-m',
+        'Advance live HEAD',
+      ]);
+      final advanced = await uncommitted('additional');
+      expect(advanced.staged.files, isEmpty);
+      expect(
+        advanced.unstaged.files.single.hunks.single.lines.last.text,
+        'additional working',
+      );
+      await expectLater(
+        uncommitted('not-materialized'),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'environment_not_live',
+          ),
+        ),
       );
       await expectLater(
         snapshot('not-materialized'),
