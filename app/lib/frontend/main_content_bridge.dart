@@ -179,7 +179,7 @@ final class MainContentBridge extends MainContentDeclarations
           final result = await binding.value.display(relativePath);
           binding.validate();
           if (!isActive) return const {'status': 'retired'};
-          return {'status': result['ok'] == false ? 'failed' : 'success'};
+          return {'status': result['ok'] == true ? 'success' : 'failed'};
         } on DisplaySourceFileUnavailable {
           return {'status': isActive ? 'unavailable' : 'retired'};
         } on AmbiguousDisplaySourceFile {

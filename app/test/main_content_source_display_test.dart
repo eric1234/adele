@@ -118,6 +118,32 @@ void main() {
       },
     );
 
+    for (final (label, response, status)
+        in <(String, Map<String, Object?>, String)>[
+          ('true', {'ok': true}, 'success'),
+          ('false', {'ok': false}, 'failed'),
+          ('missing', {}, 'failed'),
+          ('null', {'ok': null}, 'failed'),
+          ('string', {'ok': 'true'}, 'failed'),
+          ('integer', {'ok': 1}, 'failed'),
+        ]) {
+      test('display acknowledgement $label returns only $status', () async {
+        var calls = 0;
+        extensions.register(
+          point: displaySourceFileContributions,
+          id: _providerId,
+          value: DisplaySourceFileContribution(
+            display: (_) async {
+              calls++;
+              return response;
+            },
+          ),
+        );
+        expect(await bridge.displaySourceFile(_rawPath), {'status': status});
+        expect(calls, 1);
+      });
+    }
+
     for (final throws in [false, true]) {
       test(
         'provider ${throws ? 'exception' : 'rejection'} is safe and not retried',
@@ -284,10 +310,11 @@ void main() {
         expect(await _request(eval, _rawPath), {'status': 'unavailable'});
         final paths = <String>[];
         var reject = false;
+        var response = <String, Object?>{'ok': true, 'private': 'not exposed'};
         f.nativeProvider((path) async {
           paths.add(path);
           if (reject) throw StateError('private provider details');
-          return const {'ok': true, 'private': 'not exposed'};
+          return response;
         });
         expect(_availability(eval), 'available');
         expect(_availability(eval), 'available');
@@ -304,6 +331,10 @@ void main() {
         reject = true;
         expect(await _request(eval, _rawPath), {'status': 'failed'});
         expect(paths, [_rawPath, _rawPath]);
+        reject = false;
+        response = {'ok': 'true', 'private': Object()};
+        expect(await _request(eval, _rawPath), {'status': 'failed'});
+        expect(paths, [_rawPath, _rawPath, _rawPath]);
         f.expectNoEnvironmentWork();
         await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.takeException(), isNull);
