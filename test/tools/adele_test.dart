@@ -348,14 +348,20 @@ void main() {
         testTargets
             .where((target) => target.nativeToml)
             .map((target) => target.name),
-        ['adele_toml_document'],
+        ['adele_toml_document', 'adele_configuration_store'],
       );
       for (final entry in entries) {
         expect(
           entry['nativeCodeEditor'],
           ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
         );
-        expect(entry['nativeToml'], entry['name'] == 'adele_toml_document');
+        expect(
+          entry['nativeToml'],
+          [
+            'adele_toml_document',
+            'adele_configuration_store',
+          ].contains(entry['name']),
+        );
       }
       expect(
         include,
@@ -556,6 +562,11 @@ void main() {
         path: 'packages/toml_document',
         nativeToml: true,
       ),
+      (
+        name: 'adele_configuration_store',
+        path: 'packages/configuration_store',
+        nativeToml: true,
+      ),
     ]) {
       test('discovers ${expected.name} in workspace, analysis, and CI', () {
         final target = lookupTestTarget(expected.name);
@@ -592,6 +603,24 @@ void main() {
         }
       });
     }
+
+    test('configuration store keeps narrow direct dependencies', () {
+      final manifest =
+          loadYaml(
+                File(
+                  'packages/configuration_store/pubspec.yaml',
+                ).readAsStringSync(),
+              )
+              as YamlMap;
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals([
+          'adele_platform_storage',
+          'adele_toml_document',
+          'path',
+        ]),
+      );
+    });
 
     test('discovers remote extension support and stock backend targets', () {
       final workspace = File('pubspec.yaml').readAsStringSync();
@@ -1330,6 +1359,7 @@ void main() {
         'adele_project_storage|dart|packages/project_storage|test',
         'adele_platform_storage|dart|packages/platform_storage|test',
         'adele_toml_document|dart|packages/toml_document|test',
+        'adele_configuration_store|dart|packages/configuration_store|test',
         'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',

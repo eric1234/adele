@@ -61,6 +61,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`agent_kernel`](../../packages/agent_kernel/pubspec.yaml) | Internal: generic execution mechanics | No Flutter, app, concrete strategies, providers, tools, or other plugin implementations. |
 | [`adele_platform_storage`](../../packages/platform_storage/pubspec.yaml) | Internal: global configuration/state/data/cache location resolution | Flutter-free, path-only host infrastructure; no persistence or public plugin configuration API. |
 | [`adele_toml_document`](../../packages/toml_document/pubspec.yaml) | Internal: TOML validation and scalar document edits through Rust `toml_edit` | Flutter-free host infrastructure; no CodeForge, app, plugins, location resolution, file persistence, or Settings/Profile semantics. |
+| [`adele_configuration_store`](../../packages/configuration_store/pubspec.yaml) | Internal: conditional global TOML configuration-file persistence | Flutter-free host infrastructure over platform storage roots and TOML documents; no plugin filesystem service, Project storage, local-state database, or Settings/Profile semantics. |
 | [`plugin_runtime`](../../packages/plugin_runtime/pubspec.yaml) | Internal: backend/runtime hosting and routing | No Flutter, app, or plugin implementations. |
 | [`plugin_backend_host`](../../packages/plugin_backend_host/pubspec.yaml) | Internal: shared AOT backend host | No Flutter, app, or plugin implementations. |
 | [`plugin_builder`](../../packages/plugin_builder/pubspec.yaml) / [`contract_codegen`](../../packages/contract_codegen/pubspec.yaml) | Internal: source preparation / contract generation | Build-only, not plugin runtime APIs; no linked plugin implementations or Flutter UI dependencies. |
@@ -148,7 +149,8 @@ libraries and same-plugin implementation reuse must still respect these boundari
 
 It must not depend on `app` / `adele_desktop`, internal host/build packages
 (`plugin_runtime`, `plugin_backend_host`, `plugin_builder`, `contract_codegen`,
-`agent_kernel`, `adele_platform_storage`, `adele_toml_document`), or another plugin's
+`agent_kernel`, `adele_platform_storage`, `adele_toml_document`,
+`adele_configuration_store`), or another plugin's
 frontend, backend, or private implementation.
 A strategy obtains execution semantics through `adele_orchestration`, not by
 importing `agent_kernel`. A backend obtains Project storage through

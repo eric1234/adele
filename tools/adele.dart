@@ -78,6 +78,13 @@ const List<TestTarget> testTargets = <TestTarget>[
     nativeToml: true,
   ),
   TestTarget(
+    name: 'adele_configuration_store',
+    path: 'packages/configuration_store',
+    executable: 'dart',
+    arguments: <String>['test'],
+    nativeToml: true,
+  ),
+  TestTarget(
     name: 'adele_ui',
     path: 'packages/ui',
     executable: 'flutter',
@@ -339,6 +346,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'adele_toml_document', path: 'packages/toml_document', flutter: false),
+  (
+    name: 'adele_configuration_store',
+    path: 'packages/configuration_store',
+    flutter: false,
+  ),
   (
     name: 'adele_core_extensions',
     path: 'packages/core_extensions',
