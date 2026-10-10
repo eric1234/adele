@@ -128,6 +128,45 @@ or override upstream font assets. Publishing prebuilt binaries needs appropriate
 license review for the shipped target and contents; this checkout makes no
 redistribution-clearance claim.
 
+## Native TOML documents
+
+[`adele_toml_document`](../../packages/toml_document/README.md) uses a package-local
+`hook/build.dart`, not CodeForge/FRB or an application-private loader. Native build
+hooks and `@Native` code assets work with the pinned Dart/Flutter SDK. Its exact
+`hooks 2.0.2`, `code_assets 1.2.1`, and `ffi 2.2.0` dependencies already exist in
+the workspace lock; no SDK upgrade or separate native-plugin framework is needed.
+
+Provision Rust **1.93.0** (the package's `native/rust-toolchain`), the target, and
+the platform linker. On maintained Linux x64:
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+dart tools/adele.dart bootstrap
+dart tools/adele.dart test --target adele_toml_document
+```
+
+Normal Dart tests/run invoke the hook automatically. It calls the pinned compiler
+through rustup with `cargo build --locked --release`, registers its source/lock
+inputs, and bundles the resulting dynamic library as a Dart code asset. Rust
+source, manifests, and `Cargo.lock` are committed; generated libraries are not.
+Loading never substitutes a Dart parser. CI's `nativeToml` target metadata selects
+the compiler prerequisite independently of `nativeCodeEditor`.
+
+The hook maps native-host Linux/macOS/Windows x64 and arm64, rejecting unsupported
+targets, cross-compilation, static-only linking, and sanitizers. Only Linux x64 is
+validated; this is not cross-platform release-packaging evidence. Flutter desktop
+can consume the same standard hook without a Flutter dependency in the package,
+but no production app consumer is introduced here. Raw `dart compile` on this pin
+rejects build hooks: existing independently loaded backend AOT artifacts are not
+automatically supported. The SDK's hook-aware standalone AOT path is `dart build
+cli`, still preview on this pin.
+
+`toml_edit` and the private JSON bridge have exact direct Cargo pins and a committed
+transitive lock. See the package's [native notices](../../packages/toml_document/third_party_notices.txt)
+for attribution: normal Flutter Dart license collection does not include Cargo
+dependencies automatically. Release distribution needs notice inclusion and
+review of the actual shipped contents.
+
 ## Native terminal dependency
 
 The app pins the published `xterm2 5.2.0` archive, with checksum

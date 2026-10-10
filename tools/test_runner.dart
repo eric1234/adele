@@ -10,6 +10,7 @@ final class TestTarget {
     this.ciTestConcurrency,
     this.linuxDesktopDeps = false,
     this.nativeCodeEditor = false,
+    this.nativeToml = false,
   });
 
   final List<String> arguments;
@@ -17,6 +18,7 @@ final class TestTarget {
   final String executable;
   final bool linuxDesktopDeps;
   final bool nativeCodeEditor;
+  final bool nativeToml;
   final String name;
   final String path;
   final int? testConcurrency;

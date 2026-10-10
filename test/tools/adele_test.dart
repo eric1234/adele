@@ -273,6 +273,27 @@ void main() {
 
   group('test plan', () {
     test(
+      'CLI works with no resolved workspace packages or bootstrap',
+      () async {
+        final fixture = Directory.systemTemp.createTempSync('adele-test-plan-');
+        addTearDown(() => fixture.deleteSync(recursive: true));
+        final packages = File('${fixture.path}/package_config.json')
+          ..writeAsStringSync(
+            jsonEncode({'configVersion': 2, 'packages': <Object?>[]}),
+          );
+        final result = await Process.run(Platform.resolvedExecutable, [
+          '--packages=${packages.path}',
+          File('tools/adele.dart').absolute.path,
+          'test-plan',
+          '--json',
+        ], workingDirectory: fixture.path);
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        expect(jsonDecode(result.stdout as String), jsonDecode(testPlanJson()));
+        expect(fixture.listSync().map((entry) => entry.path), [packages.path]);
+      },
+    );
+
+    test(
       'catalog and checkout preparation are included in maintained targets',
       () {
         final runtime = lookupTestTarget('plugin_runtime');
@@ -323,11 +344,18 @@ void main() {
             .map((target) => target.name),
         ['source_editor_frontend', 'adele_desktop'],
       );
+      expect(
+        testTargets
+            .where((target) => target.nativeToml)
+            .map((target) => target.name),
+        ['adele_toml_document'],
+      );
       for (final entry in entries) {
         expect(
           entry['nativeCodeEditor'],
           ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
         );
+        expect(entry['nativeToml'], entry['name'] == 'adele_toml_document');
       }
       expect(
         include,
@@ -339,6 +367,7 @@ void main() {
               'name',
               'linuxDesktopDeps',
               'nativeCodeEditor',
+              'nativeToml',
               'ciTestConcurrency',
             ]),
           ),
@@ -364,6 +393,27 @@ void main() {
               _ => null,
             },
         },
+      );
+    });
+
+    test('CI installs the pinned compiler for either native requirement', () {
+      final workflow =
+          loadYaml(File('.github/workflows/ci.yaml').readAsStringSync())
+              as YamlMap;
+      final jobs = workflow['jobs'] as YamlMap;
+      final targetJob = jobs['test-target'] as YamlMap;
+      final steps = targetJob['steps'] as YamlList;
+      final compiler = steps.cast<YamlMap>().singleWhere(
+        (step) => step['name'] == 'Install pinned native compiler',
+      );
+      expect(
+        compiler['if'],
+        r'${{ matrix.nativeCodeEditor || matrix.nativeToml }}',
+      );
+      expect(
+        compiler['run'],
+        'rustup toolchain install 1.93.0 --profile minimal '
+        '--target x86_64-unknown-linux-gnu',
       );
     });
   });
@@ -494,6 +544,54 @@ void main() {
         );
       },
     );
+
+    for (final expected in [
+      (
+        name: 'adele_platform_storage',
+        path: 'packages/platform_storage',
+        nativeToml: false,
+      ),
+      (
+        name: 'adele_toml_document',
+        path: 'packages/toml_document',
+        nativeToml: true,
+      ),
+    ]) {
+      test('discovers ${expected.name} in workspace, analysis, and CI', () {
+        final target = lookupTestTarget(expected.name);
+        expect(target.path, expected.path);
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(), ['test']);
+        expect(target.argumentsFor(ci: true), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.nativeCodeEditor, isFalse);
+        expect(target.nativeToml, expected.nativeToml);
+        expect(target.ciTestConcurrency, isNull);
+        final analysis = analysisTargets.singleWhere(
+          (entry) => entry.name == expected.name,
+        );
+        expect(analysis.path, expected.path);
+        expect(analysis.flutter, isFalse);
+        final workspace =
+            loadYaml(File('pubspec.yaml').readAsStringSync()) as YamlMap;
+        expect(
+          (workspace['workspace'] as YamlList).where(
+            (path) => path == expected.path,
+          ),
+          hasLength(1),
+        );
+        final manifest =
+            loadYaml(File('${expected.path}/pubspec.yaml').readAsStringSync())
+                as YamlMap;
+        expect(manifest['name'], expected.name);
+        expect(manifest['resolution'], 'workspace');
+        for (final section in ['dependencies', 'dev_dependencies']) {
+          final dependencies = manifest[section] as YamlMap;
+          expect(dependencies, isNot(contains('flutter')));
+          expect(dependencies, isNot(contains('flutter_test')));
+        }
+      });
+    }
 
     test('discovers remote extension support and stock backend targets', () {
       final workspace = File('pubspec.yaml').readAsStringSync();
@@ -1230,6 +1328,8 @@ void main() {
         'adele_product|dart|packages/product|test',
         'adele_core_extensions|dart|packages/core_extensions|test',
         'adele_project_storage|dart|packages/project_storage|test',
+        'adele_platform_storage|dart|packages/platform_storage|test',
+        'adele_toml_document|dart|packages/toml_document|test',
         'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',
