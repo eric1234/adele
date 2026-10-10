@@ -29,13 +29,29 @@ void main() {
   Future<Map<String, Object?>> read() =>
       readSessionEvidence(collector, _session);
 
-  test('blank Session fails before acquiring storage', () async {
-    await expectLater(
-      readSessionEvidence(collector, ' \t'),
-      throwsA(_failure('invalid_session')),
+  for (final sessionId in [
+    '',
+    ' ',
+    '\t\n',
+    ' $_session',
+    '$_session ',
+    ' $_session ',
+    '\t$_session',
+    '$_session\t',
+    '\n$_session',
+    '$_session\n',
+  ]) {
+    test(
+      'invalid Session ${jsonEncode(sessionId)} fails before storage',
+      () async {
+        await expectLater(
+          readSessionEvidence(collector, sessionId),
+          throwsA(_failure('invalid_session')),
+        );
+        expect(storage.queries, isEmpty);
+      },
     );
-    expect(storage.queries, isEmpty);
-  });
+  }
 
   test('keyset pages retain every entry and Run-local identity', () async {
     storage.entries(4);
@@ -44,6 +60,8 @@ void main() {
       storage.rows[_models.name]!.add(_model(id, 'same-model', 1, 3));
     }
     final document = await read();
+    expect((document['identity'] as _Row)['session_id'], _session);
+    expect(storage.queries, isNotEmpty);
     final conversation = document['conversation'] as _Row;
     expect(conversation['entries'], storage.rows[chatEntries.name]);
     expect(storage.cursors[chatEntries.name], [null, 0, 1, 2, 3]);

@@ -15,10 +15,11 @@ final class SessionEvidenceCollector implements SessionEvaluatorService {
 
   @override
   Stream<String> collectSession(String sessionId) async* {
-    if (sessionId.trim().isEmpty) {
+    if (sessionId.isEmpty || sessionId.trim() != sessionId) {
       throw const SessionEvidenceFailure(
         code: 'invalid_session',
-        message: 'An explicit nonblank canonical Session ID is required.',
+        message:
+            'A nonempty canonical Session ID without outer whitespace is required.',
       );
     }
     final collection = _Collection(storage, sessionId);

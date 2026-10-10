@@ -187,6 +187,38 @@ void main() {
   Future<Map<String, Object?>> collect(Session owner) =>
       readSessionEvidence(evaluator, owner.id.value);
 
+  test(
+    'invalid Session IDs retain their declared failure across AOT transport',
+    () async {
+      final before = _inspect(source, _snapshot);
+      final canonicalId = session.id.value;
+      for (final sessionId in [
+        '',
+        ' \t\n',
+        ' $canonicalId',
+        '$canonicalId ',
+        '\t$canonicalId',
+        '$canonicalId\t',
+        '\n$canonicalId',
+        '$canonicalId\n',
+      ]) {
+        await expectLater(
+          readSessionEvidence(evaluator, sessionId),
+          throwsA(
+            isA<SessionEvidenceFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'invalid_session',
+            ),
+          ),
+        );
+      }
+      final document = await collect(session);
+      expect(_map(document['identity'])['session_id'], canonicalId);
+      expect(_inspect(source, _snapshot), before);
+    },
+  );
+
   test('exports exact retained Chat and Run evidence, isolates Sessions, and '
       'does not retarget a retired generated route', () async {
     await chat.configureSession(session.id.value, _instructions, 4);
