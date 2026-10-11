@@ -37,6 +37,15 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 `NativeAdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
 asynchronous plugin bootstrap.
 
+The maintained Linux checkout launcher instead selects
+[`tool/development_main.dart`](tool/development_main.dart). It mounts the same
+`AdeleApplication`, with a caller-owned Navigator key and native Session-context
+consumer for development evidence export. The evaluator-specific contract remains
+outside `app/lib`; ordinary preparation includes its backend-only installation and
+ordinary bootstrap activates it. See the
+[Session Evaluator procedure](../plugins/session_evaluator/README.md#desktop-export)
+for Command availability, sensitive-data confirmation, file semantics, and limits.
+
 ```text
 Flutter application
     -> construct NativeAdeleRuntime
@@ -1099,6 +1108,12 @@ views cannot keep context access alive. Public
 snapshot/observer API belongs to [core extensions](../packages/core_extensions/README.md#window-session-context);
 cross-system invariants and deferred transport belong to the
 [canonical architecture](../docs/architecture/plugin-system.md#window-session-context).
+
+`AdeleApplication.navigatorKey` optionally accepts a caller-owned Navigator key,
+retained once at mount like the context attachment. It allows narrow native
+composition to present dialogs and feedback without exposing application State or
+adding plugin-specific callbacks. The development exporter uses both seams;
+selection remains owned solely by `WindowSessionContextHost`.
 
 ### Grouped Main Content
 

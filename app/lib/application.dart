@@ -49,6 +49,7 @@ final class AdeleApplication extends StatefulWidget {
     this.runIds,
     this.mainContentHost,
     this.attachSessionContext,
+    this.navigatorKey,
     this.loadSettings = PreparedSettingsSnapshot.load,
   });
 
@@ -72,6 +73,9 @@ final class AdeleApplication extends StatefulWidget {
   /// joins its completion. Widget updates do not reattach or retarget consumers.
   final FutureOr<void> Function() Function(WindowSessionContext)?
   attachSessionContext;
+
+  /// Optional caller-owned UI access, selected once at mount.
+  final GlobalKey<NavigatorState>? navigatorKey;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -113,7 +117,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
   Widget? _presentation;
-  final GlobalKey<NavigatorState> _navigator = GlobalKey<NavigatorState>();
+  late final _navigator = widget.navigatorKey ?? GlobalKey<NavigatorState>();
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   final _commandRegistrations = ExtensionRegistrationGroup();
   late final CommandResolver _commands;

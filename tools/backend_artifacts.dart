@@ -90,6 +90,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File localDirectoryProject = File.fromUri(
     installations.uri.resolve('local-directory-project/backend.aot'),
   );
+  final File sessionEvaluator = File.fromUri(
+    installations.uri.resolve('session-evaluator/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -145,6 +148,12 @@ Future<List<String>> prepareDesktopPluginDefines({
               'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
           artifact: localDirectoryProject,
           stage: 'local-directory-project-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
+          artifact: sessionEvaluator,
+          stage: 'session-evaluator-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -217,6 +226,11 @@ Future<List<String>> prepareDesktopPluginDefines({
       backend: commandTools,
       id: 'dev.adele.plugin.command-tools',
       displayName: 'Command Tools',
+    ),
+    (
+      backend: sessionEvaluator,
+      id: 'dev.adele.plugin.session-evaluator',
+      displayName: 'Session Evaluator',
     ),
   ]) {
     final frontend = frontends[plugin.id];

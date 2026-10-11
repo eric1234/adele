@@ -1,27 +1,35 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/core/window_session_context.dart';
+import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
+import '../../tool/session_evidence_exporter.dart';
 import '../support/project_provider.dart';
 
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
@@ -698,6 +706,584 @@ void main() {
       ),
     );
   });
+
+  group('native evidence export', () {
+    late WindowSessionContextHost window;
+    late GlobalKey<NavigatorState> navigatorKey;
+    late SessionEvidenceExporter exporter;
+    late CommandResolver commands;
+    late AdeleRuntime mountedRuntime;
+    late _SavePicker picker;
+    late Future<void> exporting;
+    late Future<ResolvedCommand?> paletteSelection;
+
+    setUp(() {
+      window = WindowSessionContextHost();
+      addTearDown(window.close);
+      navigatorKey = GlobalKey<NavigatorState>();
+      final original = FileSelectorPlatform.instance;
+      FileSelectorPlatform.instance = picker = _SavePicker();
+      addTearDown(() => FileSelectorPlatform.instance = original);
+    });
+
+    Future<void> mount(WidgetTester tester, {AdeleRuntime? owner}) async {
+      final host = mountedRuntime = owner ?? runtime;
+      exporter = SessionEvidenceExporter(
+        runtime: host,
+        context: window.context,
+        navigatorKey: navigatorKey,
+      );
+      commands = CommandResolver(host.extensions);
+      addTearDown(exporter.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: navigatorKey,
+          home: const Scaffold(body: SizedBox.shrink()),
+        ),
+      );
+    }
+
+    Future<AdeleRuntime> reopenRuntime(WidgetTester tester) async {
+      final fresh = AdeleRuntime();
+      addTearDown(fresh.close);
+      final provider = TestProjectProvider(fresh.registry);
+      addTearDown(provider.close);
+      await tester.runAsync(() async {
+        await fresh.lifecycle.openProject(
+          sourceLocation: source.uri,
+          provider: fresh.lifecycle.resolveProjectProvider(
+            testProjectProviderId,
+          ),
+        );
+      });
+      window.presentSession(fresh.store.session(session.id)!);
+      return fresh;
+    }
+
+    Future<void> openPalette(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        paletteSelection = showDialog<ResolvedCommand>(
+          context: navigatorKey.currentContext!,
+          builder: (_) => CommandPalette(
+            extensions: mountedRuntime.extensions,
+            isInteractive: () => true,
+          ),
+        );
+      });
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> invoke(WidgetTester tester) async {
+      // AOT I/O and its continuations use real async; only UI animation is fake.
+      await tester.runAsync(() async {
+        exporting = commands.resolve(exportSessionEvidenceCommandId).invoke();
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('Export Session Evidence'), findsOneWidget);
+    }
+
+    Future<void> continueExport(WidgetTester tester) async {
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => picker.opened.future.timeout(const Duration(seconds: 10)),
+      );
+    }
+
+    Future<void> finish(WidgetTester tester) async {
+      await tester.runAsync(
+        () => exporting.timeout(const Duration(seconds: 20)),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+
+    void expectNoFeedback() {
+      expect(find.text('Session evidence exported.'), findsNothing);
+      expect(
+        find.text('Session evidence could not be exported.'),
+        findsNothing,
+      );
+    }
+
+    void expectNoStaging() {
+      expect(
+        source.listSync().where(
+          (entry) => entry.uri.pathSegments.any(
+            (segment) => segment.startsWith('.adele-session-evidence-'),
+          ),
+        ),
+        isEmpty,
+      );
+    }
+
+    testWidgets('palette exports the exact E1 document from retained Chat/Run '
+        'without collecting a draft or changing storage', (tester) async {
+      final model = _Model('Exact retained answer.', withTools: true);
+      late Map<String, Object?> expected;
+      await tester.runAsync(() async {
+        await chat.configureSession(session.id.value, _instructions, 4);
+        await chat.appendUserMessage(session.id.value, '  Exact question.\n');
+        final run = await createRun(session, 'native-export-run', model);
+        await run.start();
+        expect(run.run.state, RunState.completed);
+        await chat.setDraftRequest(
+          session.id.value,
+          'Unsubmitted private draft',
+        );
+        final other = otherSession();
+        await chat.appendUserMessage(other.id.value, 'OTHER-SESSION');
+        expected = await collect(session);
+      });
+      final before = _inspect(source, _snapshot);
+      final destination = File('${source.path}/chosen-evidence.json')
+        ..writeAsStringSync('previous destination');
+      picker.pick = () async => FileSaveLocation(destination.path);
+      window.presentSession(session);
+      await mount(tester);
+      await openPalette(tester);
+      expect(find.text('Export Session Evidence...'), findsOneWidget);
+      await tester.tap(find.text('Export Session Evidence...'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        final command = await paletteSelection;
+        expect(command!.id, exportSessionEvidenceCommandId);
+        exporting = command.invoke();
+      });
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
+      expect(find.text('Export Session Evidence'), findsOneWidget);
+      expect(find.textContaining('potentially sensitive'), findsOneWidget);
+      expect(picker.calls, 0);
+      expect(destination.readAsStringSync(), 'previous destination');
+
+      await continueExport(tester);
+      await finish(tester);
+      expect(picker.calls, 1);
+      expect(picker.options!.suggestedName, 'session-evidence.json');
+      expect(picker.typeGroups!.single.extensions, ['json']);
+      expect(destination.readAsStringSync(), jsonEncode(expected));
+      expect(expected['schema'], 'dev.adele.session-evidence.v1');
+      expect(
+        _map(expected['coverage'])['status'],
+        'complete_retained_evidence',
+      );
+      final encoded = destination.readAsStringSync();
+      expect(encoded, isNot(contains(_opaque)));
+      expect(encoded, isNot(contains('OTHER-SESSION')));
+      expect(encoded, isNot(contains('Unsubmitted private draft')));
+      expect(model.calls, 2);
+      expect(_inspect(source, _snapshot), before);
+      expectNoStaging();
+      expect(find.text('Session evidence exported.'), findsOneWidget);
+      expect(
+        find.text('Session evidence could not be exported.'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('no Session is hidden; confirmation and save cancellation are '
+        'silent and reject duplicate pending admission', (tester) async {
+      final before = _inspect(source, _snapshot);
+      await mount(tester);
+      final command = commands.resolve(exportSessionEvidenceCommandId);
+      expect(command.availability, CommandAvailability.hidden);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await openPalette(tester);
+      expect(find.text('Export Session Evidence...'), findsNothing);
+      navigatorKey.currentState!.pop();
+      await tester.pumpAndSettle();
+
+      window.presentSession(session);
+      await invoke(tester);
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await finish(tester);
+      expect(picker.calls, 0);
+      expect(command.availability, CommandAvailability.enabled);
+      expectNoFeedback();
+
+      final selection = Completer<FileSaveLocation?>();
+      picker.pick = () => selection.future;
+      await invoke(tester);
+      await continueExport(tester);
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      expect(picker.calls, 1);
+      selection.complete(null);
+      await finish(tester);
+      expect(command.availability, CommandAvailability.enabled);
+      expectNoFeedback();
+      expect(_inspect(source, _snapshot), before);
+      expectNoStaging();
+    });
+
+    testWidgets('captures A before confirmation and picker; B and A reentry '
+        'never redirect the export, and a fresh command captures B', (
+      tester,
+    ) async {
+      final other = otherSession();
+      late Map<String, Object?> expectedA;
+      late Map<String, Object?> expectedB;
+      await tester.runAsync(() async {
+        await chat.appendUserMessage(session.id.value, 'ONLY-A');
+        await chat.appendUserMessage(other.id.value, 'ONLY-B');
+        expectedA = await collect(session);
+        expectedB = await collect(other);
+      });
+      final before = _inspect(source, _snapshot);
+      final first = File('${source.path}/a.json');
+      final second = File('${source.path}/b.json');
+      final selection = Completer<FileSaveLocation?>();
+      picker.pick = () => selection.future;
+      window.presentSession(session);
+      final firstRevision = window.context.snapshot.revision;
+      await mount(tester);
+      await invoke(tester);
+      window.presentSession(other);
+      await continueExport(tester);
+      expect(first.existsSync(), isFalse);
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.disabled,
+      );
+      window.presentSession(session);
+      expect(window.context.snapshot.revision, firstRevision + 2);
+      selection.complete(FileSaveLocation(first.path));
+      await finish(tester);
+      expect(jsonDecode(first.readAsStringSync()), expectedA);
+
+      window.presentSession(other);
+      picker.pick = () async => FileSaveLocation(second.path);
+      await invoke(tester);
+      await continueExport(tester);
+      await finish(tester);
+      expect(jsonDecode(second.readAsStringSync()), expectedB);
+      expect(picker.calls, 2);
+      expect(_inspect(source, _snapshot), before);
+      expectNoStaging();
+    });
+
+    testWidgets('exports partial evidence without completing a waiting Run', (
+      tester,
+    ) async {
+      final model = _Model('Not yet answered.', withTools: true);
+      late SessionOrchestrationRun run;
+      late Map<String, Object?> expected;
+      await tester.runAsync(() async {
+        await chat.appendUserMessage(session.id.value, 'Pending question.');
+        run = await createRun(
+          session,
+          'native-pending-run',
+          model,
+          decision: ToolPolicyDecision.ask,
+        );
+        await run.start();
+        expected = await collect(session);
+      });
+      final before = _inspect(source, _snapshot);
+      final destination = File('${source.path}/partial.json');
+      picker.pick = () async => FileSaveLocation(destination.path);
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await continueExport(tester);
+      await finish(tester);
+      final document = _map(jsonDecode(destination.readAsStringSync()));
+      expect(document, expected);
+      expect(document['runs'], isEmpty);
+      expect(_map(document['coverage'])['status'], 'partial');
+      expect(
+        _map(document['coverage'])['associated_runs_without_terminal_evidence'],
+        ['native-pending-run'],
+      );
+      expect(run.run.state, RunState.waiting);
+      expect(runtime.store.runRecord(run.run.id), isNull);
+      expect(model.calls, 1);
+      expect(_inspect(source, _snapshot), before);
+      expect(find.text('Session evidence exported.'), findsOneWidget);
+      expectNoStaging();
+    });
+
+    testWidgets('collection failure keeps an existing destination intact and '
+        'shows only safe feedback', (tester) async {
+      await tester.runAsync(() async {
+        await chat.appendUserMessage(
+          session.id.value,
+          'Retained before damage.',
+        );
+        final run = await createRun(
+          session,
+          'native-failure-run',
+          _Model('Answer'),
+        );
+        await run.start();
+      });
+      _inspect(
+        source,
+        (database) => database.execute(
+          "UPDATE adele_execution_model_invocations "
+          "SET usage_provider_details_json = 'private-invalid-json'",
+        ),
+        write: true,
+      );
+      final before = _inspect(source, _snapshot);
+      final destination = File('${source.path}/existing.json')
+        ..writeAsStringSync('existing destination must survive');
+      picker.pick = () async => FileSaveLocation(destination.path);
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await continueExport(tester);
+      await finish(tester);
+      expect(
+        destination.readAsStringSync(),
+        'existing destination must survive',
+      );
+      expect(_inspect(source, _snapshot), before);
+      expectNoStaging();
+      expect(
+        find.text('Session evidence could not be exported.'),
+        findsOneWidget,
+      );
+      expect(find.text('Session evidence exported.'), findsNothing);
+      expect(find.textContaining('private-invalid-json'), findsNothing);
+      expect(find.textContaining('SessionEvidenceFailure'), findsNothing);
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.enabled,
+      );
+    });
+
+    testWidgets('write failure preserves a nonempty destination directory and '
+        'reports failure without exposing its path', (tester) async {
+      await tester.runAsync(() async {
+        await chat.appendUserMessage(
+          session.id.value,
+          'Valid retained evidence.',
+        );
+        expect(
+          _map((await collect(session))['coverage'])['status'],
+          'complete_retained_evidence',
+        );
+      });
+      final before = _inspect(source, _snapshot);
+      final destination = Directory('${source.path}/private-save-target')
+        ..createSync();
+      final existing = File('${destination.path}/keep.txt')
+        ..writeAsStringSync('existing directory contents');
+      picker.pick = () async => FileSaveLocation(destination.path);
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await continueExport(tester);
+      await finish(tester);
+      expect(destination.existsSync(), isTrue);
+      expect(existing.readAsStringSync(), 'existing directory contents');
+      expect(destination.listSync(), hasLength(1));
+      expect(_inspect(source, _snapshot), before);
+      expectNoStaging();
+      expect(
+        find.text('Session evidence could not be exported.'),
+        findsOneWidget,
+      );
+      expect(find.text('Session evidence exported.'), findsNothing);
+      expect(find.textContaining('private-save-target'), findsNothing);
+      expect(find.textContaining('FileSystemException'), findsNothing);
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.enabled,
+      );
+    });
+
+    for (final closeExporter in [false, true]) {
+      testWidgets('${closeExporter ? 'closing exporter' : 'retiring backend'} '
+          'while the native picker is pending fences publication', (
+        tester,
+      ) async {
+        final before = _inspect(source, _snapshot);
+        final destination = File('${source.path}/pending.json')
+          ..writeAsStringSync('untouched destination');
+        final selection = Completer<FileSaveLocation?>();
+        picker.pick = () => selection.future;
+        window.presentSession(session);
+        await mount(tester);
+        final command = commands.resolve(exportSessionEvidenceCommandId);
+        await invoke(tester);
+        await continueExport(tester);
+        await tester.runAsync(() async {
+          await (closeExporter ? exporter.close() : runtime.plugins.close())
+              .timeout(const Duration(seconds: 10));
+        });
+        expect(selection.isCompleted, isFalse);
+        expect(
+          () => commands.resolve(exportSessionEvidenceCommandId),
+          throwsA(isA<CommandNotFound>()),
+        );
+        await expectLater(
+          command.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        selection.complete(FileSaveLocation(destination.path));
+        await finish(tester);
+        expect(destination.readAsStringSync(), 'untouched destination');
+        expect(_inspect(source, _snapshot), before);
+        expect(picker.calls, 1);
+        expectNoStaging();
+        if (closeExporter) {
+          expectNoFeedback();
+          // The cached close Future belongs to the real-async zone too.
+          await tester.runAsync(
+            () => exporter.close().timeout(const Duration(seconds: 10)),
+          );
+        } else {
+          expect(
+            find.text('Session evidence could not be exported.'),
+            findsOneWidget,
+          );
+        }
+      });
+    }
+
+    testWidgets('close dismisses its confirmation without opening the picker', (
+      tester,
+    ) async {
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await tester.runAsync(exporter.close);
+      await finish(tester);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(picker.calls, 0);
+      expectNoFeedback();
+      expect(commands.discover(), isEmpty);
+    });
+
+    for (final failed in [false, true]) {
+      testWidgets('${failed ? 'failed' : 'absent'} evaluator startup leaves '
+          'no export Command even with a canonical Session', (tester) async {
+        final fresh = await reopenRuntime(tester);
+        await mount(tester, owner: fresh);
+        await openPalette(tester);
+        expect(commands.discover(), isEmpty);
+        await tester.runAsync(() async {
+          if (failed) {
+            final broken = await _install(artifacts, 'failed-evaluator', [
+              _chatPlugin,
+              _evaluatorPlugin,
+            ]);
+            await File(
+              '${broken.path}/$_evaluatorPlugin/backend.aot',
+            ).writeAsString('invalid evaluator artifact');
+            await fresh.plugins.start(
+              installationRoot: broken.path,
+              dartaotruntimeExecutable: aotRuntime,
+              hostArtifactPath: hostArtifact.path,
+            );
+            expect(fresh.plugins.state, ApplicationPluginState.ready);
+            expect(
+              fresh.plugins.backends
+                  .singleWhere(
+                    (backend) =>
+                        backend.installation.metadata.id.value ==
+                        _evaluatorPlugin,
+                  )
+                  .state,
+              InstalledBackendState.failed,
+            );
+            expect(_connection(fresh.plugins, _chatPlugin).isClosed, isFalse);
+          } else {
+            await fresh.plugins.start(installationRoot: '');
+            expect(fresh.plugins.state, ApplicationPluginState.ready);
+            expect(fresh.plugins.backends, isEmpty);
+          }
+        });
+        await tester.pumpAndSettle();
+        expect(fresh.extensions.discover(commandContributions), isEmpty);
+        expect(
+          () => commands.resolve(exportSessionEvidenceCommandId),
+          throwsA(isA<CommandNotFound>()),
+        );
+        expect(find.byType(CommandPalette), findsOneWidget);
+        expect(find.text('Export Session Evidence...'), findsNothing);
+        expect(picker.calls, 0);
+        expectNoFeedback();
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('startup and retirement refresh the open palette without '
+        'duplicating or retargeting a Command', (tester) async {
+      final fresh = await reopenRuntime(tester);
+      await mount(tester, owner: fresh);
+      expect(commands.discover(), isEmpty);
+      await openPalette(tester);
+      expect(find.text('Export Session Evidence...'), findsNothing);
+      await tester.runAsync(() => start(fresh.plugins, installations));
+      await tester.pumpAndSettle();
+      final command = commands.resolve(exportSessionEvidenceCommandId);
+      expect(command.availability, CommandAvailability.enabled);
+      expect(fresh.extensions.discover(commandContributions), hasLength(1));
+      expect(find.text('Export Session Evidence...'), findsOneWidget);
+
+      await tester.runAsync(() async {
+        final retired = fresh.plugins.changes.firstWhere(
+          (_) =>
+              fresh.plugins.backends
+                  .singleWhere(
+                    (item) =>
+                        item.installation.metadata.id.value == _chatPlugin,
+                  )
+                  .state ==
+              InstalledBackendState.terminated,
+        );
+        await _connection(fresh.plugins, _chatPlugin).close();
+        await retired.timeout(const Duration(seconds: 10));
+      });
+      await tester.pumpAndSettle();
+      expect(fresh.extensions.discover(commandContributions), hasLength(1));
+      expect(
+        commands
+            .resolve(exportSessionEvidenceCommandId)
+            .binding
+            .isSameRegistration(command.binding),
+        isTrue,
+      );
+      expect(find.text('Export Session Evidence...'), findsOneWidget);
+      await tester.runAsync(fresh.plugins.close);
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsOneWidget);
+      expect(find.text('Export Session Evidence...'), findsNothing);
+      expect(fresh.extensions.discover(commandContributions), isEmpty);
+      await expectLater(
+        command.invoke(),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  });
+}
+
+final class _SavePicker extends FileSelectorPlatform {
+  int calls = 0;
+  final opened = Completer<void>();
+  SaveDialogOptions? options;
+  List<XTypeGroup>? typeGroups;
+  Future<FileSaveLocation?> Function() pick = () async => null;
+
+  @override
+  Future<FileSaveLocation?> getSaveLocation({
+    List<XTypeGroup>? acceptedTypeGroups,
+    SaveDialogOptions options = const SaveDialogOptions(),
+  }) {
+    calls++;
+    this.options = options;
+    typeGroups = acceptedTypeGroups;
+    if (!opened.isCompleted) opened.complete();
+    return pick();
+  }
 }
 
 Future<Directory> _install(
