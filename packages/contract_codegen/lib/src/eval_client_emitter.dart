@@ -56,12 +56,28 @@ import 'package:adele_contract/adele_contract.dart';
 ''');
     for (final value in model.values) {
       out.writeln('class ${value.name} {');
+      final lists = value.fields
+          .where((f) => f.type.kind == TypeKind.list && !f.type.nullable)
+          .toList();
+      // Freeze stored lists after argument boxing. The pin's unmodifiable bridge
+      // produces List<dynamic>, so getters project typed copies for consumers
+      // such as addAll that require the boxed List<$Value> representation.
+      final initializers = lists.map(
+        (f) => '_${f.name} = ${f.type.dart}.unmodifiable(${f.name})',
+      );
       out.writeln(
-        '${value.name}({${value.fields.map((f) => 'required this.${f.name}').join(',')}});',
+        '${value.name}({${value.fields.map((f) => lists.contains(f) ? 'required ${f.type.dart} ${f.name}' : 'required this.${f.name}').join(',')}})${lists.isEmpty ? '' : ' : ${initializers.join(',')}'};',
       );
       for (final field in value.fields) {
         _codec(field.type);
-        out.writeln('final ${field.type.dart} ${field.name};');
+        if (lists.contains(field)) {
+          out.writeln('final ${field.type.dart} _${field.name};');
+          out.writeln(
+            '${field.type.dart} get ${field.name} => <${field.type.argument!.dart}>[..._${field.name}];',
+          );
+        } else {
+          out.writeln('final ${field.type.dart} ${field.name};');
+        }
       }
       out.writeln('}');
       _codec(TypeModel(TypeKind.value, value.name));

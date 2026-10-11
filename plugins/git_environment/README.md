@@ -93,11 +93,12 @@ materialization restores the live checkout. See the
 [product model](../../docs/architecture/product-model.md#environment) for the
 core-owned lifecycle boundary.
 
-## Unstaged change snapshots
+## Change snapshots
 
 The same stock AOT backend advertises the Diff-owned
 `adele.diff.change-set-source` v1 Capability through
-`diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`.
+`diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`
+and `snapshotUncommitted` methods.
 Its separate `dev.adele.git.change-set-source` provider is explicitly associated
 with this generation's actual Git Environment provider. The contextual dispatcher
 uses `AuthorizedEnvironmentReadService.authority()` to select only an existing
@@ -108,13 +109,12 @@ Establish/restore also bind the canonical Git directory and actual worktree root
 that live object. Inspection supplies both explicitly to Git, so a newly created
 nested `.git` or `core.worktree` setting cannot substitute another repository.
 
-`git ls-files --cached --stage --debug -z` supplies the bounded index inventory,
-not HEAD; `git ls-files --others --exclude-standard -z` adds nonignored untracked
-files. Direct bounded reads are hashed as Git blobs (SHA-1 or SHA-256 according to
-the index identity), omitting byte-equal tracked files without Git subprocesses
-per clean file. Staged-only ordinary files are absent. Both commands are scoped
-to the live root,
-including a nested Project source. Returned paths are Environment-relative,
+For Unstaged, `git ls-files --cached --stage --debug -z` supplies the bounded index
+inventory, not HEAD; `git ls-files --others --exclude-standard -z` adds nonignored
+untracked files. Direct bounded reads are hashed as Git blobs (SHA-1 or SHA-256
+according to the index identity), omitting byte-equal tracked files without Git
+subprocesses per clean file. Staged-only ordinary files are absent. Both commands
+are scoped to the live root, including a nested Project source. Returned paths are Environment-relative,
 strictly decoded UTF-8, and sorted; NUL framing preserves spaces, punctuation,
 tabs, and newlines without treating filenames as pathspec expressions. Renames
 are represented as deletion/addition, not similarity detection.
@@ -128,8 +128,26 @@ filters/hooks, and an uninspected submodule is never silently presented as clean
 Untracked nested repository directory markers are normalized to relative paths
 and retained as unsupported entries; their contents are not recursively inspected.
 
-Text patches are actual deterministic Git unified hunks over bounded index-blob
-and direct working-file snapshots. A private temporary directory outside the
+Uncommitted captures the current HEAD commit/tree and compares its bounded,
+source-scoped tree inventory with the same resolved stage-0 index used for
+Unstaged. Bounded immutable HEAD and index blobs supply staged hunks through the
+same private patch mechanism. Index-to-working-file comparisons supply the
+unstaged layer, including nonignored untracked additions. This is a layered union,
+not HEAD-to-working-tree: A-to-B staging and B-to-A working edits both remain
+visible. A staged deletion recreated on disk is a staged deletion and an unstaged
+addition. Intent-to-add is not fully staged. Unmerged stage-1/2/3 paths appear only
+in the separate conflicts collection, never as ordinary staged approval or
+unstaged changes. Existing unsupported index flags and modes remain conservative
+placeholders rather than fabricated hunks.
+
+Both layers are computed inside one contextual operation with one captured live
+Environment and repository identity, not independently resolved calls. The provider
+requires an established baseline commit; an unavailable current HEAD fails rather
+than manufacturing an empty history. HEAD is revalidated before settlement, along
+with the existing index, configuration, filesystem and authority checks.
+
+Text patches are actual deterministic Git unified hunks over bounded HEAD/index
+blobs and direct working-file snapshots. A private temporary directory outside the
 worktree supplies `git diff --no-index` with fixed literal filenames; Git does not
 run repository clean filters, textconv, external diff, or attribute-selected diff
 drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
@@ -145,7 +163,8 @@ raw content, including binary/invalid UTF-8 with stale index stat metadata, is
 omitted before content classification. Newline absence is
 retained on the corresponding hunk line; line text otherwise preserves CR and LF
 semantics rather than normalizing file content. Effective `core.filemode=false`
-suppresses executable-bit-only differences; repository settings override lower
+suppresses working-file executable-bit-only differences; actual HEAD/index mode
+differences remain visible in the staged layer. Repository settings override lower
 configuration scopes. Git executable state uses only the owner-execute bit.
 
 The snapshot subprocess path is separate from Environment foreground execution.
@@ -164,11 +183,12 @@ writes the index, edits Git configuration,
 or writes the source worktree; only its temporary snapshot copies are written and
 removed. Git executable selection through PATH is trusted, not sandboxed.
 
-Default per-operation limits are 4,096 retained tracked/untracked inventory entries
-(index records are also bounded), 256 returned files,
+Default per-operation limits are 4,096 retained inventory paths
+(HEAD and index records and their union with untracked paths are bounded),
+256 returned entries across both layers and conflicts,
 1 MiB per file side, 2 MiB collected stdout per command/patch, 64 KiB stderr counted
 without retaining diagnostics,
-8 MiB total text inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
+8 MiB total compared inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
 escaped-text/DTO transport budget below the host frame limit. Each Git process has
 a 10-second deadline including pipe completion; the entire operation has a
 30-second deadline. Output is bounded during collection, not after an unbounded
@@ -178,6 +198,11 @@ snapshot rather than returning a deceptively complete truncated result. An
 oversized tracked working file has explicitly unknown change state because its
 bytes cannot be compared within the bound, even if an external observer knows it
 is unchanged. Equal inspected files do not consume the changed-result byte budget.
+For Uncommitted these are shared operation limits, not fresh allowances for each
+layer. A path appearing in both layers counts twice toward the returned-entry
+limit. Content read for nontext placeholders is also charged by Uncommitted;
+Unstaged retains its existing text-result accounting. Aggregate overflow rejects
+the whole result, not just one section.
 
 Line-ending configuration, enumeration and direct-path/stat observations are checked
 again before publication. Inspected tracked symlinks, including clean ones omitted

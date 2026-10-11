@@ -1,5 +1,5 @@
 name: diff_viewer_contract
-description: Diff-owned bounded unstaged change snapshots for Environment providers.
+description: Diff-owned bounded read-only change snapshots for Environment providers.
 publish_to: none
 version: 0.1.0
 
@@ -13,4 +13,6 @@ dependencies:
   adele_contract: ^0.1.0
 
 dev_dependencies:
+  contract_codegen: ^0.1.0
+  dart_eval: 0.8.5
   test: ^1.26.3

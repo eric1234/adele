@@ -1,4 +1,4 @@
-/// Diff-owned, bounded read-only Unstaged change snapshots.
+/// Diff-owned, bounded read-only change snapshots.
 library;
 
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
@@ -11,6 +11,19 @@ final capabilities.CapabilityKey changeSetSourceCapability =
       id: capabilities.CapabilityId('adele.diff.change-set-source'),
       majorVersion: 1,
     );
+
+@AdeleValue('diff.uncommittedChangeSetSnapshot')
+final class UncommittedChangeSetSnapshot {
+  UncommittedChangeSetSnapshot({
+    required this.staged,
+    required this.unstaged,
+    required List<ChangedFile> conflicts,
+  }) : conflicts = List<ChangedFile>.unmodifiable(conflicts);
+
+  final ChangeSetSnapshot staged;
+  final ChangeSetSnapshot unstaged;
+  final List<ChangedFile> conflicts;
+}
 
 @AdeleValue('diff.changeSetSnapshot')
 final class ChangeSetSnapshot {
@@ -79,6 +92,10 @@ abstract interface class ChangeSetSourceService {
   /// Captured Environment authority is supplied by the host, never by arguments.
   @AdeleMethod('snapshotUnstaged')
   Future<ChangeSetSnapshot> snapshotUnstaged();
+
+  /// Separate staged and unstaged layers, not a net working-tree diff.
+  @AdeleMethod('snapshotUncommitted')
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted();
 }
 
 @AdeleFailure('diff.changeSetFailure')

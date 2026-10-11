@@ -76,7 +76,13 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
   final Map<String, String> _parentEnvironment;
 
   @override
-  Future<ChangeSetSnapshot> snapshotUnstaged() async {
+  Future<ChangeSetSnapshot> snapshotUnstaged() =>
+      _snapshot(false).then((snapshot) => snapshot.unstaged);
+
+  @override
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() => _snapshot(true);
+
+  Future<UncommittedChangeSetSnapshot> _snapshot(bool includeStaged) async {
     final operation = _SnapshotOperation(limits, _parentEnvironment);
     try {
       return await (() async {
@@ -94,7 +100,10 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
         }
 
         final environment = resolve();
-        final result = await operation.snapshot(environment);
+        final result = await operation.snapshot(
+          environment,
+          includeStaged: includeStaged,
+        );
         if (!identical(resolve(), environment)) {
           throw _failure(
             'environment_not_live',
@@ -108,6 +117,13 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
           throw _failure(
             'authority_changed',
             'The Environment authority changed.',
+          );
+        }
+        await operation._settlementValidation?.call();
+        if (!identical(resolve(), environment)) {
+          throw _failure(
+            'environment_not_live',
+            'The Environment binding changed.',
           );
         }
         return result;
@@ -146,6 +162,9 @@ final class _SnapshotOperation {
   int _lines = 0;
   bool _contentConversion = false;
   bool _fileMode = true;
+  ({String commit, String reference})? _head;
+  String _indexDescription = '';
+  Future<void> Function()? _settlementValidation;
 
   void checkOpen() {
     if (_closed) {
@@ -179,7 +198,10 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<ChangeSetSnapshot> snapshot(WorktreeEnvironment environment) async {
+  Future<UncommittedChangeSetSnapshot> snapshot(
+    WorktreeEnvironment environment, {
+    required bool includeStaged,
+  }) async {
     final root = environment.root;
     if (environment.gitDirectory == null ||
         environment.gitWorktreeRoot == null) {
@@ -218,12 +240,31 @@ final class _SnapshotOperation {
         effectiveSettings.containsKey('core.eol') ||
         (effectiveSettings.containsKey('core.autocrlf') &&
             !falseValues.contains(effectiveSettings['core.autocrlf']));
+    if (includeStaged) _head = await _readHead(root);
+    final head = includeStaged
+        ? await _headTree(root)
+        : <String, GitIndexEntry>{};
     final before = await _enumerate(root);
+    // Retain every stage identity, including stages 2/3 collapsed into the one
+    // conflict row. Comparing that row alone would miss conflict-side races.
+    final indexDescription = _indexDescription;
+    final paths = {...head.keys};
+    for (final path in before.keys) {
+      paths.add(path);
+      if (paths.length > limits.inventoryEntries) {
+        throw _failure(
+          'inventory_too_large',
+          'The combined inventory exceeds the supported entry count.',
+        );
+      }
+    }
+    final ordered = paths.toList()..sort();
+    final staged = <ChangedFile>[];
     final files = <ChangedFile>[];
-    var wireBytes = 64;
-    for (final entry in before.entries) {
-      checkOpen();
-      final file = await _file(root, entry.key, entry.value);
+    final conflicts = <ChangedFile>[];
+    var fileCount = 0;
+    var wireBytes = includeStaged ? 256 : 64;
+    void retain(ChangedFile? file, List<ChangedFile> layer) {
       if (file != null) {
         // Leave framing/DTO headroom below the host's bounded transport. Count
         // escaped text, not just input bytes (control characters expand in JSON).
@@ -240,8 +281,8 @@ final class _SnapshotOperation {
             'The change snapshot exceeds its transport budget.',
           );
         }
-        files.add(file);
-        if (files.length > limits.files) {
+        layer.add(file);
+        if (++fileCount > limits.files) {
           throw _failure(
             'too_many_files',
             'The change snapshot exceeds the supported file count.',
@@ -249,35 +290,124 @@ final class _SnapshotOperation {
         }
       }
     }
-    final after = await _enumerate(root);
-    if (settings != await _settings(root) ||
-        before.length != after.length ||
-        before.entries.any((entry) => after[entry.key] != entry.value)) {
-      throw _failure(
-        'snapshot_changed',
-        'The index or working tree changed during the snapshot.',
+
+    for (final path in ordered) {
+      checkOpen();
+      final entry = before[path];
+      if (includeStaged && entry?.kind == 'conflicted') {
+        retain(await _file(root, path, entry!), conflicts);
+        continue;
+      }
+      if (includeStaged) {
+        retain(await _stagedFile(root, path, head[path], entry), staged);
+      }
+      if (entry != null) retain(await _file(root, path, entry), files);
+    }
+    Future<void> validate() async {
+      final after = await _enumerate(root);
+      if (settings != await _settings(root) ||
+          (includeStaged && indexDescription != _indexDescription) ||
+          before.length != after.length ||
+          before.entries.any((entry) => after[entry.key] != entry.value)) {
+        throw _failure(
+          'snapshot_changed',
+          'The index or working tree changed during the snapshot.',
+        );
+      }
+      for (final entry in _observed.entries) {
+        if (!_sameState(entry.value, await _directState(root, entry.key))) {
+          throw _failure(
+            'snapshot_changed',
+            'A working file changed before snapshot completion.',
+          );
+        }
+      }
+      for (final entry in _observedLinks.entries) {
+        if (await _directLinkTarget(root, entry.key) != entry.value) {
+          throw _failure(
+            'snapshot_changed',
+            'A symbolic link changed before snapshot completion.',
+          );
+        }
+      }
+      await _validateRoot(root);
+      await _validateRoot(_gitDirectory);
+      await _validateRoot(_worktreeRoot);
+      if (_head != null && _head != await _readHead(root)) {
+        throw _failure('snapshot_changed', 'HEAD changed during the snapshot.');
+      }
+    }
+
+    if (includeStaged) _settlementValidation = validate;
+    await validate();
+    return UncommittedChangeSetSnapshot(
+      staged: ChangeSetSnapshot(files: staged),
+      unstaged: ChangeSetSnapshot(files: files),
+      conflicts: conflicts,
+    );
+  }
+
+  Future<({String commit, String reference})> _readHead(Directory root) async {
+    final commit = _decode(
+      (await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).bytes,
+    );
+    if (!RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\n$').hasMatch(commit)) {
+      throw _malformed();
+    }
+    final reference = _decode(
+      (await git(root, [
+        'symbolic-ref',
+        '--quiet',
+        'HEAD',
+      ], allowDifference: true)).bytes,
+    );
+    return (commit: commit.trim(), reference: reference);
+  }
+
+  Future<Map<String, GitIndexEntry>> _headTree(Directory root) async {
+    final raw = _decode(
+      (await git(root, [
+        'ls-tree',
+        '-r',
+        '-z',
+        _head!.commit,
+        '--',
+        '.',
+      ])).bytes,
+    );
+    final entries = <String, GitIndexEntry>{};
+    final header = RegExp(
+      r'^([0-7]{6}) (blob|commit) ([0-9a-f]{40}|[0-9a-f]{64})$',
+    );
+    var offset = 0;
+    while (offset < raw.length) {
+      if (entries.length >= limits.inventoryEntries) {
+        throw _failure(
+          'inventory_too_large',
+          'The HEAD inventory exceeds the supported entry count.',
+        );
+      }
+      final nul = raw.indexOf('\u0000', offset);
+      final tab = raw.indexOf('\t', offset);
+      if (nul < 0 || tab < offset || tab > nul) throw _malformed();
+      final match = header.firstMatch(raw.substring(offset, tab));
+      if (match == null) throw _malformed();
+      if (!const {'100644', '100755', '120000', '160000'}.contains(match[1]) ||
+          (match[1] == '160000') != (match[2] == 'commit')) {
+        throw _malformed();
+      }
+      final path = raw.substring(tab + 1, nul);
+      _validatePath(path);
+      if (entries.containsKey(path)) throw _malformed();
+      entries[path] = (
+        oldMode: match[1]!,
+        newMode: match[1]!,
+        oid: match[3]!,
+        kind: 'modified',
       );
+      offset = nul + 1;
     }
-    for (final entry in _observed.entries) {
-      if (!_sameState(entry.value, await _directState(root, entry.key))) {
-        throw _failure(
-          'snapshot_changed',
-          'A working file changed before snapshot completion.',
-        );
-      }
-    }
-    for (final entry in _observedLinks.entries) {
-      if (await _directLinkTarget(root, entry.key) != entry.value) {
-        throw _failure(
-          'snapshot_changed',
-          'A symbolic link changed before snapshot completion.',
-        );
-      }
-    }
-    await _validateRoot(root);
-    await _validateRoot(_gitDirectory);
-    await _validateRoot(_worktreeRoot);
-    return ChangeSetSnapshot(files: files);
+    return entries;
   }
 
   Future<String> _settings(Directory root) async => _decode(
@@ -304,18 +434,19 @@ final class _SnapshotOperation {
   Future<Map<String, GitIndexEntry>> _enumerate(Directory root) async {
     // Cached inventory never hashes worktree content or invokes clean filters.
     // --modified/diff-files are unsafe here, even when only raw output is asked.
+    _indexDescription = _decode(
+      (await git(root, [
+        'ls-files',
+        '--cached',
+        '--stage',
+        '--debug',
+        '-z',
+        '--',
+        '.',
+      ])).bytes,
+    );
     final changes = parseGitIndex(
-      _decode(
-        (await git(root, [
-          'ls-files',
-          '--cached',
-          '--stage',
-          '--debug',
-          '-z',
-          '--',
-          '.',
-        ])).bytes,
-      ),
+      _indexDescription,
       maximumEntries: limits.inventoryEntries,
     );
     final untracked = await git(root, [
@@ -331,8 +462,7 @@ final class _SnapshotOperation {
       changes,
       maximumEntries: limits.inventoryEntries,
     );
-    final paths = changes.keys.toList()..sort();
-    return {for (final path in paths) path: changes[path]!};
+    return changes;
   }
 
   Future<ChangedFile?> _file(
@@ -472,6 +602,118 @@ final class _SnapshotOperation {
         return null;
       }
     }
+    // D3 charges inspected changed sides even if the other side is oversized;
+    // D1 retains its text-only accounting in _textFile.
+    if (_head != null) _chargeContent(current.length);
+    final old = await _blob(root, change.oid);
+    if (old == null) {
+      return placeholder(
+        'oversized',
+        'The index file exceeds the supported size.',
+      );
+    }
+    final result = await _textFile(root, path, change.kind, old, current);
+    if (!_sameState(state, await _directState(root, path))) {
+      throw _failure(
+        'snapshot_changed',
+        'A working file changed during patch generation.',
+      );
+    }
+    return result;
+  }
+
+  Future<ChangedFile?> _stagedFile(
+    Directory root,
+    String path,
+    GitIndexEntry? old,
+    GitIndexEntry? current,
+  ) async {
+    // Intent-to-add and untracked records have no staged blob. The cached
+    // inventory, never worktree bytes, supplies the right side of this layer.
+    if (current?.oid.isEmpty ?? false) current = null;
+    if (old == null && current == null) return null;
+    if (old != null &&
+        current != null &&
+        old.oid == current.oid &&
+        old.oldMode == current.oldMode) {
+      return null;
+    }
+    final kind = old == null
+        ? 'added'
+        : current == null
+        ? 'deleted'
+        : old.oldMode != current.oldMode
+        ? 'typeChanged'
+        : 'modified';
+    ChangedFile placeholder(
+      String status,
+      String detail, {
+      String? changeKind,
+    }) => ChangedFile(
+      relativePath: path,
+      changeKind: changeKind ?? kind,
+      contentStatus: status,
+      detail: detail,
+      hunks: const [],
+    );
+    const regular = {'100644', '100755'};
+    if ((old != null && !regular.contains(old.oldMode)) ||
+        (current != null &&
+            (!regular.contains(current.oldMode) ||
+                current.kind == 'unsupported'))) {
+      return placeholder(
+        'unsupported',
+        'File type or index flags prevent ordinary text inspection.',
+      );
+    }
+    if (old != null && current != null && old.oldMode != current.oldMode) {
+      return placeholder(
+        'unsupported',
+        'File mode changes are not rendered as text.',
+        changeKind: 'typeChanged',
+      );
+    }
+    final left = await _blob(root, old?.oid ?? '');
+    final right = await _blob(root, current?.oid ?? '');
+    if (left == null || right == null) {
+      return placeholder(
+        'oversized',
+        'A staged file side exceeds the supported size.',
+      );
+    }
+    return _textFile(root, path, kind, left, right);
+  }
+
+  Future<Uint8List?> _blob(Directory root, String oid) async {
+    if (oid.isEmpty || RegExp(r'^0+$').hasMatch(oid)) return Uint8List(0);
+    final size = await git(root, ['cat-file', '-s', oid]);
+    final count = int.tryParse(_decode(size.bytes).trim());
+    if (count == null || count < 0) throw _malformed();
+    if (count > limits.fileBytes) return null;
+    final bytes = (await git(root, [
+      'cat-file',
+      'blob',
+      oid,
+    ], maximum: limits.fileBytes)).bytes;
+    if (bytes.length != count) throw _malformed();
+    if (_head != null) _chargeContent(bytes.length);
+    return bytes;
+  }
+
+  Future<ChangedFile?> _textFile(
+    Directory root,
+    String path,
+    String kind,
+    Uint8List old,
+    Uint8List current,
+  ) async {
+    ChangedFile placeholder(String status, String detail) => ChangedFile(
+      relativePath: path,
+      changeKind: kind,
+      contentStatus: status,
+      detail: detail,
+      hunks: const [],
+    );
     final attributes = _nulRecords(
       _decode(
         (await git(root, [
@@ -489,24 +731,6 @@ final class _SnapshotOperation {
       ),
     );
     if (attributes.length != 18) throw _malformed();
-    Uint8List old = Uint8List(0);
-    if (change.oid.isNotEmpty && !RegExp(r'^0+$').hasMatch(change.oid)) {
-      final size = await git(root, ['cat-file', '-s', change.oid]);
-      final count = int.tryParse(_decode(size.bytes).trim());
-      if (count == null || count < 0) throw _malformed();
-      if (count > limits.fileBytes) {
-        return placeholder(
-          'oversized',
-          'The index file exceeds the supported size.',
-        );
-      }
-      old = (await git(root, [
-        'cat-file',
-        'blob',
-        change.oid,
-      ], maximum: limits.fileBytes)).bytes;
-      if (old.length != count) throw _malformed();
-    }
     if (_contentConversion) {
       return placeholder(
         'unsupported',
@@ -541,13 +765,7 @@ final class _SnapshotOperation {
     } on FormatException {
       return placeholder('unsupported', 'Content is not valid UTF-8 text.');
     }
-    _totalBytes += old.length + current.length;
-    if (_totalBytes > limits.totalBytes) {
-      throw _failure(
-        'snapshot_too_large',
-        'The change snapshot exceeds its total content limit.',
-      );
-    }
+    if (_head == null) _chargeContent(old.length + current.length);
     if (_temporary == null) {
       final topLevel = _decode(
         (await git(root, ['rev-parse', '--show-toplevel'])).bytes,
@@ -594,8 +812,8 @@ final class _SnapshotOperation {
           '--unified=3',
           '--inter-hunk-context=0',
           '--',
-          change.kind == 'added' ? _nullDevice : 'old',
-          deleted ? _nullDevice : 'new',
+          kind == 'added' ? _nullDevice : 'old',
+          kind == 'deleted' ? _nullDevice : 'new',
         ],
         detached: true,
         allowDifference: true,
@@ -607,19 +825,13 @@ final class _SnapshotOperation {
         'The text patch exceeds the supported output size.',
       );
     }
-    if (!_sameState(state, await _directState(root, path))) {
-      throw _failure(
-        'snapshot_changed',
-        'A working file changed during patch generation.',
-      );
-    }
-    if (patch.exitCode == 0 && change.kind == 'modified') return null;
+    if (patch.exitCode == 0 && kind == 'modified') return null;
+    _chargeContent(patch.bytes.length);
     final hunks = parseGitPatch(
       _decode(patch.bytes),
       maximumLines: limits.lines - _lines,
     );
     _lines += hunks.fold(0, (total, hunk) => total + hunk.lines.length);
-    _totalBytes += patch.bytes.length;
     if (_lines > limits.lines || _totalBytes > limits.totalBytes) {
       throw _failure(
         'snapshot_too_large',
@@ -628,11 +840,21 @@ final class _SnapshotOperation {
     }
     return ChangedFile(
       relativePath: path,
-      changeKind: change.kind,
+      changeKind: kind,
       contentStatus: 'text',
       detail: null,
       hunks: hunks,
     );
+  }
+
+  void _chargeContent(int bytes) {
+    _totalBytes += bytes;
+    if (_totalBytes > limits.totalBytes) {
+      throw _failure(
+        'snapshot_too_large',
+        'The change snapshot exceeds its total content limit.',
+      );
+    }
   }
 
   Future<Uint8List?> _readFile(Directory root, String path) async {

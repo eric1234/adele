@@ -455,16 +455,25 @@ resolves only its own live worktree state; the request contains no caller-select
 Environment, repository, or path.
 
 For snapshot reads, Diff's mounted Main Content pane declares the corresponding
-`environmentReadCapabilities` entry. Each initial load or deliberate refresh
-resolves fresh eligible access, invokes one finite generated unary snapshot, then
-releases the handle. It uses the contextual settlement and retirement rules above,
+`environmentReadCapabilities` entry. Each initial load, scope change, or deliberate
+refresh resolves fresh eligible access, invokes one finite generated unary
+snapshot, then releases the handle. It uses the contextual settlement and retirement rules above,
 not context-free discovery, backend affinity, automatic activation, or a second
 review registry. Provider absence is unavailable, distinct from a successful empty
 snapshot. Unsupported files remain represented; bounds or inspection failure must
 not be published as a complete clean result.
 
-The initial service describes only Unstaged changes: working tree relative to the
-index plus nonignored untracked additions, scoped to the canonical Environment.
+The service retains `snapshotUnstaged()` for working tree relative to index plus
+nonignored untracked additions, and adds `snapshotUncommitted()` with separate
+staged and unstaged snapshots and a conflict collection. Uncommitted is a layered
+union, not a net working-tree comparison: a path may occur in both layers even
+when the edits cancel relative to HEAD. Unmerged entries are conflicts, not
+ordinary staged approval. Both layers share one bounded backend observation,
+canonical Environment capture, index observation, and captured HEAD identity;
+the frontend does not concatenate independent calls. The methods take no authority
+parameters and share the same Capability and generated service. Matching native
+and EVC artifacts are rebuilt under the pre-release compatibility policy.
+
 Review semantics belong to Diff, while Git-specific enumeration and limitations
 belong to the [Git provider](../../plugins/git_environment/README.md). This read-only
 boundary grants no staging, approval, mutation, process, or execution authority to

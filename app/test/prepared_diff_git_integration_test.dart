@@ -231,6 +231,149 @@ void main() {
   );
 
   testWidgets(
+    'stock Uncommitted scope shows staged-only nonprimary changes and confines HEAD inventory',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.write('d staged.txt', 'Staged-only additional content\n');
+        await _git(fixture.additionalRoot, ['add', 'd staged.txt']);
+        await File(
+          '${fixture.additionalWorktree.path}/outside.txt',
+        ).writeAsString('Staged outside source scope\n');
+        await _git(fixture.additionalWorktree, ['add', 'outside.txt']);
+        await File(
+          '${fixture.primaryRoot.path}/d staged.txt',
+        ).writeAsString('Staged in primary Environment\n');
+        await _git(fixture.primaryRoot, ['add', 'd staged.txt']);
+      });
+      await mount(tester);
+      await _visible(tester, 'No unstaged changes');
+      expect(find.textContaining('d staged.txt'), findsNothing);
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, 'Staged-only additional content');
+      expect(find.text('Staged changes'), findsOneWidget);
+      expect(find.text('d staged.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('-Staged baseline'), findsOneWidget);
+      expect(
+        find.textContaining('+Staged-only additional content'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('@@ -1,1 +1,1 @@'), findsOneWidget);
+      expect(find.textContaining('outside.txt'), findsNothing);
+      expect(find.textContaining('Staged in primary'), findsNothing);
+      expect(_sourceAction(), findsNothing);
+      expect(
+        fixture.store
+            .requireSessionAuthority(fixture.additionalSession.id)
+            .environmentId,
+        fixture.additional.id,
+      );
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+
+      await _selectScope(tester, 'Unstaged changes');
+      await _visible(tester, 'No unstaged changes');
+      expect(find.textContaining('d staged.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'stock Uncommitted layers retain partial staging and cancellation and refresh the selected scope',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.write(
+          'a modified.txt',
+          'context before\nStaged middle\ncontext after\n',
+        );
+        await fixture.write('e reversal.txt', 'Index layer\n');
+        await _git(fixture.additionalRoot, [
+          'add',
+          'a modified.txt',
+          'e reversal.txt',
+        ]);
+        await fixture.write(
+          'a modified.txt',
+          'context before\nStaged middle\nUnstaged ending\n',
+        );
+        await fixture.write('e reversal.txt', 'Original layer\n');
+      });
+      await mount(tester);
+      await _visible(tester, 'Unstaged ending');
+      expect(find.text('a modified.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('-Original text'), findsNothing);
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, '-Original text');
+      expect(find.text('a modified.txt  [modified]'), findsNWidgets(2));
+      expect(find.text('e reversal.txt  [modified]'), findsNWidgets(2));
+      expect(find.textContaining('+Staged middle'), findsOneWidget);
+      expect(find.textContaining('-context after'), findsOneWidget);
+      expect(find.textContaining('+Unstaged ending'), findsOneWidget);
+      expect(find.textContaining('-Original layer'), findsOneWidget);
+      expect(find.textContaining('+Index layer'), findsOneWidget);
+      expect(find.textContaining('-Index layer'), findsOneWidget);
+      expect(find.textContaining('+Original layer'), findsOneWidget);
+      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+      // The first matching label is the scope control, the last is the section.
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      for (final path in ['a modified.txt', 'e reversal.txt']) {
+        final headers = find.text('$path  [modified]');
+        expect(tester.getTopLeft(headers.first).dy, greaterThan(stagedY));
+        expect(tester.getTopLeft(headers.first).dy, lessThan(unstagedY));
+        expect(tester.getTopLeft(headers.last).dy, greaterThan(unstagedY));
+      }
+      // Only the two current-working-file entries may navigate to Source.
+      expect(_sourceAction(), findsNWidgets(2));
+      for (final action in _sourceAction().evaluate()) {
+        expect(
+          tester.getTopLeft(find.byWidget(action.widget)).dy,
+          greaterThan(unstagedY),
+        );
+      }
+
+      await tester.runAsync(
+        () => _git(fixture.additionalRoot, [
+          'add',
+          'a modified.txt',
+          'e reversal.txt',
+        ]),
+      );
+      _refresh(tester);
+      await _waitFor(
+        tester,
+        () =>
+            find.textContaining('+Unstaged ending').evaluate().isNotEmpty &&
+            find.text('a modified.txt  [modified]').evaluate().length == 1,
+      );
+      expect(find.text('Staged changes'), findsOneWidget);
+      expect(find.textContaining('e reversal.txt'), findsNothing);
+      expect(_sourceAction(), findsNothing);
+
+      await tester.runAsync(
+        () => fixture.write(
+          'a modified.txt',
+          'context before\nStaged middle\nRefreshed working ending\n',
+        ),
+      );
+      _refresh(tester);
+      await _visible(tester, '+Refreshed working ending');
+      expect(find.text('a modified.txt  [modified]'), findsNWidgets(2));
+      expect(find.textContaining('+Unstaged ending'), findsOneWidget);
+      expect(find.textContaining('-Unstaged ending'), findsOneWidget);
+      expect(_sourceAction(), findsOneWidget);
+      expect(find.textContaining('-Original text'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'actual Diff opens a tracked punctuated nonprimary path in Source and repeats without another read or pane',
     (tester) async {
       const path = _punctuatedPath;
@@ -450,38 +593,47 @@ void main() {
     },
   );
 
-  testWidgets(
-    'clean Environment is distinct from unavailable and Git failure',
-    (tester) async {
-      await mount(tester);
-      await _visible(tester, 'No unstaged changes');
-      // A Git executable failure cannot turn an unsuccessful observation into clean.
-      await tester.runAsync(
-        () => File('${fixture.gate.path}/fail').writeAsString('fail'),
-      );
-      _refresh(tester);
-      await _visible(tester, 'Unable to load');
-      expect(find.textContaining('No unstaged changes'), findsNothing);
-      await tester.runAsync(() => File('${fixture.gate.path}/fail').delete());
-      _refresh(tester);
-      await _visible(tester, 'No unstaged changes');
-      await tester.runAsync(
-        () => fixture.backends.backends.single.retireProvider(
-          fixture.capabilities.resolve(_changes),
-        ),
-      );
-      _refresh(tester);
-      await _visible(tester, 'unavailable');
-      expect(find.textContaining('No unstaged changes'), findsNothing);
-      expect(
-        fixture.capabilities.providersFor(environmentProviderCapability),
-        hasLength(1),
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-    skip: !Platform.isLinux,
-  );
+  for (final scope in ['Unstaged changes', 'Uncommitted changes']) {
+    testWidgets(
+      '$scope clean Environment is distinct from unavailable and Git failure',
+      (tester) async {
+        await mount(tester);
+        await _visible(tester, 'No unstaged changes');
+        if (scope == 'Uncommitted changes') {
+          await _selectScope(tester, scope);
+        }
+        final clean = 'No ${scope.toLowerCase()}';
+        await _visible(tester, clean);
+        // A Git executable failure cannot turn an unsuccessful observation into clean.
+        await tester.runAsync(
+          () => File('${fixture.gate.path}/fail').writeAsString('fail'),
+        );
+        _refresh(tester);
+        await _visible(tester, 'Unable to load');
+        expect(find.textContaining(clean), findsNothing);
+        await tester.runAsync(() => File('${fixture.gate.path}/fail').delete());
+        await tester.runAsync(
+          () => tester.tap(find.widgetWithText(TextButton, 'Retry')),
+        );
+        await _visible(tester, clean);
+        await tester.runAsync(
+          () => fixture.backends.backends.single.retireProvider(
+            fixture.capabilities.resolve(_changes),
+          ),
+        );
+        _refresh(tester);
+        await _visible(tester, 'unavailable');
+        expect(find.textContaining(clean), findsNothing);
+        expect(
+          fixture.capabilities.providersFor(environmentProviderCapability),
+          hasLength(1),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   testWidgets(
     'frontend-only installation retains Diff when change source is absent',
@@ -499,64 +651,77 @@ void main() {
     },
   );
 
-  for (final departure in ['navigation', 'provider retirement']) {
-    testWidgets('$departure fences a pending actual Git snapshot', (
-      tester,
-    ) async {
-      await mount(tester);
-      await _visible(tester, 'No unstaged changes');
-      expect(
-        fixture.environmentRuntime.currentMaterialization(
-          fixture.additional.id,
-        ),
-        isNotNull,
+  for (final scope in ['Unstaged changes', 'Uncommitted changes']) {
+    for (final departure in ['navigation', 'provider retirement']) {
+      testWidgets(
+        '$departure fences a pending actual Git $scope snapshot',
+        (tester) async {
+          await mount(tester);
+          await _visible(tester, 'No unstaged changes');
+          if (scope == 'Uncommitted changes') {
+            await _selectScope(tester, scope);
+            await _visible(tester, 'No uncommitted changes');
+          }
+          expect(
+            fixture.environmentRuntime.currentMaterialization(
+              fixture.additional.id,
+            ),
+            isNotNull,
+          );
+          await tester.runAsync(() async {
+            await fixture.write(
+              'a modified.txt',
+              'Old Session pending content\n',
+            );
+            await File('${fixture.gate.path}/armed').writeAsString('armed');
+          });
+          final staleRefresh = _refreshCallback(tester);
+          _refresh(tester);
+          // This checkpoint is reached inside Git's actual snapshot operation, after
+          // canonical materialization, contextual admission, and authority lookup.
+          await _waitFor(
+            tester,
+            () => File('${fixture.gate.path}/arrived').existsSync(),
+          );
+          if (departure == 'navigation') {
+            fixture.frontends.unbind(fixture.additionalSession);
+            await tester.pumpWidget(fixture.widget(fixture.primarySession));
+          } else {
+            await tester.runAsync(
+              () => fixture.backends.backends.single.retireProvider(
+                fixture.capabilities.resolve(_changes),
+              ),
+            );
+          }
+          await tester.runAsync(fixture.releaseGate);
+          if (departure == 'navigation') {
+            await _visible(tester, 'No unstaged changes');
+            staleRefresh();
+          } else {
+            await _visible(tester, 'Unable to load');
+            _refresh(tester);
+            await _visible(tester, 'unavailable');
+            final materialized = fixture.environmentRuntime
+                .currentMaterialization(fixture.additional.id)!;
+            final read = await tester.runAsync(
+              () => materialized.provider.readFile(
+                fixture.additional.id,
+                'a modified.txt',
+              ),
+            );
+            expect(read!.text, 'Old Session pending content\n');
+          }
+          await tester.pumpAndSettle();
+          expect(
+            find.textContaining('Old Session pending content'),
+            findsNothing,
+          );
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+        skip: !Platform.isLinux,
       );
-      await tester.runAsync(() async {
-        await fixture.write('a modified.txt', 'Old Session pending content\n');
-        await File('${fixture.gate.path}/armed').writeAsString('armed');
-      });
-      final staleRefresh = _refreshCallback(tester);
-      _refresh(tester);
-      // This checkpoint is reached inside Git's actual snapshot operation, after
-      // canonical materialization, contextual admission, and authority lookup.
-      await _waitFor(
-        tester,
-        () => File('${fixture.gate.path}/arrived').existsSync(),
-      );
-      if (departure == 'navigation') {
-        fixture.frontends.unbind(fixture.additionalSession);
-        await tester.pumpWidget(fixture.widget(fixture.primarySession));
-      } else {
-        await tester.runAsync(
-          () => fixture.backends.backends.single.retireProvider(
-            fixture.capabilities.resolve(_changes),
-          ),
-        );
-      }
-      await tester.runAsync(fixture.releaseGate);
-      if (departure == 'navigation') {
-        await _visible(tester, 'No unstaged changes');
-        staleRefresh();
-      } else {
-        await _visible(tester, 'Unable to load');
-        _refresh(tester);
-        await _visible(tester, 'unavailable');
-        final materialized = fixture.environmentRuntime.currentMaterialization(
-          fixture.additional.id,
-        )!;
-        final read = await tester.runAsync(
-          () => materialized.provider.readFile(
-            fixture.additional.id,
-            'a modified.txt',
-          ),
-        );
-        expect(read!.text, 'Old Session pending content\n');
-      }
-      await tester.pumpAndSettle();
-      expect(find.textContaining('Old Session pending content'), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    }, skip: !Platform.isLinux);
+    }
   }
 }
 
@@ -926,6 +1091,13 @@ VoidCallback _refreshCallback(WidgetTester tester) => tester
     .widget<TextButton>(find.widgetWithText(TextButton, 'Refresh'))
     .onPressed!;
 void _refresh(WidgetTester tester) => _refreshCallback(tester)();
+
+Future<void> _selectScope(WidgetTester tester, String scope) async {
+  await tester.runAsync(
+    () => tester.tap(find.widgetWithText(TextButton, scope)),
+  );
+  await tester.pump();
+}
 
 Finder _sourceAction() => find.widgetWithText(TextButton, 'Open in Source');
 

@@ -2,6 +2,8 @@ import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
+import 'package:dart_eval/src/eval/runtime/class.dart' show $InstanceImpl;
+import 'package:dart_eval/stdlib/core.dart';
 
 import 'support/contract_generator_support.dart';
 
@@ -76,6 +78,179 @@ final class SessionFailure implements Exception {
     },
     // Repeated native/eval generation and analysis use fresh analyzer contexts.
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'eval DTO constructors retain immutable nonnullable list storage after boxing',
+    () async {
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.entry')
+final class Entry {
+  Entry({required List<String> lines}) : lines = List<String>.unmodifiable(lines);
+  final List<String> lines;
+}
+@AdeleValue('fixture.snapshot')
+final class Snapshot {
+  const Snapshot({required this.entries, required this.optional});
+  final List<Entry> entries;
+  final List<String>? optional;
+}
+@AdeleService('fixture.snapshotService')
+abstract interface class SnapshotService {
+  @AdeleMethod('echo') Future<Snapshot> echo(Snapshot snapshot);
+  @AdeleMethod('read') Future<Snapshot> read();
+}
+''');
+      final output = await const ContractGenerator().generateEvalClient(
+        fixture.source,
+      );
+      expect(output, contains('required this.optional'));
+      final compiler = Compiler()
+        ..entrypoints.addAll([
+          'package:adele_contract/adele_contract.dart',
+          'package:fixture/fixture.dart',
+          'package:runner/main.dart',
+        ]);
+      final program = compiler.compile({
+        'adele_contract': {'adele_contract.dart': evalContractSupportSource},
+        'fixture': {'fixture.dart': output},
+        'runner': {
+          'main.dart': r'''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:fixture/fixture.dart';
+class Channel implements AdeleRequestChannel {
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    return payload['snapshot'];
+  }
+}
+class NativeChannel implements AdeleRequestChannel {
+  NativeChannel(this.response);
+  final Future<Object?> response;
+  Future<Object?> request(String method, Map<String, Object?> payload) {
+    if (method != 'fixture.snapshotService.read' || payload.isNotEmpty) {
+      throw StateError('Changed request semantics');
+    }
+    return response;
+  }
+}
+Future<Snapshot> read(Future<Object?> response) async {
+  final SnapshotServiceClient client = SnapshotServiceClient(NativeChannel(response));
+  final snapshot = await client.read();
+  final entries = <Entry>[];
+  entries.addAll(snapshot.entries);
+  for (final entry in entries) {
+    final lines = <String>[];
+    lines.addAll(entry.lines);
+    for (final line in lines) {
+      if (line != 'native') throw StateError('Invalid nested entry');
+    }
+    entry.lines.add('changed getter copy');
+    if (entry.lines.length != lines.length) throw StateError('Mutable stored lines');
+  }
+  snapshot.entries.add(Entry(lines: <String>['new getter item']));
+  if (snapshot.entries.length != entries.length) throw StateError('Mutable stored entries');
+  return snapshot;
+}
+Future<Snapshot> run(bool absent) {
+  final lines = <String>['original'];
+  final entries = <Entry>[Entry(lines: lines)];
+  final snapshot = absent
+      ? Snapshot(entries: entries, optional: null)
+      : Snapshot(entries: entries, optional: <String>['optional']);
+  lines[0] = 'changed';
+  entries[0] = Entry(lines: <String>['changed']);
+  if (snapshot.entries[0].lines[0] != 'original') {
+    throw StateError('Aliased constructor input');
+  }
+  final SnapshotServiceClient client = SnapshotServiceClient(Channel());
+  return client.echo(snapshot);
+}
+''',
+        },
+      });
+      for (final absent in [false, true]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        final decoded = await runtime.executeLib(
+          'package:runner/main.dart',
+          'run',
+          [absent],
+        );
+        var lists = 0;
+        void verify(Object? value) {
+          if (value is $InstanceImpl) {
+            for (final field in value.values) {
+              verify(field);
+            }
+          } else if (value is List) {
+            lists++;
+            expect(() => value[0] = value[0], throwsUnsupportedError);
+            expect(() => value.clear(), throwsUnsupportedError);
+            for (final item in value) {
+              verify(item);
+            }
+          } else if (value is $Value && value.$value is List) {
+            verify(value.$value);
+          }
+        }
+
+        final fields = (decoded as $InstanceImpl).values;
+        expect((fields[1] as $Value).$reified, absent ? null : ['optional']);
+        // Getter boxing exposes copies, so inspect stored nonnullable lists.
+        // Nullable list constructor behavior is deliberately unchanged.
+        verify(fields[0]);
+        expect(lists, 2);
+      }
+
+      for (final (empty, emptyLines) in [
+        (true, true),
+        (false, true),
+        (false, false),
+      ]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        // Host-produced structured data enters as boxed native values, rather
+        // than a DTO constructed and encoded inside the evaluator.
+        final response = $Map.wrap(
+          Map<$Value, $Value>.unmodifiable({
+            $String('entries'): $List.wrap(
+              List<$Value>.unmodifiable([
+                if (!empty)
+                  $Map.wrap(
+                    Map<$Value, $Value>.unmodifiable({
+                      $String('lines'): $List.wrap(
+                        List<$Value>.unmodifiable([
+                          if (!emptyLines) $String('native'),
+                        ]),
+                      ),
+                    }),
+                  ),
+              ]),
+            ),
+            $String('optional'): const $null(),
+          }),
+        );
+        final decoded = await runtime.executeLib(
+          'package:runner/main.dart',
+          'read',
+          [$Future.wrap(Future<$Value>.value(response))],
+        );
+        final fields = (decoded as $InstanceImpl).values;
+        final entries = (fields[0] as $Value).$value as List;
+        expect(entries, hasLength(empty ? 0 : 1));
+        expect(() => entries.clear(), throwsUnsupportedError);
+        if (!empty) {
+          final entry = entries.single as $InstanceImpl;
+          final lines = (entry.values.single as $Value).$value as List;
+          expect(lines, hasLength(emptyLines ? 0 : 1));
+          if (!emptyLines) {
+            expect((lines.single as $Value).$reified, 'native');
+            expect(() => lines[0] = lines[0], throwsUnsupportedError);
+          }
+          expect(() => lines.clear(), throwsUnsupportedError);
+        }
+      }
+    },
   );
 
   test(

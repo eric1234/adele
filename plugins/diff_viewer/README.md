@@ -8,10 +8,11 @@ not require Chat, a strategy frontend, or a Run.
 ## Ownership
 
 `packages/contract/lib/diff_viewer_contract.dart` owns
-`ChangeSetSourceService.snapshotUnstaged()` and the structured immutable snapshot
-values. The service takes no arguments: Session and Environment authority is
-captured by the host, not supplied in a request payload. The native library
-exports `changeSetSourceCapability` (`adele.diff.change-set-source`, major 1);
+`ChangeSetSourceService.snapshotUnstaged()`, `snapshotUncommitted()`, and the
+structured immutable snapshot values. Both methods take no arguments: Session and
+Environment authority is captured by the host, not supplied in a request payload.
+The native library exports `changeSetSourceCapability`
+(`adele.diff.change-set-source`, major 1);
 the generator owns `changeSetSourceServiceId` and native/eval transport.
 
 Snapshots contain changed files, explicit change/content status, numeric hunk
@@ -22,7 +23,18 @@ semantic strings keep the contract compatible with the pinned evaluator.
 map, defaulting to empty. Native clients reconstruct declared failures; the
 frontend's safe settlement path shows a local error state, not native diagnostics.
 
-The [stock Git provider](../git_environment/README.md#unstaged-change-snapshots)
+`snapshotUnstaged()` returns the existing `ChangeSetSnapshot`.
+`snapshotUncommitted()` returns `UncommittedChangeSetSnapshot` with separate
+`staged` and `unstaged` `ChangeSetSnapshot` values and an immutable `conflicts`
+list of `ChangedFile`. Uncommitted is a layered union, not a net comparison:
+HEAD A, index B, working file A produces both staged A-to-B and unstaged B-to-A
+hunks for the same path. Unresolved paths belong to `conflicts`, not ordinary
+staged or unstaged entries. The original Unstaged operation retains its conflict
+placeholders. The service/Capability identities remain unchanged; native and EVC
+artifacts must be rebuilt together under the
+[pre-release policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+
+The [stock Git provider](../git_environment/README.md#change-snapshots)
 implements this deliberately public contract over its exact live Environment.
 It owns Git/index semantics, filesystem safety, process execution and bounds.
 The Diff frontend imports neither Git nor application/native-host implementation.
@@ -39,14 +51,21 @@ through the public source-display point. There is no context-free capability
 grant, own-backend service, direct file access, process, terminal, editor, or
 execution grant.
 
-The mounted pane requests a snapshot immediately. Each explicit Refresh or Retry
-performs fresh contextual resolution, then invokes the typed generated client over
-`EnvironmentCapabilityRequestChannel` through
+The mounted pane initially selects **Unstaged changes**. A minimal selector offers
+**Uncommitted changes** without persisting a preference. Each scope calls its
+specific generated method; Uncommitted is one contextual operation, not two
+frontend requests concatenated together. Its lazy rows distinguish
+**Staged changes**, **Unstaged changes**, and **Conflicts**, retaining paths and
+hunks in each layer. Only an empty pair of layers and empty conflicts is clean.
+
+The mounted pane requests a snapshot immediately. Each scope change, Refresh or
+Retry performs fresh contextual resolution, then invokes the typed generated
+client over `EnvironmentCapabilityRequestChannel` through
 `settleEnvironmentCapabilityOperation`. Each snapshot releases its provider
-handle. Superseding refresh, departure preparation, and disposal invalidate the
-local request revision and release pending access; a late resolution releases its
-unused handle and an older result cannot replace a newer presentation. Departure
-does not wait for independently owned backend work. If another pane refuses
+handle. Scope changes, superseding refresh, departure preparation, and disposal
+invalidate the local request revision and release pending access; a late resolution
+releases its unused handle and an older result cannot replace a newer presentation.
+Departure does not wait for independently owned backend work. If another pane refuses
 navigation, Diff remains manually refreshable.
 
 The pane distinguishes loading, unavailable, clean, and error states. Unified
@@ -58,14 +77,17 @@ confirmed modification: for example a provider may decline recursive submodule
 inspection and supply that explanation in `detail`. Such a snapshot is not a
 claim that the entire Environment was inspected or clean.
 
-Eligible file headers offer **Open in Source** through the public
+Eligible unstaged current-working-file headers offer **Open in Source** through
+the public
 [`main_content_bridge.dart` source-display API](../../packages/ui/README.md#source-file-display),
 not a Source implementation import. Eligibility requires existing text content:
 `contentStatus: 'text'` with `added`, `modified`, or a text-bearing `typeChanged`
 change. Deleted, binary, oversized, unsupported, conflicted, and type-only entries
 without text offer no action. The raw `relativePath` is retained separately from
 the displayed header and forwarded unchanged, including spaces and punctuation;
-Diff neither parses its label nor normalizes the path.
+Diff neither parses its label nor normalizes the path. Staged and conflict headers
+offer no Source action: Source opens the actual working file, not historical index
+content. A path occurring in both layers can still open from its unstaged header.
 
 One pane-wide pending request suppresses duplicate openings. Missing or ambiguous
 Source providers remain explicit, and failed display shows a safe, nonfatal error
@@ -94,18 +116,22 @@ dart tools/adele.dart test --target diff_viewer_frontend
 dart tools/adele.dart test --target adele_tools
 ```
 
-The contract suite checks native nested transport, strict decoding, empty request
-payloads, declared failures, and list immutability. The frontend suite compiles
-and mounts real EVC with generated native/eval codecs through a test-only
-contextual port, covering states, manual recovery, handle cleanup, held operation
-races, lazy display, and Source action eligibility, raw paths, pending suppression,
-safe failures, and stale callbacks. It does not substitute for authority validation:
+The contract suite checks both native and interpreted nested transport, strict
+decoding, empty request payloads, declared failures, and list immutability. The
+frontend suite compiles and mounts real EVC with generated native/eval codecs
+through a test-only contextual port, covering states, manual recovery, handle cleanup, held operation
+races, scope switching, separate staged/unstaged/conflict rows, cancellation,
+selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
+paths, pending suppression, safe failures, and stale callbacks. It does not
+substitute for authority validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
 consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
 real stock Git AOT plus independently prepared Diff and Source EVC through normal
-catalog/Main Content hosting, including canonical nonprimary content, deduplication,
-dirty text/undo, focus, and gated retirement/navigation. That cross-plugin suite
-requires the native CodeForge library; the isolated Diff frontend suite does not.
+catalog/Main Content hosting, including real staged-only and layered
+partial/cancelling changes, source confinement, selected-scope Refresh, canonical
+nonprimary content, deduplication, dirty text/undo, focus, and gated
+retirement/navigation. That cross-plugin suite requires the native CodeForge
+library; the isolated Diff frontend suite does not.
 The existing Source host suite remains the owner of Source document/operation
 behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)
 for prerequisites and test ownership, not recorded passing outcomes.

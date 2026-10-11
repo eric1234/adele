@@ -41,7 +41,7 @@ void main() {
     await container.delete(recursive: true);
   });
 
-  Future<ChangeSetSnapshot> snapshot({
+  GitChangeSetSourceService service({
     GitChangeSetLimits limits = const GitChangeSetLimits(),
     Map<String, String>? parentEnvironment,
   }) => GitChangeSetSourceService(
@@ -54,7 +54,627 @@ void main() {
       'XDG_CONFIG_HOME': '${container.path}/config',
       ...?parentEnvironment,
     },
+  );
+
+  Future<ChangeSetSnapshot> snapshot({
+    GitChangeSetLimits limits = const GitChangeSetLimits(),
+    Map<String, String>? parentEnvironment,
+  }) => service(
+    limits: limits,
+    parentEnvironment: parentEnvironment,
   ).snapshotUnstaged();
+
+  Future<UncommittedChangeSetSnapshot> uncommitted({
+    GitChangeSetLimits limits = const GitChangeSetLimits(),
+    Map<String, String>? parentEnvironment,
+  }) => service(
+    limits: limits,
+    parentEnvironment: parentEnvironment,
+  ).snapshotUncommitted();
+
+  test(
+    'uncommitted separates staged unstaged partial hunks and cancellation',
+    () async {
+      final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';
+      for (final name in ['partial', 'cancel', 'staged', 'unstaged']) {
+        await File('${repository.path}/$name').writeAsString(original);
+      }
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Layers']);
+      final indexed = original
+          .replaceFirst('line 1\n', 'staged first\n')
+          .replaceFirst('line 27\n', 'staged last\n');
+      for (final name in ['partial', 'cancel', 'staged']) {
+        await File('${repository.path}/$name').writeAsString(indexed);
+      }
+      await _git(repository, ['add', '.']);
+      await File('${repository.path}/partial').writeAsString(
+        indexed
+            .replaceFirst('staged first\n', 'working first\n')
+            .replaceFirst('staged last\n', 'working last\n'),
+      );
+      await File('${repository.path}/cancel').writeAsString(original);
+      await File('${repository.path}/unstaged').writeAsString('working only\n');
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+      final config = await File('${repository.path}/.git/config').readAsBytes();
+      final result = await uncommitted();
+      expect(result.staged.files.map((f) => f.relativePath), [
+        'cancel',
+        'partial',
+        'staged',
+      ]);
+      expect(result.unstaged.files.map((f) => f.relativePath), [
+        'cancel',
+        'partial',
+        'unstaged',
+      ]);
+      expect(result.conflicts, isEmpty);
+      final staged = result.staged.files[1];
+      final working = result.unstaged.files[1];
+      expect(staged.hunks, hasLength(2));
+      expect(working.hunks, hasLength(2));
+      expect(
+        staged.hunks.first.lines.where((l) => l.kind == 'addition').single.text,
+        'staged first',
+      );
+      expect(
+        working.hunks.first.lines
+            .where((l) => l.kind == 'deletion')
+            .single
+            .text,
+        'staged first',
+      );
+      expect(
+        working.hunks.first.lines
+            .where((l) => l.kind == 'addition')
+            .single
+            .text,
+        'working first',
+      );
+      expect(
+        result.unstaged.files.first.hunks.first.lines
+            .where((l) => l.kind == 'addition')
+            .single
+            .text,
+        'line 1',
+      );
+      expect(
+        (await snapshot()).files.map((f) => f.relativePath),
+        result.unstaged.files.map((f) => f.relativePath),
+      );
+      expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+      expect(
+        await File('${repository.path}/.git/config').readAsBytes(),
+        config,
+      );
+      expect(await File('${repository.path}/cancel').readAsString(), original);
+      expect(authority.fileReads, 0);
+    },
+  );
+
+  test(
+    'staged additions deletions recreated deletions and ignored untracked paths',
+    () async {
+      await File('${repository.path}/deleted').writeAsString('deleted HEAD\n');
+      await File(
+        '${repository.path}/recreated',
+      ).writeAsString('original HEAD\n');
+      await File('${repository.path}/.gitignore').writeAsString('ignored\n');
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Deletes']);
+      await _git(repository, ['rm', 'deleted', 'recreated']);
+      await File('${repository.path}/added').writeAsString('index addition\n');
+      await File('${repository.path}/empty').writeAsString('');
+      await _git(repository, ['add', 'added', 'empty']);
+      await File(
+        '${repository.path}/added',
+      ).writeAsString('working addition\n');
+      await File(
+        '${repository.path}/recreated',
+      ).writeAsString('recreated working\n');
+      await File('${repository.path}/untracked').writeAsString('untracked\n');
+      await File('${repository.path}/ignored').writeAsString('ignored\n');
+      final result = await uncommitted();
+      expect(
+        result.staged.files.map((f) => '${f.relativePath}:${f.changeKind}'),
+        ['added:added', 'deleted:deleted', 'empty:added', 'recreated:deleted'],
+      );
+      expect(
+        result.staged.files.first.hunks.single.lines.single.text,
+        'index addition',
+      );
+      final addition = result.staged.files.first.hunks.single;
+      expect(
+        (
+          addition.oldStart,
+          addition.oldCount,
+          addition.newStart,
+          addition.newCount,
+        ),
+        (0, 0, 1, 1),
+      );
+      final deletion = result.staged.files[1].hunks.single;
+      expect(
+        (
+          deletion.oldStart,
+          deletion.oldCount,
+          deletion.newStart,
+          deletion.newCount,
+        ),
+        (1, 1, 0, 0),
+      );
+      expect(result.staged.files[2].hunks, isEmpty);
+      expect(
+        result.staged.files.last.hunks.single.lines.single.text,
+        'original HEAD',
+      );
+      expect(
+        result.unstaged.files.map((f) => '${f.relativePath}:${f.changeKind}'),
+        ['added:modified', 'recreated:added', 'untracked:added'],
+      );
+    },
+  );
+
+  test(
+    'intent to add is unstaged and all conflict stages have one separate entry',
+    () async {
+      for (final name in ['intent', 'intent-empty']) {
+        await File(
+          '${repository.path}/$name',
+        ).writeAsString(name == 'intent' ? 'intent\n' : '');
+        await _git(repository, ['add', '-N', name]);
+      }
+      final oids = <String>[];
+      for (final content in ['base\n', 'ours\n', 'theirs\n']) {
+        oids.add(
+          (await _git(repository, [
+            'hash-object',
+            '-w',
+            '--stdin',
+          ], input: content)).trim(),
+        );
+      }
+      await _git(
+        repository,
+        ['update-index', '--index-info'],
+        input: [
+          for (var i = 0; i < 3; i++) '100644 ${oids[i]} ${i + 1}\tconflict\n',
+        ].join(),
+      );
+      await File(
+        '${repository.path}/conflict',
+      ).writeAsString('conflicted working\n');
+      final result = await uncommitted();
+      expect(result.staged.files, isEmpty);
+      expect(result.unstaged.files.map((f) => f.relativePath), [
+        'intent',
+        'intent-empty',
+      ]);
+      expect(
+        result.unstaged.files.every((f) => f.changeKind == 'added'),
+        isTrue,
+      );
+      expect(result.conflicts.single.relativePath, 'conflict');
+      expect(result.conflicts.single.changeKind, 'conflicted');
+      expect(result.conflicts.single.contentStatus, 'conflicted');
+      expect(result.conflicts.single.hunks, isEmpty);
+      expect((await snapshot()).files.first.contentStatus, 'conflicted');
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(files: 2)),
+        throwsA(_code('too_many_files')),
+      );
+    },
+  );
+
+  test(
+    'uncommitted nested scope uses Environment relative HEAD and index paths',
+    () async {
+      final nested = await Directory('${repository.path}/selected').create();
+      for (final path in ['selected/same', 'outside']) {
+        await File('${repository.path}/$path').writeAsString('HEAD\n');
+      }
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Nested layers']);
+      for (final path in ['selected/same', 'outside']) {
+        await File('${repository.path}/$path').writeAsString('index $path\n');
+      }
+      await _git(repository, ['add', '.']);
+      await File('${nested.path}/same').writeAsString('working selected\n');
+      provider.liveObjects.unbind(EnvironmentId('selected'));
+      provider.liveObjects.bind(
+        EnvironmentId('selected'),
+        WorktreeEnvironment(
+          nested,
+          gitWorktreeRoot: repository,
+          gitDirectory: Directory('${repository.path}/.git'),
+        ),
+      );
+      await _git(nested, ['init']);
+      final result = await uncommitted();
+      expect(result.staged.files.single.relativePath, 'same');
+      expect(
+        result.staged.files.single.hunks.single.lines.last.text,
+        'index selected/same',
+      );
+      expect(result.unstaged.files.single.relativePath, 'same');
+      expect(
+        result.unstaged.files.single.hunks.single.lines.last.text,
+        'working selected',
+      );
+      expect(result.conflicts, isEmpty);
+    },
+  );
+
+  test(
+    'staged NUL tree inventory preserves literal unusual paths',
+    () async {
+      final paths = [
+        ' space ',
+        '-option',
+        ':(glob)*',
+        'tab\tfile',
+        'line\nfile',
+        r'back\slash',
+      ];
+      for (final path in paths) {
+        await File('${repository.path}/$path').writeAsString('HEAD\n');
+      }
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Literal HEAD paths']);
+      for (final path in paths) {
+        await File('${repository.path}/$path').writeAsString('index\n');
+      }
+      await _git(repository, ['add', '.']);
+      final result = await uncommitted();
+      expect(result.staged.files.map((f) => f.relativePath), paths..sort());
+      expect(
+        result.staged.files.every((f) => f.contentStatus == 'text'),
+        isTrue,
+      );
+      expect(result.unstaged.files, isEmpty);
+    },
+    skip: Platform.isWindows,
+  );
+
+  test(
+    'staged unsupported modes flags links gitlinks and nontext remain explicit',
+    () async {
+      for (final name in ['mode', 'skip', 'assume', 'binary', 'encoding']) {
+        await File('${repository.path}/$name').writeAsString('HEAD\n');
+      }
+      await Link('${repository.path}/link').create('missing-before');
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Types']);
+      await File('${repository.path}/binary').writeAsBytes([1, 0, 2]);
+      await File('${repository.path}/encoding').writeAsBytes([255]);
+      await Link('${repository.path}/link').update('missing-after');
+      await _git(repository, ['update-index', '--chmod=+x', 'mode']);
+      await _git(repository, ['add', 'binary', 'encoding', 'link']);
+      await _git(repository, ['update-index', '--skip-worktree', 'skip']);
+      await _git(repository, ['update-index', '--assume-unchanged', 'assume']);
+      final commit = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+      await _git(repository, [
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        '160000,$commit,module',
+      ]);
+      final result = await uncommitted();
+      final staged = {for (final f in result.staged.files) f.relativePath: f};
+      expect(staged.keys, ['binary', 'encoding', 'link', 'mode', 'module']);
+      expect(staged['binary']!.contentStatus, 'binary');
+      expect(staged['mode']!.changeKind, 'typeChanged');
+      expect(staged.values.every((f) => f.hunks.isEmpty), isTrue);
+      expect(
+        staged.values.where((f) => f.contentStatus == 'unsupported'),
+        hasLength(4),
+      );
+      final working = {
+        for (final f in result.unstaged.files) f.relativePath: f,
+      };
+      expect(working['skip']!.contentStatus, 'unsupported');
+      expect(working['assume']!.contentStatus, 'unsupported');
+      expect(working['module']!.contentStatus, 'unsupported');
+      expect(await Link('${repository.path}/link').target(), 'missing-after');
+    },
+    skip: Platform.isWindows,
+  );
+
+  test(
+    'staged immutable blob sizes and combined layer budgets are bounded',
+    () async {
+      await File('${repository.path}/baseline').writeAsString('index\n');
+      await _git(repository, ['add', 'baseline']);
+      await File('${repository.path}/baseline').writeAsString('work\n');
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(files: 1)),
+        throwsA(_code('too_many_files')),
+      );
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(lines: 3)),
+        throwsA(_code('snapshot_too_large')),
+      );
+      // Each layer fits independently, their inputs plus patches do not.
+      expect(
+        (await snapshot(
+          limits: const GitChangeSetLimits(totalBytes: 200),
+        )).files,
+        hasLength(1),
+      );
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(totalBytes: 200)),
+        throwsA(_code('snapshot_too_large')),
+      );
+      await File('${repository.path}/baseline').writeAsString('index\n');
+      expect(
+        (await uncommitted(
+          limits: const GitChangeSetLimits(totalBytes: 200),
+        )).staged.files,
+        hasLength(1),
+      );
+      await File('${repository.path}/baseline').writeAsString('work\n');
+      await File('${repository.path}/large').writeAsString('x' * 100);
+      await _git(repository, ['add', 'large']);
+      await File('${repository.path}/large').writeAsString('small\n');
+      final result = await uncommitted(
+        limits: const GitChangeSetLimits(fileBytes: 20),
+      );
+      expect(result.staged.files.last.contentStatus, 'oversized');
+      expect(result.unstaged.files.last.contentStatus, 'oversized');
+      await _git(repository, ['commit', '-m', 'Large HEAD']);
+      await _git(repository, ['rm', '--cached', 'large']);
+      expect(
+        (await uncommitted(
+          limits: const GitChangeSetLimits(fileBytes: 20),
+        )).staged.files.single.contentStatus,
+        'oversized',
+      );
+    },
+  );
+
+  test(
+    'clean snapshots consume no changed content budget and HEAD index union are bounded',
+    () async {
+      final clean = await uncommitted(
+        limits: const GitChangeSetLimits(
+          totalBytes: 1,
+          files: 1,
+          inventoryEntries: 1,
+        ),
+      );
+      expect(clean.staged.files, isEmpty);
+      expect(clean.unstaged.files, isEmpty);
+      expect(clean.conflicts, isEmpty);
+      await File('${repository.path}/deleted').writeAsString('old\n');
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Inventory']);
+      await _git(repository, ['rm', 'deleted']);
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(inventoryEntries: 1)),
+        throwsA(_code('inventory_too_large')),
+      );
+      await File('${repository.path}/added').writeAsString('new\n');
+      await _git(repository, ['add', 'added']);
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(inventoryEntries: 2)),
+        throwsA(_code('inventory_too_large')),
+      );
+      await File('${repository.path}/another').writeAsString('new\n');
+      await _git(repository, ['add', 'another']);
+      await expectLater(
+        uncommitted(limits: const GitChangeSetLimits(inventoryEntries: 2)),
+        throwsA(_code('inventory_too_large')),
+      );
+    },
+  );
+
+  for (final oversized in ['staged HEAD', 'staged index', 'unstaged index']) {
+    test(
+      'bounded sides of oversized $oversized pairs share the aggregate budget',
+      () async {
+        for (final name in ['one', 'two']) {
+          await File(
+            '${repository.path}/$name',
+          ).writeAsString(oversized == 'staged index' ? 'small\n' : 'x' * 100);
+        }
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Oversized pairs']);
+        for (final name in ['one', 'two']) {
+          await File(
+            '${repository.path}/$name',
+          ).writeAsString(oversized == 'staged index' ? 'x' * 100 : 'small\n');
+        }
+        if (oversized != 'unstaged index') await _git(repository, ['add', '.']);
+        final result = await uncommitted(
+          limits: const GitChangeSetLimits(fileBytes: 20),
+        );
+        final files = oversized == 'unstaged index'
+            ? result.unstaged.files
+            : result.staged.files;
+        expect(files, hasLength(2));
+        expect(files.every((f) => f.contentStatus == 'oversized'), isTrue);
+        await expectLater(
+          uncommitted(
+            limits: const GitChangeSetLimits(fileBytes: 20, totalBytes: 10),
+          ),
+          throwsA(_code('snapshot_too_large')),
+        );
+      },
+    );
+  }
+
+  test(
+    'escaped transport budget is shared by opposing layers of one path',
+    () async {
+      await File(
+        '${repository.path}/baseline',
+      ).writeAsString('\u0001' * 525000);
+      await _git(repository, ['add', 'baseline']);
+      await File('${repository.path}/baseline').writeAsString('baseline\n');
+      await expectLater(uncommitted(), throwsA(_code('snapshot_too_large')));
+    },
+  );
+
+  test(
+    'staged read never invokes configured conversions hooks or mutates source',
+    () async {
+      await File('${repository.path}/baseline').writeAsString('index\n');
+      await _git(repository, ['add', 'baseline']);
+      final sentinel = File('${container.path}/executed');
+      for (final key in [
+        'filter.evil.clean',
+        'filter.evil.process',
+        'diff.evil.textconv',
+        'diff.external',
+        'core.fsmonitor',
+      ]) {
+        await _git(repository, ['config', key, 'touch ${sentinel.path}']);
+      }
+      await File(
+        '${repository.path}/.git/info/attributes',
+      ).writeAsString('baseline filter=evil diff=evil\n');
+      final hook = File('${repository.path}/.git/hooks/post-index-change');
+      await hook.writeAsString('#!/bin/sh\ntouch ${_quote(sentinel.path)}\n');
+      await Process.run('chmod', ['755', hook.path]);
+      final paths = [
+        '.git/index',
+        '.git/config',
+        '.git/info/attributes',
+        'baseline',
+      ];
+      final before = {
+        for (final path in paths)
+          path: await File('${repository.path}/$path').readAsBytes(),
+      };
+      final result = await uncommitted();
+      expect(result.staged.files.single.contentStatus, 'unsupported');
+      expect(result.unstaged.files, isEmpty);
+      expect(await sentinel.exists(), isFalse);
+      for (final path in paths) {
+        expect(
+          await File('${repository.path}/$path').readAsBytes(),
+          before[path],
+        );
+      }
+    },
+    skip: !Platform.isLinux,
+  );
+
+  for (final mutation in ['HEAD', 'index', 'worktree']) {
+    test('uncommitted $mutation race rejects both layers', () async {
+      final target = File('${repository.path}/baseline');
+      await target.writeAsString('index\n');
+      await _git(repository, ['add', 'baseline']);
+      await target.writeAsString('worktree\n');
+      final next = (await _git(repository, [
+        'commit-tree',
+        'HEAD^{tree}',
+        '-p',
+        'HEAD',
+        '-m',
+        'Next',
+      ])).trim();
+      final action = switch (mutation) {
+        'HEAD' =>
+          '/usr/bin/git -C ${_quote(repository.path)} update-ref HEAD $next',
+        'index' =>
+          '/usr/bin/git -C ${_quote(repository.path)} update-index --force-remove baseline',
+        _ => '/usr/bin/printf "raced content\\n" > ${_quote(target.path)}',
+      };
+      final count = File('${container.path}/patch-count');
+      final shim = await _shim(container, '''
+case " \$* " in
+  *" --no-index "*)
+    if [ -e ${_quote(count.path)} ]; then $action; else /usr/bin/touch ${_quote(count.path)}; fi ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+      UncommittedChangeSetSnapshot? published;
+      await expectLater(
+        uncommitted(
+          parentEnvironment: {'PATH': shim.path},
+        ).then((result) => published = result),
+        throwsA(_code('snapshot_changed')),
+      );
+      expect(published, isNull);
+      expect(await count.exists(), isTrue);
+    }, skip: !Platform.isLinux);
+  }
+
+  for (final stage in [2, 3]) {
+    test(
+      'conflict stage $stage identity is revalidated even with unchanged stage one',
+      () async {
+        final base = (await _git(repository, [
+          'rev-parse',
+          'HEAD:baseline',
+        ])).trim();
+        final other = (await _git(repository, [
+          'hash-object',
+          '-w',
+          '--stdin',
+        ], input: 'other\n')).trim();
+        await _git(
+          repository,
+          ['update-index', '--index-info'],
+          input: [
+            for (var i = 1; i <= 3; i++) '100644 $base $i\tconflict\n',
+          ].join(),
+        );
+        await File('${repository.path}/baseline').writeAsString('working\n');
+        final shim = await _shim(container, '''
+case " \$* " in
+  *" --no-index "*) /usr/bin/printf '100644 $other $stage\\tconflict\\n' | /usr/bin/git -C ${_quote(repository.path)} update-index --index-info ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+        await expectLater(
+          uncommitted(parentEnvironment: {'PATH': shim.path}),
+          throwsA(_code('snapshot_changed')),
+        );
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  test('uncommitted HEAD is revalidated after authorized settlement', () async {
+    final head = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+    await _git(repository, ['branch', 'same-commit', head]);
+    authority.onRead = (count) {
+      if (count == 2) {
+        File(
+          '${repository.path}/.git/HEAD',
+        ).writeAsStringSync('ref: refs/heads/same-commit\n');
+      }
+    };
+    await expectLater(uncommitted(), throwsA(_code('snapshot_changed')));
+  });
+
+  test(
+    'uncommitted process and operation deadlines do not publish clean results',
+    () async {
+      final shim = await _shim(container, 'exec /bin/sleep 30');
+      await expectLater(
+        uncommitted(
+          limits: const GitChangeSetLimits(
+            processTimeout: Duration(milliseconds: 50),
+          ),
+          parentEnvironment: {'PATH': shim.path},
+        ),
+        throwsA(_code('git_timeout')),
+      );
+      await expectLater(
+        uncommitted(
+          limits: const GitChangeSetLimits(
+            operationTimeout: Duration(milliseconds: 50),
+          ),
+          parentEnvironment: {'PATH': shim.path},
+        ),
+        throwsA(_code('operation_timeout')),
+      );
+    },
+    skip: !Platform.isLinux,
+  );
 
   test(
     'real index versus worktree includes multiple hunks and excludes staged-only',
@@ -968,9 +1588,12 @@ exec /usr/bin/git "\$@"
         if (count == 2) throw StateError('revoked');
       };
       await expectLater(snapshot(), throwsStateError);
+      authority.reads = 0;
+      await expectLater(uncommitted(), throwsStateError);
       authority.onRead = null;
       authority.environmentId = 'missing';
       await expectLater(snapshot(), throwsA(_code('environment_not_live')));
+      await expectLater(uncommitted(), throwsA(_code('environment_not_live')));
     },
   );
 
