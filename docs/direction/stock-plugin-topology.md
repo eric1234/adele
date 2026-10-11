@@ -337,9 +337,9 @@ Task/environment/worktree/branch names may match by convention but are not one i
 ### Review/change provider
 
 Git implements the Diff-owned public `ChangeSetSource` Capability in its existing
-Environment backend. The read-only implementation supplies Unstaged and layered
-Uncommitted snapshots for its exactly associated canonical Environment. The contract
-remains in the Diff ecosystem rather than core; see the
+Environment backend. The initial read-only implementation supplies Unstaged
+snapshots for its exactly associated canonical Environment. The contract remains
+in the Diff ecosystem rather than core; see the
 [accepted ownership boundary](../architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots)
 and [Git implementation scope](../../plugins/git_environment/README.md).
 
@@ -715,11 +715,10 @@ Graceful degradation:
 - no Git but another compatible change provider: Diff can still work.
 
 The current [Diff Viewer](../../plugins/diff_viewer/README.md) is the modest
-read-only subset: default Unstaged and selectable layered Uncommitted hunks,
-separate conflicts, explicit content limitations, clean and unavailable/error
-states, manual Refresh, and eligible unstaged Open in Source. The broader review
-controls described here remain intended future behavior, not capabilities implied
-by the change-source contract.
+read-only subset: unified Unstaged hunks, explicit content limitations, clean and
+unavailable/error states, and manual Refresh. The broader review controls described
+here remain intended future behavior, not capabilities implied by the initial
+change-source contract.
 
 ## 9.2 Internal Source Editor
 
