@@ -3,15 +3,20 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:flutter/material.dart';
@@ -21,13 +26,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../../../app/tool/source_editor_frontend_compiler.dart';
-import '../../../../../tools/stock_frontend_descriptors.dart';
+import '../../../../../tools/backend_artifacts.dart';
 
 const _path = 'lib/source.dart';
 const _original = 'original source\n';
 const _otherText = 'other Environment source\n';
 const _readRevision = 'opaque:initial';
 const _writeRevision = 'opaque:acknowledged';
+const _folding = 'dev.adele.source-editor.enable-folding';
 
 void main() {
   late Directory temporary;
@@ -36,47 +42,52 @@ void main() {
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-source-host-');
     final installed = await Directory('${temporary.path}/source').create();
+    final repository = Directory.current.parent.parent.parent.parent;
     await File('${installed.path}/frontend.evc').writeAsBytes(
-      await compileSourceEditorFrontend(
-        repositoryRoot: Directory.current.parent.parent.parent.parent,
-      ),
+      await compileSourceEditorFrontend(repositoryRoot: repository),
     );
-    await File(
-      '${installed.path}/adele_plugin.installation.json',
-    ).writeAsString(
-      jsonEncode({
-        'manifestVersion': 1,
-        'metadata': {
-          'id': 'dev.adele.source-editor',
-          'version': '1',
-          'displayName': 'Source Editor',
-        },
-        'components': {
-          'frontend': {
-            'artifact': 'frontend.evc',
-            'presentations':
-                stockFrontendDescriptors['dev.adele.source-editor'],
-            'extensions':
-                stockFrontendExtensionDescriptors['dev.adele.source-editor'],
-          },
-        },
-      }),
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: installed,
+      pluginId: 'dev.adele.source-editor',
+      displayName: 'Source',
+      frontend: true,
     );
     catalog = await PreparedPluginCatalog.discover(temporary.path);
     expect(catalog.issues, isEmpty);
     expect(catalog.installations.single.backendArtifactUri, isNull);
+    expect(
+      catalog.installations.single.settingsSchema!.definitions.single.id,
+      SettingId(_folding),
+    );
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
-  Future<_Fixture> start(WidgetTester tester) async {
+  Future<_Fixture> start(WidgetTester tester, {bool? folding}) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
-    final fixture = _Fixture();
+    final root = await temporary.createTemp('settings-');
+    final roots = PlatformStorageRoots(
+      operatingSystem: Platform.operatingSystem,
+      configurationRoot: '${root.path}/config',
+      localStateRoot: '${root.path}/state',
+      localDataRoot: '${root.path}/data',
+      cacheRoot: '${root.path}/cache',
+    );
+    final fixture = _Fixture(roots);
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       await fixture.frontends.close();
       await fixture.registration.close();
+      await root.delete(recursive: true);
       await tester.binding.setSurfaceSize(null);
     });
+    if (folding != null) {
+      final settings = GlobalSettingsStore(
+        store: ConfigurationStore(roots),
+        catalog: catalog.settings,
+      );
+      settings.save(settings.load().setOverride(SettingId(_folding), folding));
+    }
     await fixture.frontends.start(catalog);
     expect(
       fixture.frontends.generations.single.state,
@@ -97,6 +108,76 @@ void main() {
     expect(find.byType(CodeForge), findsNothing);
     expect(fixture.provider.restored, isEmpty);
     return fixture;
+  }
+
+  for (final folding in <bool?>[null, true]) {
+    testWidgets(
+      'actual Source EVC ${folding == null ? 'default false' : 'global true'} folding retains native owners across remount and navigation',
+      (tester) => tester.runAsync(() async {
+        final fixture = await start(tester, folding: folding);
+        final expected = folding ?? false;
+        final opened = await fixture.display(_path);
+        expect(opened['ok'], isTrue);
+        await _until(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+        );
+        final native = _editor(tester);
+        expect(native.enableFolding, expected);
+        expect(native.controller!.text, _original);
+        await _deleteFirst(tester, native);
+
+        if (Platform.isLinux) {
+          final settings = GlobalSettingsStore(
+            store: ConfigurationStore(fixture.roots),
+            catalog: catalog.settings,
+          );
+          settings.save(
+            settings.load().setOverride(SettingId(_folding), !expected),
+          );
+          final nextStartup = await PreparedSettingsSnapshot.load(
+            catalog,
+            roots: fixture.roots,
+          );
+          expect(
+            nextStartup.read(catalog.installations.single, _folding).value,
+            !expected,
+          );
+        }
+
+        await fixture.hide(tester);
+        expect(find.byType(CodeForge), findsNothing);
+        await fixture.mount(tester, fixture.otherSession);
+        expect(find.byType(CodeForge), findsNothing);
+        await fixture.mount(tester, fixture.session);
+        await _until(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+        );
+        final remounted = _editor(tester);
+        expect(remounted.enableFolding, expected);
+        expect(remounted.controller, same(native.controller));
+        expect(remounted.undoController, same(native.undoController));
+        expect(remounted.controller!.text, _original.substring(1));
+        final element = tester.element(find.byType(CodeForge));
+
+        expect((await fixture.display(_path))['id'], opened['id']);
+        await tester.pump();
+        expect(fixture.provider.reads, hasLength(1));
+        expect(find.byType(CodeForge), findsOneWidget);
+        expect(tester.element(find.byType(CodeForge)), same(element));
+        expect(_editor(tester).enableFolding, expected);
+        expect(_editor(tester).controller, same(native.controller));
+        expect(_editor(tester).undoController, same(native.undoController));
+        remounted.focusNode!.requestFocus();
+        await tester.pump();
+        await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+        expect(native.controller!.text, _original);
+        expect(fixture.provider.replacements, isEmpty);
+        expect(tester.takeException(), isNull);
+      }),
+      skip: folding != null && !Platform.isLinux,
+    );
   }
 
   testWidgets(
@@ -995,7 +1076,7 @@ EnvironmentTextFile _file(String text) => EnvironmentTextFile(
 );
 
 final class _Fixture {
-  _Fixture() {
+  _Fixture(this.roots) {
     primary = Environment(
       id: EnvironmentId('primary'),
       taskId: task.id,
@@ -1041,9 +1122,12 @@ final class _Fixture {
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,
       mainContentHost: host,
+      loadSettings: (catalog) =>
+          PreparedSettingsSnapshot.load(catalog, roots: roots),
     );
   }
 
+  final PlatformStorageRoots roots;
   final store = InMemoryProductStore();
   final registry = CapabilityRegistry();
   final extensions = ExtensionRegistry();

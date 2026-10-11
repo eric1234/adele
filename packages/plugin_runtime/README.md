@@ -65,16 +65,18 @@ to [plugin layout](../../docs/architecture/plugin-layout.md#prepared-installatio
 reads a deterministic startup snapshot of immediate child directories'
 `adele_plugin.installation.json` files, not source `adele_plugin.yaml` manifests.
 The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
-`metadata` supplies `PluginMetadata`; the required `components` object may be
-empty, retaining an inert metadata-only installation. A backend component supplies
+`metadata` supplies `PluginMetadata`; optional installation-level `settingsSchema`
+references declarative settings. The required `components` object may be
+empty, retaining a metadata-only installation. A backend component supplies
 an `artifact` path and optional `consumesCapabilities`; a frontend supplies an
 `artifact` path and descriptors.
-The in-memory catalog captures parsed metadata and validated locations, not an
-atomic filesystem snapshot or artifact bytes. Later component loading can fail
-even after discovery succeeds.
-Discovery validates metadata and independently optional backend/frontend components
-with confined prepared files, without starting processes, compiling source, loading
-EVC, or watching for changes. `PreparedPluginInstallation` retains optional
+The in-memory catalog captures parsed metadata, settings declarations, and validated
+locations, not an atomic filesystem snapshot or executable artifact bytes. Later
+component loading can fail even after discovery succeeds.
+Discovery validates metadata, optional settings, and independently optional
+backend/frontend components with confined prepared files, without starting
+processes, compiling source, loading EVC, or watching for changes.
+`PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
@@ -86,6 +88,76 @@ The separate sealed `PreparedFrontendExtension` includes
 `extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list. Manifest version remains 1.
+
+### Settings Schemas
+
+An optional top-level `settingsSchema: "settings.schema.json"` references a UTF-8
+JSON asset in the installation. It is not a backend/frontend component, activation
+declaration, executable validator, or configured value. Existing installations
+without the field remain valid and contribute no settings; metadata-only,
+backend-only, and frontend-only installations can all declare settings.
+The asset has an explicit independent version and a strict envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "org.example.plugin.enabled",
+      "type": "boolean",
+      "default": true,
+      "label": "Enabled",
+      "category": "General",
+      "section": "Output"
+    }
+  ]
+}
+```
+
+Each definition requires `id`, `type`, `default`, `label`, `category`, and `section`;
+`description` is optional. `type` is exactly `boolean`, `integer`, `string`, or
+`enum`. Only integers accept optional inclusive `minimum`/`maximum`. Only enums
+require `options`, a nonempty array of objects with required stable `value` and
+optional display `label`. No other fields, nulls, coercions, or executable hooks
+are accepted. Ordinary string defaults remain unconstrained text within the asset
+byte bound. Description may be empty or multiline.
+
+Ownership is derived from `metadata.id` as `SettingOwnerId`, never accepted from
+the asset. Every setting ID must be beneath that PluginId's namespace at a dot
+boundary. The public [`adele_settings`](../settings/README.md) constructors own
+identity, presentation, enum uniqueness, integer bounds, and default validation;
+discovery does not implement a second settings semantic model or depend on TOML
+or native persistence. Categories/sections are product organization, not ownership.
+
+`PreparedSettingsSchema` owns the prepared-input bounds: at most 1 MiB of UTF-8
+bytes (the read itself is bounded), 256 definitions, and 128 options per enum.
+IDs allow at most 256 UTF-16 code units; labels, categories, sections, enum values,
+and enum labels allow 160 each; descriptions allow 4096. References use the same
+portable relative-path, canonical confinement, symlink, and regular-file checks
+as executable artifacts. Discovery reads and validates the schema without loading
+either executable component. Declarations are a captured immutable snapshot;
+later file edits do not change them.
+
+`PreparedPluginInstallation.settingsSchema` is null when absent or rejected;
+otherwise it contains the canonical `artifactUri` and immutable `definitions`
+sorted by setting ID. Missing/unreadable assets, unsupported versions, malformed
+definitions, and within-schema duplicate IDs reject the whole schema, not just
+individual definitions. `PreparedPluginCatalogIssue.isSettingsSchemaIssue` marks
+that failure (`component` is null), while retaining the installation and every
+healthy executable component. Conversely, invalid executable components do not
+discard a valid schema. Duplicate PluginIds still exclude all conflicting
+installations, including their settings.
+
+`PreparedPluginCatalog.settings` assembles an ordinary `SettingsCatalog` over
+surviving schemas, in setting-ID order. Cross-installation setting-ID collisions
+(possible with nested owner namespaces) throw `DuplicateSettingId` explicitly on
+aggregation, preserving both owners and the prepared installations rather than
+silently selecting a winner. The getter does not load user configuration, start
+plugins, or imply Settings UI, Profiles, or live reconfiguration.
+The [focused schema tests](test/prepared_settings_schema_test.dart) cover these
+boundaries independently of executable hosting.
+
+### Component Declarations
 
 `components.backend.consumesCapabilities` is a backend-only consumption allowlist,
 not a provider advertisement or dependency on an active implementation. For example,
@@ -331,7 +403,8 @@ invalid component instead records `PreparedPluginCatalogIssue.component` as
 while retaining the installation and healthy sibling. Invalid roles, kinds, or
 descriptors invalidate the frontend component. Readable valid identities are reserved before
 the remaining validation; duplicate PluginIds exclude all conflict members,
-including otherwise invalid manifests, without version selection. Root I/O
+including otherwise invalid manifests, without version selection. Schema failures
+instead use the settings-specific issue discriminator described above. Root I/O
 failures propagate instead of looking empty.
 
 File confinement and existence do not establish executable EVC correctness.

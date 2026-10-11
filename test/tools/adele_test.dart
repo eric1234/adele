@@ -429,15 +429,25 @@ void main() {
               .map((target) => target.name),
           ['source_editor_frontend', 'adele_desktop'],
         );
+        const nativeTomlTargets = [
+          'adele_toml_document',
+          'adele_configuration_store',
+          'adele_settings_host',
+          'filesystem_tools_frontend',
+          'command_tools_frontend',
+          'chat_strategy_frontend',
+          'task_browser_frontend',
+          'terminal_frontend',
+          'diff_viewer_frontend',
+          'source_editor_frontend',
+          'openai_frontend',
+          'adele_desktop',
+        ];
         expect(
           testTargets
               .where((target) => target.nativeToml)
               .map((target) => target.name),
-          [
-            'adele_toml_document',
-            'adele_configuration_store',
-            'adele_settings_host',
-          ],
+          nativeTomlTargets,
         );
         for (final entry in entries) {
           expect(
@@ -446,11 +456,7 @@ void main() {
           );
           expect(
             entry['nativeToml'],
-            [
-              'adele_toml_document',
-              'adele_configuration_store',
-              'adele_settings_host',
-            ].contains(entry['name']),
+            nativeTomlTargets.contains(entry['name']),
           );
         }
         expect(
@@ -495,6 +501,44 @@ void main() {
         );
       },
     );
+
+    test('native TOML metadata includes transitive test dependencies', () {
+      final manifests = <String, YamlMap>{};
+      for (final path in {
+        ...analysisTargets.map((target) => target.path),
+        ...testTargets.map((target) => target.path),
+      }) {
+        final manifest =
+            loadYaml(File('$path/pubspec.yaml').readAsStringSync()) as YamlMap;
+        manifests[manifest['name'] as String] = manifest;
+      }
+      for (final target in testTargets) {
+        final manifest =
+            loadYaml(File('${target.path}/pubspec.yaml').readAsStringSync())
+                as YamlMap;
+        final pending = <String>[
+          manifest['name'] as String,
+          ...?((manifest['dev_dependencies'] as YamlMap?)?.keys.cast<String>()),
+        ];
+        final visited = <String>{};
+        while (pending.isNotEmpty) {
+          final name = pending.removeLast();
+          if (!visited.add(name)) continue;
+          pending.addAll(
+            (manifests[name]?['dependencies'] as YamlMap?)?.keys
+                    .cast<String>() ??
+                const [],
+          );
+        }
+        expect(
+          target.nativeToml,
+          visited.contains('adele_toml_document'),
+          reason:
+              '${target.name} native hooks include dev dependencies of the '
+              'test package and production dependencies of its dependencies.',
+        );
+      }
+    });
 
     test('CI installs the pinned compiler for either native requirement', () {
       final workflow =

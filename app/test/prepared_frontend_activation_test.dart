@@ -1396,6 +1396,8 @@ Future<void> delayedCommand() async {
       final catalog = await discover();
       final starting = owner.start(catalog);
       expect(owner.state, ApplicationFrontendState.starting);
+      // The empty settings snapshot settles before asynchronous artifact loading.
+      await Future<void>.value();
       expect(owner.generations.first.state, InstalledFrontendState.starting);
       expect(() => owner.start(catalog), throwsStateError);
       final closing = owner.close();

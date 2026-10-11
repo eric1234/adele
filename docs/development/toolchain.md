@@ -150,7 +150,10 @@ through rustup with `cargo build --locked --release`, registers its source/lock
 inputs, and bundles the resulting dynamic library as a Dart code asset. Rust
 source, manifests, and `Cargo.lock` are committed; generated libraries are not.
 Loading never substitutes a Dart parser. CI's `nativeToml` target metadata selects
-the compiler prerequisite independently of `nativeCodeEditor`.
+the compiler prerequisite independently of `nativeCodeEditor`. The desktop now
+consumes the Settings host at frontend startup, so its tests and frontend targets
+with a development dependency on the desktop require native TOML as well. This
+does not add Rust to standalone semantic Settings or prepared-catalog parsing.
 
 The host-only [`adele_configuration_store`](../../packages/configuration_store/README.md)
 uses that same transitive hook and compiler requirement, not another native build.
@@ -160,11 +163,14 @@ Its Linux write path uses coreutils `chmod`; its filesystem tests also use GNU
 The hook maps native-host Linux/macOS/Windows x64 and arm64, rejecting unsupported
 targets, cross-compilation, static-only linking, and sanitizers. Only Linux x64 is
 validated; this is not cross-platform release-packaging evidence. Flutter desktop
-can consume the same standard hook without a Flutter dependency in the package,
-but no production app consumer is introduced here. Raw `dart compile` on this pin
+consumes the same standard hook without a Flutter dependency in the package.
+Raw `dart compile` on this pin
 rejects build hooks: existing independently loaded backend AOT artifacts are not
 automatically supported. The SDK's hook-aware standalone AOT path is `dart build
-cli`, still preview on this pin.
+cli`, still preview on this pin. Maintained backend AOT compilation remains rooted
+at the repository's dependency-free launcher package and imports no Settings host
+or TOML implementation. Do not move those commands to the app's native-hook graph
+or infer native-asset delivery from successful snapshot compilation.
 
 `toml_edit` and the private JSON bridge have exact direct Cargo pins and a committed
 transitive lock. See the package's [native notices](../../packages/toml_document/third_party_notices.txt)
@@ -393,7 +399,10 @@ and the same remote Chat backend, not an in-process strategy fallback.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
-`backend.aot` and `frontend.evc`. Runtime
+`backend.aot` and `frontend.evc`. The same stock publication helper copies the
+Source Editor's authoritative `settings.schema.json` and references it separately
+from executable components. Schema metadata is available before frontend startup;
+global user values remain in TOML, not generated installation artifacts. Runtime
 receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the
 temporary generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend
 or frontend artifact defines or source paths. Installed manifests are distinct from the draft

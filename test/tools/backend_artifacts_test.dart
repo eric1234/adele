@@ -87,6 +87,7 @@ void main() {
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
       'plugins/git_environment/packages/backend/native/git_pty_helper.c',
+      'plugins/source_editor/settings.schema.json',
     ]) {
       final File destination = File('${root.path}/$path');
       destination.parent.createSync(recursive: true);
@@ -1112,6 +1113,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'version': '0.1.0',
               'displayName': plugin.name,
             },
+            if (plugin.directory == 'source-editor')
+              'settingsSchema': 'settings.schema.json',
             'components': {
               if (plugin.backend) 'backend': {'artifact': 'backend.aot'},
               if (hasFrontend)
@@ -1128,6 +1131,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               1 +
                   (plugin.backend ? 1 : 0) +
                   (hasFrontend ? 1 : 0) +
+                  (plugin.directory == 'source-editor' ? 1 : 0) +
                   (plugin.directory == 'git-environment' ? 1 : 0),
             ),
           );
@@ -1209,6 +1213,44 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value == 'dev.adele.source-editor',
         );
         expect(source.backendArtifactUri, isNull);
+        final schema = source.settingsSchema!;
+        expect(
+          schema.artifactUri,
+          installations.uri.resolve('source-editor/settings.schema.json'),
+        );
+        expect(
+          File.fromUri(schema.artifactUri).readAsBytesSync(),
+          File('plugins/source_editor/settings.schema.json').readAsBytesSync(),
+        );
+        expect(
+          jsonDecode(File.fromUri(schema.artifactUri).readAsStringSync()),
+          {
+            'schemaVersion': 1,
+            'definitions': [
+              {
+                'id': 'dev.adele.source-editor.enable-folding',
+                'type': 'boolean',
+                'default': false,
+                'label': 'Enable Code Folding',
+                'category': 'Editor',
+                'section': 'Display',
+              },
+            ],
+          },
+        );
+        final setting = schema.definitions.single;
+        expect(setting.id.value, 'dev.adele.source-editor.enable-folding');
+        expect(setting.owner.value, source.metadata.id.value);
+        expect(setting.defaultValue, isFalse);
+        expect(setting.label, 'Enable Code Folding');
+        expect(setting.category, 'Editor');
+        expect(setting.section, 'Display');
+        expect(setting.description, isNull);
+        expect(setting.validate(true), isTrue);
+        expect(() => setting.validate('true'), throwsException);
+        expect(() => setting.validate(1), throwsException);
+        expect(catalog.settings.definitions, [setting]);
+        expect(catalog.settings.resolve(setting.id).value, isFalse);
         final sourceCommand =
             source.frontend!.extensions.single
                 as PreparedMainContentActionCommandExtension;
@@ -1669,6 +1711,42 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(launchArguments.existsSync(), isTrue);
     },
   );
+
+  for (final failure in ['missing', 'empty', 'directory']) {
+    test(
+      'stock settings schema $failure prevents Source publication and launch',
+      () async {
+        final schema = File(
+          '${root.path}/plugins/source_editor/settings.schema.json',
+        );
+        if (failure == 'empty') {
+          schema.writeAsBytesSync([]);
+        } else {
+          schema.deleteSync();
+          if (failure == 'directory') Directory(schema.path).createSync();
+        }
+        final result = await invoke(['run', 'linux']);
+        expect(result.exitCode, 1);
+        expect(result.stderr, contains('settings schema'));
+        expect(result.stderr, contains('settings.schema.json'));
+        expect(launchArguments.existsSync(), isFalse);
+        expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+        final builds = Directory(
+          '${root.path}/.dart_tool/adele/desktop-plugins',
+        );
+        for (final build in builds.listSync().whereType<Directory>()) {
+          expect(
+            File.fromUri(
+              build.uri.resolve(
+                'installations/source-editor/adele_plugin.installation.json',
+              ),
+            ).existsSync(),
+            isFalse,
+          );
+        }
+      },
+    );
+  }
 
   for (final String failedEntrypoint in _backendEntrypoints) {
     for (final String command in <String>['run', 'build']) {

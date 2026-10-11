@@ -164,9 +164,11 @@ volumes; parallelism comes only from the four independent CI jobs, retaining all
 test files. Full-suite `--ci` execution also uses one worker. The non-CI target
 retains Flutter's normal worker default.
 The app and Source Editor targets require Rust 1.93.0 for their shared CodeForge
-library; Source Editor does not require Linux desktop or PTY prerequisites.
-Source-only bootstrap
-and tooling tests do not. Follow [native preparation](toolchain.md#native-editor-preparation)
+library and transitive native TOML hook. Frontend test targets with a development
+dependency on the app also declare `nativeToml`, even without CodeForge use.
+Source Editor does not require Linux desktop or PTY prerequisites. Source-only
+bootstrap and tooling tests do not require Rust.
+Follow [native preparation](toolchain.md#native-editor-preparation)
 and use an explicit pinned `FLUTTER_ROOT`, not just a Dart executable selected by
 a version-manager shim.
 
@@ -249,6 +251,21 @@ target owns the thin adapter boundary using actual configuration-store and nativ
 TOML operations with temporary roots, not a fake persistence layer. Semantic
 resolution checks do not substitute for native host integration checks; neither
 target establishes application Settings UI or Profile activation behavior.
+
+Prepared declaration parsing remains pure Dart in the `plugin_runtime` target,
+covering independent schemas, scalar constraints, ownership, bounded metadata,
+asset confinement, whole-schema rejection, component isolation, and deterministic
+duplicate diagnostics. The tooling target exercises actual stock schema publication
+through the maintained installation helper, not just a hand-authored manifest.
+
+`app/test/prepared_settings_test.dart` loads the real Source declaration with
+temporary configuration roots and checks native persistence/provenance, explicit
+invalid overrides, unknown/comment preservation, stale-save conflicts, exact-owner
+access, and frontend failure isolation. The Source frontend target exercises the
+compiled Source operation and rendered CodeForge folding option with retained
+controller/text/undo and document identity. These tests never write user roots.
+Configuration is a startup snapshot, not a live update test: edit the file and
+restart for new values; existing native owners are not reconstructed.
 
 For package-specific analysis, run `dart analyze --fatal-infos` in each package.
 The small native ABI suite can be run from `packages/toml_document/native/` with
@@ -535,6 +552,15 @@ and real prepared-EVC/native integration in
 [`source_editor_host_test.dart`](../../plugins/source_editor/packages/frontend/test/source_editor_host_test.dart)
 through Flutter, with native editor preparation handled by the maintained runner. Public resolver cases are in
 [`display_source_file_test.dart`](../../packages/ui/test/display_source_file_test.dart).
+
+The Source host suite also verifies the real plugin-owned folding schema through
+stock installation publication and owner-scoped startup resolution. For direct
+iteration, run the application tests `test/prepared_settings_test.dart` and
+`test/contribution_settings_bridge_test.dart` alongside the Source target. These
+use the native TOML prerequisites; the latter checks compiled scalar bridge access
+and retirement without needing a CodeForge editor instance. Live folding changes
+on already-open editors are deliberately not implemented or claimed by this suite.
+
 Catalog checks own explicit permissions/actions/operations and hook validation;
 tooling checks own workspace/analysis/test discovery, stock descriptor entrypoints,
 frontend-only preparation, and the production app/plugin dependency boundary.

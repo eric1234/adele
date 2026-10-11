@@ -11,6 +11,7 @@ import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
+import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
@@ -33,6 +34,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 final showCommandPaletteCommandId = CommandId('dev.adele.command.show-palette');
 final toggleConsoleCommandId = CommandId('dev.adele.command.toggle-console');
@@ -45,6 +47,7 @@ final class AdeleApplication extends StatefulWidget {
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
     this.mainContentHost,
+    this.loadSettings = PreparedSettingsSnapshot.load,
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -53,6 +56,8 @@ final class AdeleApplication extends StatefulWidget {
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
+  final Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)
+  loadSettings;
 
   /// Optional native bindings for declared prepared Main Content panes.
   /// Catalog discovery and registration still use the ordinary frontend path.
@@ -179,6 +184,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ),
       consoleHost: _consoleHost,
       mainContentHost: _mainContentHost,
+      loadSettings: widget.loadSettings,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),

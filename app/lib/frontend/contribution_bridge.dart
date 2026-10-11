@@ -37,9 +37,18 @@ final class RetainedContribution extends ChangeNotifier {
   NativeCodeEditor editor(String id) =>
       _editors[id] ?? (throw StateError('Unknown owned code editor.'));
 
-  Future<bool> createEditor(String id, String text, String language) async {
+  Future<bool> createEditor(
+    String id,
+    String text,
+    String language, [
+    bool enableFolding = false,
+  ]) async {
     if (_closed || _editors.containsKey(id)) return false;
-    final editor = NativeCodeEditor(text: text, language: language);
+    final editor = NativeCodeEditor(
+      text: text,
+      language: language,
+      enableFolding: enableFolding,
+    );
     _editors[id] = editor;
     try {
       await editor.initialize();
@@ -126,6 +135,11 @@ class ContributionDeclarations implements EvalPlugin {
       ),
       ('removeContributionData', boolean, const [key]),
       ('allocateContributionId', string, const <BridgeParameter>[]),
+      (
+        'readPluginSetting',
+        const BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.object)),
+        const [id],
+      ),
       ('readContributionArguments', nullableMap, const <BridgeParameter>[]),
       (
         'invokeContributionOperation',
@@ -140,7 +154,12 @@ class ContributionDeclarations implements EvalPlugin {
       (
         'createContributionCodeEditor',
         futureBool,
-        const [id, text, BridgeParameter('language', string, false)],
+        const [
+          id,
+          text,
+          BridgeParameter('language', string, false),
+          BridgeParameter('enableFolding', boolean, true),
+        ],
       ),
       ('snapshotContributionCodeEditor', map, const [id]),
       ('readContributionCodeEditorState', map, const [id]),
@@ -178,6 +197,7 @@ final class ContributionBridge extends ContributionDeclarations
     required this.nativeCodeEditor,
     this.invoke,
     this.confirm,
+    this.readSetting,
   });
 
   final RetainedContribution owner;
@@ -188,6 +208,7 @@ final class ContributionBridge extends ContributionDeclarations
   final Future<Map<String, Object?>> Function(String, Map<String, Object?>)?
   invoke;
   final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final Object Function(String id)? readSetting;
   final Zone _nativeZone = Zone.current;
   final Set<EvalCallable> _listeners = Set.identity();
   Runtime? _runtime;
@@ -300,6 +321,16 @@ final class ContributionBridge extends ContributionDeclarations
         _validateData();
         return $String(owner.allocateId());
       })
+      ..registerBridgeFunc(_library, 'readPluginSetting', (_, _, args) {
+        _validate();
+        final read = readSetting;
+        if (read == null) throw StateError('Plugin setting is unavailable.');
+        final value = read(string(args, 0));
+        if (value is! bool && value is! int && value is! String) {
+          throw StateError('Plugin setting is not a supported scalar.');
+        }
+        return wrapStructuredBridgeData(value);
+      })
       ..registerBridgeFunc(_library, 'readContributionArguments', (_, _, _) {
         return wrapStructuredBridgeData(available ? arguments : null);
       })
@@ -350,10 +381,12 @@ final class ContributionBridge extends ContributionDeclarations
         final id = string(args, 0);
         final text = string(args, 1);
         final language = string(args, 2);
+        final enableFolding =
+            (args.length > 3 ? args[3]?.$value as bool? : null) ?? false;
         return _future(() async {
           if (!nativeCodeEditor) return false;
           try {
-            return await owner.createEditor(id, text, language);
+            return await owner.createEditor(id, text, language, enableFolding);
           } on Object {
             return false;
           }

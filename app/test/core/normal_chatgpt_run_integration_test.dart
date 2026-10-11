@@ -19,6 +19,7 @@ import 'package:adele_desktop/frontend/environment_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
@@ -34,6 +35,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -53,6 +55,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../../../tools/backend_artifacts.dart';
 import '../../../tools/git_pty_artifact.dart';
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
@@ -5618,6 +5621,7 @@ final class _PreparedProduct {
       _sourceEditorPluginId,
     ]) {
       final installed = await Directory('${root.path}/$id').create();
+      if (id == _sourceEditorPluginId) continue;
       await File(
         '${installed.path}/adele_plugin.installation.json',
       ).writeAsString(
@@ -5647,6 +5651,13 @@ final class _PreparedProduct {
     );
     await File('${root.path}/$_sourceEditorPluginId/frontend.evc').writeAsBytes(
       await compileSourceEditorFrontend(repositoryRoot: repository),
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: Directory('${root.path}/$_sourceEditorPluginId'),
+      pluginId: _sourceEditorPluginId,
+      displayName: 'Source',
+      frontend: true,
     );
     await File(
       '${root.path}/$_localDirectoryProjectPluginId/frontend.evc',
@@ -5866,6 +5877,16 @@ final class _ProductFixture {
     await tester.pumpWidget(
       AdeleApplication(
         createRuntime: () => runtime,
+        loadSettings: (catalog) => PreparedSettingsSnapshot.load(
+          catalog,
+          roots: PlatformStorageRoots(
+            operatingSystem: Platform.operatingSystem,
+            configurationRoot: '${directory.path}/config',
+            localStateRoot: '${directory.path}/state',
+            localDataRoot: '${directory.path}/data',
+            cacheRoot: '${directory.path}/cache',
+          ),
+        ),
         readChatGptConfiguration: () => configureModel
             ? const StockChatGptConfiguration(model: 'gpt-6-astra')
             : null,

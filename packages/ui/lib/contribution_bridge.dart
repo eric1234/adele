@@ -10,6 +10,11 @@ bool removeContributionData(String key) =>
     throw UnsupportedError('Prepared only.');
 String allocateContributionId() => throw UnsupportedError('Prepared only.');
 
+/// Read a declared scalar setting from this installation's startup snapshot.
+/// The host binds ownership; callers cannot select a plugin or supply a default.
+/// Missing, foreign, invalid, or retired reads fail rather than substitute values.
+Object readPluginSetting(String id) => throw UnsupportedError('Prepared only.');
+
 /// Copied arguments for the current finite operation. An active presentation or
 /// an argument-free operation returns an empty map; retired access returns null.
 /// Session/Environment identity is supplied only by readMainContentContext, and
@@ -33,11 +38,13 @@ void unsubscribeContribution(void Function() listener) =>
 
 /// Supplied-text construction grants no filesystem authority. The native owner
 /// survives presentation departure. Existing IDs are rejected without replacement.
+/// Folding is fixed at construction; this does not update an existing editor.
 Future<bool> createContributionCodeEditor(
   String id,
   String text,
-  String language,
-) => throw UnsupportedError('Prepared only.');
+  String language, [
+  bool enableFolding = false,
+]) => throw UnsupportedError('Prepared only.');
 Map<String, dynamic> snapshotContributionCodeEditor(String id) =>
     throw UnsupportedError('Prepared only.');
 Map<String, dynamic> readContributionCodeEditorState(String id) =>
