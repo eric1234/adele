@@ -12,6 +12,17 @@ final capabilities.CapabilityKey changeSetSourceCapability =
       majorVersion: 1,
     );
 
+@AdeleValue('diff.taskChangeSetSnapshot')
+final class TaskChangeSetSnapshot {
+  const TaskChangeSetSnapshot({
+    required this.committed,
+    required this.uncommitted,
+  });
+
+  final ChangeSetSnapshot committed;
+  final UncommittedChangeSetSnapshot uncommitted;
+}
+
 @AdeleValue('diff.uncommittedChangeSetSnapshot')
 final class UncommittedChangeSetSnapshot {
   UncommittedChangeSetSnapshot({
@@ -96,6 +107,10 @@ abstract interface class ChangeSetSourceService {
   /// Separate staged and unstaged layers, not a net working-tree diff.
   @AdeleMethod('snapshotUncommitted')
   Future<UncommittedChangeSetSnapshot> snapshotUncommitted();
+
+  /// Committed Task/branch changes and the separate uncommitted layers.
+  @AdeleMethod('snapshotTaskChanges')
+  Future<TaskChangeSetSnapshot> snapshotTaskChanges();
 }
 
 @AdeleFailure('diff.changeSetFailure')

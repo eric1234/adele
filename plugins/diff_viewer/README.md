@@ -8,9 +8,10 @@ not require Chat, a strategy frontend, or a Run.
 ## Ownership
 
 `packages/contract/lib/diff_viewer_contract.dart` owns
-`ChangeSetSourceService.snapshotUnstaged()`, `snapshotUncommitted()`, and the
-structured immutable snapshot values. Both methods take no arguments: Session and
-Environment authority is captured by the host, not supplied in a request payload.
+`ChangeSetSourceService.snapshotUnstaged()`, `snapshotUncommitted()`,
+`snapshotTaskChanges()`, and the structured immutable snapshot values. All methods
+take no arguments: Session and Environment authority is captured by the host, not
+supplied in a request payload.
 The native library exports `changeSetSourceCapability`
 (`adele.diff.change-set-source`, major 1);
 the generator owns `changeSetSourceServiceId` and native/eval transport.
@@ -34,6 +35,16 @@ placeholders. The service/Capability identities remain unchanged; native and EVC
 artifacts must be rebuilt together under the
 [pre-release policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
+`snapshotTaskChanges()` returns `TaskChangeSetSnapshot`, composing `committed`
+(`ChangeSetSnapshot`) and `uncommitted` (`UncommittedChangeSetSnapshot`). Committed
+changes are the net change from the provider's retained Environment baseline to
+current committed state, not a history of individual commits. The stock Git
+provider uses the exact baseline established for the selected Environment, which
+can differ between Environments within one Task. Committed, staged, unstaged, and
+conflict entries stay separate; a path may occur in multiple layers even when its
+working content matches the baseline. No Git identities or baseline selector enter
+the public contract.
+
 The [stock Git provider](../git_environment/README.md#change-snapshots)
 implements this deliberately public contract over its exact live Environment.
 It owns Git/index semantics, filesystem safety, process execution and bounds.
@@ -51,12 +62,16 @@ through the public source-display point. There is no context-free capability
 grant, own-backend service, direct file access, process, terminal, editor, or
 execution grant.
 
-The mounted pane initially selects **Unstaged changes**. A minimal selector offers
-**Uncommitted changes** without persisting a preference. Each scope calls its
-specific generated method; Uncommitted is one contextual operation, not two
-frontend requests concatenated together. Its lazy rows distinguish
-**Staged changes**, **Unstaged changes**, and **Conflicts**, retaining paths and
-hunks in each layer. Only an empty pair of layers and empty conflicts is clean.
+The mounted pane initially selects **Unstaged changes**. A minimal selector also
+offers **Uncommitted changes** and **Task / Branch** without persisting a preference.
+Refresh occupies a separate row so scope controls remain usable in narrow panes.
+Each scope calls its specific generated method; layered scopes each use one
+contextual operation, not independent frontend requests concatenated together.
+Task's lazy rows distinguish **Committed changes**, **Staged changes**,
+**Unstaged changes**, and **Conflicts**, retaining paths and hunks in each layer.
+Task is clean only when all four categories are empty; committed work stays visible
+after Uncommitted becomes clean. Committed entries have no staging or Unapprove
+affordance.
 
 The mounted pane requests a snapshot immediately. Each scope change, Refresh or
 Retry performs fresh contextual resolution, then invokes the typed generated
@@ -85,9 +100,10 @@ not a Source implementation import. Eligibility requires existing text content:
 change. Deleted, binary, oversized, unsupported, conflicted, and type-only entries
 without text offer no action. The raw `relativePath` is retained separately from
 the displayed header and forwarded unchanged, including spaces and punctuation;
-Diff neither parses its label nor normalizes the path. Staged and conflict headers
-offer no Source action: Source opens the actual working file, not historical index
-content. A path occurring in both layers can still open from its unstaged header.
+Diff neither parses its label nor normalizes the path. Committed, staged, and
+conflict headers offer no Source action: Source opens the actual working file,
+not a historical baseline/commit or index blob. A path occurring in multiple
+layers can still open from its unstaged header.
 
 One pane-wide pending request suppresses duplicate openings. Missing or ambiguous
 Source providers remain explicit, and failed display shows a safe, nonfatal error
@@ -116,19 +132,21 @@ dart tools/adele.dart test --target diff_viewer_frontend
 dart tools/adele.dart test --target adele_tools
 ```
 
-The contract suite checks both native and interpreted nested transport, strict
-decoding, empty request payloads, declared failures, and list immutability. The
-frontend suite compiles and mounts real EVC with generated native/eval codecs
-through a test-only contextual port, covering states, manual recovery, handle cleanup, held operation
-races, scope switching, separate staged/unstaged/conflict rows, cancellation,
+The contract suite checks native and interpreted nested transport for all scopes,
+strict decoding, empty request payloads, declared failures, and list immutability.
+The frontend suite compiles and mounts real EVC with generated native/eval codecs
+through a test-only contextual port, covering states, manual recovery, handle
+cleanup, held operation races, scope switching, separate
+committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. It does not
 substitute for authority validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
 consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
 real stock Git AOT plus independently prepared Diff and Source EVC through normal
-catalog/Main Content hosting, including real staged-only and layered
-partial/cancelling changes, source confinement, selected-scope Refresh, canonical
+catalog/Main Content hosting, including committed-only work, exact independently
+established baselines, staged-only and layered partial/cancelling changes,
+source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
 retirement/navigation. That cross-plugin suite requires the native CodeForge
 library; the isolated Diff frontend suite does not.

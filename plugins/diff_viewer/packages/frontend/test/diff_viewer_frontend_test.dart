@@ -139,10 +139,13 @@ void main() {
   ) async {
     registerSource();
     await mount(tester);
-    for (final uncommitted in [false, true]) {
-      if (uncommitted) {
+    for (final scope in ['unstaged', 'uncommitted', 'task']) {
+      if (scope != 'unstaged') {
         await tester.tap(
-          find.widgetWithText(TextButton, 'Uncommitted changes'),
+          find.widgetWithText(
+            TextButton,
+            scope == 'task' ? 'Task / Branch' : 'Uncommitted changes',
+          ),
         );
         await tester.pumpAndSettle();
       }
@@ -175,16 +178,26 @@ void main() {
           // Even text-shaped entries in the conflicts section are not current files.
           conflicts: port.service.value.files,
         );
+        port.service.task = TaskChangeSetSnapshot(
+          committed: port.service.value,
+          uncommitted: port.service.uncommitted,
+        );
         await tester.tap(find.text('Refresh'));
         await tester.pumpAndSettle();
         expect(
           find.text('file.txt  [${entry.$1}]'),
-          findsNWidgets(uncommitted ? 3 : 1),
+          findsNWidgets(
+            scope == 'task'
+                ? 4
+                : scope == 'uncommitted'
+                ? 3
+                : 1,
+          ),
         );
         expect(
           find.text('Open in Source'),
           entry.$3 ? findsOneWidget : findsNothing,
-          reason: 'uncommitted=$uncommitted: ${entry.$1}/${entry.$2}',
+          reason: '$scope: ${entry.$1}/${entry.$2}',
         );
       }
     }
@@ -567,6 +580,18 @@ void main() {
       expect(find.text('lower-layer.txt  [modified]'), findsNothing);
       expect(find.text('Conflicts'), findsNothing);
       expect(tester.widgetList(find.byType(Text)).length, lessThan(100));
+      port.service.task = TaskChangeSetSnapshot(
+        committed: port.service.value,
+        uncommitted: port.service.uncommitted,
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(find.text('Committed changes'), findsOneWidget);
+      expect(find.textContaining('+line-0'), findsOneWidget);
+      expect(find.textContaining('+line-1999'), findsNothing);
+      expect(find.text('Staged changes'), findsNothing);
+      expect(find.text('Open in Source'), findsNothing);
+      expect(tester.widgetList(find.byType(Text)).length, lessThan(100));
       await tester.drag(find.byType(ListView), const Offset(0, -600));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
@@ -690,7 +715,238 @@ void main() {
     },
   );
 
-  for (final initial in ['unstaged', 'uncommitted']) {
+  testWidgets(
+    'Task renders independent same-path layers from one generated call',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      registerSource();
+      const path = 'dir/two words [deleted]\t\u03bb.txt';
+      port.service.task = _task(
+        committed: _snapshot(
+          path: path,
+          before: 'baseline',
+          after: 'committed',
+        ),
+        uncommitted: _uncommitted(
+          staged: _snapshot(path: path, before: 'committed', after: 'index'),
+          unstaged: _snapshot(path: path, before: 'index', after: 'working'),
+          conflicts: [_conflict()],
+        ),
+      );
+      await mount(tester);
+      expect(find.text('No unstaged changes.'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(port.methods, [
+        changeSetSourceServiceSnapshotUnstagedId,
+        changeSetSourceServiceSnapshotTaskChangesId,
+      ]);
+      expect(port.service.calls, 1);
+      expect(port.service.uncommittedCalls, 0);
+      expect(port.service.taskCalls, 1);
+      expect(find.text('$path  [modified]'), findsNWidgets(3));
+      expect(find.text('@@ -3,2 +3,2 @@'), findsNWidgets(3));
+      expect(find.text('   3    3  shared'), findsNWidgets(3));
+      expect(find.text('   4      -baseline'), findsOneWidget);
+      expect(find.text('        4 +committed'), findsOneWidget);
+      expect(find.text('   4      -committed'), findsOneWidget);
+      expect(find.text('        4 +index'), findsOneWidget);
+      expect(find.text('   4      -index'), findsOneWidget);
+      expect(find.text('        4 +working'), findsOneWidget);
+      expect(find.text(r'\ No newline at end of file'), findsNWidgets(3));
+      final sections = [
+        'Committed changes',
+        'Staged changes',
+        'Unstaged changes',
+        'Conflicts',
+      ];
+      for (var index = 1; index < sections.length; index++) {
+        expect(
+          tester.getTopLeft(find.text(sections[index]).last).dy,
+          greaterThan(
+            tester.getTopLeft(find.text(sections[index - 1]).last).dy,
+          ),
+        );
+      }
+      expect(find.text('No task changes.'), findsNothing);
+      expect(find.text('Open in Source'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Open in Source')).dy,
+        greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+      );
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      expect(source.paths, [path]);
+      expect(port.handles, isEmpty);
+      expect(port.releases, ['handle-1', 'handle-2']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('all scope controls and Refresh fit ordinary narrow panes', (
+    tester,
+  ) async {
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    registerSource();
+    port.service.value = _snapshot();
+    port.service.uncommitted = _uncommitted(unstaged: port.service.value);
+    port.service.task = _task(uncommitted: port.service.uncommitted);
+    await mount(tester);
+    for (final width in [320.0, 480.0, 900.0]) {
+      await tester.binding.setSurfaceSize(Size(width, 600));
+      await tester.pumpAndSettle();
+      for (final label in [
+        'Unstaged changes',
+        'Uncommitted changes',
+        'Task / Branch',
+      ]) {
+        final button = find.widgetWithText(TextButton, label);
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        expect(tester.getRect(button).left, greaterThanOrEqualTo(0));
+        expect(tester.getRect(button).right, lessThanOrEqualTo(width));
+        expect(
+          tester.getTopLeft(find.widgetWithText(TextButton, 'Refresh')).dy,
+          greaterThanOrEqualTo(tester.getBottomLeft(button).dy),
+        );
+        expect(find.text('notes.txt  [modified]'), findsOneWidget);
+        expect(tester.takeException(), isNull, reason: '$width / $label');
+      }
+    }
+  });
+
+  testWidgets(
+    'Task clean requires all layers empty and Refresh/Retry retain scope',
+    (tester) async {
+      await mount(tester);
+      final held = Completer<TaskChangeSetSnapshot>();
+      port.service.pendingTask = held.future;
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(find.text('Loading task changes...'), findsOneWidget);
+      expect(port.handles, hasLength(1));
+      held.complete(_task());
+      await tester.pumpAndSettle();
+      expect(find.text('No task changes.'), findsOneWidget);
+      for (final text in [
+        'No committed changes.',
+        'No staged changes.',
+        'No unstaged changes.',
+        'No conflicts.',
+      ]) {
+        expect(find.text(text), findsOneWidget);
+      }
+      port.available = false;
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Diff unavailable for this Environment.'),
+        findsOneWidget,
+      );
+      port.available = true;
+      port.service.failure = true;
+      await tester.tap(find.text('Retry'));
+      await tester.pumpAndSettle();
+      expect(find.text('Unable to load task changes.'), findsOneWidget);
+      expect(find.textContaining('private failure'), findsNothing);
+      expect(port.handles, isEmpty);
+      port.service.failure = false;
+      port.service.task = _task(
+        committed: _snapshot(path: 'committed-only.txt'),
+      );
+      await tester.tap(find.text('Retry'));
+      await tester.pumpAndSettle();
+      expect(find.text('committed-only.txt  [modified]'), findsOneWidget);
+      expect(find.text('No task changes.'), findsNothing);
+      expect(find.text('Open in Source'), findsNothing);
+      for (final layer in ['staged', 'unstaged', 'conflicts']) {
+        port.service.task = _task(
+          uncommitted: _uncommitted(
+            staged: layer == 'staged' ? _snapshot() : null,
+            unstaged: layer == 'unstaged' ? _snapshot() : null,
+            conflicts: layer == 'conflicts' ? [_conflict()] : [],
+          ),
+        );
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(find.text('No task changes.'), findsNothing);
+      }
+      expect(port.service.calls, 1);
+      expect(port.service.uncommittedCalls, 0);
+      expect(port.service.taskCalls, 6);
+      expect(port.resolutions, 8);
+      expect(
+        port.methods.skip(1),
+        everyElement(changeSetSourceServiceSnapshotTaskChangesId),
+      );
+      expect(port.handles, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'rapid three-scope switches and Task Refresh fence every older operation',
+    (tester) async {
+      final old = Completer<ChangeSetSnapshot>();
+      final combined = Completer<UncommittedChangeSetSnapshot>();
+      final task = Completer<TaskChangeSetSnapshot>();
+      port.service.pending = old.future;
+      await mount(tester);
+      port.service.pendingUncommitted = combined.future;
+      await tester.tap(find.widgetWithText(TextButton, 'Uncommitted changes'));
+      await tester.pumpAndSettle();
+      port.service.pendingTask = task.future;
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      port.service.task = _task(committed: _snapshot(path: 'current.txt'));
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(find.text('current.txt  [modified]'), findsOneWidget);
+      expect(port.handles, isEmpty);
+      expect(port.releases, ['handle-1', 'handle-2', 'handle-3', 'handle-4']);
+      task.complete(_task(committed: _snapshot(path: 'obsolete-task.txt')));
+      combined.completeError(StateError('private obsolete failure'));
+      old.complete(_snapshot(path: 'obsolete-unstaged.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('current.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('obsolete'), findsNothing);
+      expect(find.text('Unable to load task changes.'), findsNothing);
+      expect(port.methods, [
+        changeSetSourceServiceSnapshotUnstagedId,
+        changeSetSourceServiceSnapshotUncommittedId,
+        changeSetSourceServiceSnapshotTaskChangesId,
+        changeSetSourceServiceSnapshotTaskChangesId,
+      ]);
+      expect(port.releases, hasLength(4));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'rapid pending scope resolutions admit only the latest Task request',
+    (tester) async {
+      final unstaged = Completer<void>();
+      final uncommitted = Completer<void>();
+      port.resolving = unstaged.future;
+      await mount(tester);
+      port.resolving = uncommitted.future;
+      await tester.tap(find.widgetWithText(TextButton, 'Uncommitted changes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(find.text('No task changes.'), findsOneWidget);
+      uncommitted.complete();
+      unstaged.complete();
+      await tester.pumpAndSettle();
+      expect(port.methods, [changeSetSourceServiceSnapshotTaskChangesId]);
+      expect(port.releases, ['handle-3', 'handle-2', 'handle-1']);
+      expect(port.handles, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final initial in ['unstaged', 'uncommitted', 'task']) {
     final other = initial == 'unstaged' ? 'uncommitted' : 'unstaged';
     final button = initial == 'unstaged'
         ? 'Uncommitted changes'
@@ -701,6 +957,7 @@ void main() {
         (tester) async {
           final old = Completer<ChangeSetSnapshot>();
           final combined = Completer<UncommittedChangeSetSnapshot>();
+          final task = Completer<TaskChangeSetSnapshot>();
           if (initial == 'unstaged') port.service.pending = old.future;
           await mount(tester);
           if (initial == 'uncommitted') {
@@ -708,6 +965,11 @@ void main() {
             await tester.tap(
               find.widgetWithText(TextButton, 'Uncommitted changes'),
             );
+            await tester.pumpAndSettle();
+          }
+          if (initial == 'task') {
+            port.service.pendingTask = task.future;
+            await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
             await tester.pumpAndSettle();
           }
           expect(find.text('Loading $initial changes...'), findsOneWidget);
@@ -724,13 +986,19 @@ void main() {
             } else {
               old.complete(_snapshot(path: 'obsolete.txt'));
             }
-          } else {
+          } else if (initial == 'uncommitted') {
             if (fails) {
               combined.completeError(StateError('private obsolete failure'));
             } else {
               combined.complete(
                 _uncommitted(staged: _snapshot(path: 'obsolete.txt')),
               );
+            }
+          } else {
+            if (fails) {
+              task.completeError(StateError('private obsolete failure'));
+            } else {
+              task.complete(_task(committed: _snapshot(path: 'obsolete.txt')));
             }
           }
           await tester.pumpAndSettle();
@@ -755,10 +1023,13 @@ void main() {
         final held = Completer<void>();
         if (initial == 'unstaged') port.resolving = held.future;
         await mount(tester);
-        if (initial == 'uncommitted') {
+        if (initial != 'unstaged') {
           port.resolving = held.future;
           await tester.tap(
-            find.widgetWithText(TextButton, 'Uncommitted changes'),
+            find.widgetWithText(
+              TextButton,
+              initial == 'task' ? 'Task / Branch' : 'Uncommitted changes',
+            ),
           );
           await tester.pumpAndSettle();
         }
@@ -829,40 +1100,93 @@ void main() {
     }
   }
 
-  testWidgets(
-    'scope switch fences source callbacks and late feedback without duplicate admission',
-    (tester) async {
-      registerSource();
-      final held = Completer<Map<String, Object?>>();
-      source.pending = held.future;
-      port.service.value = _snapshot();
-      port.service.uncommitted = _uncommitted(
-        unstaged: _snapshot(path: 'current.txt'),
-      );
-      await mount(tester);
-      final old = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Open in Source'),
-      );
-      old.onPressed!();
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(TextButton, 'Uncommitted changes'));
-      await tester.pumpAndSettle();
-      expect(find.text('current.txt  [modified]'), findsOneWidget);
-      expect(find.text('Opening in Source...'), findsOneWidget);
-      old.onPressed!();
-      expect(source.paths, ['notes.txt']);
-      held.complete({'ok': false});
-      await tester.pumpAndSettle();
-      expect(find.text('Unable to open file in Source.'), findsNothing);
-      old.onPressed!();
-      await tester.pumpAndSettle();
-      expect(source.paths, ['notes.txt']);
-      await tester.tap(find.text('Open in Source'));
-      await tester.pumpAndSettle();
-      expect(source.paths, ['notes.txt', 'current.txt']);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  for (final resolving in [true, false]) {
+    for (final ending in ['departure', 'dispose', 'retirement']) {
+      testWidgets('Task pending resolution=$resolving is fenced on $ending', (
+        tester,
+      ) async {
+        await mount(tester);
+        final resolution = Completer<void>();
+        final snapshot = Completer<TaskChangeSetSnapshot>();
+        if (resolving) {
+          port.resolving = resolution.future;
+        } else {
+          port.service.pendingTask = snapshot.future;
+        }
+        await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+        await tester.pumpAndSettle();
+        if (ending == 'departure') {
+          await lifecycle.prepareToDeactivate();
+        } else if (ending == 'dispose') {
+          await tester.pumpWidget(const SizedBox());
+        } else {
+          frontend.invalidate();
+          await tester.pumpAndSettle();
+          expect(find.text('Frontend unavailable.'), findsOneWidget);
+        }
+        expect(port.handles, isEmpty);
+        if (resolving) {
+          resolution.complete();
+        } else {
+          snapshot.complete(_task(committed: _snapshot(path: 'departed.txt')));
+        }
+        await tester.pumpAndSettle();
+        expect(find.textContaining('departed.txt'), findsNothing);
+        expect(port.service.taskCalls, resolving ? 0 : 1);
+        expect(port.handles, isEmpty);
+        expect(port.releases, ['handle-1', 'handle-2']);
+        if (ending == 'departure') {
+          port.service.task = _task(committed: _snapshot(path: 'retry.txt'));
+          await tester.tap(find.text('Retry'));
+          await tester.pumpAndSettle();
+          expect(find.text('retry.txt  [modified]'), findsOneWidget);
+          expect(
+            port.methods.last,
+            changeSetSourceServiceSnapshotTaskChangesId,
+          );
+        }
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  for (final target in ['Uncommitted changes', 'Task / Branch']) {
+    testWidgets(
+      '$target scope switch fences source callbacks and late feedback without duplicate admission',
+      (tester) async {
+        registerSource();
+        final held = Completer<Map<String, Object?>>();
+        source.pending = held.future;
+        port.service.value = _snapshot();
+        port.service.uncommitted = _uncommitted(
+          unstaged: _snapshot(path: 'current.txt'),
+        );
+        port.service.task = _task(uncommitted: port.service.uncommitted);
+        await mount(tester);
+        final old = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Open in Source'),
+        );
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(TextButton, target));
+        await tester.pumpAndSettle();
+        expect(find.text('current.txt  [modified]'), findsOneWidget);
+        expect(find.text('Opening in Source...'), findsOneWidget);
+        old.onPressed!();
+        expect(source.paths, ['notes.txt']);
+        held.complete({'ok': false});
+        await tester.pumpAndSettle();
+        expect(find.text('Unable to open file in Source.'), findsNothing);
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        expect(source.paths, ['notes.txt']);
+        await tester.tap(find.text('Open in Source'));
+        await tester.pumpAndSettle();
+        expect(source.paths, ['notes.txt', 'current.txt']);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'generated eval rejects incomplete Uncommitted layers and malformed nested values',
@@ -923,6 +1247,104 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'generated eval rejects malformed Task components without partial results',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await mount(tester);
+      port.service.task = _task(
+        committed: _snapshot(),
+        uncommitted: _uncommitted(
+          staged: _snapshot(),
+          unstaged: _snapshot(),
+          conflicts: [_conflict()],
+        ),
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      final wire = port.lastResponse! as Map<String, Object?>;
+      final uncommitted = wire['uncommitted']! as Map<String, Object?>;
+      final committed = wire['committed']! as Map<String, Object?>;
+      final file = (committed['files']! as List).single as Map<String, Object?>;
+      final hunk = (file['hunks']! as List).single as Map<String, Object?>;
+      final line = (hunk['lines']! as List).first as Map<String, Object?>;
+      for (final invalid in <Map<String, Object?>>[
+        {...wire, 'extra': true},
+        for (final field in ['committed', 'uncommitted']) ...[
+          {...wire}..remove(field),
+          {...wire, field: null},
+          {...wire, field: 'invalid'},
+          {...wire, field: <String, Object?>{}},
+        ],
+        for (final field in ['staged', 'unstaged', 'conflicts']) ...[
+          {
+            ...wire,
+            'uncommitted': {...uncommitted}..remove(field),
+          },
+          {
+            ...wire,
+            'uncommitted': {...uncommitted, field: null},
+          },
+        ],
+        {
+          ...wire,
+          'uncommitted': {
+            ...uncommitted,
+            'conflicts': [null],
+          },
+        },
+        for (final layer in ['committed', 'staged', 'unstaged'])
+          for (final bad in [
+            {
+              'files': [
+                {...file}..remove('detail'),
+              ],
+            },
+            {
+              'files': [
+                {
+                  ...file,
+                  'hunks': [
+                    {
+                      ...hunk,
+                      'lines': [
+                        {...line, 'noNewline': 'false'},
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ])
+            if (layer == 'committed')
+              {...wire, layer: bad}
+            else
+              {
+                ...wire,
+                'uncommitted': {...uncommitted, layer: bad},
+              },
+      ]) {
+        port.wireResponse = invalid;
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(find.text('Unable to load task changes.'), findsOneWidget);
+        expect(find.text('notes.txt  [modified]'), findsNothing);
+        expect(find.text('No task changes.'), findsNothing);
+        expect(port.handles, isEmpty);
+        port.wireResponse = null;
+        await tester.tap(find.text('Retry'));
+        await tester.pumpAndSettle();
+        expect(find.text('notes.txt  [modified]'), findsNWidgets(3));
+      }
+      expect(
+        port.methods.skip(1),
+        everyElement(changeSetSourceServiceSnapshotTaskChangesId),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 ChangeSetSnapshot _snapshot({
@@ -971,14 +1393,25 @@ ChangedFile _conflict() => ChangedFile(
   hunks: [],
 );
 
+TaskChangeSetSnapshot _task({
+  ChangeSetSnapshot? committed,
+  UncommittedChangeSetSnapshot? uncommitted,
+}) => TaskChangeSetSnapshot(
+  committed: committed ?? ChangeSetSnapshot(files: []),
+  uncommitted: uncommitted ?? _uncommitted(),
+);
+
 class _Service implements ChangeSetSourceService {
   ChangeSetSnapshot value = ChangeSetSnapshot(files: []);
   UncommittedChangeSetSnapshot uncommitted = _uncommitted();
+  TaskChangeSetSnapshot task = _task();
   Future<ChangeSetSnapshot>? pending;
   Future<UncommittedChangeSetSnapshot>? pendingUncommitted;
+  Future<TaskChangeSetSnapshot>? pendingTask;
   bool failure = false;
   int calls = 0;
   int uncommittedCalls = 0;
+  int taskCalls = 0;
   @override
   Future<ChangeSetSnapshot> snapshotUnstaged() async {
     calls++;
@@ -1001,6 +1434,18 @@ class _Service implements ChangeSetSourceService {
       throw const ChangeSetFailure(code: 'failed', message: 'private failure');
     }
     return uncommitted;
+  }
+
+  @override
+  Future<TaskChangeSetSnapshot> snapshotTaskChanges() async {
+    taskCalls++;
+    final held = pendingTask;
+    pendingTask = null;
+    if (held != null) return held;
+    if (failure) {
+      throw const ChangeSetFailure(code: 'failed', message: 'private failure');
+    }
+    return task;
   }
 }
 
@@ -1101,6 +1546,7 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
       isIn([
         changeSetSourceServiceSnapshotUnstagedId,
         changeSetSourceServiceSnapshotUncommittedId,
+        changeSetSourceServiceSnapshotTaskChangesId,
       ]),
     );
     methods.add(method);

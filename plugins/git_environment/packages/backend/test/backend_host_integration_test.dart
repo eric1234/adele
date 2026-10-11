@@ -138,6 +138,18 @@ void main() {
           ),
         ),
       );
+      await expectLater(
+        ChangeSetSourceServiceClient(
+          changes.requestChannel,
+        ).snapshotTaskChanges(),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'invalid_host_invocation_context',
+          ),
+        ),
+      );
       Future<T> invoke<T>(
         String environmentId,
         Future<T> Function(ChangeSetSourceServiceClient) call,
@@ -168,6 +180,8 @@ void main() {
           invoke(id, (client) => client.snapshotUnstaged());
       Future<UncommittedChangeSetSnapshot> uncommitted(String id) =>
           invoke(id, (client) => client.snapshotUncommitted());
+      Future<TaskChangeSetSnapshot> taskChanges(String id) =>
+          invoke(id, (client) => client.snapshotTaskChanges());
 
       final results = await Future.wait([
         snapshot('primary'),
@@ -233,6 +247,71 @@ void main() {
       expect(
         advanced.unstaged.files.single.hunks.single.lines.last.text,
         'additional working',
+      );
+      final taskResults = await Future.wait([
+        taskChanges('primary'),
+        taskChanges('additional'),
+      ]);
+      expect(taskResults.first.committed.files, isEmpty);
+      expect(taskResults.last.committed.files.single.relativePath, 'same.txt');
+      expect(taskResults.last.committed.files.single.changeKind, 'added');
+      expect(
+        taskResults.last.committed.files.single.hunks.single.lines.single.text,
+        'additional content',
+      );
+      expect(taskResults.last.uncommitted.staged.files, isEmpty);
+      expect(
+        taskResults
+            .last
+            .uncommitted
+            .unstaged
+            .files
+            .single
+            .hunks
+            .single
+            .lines
+            .last
+            .text,
+        'additional working',
+      );
+      await _git(roots['additional']!, ['add', 'same.txt']);
+      final indexed = await provider.readFile(
+        EnvironmentId('additional'),
+        'same.txt',
+      );
+      await provider.replaceExistingTextFile(
+        EnvironmentId('additional'),
+        'same.txt',
+        'additional newest\n',
+        indexed.revision,
+      );
+      final allLayers = await taskChanges('additional');
+      expect(
+        allLayers.committed.files.single.hunks.single.lines.single.text,
+        'additional content',
+      );
+      expect(
+        allLayers.uncommitted.staged.files.single.hunks.single.lines.map(
+          (line) => line.text,
+        ),
+        ['additional content', 'additional working'],
+      );
+      expect(
+        allLayers.uncommitted.unstaged.files.single.hunks.single.lines.map(
+          (line) => line.text,
+        ),
+        ['additional working', 'additional newest'],
+      );
+      expect(allLayers.uncommitted.conflicts, isEmpty);
+      await expectLater(
+        taskChanges('not-materialized'),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'environment_not_live',
+          ),
+        ),
       );
       await expectLater(
         uncommitted('not-materialized'),

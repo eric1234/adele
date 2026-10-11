@@ -78,7 +78,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         capabilityId: changeSetSourceCapability.id.value,
         capabilityMajorVersion: changeSetSourceCapability.majorVersion,
         serviceId: changeSetSourceServiceId,
-        displayName: 'Git Uncommitted Changes',
+        displayName: 'Git Changes',
         configurationContext: defaultConfigurationContext,
         association: AdeleProviderAssociation(
           capabilityId: environmentProviderCapability.id.value,

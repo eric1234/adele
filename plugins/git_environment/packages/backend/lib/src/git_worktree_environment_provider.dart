@@ -107,6 +107,8 @@ final class GitWorktreeEnvironmentProvider
         environmentId: environment.id,
         worktreeRoot: worktreeRoot,
         relativePath: source.relativePath,
+        baselineCommit: baselineCommit,
+        branch: branch,
         failureCode: 'worktree_establishment_failed',
         failureMessage:
             'The Task worktree does not contain the Project source scope.',
@@ -236,6 +238,8 @@ final class GitWorktreeEnvironmentProvider
       environmentId: environment.id,
       worktreeRoot: worktreeRoot,
       relativePath: source.relativePath,
+      baselineCommit: state.baselineCommit,
+      branch: state.branch,
       failureCode: 'restore_source_scope_missing',
       failureMessage:
           'The retained worktree does not contain the Project source scope.',
@@ -708,6 +712,8 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
   required EnvironmentId environmentId,
   required Directory worktreeRoot,
   required String relativePath,
+  required String baselineCommit,
+  required String branch,
   required String failureCode,
   required String failureMessage,
 }) async {
@@ -727,6 +733,8 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
       expectedScope,
       gitWorktreeRoot: worktreeRoot,
       gitDirectory: Directory(gitDirectory),
+      baselineCommit: baselineCommit,
+      branch: branch,
     );
   } on ArgumentError catch (error) {
     throw _environmentFailure(

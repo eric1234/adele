@@ -35,6 +35,11 @@ const _diffPlugin = 'dev.adele.diff-viewer';
 const _sourcePlugin = 'dev.adele.source-editor';
 const _punctuatedPath = "b tracked + [file]; 'quoted'\tname.txt";
 const _bound = Duration(seconds: 20);
+const _scopes = [
+  ('Unstaged changes', 'No unstaged changes'),
+  ('Uncommitted changes', 'No uncommitted changes'),
+  ('Task / Branch', 'No task changes'),
+];
 final _changes = CapabilityKey(
   id: CapabilityId('adele.diff.change-set-source'),
   majorVersion: 1,
@@ -374,6 +379,217 @@ void main() {
   );
 
   testWidgets(
+    'stock Task scope shows committed-only managed branch changes and refreshes after a real commit',
+    (tester) async {
+      await tester.runAsync(() async {
+        expect(
+          (await _git(fixture.additionalRoot, [
+            'branch',
+            '--show-current',
+          ])).trim(),
+          fixture.additional.providerState!['branch'],
+        );
+        await fixture.write(
+          'a modified.txt',
+          'context before\nCommitted Task change\ncontext after\n',
+        );
+        await _git(fixture.additionalRoot, ['add', 'a modified.txt']);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'First managed branch change',
+        ]);
+        expect(
+          await _git(fixture.additionalRoot, ['status', '--porcelain=v1']),
+          isEmpty,
+        );
+      });
+      await mount(tester);
+      await _visible(tester, 'No unstaged changes');
+      expect(find.textContaining('a modified.txt'), findsNothing);
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, 'No uncommitted changes');
+      expect(find.textContaining('a modified.txt'), findsNothing);
+
+      await _selectScope(tester, 'Task / Branch');
+      await _visible(tester, '+Committed Task change');
+      expect(find.text('Committed changes'), findsOneWidget);
+      expect(find.text('a modified.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('-Original text'), findsOneWidget);
+      expect(find.textContaining('No staged changes'), findsOneWidget);
+      expect(find.textContaining('No unstaged changes'), findsOneWidget);
+      expect(find.textContaining('No conflicts'), findsOneWidget);
+      expect(find.textContaining('No task changes'), findsNothing);
+      expect(_sourceAction(), findsNothing);
+
+      final previousHead = await tester.runAsync(
+        () => _git(fixture.additionalRoot, ['rev-parse', 'HEAD']),
+      );
+      await tester.runAsync(() async {
+        await fixture.write(
+          'a modified.txt',
+          'context before\nRefreshed committed Task change\ncontext after\n',
+        );
+        await _git(fixture.additionalRoot, ['add', 'a modified.txt']);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'Second managed branch change',
+        ]);
+        expect(
+          await _git(fixture.additionalRoot, ['rev-parse', 'HEAD']),
+          isNot(previousHead),
+        );
+      });
+      _refresh(tester);
+      await _visible(tester, '+Refreshed committed Task change');
+      expect(find.textContaining('+Committed Task change'), findsNothing);
+      // Refresh remains in Task scope and compares against establishment, not
+      // the previous observation or the parent of the newest commit.
+      expect(find.textContaining('-Original text'), findsOneWidget);
+      expect(find.textContaining('-Committed Task change'), findsNothing);
+      expect(find.text('a modified.txt  [modified]'), findsOneWidget);
+      expect(_sourceAction(), findsNothing);
+      for (final (scope, clean) in _scopes.take(2)) {
+        await _selectScope(tester, scope);
+        await _visible(tester, clean);
+        expect(find.textContaining('a modified.txt'), findsNothing);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'stock Task layers use the selected nonprimary baseline and confine committed staged and unstaged paths',
+    (tester) async {
+      const path = 'g baseline.txt';
+      const working = 'Selected Environment working layer\n';
+      final selectedBaseline =
+          fixture.additional.providerState!['baselineCommit'];
+      final primaryBaseline = fixture.primary.providerState!['baselineCommit'];
+      expect(selectedBaseline, isNot(primaryBaseline));
+      expect(fixture.additional.role, EnvironmentRole.additional);
+      expect(fixture.additionalRoot.path, isNot(fixture.primaryRoot.path));
+      expect(
+        fixture.additional.providerState!['sourceRelativePath'],
+        'nested source',
+      );
+      await tester.runAsync(() async {
+        expect(
+          (await _git(fixture.additionalRoot, ['rev-parse', 'HEAD'])).trim(),
+          selectedBaseline,
+        );
+        expect(
+          (await _git(fixture.primaryRoot, ['rev-parse', 'HEAD'])).trim(),
+          primaryBaseline,
+        );
+        await fixture.write(path, 'Selected Environment committed layer\n');
+        final outside = File('${fixture.additionalWorktree.path}/outside.txt');
+        await outside.writeAsString('Committed outside source scope\n');
+        await _git(fixture.additionalWorktree, [
+          'add',
+          'nested source/$path',
+          'outside.txt',
+        ]);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'Selected Environment committed work',
+        ]);
+        await fixture.write(path, 'Selected Environment staged layer\n');
+        await outside.writeAsString('Staged outside source scope\n');
+        await _git(fixture.additionalWorktree, [
+          'add',
+          'nested source/$path',
+          'outside.txt',
+        ]);
+        await fixture.write(path, working);
+        await outside.writeAsString('Unstaged outside source scope\n');
+
+        final primaryFile = File('${fixture.primaryRoot.path}/$path');
+        await primaryFile.writeAsString(
+          'Primary Environment committed layer\n',
+        );
+        await _git(fixture.primaryRoot, ['add', path]);
+        await _git(fixture.primaryRoot, [
+          'commit',
+          '-m',
+          'Primary Environment committed work',
+        ]);
+        await primaryFile.writeAsString('Primary Environment staged layer\n');
+        await _git(fixture.primaryRoot, ['add', path]);
+        await primaryFile.writeAsString('Primary Environment working layer\n');
+        await File(
+          '${Directory.fromUri(fixture.project.sourceLocation).path}/$path',
+        ).writeAsString('Original Project working layer\n');
+      });
+      await mount(tester);
+      await _visible(tester, '+Selected Environment working layer');
+      expect(find.text('$path  [modified]'), findsOneWidget);
+      await _selectScope(tester, 'Task / Branch');
+      await _visible(tester, '-Additional establishment baseline');
+      expect(find.text('$path  [modified]'), findsNWidgets(3));
+      for (final line in [
+        '-Additional establishment baseline',
+        '+Selected Environment committed layer',
+        '-Selected Environment committed layer',
+        '+Selected Environment staged layer',
+        '-Selected Environment staged layer',
+        '+Selected Environment working layer',
+      ]) {
+        expect(find.textContaining(line), findsOneWidget);
+      }
+      for (final absent in [
+        'Primary establishment baseline',
+        'Primary Environment',
+        'Original Project',
+        'outside.txt',
+        'outside source scope',
+        'nested source/',
+      ]) {
+        expect(find.textContaining(absent), findsNothing);
+      }
+      final committedY = tester.getTopLeft(find.text('Committed changes')).dy;
+      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      final headers = find.text('$path  [modified]');
+      expect(tester.getTopLeft(headers.at(0)).dy, greaterThan(committedY));
+      expect(tester.getTopLeft(headers.at(0)).dy, lessThan(stagedY));
+      expect(tester.getTopLeft(headers.at(1)).dy, greaterThan(stagedY));
+      expect(tester.getTopLeft(headers.at(1)).dy, lessThan(unstagedY));
+      expect(tester.getTopLeft(headers.at(2)).dy, greaterThan(unstagedY));
+      expect(_sourceAction(), findsOneWidget);
+      expect(tester.getTopLeft(_sourceAction()).dy, greaterThan(unstagedY));
+      expect(
+        fixture.store
+            .requireSessionAuthority(fixture.additionalSession.id)
+            .environmentId,
+        fixture.additional.id,
+      );
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(fixture.reads, isEmpty);
+
+      tester.view.physicalSize = const Size(720, 1200);
+      await tester.pump();
+      await _openFromDiff(tester);
+      expect(_editor(tester).controller!.text, working);
+      expect(fixture.reads, [(fixture.additional.id.value, path)]);
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'actual Diff opens a tracked punctuated nonprimary path in Source and repeats without another read or pane',
     (tester) async {
       const path = _punctuatedPath;
@@ -593,16 +809,15 @@ void main() {
     },
   );
 
-  for (final scope in ['Unstaged changes', 'Uncommitted changes']) {
+  for (final (scope, clean) in _scopes) {
     testWidgets(
       '$scope clean Environment is distinct from unavailable and Git failure',
       (tester) async {
         await mount(tester);
         await _visible(tester, 'No unstaged changes');
-        if (scope == 'Uncommitted changes') {
+        if (scope != 'Unstaged changes') {
           await _selectScope(tester, scope);
         }
-        final clean = 'No ${scope.toLowerCase()}';
         await _visible(tester, clean);
         // A Git executable failure cannot turn an unsuccessful observation into clean.
         await tester.runAsync(
@@ -646,21 +861,26 @@ void main() {
       _refresh(tester);
       await _visible(tester, 'unavailable');
       expect(fixture.backends.backends, isEmpty);
+      for (final (scope, clean) in _scopes.skip(1)) {
+        await _selectScope(tester, scope);
+        await _visible(tester, 'unavailable');
+        expect(find.textContaining(clean), findsNothing);
+      }
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
 
-  for (final scope in ['Unstaged changes', 'Uncommitted changes']) {
+  for (final (scope, clean) in _scopes) {
     for (final departure in ['navigation', 'provider retirement']) {
       testWidgets(
         '$departure fences a pending actual Git $scope snapshot',
         (tester) async {
           await mount(tester);
           await _visible(tester, 'No unstaged changes');
-          if (scope == 'Uncommitted changes') {
+          if (scope != 'Unstaged changes') {
             await _selectScope(tester, scope);
-            await _visible(tester, 'No uncommitted changes');
+            await _visible(tester, clean);
           }
           expect(
             fixture.environmentRuntime.currentMaterialization(
@@ -673,6 +893,14 @@ void main() {
               'a modified.txt',
               'Old Session pending content\n',
             );
+            if (scope == 'Task / Branch') {
+              await _git(fixture.additionalRoot, ['add', 'a modified.txt']);
+              await _git(fixture.additionalRoot, [
+                'commit',
+                '-m',
+                'Pending Task snapshot commit',
+              ]);
+            }
             await File('${fixture.gate.path}/armed').writeAsString('armed');
           });
           final staleRefresh = _refreshCallback(tester);
@@ -684,8 +912,11 @@ void main() {
             () => File('${fixture.gate.path}/arrived').existsSync(),
           );
           if (departure == 'navigation') {
-            fixture.frontends.unbind(fixture.additionalSession);
-            await tester.pumpWidget(fixture.widget(fixture.primarySession));
+            await fixture.navigate(
+              tester,
+              fixture.additionalSession,
+              fixture.primarySession,
+            );
           } else {
             await tester.runAsync(
               () => fixture.backends.backends.single.retireProvider(
@@ -804,6 +1035,7 @@ final class _Fixture {
       'c deleted.txt': 'Deleted baseline\n',
       'd staged.txt': 'Staged baseline\n',
       'e reversal.txt': 'Original layer\n',
+      'g baseline.txt': 'Primary establishment baseline\n',
       '.gitignore': '*.tmp\n',
     }.entries) {
       await File('${source.path}/${entry.key}').writeAsString(entry.value);
@@ -842,6 +1074,13 @@ final class _Fixture {
         projectId: project.id,
         title: 'Real Diff Task',
       );
+      // Establish the nonprimary Environment from a genuinely newer source
+      // commit. Retained provider state, not a synthetic baseline, is restored.
+      await File(
+        '${source.path}/g baseline.txt',
+      ).writeAsString('Additional establishment baseline\n');
+      await _git(source, ['add', 'g baseline.txt']);
+      await _git(source, ['commit', '-m', 'Additional Environment baseline']);
       final binding = capabilities.resolve(environmentProviderCapability);
       final provider = GeneratedEnvironmentProvider(
         providerId: binding.provider.id,
