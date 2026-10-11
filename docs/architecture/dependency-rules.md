@@ -54,6 +54,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_model_provider`](../../packages/model_provider/pubspec.yaml) | Public: provider-neutral model-provider contract | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_product`](../../packages/product/pubspec.yaml) | Public: product identities and immutable values | No executable orchestration, extension registration, UI, host, or plugin implementation concerns. |
 | [`adele_project_storage`](../../packages/project_storage/pubspec.yaml) | Public: Session-scoped relational storage contract shared by host and plugins | Pure Dart; no SQLite, Flutter, app, host implementation, or concrete plugin dependencies. |
+| [`adele_settings`](../../packages/settings/pubspec.yaml) | Public: declarative scalar settings, immutable catalog, and effective global resolution | Pure Dart; only shared public-ID validation from `adele_plugin_api`; no Flutter, filesystem, TOML, native, host, app, or concrete plugin dependency. |
 | [`adele_model_tool`](../../packages/model_tool/pubspec.yaml) | Public: model-tool semantics and transport | No Flutter, host implementations, app, or concrete tools. |
 | [`adele_orchestration`](../../packages/orchestration/pubspec.yaml) | Public: strategy/execution semantics and transport | No `agent_kernel`, other host implementations, Flutter, app, or concrete strategies. |
 | [`adele_environment`](../../packages/environment/pubspec.yaml) | Public: Environment provider and authorized-facet contracts | No Flutter, host implementations, app, or concrete providers. |
@@ -62,7 +63,8 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_platform_storage`](../../packages/platform_storage/pubspec.yaml) | Internal: global configuration/state/data/cache location resolution | Flutter-free, path-only host infrastructure; no persistence or public plugin configuration API. |
 | [`adele_toml_document`](../../packages/toml_document/pubspec.yaml) | Internal: TOML validation and scalar document edits through Rust `toml_edit` | Flutter-free host infrastructure; no CodeForge, app, plugins, location resolution, file persistence, or Settings/Profile semantics. |
 | [`adele_configuration_store`](../../packages/configuration_store/pubspec.yaml) | Internal: conditional global TOML configuration-file persistence | Flutter-free host infrastructure over platform storage roots and TOML documents; no plugin filesystem service, Project storage, local-state database, or Settings/Profile semantics. |
-| [`plugin_runtime`](../../packages/plugin_runtime/pubspec.yaml) | Internal: backend/runtime hosting and routing | No Flutter, app, or plugin implementations. |
+| [`adele_settings_host`](../../packages/settings_host/pubspec.yaml) | Internal: global scalar settings snapshot/edit adapter | Uses `adele_settings`, `adele_configuration_store`, and `adele_toml_document`; no second transaction layer, UI, activation, or runtime reconfiguration. |
+| [`plugin_runtime`](../../packages/plugin_runtime/pubspec.yaml) | Internal: prepared installation/declaration discovery and backend/runtime hosting | Uses public scalar Settings for data-only schemas; no TOML/native persistence, Flutter, app, or plugin implementations. |
 | [`plugin_backend_host`](../../packages/plugin_backend_host/pubspec.yaml) | Internal: shared AOT backend host | No Flutter, app, or plugin implementations. |
 | [`plugin_builder`](../../packages/plugin_builder/pubspec.yaml) / [`contract_codegen`](../../packages/contract_codegen/pubspec.yaml) | Internal: source preparation / contract generation | Build-only, not plugin runtime APIs; no linked plugin implementations or Flutter UI dependencies. |
 | [`adele_desktop`](../../app/pubspec.yaml) | Private: Flutter desktop composition root | No production dependency on any package under `plugins/**`, including contracts; not a public plugin-API owner. |
@@ -115,6 +117,13 @@ internal host packages, and generic host/native third-party libraries required
 for bridges and composition. It must not become the implementation owner of
 concrete plugin behavior or define public plugin contracts in application code.
 
+Desktop prepared-frontend startup may use the internal Settings host and global
+storage roots off the UI isolate. Interpreted consumers receive owner-scoped
+immutable scalar values through public UI bridges, not host persistence APIs.
+Native presentation primitives accept generic construction options; application
+code must not interpret a concrete plugin's setting ID. Backend AOT preparation
+and pure-Dart prepared schema parsing remain independent of native TOML.
+
 The private Project database and its `sqlite3` dependency belong in `app`, not
 `adele_product`, `adele_project_storage`, `adele_core_extensions`, or a plugin
 backend. The provider describes source-relative placement through public values;
@@ -153,7 +162,7 @@ libraries and same-plugin implementation reuse must still respect these boundari
 It must not depend on `app` / `adele_desktop`, internal host/build packages
 (`plugin_runtime`, `plugin_backend_host`, `plugin_builder`, `contract_codegen`,
 `agent_kernel`, `adele_platform_storage`, `adele_toml_document`,
-`adele_configuration_store`), or another plugin's
+`adele_configuration_store`, `adele_settings_host`), or another plugin's
 frontend, backend, or private implementation.
 A strategy obtains execution semantics through `adele_orchestration`, not by
 importing `agent_kernel`. A backend obtains Project storage through
@@ -192,9 +201,10 @@ concrete package layouts belong to local plugin READMEs.
 
 ## Pure-Dart boundary
 
-Product, Project storage contracts, orchestration, contracts, capability routing,
-Environment semantics, model-provider/tool semantics, backend runtime, and execution
-mechanics must remain usable and testable without Flutter where Flutter is not
+Product, ordinary setting contracts/resolution, Project storage contracts,
+orchestration, contracts, capability routing, Environment semantics,
+model-provider/tool semantics, backend runtime, and execution mechanics must remain
+usable and testable without Flutter where Flutter is not
 intrinsic to their purpose. Generic plugin APIs, backend support, and internal build/generation
 packages also retain Flutter-free production dependency graphs.
 

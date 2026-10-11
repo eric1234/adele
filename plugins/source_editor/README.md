@@ -78,6 +78,34 @@ repair or lossless-departure claim. See the
 [native editor evidence](../../docs/experiments/codeforge-correctness.md).
 Highlighting is limited to Dart, JSON, and Python; other suffixes use plain text.
 
+## Settings
+
+`settings.schema.json` is the authoritative declaration for
+`dev.adele.source-editor.enable-folding`, including its type, default, and UI
+metadata. Stock preparation copies that asset into the installed plugin. The
+finite `displaySource()` operation reads the host-validated value from its exact
+installation's startup snapshot, then supplies it to native editor construction.
+Source does not supply a fallback or duplicate the schema's validation rules.
+
+Set the literal root key in global `settings.toml` to enable folding:
+
+```toml
+"dev.adele.source-editor.enable-folding" = true
+```
+
+The file is under ADELE's resolved configuration root, on Linux normally
+`~/.config/adele/config/settings.toml` (or
+`$XDG_CONFIG_HOME/adele/config/settings.toml`). Other platform locations belong to
+[platform storage](../../packages/platform_storage/README.md). Startup never
+creates the file. Invalid known values fail the owning frontend explicitly rather
+than silently selecting a default; unknown settings are preserved.
+
+Folding is fixed for an editor's lifetime. Configuration changes require a fresh
+application startup; there is no live toggle. Opening an already retained document,
+reordering, and remounting retain its existing editor, text, and undo owner.
+No configuration file or TOML/native settings dependency crosses into production
+frontend code; integration tests use host packages as development dependencies.
+
 ## Entrypoints
 
 `packages/frontend/lib/main.dart` supplies the prepared ABI:
@@ -96,7 +124,8 @@ Finite operations receive immutable host-captured context. Environment keys and
 document IDs are identity data, never authority to select another Environment.
 `main_content_bridge.dart` supplies Session/Environment context, pane IDs, and
 collection changes; `contribution_bridge.dart` supplies operation arguments,
-retained records/resources, and generic confirmation. Only finite operations use
+retained records/resources, installation-bound scalar settings, and generic
+confirmation. Only finite operations use
 `environment_access_bridge.dart` for captured file access. Session-less exit reads
 all retained records without inventing a current Environment.
 `code_editor_bridge.dart` gives each view a fresh native presentation handle.
@@ -114,7 +143,9 @@ not substitute for prepared-EVC/native integration, authority, or catalog checks
 Source EVC/native integration suite, including retained documents, native undo,
 Command-to-input invocation without reads, submitted display with captured
 Environment authority, provider recovery, conditional Save/conflicts, and
-Close/exit lifecycle races.
+Close/exit lifecycle races. Folding tests discover the actual published schema,
+resolve isolated global configuration, and inspect CodeForge's rendered option
+while preserving retained native text/controller/undo and document identity.
 Both suites run through `dart tools/adele.dart test --target source_editor_frontend`
 from the repository root, including maintained native editor preparation.
 The Source cases in `app/test/core/normal_chatgpt_run_integration_test.dart` cover

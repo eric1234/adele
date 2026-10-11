@@ -429,11 +429,25 @@ void main() {
               .map((target) => target.name),
           ['source_editor_frontend', 'adele_desktop'],
         );
+        const nativeTomlTargets = [
+          'adele_toml_document',
+          'adele_configuration_store',
+          'adele_settings_host',
+          'filesystem_tools_frontend',
+          'command_tools_frontend',
+          'chat_strategy_frontend',
+          'task_browser_frontend',
+          'terminal_frontend',
+          'diff_viewer_frontend',
+          'source_editor_frontend',
+          'openai_frontend',
+          'adele_desktop',
+        ];
         expect(
           testTargets
               .where((target) => target.nativeToml)
               .map((target) => target.name),
-          ['adele_toml_document', 'adele_configuration_store'],
+          nativeTomlTargets,
         );
         for (final entry in entries) {
           expect(
@@ -442,10 +456,7 @@ void main() {
           );
           expect(
             entry['nativeToml'],
-            [
-              'adele_toml_document',
-              'adele_configuration_store',
-            ].contains(entry['name']),
+            nativeTomlTargets.contains(entry['name']),
           );
         }
         expect(
@@ -490,6 +501,44 @@ void main() {
         );
       },
     );
+
+    test('native TOML metadata includes transitive test dependencies', () {
+      final manifests = <String, YamlMap>{};
+      for (final path in {
+        ...analysisTargets.map((target) => target.path),
+        ...testTargets.map((target) => target.path),
+      }) {
+        final manifest =
+            loadYaml(File('$path/pubspec.yaml').readAsStringSync()) as YamlMap;
+        manifests[manifest['name'] as String] = manifest;
+      }
+      for (final target in testTargets) {
+        final manifest =
+            loadYaml(File('${target.path}/pubspec.yaml').readAsStringSync())
+                as YamlMap;
+        final pending = <String>[
+          manifest['name'] as String,
+          ...?((manifest['dev_dependencies'] as YamlMap?)?.keys.cast<String>()),
+        ];
+        final visited = <String>{};
+        while (pending.isNotEmpty) {
+          final name = pending.removeLast();
+          if (!visited.add(name)) continue;
+          pending.addAll(
+            (manifests[name]?['dependencies'] as YamlMap?)?.keys
+                    .cast<String>() ??
+                const [],
+          );
+        }
+        expect(
+          target.nativeToml,
+          visited.contains('adele_toml_document'),
+          reason:
+              '${target.name} native hooks include dev dependencies of the '
+              'test package and production dependencies of its dependencies.',
+        );
+      }
+    });
 
     test('CI installs the pinned compiler for either native requirement', () {
       final workflow =
@@ -1039,6 +1088,12 @@ void main() {
         path: 'packages/configuration_store',
         nativeToml: true,
       ),
+      (name: 'adele_settings', path: 'packages/settings', nativeToml: false),
+      (
+        name: 'adele_settings_host',
+        path: 'packages/settings_host',
+        nativeToml: true,
+      ),
     ]) {
       test('discovers ${expected.name} in workspace, analysis, and CI', () {
         final target = lookupTestTarget(expected.name);
@@ -1091,6 +1146,36 @@ void main() {
           'adele_toml_document',
           'path',
         ]),
+      );
+    });
+
+    test('public settings keeps host dependencies out of production', () {
+      final manifest =
+          loadYaml(File('packages/settings/pubspec.yaml').readAsStringSync())
+              as YamlMap;
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals(['adele_plugin_api']),
+      );
+    });
+
+    test('settings host keeps narrow direct production dependencies', () {
+      final manifest =
+          loadYaml(
+                File('packages/settings_host/pubspec.yaml').readAsStringSync(),
+              )
+              as YamlMap;
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals([
+          'adele_settings',
+          'adele_configuration_store',
+          'adele_toml_document',
+        ]),
+      );
+      expect(
+        (manifest['dev_dependencies'] as YamlMap).keys,
+        containsAll(['adele_platform_storage', 'path', 'test']),
       );
     });
 
@@ -1935,6 +2020,8 @@ void main() {
         'adele_platform_storage|dart|packages/platform_storage|test',
         'adele_toml_document|dart|packages/toml_document|test',
         'adele_configuration_store|dart|packages/configuration_store|test',
+        'adele_settings|dart|packages/settings|test',
+        'adele_settings_host|dart|packages/settings_host|test',
         'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',

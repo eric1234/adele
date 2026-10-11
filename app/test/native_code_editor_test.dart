@@ -15,6 +15,41 @@ import 'support/command_palette_shortcut.dart';
 void main() {
   setUpAll(NativeCodeEditor.initializeLibrary);
 
+  for (final enableFolding in [false, true]) {
+    testWidgets(
+      'folding $enableFolding retains text and undo owners across remount',
+      (tester) async {
+        final editor = NativeCodeEditor(
+          text: 'abc',
+          enableFolding: enableFolding,
+        );
+        addTearDown(editor.dispose);
+        await tester.runAsync(editor.initialize);
+        await _mount(tester, editor);
+        final before = tester.widget<CodeForge>(find.byType(CodeForge));
+        expect(before.enableFolding, enableFolding);
+        expect(editor.requestFocus(), isTrue);
+        await tester.pump();
+        await _key(tester, LogicalKeyboardKey.delete);
+        expect(editor.snapshot()['text'], 'bc');
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _mount(tester, editor);
+        final after = tester.widget<CodeForge>(find.byType(CodeForge));
+        expect(after.enableFolding, enableFolding);
+        expect(after.controller, same(before.controller));
+        expect(after.undoController, same(before.undoController));
+        expect(editor.snapshot()['text'], 'bc');
+        expect(editor.requestFocus(), isTrue);
+        await tester.pump();
+        await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+        expect(editor.snapshot()['text'], 'abc');
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'focused editor yields the platform palette chord without changing text',
     (tester) async {
@@ -134,6 +169,10 @@ void main() {
       final editor = NativeCodeEditor(text: 'abc');
       await tester.runAsync(editor.initialize);
       await _mount(tester, editor);
+      expect(
+        tester.widget<CodeForge>(find.byType(CodeForge)).enableFolding,
+        isFalse,
+      );
       editor.requestFocus();
       await tester.pump();
       var changes = 0;

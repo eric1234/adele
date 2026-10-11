@@ -85,6 +85,19 @@ const List<TestTarget> testTargets = <TestTarget>[
     nativeToml: true,
   ),
   TestTarget(
+    name: 'adele_settings',
+    path: 'packages/settings',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_settings_host',
+    path: 'packages/settings_host',
+    executable: 'dart',
+    arguments: <String>['test'],
+    nativeToml: true,
+  ),
+  TestTarget(
     name: 'adele_ui',
     path: 'packages/ui',
     executable: 'flutter',
@@ -174,6 +187,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/filesystem_tools/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'search_tools_plugin',
@@ -210,6 +224,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/command_tools/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'agents_md_plugin',
@@ -240,6 +255,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/chat_strategy/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'session_evaluator_contract',
@@ -270,12 +286,14 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/task_browser/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'terminal_frontend',
     path: 'plugins/terminal/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'diff_viewer_contract',
@@ -288,6 +306,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/diff_viewer/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'source_editor_frontend',
@@ -295,6 +314,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     executable: 'flutter',
     arguments: <String>['test'],
     nativeCodeEditor: true,
+    nativeToml: true,
   ),
   TestTarget(
     name: 'scripted_model_contract',
@@ -325,6 +345,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'plugins/openai/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
+    nativeToml: true,
   ),
   TestTarget(
     name: 'workspace_demo_contract',
@@ -347,6 +368,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     ciShards: 4,
     linuxDesktopDeps: true,
     nativeCodeEditor: true,
+    nativeToml: true,
   ),
 ];
 
@@ -376,6 +398,8 @@ analysisTargets = <({String name, String path, bool flutter})>[
     path: 'packages/configuration_store',
     flutter: false,
   ),
+  (name: 'adele_settings', path: 'packages/settings', flutter: false),
+  (name: 'adele_settings_host', path: 'packages/settings_host', flutter: false),
   (
     name: 'adele_core_extensions',
     path: 'packages/core_extensions',

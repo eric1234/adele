@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "dev.adele.source-editor.enable-folding",
+      "type": "boolean",
+      "default": false,
+      "label": "Enable Code Folding",
+      "category": "Editor",
+      "section": "Display"
+    }
+  ]
+}
