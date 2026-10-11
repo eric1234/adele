@@ -6,6 +6,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 export 'commands.dart';
 export 'project_provider.dart';
+export 'window_session_context.dart';
 
 /// Zero or more independently selectable contributions, without priority or an
 /// implicit default. The host retains and validates the exact [ExtensionBinding]

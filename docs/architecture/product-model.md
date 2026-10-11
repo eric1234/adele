@@ -366,6 +366,10 @@ strategy-owned Session state, Environment authority, presentation state, and
 execution resources. Chat owns a generation-local backend cache backed by its own
 relational schema for durable Sessions, separately from the core product store.
 
+The [Window Session Context](plugin-system.md#window-session-context) observes
+which canonical Session one window presents. That transient selection and its
+revision are not product fields, durable storage, or Session lifecycle changes.
+
 Three kinds of identity must not be conflated:
 
 | Concept | Meaning |

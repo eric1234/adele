@@ -47,7 +47,7 @@ manifests for exact current dependencies, including development-only dependencie
 | Package | Responsibility / layer | Critical boundary |
 | --- | --- | --- |
 | [`adele_plugin_api`](../../packages/plugin_api/pubspec.yaml) | Public: generic plugin identity, extension registration, and binding liveness | No Flutter, host implementations, app, or concrete plugins. |
-| [`adele_core_extensions`](../../packages/core_extensions/pubspec.yaml) | Public: core-owned extension contracts without another domain owner | Not a catch-all for public APIs; no Flutter or implementation dependencies. |
+| [`adele_core_extensions`](../../packages/core_extensions/pubspec.yaml) | Public: core-owned extension contracts and window selection observation without another domain owner | Not a catch-all for public APIs; no Flutter or implementation dependencies. |
 | [`adele_contract`](../../packages/contract/pubspec.yaml) | Public: declarations, channels, and exposure values | No Flutter, analyzer/compiler, generation tooling, or host/runtime implementation dependencies. |
 | [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels | No Flutter, host internals, or domain-specific orchestration semantics. |
 | [`adele_capabilities`](../../packages/capabilities/pubspec.yaml) | Public: capability/provider identities and routing | No Flutter, host implementations, app, or concrete providers. |
@@ -78,11 +78,14 @@ implementations into the normal application runtime.
 
 - **`adele_core_extensions`** owns only core-owned extension contracts with no
   natural existing public domain owner. Presentation-independent Commands, Project
-  selection, and provider backing preparation are concrete examples, not a template
-  for moving all extension points here. These pure-Dart contracts use the public
+  selection, provider backing preparation, and read-only Window Session Context
+  are concrete examples, not a template for moving all extension points here.
+  These pure-Dart contracts use the public
   extension registry and, where needed, capability/transport APIs, not Flutter,
   SQLite, or filesystem hosting. New APIs normally belong with their product,
   orchestration, tool, Environment, UI, or plugin-domain owner.
+  Window selection depends toward `adele_product` for the canonical immutable
+  Session value; it does not put transient window state into that product package.
 - **`adele_product`** remains independent of executable strategy/runtime/UI layers
   and extension registration. Its `adele_capabilities` dependency supplies generic
   `ProviderId` values; the transitive `adele_plugin_api` dependency does not mean

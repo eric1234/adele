@@ -6,6 +6,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/core/window_session_context.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
@@ -47,6 +48,7 @@ final class AdeleApplication extends StatefulWidget {
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
     this.mainContentHost,
+    this.attachSessionContext,
     this.loadSettings = PreparedSettingsSnapshot.load,
   });
 
@@ -63,6 +65,13 @@ final class AdeleApplication extends StatefulWidget {
   /// Catalog discovery and registration still use the ordinary frontend path.
   /// Selected once at mount; this application closes the host on shutdown.
   final PreparedMainContentHost? mainContentHost;
+
+  /// Optional native composition, independent of presentation contributions.
+  /// Called once at mount with read-only window access. Return cleanup for owned
+  /// subscriptions/registrations; shutdown revokes access before invoking it and
+  /// joins its completion. Widget updates do not reattach or retarget consumers.
+  final FutureOr<void> Function() Function(WindowSessionContext)?
+  attachSessionContext;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -89,7 +98,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   SessionExecutionController? _execution;
   late final SessionExecutionOwners _executions;
   Object? _workbench;
-  Session? _session;
+  final _sessionContext = WindowSessionContextHost();
+  Session? get _session => _sessionContext.session;
+  FutureOr<void> Function()? _detachSessionContext;
   late final ConsoleController _console;
   late final PreparedConsoleHost _consoleHost;
   late final PreparedMainContentHost _mainContentHost;
@@ -101,6 +112,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final Set<WindowTaskBrowserSource> _browsers = {};
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
+  Widget? _presentation;
   final GlobalKey<NavigatorState> _navigator = GlobalKey<NavigatorState>();
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   final _commandRegistrations = ExtensionRegistrationGroup();
@@ -190,6 +202,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ),
     );
     _inspection.addListener(_inspectionChanged);
+    _sessionContext.context.observe(
+      (snapshot) => _console.setSession(snapshot.session),
+    );
+    _sessionContext.context.observe(
+      (snapshot) => _inspection.presentSession(snapshot.session),
+    );
     try {
       _chatGptConfiguration = widget.readChatGptConfiguration();
     } on Object {
@@ -247,6 +265,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         _frontends.releasePresentations();
         unawaited(_closeAndReport());
       },
+    );
+    _detachSessionContext = widget.attachSessionContext?.call(
+      _sessionContext.context,
     );
   }
 
@@ -519,6 +540,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     if (!mounted ||
         _closing != null ||
         _session != null ||
+        _navigating ||
         _creatingTask ||
         task == null ||
         task.projectId != _project?.id ||
@@ -543,15 +565,13 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     controller?.activityChanges.addListener(_activityChanged);
     setState(() {
       _workbench = Object();
-      _session = session;
       _environment = _consoleHost.environmentForSession(session);
       _execution = controller;
       _sessionLabel =
           strategy?.binding.value.displayName ?? session.strategyId.value;
       _navigationError = null;
+      _sessionContext.presentSession(session);
     });
-    _console.setSession(session);
-    _inspection.presentSession(session);
   }
 
   String? get _taskUnavailableReason {
@@ -657,8 +677,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         () => _frontends.unbind(session),
         () => _execution?.removeListener(_executionChanged),
         () => _execution?.activityChanges.removeListener(_activityChanged),
-        () => _console.setSession(null),
-        () => _inspection.presentSession(null),
       ]) {
         try {
           cleanup();
@@ -669,7 +687,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       }
       setState(() {
         _execution = null;
-        _session = null;
         _sessionLabel = null;
         _navigationError = cleanupError == null
             ? null
@@ -678,6 +695,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         _environment = task == null
             ? null
             : _runtime.store.primaryEnvironmentFor(task.id);
+        _sessionContext.presentSession(null);
       });
       if (cleanupError != null) {
         FlutterError.reportError(
@@ -702,6 +720,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _closeRuntime() => _closing ??= () {
     _workbench = null;
+    _sessionContext.close();
+    final detachContext = _detachSessionContext;
+    _detachSessionContext = null;
+    final closingContextConsumer = Future<void>.sync(
+      () => detachContext?.call(),
+    );
     final closingCommands = _commandRegistrations.close();
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
@@ -716,6 +740,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     // for normal admitted settlement, including hidden Session history writes.
     final draining = Future.wait<void>([
       closingCommands,
+      closingContextConsumer,
       settlingRuns,
       closingConsole,
       closingConsoleHost,
@@ -786,7 +811,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         _project = project;
         _task = null;
         _environment = null;
-        _session = null;
       });
     } on Object catch (error) {
       if (mounted && _closing == null) {
@@ -822,9 +846,14 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   @override
   Widget build(BuildContext context) {
+    // Accepted exit retains inert display, not live Session selection. Reusing
+    // the tree lets its existing retention gate fence input while owners drain.
+    if (_retainingPresentations.value && _presentation != null) {
+      return _presentation!;
+    }
     final session = _session;
     final workbench = _workbench;
-    return ValueListenableBuilder<bool>(
+    return _presentation = ValueListenableBuilder<bool>(
       valueListenable: _retainingPresentations,
       builder: (context, retaining, child) => PreparedFrontendRetention(
         notifier: _retainingPresentations,
