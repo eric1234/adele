@@ -12,6 +12,7 @@ final class NativeCodeEditor extends ChangeNotifier {
     required String text,
     this.readOnly = false,
     this.language = 'dart',
+    this.enableFolding = false,
   }) : _initialText = text {
     if (!const {'plain', 'dart', 'json', 'python'}.contains(language)) {
       throw ArgumentError.value(
@@ -27,6 +28,8 @@ final class NativeCodeEditor extends ChangeNotifier {
 
   final bool readOnly;
   final String language;
+  // CodeForge installs folding callbacks only at construction, not on updates.
+  final bool enableFolding;
   String? _initialText;
   Future<void>? _initialization;
   CodeForgeController? _controller;
@@ -194,7 +197,7 @@ class _EditorViewState extends State<_EditorView> {
       readOnly: editor.readOnly,
       language: mode,
       enableLocalSuggestions: false,
-      enableFolding: false,
+      enableFolding: editor.enableFolding,
       enableKeyboardSuggestions: false,
     );
   }

@@ -27,8 +27,12 @@ class ContributionSourcePort implements SourceDocumentPort {
   @override
   String allocateId() => allocateContributionId();
   @override
-  Future<bool> createEditor(String id, String text, String language) =>
-      createContributionCodeEditor(id, text, language);
+  Future<bool> createEditor(
+    String id,
+    String text,
+    String language,
+    bool enableFolding,
+  ) => createContributionCodeEditor(id, text, language, enableFolding);
   @override
   Map<String, dynamic> editorState(String id) =>
       readContributionCodeEditorState(id);
@@ -75,7 +79,9 @@ String sourceArgument(String key) {
 Future<Map<String, dynamic>> displaySource() {
   final documents = sourceDocuments();
   final path = sourceArgument('path');
-  return documents.display(path);
+  final enableFolding =
+      readPluginSetting('dev.adele.source-editor.enable-folding') as bool;
+  return documents.display(path, enableFolding);
 }
 
 Future<Map<String, dynamic>> saveSource() {

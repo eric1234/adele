@@ -64,7 +64,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_toml_document`](../../packages/toml_document/pubspec.yaml) | Internal: TOML validation and scalar document edits through Rust `toml_edit` | Flutter-free host infrastructure; no CodeForge, app, plugins, location resolution, file persistence, or Settings/Profile semantics. |
 | [`adele_configuration_store`](../../packages/configuration_store/pubspec.yaml) | Internal: conditional global TOML configuration-file persistence | Flutter-free host infrastructure over platform storage roots and TOML documents; no plugin filesystem service, Project storage, local-state database, or Settings/Profile semantics. |
 | [`adele_settings_host`](../../packages/settings_host/pubspec.yaml) | Internal: global scalar settings snapshot/edit adapter | Uses `adele_settings`, `adele_configuration_store`, and `adele_toml_document`; no second transaction layer, UI, activation, or runtime reconfiguration. |
-| [`plugin_runtime`](../../packages/plugin_runtime/pubspec.yaml) | Internal: backend/runtime hosting and routing | No Flutter, app, or plugin implementations. |
+| [`plugin_runtime`](../../packages/plugin_runtime/pubspec.yaml) | Internal: prepared installation/declaration discovery and backend/runtime hosting | Uses public scalar Settings for data-only schemas; no TOML/native persistence, Flutter, app, or plugin implementations. |
 | [`plugin_backend_host`](../../packages/plugin_backend_host/pubspec.yaml) | Internal: shared AOT backend host | No Flutter, app, or plugin implementations. |
 | [`plugin_builder`](../../packages/plugin_builder/pubspec.yaml) / [`contract_codegen`](../../packages/contract_codegen/pubspec.yaml) | Internal: source preparation / contract generation | Build-only, not plugin runtime APIs; no linked plugin implementations or Flutter UI dependencies. |
 | [`adele_desktop`](../../app/pubspec.yaml) | Private: Flutter desktop composition root | No production dependency on any package under `plugins/**`, including contracts; not a public plugin-API owner. |
@@ -113,6 +113,13 @@ The app is the generic composition root. It may depend on public ADELE APIs,
 internal host packages, and generic host/native third-party libraries required
 for bridges and composition. It must not become the implementation owner of
 concrete plugin behavior or define public plugin contracts in application code.
+
+Desktop prepared-frontend startup may use the internal Settings host and global
+storage roots off the UI isolate. Interpreted consumers receive owner-scoped
+immutable scalar values through public UI bridges, not host persistence APIs.
+Native presentation primitives accept generic construction options; application
+code must not interpret a concrete plugin's setting ID. Backend AOT preparation
+and pure-Dart prepared schema parsing remain independent of native TOML.
 
 The private Project database and its `sqlite3` dependency belong in `app`, not
 `adele_product`, `adele_project_storage`, `adele_core_extensions`, or a plugin

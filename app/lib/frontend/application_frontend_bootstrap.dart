@@ -20,6 +20,7 @@ import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
 import 'prepared_main_content_host.dart';
 import 'prepared_session_services.dart';
+import 'prepared_settings.dart';
 import 'prepared_task_browser_host.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
@@ -44,6 +45,7 @@ final class ApplicationFrontendBootstrap {
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
     PreparedMainContentHost? mainContentHost,
+    this.loadSettings = PreparedSettingsSnapshot.load,
   }) : _extensions = extensions,
        _backends = backends,
        _sessionServices = sessionServices,
@@ -57,6 +59,8 @@ final class ApplicationFrontendBootstrap {
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
   final PreparedMainContentHost _mainContentHost;
+  final Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)
+  loadSettings;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -131,9 +135,10 @@ final class ApplicationFrontendBootstrap {
   }
 
   Future<void> _start() async {
+    final settings = await loadSettings(_catalog!);
     for (final generation in _generations) {
       if (_state == ApplicationFrontendState.closing) return;
-      await generation._start();
+      await generation._start(settings);
       _changes.add(_state);
     }
     if (_state != ApplicationFrontendState.closing) {
@@ -241,12 +246,13 @@ final class InstalledFrontendActivation {
     for (final (_, _, registration) in _registrations) registration,
   ]);
 
-  Future<void> _start() =>
-      _closed ? Future<void>.value() : _starting = _activate();
+  Future<void> _start(PreparedSettingsSnapshot settings) =>
+      _closed ? Future<void>.value() : _starting = _activate(settings);
 
-  Future<void> _activate() async {
+  Future<void> _activate(PreparedSettingsSnapshot settings) async {
     _state = InstalledFrontendState.starting;
     try {
+      settings.validateInstallation(installation);
       final component = installation.frontend!;
       final generation = _generation = await PreparedFrontend.load(
         File.fromUri(component.artifactUri),
@@ -350,6 +356,7 @@ final class InstalledFrontendActivation {
                 services: _sessionServices,
                 capabilityRegistry: _backends?.registry,
                 backends: _backends,
+                readSetting: (id) => settings.read(installation, id).value,
               ),
             );
             final binding = _extensions

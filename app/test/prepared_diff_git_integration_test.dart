@@ -11,8 +11,10 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -23,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../tools/backend_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/diff_viewer_frontend_compiler.dart';
 import '../tool/source_editor_frontend_compiler.dart';
@@ -95,13 +98,13 @@ void main() {
     await File('${source.path}/frontend.evc').writeAsBytes(
       await compileSourceEditorFrontend(repositoryRoot: repository),
     );
-    await _manifest(source, _sourcePlugin, {
-      'frontend': {
-        'artifact': 'frontend.evc',
-        'presentations': stockFrontendDescriptors[_sourcePlugin]!,
-        'extensions': stockFrontendExtensionDescriptors[_sourcePlugin]!,
-      },
-    });
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: source,
+      pluginId: _sourcePlugin,
+      displayName: 'Source',
+      frontend: true,
+    );
   });
   tearDownAll(() => artifacts.delete(recursive: true));
 
@@ -609,6 +612,16 @@ final class _Fixture {
       extensions: extensions,
       backends: backends,
       mainContentHost: mainContent,
+      loadSettings: (catalog) => PreparedSettingsSnapshot.load(
+        catalog,
+        roots: PlatformStorageRoots(
+          operatingSystem: Platform.operatingSystem,
+          configurationRoot: '${root.path}/config',
+          localStateRoot: '${root.path}/state',
+          localDataRoot: '${root.path}/data',
+          cacheRoot: '${root.path}/cache',
+        ),
+      ),
     );
   }
 

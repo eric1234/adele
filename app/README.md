@@ -206,6 +206,38 @@ Descriptor details belong to [plugin layout](../docs/architecture/plugin-layout.
 and [plugin runtime](../packages/plugin_runtime/README.md#prepared-catalog);
 concrete frontend behavior belongs to each plugin.
 
+### Prepared settings
+
+[`PreparedSettingsSnapshot`](lib/frontend/prepared_settings.dart) assembles the
+catalog's validated declarations and resolves them through `GlobalSettingsStore`
+once before frontend activation. A short-lived host isolate performs synchronous
+configuration-store/TOML work; only immutable scalar results, provenance, and
+errors return to the UI isolate. No store reads occur in widget builds or bridge
+calls. A catalog without declarations does not read configuration at all. Backend
+startup does not wait for settings or acquire a settings dependency.
+
+The host binds `readPluginSetting` in the public contribution bridge to the exact
+prepared installation and its validated declarations, not a caller-supplied owner
+or a namespace-prefix guess. Main Content initialization, input/pane presentations,
+and fresh finite operations receive the same startup values with their existing
+liveness checks. Other presentation roles and backend AOT settings delivery are not
+implemented. The bridge exports no paths, TOML, mutation, credentials, or other
+owners' settings.
+
+Invalid known overrides fail the owning frontend activation and retain an
+attributable error in `InstalledFrontendActivation.failure`. Whole-file load or
+catalog aggregation failures remain errors for frontends declaring settings;
+settings-free frontends and independently started backends remain usable. An invalid
+schema is a settings-specific catalog issue, not a reason to disable a valid
+executable component; attempting to read an undeclared setting still fails.
+Startup never creates or rewrites `settings.toml` or materializes defaults.
+
+Configuration is captured at startup, without watching, refresh, or cross-window
+synchronization. Edit global `settings.toml` and restart ADELE to load changes.
+See [configuration architecture](../docs/architecture/profiles-and-configuration.md)
+for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
+for declaration ownership, bounds, and diagnostics.
+
 ### Prepared Capability access
 
 [`CapabilityAccessBridge`](lib/frontend/capability_access_bridge.dart) mediates
@@ -337,10 +369,11 @@ configured. The host chooses `plain`, `dart`, `json`, or `python` highlighting w
 Dependency preparation belongs to the
 [toolchain policy](../docs/development/toolchain.md#native-editor-preparation).
 
-`NativeCodeEditor(text:, readOnly:, language:)` is a `ChangeNotifier` owning an
-ordinary `CodeForgeController` and `UndoRedoController`. Read-only and language
-settings are fixed for that owner. `initialize()` awaits memoized native-library
-initialization before constructing the controller. The owner retains text and
+`NativeCodeEditor(text:, readOnly:, language:, enableFolding:)` is a `ChangeNotifier`
+owning an ordinary `CodeForgeController` and `UndoRedoController`. Read-only,
+language, and folding availability are fixed for that owner. Folding defaults to
+false unless the constructing consumer opts in. `initialize()` awaits memoized
+native-library initialization before constructing the controller. The owner retains text and
 undo independently of widget lifetime; callers close it explicitly with `dispose()`.
 Use one mounted view per editor, and separate owners for independent panes.
 Focus and scroll resources belong to the widget; remounting does not promise
@@ -1178,6 +1211,16 @@ actions/panes and the public `DisplaySourceFile` resolver; bootstrap registers t
 display adapter from the descriptor's declared operation. No Source backend, Chat
 presentation, model configuration, or Run is required to open/edit/save a file in
 an existing canonical Session.
+
+Source owns the folding declaration and reads its resolved Boolean during the
+finite `displaySource` operation, before editor construction. The generic
+contribution bridge carries only an `enableFolding` construction option to the
+retained native owner; application code does not select a Source setting ID.
+Reopening or remounting an existing document preserves its controller, text, undo,
+and original folding option. Folding availability is configuration; individual
+folded ranges remain view interaction state. Live updates are not implemented:
+CodeForge 10.14.0's flag setter does not perform all constructor-time callback and
+fold-layout transitions, so existing documents are not recreated to apply changes.
 
 The stock `Open Source...` Command and retained Main Content button present the
 same `openSourceInput()` form. Opening it performs no Environment read. Only path

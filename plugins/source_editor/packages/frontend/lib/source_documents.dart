@@ -6,7 +6,12 @@ abstract class SourceDocumentPort {
   bool write(String id, Map<String, dynamic> data);
   bool remove(String id);
   String allocateId();
-  Future<bool> createEditor(String id, String text, String language);
+  Future<bool> createEditor(
+    String id,
+    String text,
+    String language,
+    bool enableFolding,
+  );
 
   /// Unavailable native access returns an empty map, matching the public bridge.
   Map<String, dynamic> editorState(String id);
@@ -121,7 +126,7 @@ class SourceDocuments {
     'focus': id,
   };
 
-  Future<Map<String, dynamic>> display(String path) async {
+  Future<Map<String, dynamic>> display(String path, bool enableFolding) async {
     if (environmentKey.isEmpty) {
       return sourceFailure(
         'environment_unavailable',
@@ -145,7 +150,7 @@ class SourceDocuments {
     final id = port.allocateId();
     final text = file['text'] as String;
     final language = sourceLanguage(normalizedPath);
-    final created = await port.createEditor(id, text, language);
+    final created = await port.createEditor(id, text, language, enableFolding);
     if (!created) {
       return sourceFailure(
         'editor_unavailable',

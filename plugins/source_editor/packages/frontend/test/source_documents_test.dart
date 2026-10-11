@@ -14,7 +14,7 @@ void main() {
   });
 
   Future<String> open([String path = 'lib/main.dart']) async {
-    final result = await documents.display(path);
+    final result = await documents.display(path, false);
     expect(result['ok'], isTrue);
     expect(result['focus'], result['id']);
     return result['id'] as String;
@@ -27,7 +27,7 @@ void main() {
       final create = Completer<bool>();
       port.onRead = (path) => read.future;
       port.onCreate = (id) => create.future;
-      final operation = documents.display('lib/main.dart');
+      final operation = documents.display('lib/main.dart', false);
       expect(port.records, isEmpty);
       expect(port.editors, isEmpty);
       expect(port.allocated, 0);
@@ -55,11 +55,11 @@ void main() {
         },
       };
       port.onRead = (path) async => failure;
-      expect(await documents.display('large.dart'), same(failure));
+      expect(await documents.display('large.dart', false), same(failure));
       expect(port.allocated, 0);
       port.onRead = null;
       port.onCreate = (id) async => false;
-      expect((await documents.display('main.dart'))['ok'], isFalse);
+      expect((await documents.display('main.dart', false))['ok'], isFalse);
       expect(port.records, isEmpty);
       expect(port.editors, isEmpty);
     },
@@ -91,7 +91,7 @@ void main() {
       port.onRead = (path) async =>
           sourceFailure('binding_stale', 'Provider retired.');
       final cold = SourceDocuments(port, 'environment-a');
-      expect(await cold.display('lib/main.dart'), {
+      expect(await cold.display('lib/main.dart', false), {
         'ok': true,
         'id': id,
         'focus': id,
@@ -113,7 +113,7 @@ void main() {
         if (id == 'document-1') return slow.future;
         return Future<bool>.value(true);
       };
-      final first = documents.display('main.dart');
+      final first = documents.display('main.dart', false);
       await Future<void>.delayed(Duration.zero);
       final winner = await open('main.dart');
       expect(winner, 'document-2');
@@ -132,7 +132,7 @@ void main() {
     () async {
       final first = await open();
       final other = SourceDocuments(port, 'environment-b');
-      final second = await other.display('lib/main.dart');
+      final second = await other.display('lib/main.dart', false);
       expect(second['id'], isNot(first));
       expect(documents.documents(false).length, 1);
       expect(other.documents(false).length, 1);
@@ -152,7 +152,7 @@ void main() {
       final first = await open('a.dart');
       final second = await open('b.json');
       final other = SourceDocuments(port, 'environment-b');
-      final hidden = await other.display('hidden.py');
+      final hidden = await other.display('hidden.py', false);
       expect(documents.move(second, -1), isTrue);
       expect(documents.move(second, -1), isFalse);
       final cold = SourceDocuments(port, 'environment-a');
@@ -177,6 +177,29 @@ void main() {
       expect(sourceLanguage('Dockerfile'), 'plain');
     },
   );
+
+  for (final enableFolding in [false, true]) {
+    test(
+      'folding $enableFolding is passed only to new editor construction',
+      () async {
+        final result = await documents.display('main.dart', enableFolding);
+        final id = result['id'] as String;
+        final editor = port.editors[id]!;
+        expect(editor['enableFolding'], enableFolding);
+        port.edit(id, 'retained edits');
+        final retained = documents.document(id);
+        final cold = SourceDocuments(port, 'environment-a');
+        expect((await cold.display('main.dart', !enableFolding))['id'], id);
+        expect(port.editors[id], same(editor));
+        expect(editor['enableFolding'], enableFolding);
+        expect(editor['text'], 'retained edits');
+        expect(cold.document(id), retained);
+        expect(port.allocated, 1);
+        expect(port.reads, ['main.dart']);
+        expect(port.released, isEmpty);
+      },
+    );
+  }
 
   test(
     'save is one flight with one snapshot and advances baseline to saved text only',
@@ -427,7 +450,7 @@ void main() {
     () async {
       final first = await open('a.dart');
       final other = SourceDocuments(port, 'environment-b');
-      final second = (await other.display('b.py'))['id'] as String;
+      final second = (await other.display('b.py', false))['id'] as String;
       port.edit(first, 'dirty a');
       port.edit(second, 'dirty b');
       final exit = SourceDocuments(port, '');
@@ -481,7 +504,7 @@ void main() {
       final first = await open();
       port.edit(first, 'dirty');
       final other = SourceDocuments(port, 'environment-b');
-      final second = (await other.display('hidden.py'))['id'] as String;
+      final second = (await other.display('hidden.py', false))['id'] as String;
       final confirmation = Completer<bool>();
       port.onConfirm = (message) => confirmation.future;
       final exit = documents.exit();
@@ -499,7 +522,7 @@ void main() {
   test('revoked publication releases its provisional native editor', () async {
     port.allowWrites = false;
     expect(
-      (await documents.display('main.dart'))['failure']['code'],
+      (await documents.display('main.dart', false))['failure']['code'],
       'retired',
     );
     expect(port.records, isEmpty);
@@ -509,9 +532,9 @@ void main() {
 
   test('empty Environment never reads or writes files', () async {
     final unavailable = SourceDocuments(port, '');
-    expect((await unavailable.display('main.dart'))['ok'], isFalse);
+    expect((await unavailable.display('main.dart', false))['ok'], isFalse);
     expect(port.reads, isEmpty);
-    expect((await documents.display(''))['ok'], isFalse);
+    expect((await documents.display('', false))['ok'], isFalse);
     expect(port.reads, isEmpty);
   });
 }
@@ -571,7 +594,12 @@ class _Port extends SourceDocumentPort {
   String allocateId() => 'document-${++allocated}';
 
   @override
-  Future<bool> createEditor(String id, String text, String language) async {
+  Future<bool> createEditor(
+    String id,
+    String text,
+    String language,
+    bool enableFolding,
+  ) async {
     if (editors.containsKey(id)) return false;
     if (onCreate != null && !await onCreate!(id)) return false;
     editors[id] = {
@@ -579,6 +607,7 @@ class _Port extends SourceDocumentPort {
       'revision': 0,
       'ready': true,
       'language': language,
+      'enableFolding': enableFolding,
       'readOnly': false,
     };
     return true;

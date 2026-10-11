@@ -356,6 +356,16 @@ native implementations supply their behavior; calling a stub natively throws
   native text/undo owner outlives attachments, with fresh per-pane access through
   `code_editor_bridge.dart`. Deliberate snapshots/state reads and explicit release
   remain scoped to that contribution, not a global document lookup.
+  An optional fourth positional `enableFolding` boolean defaults to false for
+  unrelated consumers and is immutable construction policy, not a live editor
+  update. Existing three-argument calls remain valid.
+  `readPluginSetting(String id)` returns a validated scalar (`bool`, `int`, or
+  `String`) from the exact installation's startup snapshot. It is available to
+  Main Content initializers, input/pane views, and admitted finite operations,
+  independently of retained-data/editor grants. The host binds ownership; there
+  is no plugin-owner selector, caller fallback, filesystem read, mutation, or
+  subscription API. Undeclared, foreign, invalid, missing, or retired reads fail
+  rather than invent defaults. Configuration changes do not mutate this snapshot.
   `invokeContributionOperation` admits only descriptor-declared finite entrypoints
   with copied arguments and captured context. Admitted operations can settle into
   retained data after navigation without reviving a departed view.

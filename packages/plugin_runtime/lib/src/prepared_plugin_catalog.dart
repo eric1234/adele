@@ -1,13 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_settings/adele_settings.dart';
 
-/// One prepared installation, without activation, configuration, or source data.
+/// One prepared installation, without activation, configured values, or source data.
 final class PreparedPluginInstallation {
   PreparedPluginInstallation({
     required this.metadata,
@@ -15,6 +17,7 @@ final class PreparedPluginInstallation {
     required this.backendArtifactUri,
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     this.frontend,
+    this.settingsSchema,
   }) : backendConsumedCapabilities = _backendConsumedCapabilityKeys(
          backendConsumedCapabilities,
        ) {
@@ -23,6 +26,12 @@ final class PreparedPluginInstallation {
       throw const FormatException(
         'consumesCapabilities requires a backend component.',
       );
+    }
+    if (settingsSchema?.definitions.any(
+          (definition) => definition.owner.value != metadata.id.value,
+        ) ??
+        false) {
+      throw const FormatException('Settings schema owner must match PluginId.');
     }
   }
 
@@ -37,11 +46,35 @@ final class PreparedPluginInstallation {
   final List<CapabilityKey> backendConsumedCapabilities;
   final PreparedFrontendComponent? frontend;
 
+  /// Installation-level declarations, independent of executable components.
+  final PreparedSettingsSchema? settingsSchema;
+
   /// Encodes the backend's consumesCapabilities array, copying mutable data.
   List<Map<String, Object?>> backendConsumedCapabilitiesToJson() => [
     for (final key in backendConsumedCapabilities)
       {'id': key.id.value, 'majorVersion': key.majorVersion},
   ];
+}
+
+/// Validated declarative settings captured without executing plugin code.
+final class PreparedSettingsSchema {
+  PreparedSettingsSchema._({
+    required this.artifactUri,
+    required Iterable<SettingDefinition<Object>> definitions,
+  }) : definitions = SettingsCatalog(definitions).definitions;
+
+  static const schemaVersion = 1;
+  static const maxBytes = 1024 * 1024;
+  static const maxDefinitions = 256;
+  static const maxEnumOptions = 128;
+  static const maxIdLength = 256;
+  static const maxLabelLength = 160;
+  static const maxDescriptionLength = 4096;
+
+  final Uri artifactUri;
+
+  /// Immutable definitions in setting-ID order; owners derive from PluginId.
+  final List<SettingDefinition<Object>> definitions;
 }
 
 /// Prepared locations and descriptors, without reading or decoding bytecode.
@@ -495,21 +528,26 @@ final class PreparedModelNativeActivityPresentation
 
 enum PreparedPluginComponent { backend, frontend }
 
-/// An excluded installation or component. Healthy siblings remain discoverable.
+/// An excluded installation, component, or schema. Healthy siblings remain usable.
 final class PreparedPluginCatalogIssue {
   const PreparedPluginCatalogIssue({
     required this.installationDirectory,
     required this.message,
     this.pluginId,
     this.component,
+    this.isSettingsSchemaIssue = false,
   });
 
   final Directory installationDirectory;
   final String message;
   final PluginId? pluginId;
 
-  /// Null for installation-wide failures, including duplicate identities.
+  /// Null for installation-wide failures or a settings schema failure.
   final PreparedPluginComponent? component;
+
+  /// True only when an installation's whole settings schema was rejected.
+  /// The installation and its healthy executable components remain discoverable.
+  final bool isSettingsSchemaIssue;
 
   @override
   String toString() => '${installationDirectory.path}: $message';
@@ -525,6 +563,15 @@ final class PreparedPluginCatalog {
 
   final List<PreparedPluginInstallation> installations;
   final List<PreparedPluginCatalogIssue> issues;
+
+  /// Aggregates declarations in setting-ID order without activating plugins.
+  ///
+  /// Cross-installation collisions throw [DuplicateSettingId], including nested
+  /// owner namespaces. Discovery never selects a winner or loses healthy code.
+  SettingsCatalog get settings => SettingsCatalog([
+    for (final installation in installations)
+      ...?installation.settingsSchema?.definitions,
+  ]);
 
   /// Empty/unconfigured and missing roots are empty catalogs. Root I/O failures
   /// propagate; individual malformed installations are reported in [issues].
@@ -577,6 +624,7 @@ final class PreparedPluginCatalog {
           'manifestVersion',
           'metadata',
           'components',
+          'settingsSchema',
         });
         if (document['manifestVersion'] is! int ||
             document['manifestVersion'] != 1) {
@@ -607,6 +655,7 @@ final class PreparedPluginCatalog {
         Uri? backendArtifactUri;
         List<CapabilityKey> backendConsumedCapabilities = const [];
         PreparedFrontendComponent? frontend;
+        PreparedSettingsSchema? settingsSchema;
         for (final component in PreparedPluginComponent.values) {
           if (!components.containsKey(component.name)) continue;
           try {
@@ -659,6 +708,33 @@ final class PreparedPluginCatalog {
             );
           }
         }
+        if (document.containsKey('settingsSchema')) {
+          try {
+            settingsSchema = await _settingsSchema(
+              document['settingsSchema'],
+              resolvedDirectory,
+              pluginMetadata.id,
+            );
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isSettingsSchemaIssue: true,
+                message: 'Invalid settings schema: ${error.message}',
+              ),
+            );
+          } on FileSystemException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isSettingsSchemaIssue: true,
+                message: 'Unable to read settings schema: $error',
+              ),
+            );
+          }
+        }
         installations.add(
           PreparedPluginInstallation(
             metadata: pluginMetadata,
@@ -666,6 +742,7 @@ final class PreparedPluginCatalog {
             backendArtifactUri: backendArtifactUri,
             backendConsumedCapabilities: backendConsumedCapabilities,
             frontend: frontend,
+            settingsSchema: settingsSchema,
           ),
         );
       } on FormatException catch (error) {
@@ -707,6 +784,169 @@ final class PreparedPluginCatalog {
       issues: issues,
     );
   }
+}
+
+Future<PreparedSettingsSchema> _settingsSchema(
+  Object? reference,
+  Directory directory,
+  PluginId pluginId,
+) async {
+  final uri = await _artifact(reference, 'settingsSchema', directory);
+  // Limit the read itself, not only the decoded document or a prior file stat.
+  final bytes = BytesBuilder(copy: false);
+  await for (final chunk in File.fromUri(
+    uri,
+  ).openRead(0, PreparedSettingsSchema.maxBytes + 1)) {
+    bytes.add(chunk);
+    if (bytes.length > PreparedSettingsSchema.maxBytes) {
+      throw const FormatException(
+        'settingsSchema must not exceed ${PreparedSettingsSchema.maxBytes} bytes.',
+      );
+    }
+  }
+  final document = _object(
+    jsonDecode(utf8.decode(bytes.takeBytes())),
+    'settingsSchema',
+    {'schemaVersion', 'definitions'},
+  );
+  if (document['schemaVersion'] is! int ||
+      document['schemaVersion'] != PreparedSettingsSchema.schemaVersion) {
+    throw const FormatException(
+      'settingsSchema.schemaVersion must be integer 1.',
+    );
+  }
+  final definitions = document['definitions'];
+  if (definitions is! List<Object?> ||
+      definitions.length > PreparedSettingsSchema.maxDefinitions) {
+    throw const FormatException(
+      'settingsSchema.definitions must be an array with at most '
+      '${PreparedSettingsSchema.maxDefinitions} entries.',
+    );
+  }
+  final owner = SettingOwnerId(pluginId.value);
+  try {
+    return PreparedSettingsSchema._(
+      artifactUri: uri,
+      definitions: [
+        for (var index = 0; index < definitions.length; index++)
+          _settingDefinition(
+            definitions[index],
+            'settingsSchema.definitions[$index]',
+            owner,
+          ),
+      ],
+    );
+  } on ArgumentError catch (error) {
+    throw FormatException('settingsSchema: ${error.message}');
+  } on InvalidSettingValue catch (error) {
+    throw FormatException('settingsSchema: $error');
+  } on DuplicateSettingId catch (error) {
+    throw FormatException('settingsSchema: $error');
+  }
+}
+
+SettingDefinition<Object> _settingDefinition(
+  Object? value,
+  String label,
+  SettingOwnerId owner,
+) {
+  if (value is! Map<String, Object?>) {
+    throw FormatException('$label must be an object.');
+  }
+  final definition = value;
+  final kind = _text(definition['type'], '$label.type');
+  final allowed = {
+    'id',
+    'type',
+    'default',
+    'label',
+    'category',
+    'section',
+    'description',
+    if (kind == 'integer') ...['minimum', 'maximum'],
+    if (kind == 'enum') 'options',
+  };
+  _object(definition, label, allowed);
+  int? bound(String field) {
+    if (!definition.containsKey(field)) return null;
+    final value = definition[field];
+    if (value is! int) {
+      throw FormatException('$label.$field must be an integer.');
+    }
+    return value;
+  }
+
+  final SettingType<Object> type;
+  switch (kind) {
+    case 'boolean':
+      type = const BooleanSettingType();
+    case 'integer':
+      type = IntegerSettingType(
+        minimum: bound('minimum'),
+        maximum: bound('maximum'),
+      );
+    case 'string':
+      type = const StringSettingType();
+    case 'enum':
+      final options = definition['options'];
+      if (options is! List<Object?> ||
+          options.length > PreparedSettingsSchema.maxEnumOptions) {
+        throw FormatException(
+          '$label.options must be an array with at most '
+          '${PreparedSettingsSchema.maxEnumOptions} entries.',
+        );
+      }
+      type = EnumSettingType([
+        for (var index = 0; index < options.length; index++)
+          _settingEnumOption(options[index], '$label.options[$index]'),
+      ]);
+    default:
+      throw FormatException('$label.type is unsupported.');
+  }
+  return SettingDefinition(
+    id: SettingId(
+      _settingsText(
+        definition['id'],
+        '$label.id',
+        PreparedSettingsSchema.maxIdLength,
+      ),
+    ),
+    owner: owner,
+    label: _settingsText(definition['label'], '$label.label'),
+    category: _settingsText(definition['category'], '$label.category'),
+    section: _settingsText(definition['section'], '$label.section'),
+    description: definition.containsKey('description')
+        ? _settingsText(
+            definition['description'],
+            '$label.description',
+            PreparedSettingsSchema.maxDescriptionLength,
+          )
+        : null,
+    type: type,
+    defaultValue: definition['default'],
+  );
+}
+
+SettingEnumOption _settingEnumOption(Object? value, String label) {
+  final option = _object(value, label, {'value', 'label'});
+  return SettingEnumOption(
+    _settingsText(option['value'], '$label.value'),
+    label: option.containsKey('label')
+        ? _settingsText(option['label'], '$label.label')
+        : null,
+  );
+}
+
+String _settingsText(
+  Object? value,
+  String label, [
+  int limit = PreparedSettingsSchema.maxLabelLength,
+]) {
+  final text = _text(value, label, blank: true);
+  if (text.length > limit) {
+    throw FormatException('$label must not exceed $limit UTF-16 code units.');
+  }
+  return text;
 }
 
 Future<PreparedFrontendComponent> _frontend(

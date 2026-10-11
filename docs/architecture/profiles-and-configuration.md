@@ -3,8 +3,10 @@
 Role: Canonical architecture
 
 Implementation status: Declarative ordinary scalar settings, immutable catalogs,
-default/global resolution, and conditional global TOML persistence are implemented.
-Prepared-plugin discovery, Settings UI, and Profiles remain unimplemented.
+default/global resolution, conditional global TOML persistence, and prepared-plugin
+declaration discovery are implemented. Desktop Main Content frontends can read
+owner-scoped startup values; Source Editor folding is the first consumer.
+Settings UI and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -112,6 +114,23 @@ falls back. Unknown persisted IDs do not invalidate known settings or disappear
 when owners are unavailable. Reset removes the global entry and restores default
 provenance. No null, Profile/Project layer, compound merge, or named configuration
 record model is supplied by this scalar contract.
+
+Prepared installations can supply optional, data-only JSON declarations before
+executable components start. The installation's `PluginId` supplies declaration
+ownership; schema contents cannot select an owner. The catalog reuses the scalar
+contract rather than establishing another validation engine. Schema failure is
+isolated from backend/frontend availability, and cross-installation setting-ID
+collisions fail catalog aggregation explicitly. See [plugin layout](plugin-layout.md#prepared-installation-snapshot)
+and the [runtime schema owner](../../packages/plugin_runtime/README.md#prepared-catalog).
+
+The desktop captures default/global resolution once at frontend startup, with
+synchronous store/document operations in a short-lived host I/O isolate. Prepared
+Main Content receives read-only scalar access bound to its exact owning installation
+and validated declarations, including finite operations before panes are published.
+Invalid known values fail the owning frontend, not a silent default or a backend
+startup dependency. No Profile filtering, live notification, mutation API, or
+backend settings delivery is implied. The [application boundary](../../app/README.md#prepared-settings)
+owns startup and failure details.
 
 ## Shared context, distinct composition
 
@@ -309,8 +328,9 @@ propagates whole-document conflicts without retry or merge. Unknown values are
 not scanned or rewritten. Unsupported known TOML values fail explicitly instead
 of causing structural repair, and no syntax/type coercion is performed. Ordinary
 scalar edits and explicit reset use the existing document operations and their
-preservation limits. The adapter remains synchronous on the owning host isolate,
-with no desktop UI wiring and no implied adoption by active runtime consumers.
+preservation limits. The adapter remains synchronous on the owning host isolate;
+desktop startup runs its read-only load/resolve work off the UI isolate. Runtime
+bridges receive resolved immutable values, not the store or document.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
@@ -406,6 +426,11 @@ Implemented foundations and current limits:
   internal global settings adapter support standalone host consumers without
   plugin activation or Flutter. Only default/global resolution is implemented.
 - Installation/catalog metadata remains distinct from activation/configuration.
+- Prepared installation schemas expose scalar declarations independently of code
+  startup. Owner-scoped desktop Main Content reads use a startup snapshot; Source
+  Editor applies folding availability at native editor construction. Settings-file
+  changes require an application restart, and retained documents are not recreated
+  or live-updated to change folding.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
@@ -417,8 +442,8 @@ Implemented foundations and current limits:
   do not implement this architecture; operational details belong in the
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
-Not implemented: Profile manager/persistence, profile-aware activation, prepared
-settings discovery, Settings UI, configured-instance management UI,
+Not implemented: Profile manager/persistence, profile-aware activation,
+Settings UI, configured-instance management UI,
 profile-aware provider routing, or production workbench-state persistence.
 
 ## Deferred decisions

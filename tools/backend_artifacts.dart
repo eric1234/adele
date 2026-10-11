@@ -221,27 +221,13 @@ Future<List<String>> prepareDesktopPluginDefines({
   ]) {
     final frontend = frontends[plugin.id];
     final directory = (plugin.backend ?? frontend!).parent;
-    await File.fromUri(
-      directory.uri.resolve('adele_plugin.installation.json'),
-    ).writeAsString(
-      jsonEncode(<String, Object?>{
-        'manifestVersion': 1,
-        'metadata': <String, Object?>{
-          'id': plugin.id,
-          'version': '0.1.0',
-          'displayName': plugin.displayName,
-        },
-        'components': <String, Object?>{
-          if (plugin.backend != null)
-            'backend': <String, Object?>{'artifact': 'backend.aot'},
-          if (frontend != null)
-            'frontend': <String, Object?>{
-              'artifact': 'frontend.evc',
-              'presentations': stockFrontendDescriptors[plugin.id] ?? [],
-              'extensions': ?stockFrontendExtensionDescriptors[plugin.id],
-            },
-        },
-      }),
+    await publishStockPluginInstallation(
+      repositoryRoot: repositoryRoot,
+      installationDirectory: directory,
+      pluginId: plugin.id,
+      displayName: plugin.displayName,
+      backend: plugin.backend != null,
+      frontend: frontend != null,
     );
   }
   final File argumentsFile = File.fromUri(
@@ -254,6 +240,65 @@ Future<List<String>> prepareDesktopPluginDefines({
     '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=${installations.path}',
     '--dart-define=ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE=${argumentsFile.path}',
   ];
+}
+
+/// Publishes stock metadata and authored assets after component preparation.
+/// Runtime discovery remains the sole settings-schema parser.
+Future<void> publishStockPluginInstallation({
+  required Directory repositoryRoot,
+  required Directory installationDirectory,
+  required String pluginId,
+  required String displayName,
+  bool backend = false,
+  bool frontend = false,
+}) async {
+  final schemaSource = switch (pluginId) {
+    'dev.adele.source-editor' => 'plugins/source_editor/settings.schema.json',
+    _ => null,
+  };
+  await installationDirectory.create(recursive: true);
+  if (schemaSource != null) {
+    final source = File.fromUri(
+      repositoryRoot.absolute.uri.resolve(schemaSource),
+    );
+    try {
+      final bytes = await source.readAsBytes();
+      if (bytes.isEmpty) {
+        throw PluginBuildFailure(
+          'Stock settings schema is empty: ${source.path}',
+        );
+      }
+      await File.fromUri(
+        installationDirectory.uri.resolve('settings.schema.json'),
+      ).writeAsBytes(bytes);
+    } on FileSystemException catch (error) {
+      throw PluginBuildFailure(
+        'Unable to prepare stock settings schema: $error',
+      );
+    }
+  }
+  await File.fromUri(
+    installationDirectory.uri.resolve('adele_plugin.installation.json'),
+  ).writeAsString(
+    jsonEncode(<String, Object?>{
+      'manifestVersion': 1,
+      'metadata': <String, Object?>{
+        'id': pluginId,
+        'version': '0.1.0',
+        'displayName': displayName,
+      },
+      if (schemaSource != null) 'settingsSchema': 'settings.schema.json',
+      'components': <String, Object?>{
+        if (backend) 'backend': <String, Object?>{'artifact': 'backend.aot'},
+        if (frontend)
+          'frontend': <String, Object?>{
+            'artifact': 'frontend.evc',
+            'presentations': stockFrontendDescriptors[pluginId] ?? [],
+            'extensions': ?stockFrontendExtensionDescriptors[pluginId],
+          },
+      },
+    }),
+  );
 }
 
 // Temporary until general plugin configuration exists. Forward public references

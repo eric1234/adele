@@ -93,16 +93,19 @@ final class PreparedMainContentHost {
     PreparedSessionServices? services,
     CapabilityRegistry? capabilityRegistry,
     ApplicationPluginBootstrap? backends,
+    Object Function(String id)? readSetting,
   }) {
     final retained =
         descriptor.retainedData ||
             descriptor.actions.isNotEmpty ||
-            descriptor.operations.isNotEmpty
+            descriptor.operations.isNotEmpty ||
+            readSetting != null
         ? _retained[descriptor] = _RetainedMainContent(
             owner: RetainedContribution(),
             generation: generation,
             descriptor: descriptor,
             isActive: () => !_closed && isActive(),
+            readSetting: readSetting,
           )
         : null;
     late final MainContentContribution contribution;
@@ -471,6 +474,7 @@ final class PreparedMainContentHost {
     isActive: () => retained.isActive() && isActive(),
     nativeCodeEditor: retained.descriptor.nativeCodeEditor,
     retainedData: retained.descriptor.retainedData,
+    readSetting: retained.readSetting,
     invoke: (operation, arguments) =>
         _invoke(retained, attachment, operation, arguments),
   );
@@ -606,6 +610,7 @@ final class PreparedMainContentHost {
               arguments: capturedArguments,
               nativeCodeEditor: retained.descriptor.nativeCodeEditor,
               retainedData: retained.descriptor.retainedData,
+              readSetting: retained.readSetting,
               confirm: confirm,
             ),
             EnvironmentAccessBridge(files: files, isActive: retained.isActive),
@@ -768,11 +773,13 @@ final class _RetainedMainContent {
     required this.generation,
     required this.descriptor,
     required this.isActive,
+    this.readSetting,
   });
   final RetainedContribution owner;
   final PreparedFrontend generation;
   final PreparedMainContentPresentation descriptor;
   final bool Function() isActive;
+  final Object Function(String id)? readSetting;
   _MainContentAttachment? attachment;
 }
 
