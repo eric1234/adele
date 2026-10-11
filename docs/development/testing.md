@@ -199,12 +199,18 @@ Flutter test invocation does not perform that preparation.
 
 ## Configuration foundation checks
 
-After bootstrap with the [native TOML prerequisites](toolchain.md#native-toml-documents):
+After bootstrap, select the focused targets below. The TOML document,
+configuration-store, and Settings host targets also require the
+[native TOML prerequisites](toolchain.md#native-toml-documents); platform-storage
+and semantic Settings tests do not require native TOML. These commands identify
+validation owners, not recorded test outcomes.
 
 ```sh
 dart tools/adele.dart test --target adele_platform_storage
 dart tools/adele.dart test --target adele_toml_document
 dart tools/adele.dart test --target adele_configuration_store
+dart tools/adele.dart test --target adele_settings
+dart tools/adele.dart test --target adele_settings_host
 dart test test/tools/adele_test.dart
 ```
 
@@ -220,7 +226,12 @@ parsing, scalar reads/updates/insertion/removal, comments/layout, Unicode, exact
 no-ops, and invalid-operation isolation. CRLF normalization on edits is an asserted
 upstream limitation, not silently treated as lossless preservation. The tooling
 suite owns workspace/analysis/target discovery and CI compiler metadata, including
-the persistence target's transitive native TOML requirement.
+the persistence and Settings host targets' transitive native TOML requirement.
+It also checks the packages' narrow direct production dependencies: public
+Settings depends only on `adele_plugin_api`, the internal Settings host depends on
+Settings/configuration-store/TOML, and configuration-store retains its existing
+storage/TOML/path boundary. These are focused manifest checks, not a repository-wide
+dependency-graph linter.
 
 The configuration-store target uses temporary configuration/state/data/cache roots
 and real native TOML to check loading, no-op preservation, conditional replacement,
@@ -232,11 +243,18 @@ API. Run as an unprivileged Linux user for the actual permission-denied assertio
 the target uses coreutils `chmod` and `stat`. Linux x64 is the validated persistence
 path, not macOS/Windows or unconditional power-loss durability evidence.
 
+The `adele_settings` target owns pure-Dart definition, catalog, and resolution
+checks without filesystem persistence or native TOML. The `adele_settings_host`
+target owns the thin adapter boundary using actual configuration-store and native
+TOML operations with temporary roots, not a fake persistence layer. Semantic
+resolution checks do not substitute for native host integration checks; neither
+target establishes application Settings UI or Profile activation behavior.
+
 For package-specific analysis, run `dart analyze --fatal-infos` in each package.
 The small native ABI suite can be run from `packages/toml_document/native/` with
 `cargo test --locked`, and its formatting with `cargo fmt --check`, using that
-directory's pinned toolchain. No Settings/Profile declaration, resolution, or UI
-is implied by these foundation checks.
+directory's pinned toolchain. Native ABI checks do not cover Settings semantics
+or host persistence integration.
 
 ## Application validation map
 

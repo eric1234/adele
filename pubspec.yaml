@@ -26,6 +26,8 @@ workspace:
   - packages/plugin_runtime
   - packages/product
   - packages/project_storage
+  - packages/settings
+  - packages/settings_host
   - packages/toml_document
   - packages/ui
   - plugins/workspace_demo

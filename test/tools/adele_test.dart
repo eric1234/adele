@@ -433,7 +433,11 @@ void main() {
           testTargets
               .where((target) => target.nativeToml)
               .map((target) => target.name),
-          ['adele_toml_document', 'adele_configuration_store'],
+          [
+            'adele_toml_document',
+            'adele_configuration_store',
+            'adele_settings_host',
+          ],
         );
         for (final entry in entries) {
           expect(
@@ -445,6 +449,7 @@ void main() {
             [
               'adele_toml_document',
               'adele_configuration_store',
+              'adele_settings_host',
             ].contains(entry['name']),
           );
         }
@@ -1039,6 +1044,12 @@ void main() {
         path: 'packages/configuration_store',
         nativeToml: true,
       ),
+      (name: 'adele_settings', path: 'packages/settings', nativeToml: false),
+      (
+        name: 'adele_settings_host',
+        path: 'packages/settings_host',
+        nativeToml: true,
+      ),
     ]) {
       test('discovers ${expected.name} in workspace, analysis, and CI', () {
         final target = lookupTestTarget(expected.name);
@@ -1091,6 +1102,36 @@ void main() {
           'adele_toml_document',
           'path',
         ]),
+      );
+    });
+
+    test('public settings keeps host dependencies out of production', () {
+      final manifest =
+          loadYaml(File('packages/settings/pubspec.yaml').readAsStringSync())
+              as YamlMap;
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals(['adele_plugin_api']),
+      );
+    });
+
+    test('settings host keeps narrow direct production dependencies', () {
+      final manifest =
+          loadYaml(
+                File('packages/settings_host/pubspec.yaml').readAsStringSync(),
+              )
+              as YamlMap;
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals([
+          'adele_settings',
+          'adele_configuration_store',
+          'adele_toml_document',
+        ]),
+      );
+      expect(
+        (manifest['dev_dependencies'] as YamlMap).keys,
+        containsAll(['adele_platform_storage', 'path', 'test']),
       );
     });
 
@@ -1935,6 +1976,8 @@ void main() {
         'adele_platform_storage|dart|packages/platform_storage|test',
         'adele_toml_document|dart|packages/toml_document|test',
         'adele_configuration_store|dart|packages/configuration_store|test',
+        'adele_settings|dart|packages/settings|test',
+        'adele_settings_host|dart|packages/settings_host|test',
         'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',
