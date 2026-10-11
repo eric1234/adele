@@ -1,0 +1,351 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:isolate';
+import 'dart:ui' show IsolateNameServer, RootIsolateToken;
+
+import 'package:adele_configuration_store/adele_configuration_store.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
+import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_settings_host/adele_settings_host.dart';
+
+/// An application owner's lease on the main isolate's shared settings worker.
+///
+/// Construct on the Flutter root isolate, never in independently spawned window
+/// workers. All owners share one serial writer, including while a previous last
+/// owner is closing. Stores, documents, and persistence baselines stay there.
+base class GlobalSettingsService {
+  GlobalSettingsService({
+    required this.catalog,
+    required PlatformStorageRoots roots,
+  }) : _roots = roots,
+       filePath = Directory(
+         roots.configurationRoot,
+       ).uri.resolve('settings.toml').toFilePath(),
+       _worker = _SettingsWorker.acquire();
+
+  final SettingsCatalog catalog;
+  final String filePath;
+  final PlatformStorageRoots _roots;
+  final _SettingsWorker _worker;
+  final Object _identity = Object();
+  late final int _owner = _worker.nextOwner++;
+  Future<void> _pending = Future<void>.value();
+  Future<void>? _closing;
+
+  /// A failed load invalidates this owner's previous edit baseline.
+  Future<GlobalSettingsView> load() => _enqueue(_Operation.load);
+
+  Future<GlobalSettingsView> save(
+    GlobalSettingsView expected,
+    SettingId id,
+    Object value,
+  ) => _enqueue(_Operation.save, expected: expected, id: id, value: value);
+
+  Future<GlobalSettingsView> reset(GlobalSettingsView expected, SettingId id) =>
+      _enqueue(_Operation.reset, expected: expected, id: id);
+
+  Future<GlobalSettingsView> _enqueue(
+    _Operation operation, {
+    GlobalSettingsView? expected,
+    SettingId? id,
+    Object? value,
+  }) {
+    if (_closing != null) {
+      return Future.error(StateError('The settings service is closed.'));
+    }
+    if (expected != null && !identical(expected._owner, _identity)) {
+      return Future.error(
+        ArgumentError('The view belongs to another settings owner.'),
+      );
+    }
+    final result = _pending.then((_) async {
+      final loaded =
+          await _worker.request(
+                _Request(
+                  owner: _owner,
+                  operation: operation,
+                  catalog: catalog,
+                  roots: _roots,
+                  revision: expected?._revision,
+                  setting: id,
+                  value: value,
+                ),
+              )
+              as _Values;
+      return GlobalSettingsView._(catalog, _identity, loaded);
+    });
+    _pending = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
+
+  /// Fences new work immediately and drains admitted work without cancellation.
+  /// The final lease waits for the worker to exit, not merely a stop request.
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    await _pending;
+    await _worker.release(_owner);
+  }
+}
+
+/// Immutable display values, not a TOML edit buffer or a transferable baseline.
+final class GlobalSettingsView {
+  GlobalSettingsView._(this.catalog, this._owner, _Values result)
+    : _revision = result.revision,
+      values = Map.unmodifiable(result.values),
+      failures = Map.unmodifiable(result.failures);
+
+  final SettingsCatalog catalog;
+  final Map<SettingId, ResolvedSetting<Object>> values;
+  final Map<SettingId, Object> failures;
+  final Object _owner;
+  final int _revision;
+}
+
+enum _Operation { load, save, reset, release }
+
+final class _Request {
+  const _Request({
+    required this.owner,
+    required this.operation,
+    this.catalog,
+    this.roots,
+    this.revision,
+    this.setting,
+    this.value,
+  });
+
+  final int owner;
+  final _Operation operation;
+  final SettingsCatalog? catalog;
+  final PlatformStorageRoots? roots;
+  final int? revision;
+  final SettingId? setting;
+  final Object? value;
+}
+
+final class _Values {
+  const _Values(this.revision, this.values, this.failures);
+
+  final int revision;
+  final Map<SettingId, ResolvedSetting<Object>> values;
+  final Map<SettingId, Object> failures;
+}
+
+/// The lease registry is main-isolate-only: Dart's Unix locks do not serialize
+/// writers in different isolates of the same process.
+final class _SettingsWorker {
+  _SettingsWorker(Future<void>? predecessor) {
+    // Startup can fail before an owner calls load; retain that failure without
+    // leaving an unobserved asynchronous error.
+    unawaited(
+      _ready.future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    unawaited(_start(predecessor));
+  }
+
+  static _SettingsWorker? _shared;
+  static const _ownerName = 'dev.adele.global-settings-owner';
+
+  static _SettingsWorker acquire() {
+    if (RootIsolateToken.instance == null) {
+      throw StateError(
+        'Settings owners must be created on the Flutter root isolate.',
+      );
+    }
+    final previous = _shared;
+    final worker = previous == null || previous._stopping
+        ? _shared = _SettingsWorker(previous?._exited.future)
+        : previous;
+    worker._leases++;
+    return worker;
+  }
+
+  final _ready = Completer<SendPort>();
+  final _exited = Completer<void>();
+  final _requests = <int, Completer<Object?>>{};
+  ReceivePort? _events;
+  Object? _failure;
+  StackTrace? _failureStack;
+  int _leases = 0;
+  int nextOwner = 0;
+  int _nextRequest = 0;
+  bool _stopping = false;
+
+  Future<void> _start(Future<void>? predecessor) async {
+    try {
+      if (predecessor != null) await predecessor;
+      final events = _events = ReceivePort();
+      // Another Flutter engine has its own root-isolate statics. It must route
+      // through the application owner, not spawn an independent process writer.
+      if (!IsolateNameServer.registerPortWithName(
+        events.sendPort,
+        _ownerName,
+      )) {
+        throw StateError('Another root isolate already owns global settings.');
+      }
+      events.listen(_onEvent);
+      await Isolate.spawn(
+        _settingsWorkerMain,
+        events.sendPort,
+        debugName: 'adele-global-settings',
+        onError: events.sendPort,
+        onExit: events.sendPort,
+      );
+    } on Object catch (error, stack) {
+      _fail(error, stack);
+      _finish();
+    }
+  }
+
+  void _onEvent(Object? event) {
+    switch (event) {
+      case SendPort():
+        _ready.complete(event);
+      case (
+        final int id,
+        final Object? value,
+        final Object? error,
+        final StackTrace? stack,
+      ):
+        final pending = _requests.remove(id);
+        if (error != null) {
+          pending?.completeError(error, stack);
+        } else {
+          pending?.complete(value);
+        }
+      case [final String error, final String stack]:
+        _fail(RemoteError(error, stack), StackTrace.fromString(stack));
+      case null:
+        if (!_stopping || _requests.isNotEmpty || !_ready.isCompleted) {
+          _fail(
+            StateError('The settings worker exited unexpectedly.'),
+            StackTrace.current,
+          );
+        }
+        _finish();
+    }
+  }
+
+  void _fail(Object error, StackTrace stack) {
+    _failure ??= error;
+    _failureStack ??= stack;
+    if (!_ready.isCompleted) _ready.completeError(error, stack);
+    for (final pending in _requests.values) {
+      pending.completeError(error, stack);
+    }
+    _requests.clear();
+  }
+
+  void _finish() {
+    if (IsolateNameServer.lookupPortByName(_ownerName) == _events?.sendPort) {
+      IsolateNameServer.removePortNameMapping(_ownerName);
+    }
+    _events?.close();
+    if (!_exited.isCompleted) _exited.complete();
+  }
+
+  Future<Object?> request(_Request request) async {
+    final port = await _ready.future;
+    if (_failure case final failure?) {
+      Error.throwWithStackTrace(failure, _failureStack!);
+    }
+    final id = _nextRequest++;
+    final pending = Completer<Object?>();
+    _requests[id] = pending;
+    try {
+      port.send((id, request));
+    } on Object {
+      _requests.remove(id);
+      rethrow;
+    }
+    return pending.future;
+  }
+
+  Future<void> release(int owner) async {
+    try {
+      await request(_Request(owner: owner, operation: _Operation.release));
+    } on Object {
+      // Worker failure has already settled admitted operations. Still release
+      // the lease and await its exit; close must not strand the shared owner.
+    }
+    if (--_leases != 0) return;
+    _stopping = true;
+    try {
+      final port = await _ready.future;
+      if (_failure == null) port.send(null);
+    } on Object {
+      // Startup failure also completes _exited.
+    }
+    await _exited.future;
+  }
+}
+
+final class _SettingsOwner {
+  _SettingsOwner(_Request request)
+    : store = GlobalSettingsStore(
+        store: ConfigurationStore(request.roots!),
+        catalog: request.catalog!,
+      );
+
+  final GlobalSettingsStore store;
+  GlobalSettingsSnapshot? baseline;
+  int revision = 0;
+
+  _Values apply(_Request request) {
+    final GlobalSettingsSnapshot saved;
+    if (request.operation == _Operation.load) {
+      baseline = null;
+      revision++;
+      saved = store.load();
+    } else {
+      final expected = baseline;
+      if (expected == null || request.revision != revision) {
+        throw ConfigurationConflictException(store.store.filePath);
+      }
+      final edited = request.operation == _Operation.save
+          ? expected.setOverride(request.setting!, request.value)
+          : expected.resetOverride(request.setting!);
+      saved = store.save(edited);
+      revision++;
+    }
+    baseline = saved;
+    final values = <SettingId, ResolvedSetting<Object>>{};
+    final failures = <SettingId, Object>{};
+    for (final definition in store.catalog.definitions) {
+      try {
+        values[definition.id] = saved.resolve<Object>(definition.id);
+      } on Object catch (error) {
+        failures[definition.id] = error;
+      }
+    }
+    return _Values(revision, values, failures);
+  }
+}
+
+void _settingsWorkerMain(SendPort reply) {
+  final requests = ReceivePort();
+  final owners = <int, _SettingsOwner>{};
+  reply.send(requests.sendPort);
+  requests.listen((Object? message) {
+    if (message == null) {
+      requests.close();
+      return;
+    }
+    final (id, request) = message as (int, _Request);
+    try {
+      final Object? result;
+      if (request.operation == _Operation.release) {
+        owners.remove(request.owner);
+        result = null;
+      } else {
+        result = owners
+            .putIfAbsent(request.owner, () => _SettingsOwner(request))
+            .apply(request);
+      }
+      reply.send((id, result, null, null));
+    } on Object catch (error, stack) {
+      reply.send((id, null, error, stack));
+    }
+  });
+}

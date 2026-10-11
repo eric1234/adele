@@ -267,6 +267,34 @@ controller/text/undo and document identity. These tests never write user roots.
 Configuration is a startup snapshot, not a live update test: edit the file and
 restart for new values; existing native owners are not reconstructed.
 
+`app/test/core/global_settings_service_test.dart` exercises the retained I/O worker
+with actual native persistence, temporary roots, separate owner baselines, serialized
+rapid operations, shutdown fencing/draining, load/save failures, and unchanged CFG2
+conflicts. `app/test/global_settings_dialog_test.dart` covers scalar controls,
+category/section organization, validation, search, provenance, empty/invalid catalogs,
+per-setting save/reset, explicit reload, and real Source schema persistence. A
+pipe-gated separate Dart lock holder tests dismissal during an admitted transaction;
+this uses the same Dart file-lock domain, not `flock`.
+Keyboard traversal excludes filtered editors while retaining their drafts. A
+test-only service subclass injects a lost acknowledgement after actual native
+publication to verify conservative error reporting and mandatory Reload.
+
+Application entry, modal/Command Palette isolation, unavailable frontend recovery,
+and captured storage roots are covered in `app/test/application_test.dart`. The
+normal Source case in `app/test/core/normal_chatgpt_run_integration_test.dart` opens
+Settings in no-Project, Task Browser, and active Session states, saves through the
+real prepared schema and host store, and checks retained native/document/workbench
+identities and startup-only folding for later editors. This requires the existing
+native editor preparation, not a new target. All new app test files are discovered
+by the existing desktop shard registry; no production dummy settings are installed.
+
+From `app/`, after bootstrap and native prerequisites:
+
+```sh
+flutter test --no-pub --concurrency 1 test/core/global_settings_service_test.dart test/global_settings_dialog_test.dart test/application_test.dart test/prepared_settings_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --plain-name 'normal Source Editor retains Environment documents without Chat, a model or a Run'
+```
+
 For package-specific analysis, run `dart analyze --fatal-infos` in each package.
 The small native ABI suite can be run from `packages/toml_document/native/` with
 `cargo test --locked`, and its formatting with `cargo fmt --check`, using that

@@ -30,6 +30,7 @@ import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -81,6 +82,7 @@ const _localDirectoryProjectPluginId =
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
 const _sourceEditorPluginId = 'dev.adele.source-editor';
+const _foldingSetting = '$_sourceEditorPluginId.enable-folding';
 const _reviewPluginId = 'test.review-workspace';
 const _reviewLibrary = 'package:review_workspace/main.dart';
 const _reviewTitle = 'Leave the review workspace?';
@@ -183,6 +185,41 @@ void main() {
 
         expect(fixture.shell(tester).project, isNull);
         await expectHiddenOpenSource();
+        final settingsFile = File(
+          '${fixture.configurationRoots.configurationRoot}/settings.toml',
+        );
+        var savedFolding = false;
+        Future<void> openSettings() async {
+          await _terminalTap(
+            tester,
+            find.byKey(const ValueKey('settings-button')),
+          );
+          await _terminalUntil(
+            tester,
+            () => find
+                .byKey(const ValueKey('setting-input-$_foldingSetting'))
+                .evaluate()
+                .isNotEmpty,
+            'stock folding declaration in Global Settings',
+          );
+          expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+          expect(find.text('Global Settings'), findsOneWidget);
+          expect(
+            tester
+                .widget<Switch>(
+                  find.byKey(const ValueKey('setting-input-$_foldingSetting')),
+                )
+                .value,
+            savedFolding,
+          );
+        }
+
+        await openSettings();
+        expect(fixture.shell(tester).project, isNull);
+        expect(find.byType(MainContentHost), findsNothing);
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        expect(await settingsFile.exists(), isFalse);
 
         // Canonical Sessions need a strategy identity, not Chat or a materialized Run.
         final strategyId = OrchestrationStrategyId(
@@ -297,6 +334,116 @@ void main() {
         }
 
         retainedA();
+        final mainContent = find.byType(MainContentHost);
+        final mainContentElement = tester.element(mainContent);
+        final mainContentState = tester.state(mainContent);
+        final workbenchKey = tester.widget<MainContentHost>(mainContent).key;
+        final console = tester
+            .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+            .controller;
+        final consoleVisible = console.visible;
+        final consoleSelection = console.selectedTab;
+        final mounts = [
+          for (final path in [_sourcePath, secondPath])
+            (
+              path: path,
+              paneElement: tester.element(_sourcePane(path)),
+              paneState: tester.state(_sourcePane(path)),
+              runtime: tester
+                  .widget<$StatefulWidget$bridge>(_sourcePane(path))
+                  .$runtime,
+              nativeElement: tester.element(
+                find.descendant(
+                  of: _sourcePane(path),
+                  matching: find.byType(CodeForge),
+                ),
+              ),
+              nativeState: tester.state(
+                find.descendant(
+                  of: _sourcePane(path),
+                  matching: find.byType(CodeForge),
+                ),
+              ),
+            ),
+        ];
+
+        void retainedAcrossSettings() {
+          retainedA();
+          expect(tester.element(mainContent), same(mainContentElement));
+          expect(tester.state(mainContent), same(mainContentState));
+          expect(tester.widget<MainContentHost>(mainContent).key, workbenchKey);
+          expect(_session(tester), same(sessionA));
+          expect(runtime.store.session(sessionA.id), same(sessionA));
+          expect(fixture.shell(tester).project, same(project));
+          expect(fixture.shell(tester).task, same(taskA));
+          expect(fixture.shell(tester).environment, same(environmentA));
+          expect(
+            tester
+                .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+                .controller,
+            same(console),
+          );
+          expect(console.session, same(sessionA));
+          expect(console.visible, consoleVisible);
+          expect(console.selectedTab, same(consoleSelection));
+          for (final mount in mounts) {
+            final pane = _sourcePane(mount.path);
+            final native = find.descendant(
+              of: pane,
+              matching: find.byType(CodeForge),
+            );
+            expect(tester.element(pane), same(mount.paneElement));
+            expect(tester.state(pane), same(mount.paneState));
+            expect(
+              tester.widget<$StatefulWidget$bridge>(pane).$runtime,
+              same(mount.runtime),
+            );
+            expect(tester.element(native), same(mount.nativeElement));
+            expect(tester.state(native), same(mount.nativeState));
+            expect(tester.widget<CodeForge>(native).enableFolding, isFalse);
+          }
+        }
+
+        retainedAcrossSettings();
+        await openSettings();
+        retainedAcrossSettings();
+        if (Platform.isLinux) {
+          await _terminalTap(
+            tester,
+            find.byKey(const ValueKey('setting-input-$_foldingSetting')),
+          );
+          await _terminalTap(
+            tester,
+            find.byKey(const ValueKey('setting-save-$_foldingSetting')),
+          );
+          await _terminalUntil(
+            tester,
+            () async =>
+                await settingsFile.exists() &&
+                (await settingsFile.readAsString()).contains(
+                  '"$_foldingSetting" = true',
+                ),
+            'Global Settings saves folding to the injected configuration root',
+          );
+          expect(
+            find.text('Restart ADELE to apply configuration changes.'),
+            findsOneWidget,
+          );
+          final persisted = await PreparedSettingsSnapshot.load(
+            runtime.plugins.catalog!,
+            roots: fixture.configurationRoots,
+          );
+          expect(
+            persisted.read(sourceInstallation, _foldingSetting).value,
+            isTrue,
+          );
+          savedFolding = true;
+          retainedAcrossSettings();
+        }
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        expect(find.byType(AlertDialog), findsNothing);
+        retainedAcrossSettings();
         final repeated = await show(_sourcePath);
         expect(repeated['ok'], isTrue, reason: '$repeated');
         await tester.pump();
@@ -312,6 +459,18 @@ void main() {
         expect(find.byType(CodeForge), findsNothing);
         expect(find.byType(AlertDialog), findsNothing);
         await expectHiddenOpenSource();
+        await openSettings();
+        expect(find.byType(MainContentHost), findsNothing);
+        expect(find.byType(CodeForge), findsNothing);
+        expect(ownerA.isDisposed, isFalse);
+        expect(ownerSecond.isDisposed, isFalse);
+        expect(ownerA.snapshot()['text'], _taskText.substring(1));
+        expect(ownerSecond.snapshot()['text'], secondText.substring(1));
+        expect(fixture.shell(tester).task, same(taskA));
+        expect(runtime.store.session(sessionA.id), same(sessionA));
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        expect(find.byType(AlertDialog), findsNothing);
         await _terminalTap(tester, _sessionRow(siblingA.id));
         await _terminalUntil(
           tester,
@@ -376,6 +535,7 @@ void main() {
         final ownerB = _sourceOwner(tester, _sourcePath);
         expect(ownerB, isNot(same(ownerA)));
         expect(ownerB.snapshot()['text'], textB);
+        expect(_sourceNative(tester, _sourcePath).enableFolding, isFalse);
         await _sourceKey(
           tester,
           ownerB,
@@ -509,6 +669,7 @@ void main() {
         final reopened = _sourceOwner(tester, _sourcePath);
         expect(reopened, isNot(same(ownerA)));
         expect(reopened.snapshot()['text'], external);
+        expect(_sourceNative(tester, _sourcePath).enableFolding, isFalse);
         await _sourceAction(tester, _sourcePath, 'Close');
         await _terminalUntil(
           tester,
@@ -5917,6 +6078,13 @@ final class _ProductFixture {
     ids: MonotonicProductIdSource(seed: 'f3g-product'),
   );
   final runIds = _RunIds();
+  late final configurationRoots = PlatformStorageRoots(
+    operatingSystem: Platform.operatingSystem,
+    configurationRoot: '${directory.path}/config',
+    localStateRoot: '${directory.path}/state',
+    localDataRoot: '${directory.path}/data',
+    cacheRoot: '${directory.path}/cache',
+  );
 
   static Future<_ProductFixture> create() async {
     final directory = await Directory.systemTemp.createTemp(
@@ -6016,16 +6184,7 @@ final class _ProductFixture {
     await tester.pumpWidget(
       AdeleApplication(
         createRuntime: () => runtime,
-        loadSettings: (catalog) => PreparedSettingsSnapshot.load(
-          catalog,
-          roots: PlatformStorageRoots(
-            operatingSystem: Platform.operatingSystem,
-            configurationRoot: '${directory.path}/config',
-            localStateRoot: '${directory.path}/state',
-            localDataRoot: '${directory.path}/data',
-            cacheRoot: '${directory.path}/cache',
-          ),
-        ),
+        configurationRoots: configurationRoots,
         readChatGptConfiguration: () => configureModel
             ? const StockChatGptConfiguration(model: 'gpt-6-astra')
             : null,

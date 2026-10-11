@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -26,11 +28,13 @@ import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/task_browser/task_browser_presentation_host.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -49,7 +53,7 @@ final class AdeleApplication extends StatefulWidget {
     this.runIds,
     this.mainContentHost,
     this.attachSessionContext,
-    this.loadSettings = PreparedSettingsSnapshot.load,
+    this.configurationRoots,
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -58,8 +62,10 @@ final class AdeleApplication extends StatefulWidget {
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
-  final Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)
-  loadSettings;
+
+  /// One location for startup configuration and fresh Global Settings edits.
+  /// Tests supply isolated configuration and local-state roots here.
+  final PlatformStorageRoots? configurationRoots;
 
   /// Optional native bindings for declared prepared Main Content panes.
   /// Catalog discovery and registration still use the ordinary frontend path.
@@ -118,11 +124,25 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final _commandRegistrations = ExtensionRegistrationGroup();
   late final CommandResolver _commands;
   DialogRoute<ResolvedCommand>? _palette;
+  DialogRoute<void>? _settingsDialog;
+  GlobalSettingsService? _settings;
+  PlatformStorageRoots? _configurationRoots;
+  Object? _configurationLocationError;
   bool _preparingExit = false;
 
   @override
   void initState() {
     super.initState();
+    try {
+      _configurationRoots =
+          widget.configurationRoots ??
+          PlatformStorageRoots.resolve(
+            operatingSystem: Platform.operatingSystem,
+            environment: Platform.environment,
+          );
+    } on Object catch (error) {
+      _configurationLocationError = error;
+    }
     _runtime = widget.createRuntime();
     _console = ConsoleController(
       _runtime.extensions,
@@ -196,7 +216,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ),
       consoleHost: _consoleHost,
       mainContentHost: _mainContentHost,
-      loadSettings: widget.loadSettings,
+      loadSettings: _loadStartupSettings,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -251,6 +271,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         if (_preparingExit) return AppExitResponse.cancel;
         setState(() => _preparingExit = true);
         _dismissCommandPalette();
+        _dismissSettings();
         try {
           if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
           _retainingPresentations.value = true;
@@ -305,7 +326,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   bool get _canShowCommandPalette {
-    if (!_commandsInteractive) return false;
+    if (!_commandsInteractive || _settingsDialog != null) return false;
     try {
       return _commands.resolve(showCommandPaletteCommandId).availability ==
           CommandAvailability.enabled;
@@ -316,7 +337,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _showCommandPalette() async {
     final navigator = _navigator.currentState;
-    if (!_commandsInteractive || _palette != null || navigator == null) return;
+    if (!_commandsInteractive ||
+        _palette != null ||
+        _settingsDialog != null ||
+        navigator == null) {
+      return;
+    }
     final route = DialogRoute<ResolvedCommand>(
       context: navigator.context,
       builder: (_) => CommandPalette(
@@ -336,6 +362,76 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   void _dismissCommandPalette() {
     final route = _palette;
+    final navigator = route?.navigator;
+    if (route != null && navigator != null && route.isActive) {
+      navigator.removeRoute(route);
+    }
+  }
+
+  Future<GlobalSettingsService> _settingsService() async {
+    if (_closing != null) throw StateError('Application settings are closed.');
+    if (_settings case final settings?) return settings;
+    if (_configurationLocationError case final error?) throw error;
+    final catalog = _runtime.plugins.catalog;
+    if (catalog == null) {
+      throw StateError(
+        'Prepared setting declarations are unavailable. '
+        '${_bootstrapError ?? _runtime.plugins.failure ?? 'Startup is not complete; try Reload.'}',
+      );
+    }
+    return _settings = GlobalSettingsService(
+      catalog: catalog.settings,
+      roots: _configurationRoots!,
+    );
+  }
+
+  Future<PreparedSettingsSnapshot> _loadStartupSettings(
+    PreparedPluginCatalog catalog,
+  ) async {
+    try {
+      // Empty declarations need no startup disk read. Settings itself still reads
+      // the file when opened, including malformed-file diagnostics.
+      if (catalog.settings.definitions.isEmpty) {
+        return await PreparedSettingsSnapshot.load(catalog);
+      }
+      final settings = await _settingsService();
+      return PreparedSettingsSnapshot.fromView(catalog, await settings.load());
+    } on Object catch (error) {
+      return PreparedSettingsSnapshot.fromFailure(catalog, error);
+    }
+  }
+
+  Future<void> _showSettings() async {
+    final navigator = _navigator.currentState;
+    if (!_commandsInteractive ||
+        _settingsDialog != null ||
+        _palette != null ||
+        navigator == null) {
+      return;
+    }
+    final route = DialogRoute<void>(
+      context: navigator.context,
+      builder: (_) => GlobalSettingsDialog(
+        service: _settingsService,
+        declarationIssues: () => [
+          for (final issue
+              in _runtime.plugins.catalog?.issues ??
+                  <PreparedPluginCatalogIssue>[])
+            if (issue.isSettingsSchemaIssue || issue.component == null)
+              '${issue.installationDirectory.path}: ${issue.message}',
+        ],
+      ),
+    );
+    setState(() => _settingsDialog = route);
+    try {
+      await navigator.push(route);
+    } finally {
+      if (mounted) setState(() => _settingsDialog = null);
+    }
+  }
+
+  void _dismissSettings() {
+    final route = _settingsDialog;
     final navigator = route?.navigator;
     if (route != null && navigator != null && route.isActive) {
       navigator.removeRoute(route);
@@ -727,6 +823,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       () => detachContext?.call(),
     );
     final closingCommands = _commandRegistrations.close();
+    final closingSettings = _settings?.close();
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
@@ -741,6 +838,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final draining = Future.wait<void>([
       closingCommands,
       closingContextConsumer,
+      ?closingSettings,
       settlingRuns,
       closingConsole,
       closingConsoleHost,
@@ -872,6 +970,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           child: AdeleShell(
             onCommandPalette: _canShowCommandPalette
                 ? _invokeShowCommandPalette
+                : null,
+            onSettings:
+                _commandsInteractive &&
+                    _settingsDialog == null &&
+                    _palette == null
+                ? _showSettings
                 : null,
             project: _project,
             task: _task,

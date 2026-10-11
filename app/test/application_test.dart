@@ -13,11 +13,13 @@ import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -26,6 +28,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../tools/backend_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/task_browser_frontend_compiler.dart';
 import 'fixtures/window_session_command.dart';
@@ -34,6 +37,231 @@ import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
+  testWidgets(
+    'Global Settings opens before a Project with no plugins and fences the Command Palette shortcut',
+    (tester) => tester.runAsync(() async {
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-empty-settings-application-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final roots = _configurationRoots(directory);
+      final runtime = NativeAdeleRuntime();
+      addTearDown(runtime.close);
+      try {
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: roots,
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: '${directory.path}/missing',
+            ),
+          ),
+        );
+        await starting;
+        await tester.pumpAndSettle();
+        final shell = tester.element(find.byType(AdeleShell));
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(runtime.plugins.catalog!.installations, isEmpty);
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: _configurationRoots(
+              Directory('${directory.path}/unused'),
+            ),
+          ),
+        );
+        await tester.tap(find.byKey(const ValueKey('settings-button')));
+        await _settingsUntil(
+          tester,
+          () => find
+              .text('No settings are available from installed plugins.')
+              .evaluate()
+              .isNotEmpty,
+        );
+        expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+        expect(find.text('Global Settings'), findsOneWidget);
+        expect(find.byKey(const ValueKey('settings-reload')), findsOneWidget);
+        expect(
+          find.text('${roots.configurationRoot}/settings.toml'),
+          findsOneWidget,
+          reason:
+              'Even lazy Settings uses the roots selected at application mount.',
+        );
+        expect(find.text('Enable Code Folding'), findsNothing);
+        final settings = tester.element(find.byType(GlobalSettingsDialog));
+        final search = find.byKey(const ValueKey('settings-search'));
+        await tester.enterText(search, 'keep this search');
+        await tester.pumpAndSettle();
+        final editable = tester.widget<EditableText>(
+          find.descendant(of: search, matching: find.byType(EditableText)),
+        );
+        expect(await sendPaletteShortcut(tester), isFalse);
+        await tester.pumpAndSettle();
+        expect(find.byType(CommandPalette), findsNothing);
+        expect(
+          tester.element(find.byType(GlobalSettingsDialog)),
+          same(settings),
+        );
+        expect(editable.focusNode.hasPrimaryFocus, isTrue);
+        expect(editable.controller.text, 'keep this search');
+        await tester.tap(find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        expect(tester.element(find.byType(AdeleShell)), same(shell));
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(find.byType(MainContentHost), findsNothing);
+        expect(await sendPaletteShortcut(tester), isTrue);
+        await tester.pumpAndSettle();
+        expect(find.byType(CommandPalette), findsOneWidget);
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.byType(CommandPalette), findsNothing);
+        for (final root in [
+          roots.configurationRoot,
+          roots.localStateRoot,
+          roots.localDataRoot,
+          roots.cacheRoot,
+        ]) {
+          expect(await Directory(root).exists(), isFalse);
+        }
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+  );
+
+  testWidgets(
+    'Global Settings repairs an invalid stock value with its frontend unavailable',
+    (tester) => tester.runAsync(() async {
+      const sourceId = 'dev.adele.source-editor';
+      const folding = '$sourceId.enable-folding';
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-unavailable-settings-application-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final roots = _configurationRoots(directory);
+      final installed = Directory('${directory.path}/installed/source');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: installed,
+        pluginId: sourceId,
+        displayName: 'Source',
+        frontend: true,
+      );
+      await File('${installed.path}/frontend.evc').writeAsBytes([0]);
+      final file = File('${roots.configurationRoot}/settings.toml');
+      await file.parent.create(recursive: true);
+      const unknown = '"dev.unavailable.plugin.value" = [1, 2] # keep\n';
+      const original = '# user settings\n"$folding" = "invalid"\n$unknown';
+      await file.writeAsString(original);
+      final runtime = NativeAdeleRuntime();
+      addTearDown(runtime.close);
+      try {
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: roots,
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: '${directory.path}/installed',
+            ),
+          ),
+        );
+        await starting;
+        await tester.pumpAndSettle();
+        expect(runtime.plugins.catalog!.issues, isEmpty);
+        expect(
+          runtime.plugins.catalog!.settings.definitions.single.id.value,
+          folding,
+        );
+        expect(runtime.extensions.discover(mainContentContributions), isEmpty);
+        expect(find.text('No Project is open'), findsOneWidget);
+        final applicationState = tester.state(find.byType(AdeleApplication));
+        final replacementRoots = _configurationRoots(
+          Directory('${directory.path}/unused'),
+        );
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: replacementRoots,
+          ),
+        );
+        expect(
+          tester.state(find.byType(AdeleApplication)),
+          same(applicationState),
+        );
+        await tester.tap(find.byKey(const ValueKey('settings-button')));
+        final reset = find.byKey(const ValueKey('setting-reset-$folding'));
+        await _settingsUntil(tester, () => reset.evaluate().isNotEmpty);
+        expect(find.text('Global Settings'), findsOneWidget);
+        expect(find.text('Enable Code Folding'), findsOneWidget);
+        expect(
+          find.text('Global override is invalid; no effective value.'),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('setting-input-$folding')),
+          findsNothing,
+        );
+        expect(await file.readAsString(), original);
+        await tester.ensureVisible(reset);
+        await tester.tap(reset);
+        await _settingsUntil(
+          tester,
+          () => find
+              .byKey(const ValueKey('setting-input-$folding'))
+              .evaluate()
+              .isNotEmpty,
+        );
+        expect(
+          tester
+              .widget<Switch>(
+                find.byKey(const ValueKey('setting-input-$folding')),
+              )
+              .value,
+          isFalse,
+        );
+        expect(await file.readAsString(), isNot(contains(folding)));
+        expect(await file.readAsString(), contains(unknown));
+        expect(
+          await Directory(replacementRoots.configurationRoot).exists(),
+          isFalse,
+          reason: 'Rebuilds must not replace the startup configuration roots.',
+        );
+        expect(
+          find.text('Restart ADELE to apply configuration changes.'),
+          findsOneWidget,
+        );
+        expect(runtime.extensions.discover(mainContentContributions), isEmpty);
+        expect(
+          runtime.extensions.discover(displaySourceFileContributions),
+          isEmpty,
+        );
+        await tester.tap(find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        expect(find.byType(GlobalSettingsDialog), findsNothing);
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+    skip: !Platform.isLinux,
+  );
+
   for (final bool missing in [false, true]) {
     testWidgets(
       '${missing ? 'missing' : 'empty'} installation root boots without plugins and accepts a later selector',
@@ -773,6 +1001,27 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+}
+
+PlatformStorageRoots _configurationRoots(Directory directory) =>
+    PlatformStorageRoots(
+      operatingSystem: Platform.operatingSystem,
+      configurationRoot: '${directory.path}/config',
+      localStateRoot: '${directory.path}/state',
+      localDataRoot: '${directory.path}/data',
+      cacheRoot: '${directory.path}/cache',
+    );
+
+Future<void> _settingsUntil(WidgetTester tester, bool Function() ready) async {
+  final clock = Stopwatch()..start();
+  while (!ready()) {
+    if (clock.elapsed >= const Duration(seconds: 10)) {
+      fail('Timed out waiting for Global Settings.');
+    }
+    await Future<void>.delayed(Duration.zero);
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
 }
 
 final class _EnvironmentChannel implements AdeleRequestChannel {

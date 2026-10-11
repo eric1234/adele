@@ -210,11 +210,14 @@ concrete frontend behavior belongs to each plugin.
 
 [`PreparedSettingsSnapshot`](lib/frontend/prepared_settings.dart) assembles the
 catalog's validated declarations and resolves them through `GlobalSettingsStore`
-once before frontend activation. A short-lived host isolate performs synchronous
-configuration-store/TOML work; only immutable scalar results, provenance, and
-errors return to the UI isolate. No store reads occur in widget builds or bridge
-calls. A catalog without declarations does not read configuration at all. Backend
-startup does not wait for settings or acquire a settings dependency.
+once before frontend activation. Normal application startup uses
+[`GlobalSettingsService`](lib/core/global_settings_service.dart), the same retained
+I/O owner as the Settings dialog, with roots captured at application mount. Only
+immutable scalar results, provenance, and errors return to the UI isolate. No store
+reads occur in widget builds or bridge calls. Startup with no declarations does not
+read configuration. Backend startup does not wait for settings or acquire a
+settings dependency. The standalone read-only loader remains available to isolated
+hosts/tests using a short-lived isolate.
 
 The host binds `readPluginSetting` in the public contribution bridge to the exact
 prepared installation and its validated declarations, not a caller-supplied owner
@@ -232,11 +235,51 @@ schema is a settings-specific catalog issue, not a reason to disable a valid
 executable component; attempting to read an undeclared setting still fails.
 Startup never creates or rewrites `settings.toml` or materializes defaults.
 
-Configuration is captured at startup, without watching, refresh, or cross-window
-synchronization. Edit global `settings.toml` and restart ADELE to load changes.
+Consumer configuration is captured at startup, without watching or live refresh.
+Edit global `settings.toml` manually or through Global Settings and restart ADELE
+to apply changes, including to subsequently opened Source editors.
 See [configuration architecture](../docs/architecture/profiles-and-configuration.md)
 for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
 for declaration ownership, bounds, and diagnostics.
+
+### Global Settings
+
+The header Settings icon opens
+[`GlobalSettingsDialog`](lib/ui/settings/global_settings_dialog.dart), before a
+Project is open, in Task Browser, or over an active Session. It uses the existing
+application Navigator's dialog route without replacing Main Content or changing
+workbench ownership. Missing or failed plugin frontends do not remove Settings.
+The dialog uses the startup-discovered prepared catalog, not executable plugin UI
+or a second installation scan. Declaration metadata supplies categories, sections,
+labels, descriptions, scalar controls, and search terms.
+
+The dialog loads current persisted configuration on each opening, independently
+of the immutable frontend startup snapshot. Effective values and Default/Global
+provenance remain visible while drafts are edited. Save is deliberate and per
+setting; Reset removes an override instead of copying its default. Text input
+does not write on each keystroke, enum labels are not serialized, and ordinary
+strings accept multiple lines. Reload discards drafts and reads the current file.
+Conflicts require this explicit reload rather than automatic merge or retry.
+Other failures also require Reload to confirm disk state; a cleanup or lost-response
+failure can follow publication and is not reported as proof that nothing was saved.
+
+`GlobalSettingsService` keeps native TOML operations and conditional persistence
+off the UI isolate. Main-isolate service owners lease one serial worker, with an
+ownership guard against independent Flutter-engine writers. Each owner retains
+its own whole-document baseline. Closing the dialog does not cancel a transaction;
+application shutdown fences and drains admitted requests before releasing its lease.
+`AdeleApplication.configurationRoots` injects the same temporary config/state roots
+for startup and editing tests. See the
+[canonical configuration ownership](../docs/architecture/profiles-and-configuration.md#configuration-persistence)
+for process coordination and Linux-versus-other-platform write limits.
+
+Malformed TOML and inaccessible files display diagnostics and the file path without
+being overwritten. Invalid scalar overrides are not defaulted; Reset can recover
+them through the existing settings API. Unsupported structures require manual repair
+and Reload. Missing/invalid prepared schemas remain visible diagnostics, and duplicate
+declarations fail aggregation. Repairing installation declarations requires restart.
+No Profiles, scope selector, runtime restart command, or live editor reconfiguration
+is implemented.
 
 ### Prepared Capability access
 
