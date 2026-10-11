@@ -565,9 +565,9 @@ context/view revocation withdraws its owned dialog route and settles the abandon
 request without awaiting an answer or cleanup. Metadata updates do not withdraw
 it, and route withdrawal cannot pop unrelated navigation or authorize cleanup.
 
-`AdeleApplication` sets the controller's Session in `_activateSession`, clears it
-only after accepted navigation in `_showBrowser`, and supplies the shell's bounded
-console area only while a Session is presented. Task Browser has no panel, toggle,
+`AdeleApplication` observes its [Window Session Context](#window-session-context)
+to set the controller's Session after activation or accepted departure, and supplies
+the shell's bounded console area only while a Session is presented. Task Browser has no panel, toggle,
 or console creation actions, even with a selected Task. The console is outside the
 Session/Inspection scroll views; navigation settlement blocks its input/focus too.
 Presentation defaults to selected-only. `ConsoleContent.keepAlive` explicitly
@@ -1042,6 +1042,30 @@ Explicit retained-contribution exit preflight is separate, as described
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
+
+### Window Session Context
+
+[`WindowSessionContextHost`](lib/core/window_session_context.dart) is the
+Flutter-free publisher owned by `AdeleApplication`, not by its runtime. Application
+selection reads use this sole source; there is no independently mutable selected
+Session field. `_activateSession` validates canonical membership and commits the
+new selection after preparing window state. `_showBrowser` keeps it during
+deactivation preflight, revokes presentation after acceptance, then commits null.
+The synchronous observers call `ConsoleController.setSession` and
+`WindowInspection.presentSession`; `MainContentHost` receives the same canonical
+Session at build, retaining its existing workbench and attachment guards.
+
+The optional `AdeleApplication.attachSessionContext` hook supplies a separate
+read-only facade once at mount. A native consumer returns a cleanup callback for
+its own registrations/subscriptions; widget updates do not reattach it. Shutdown
+first closes the source synchronously, then invokes and joins that cleanup alongside
+the other window owners. Forced Flutter disposal starts the same cleanup without
+awaiting it. Accepted exit freezes the already-built presentation tree behind its
+existing retention gate, not a second selected-Session value. Retained inert exit
+views cannot keep context access alive. Public
+snapshot/observer API belongs to [core extensions](../packages/core_extensions/README.md#window-session-context);
+cross-system invariants and deferred transport belong to the
+[canonical architecture](../docs/architecture/plugin-system.md#window-session-context).
 
 ### Grouped Main Content
 

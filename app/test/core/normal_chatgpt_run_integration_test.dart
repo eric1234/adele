@@ -1473,7 +1473,20 @@ void main() {
         await processSubscription.cancel();
         await processServer.close();
       });
-      await fixture.launch(tester, prepared, endpoint: server);
+      late WindowSessionContext context;
+      final selections = <WindowSessionSnapshot>[];
+      await fixture.launch(
+        tester,
+        prepared,
+        endpoint: server,
+        attachSessionContext: (access) {
+          context = access;
+          return access.observe(selections.add);
+        },
+      );
+      expect(context.snapshot.session, isNull);
+      expect(context.snapshot.revision, 0);
+      expect(selections, isEmpty);
       // Registered after launch so failed assertions unblock owned Run drainage
       // before application/backend teardown. Socket EOF also releases an as-yet
       // unobserved child whose PID has not reached the first handshake.
@@ -1523,6 +1536,8 @@ void main() {
       final consoleHost = find.byType(WorkbenchConsole);
 
       Future<void> browse() async {
+        final previous = context.snapshot;
+        final notifications = selections.length;
         await _breadcrumb(tester, 'project-breadcrumb');
         await _terminalUntil(
           tester,
@@ -1530,6 +1545,11 @@ void main() {
           'leave the active Session without draining execution',
         );
         expect(fixture.shell(tester).navigationError, isNull);
+        expect(context.snapshot.session, isNull);
+        expect(context.snapshot.revision, previous.revision + 1);
+        expect(selections, hasLength(notifications + 1));
+        expect(selections.last, same(context.snapshot));
+        expect(fixture.shell(tester).inspection, isNull);
         expect(find.byType(InspectionHost), findsNothing);
         expect(consoleHost, findsNothing);
       }
@@ -1543,6 +1563,8 @@ void main() {
           'fresh Chat presentation for ${session.id.value}',
         );
         expect(_session(tester), same(session));
+        expect(context.snapshot.session, same(session));
+        expect(fixture.shell(tester).inspection, isNull);
       }
 
       Future<_PresentedCapture> inspect(
@@ -1609,6 +1631,9 @@ void main() {
         'A first approval',
       );
       final sessionA = _session(tester);
+      final selectedA = context.snapshot;
+      expect(selectedA.session, same(runtime.store.session(sessionA.id)));
+      expect(selectedA.revision, 1);
       final runA = fixture.runIds.values.single;
       final statusA = fixture.status(tester);
       final approvalA1 = statusA.pendingApproval!;
@@ -1632,7 +1657,11 @@ void main() {
       final console = tester.widget<WorkbenchConsole>(consoleHost).controller;
       final tabA1 = console.selectedTab!;
       expect(console.eligibleTabs, [tabA1]);
+      expect(console.session, same(context.snapshot.session));
+      expect(context.snapshot, same(selectedA));
+      expect(selections, [same(selectedA)]);
       await browse();
+      expect(console.session, isNull);
       expect(find.textContaining('1 running'), findsWidgets);
       expect(await childA1.isAlive(), isTrue);
       expect((await captureA1.state()).state, 'capturing');
@@ -1658,6 +1687,11 @@ void main() {
         'B independent approval',
       );
       final sessionB = _session(tester);
+      final selectedB = context.snapshot;
+      expect(selectedB.session, same(runtime.store.session(sessionB.id)));
+      expect(selectedB.revision, 3);
+      expect(console.session, same(selectedB.session));
+      expect(fixture.shell(tester).inspection, isNull);
       final runB = fixture.runIds.values.last;
       final statusB = fixture.status(tester);
       expect(sessionB.id, isNot(sessionA.id));
@@ -1703,6 +1737,13 @@ void main() {
         tester,
         () async => (await captureA1.tail()).contains('CONCURRENT_A1_PROGRESS'),
         'hidden A continues capture',
+      );
+      expect(context.snapshot, same(selectedB));
+      expect(selections, hasLength(3));
+      expect(console.session, same(selectedB.session));
+      expect(
+        tester.widget<ToolActivityInspectionHost>(inspection).source.sessionId,
+        sessionB.id,
       );
       for (final (capture, child, environment) in [
         (captureA1, childA1, environmentA),
@@ -1843,6 +1884,8 @@ void main() {
       expect(console.selectedTab, same(tabB1));
       expect(console.eligibleTabs, [tabB1]);
       expect(tester.widget<TextField>(_composer()).controller!.text, draftB);
+      final visibleB = context.snapshot;
+      final notifications = selections.length;
       childA2.release('exit');
       await _terminalUntil(
         tester,
@@ -1853,6 +1896,12 @@ void main() {
       );
       childA2.exited = true;
       expect(_session(tester), same(sessionB));
+      expect(context.snapshot, same(visibleB));
+      expect(visibleB.session, same(sessionB));
+      expect(selections, hasLength(notifications));
+      expect(console.session, same(sessionB));
+      expect(fixture.shell(tester).inspection, isNull);
+      expect(find.byType(InspectionHost), findsNothing);
       expect(find.text(answers['A']!), findsNothing);
       expect(find.text(answers['B']!), findsOneWidget);
       _rethrowEndpointFailure(endpointFailures);
@@ -1970,7 +2019,12 @@ void main() {
         children.map((child) => child.pid!).toList(),
       );
       expect(tester.takeException(), isNull);
+      final notificationsBeforeExit = selections.length;
       expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      expect(context.isActive, isFalse);
+      expect(() => context.snapshot, throwsStateError);
+      expect(() => context.observe(selections.add), throwsStateError);
+      expect(selections, hasLength(notificationsBeforeExit));
       expect(commandConnection.isClosed, isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
     }),
@@ -4468,11 +4522,17 @@ void main() {
           await subscription.cancel();
           await server.close(force: true);
         });
+        late WindowSessionContext context;
+        final selections = <WindowSessionSnapshot>[];
         await fixture.launch(
           tester,
           prepared,
           root: root,
           endpoint: server,
+          attachSessionContext: (access) {
+            context = access;
+            return access.observe(selections.add);
+          },
           startupArguments: {
             _chatPluginId: [
               'http://${server.address.address}:${server.port}/draft',
@@ -4483,12 +4543,24 @@ void main() {
           if (!releaseFirst.isCompleted) releaseFirst.complete();
           if (!releaseLatest.isCompleted) releaseLatest.complete();
         });
+        expect(context.isActive, isTrue);
+        expect(context.snapshot.session, isNull);
+        expect(context.snapshot.revision, 0);
+        expect(selections, isEmpty);
         await fixture.openTask(tester);
         // The gated backend intentionally has no optional strategy display name.
         await _tap(tester, 'New ${chatStrategyId.value} Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final session = _session(tester);
         final task = fixture.shell(tester).task!;
+        final selected = context.snapshot;
+        expect(selected.session, same(session));
+        expect(
+          selected.session,
+          same(fixture.runtime.store.session(session.id)),
+        );
+        expect(selected.revision, 1);
+        expect(selections, [same(selected)]);
         final connection = fixture.runtime.plugins.backends
             .singleWhere(
               (backend) =>
@@ -4505,6 +4577,8 @@ void main() {
         );
         expect(fixture.shell(tester).navigating, isTrue);
         expect(_session(tester), same(session));
+        expect(context.snapshot, same(selected));
+        expect(selections, [same(selected)]);
         expect(fixture.shell(tester).task, same(task));
         expect(
           tester.widget<TextField>(_composer()).controller!.text,
@@ -4518,6 +4592,8 @@ void main() {
         await tester.pump();
         expect(fixture.shell(tester).navigating, isTrue);
         expect(_session(tester), same(session));
+        expect(context.snapshot, same(selected));
+        expect(selections, [same(selected)]);
         expect(writes, [firstDraft, latestDraft]);
         expect(fixture.runIds.values, isEmpty);
         expect(fixture.runtime.store.runsForSession(session.id), isEmpty);
@@ -4526,6 +4602,8 @@ void main() {
         _rethrowEndpointFailure(failures);
         if (rejectLatest) {
           expect(_session(tester), same(session));
+          expect(context.snapshot, same(selected));
+          expect(selections, [same(selected)]);
           expect(fixture.shell(tester).task, same(task));
           expect(fixture.status(tester).unavailableReason, isNull);
           expect(tester.widget<TextField>(_composer()).enabled, isTrue);
@@ -4573,6 +4651,10 @@ void main() {
           expect(fixture.shell(tester).task, same(task));
           expect(writes, [firstDraft, latestDraft]);
         }
+        final departed = context.snapshot;
+        expect(departed.session, isNull);
+        expect(departed.revision, 2);
+        expect(selections, [same(selected), same(departed)]);
         expect(fixture.shell(tester).navigationError, isNull);
         expect(
           (await chat.snapshot(session.id.value)).draftRequest,
@@ -4582,6 +4664,13 @@ void main() {
         await _openSession(tester, session.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         expect(_session(tester), same(session));
+        expect(context.snapshot.session, same(session));
+        expect(context.snapshot.revision, 3);
+        expect(selections, [
+          same(selected),
+          same(departed),
+          same(context.snapshot),
+        ]);
         expect(
           tester.widget<TextField>(_composer()).controller!.text,
           latestDraft,
@@ -4656,8 +4745,27 @@ void main() {
           await subscription.cancel();
           await server.close(force: true);
         });
+        late WindowSessionContext context;
+        late void Function() detach;
+        final selections = <WindowSessionSnapshot>[];
+        var cleanups = 0;
+        bool? activeDuringCleanup;
         try {
-          await fixture.launch(tester, prepared, endpoint: server);
+          await fixture.launch(
+            tester,
+            prepared,
+            endpoint: server,
+            attachSessionContext: (access) {
+              context = access;
+              detach = access.observe(selections.add);
+              return () {
+                // Keep the observer attached through drainage; shutdown must
+                // invalidate it without publishing a synthetic selection.
+                cleanups++;
+                activeDuringCleanup = access.isActive;
+              };
+            },
+          );
           addTearDown(() {
             if (!release.isCompleted) release.complete();
           });
@@ -4708,16 +4816,26 @@ void main() {
           );
           await _tap(tester, 'New Chat Session');
           await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-          expect(_session(tester).id, isNot(session.id));
+          final selected = _session(tester);
+          final selectedSnapshot = context.snapshot;
+          expect(selected.id, isNot(session.id));
+          expect(selectedSnapshot.session, same(selected));
+          expect(selectedSnapshot.revision, 3);
+          expect(selections.map((snapshot) => snapshot.session), [
+            same(session),
+            isNull,
+            same(selected),
+          ]);
+          expect(selections.map((snapshot) => snapshot.revision), [1, 2, 3]);
           expect(fixture.status(tester).pendingApproval, isNull);
           expect(fixture.status(tester).isAdvancing, isFalse);
           if (waiting) {
             final approval = hiddenStatus.pendingApproval!;
             await tester.pumpWidget(const SizedBox.shrink());
+            expect(context.isActive, isFalse);
             hiddenStatus.onDecision(approval, true);
             hiddenStatus.onDecision(approval, false);
           } else {
-            final selected = _session(tester);
             PreparedFrontend? generation;
             // Prepared views key their exact generation. Retire the shared Chat
             // frontend through B's actual pane while A's accepted Run is hidden.
@@ -4739,6 +4857,9 @@ void main() {
             generation!.invalidate();
             await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
             expect(_session(tester), same(selected));
+            expect(context.isActive, isTrue);
+            expect(context.snapshot, same(selectedSnapshot));
+            expect(selections, hasLength(3));
             expect(find.text('Frontend unavailable.'), findsOneWidget);
             expect(connection.isClosed, isFalse);
             expect(runtime.plugins.state, ApplicationPluginState.ready);
@@ -4762,8 +4883,13 @@ void main() {
             await Future<void>.delayed(Duration.zero);
             await tester.pump();
             expect(exited, isFalse);
+            expect(context.isActive, isFalse);
+            expect(cleanups, 1);
+            expect(activeDuringCleanup, isFalse);
             expect(runtime.plugins.state, ApplicationPluginState.ready);
             expect(connection.isClosed, isFalse);
+            expect(_session(tester), same(selected));
+            expect(find.text('Frontend unavailable.'), findsOneWidget);
             expect(
               (await chat.snapshot(session.id.value)).entries,
               hasLength(1),
@@ -4775,11 +4901,21 @@ void main() {
             );
             expect(find.text('Late accepted answer.'), findsNothing);
           }
+          expect(context.isActive, isFalse);
+          expect(() => context.snapshot, throwsStateError);
+          expect(() => context.observe(selections.add), throwsStateError);
+          expect(cleanups, 1);
+          expect(activeDuringCleanup, isFalse);
           await _pumpUntil(
             tester,
             () => runtime.plugins.state == ApplicationPluginState.closed,
           );
           _rethrowEndpointFailure(errors);
+          expect(selections, hasLength(3));
+          expect(selections.last, same(selectedSnapshot));
+          expect(selectedSnapshot.session, same(selected));
+          detach();
+          detach();
           expect(requests, 1);
           expect(fixture.runIds.values, hasLength(1));
           expect(
@@ -4796,6 +4932,7 @@ void main() {
             throwsA(isA<PluginConnectionClosed>()),
           );
           await tester.pumpWidget(const SizedBox.shrink());
+          expect(cleanups, 1);
           expect(tester.takeException(), isNull);
         } finally {
           if (!release.isCompleted) release.complete();
@@ -5817,6 +5954,8 @@ final class _ProductFixture {
     NativeAdeleRuntime? usingRuntime,
     RunIdSource? usingRunIds,
     PreparedMainContentHost? mainContentHost,
+    FutureOr<void> Function() Function(WindowSessionContext)?
+    attachSessionContext,
     bool configureModel = true,
     Map<String, List<String>> startupArguments = const {},
   }) async {
@@ -5871,6 +6010,7 @@ final class _ProductFixture {
             : null,
         runIds: usingRunIds ?? runIds,
         mainContentHost: mainContentHost,
+        attachSessionContext: attachSessionContext,
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,

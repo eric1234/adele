@@ -3,8 +3,9 @@
 Experimental public, pure-Dart contracts for narrow core-owned extension points
 that lack a natural existing public domain owner. This is not a catch-all for
 plugin APIs or shared types. Its current contracts cover Commands, Project
-selection, and provider backing preparation. It depends on public `adele_plugin_api`,
-`adele_capabilities`, and `adele_contract`, not Flutter, product, SQLite,
+selection, provider backing preparation, and read-only Window Session Context.
+It depends on public `adele_plugin_api`, `adele_product`,
+`adele_capabilities`, and `adele_contract`, not Flutter, SQLite,
 application code, or internal host implementations.
 
 ## Ownership
@@ -98,6 +99,24 @@ Dynamic contextual backend availability/authority and keybindings remain
 unimplemented. No stock backend needs to advertise a Command;
 the app's real-AOT probe tests the production adapter without inventing a stock
 context-free operation.
+
+## Window Session Context
+
+[`window_session_context.dart`](lib/window_session_context.dart), exported by the
+main library, defines `WindowSessionContext` and `WindowSessionSnapshot` without
+Flutter or a publisher API. `snapshot` contains the canonical `Session?` and an
+integer selection `revision`; `observe(listener)` returns an idempotent detach
+callback. Observers receive synchronous committed changes, not initial replay;
+late consumers read `snapshot` explicitly. `isActive` becomes false when the window
+ends access, after which reads and new subscriptions throw `StateError`. Previously
+captured snapshots remain immutable. Observation is not an authority grant.
+
+The host implementation and optional native attachment belong to the
+[desktop application](../../app/README.md#window-session-context), not this package.
+Native Commands can use separately supplied context without changing
+`CommandContribution`; no UI participation or backend transport is implied.
+Selection, failure, shutdown, and remote-boundary semantics have one canonical home
+in [Window Session context architecture](../../docs/architecture/plugin-system.md#window-session-context).
 
 ## Project Selection
 

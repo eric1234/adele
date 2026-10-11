@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
@@ -27,6 +28,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/task_browser_frontend_compiler.dart';
+import 'fixtures/window_session_command.dart';
 import 'support/command_palette_shortcut.dart';
 import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
@@ -337,6 +339,18 @@ void main() {
   ) async {
     final NativeAdeleRuntime runtime = NativeAdeleRuntime();
     int creations = 0;
+    final contexts = <WindowSessionContext>[];
+    var detachments = 0;
+    void Function() attach(WindowSessionContext context) {
+      contexts.add(context);
+      final detach = context.observe((_) => fail('No Session was selected.'));
+      return () {
+        expect(context.isActive, isFalse);
+        detach();
+        detachments++;
+      };
+    }
+
     NativeAdeleRuntime createRuntime() {
       creations++;
       return runtime;
@@ -347,7 +361,15 @@ void main() {
       isEmpty,
       reason: 'A bare runtime has no model tools before plugin bootstrap.',
     );
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await tester.pumpWidget(
+      AdeleApplication(
+        createRuntime: createRuntime,
+        attachSessionContext: attach,
+      ),
+    );
+    final context = contexts.single;
+    expect(context.snapshot.session, isNull);
+    expect(context.snapshot.revision, 0);
     expect(
       runtime.extensions.discover(orchestrationStrategyContributions),
       isEmpty,
@@ -363,11 +385,22 @@ void main() {
     expect(find.text('No Project selectors are available.'), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
 
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await tester.pumpWidget(
+      AdeleApplication(
+        createRuntime: createRuntime,
+        attachSessionContext: attach,
+      ),
+    );
     expect(creations, 1);
+    expect(contexts, [same(context)]);
+    expect(detachments, 0);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+    expect(context.isActive, isFalse);
+    expect(() => context.snapshot, throwsStateError);
+    expect(() => context.observe((_) {}), throwsStateError);
+    expect(detachments, 1);
     expect(
       runtime.extensions.discover(orchestrationStrategyContributions),
       isEmpty,
@@ -375,17 +408,47 @@ void main() {
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
+    await tester.pumpWidget(AdeleApplication(attachSessionContext: attach));
+    expect(contexts, hasLength(2));
+    expect(contexts.last, isNot(same(context)));
+    expect(contexts.last.snapshot.revision, 0);
+    expect(context.isActive, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(detachments, 2);
   });
 
   testWidgets('graceful application exit awaits runtime retirement', (
     WidgetTester tester,
   ) async {
     late NativeAdeleRuntime runtime;
+    late WindowSessionContext context;
+    final cleanup = Completer<void>();
+    var detachments = 0;
+    bool? activeAtDetach;
     await tester.pumpWidget(
-      AdeleApplication(createRuntime: () => runtime = NativeAdeleRuntime()),
+      AdeleApplication(
+        createRuntime: () => runtime = NativeAdeleRuntime(),
+        attachSessionContext: (value) {
+          context = value;
+          return () {
+            activeAtDetach = context.isActive;
+            detachments++;
+            return cleanup.future;
+          };
+        },
+      ),
     );
 
-    expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+    final exiting = tester.binding.handleRequestAppExit();
+    await tester.pump();
+    expect(context.isActive, isFalse);
+    expect(() => context.snapshot, throwsStateError);
+    expect(detachments, 1);
+    expect(activeAtDetach, isFalse);
+    expect(runtime.plugins.state, isNot(ApplicationPluginState.closed));
+    cleanup.complete();
+    expect(await exiting, AppExitResponse.exit);
 
     expect(
       runtime.extensions.discover(orchestrationStrategyContributions),
@@ -395,6 +458,7 @@ void main() {
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
+    expect(detachments, 1);
     expect(tester.takeException(), isNull);
   });
 
@@ -446,6 +510,9 @@ void main() {
         ),
       );
       final presented = <Session>[];
+      final commandGate = Completer<void>();
+      late WindowSessionCommandFixture consumer;
+      var consumerDetachments = 0;
       ExtensionRegistration? contribution(String name, {bool strategy = true}) {
         final key = name.toLowerCase();
         final id = OrchestrationStrategyId('dev.example.$key');
@@ -509,6 +576,17 @@ void main() {
         await tester.pumpWidget(
           AdeleApplication(
             createRuntime: () => runtime,
+            attachSessionContext: (context) {
+              consumer = WindowSessionCommandFixture(
+                context: context,
+                registry: runtime.extensions,
+                gate: commandGate,
+              );
+              return () {
+                consumerDetachments++;
+                return consumer.close();
+              };
+            },
             bootstrapPlugins: (plugins) =>
                 plugins.start(installationRoot: installations.path),
           ),
@@ -520,11 +598,15 @@ void main() {
       await tester.pumpAndSettle();
       final commands = CommandResolver(runtime.extensions);
       final toggleConsole = commands.resolve(toggleConsoleCommandId);
+      expect(consumer.initialSnapshot.session, isNull);
+      expect(consumer.initialSnapshot.revision, 0);
+      expect(consumer.command.availability, CommandAvailability.hidden);
       expect(toggleConsole.availability, CommandAvailability.hidden);
       await sendPaletteShortcut(tester);
       await tester.pumpAndSettle();
       expect(find.byType(CommandPalette), findsOneWidget);
       expect(find.text('Toggle Console'), findsNothing);
+      expect(find.text(WindowSessionCommandFixture.label), findsNothing);
       await tester.tap(find.byTooltip('Close Command Palette'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('New Task'));
@@ -577,11 +659,22 @@ void main() {
         same(presented.single),
       );
       expect(runtime.store.sessionsForTask(task.id), [same(presented.single)]);
+      final sessionA = presented.single;
+      final selectionA = consumer.context.snapshot;
+      expect(selectionA.session, same(sessionA));
+      expect(selectionA.revision, 1);
+      expect(consumer.changes, [same(selectionA)]);
+      expect(
+        tester.widget<MainContentHost>(find.byType(MainContentHost)).session,
+        same(selectionA.session),
+      );
+      expect(consumer.command.availability, CommandAvailability.enabled);
       expect(find.text('Second presentation'), findsOneWidget);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
       final console = tester
           .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
           .controller;
+      expect(console.session, same(selectionA.session));
       expect(toggleConsole.availability, CommandAvailability.enabled);
       expect(console.visible, isTrue);
       final input = find.byKey(const ValueKey('session-input'));
@@ -606,11 +699,20 @@ void main() {
       await toggleConsole.invoke();
       await tester.pumpAndSettle();
       expect(console.visible, isTrue);
+      expect(consumer.changes, [same(selectionA)]);
+      await sendPaletteShortcut(tester);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(WindowSessionCommandFixture.label));
+      await tester.pumpAndSettle();
+      expect(consumer.captured, [same(selectionA)]);
+      expect(consumer.completed, isEmpty);
       // Start departure on the trigger key, after both modifiers are down, to
       // exercise the synchronous interaction fence before settlement/rebuild.
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       tester.widget<AdeleShell>(find.byType(AdeleShell)).onTask!();
+      expect(consumer.context.snapshot, same(selectionA));
+      expect(console.session, same(sessionA));
       expect(toggleConsole.availability, CommandAvailability.disabled);
       expect(await tester.sendKeyDownEvent(LogicalKeyboardKey.keyP), isFalse);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
@@ -625,7 +727,47 @@ void main() {
       expect(toggleConsole.availability, CommandAvailability.hidden);
       expect(console.visible, isTrue);
       expect(find.byType(WorkbenchConsole), findsNothing);
+      expect(consumer.context.snapshot.session, isNull);
+      expect(consumer.context.snapshot.revision, 2);
+      expect(consumer.changes, hasLength(2));
+      expect(console.session, isNull);
+      expect(console.isClosed, isFalse);
+      expect(consumer.command.availability, CommandAvailability.hidden);
+
+      await tester.tap(find.text('New Second Session'));
+      await tester.pumpAndSettle();
+      final sessionB = consumer.context.snapshot.session!;
+      expect(sessionB, isNot(same(sessionA)));
+      expect(consumer.context.snapshot.revision, 3);
+      expect(console.session, same(sessionB));
+      expect(
+        tester
+            .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+            .controller,
+        same(console),
+      );
+      commandGate.complete();
+      await tester.pumpAndSettle();
+      expect(consumer.completed, [same(selectionA)]);
+
+      tester.widget<AdeleShell>(find.byType(AdeleShell)).onTask!();
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.ancestor(
+          of: find.textContaining('Session: ${sessionA.id.value}\n'),
+          matching: find.byType(ListTile),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(consumer.context.snapshot.session, same(sessionA));
+      expect(consumer.context.snapshot.revision, 5);
+      expect(console.session, same(sessionA));
+      expect(consumer.changes.map((value) => value.revision), [1, 2, 3, 4, 5]);
       await tester.runAsync(tester.binding.handleRequestAppExit);
+      expect(consumer.context.isActive, isFalse);
+      expect(() => consumer.context.snapshot, throwsStateError);
+      expect(consumerDetachments, 1);
+      expect(console.isClosed, isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

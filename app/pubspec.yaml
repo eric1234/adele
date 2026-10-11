@@ -49,6 +49,7 @@ dev_dependencies:
   scripted_model_contract: ^0.1.0
   search_tools_plugin: ^0.1.0
   session_evaluator_contract: ^0.1.0
+  test: ^1.26.3
   workspace_demo_contract: ^0.1.0
   flutter_test:
     sdk: flutter

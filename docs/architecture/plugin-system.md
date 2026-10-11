@@ -391,6 +391,57 @@ additional binding scopes remain future work.
 See the [public API map](../../packages/core_extensions/README.md#commands)
 and [application hosting](../../app/README.md#command-palette).
 
+## Window Session context
+
+One application window owns one authoritative, observable Session presentation
+selection. The pure-Dart `WindowSessionContext` in `adele_core_extensions` exposes
+only a synchronous immutable snapshot and detachable committed-change observers.
+It is independent of Commands and UI extension points: a native consumer need not
+contribute Main Content, Console, or Inspection to read it. The desktop composition
+root owns publication, not `AdeleRuntime`, the product store, or a plugin. A
+headless runtime has no implicit selected Session; separate windows have separate
+contexts.
+
+`WindowSessionSnapshot` contains only the selected canonical product `Session`
+(or null) and a window-local selection revision. Initial state is null at revision
+zero. After canonical validation, entering a Session advances the revision;
+accepted departure advances it with null. Returning to the same canonical Session
+establishes a new epoch. Repeated selection of the unchanged canonical object does
+not notify. Revisions describe presentation selection, not durable product versions,
+Run progress, or executable generations. The Session already supplies typed Task
+and strategy identities; no product graph or Environment provider state is copied.
+
+Navigation preparation keeps the old selection observable. Rejected or failed
+preflight publishes nothing. Accepted departure revokes the departing presentation
+before publishing the committed change. Console and Inspection follow that change
+through their existing local lifecycle methods; Main Content receives the canonical
+Session from the same upstream source but retains its specific revocable attachment
+grant. Their tabs, residence, interaction epochs, card provenance, panes, actions,
+and settlement contracts do not become generic context events. Run activity,
+registry changes, view rebuilds, and local tab/card operations do not change
+selection or cancel independently owned execution.
+
+Observers run synchronously in revision order and may detach explicitly. A late
+consumer reads the current snapshot rather than waiting for navigation. Listener
+failure is reported to its Dart Zone without undoing the committed fact or skipping
+healthy observers. Reentrant publication is rejected, not queued into an unbounded
+event loop. Window shutdown synchronously invalidates access and drops observers;
+it is not a synthetic navigation event. Earlier snapshots remain immutable facts,
+not usable live observation access. Native composition owns subscription and
+registration cleanup separately from any already-admitted operation.
+
+An ordinary native `CommandContribution` may consult separately supplied context
+for availability and capture its snapshot at invocation, before asynchronous work.
+That capture must not silently follow later navigation. This adds no generalized
+contextual Command interface and grants no filesystem, storage, Environment,
+execution, or approval authority.
+
+Interpreted frontend and AOT backend notification transport remains separate and
+unimplemented. It needs deliberate window-scoped and exact-generation routing;
+this local source neither broadcasts to backends nor defines a globally active
+Session or unrestricted host service. See the [public API map](../../packages/core_extensions/README.md#window-session-context)
+and [desktop composition](../../app/README.md#window-session-context).
+
 ## UI and presentation
 
 Plugin-facing UI extension points describe semantic roles, not fixed physical
@@ -712,8 +763,9 @@ rejection or failure leaves live panes available for correction or retry. A miss
 hook means nothing to flush. This does not transfer navigation ownership, plugin
 state semantics, or storage codecs into the host, and is not a general plugin lifecycle hook system.
 
-Accepted navigation revokes the departing panes' captured access and actions, and
-clears Session-local Inspection and console context before changing selection.
+Accepted navigation revokes the departing panes' captured access and actions, then
+commits the [window selection](#window-session-context); its synchronous observers
+clear Session-local Inspection and console context before navigation returns.
 It does not close the Session's execution owner: preparation, advancement,
 approval waits, and terminal persistence may continue without a mounted view.
 Pending local saves or message acceptance may still refuse deactivation for retry;
