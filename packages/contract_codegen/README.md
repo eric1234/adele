@@ -70,13 +70,19 @@ contract shapes fail generation; there is no native plugin-specific codec fallba
 The projection is generated during EVC compilation rather than maintained as a
 second contract source or hand-written application adapter.
 
-Generated eval DTO constructors copy nonnullable list fields into unmodifiable
-storage after the pin's typed-argument boxing. Decoder-only wrapping is insufficient:
-boxing can otherwise replace an unmodifiable list with a mutable backing copy.
-The Diff nested snapshot tests verify stored lists and detached constructor inputs,
-not just getter results (some getter operations box copies). Nullable list fields
-retain their existing field-formal behavior; this narrow fix does not claim general
-nullable-collection or JSON-map immutability under the evaluator.
+Generated eval DTO constructors copy nonnullable list fields into private
+unmodifiable storage after the pin's typed-argument boxing. Their typed getters
+return fresh list-literal copies: the pin's `List.unmodifiable` produces a native
+`List<dynamic>` backing list that cannot be passed directly to boxed consumers
+such as `List<$Value>.addAll`, even when its elements are valid evaluator values.
+The getter projection restores the expected boxed element representation without
+exposing mutable DTO storage. Mutating a returned list changes only that detached
+copy; it is not guaranteed to throw. Nested value DTOs retain their own immutable
+list storage. Generator tests cover native structured payloads, empty/nonempty
+DTO and scalar lists, `addAll`, and the actual stored lists after boxing; the Diff
+contract tests retain nested snapshot coverage. Nullable list fields keep their
+existing field-formal behavior. General nullable-collection and JSON-map
+immutability are not claimed under the evaluator.
 
 `evalContractSupportSource` supplies the minimal interpreted request/stream-channel
 and protocol-error types. A frontend combines its generated client with `adele_ui`'s

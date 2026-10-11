@@ -3,6 +3,7 @@ import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/src/eval/runtime/class.dart' show $InstanceImpl;
+import 'package:dart_eval/stdlib/core.dart';
 
 import 'support/contract_generator_support.dart';
 
@@ -99,6 +100,7 @@ final class Snapshot {
 @AdeleService('fixture.snapshotService')
 abstract interface class SnapshotService {
   @AdeleMethod('echo') Future<Snapshot> echo(Snapshot snapshot);
+  @AdeleMethod('read') Future<Snapshot> read();
 }
 ''');
       final output = await const ContractGenerator().generateEvalClient(
@@ -122,6 +124,34 @@ class Channel implements AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     return payload['snapshot'];
   }
+}
+class NativeChannel implements AdeleRequestChannel {
+  NativeChannel(this.response);
+  final Future<Object?> response;
+  Future<Object?> request(String method, Map<String, Object?> payload) {
+    if (method != 'fixture.snapshotService.read' || payload.isNotEmpty) {
+      throw StateError('Changed request semantics');
+    }
+    return response;
+  }
+}
+Future<Snapshot> read(Future<Object?> response) async {
+  final SnapshotServiceClient client = SnapshotServiceClient(NativeChannel(response));
+  final snapshot = await client.read();
+  final entries = <Entry>[];
+  entries.addAll(snapshot.entries);
+  for (final entry in entries) {
+    final lines = <String>[];
+    lines.addAll(entry.lines);
+    for (final line in lines) {
+      if (line != 'native') throw StateError('Invalid nested entry');
+    }
+    entry.lines.add('changed getter copy');
+    if (entry.lines.length != lines.length) throw StateError('Mutable stored lines');
+  }
+  snapshot.entries.add(Entry(lines: <String>['new getter item']));
+  if (snapshot.entries.length != entries.length) throw StateError('Mutable stored entries');
+  return snapshot;
 }
 Future<Snapshot> run(bool absent) {
   final lines = <String>['original'];
@@ -171,6 +201,54 @@ Future<Snapshot> run(bool absent) {
         // Nullable list constructor behavior is deliberately unchanged.
         verify(fields[0]);
         expect(lists, 2);
+      }
+
+      for (final (empty, emptyLines) in [
+        (true, true),
+        (false, true),
+        (false, false),
+      ]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        // Host-produced structured data enters as boxed native values, rather
+        // than a DTO constructed and encoded inside the evaluator.
+        final response = $Map.wrap(
+          Map<$Value, $Value>.unmodifiable({
+            $String('entries'): $List.wrap(
+              List<$Value>.unmodifiable([
+                if (!empty)
+                  $Map.wrap(
+                    Map<$Value, $Value>.unmodifiable({
+                      $String('lines'): $List.wrap(
+                        List<$Value>.unmodifiable([
+                          if (!emptyLines) $String('native'),
+                        ]),
+                      ),
+                    }),
+                  ),
+              ]),
+            ),
+            $String('optional'): const $null(),
+          }),
+        );
+        final decoded = await runtime.executeLib(
+          'package:runner/main.dart',
+          'read',
+          [$Future.wrap(Future<$Value>.value(response))],
+        );
+        final fields = (decoded as $InstanceImpl).values;
+        final entries = (fields[0] as $Value).$value as List;
+        expect(entries, hasLength(empty ? 0 : 1));
+        expect(() => entries.clear(), throwsUnsupportedError);
+        if (!empty) {
+          final entry = entries.single as $InstanceImpl;
+          final lines = (entry.values.single as $Value).$value as List;
+          expect(lines, hasLength(emptyLines ? 0 : 1));
+          if (!emptyLines) {
+            expect((lines.single as $Value).$reified, 'native');
+            expect(() => lines[0] = lines[0], throwsUnsupportedError);
+          }
+          expect(() => lines.clear(), throwsUnsupportedError);
+        }
       }
     },
   );
