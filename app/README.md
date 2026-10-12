@@ -37,6 +37,15 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 `NativeAdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
 asynchronous plugin bootstrap.
 
+The maintained Linux checkout launcher instead selects
+[`tool/development_main.dart`](tool/development_main.dart). It mounts the same
+`AdeleApplication`, with a caller-owned Navigator key and native Session-context
+consumer for development evidence export. The evaluator-specific contract remains
+outside `app/lib`; ordinary preparation includes its backend-only installation and
+ordinary bootstrap activates it. See the
+[Session Evaluator procedure](../plugins/session_evaluator/README.md#desktop-export)
+for Command availability, sensitive-data confirmation, file semantics, and limits.
+
 ```text
 Flutter application
     -> construct NativeAdeleRuntime
@@ -838,7 +847,11 @@ and Escape dismisses the dialog. Query edits select the best result; registry
 changes rerank membership while preserving only exact selections. Keyed rows
 retain Tab-focus identity across reordering; a replacement requires fresh user
 selection and cannot inherit the retired row's callback authority.
-Availability is reevaluated on build and before invocation, not polled.
+Availability is reevaluated on build and before invocation, not polled. The palette
+also listens to optional `availabilityChanges` signals from unique live Command
+registrations, including hidden and search-filtered entries, to refresh their
+current callback state. It cancels subscriptions on conflict, retirement, or palette
+disposal; signals never replace exact invocation admission.
 
 Dismissal returns an exact resolved Command to application dispatch, allowing the
 invoked operation to present its own input. Navigation and exit dismiss/fence the
@@ -1099,6 +1112,12 @@ views cannot keep context access alive. Public
 snapshot/observer API belongs to [core extensions](../packages/core_extensions/README.md#window-session-context);
 cross-system invariants and deferred transport belong to the
 [canonical architecture](../docs/architecture/plugin-system.md#window-session-context).
+
+`AdeleApplication.navigatorKey` optionally accepts a caller-owned Navigator key,
+retained once at mount like the context attachment. It allows narrow native
+composition to present dialogs and feedback without exposing application State or
+adding plugin-specific callbacks. The development exporter uses both seams;
+selection remains owned solely by `WindowSessionContextHost`.
 
 ### Grouped Main Content
 

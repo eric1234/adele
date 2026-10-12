@@ -35,7 +35,12 @@ of presentation. `commandContributions` is the ordinary typed extension point
 
 `CommandContribution` carries one ID, a nonblank single-line label bounded to 160
 UTF-16 code units, a cheap synchronous side-effect-free availability callback, and
-a `FutureOr<void>` invocation callback. `CommandAvailability` distinguishes
+a `FutureOr<void>` invocation callback. Optional `Stream<void>? availabilityChanges`
+defaults to null; a supplied broadcast stream signals consumers to reevaluate the
+callback, not an availability value, membership change, or authority grant.
+Construction rejects non-broadcast streams with `ArgumentError`, checking
+`isBroadcast` without listening to or converting the stream.
+`CommandAvailability` distinguishes
 `hidden` (irrelevant), `disabled` (relevant but unavailable), and `enabled`.
 There is no generic Project/Session/Environment context or authority grant.
 
@@ -64,8 +69,8 @@ Prepared metadata reuses `CommandId` and
 the [application frontend owner](../../app/README.md#prepared-frontend-activation).
 The [application palette](../../app/README.md#command-palette) is one consumer;
 keybindings and other future input surfaces can use the same domain. Registration
-changes use the existing registry stream; no general availability notification or
-polling protocol is defined. Cross-system rules belong to
+changes use the existing registry stream, independently of optional availability
+invalidation. There is no polling protocol. Cross-system rules belong to
 [Commands and input](../../docs/architecture/plugin-system.md#commands-and-input).
 
 ### Remote Commands

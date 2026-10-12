@@ -36,6 +36,74 @@ void main() {
   });
 
   group('CommandContribution', () {
+    test('availability changes are optional and default to null', () {
+      expect(
+        CommandContribution(
+          id: CommandId('dev.adele.test.command'),
+          label: 'Run command',
+          availability: () => CommandAvailability.enabled,
+          invoke: () {},
+        ).availabilityChanges,
+        isNull,
+      );
+    });
+
+    test(
+      'accepts a broadcast stream without subscribing or replacing it',
+      () async {
+        var listens = 0;
+        final controller = StreamController<void>.broadcast(
+          onListen: () => listens++,
+        );
+        addTearDown(controller.close);
+        final changes = controller.stream;
+        final contribution = _command(availabilityChanges: changes);
+        expect(contribution.availabilityChanges, same(changes));
+        expect(listens, 0);
+        expect(controller.hasListener, isFalse);
+        for (var opening = 0; opening < 2; opening++) {
+          final subscription = contribution.availabilityChanges!.listen((_) {});
+          await subscription.cancel();
+        }
+        expect(listens, 2);
+      },
+    );
+
+    for (final availability in CommandAvailability.values) {
+      test(
+        'rejects a single-subscription signal for $availability without consuming it',
+        () async {
+          var listens = 0;
+          var evaluations = 0;
+          final controller = StreamController<void>(onListen: () => listens++);
+          addTearDown(controller.close);
+          final changes = controller.stream;
+          expect(
+            () => _command(
+              availabilityChanges: changes,
+              availability: () {
+                evaluations++;
+                return availability;
+              },
+            ),
+            throwsA(
+              isA<ArgumentError>().having(
+                (error) => error.name,
+                'name',
+                'availabilityChanges',
+              ),
+            ),
+          );
+          expect(evaluations, 0);
+          expect(listens, 0);
+          expect(controller.hasListener, isFalse);
+          final subscription = changes.listen((_) {});
+          expect(listens, 1);
+          await subscription.cancel();
+        },
+      );
+    }
+
     test('uses the stable typed extension point', () {
       expect(
         commandContributions,
@@ -543,6 +611,83 @@ void main() {
       expect(captured.availability, CommandAvailability.enabled);
     });
 
+    test(
+      'availability signals do not change membership or admission',
+      () async {
+        final signals = StreamController<void>.broadcast(sync: true);
+        addTearDown(signals.close);
+        final availabilityChanges = signals.stream;
+        var notifications = 0;
+        var changes = 0;
+        var evaluations = 0;
+        var calls = 0;
+        var state = CommandAvailability.disabled;
+        final contribution = _command(
+          availabilityChanges: availabilityChanges,
+          availability: () {
+            evaluations++;
+            return state;
+          },
+          invoke: () => calls++,
+        );
+        expect(contribution.availabilityChanges, same(availabilityChanges));
+        final signalSubscription = contribution.availabilityChanges!.listen(
+          (_) => notifications++,
+        );
+        addTearDown(signalSubscription.cancel);
+        final registrySubscription = registry.changes.listen((_) => changes++);
+        addTearDown(registrySubscription.cancel);
+        final registration = _register(registry, contribution);
+        final captured = resolver.resolve(contribution.id);
+        await Future<void>.delayed(Duration.zero);
+        expect(changes, 1);
+
+        signals.add(null);
+        final discovered = resolver.discover().single;
+        expect(notifications, 1);
+        expect(evaluations, 0);
+        expect(calls, 0);
+        expect(discovered.id, contribution.id);
+        expect(discovered.label, contribution.label);
+        expect(discovered.binding.value, same(contribution));
+        expect(captured.binding.isSameRegistration(discovered.binding), isTrue);
+        expect(registration.owns(discovered.binding), isTrue);
+        expect(captured.availability, CommandAvailability.disabled);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<CommandUnavailable>()),
+        );
+        expect(calls, 0);
+
+        state = CommandAvailability.enabled;
+        final pending = captured.invoke();
+        expect(calls, 1);
+        await pending;
+        await Future<void>.delayed(Duration.zero);
+        expect(changes, 1);
+
+        await registration.close();
+        final replacement = _register(registry, contribution);
+        signals.add(null);
+        final fresh = resolver.resolve(contribution.id);
+        expect(notifications, 2);
+        expect(resolver.discover(), hasLength(1));
+        expect(captured.binding.isSameRegistration(fresh.binding), isFalse);
+        expect(replacement.owns(captured.binding), isFalse);
+        expect(replacement.owns(fresh.binding), isTrue);
+        expect(captured.availability, CommandAvailability.disabled);
+        await expectLater(
+          captured.invoke(),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(calls, 1);
+        await fresh.invoke();
+        expect(calls, 2);
+        await Future<void>.delayed(Duration.zero);
+        expect(changes, 3);
+      },
+    );
+
     test('state reads and invocation add no registry notifications', () async {
       var changes = 0;
       final subscription = registry.changes.listen((_) => changes++);
@@ -571,11 +716,13 @@ CommandContribution _command({
   String id = 'dev.adele.test.command',
   String label = 'Run command',
   CommandAvailability Function()? availability,
+  Stream<void>? availabilityChanges,
   FutureOr<void> Function()? invoke,
 }) => CommandContribution(
   id: CommandId(id),
   label: label,
   availability: availability ?? () => CommandAvailability.enabled,
+  availabilityChanges: availabilityChanges,
   invoke: invoke ?? () {},
 );
 

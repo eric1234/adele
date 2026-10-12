@@ -4,7 +4,7 @@ Session Evaluator (`dev.adele.plugin.session-evaluator`) is a **trusted,
 development-only diagnostic**, not a model tool or production export workflow.
 It collects retained evidence for an explicit durable Session without resolving
 its strategy, materializing its Environment, starting a Run, or initializing state.
-The intended later workflow is to export evidence after using a normal ADELE Chat
+The development desktop can export evidence after using a normal ADELE Chat
 Session and give it to an independent evaluator. This plugin does not evaluate,
 score, or interpret the evidence, and does not replace the legacy headless runner.
 
@@ -13,7 +13,11 @@ score, or interpret the evidence, and does not replace the legacy headless runne
 `packages/contract` owns the narrow generated `SessionEvaluatorService` and
 `readSessionEvidence` document assembler. `packages/backend` owns the collector,
 selected SQL schema knowledge, validation, and native entrypoint. There is no
-frontend, Capability, strategy, Command, storage schema, or file-writing service.
+frontend, Capability, strategy, backend Command, storage schema, or file-writing
+service. The development-only native adapter in
+[`app/tool/session_evidence_exporter.dart`](../../app/tool/session_evidence_exporter.dart)
+owns the desktop Command, confirmation, native Save dialog, and local file commit.
+Production `app/lib` imports no evaluator contract or implementation.
 
 The backend obtains the public `ProjectStorageService` through its exact
 generation's infrastructure context. It calls only `queryForSession`, in `durable`
@@ -103,22 +107,108 @@ covers selected fields and attributable relationships, not excluded opaque data 
 Project-wide orphan rows that cannot be attributed to this Session.
 
 Full Command Tools stdout/stderr transcripts, Git/worktree evidence, Environment
-provider state, live/waiting Runs, provider replay data, filesystem export authority,
-desktop UI, Markdown reports, and evaluation questions are deliberately absent.
+provider state, live/waiting Runs, provider replay data, Markdown reports, and
+evaluation questions are deliberately absent from the evidence.
 Generic tool progress and bounded command outcomes are not full command transcripts.
-These limitations must remain visible when a future export workflow is added.
+
+## Desktop Export
+
+With the [pinned toolchain](../../docs/development/toolchain.md), run from the
+repository root:
+
+```sh
+dart tools/adele.dart bootstrap
+dart tools/adele.dart run linux
+```
+
+The ordinary Linux development preparation compiles the evaluator AOT backend and
+publishes `session-evaluator/backend.aot` in the same prepared installation catalog
+as the other plugins. Normal bootstrap activates it without a feature switch,
+special startup arguments, or artificial advertisements. Its absence or failure
+leaves export unavailable, not a prerequisite for unrelated application behavior.
+The launcher selects `app/tool/development_main.dart`, which mounts the ordinary
+`AdeleApplication` and attaches the native adapter through `attachSessionContext`.
+Direct `app/lib/main.dart` remains plugin-neutral and does not attach the exporter.
+
+1. Open a durable Project and a Session. Use ADELE normally, preferably letting
+   work settle before collecting its retained evidence.
+2. Open the Command Palette with the AppBar button or its platform shortcut and
+   select **Export Session Evidence...**
+3. Read the sensitive-data confirmation and explicitly choose **Continue**.
+4. Choose a local destination in the native Save dialog, which suggests
+   `session-evidence.json`. Cancellation at either dialog writes nothing.
+5. Wait for **Session evidence exported.** before using the file. Failure feedback
+   is generic and never includes evidence contents or backend/SQL diagnostics.
+
+The ordinary semantic Command ID is
+`dev.adele.session-evaluator.export-session-evidence`. The adapter registers exactly
+one Command when the evaluator becomes ready and retires it with that generation;
+bootstrap and registration notifications refresh an open palette without polling.
+Before readiness or after failure/retirement it is not registered. With a ready
+backend but no Session it is hidden; while an export is pending it is disabled.
+No Main Content, Console, or Inspection participation is needed.
+
+### Capture And Lifetime
+
+Command invocation synchronously captures the `WindowSessionSnapshot`, canonical
+Session, exact `InstalledBackendActivation`, and its default configuration/service
+route. `SessionEvaluatorServiceClient` and `readSessionEvidence` use that retained
+route through the existing generation-validated channel. No storage reader is
+linked into the adapter. Navigation, including leaving and reentering a Session,
+does not replace the captured Session or retarget the backend. The selection
+revision is only an epoch, not execution or storage authority. Fresh invocation
+captures the new selection.
+
+Only one export may be pending per exporter/window, from confirmation through file
+commit. Success, cancellation, and failure clear pending state. Backend retirement
+fences collection and pre-commit validation; no replacement is silently selected.
+Valid partial evidence is exported unchanged with its existing coverage fields.
+
+Window cleanup closes admission and removes the exact Command and bootstrap
+subscription immediately. It withdraws only its own confirmation route, suppresses
+late feedback, and does not await an unanswered native Save dialog or collection.
+Late picker results cannot start collection or writing. Backend shutdown settles
+the captured transport. In-flight file staging receives at most two seconds of
+shutdown joining; its next validation prevents commit and its `finally` cleanup
+removes staging where possible. A rename already submitted may complete, without
+a late success notification. Forced process termination can leave a private staging
+directory; this is not a crash-recovery or persistent-export-history mechanism.
+
+### File Semantics
+
+The complete E1 document is collected and validated before any staging file is
+created. The adapter preserves its structured data, schema, coverage, and bounds;
+it does not interpret, redact, wrap, or truncate evidence. It encodes JSON, flushes
+a staged file in a unique private `.adele-session-evidence-*` directory under the
+destination's parent, then renames the completed file over the destination.
+Collection, staging, or pre-commit validation failure leaves an existing destination
+intact. Failed finalization never deletes the destination as a fallback. Staging
+cleanup is best effort after both failure and success.
+
+The writer uses POSIX same-filesystem rename on Linux/macOS; only Linux is tested
+and automatically provisioned by the maintained launcher. Other platforms fail
+cleanly before staging rather than claiming unsafe replacement semantics. This
+does not guarantee power-loss durability, preserve the previous file's metadata,
+or provide conflict detection against another writer. A destination symlink is
+replaced, not followed. The native dialog owns destination/overwrite interaction.
+Evidence is unredacted local development data; choose an appropriately protected
+destination and review it before sharing.
 
 ## Exercise And Validate
 
 Use the [pinned toolchain](../../docs/development/toolchain.md) and repository
-bootstrap/generation. The evaluator is not included in ordinary desktop preparation
-or release packaging. `app/test/core/session_evaluator_integration_test.dart`
+bootstrap/generation. Prepared checkout paths are not portable release packaging.
+`app/test/core/session_evaluator_integration_test.dart`
 compiles the real shared host, Chat, and evaluator AOT entrypoints, assembles an
 explicit temporary backend-only installation, and uses normal application
 bootstrap plus the real Project storage host. Its deterministic local model/tools
 produce actual retained Chat and Run data without paid provider calls. The test
-caller assembles and writes JSON in its temporary directory and checks read-only
-state, Session isolation, failure semantics, and generation replacement.
+caller and native Command Palette workflow write JSON in temporary directories and
+check exact documents, read-only state, Session isolation, valid partial coverage,
+cancellation, failure, pending work, navigation, shutdown, and generation retirement.
+`app/test/session_evidence_file_test.dart` injects faults at real staging and rename
+boundaries. Tooling tests check the ordinary prepared catalog and launcher target;
+application tests check the plugin-neutral Navigator/context composition seams.
 
 From the repository root:
 
@@ -126,14 +216,16 @@ From the repository root:
 dart tools/adele.dart bootstrap
 dart tools/adele.dart test --target session_evaluator_contract
 dart tools/adele.dart test --target session_evaluator_backend
+dart tools/adele.dart test --target adele_core_extensions
 dart tools/adele.dart test --target adele_tools
+dart tools/adele.dart test --target adele_desktop --ci
 dart tools/adele.dart generate --check
 ```
 
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/session_evidence_file_test.dart test/application_test.dart
 ```
 
 The new packages participate in maintained analysis/test targets; the existing

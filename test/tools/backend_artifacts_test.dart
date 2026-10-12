@@ -33,6 +33,8 @@ const String _chatEntrypoint =
     'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart';
 const String _localDirectoryProjectEntrypoint =
     'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart';
+const String _sessionEvaluatorEntrypoint =
+    'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart';
 const _backendEntrypoints = [
   _hostEntrypoint,
   _gitEntrypoint,
@@ -43,6 +45,7 @@ const _backendEntrypoints = [
   _commandToolsEntrypoint,
   _chatEntrypoint,
   _localDirectoryProjectEntrypoint,
+  _sessionEvaluatorEntrypoint,
 ];
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
@@ -328,7 +331,7 @@ if [ "\$ADELE_TEST_FAIL_ENTRYPOINT" = "\$3" ]; then
   printf 'snapshot compiler failed' >&2
   exit 17
 fi
-if [ "\$ADELE_TEST_OMIT_ARTIFACT" != 1 ]; then
+if [ "\$ADELE_TEST_OMIT_ARTIFACT" != "\$3" ]; then
   printf 'snapshot %s\n' "\$3" > "\$5"
 fi
 printf 'compiled|%s\n' "\$3" >> '${commands.path}'
@@ -804,9 +807,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare frontend-only browser, Terminal, Source and Diff installations',
+    'Linux development launcher prepares evaluator and existing stock catalog without opt-in',
     () async {
       for (final path in [
+        _sessionEvaluatorEntrypoint,
         _localDirectoryProjectEntrypoint,
         'plugins/local_directory_project/packages/backend/lib/local_directory_project_backend.dart',
         'plugins/local_directory_project/packages/frontend/lib/local_directory_project_frontend.dart',
@@ -871,6 +875,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_chatEntrypoint',
           'compile|$_localDirectoryProjectEntrypoint',
           'compiled|$_localDirectoryProjectEntrypoint',
+          'compile|$_sessionEvaluatorEntrypoint',
+          'compiled|$_sessionEvaluatorEntrypoint',
           'compile|git-pty-helper',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
@@ -903,14 +909,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ]);
         final List<String> launched = launchArguments.readAsLinesSync();
         final bool run = arguments.first == 'run';
-        expect(launched.take(run ? 4 : 3), <String>[
+        expect(launched.take(run ? 5 : 4), <String>[
           arguments.first,
           if (run) '-d',
           'linux',
-          arguments.contains('--profile') ? '--profile' : '--debug',
+          arguments.length == 3 ? arguments.last : '--debug',
+          '--target=tool/development_main.dart',
         ]);
         final Map<String, String> defines = <String, String>{};
-        for (final String argument in launched.skip(run ? 4 : 3)) {
+        for (final String argument in launched.skip(run ? 5 : 4)) {
           expect(argument, startsWith('--dart-define='));
           final String define = argument.substring('--dart-define='.length);
           final int separator = define.indexOf('=');
@@ -918,7 +925,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 8 : 7));
+        expect(launched, hasLength(run ? 9 : 8));
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -1012,6 +1019,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'terminal',
             'source-editor',
             'diff-viewer',
+            'session-evaluator',
           ]),
         );
         final installedIds = <String>{};
@@ -1088,6 +1096,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             name: 'Diff',
             backend: false,
           ),
+          (
+            directory: 'session-evaluator',
+            id: 'dev.adele.plugin.session-evaluator',
+            name: 'Session Evaluator',
+            backend: true,
+          ),
         ]) {
           final directory = Directory.fromUri(
             installations.uri.resolve('${plugin.directory}/'),
@@ -1145,7 +1159,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(12));
+        expect(installedIds, hasLength(13));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -1160,13 +1174,29 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(8),
+          hasLength(9),
         );
         expect(
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
           hasLength(9),
+        );
+        final evaluator = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value ==
+              'dev.adele.plugin.session-evaluator',
+        );
+        expect(evaluator.frontend, isNull);
+        expect(evaluator.settingsSchema, isNull);
+        expect(evaluator.backendConsumedCapabilities, isEmpty);
+        expect(
+          evaluator.backendArtifactUri,
+          installations.uri.resolve('session-evaluator/backend.aot'),
+        );
+        expect(
+          File.fromUri(evaluator.backendArtifactUri!).readAsStringSync(),
+          'snapshot $_sessionEvaluatorEntrypoint\n',
         );
         final diff = catalog.installations.singleWhere(
           (installation) =>
@@ -1458,6 +1488,29 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
+  for (final arguments in [
+    ['run', 'linux', '--profile'],
+    ['run', 'linux', '--release'],
+    ['build', 'linux', '--release'],
+  ]) {
+    test('${arguments.join(' ')} selects the development entrypoint', () async {
+      final result = await invoke(arguments);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      final run = arguments.first == 'run';
+      expect(launchArguments.readAsLinesSync().take(run ? 5 : 4), [
+        arguments.first,
+        if (run) '-d',
+        'linux',
+        arguments.last,
+        '--target=tool/development_main.dart',
+      ]);
+      expect(
+        commands.readAsLinesSync(),
+        contains('compiled|$_sessionEvaluatorEntrypoint'),
+      );
+    });
+  }
+
   for (final failure in ['exit', 'missing', 'empty']) {
     test(
       'native helper $failure failure prevents runtime activation',
@@ -1493,7 +1546,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(12));
+        expect(catalog.installations, hasLength(13));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -1512,7 +1565,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 7 : 8),
+          hasLength(missing == PreparedPluginComponent.backend ? 8 : 9),
         );
         expect(
           catalog.installations.where(
@@ -1535,7 +1588,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(12));
+    expect(catalog.installations, hasLength(13));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -1621,7 +1674,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(12));
+        expect(manifests, hasLength(13));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -1768,6 +1821,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             ),
           );
         }
+        if (failedEntrypoint == _sessionEvaluatorEntrypoint) {
+          expect(
+            result.stderr,
+            contains('session-evaluator-compilation failed with exit code 17'),
+          );
+        }
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           'generate|sdk',
@@ -1845,6 +1904,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_chatEntrypoint',
               'compile|$_localDirectoryProjectEntrypoint',
               'compiled|$_localDirectoryProjectEntrypoint',
+              'compile|$_sessionEvaluatorEntrypoint',
+              'compiled|$_sessionEvaluatorEntrypoint',
               'compile|git-pty-helper',
               for (final frontend in frontendCompilations.entries.take(
                 frontendCompilations.keys.toList().indexOf(kind) + 1,
@@ -1892,20 +1953,26 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     expectNoPublishedInstallations();
   });
 
-  test('compiler success without a snapshot does not launch Flutter', () async {
-    environment['ADELE_TEST_OMIT_ARTIFACT'] = '1';
-    final ProcessResult result = await invoke(<String>['run', 'linux']);
-    expect(result.exitCode, 1);
-    expect(result.stderr, contains('produced no artifact'));
-    expect(commands.readAsLinesSync(), <String>[
-      'inspect-sdk',
-      'generate|sdk',
-      'compile|$_hostEntrypoint',
-      'compiled|$_hostEntrypoint',
-    ]);
-    expect(launchArguments.existsSync(), isFalse);
-    expectNoPublishedInstallations();
-  });
+  for (final entrypoint in [_hostEntrypoint, _sessionEvaluatorEntrypoint]) {
+    test(
+      'compiler success without $entrypoint artifact blocks launch',
+      () async {
+        environment['ADELE_TEST_OMIT_ARTIFACT'] = entrypoint;
+        final ProcessResult result = await invoke(<String>['run', 'linux']);
+        expect(result.exitCode, 1);
+        expect(result.stderr, contains('produced no artifact'));
+        expect(commands.readAsLinesSync(), <String>[
+          'inspect-sdk',
+          'generate|sdk',
+          for (final compiled in _backendEntrypoints.take(
+            _backendEntrypoints.indexOf(entrypoint) + 1,
+          )) ...['compile|$compiled', 'compiled|$compiled'],
+        ]);
+        expect(launchArguments.existsSync(), isFalse);
+        expectNoPublishedInstallations();
+      },
+    );
+  }
 }
 
 void _script(File file, String body) {

@@ -951,7 +951,7 @@ void main() {
       },
     );
 
-    test('discovers the opt-in evaluator without stock startup or Flutter', () {
+    test('discovers evaluator without production dependencies', () {
       const root = 'plugins/session_evaluator/packages';
       for (final component in ['contract', 'backend']) {
         final name = 'session_evaluator_$component';
@@ -997,7 +997,7 @@ void main() {
       );
       expect(
         File('tools/backend_artifacts.dart').readAsStringSync(),
-        isNot(contains('session_evaluator')),
+        contains('$root/backend/bin/session_evaluator_backend.dart'),
       );
       expect(Directory('$root/frontend').existsSync(), isFalse);
       final app =

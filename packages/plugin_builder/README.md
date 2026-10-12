@@ -51,12 +51,12 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, eight backend AOT snapshots (Git Environment, OpenAI, Chat,
-AGENTS.md, Search, Filesystem Tools, Command Tools, and Local Directory Project),
-and five frontend EVCs (Chat, Local Directory Project, Filesystem Tools, Command
-Tools, and OpenAI activity) before launching the Flutter run/build command. Backend compilation
+shared host AOT snapshot, stock backend AOT snapshots, and stock frontend EVCs
+before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
-applies to explicit Linux debug/release modes. Non-Linux commands and the explicit
+applies to explicit Linux debug/release modes. Linux run/build automatically select
+`app/tool/development_main.dart` for development composition, without an opt-in flag.
+Non-Linux commands and the explicit
 development smoke keep their existing compilation topology, with current contract
 generation before Flutter starts. `prepareDesktopPluginDefines` in
 `tools/backend_artifacts.dart` owns backend source paths and unified stock
@@ -70,8 +70,12 @@ snapshot compilations nor frontend preparation repeat that repository-wide step.
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
 It compiles the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
-Command Tools, and Local Directory Project backends.
-`tools/frontend_artifacts.dart` prepares all five stock EVCs in the same installation
+Command Tools, Local Directory Project, and Session Evaluator backends.
+Session Evaluator is a trusted development-only backend installation with semantic
+identity `dev.adele.plugin.session-evaluator`; it has no frontend and needs no
+startup arguments or additional deployment defines. Inclusion in checkout builds,
+including release mode, is not production/release packaging support.
+`tools/frontend_artifacts.dart` prepares stock EVCs in the same installation
 root with the selected Flutter SDK. `tools/stock_frontend_descriptors.dart` is the
 singular stock build-side source for presentation and behavioral extension
 descriptors, shared with installation fixtures rather than duplicated in app runtime
@@ -83,10 +87,11 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
-Eight installation directories are immediate children of the one installation root;
+Installation directories are immediate children of the one installation root;
 Chat, Local Directory Project, Filesystem Tools, Command Tools, and OpenAI each
 share one manifest and PluginId across their independently activatable backend and
-frontend components:
+frontend components. Backend-bearing installations have this layout; frontend-only
+installations occupy sibling directories:
 
 ```text
 desktop-plugins/build-*/
@@ -116,6 +121,9 @@ desktop-plugins/build-*/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
     |-- search-tools/
+    |   |-- adele_plugin.installation.json
+    |   `-- backend.aot
+    |-- session-evaluator/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
     `-- openai/
