@@ -40,6 +40,13 @@ final class CommandContribution {
     this.availabilityChanges,
   }) {
     validateLabel(label);
+    if (availabilityChanges?.isBroadcast == false) {
+      throw ArgumentError.value(
+        availabilityChanges,
+        'availabilityChanges',
+        'Must be a broadcast stream.',
+      );
+    }
   }
 
   /// Validates display metadata without constructing an executable contribution.
@@ -68,6 +75,7 @@ final class CommandContribution {
 
   /// Optional broadcast invalidations: reevaluate [availability], not a supplied
   /// value, context, or authority. Membership still uses [ExtensionRegistry.changes].
+  /// Non-broadcast streams are rejected at construction with [ArgumentError].
   /// Signal lifetime is owner-managed; consumers cancel on retirement or disposal.
   /// Without a signal, presentation and invocation checks work as before.
   final Stream<void>? availabilityChanges;

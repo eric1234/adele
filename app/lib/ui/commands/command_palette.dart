@@ -58,35 +58,51 @@ final class _CommandPaletteState extends State<CommandPalette> {
     }
     // Hidden and search-filtered commands must also be able to invalidate.
     for (final command in commands) {
-      final changes = command.binding.value.availabilityChanges;
-      if (changes == null ||
-          _availabilityObservers.keys.any(
-            (current) => current.binding.isSameRegistration(command.binding),
-          )) {
-        continue;
-      }
-      void invalidate() {
-        if (!mounted || !_availabilityObservers.containsKey(command)) return;
-        try {
-          final current = _commands.resolve(command.id);
-          if (!current.binding.isSameRegistration(command.binding)) return;
-        } on Object {
-          return;
+      StreamSubscription<void>? subscription;
+      void Function()? detachRetirement;
+      void detach() {
+        detachRetirement?.call();
+        final current = subscription;
+        subscription = null;
+        if (current != null) {
+          unawaited(
+            Future<void>.sync(current.cancel).catchError((Object _) {}),
+          );
         }
-        setState(() {});
       }
 
-      final subscription = changes.listen(
-        (_) => invalidate(),
-        onError: (Object _) => invalidate(),
-      );
-      final detach = command.binding.onRetire(() {
-        _availabilityObservers.remove(command)?.call();
-      });
-      _availabilityObservers[command] = () {
+      try {
+        final changes = command.binding.value.availabilityChanges;
+        if (changes == null ||
+            _availabilityObservers.keys.any(
+              (current) => current.binding.isSameRegistration(command.binding),
+            )) {
+          continue;
+        }
+        void invalidate() {
+          if (!mounted || !_availabilityObservers.containsKey(command)) return;
+          try {
+            final current = _commands.resolve(command.id);
+            if (!current.binding.isSameRegistration(command.binding)) return;
+          } on Object {
+            return;
+          }
+          setState(() {});
+        }
+
+        subscription = changes.listen(
+          (_) => invalidate(),
+          onError: (Object _) => invalidate(),
+        );
+        detachRetirement = command.binding.onRetire(() {
+          _availabilityObservers.remove(command)?.call();
+        });
+        _availabilityObservers[command] = detach;
+      } on Object {
+        // A failed optional observer cannot block presentation or synchronous
+        // admission. Release any subscription acquired before setup failed.
         detach();
-        unawaited(subscription.cancel());
-      };
+      }
     }
   }
 

@@ -821,6 +821,160 @@ void main() {
   );
 
   testWidgets(
+    'invalid signals are rejected before repeated palette presentation',
+    (tester) async {
+      final invalid = StreamController<void>();
+      addTearDown(() {
+        unawaited(invalid.close());
+      });
+      expect(
+        () => contribute(
+          'invalid',
+          'Invalid operation',
+          availabilityChanges: invalid.stream,
+        ),
+        throwsArgumentError,
+      );
+      expect(invalid.hasListener, isFalse);
+      expect(
+        () => commands.resolve(CommandId('test.command.invalid')),
+        throwsA(isA<CommandNotFound>()),
+      );
+      final changes = StreamController<void>.broadcast();
+      addTearDown(changes.close);
+      var enabled = false;
+      var calls = 0;
+      final registration = contribute(
+        'valid',
+        'Valid operation',
+        availabilityChanges: changes.stream,
+        availability: () => enabled
+            ? CommandAvailability.enabled
+            : CommandAvailability.disabled,
+        invoke: () => calls++,
+      );
+      await mount(tester);
+      for (var opening = 0; opening < 2; opening++) {
+        enabled = false;
+        await open(tester);
+        expect(changes.hasListener, isTrue);
+        await tester.enterText(search, 'valid');
+        await tester.pumpAndSettle();
+        final row = find.widgetWithText(ListTile, 'Valid operation');
+        final element = tester.element(row);
+        expect(tester.widget<ListTile>(row).enabled, isFalse);
+        enabled = true;
+        changes.add(null);
+        await tester.pumpAndSettle();
+        expect(tester.element(row), same(element));
+        expect(tester.widget<ListTile>(row).enabled, isTrue);
+        expect(tester.widget<ListTile>(row).selected, isTrue);
+        expect(tester.widget<TextField>(search).controller!.text, 'valid');
+        expect(
+          registration.owns(
+            commands.resolve(CommandId('test.command.valid')).binding,
+          ),
+          isTrue,
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(calls, opening + 1);
+        expect(changes.hasListener, isFalse);
+      }
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'a throwing broadcast listen cannot block other Commands or reopen',
+    (tester) async {
+      final failing = StreamController<void>.broadcast();
+      final healthy = StreamController<void>.broadcast();
+      addTearDown(failing.close);
+      addTearDown(healthy.close);
+      var attempts = 0;
+      var calls = 0;
+      var enabled = false;
+      contribute(
+        'failing',
+        'A failing observer',
+        availabilityChanges: _OnListenStream(failing.stream, () {
+          attempts++;
+          throw StateError('private attachment failure');
+        }),
+      );
+      contribute(
+        'healthy',
+        'Healthy operation',
+        availabilityChanges: healthy.stream,
+        availability: () => enabled
+            ? CommandAvailability.enabled
+            : CommandAvailability.disabled,
+        invoke: () => calls++,
+      );
+      await mount(tester);
+      for (var opening = 0; opening < 2; opening++) {
+        enabled = false;
+        await open(tester);
+        expect(failing.hasListener, isFalse);
+        expect(healthy.hasListener, isTrue);
+        expect(find.text('A failing observer'), findsOneWidget);
+        expect(find.textContaining('private attachment failure'), findsNothing);
+        final row = find.widgetWithText(ListTile, 'Healthy operation');
+        expect(tester.widget<ListTile>(row).enabled, isFalse);
+        enabled = true;
+        healthy.add(null);
+        await tester.pumpAndSettle();
+        expect(tester.widget<ListTile>(row).enabled, isTrue);
+        await tester.tap(row);
+        await tester.pumpAndSettle();
+        expect(calls, opening + 1);
+        expect(healthy.hasListener, isFalse);
+        expect(tester.takeException(), isNull);
+      }
+      expect(attempts, greaterThanOrEqualTo(2));
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'retirement during observer attachment releases the acquired subscription',
+    (tester) async {
+      var cancellations = 0;
+      final changes = StreamController<void>.broadcast(
+        onCancel: () => cancellations++,
+      );
+      addTearDown(changes.close);
+      late ExtensionRegistration retiring;
+      retiring = contribute(
+        'retiring',
+        'A retiring observer',
+        availabilityChanges: _OnListenStream(changes.stream, () {
+          unawaited(retiring.close());
+        }),
+      );
+      var calls = 0;
+      contribute('unaffected', 'Unaffected operation', invoke: () => calls++);
+      await mount(tester);
+      await open(tester);
+      expect(retiring.isClosed, isTrue);
+      expect(changes.hasListener, isFalse);
+      expect(cancellations, 1);
+      expect(find.text('A retiring observer'), findsNothing);
+      expect(
+        () => commands.resolve(CommandId('test.command.retiring')),
+        throwsA(isA<CommandNotFound>()),
+      );
+      await tester.tap(find.text('Unaffected operation'));
+      await tester.pumpAndSettle();
+      expect(calls, 1);
+      expect(tester.takeException(), isNull);
+      await unmount(tester);
+      expect(cancellations, 1);
+    },
+  );
+
+  testWidgets(
     'availability subscriptions follow unique membership not result filtering',
     (tester) async {
       var listens = 0;
@@ -1316,5 +1470,27 @@ void main() {
         );
       }
     });
+  }
+}
+
+final class _OnListenStream extends StreamView<void> {
+  _OnListenStream(super.stream, this.onListen);
+
+  final void Function() onListen;
+
+  @override
+  StreamSubscription<void> listen(
+    void Function(void)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    onListen();
+    return super.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
   }
 }

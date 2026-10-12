@@ -38,6 +38,8 @@ UTF-16 code units, a cheap synchronous side-effect-free availability callback, a
 a `FutureOr<void>` invocation callback. Optional `Stream<void>? availabilityChanges`
 defaults to null; a supplied broadcast stream signals consumers to reevaluate the
 callback, not an availability value, membership change, or authority grant.
+Construction rejects non-broadcast streams with `ArgumentError`, checking
+`isBroadcast` without listening to or converting the stream.
 `CommandAvailability` distinguishes
 `hidden` (irrelevant), `disabled` (relevant but unavailable), and `enabled`.
 There is no generic Project/Session/Environment context or authority grant.

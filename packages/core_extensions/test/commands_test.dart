@@ -48,6 +48,62 @@ void main() {
       );
     });
 
+    test(
+      'accepts a broadcast stream without subscribing or replacing it',
+      () async {
+        var listens = 0;
+        final controller = StreamController<void>.broadcast(
+          onListen: () => listens++,
+        );
+        addTearDown(controller.close);
+        final changes = controller.stream;
+        final contribution = _command(availabilityChanges: changes);
+        expect(contribution.availabilityChanges, same(changes));
+        expect(listens, 0);
+        expect(controller.hasListener, isFalse);
+        for (var opening = 0; opening < 2; opening++) {
+          final subscription = contribution.availabilityChanges!.listen((_) {});
+          await subscription.cancel();
+        }
+        expect(listens, 2);
+      },
+    );
+
+    for (final availability in CommandAvailability.values) {
+      test(
+        'rejects a single-subscription signal for $availability without consuming it',
+        () async {
+          var listens = 0;
+          var evaluations = 0;
+          final controller = StreamController<void>(onListen: () => listens++);
+          addTearDown(controller.close);
+          final changes = controller.stream;
+          expect(
+            () => _command(
+              availabilityChanges: changes,
+              availability: () {
+                evaluations++;
+                return availability;
+              },
+            ),
+            throwsA(
+              isA<ArgumentError>().having(
+                (error) => error.name,
+                'name',
+                'availabilityChanges',
+              ),
+            ),
+          );
+          expect(evaluations, 0);
+          expect(listens, 0);
+          expect(controller.hasListener, isFalse);
+          final subscription = changes.listen((_) {});
+          expect(listens, 1);
+          await subscription.cancel();
+        },
+      );
+    }
+
     test('uses the stable typed extension point', () {
       expect(
         commandContributions,
