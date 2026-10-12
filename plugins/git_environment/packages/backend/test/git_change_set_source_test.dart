@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
@@ -89,6 +90,16 @@ void main() {
     limits: limits,
     parentEnvironment: parentEnvironment,
   ).snapshotTaskChanges();
+
+  Future<ChangeSetSnapshot> workingChanges(
+    String scope, {
+    GitChangeSetLimits limits = const GitChangeSetLimits(),
+  }) async => switch (scope) {
+    'Unstaged' => await snapshot(limits: limits),
+    'Uncommitted' => (await uncommitted(limits: limits)).unstaged,
+    'Task' => (await taskChanges(limits: limits)).uncommitted.unstaged,
+    _ => throw StateError('Unknown review scope: $scope'),
+  };
 
   void bindTask({
     required String? baseline,
@@ -1940,6 +1951,480 @@ exec /usr/bin/git "\$@"
     expect((await snapshot()).files, isEmpty);
   });
 
+  test(
+    'unchanged 1054288-byte tracked binary is clean without mutation',
+    () async {
+      final file = File('${repository.path}/large.bin');
+      final bytes = _binaryBytes();
+      expect(bytes, hasLength(1054288));
+      await file.writeAsBytes(bytes);
+      await _git(repository, ['add', 'large.bin']);
+      await _git(repository, ['commit', '-m', 'Large binary']);
+      await file.setLastModified(DateTime.utc(2000));
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+
+      final result = await snapshot();
+
+      expect(await file.readAsBytes(), bytes);
+      expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+      expect(result.files, isEmpty);
+      expect(authority.fileReads, 0);
+    },
+  );
+
+  for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+    test(
+      '$scope verifies oversized binary and text without rendering them',
+      () async {
+        final binary = File('${repository.path}/large.bin');
+        final text = File('${repository.path}/large.txt');
+        final bytes = _binaryBytes();
+        final content = '${'x' * 1054287}\n';
+        await binary.writeAsBytes(bytes);
+        await text.writeAsString(content);
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Oversized tracked files']);
+        bindTask(
+          baseline: (await _git(repository, ['rev-parse', 'HEAD'])).trim(),
+          retainedBranch: branch,
+        );
+        await binary.setLastModified(DateTime.utc(2000));
+        await text.setLastModified(DateTime.utc(2000));
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        expect(
+          (await workingChanges(
+            scope,
+            limits: const GitChangeSetLimits(totalBytes: 1, files: 1),
+          )).files,
+          isEmpty,
+        );
+
+        bytes[bytes.length - 1] ^= 1;
+        await binary.writeAsBytes(bytes);
+        await text.writeAsString(
+          '${content.substring(0, content.length - 2)}y\n',
+        );
+        await File(
+          '${repository.path}/baseline',
+        ).writeAsString('visible edit\n');
+        final result = await workingChanges(
+          scope,
+          limits: const GitChangeSetLimits(
+            totalBytes: 1024,
+            files: 3,
+            lines: 2,
+          ),
+        );
+        expect(result.files.map((f) => f.relativePath), [
+          'baseline',
+          'large.bin',
+          'large.txt',
+        ]);
+        expect(result.files.first.contentStatus, 'text');
+        expect(result.files.first.hunks.single.lines.map((l) => l.text), [
+          'baseline',
+          'visible edit',
+        ]);
+        for (final changed in result.files.skip(1)) {
+          expect(changed.changeKind, 'modified');
+          expect(changed.contentStatus, 'oversized');
+          expect(changed.detail!.toLowerCase(), contains('raw'));
+          expect(changed.detail!.toLowerCase(), contains('differ'));
+          expect(changed.hunks, isEmpty);
+        }
+        expect(await binary.readAsBytes(), bytes);
+        expect(
+          await text.readAsString(),
+          '${content.substring(0, content.length - 2)}y\n',
+        );
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+        expect(authority.fileReads, 0);
+      },
+    );
+
+    test(
+      '$scope separates verification budgets from content budgets',
+      () async {
+        for (final name in ['a-large', 'b-large', 'c-large']) {
+          await File(
+            '${repository.path}/$name',
+          ).writeAsBytes(_binaryBytes(128));
+        }
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Verification budgets']);
+        bindTask(
+          baseline: (await _git(repository, ['rev-parse', 'HEAD'])).trim(),
+          retainedBranch: branch,
+        );
+        final changed = _binaryBytes(128)..[127] ^= 1;
+        await File('${repository.path}/b-large').writeAsBytes(changed);
+        final result = await workingChanges(
+          scope,
+          limits: const GitChangeSetLimits(
+            fileBytes: 32,
+            verificationFileBytes: 128,
+            verificationTotalBytes: 256,
+            totalBytes: 1,
+          ),
+        );
+        expect(result.files.map((f) => f.relativePath), ['b-large', 'c-large']);
+        expect(result.files.first.changeKind, 'modified');
+        expect(result.files.first.detail!.toLowerCase(), contains('raw'));
+        expect(result.files.last.changeKind, 'unsupported');
+        expect(
+          result.files.last.detail!.toLowerCase(),
+          contains('unavailable'),
+        );
+        expect(
+          result.files.every((f) => f.contentStatus == 'oversized'),
+          isTrue,
+        );
+        expect(result.files.every((f) => f.hunks.isEmpty), isTrue);
+
+        await File(
+          '${repository.path}/a-large',
+        ).writeAsBytes(_binaryBytes(129));
+        await File(
+          '${repository.path}/b-large',
+        ).writeAsBytes(_binaryBytes(128));
+        final perFile = await workingChanges(
+          scope,
+          limits: const GitChangeSetLimits(
+            fileBytes: 32,
+            verificationFileBytes: 128,
+            verificationTotalBytes: 128,
+            totalBytes: 1,
+          ),
+        );
+        expect(perFile.files.map((f) => f.relativePath), [
+          'a-large',
+          'c-large',
+        ]);
+        for (final unknown in perFile.files) {
+          expect(unknown.changeKind, 'unsupported');
+          expect(unknown.contentStatus, 'oversized');
+          expect(unknown.detail!.toLowerCase(), contains('unavailable'));
+          expect(unknown.hunks, isEmpty);
+        }
+      },
+    );
+
+    test(
+      '$scope does not spend verification bytes on untracked files',
+      () async {
+        await File(
+          '${repository.path}/z-tracked',
+        ).writeAsBytes(_binaryBytes(128));
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Tracked scan']);
+        bindTask(
+          baseline: (await _git(repository, ['rev-parse', 'HEAD'])).trim(),
+          retainedBranch: branch,
+        );
+        await File(
+          '${repository.path}/a-untracked',
+        ).writeAsBytes(_binaryBytes(128));
+        final result = await workingChanges(
+          scope,
+          limits: const GitChangeSetLimits(
+            fileBytes: 32,
+            verificationFileBytes: 128,
+            verificationTotalBytes: 128,
+            totalBytes: 1,
+          ),
+        );
+        expect(result.files.single.relativePath, 'a-untracked');
+        expect(result.files.single.changeKind, 'added');
+        expect(result.files.single.contentStatus, 'oversized');
+        expect(result.files.single.hunks, isEmpty);
+      },
+    );
+
+    for (final verified in [true, false]) {
+      test(
+        '$scope revalidates observed oversized files after verified=$verified',
+        () async {
+          final large = File('${repository.path}/a-large');
+          await large.writeAsBytes(_binaryBytes(128));
+          await File('${repository.path}/z-later').writeAsString('before\n');
+          await _git(repository, ['add', '.']);
+          await _git(repository, ['commit', '-m', 'Observed oversized file']);
+          bindTask(
+            baseline: (await _git(repository, ['rev-parse', 'HEAD'])).trim(),
+            retainedBranch: branch,
+          );
+          await File('${repository.path}/z-later').writeAsString('after\n');
+          final shim = await _shim(container, '''
+case " \$* " in
+  *" --no-index "*) /usr/bin/printf 'raced' >> ${_quote(large.path)} ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+          final source = service(
+            limits: GitChangeSetLimits(
+              fileBytes: 32,
+              verificationFileBytes: verified ? 128 : 1,
+            ),
+            parentEnvironment: {'PATH': shim.path},
+          );
+          final read = switch (scope) {
+            'Unstaged' => source.snapshotUnstaged(),
+            'Uncommitted' => source.snapshotUncommitted(),
+            _ => source.snapshotTaskChanges(),
+          };
+          await expectLater(read, throwsA(_code('snapshot_changed')));
+          expect(await large.length(), 133);
+        },
+        skip: !Platform.isLinux,
+      );
+    }
+  }
+
+  test('verification limits have independent reducible-only defaults', () {
+    const defaults = GitChangeSetLimits();
+    expect(defaults.verificationFileBytes, 16 * 1024 * 1024);
+    expect(defaults.verificationTotalBytes, 64 * 1024 * 1024);
+    expect(defaults.fileBytes, 1024 * 1024);
+    expect(defaults.totalBytes, 8 * 1024 * 1024);
+    for (final limits in [
+      const GitChangeSetLimits(verificationFileBytes: 0),
+      const GitChangeSetLimits(verificationTotalBytes: 0),
+      GitChangeSetLimits(
+        verificationFileBytes: defaults.verificationFileBytes + 1,
+      ),
+      GitChangeSetLimits(
+        verificationTotalBytes: defaults.verificationTotalBytes + 1,
+      ),
+    ]) {
+      expect(() => service(limits: limits), throwsArgumentError);
+    }
+    expect(
+      () => service(
+        limits: const GitChangeSetLimits(
+          verificationFileBytes: 1,
+          verificationTotalBytes: 1,
+        ),
+      ),
+      returnsNormally,
+    );
+  });
+
+  for (final behavior in [
+    'partial reads',
+    'early EOF',
+    'read error',
+    'growth',
+    'same-size mutation',
+    'timeout',
+  ]) {
+    test(
+      'oversized verification handles $behavior without false clean results',
+      () async {
+        final target = File('${repository.path}/large');
+        final bytes = _binaryBytes(65536 + 7);
+        await target.writeAsBytes(bytes);
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Streaming verification']);
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        final release = Completer<void>();
+        final closed = Completer<void>();
+        var reads = 0;
+        List<int>? firstBuffer;
+        final overrides = _ReadOverrides(target.path, (
+          file,
+          buffer,
+          start,
+          end,
+        ) async {
+          reads++;
+          expect(buffer, hasLength(65536));
+          expect(end - start, inInclusiveRange(1, 65536));
+          firstBuffer ??= buffer;
+          expect(identical(buffer, firstBuffer), isTrue);
+          if (reads == 2) {
+            switch (behavior) {
+              case 'early EOF':
+                return 0;
+              case 'read error':
+                throw FileSystemException('Injected read failure', target.path);
+              case 'growth':
+                await target.writeAsString('x', mode: FileMode.append);
+              case 'same-size mutation':
+                bytes[0] ^= 1;
+                await target.writeAsBytes(bytes);
+                await target.setLastModified(DateTime.utc(2001));
+              case 'timeout':
+                await release.future;
+            }
+          }
+          if (behavior == 'partial reads' && end - start > 4093) {
+            end = start + 4093;
+          }
+          return file.readInto(buffer, start, end);
+        }, () => closed.complete());
+        ChangeSetSnapshot? published;
+        final observation = IOOverrides.runWithIOOverrides(
+          () => snapshot(
+            limits: GitChangeSetLimits(
+              fileBytes: 1024,
+              operationTimeout: Duration(
+                seconds: behavior == 'timeout' ? 2 : 30,
+              ),
+            ),
+          ).then((result) => published = result),
+          overrides,
+        );
+        try {
+          if (behavior == 'partial reads' || behavior == 'read error') {
+            final result = await observation;
+            if (behavior == 'partial reads') {
+              expect(result.files, isEmpty);
+            } else {
+              expect(result.files.single.contentStatus, 'oversized');
+              expect(result.files.single.changeKind, 'unsupported');
+              expect(result.files.single.detail, contains('unavailable'));
+              expect(result.files.single.hunks, isEmpty);
+            }
+          } else {
+            await expectLater(
+              observation,
+              throwsA(
+                _code(
+                  behavior == 'timeout'
+                      ? 'operation_timeout'
+                      : 'snapshot_changed',
+                ),
+              ),
+            );
+            expect(published, isNull);
+          }
+        } finally {
+          release.complete();
+          if (reads > 0) {
+            await closed.future.timeout(const Duration(seconds: 5));
+          }
+        }
+        expect(reads, greaterThanOrEqualTo(2));
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+        if (behavior != 'growth') expect(await target.readAsBytes(), bytes);
+      },
+    );
+  }
+
+  for (final (initial, working, fileMode, changed) in [
+    ('0644', '0744', true, true),
+    ('0755', '0655', true, true),
+    ('0644', '0645', true, false),
+    ('0644', '0744', false, false),
+  ]) {
+    test(
+      'oversized mode $initial to $working honors core.filemode=$fileMode',
+      () async {
+        await _git(repository, ['config', 'core.filemode', 'true']);
+        final file = File('${repository.path}/large');
+        await file.writeAsBytes(_binaryBytes(128));
+        expect((await Process.run('chmod', [initial, file.path])).exitCode, 0);
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Oversized mode']);
+        expect((await Process.run('chmod', [working, file.path])).exitCode, 0);
+        await _git(repository, ['config', 'core.filemode', '$fileMode']);
+        final result = await snapshot(
+          limits: GitChangeSetLimits(
+            fileBytes: 32,
+            verificationFileBytes: changed ? 1 : 128,
+          ),
+        );
+        if (changed) {
+          expect(result.files.single.changeKind, 'typeChanged');
+          expect(result.files.single.contentStatus, 'unsupported');
+          expect(result.files.single.detail, contains('mode'));
+          expect(result.files.single.hunks, isEmpty);
+        } else {
+          expect(result.files, isEmpty);
+        }
+      },
+      skip: Platform.isWindows,
+    );
+  }
+
+  test(
+    'SHA256 oversized raw hashes match the index in every review scope',
+    () async {
+      repository = await Directory('${container.path}/sha256').create();
+      await _git(repository, ['init', '--object-format=sha256']);
+      await _git(repository, ['config', 'user.name', 'ADELE Test']);
+      await _git(repository, ['config', 'user.email', 'adele@example.invalid']);
+      final file = File('${repository.path}/large');
+      final bytes = _binaryBytes();
+      await file.writeAsBytes(bytes);
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'SHA256 oversized']);
+      final commit = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+      expect(commit, hasLength(64));
+      bindTask(
+        baseline: commit,
+        retainedBranch: (await _git(repository, [
+          'symbolic-ref',
+          '--short',
+          'HEAD',
+        ])).trim(),
+      );
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+      for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+        expect((await workingChanges(scope)).files, isEmpty);
+      }
+      bytes[bytes.length - 1] ^= 1;
+      await file.writeAsBytes(bytes);
+      for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+        final changed = (await workingChanges(scope)).files.single;
+        expect(changed.changeKind, 'modified');
+        expect(changed.contentStatus, 'oversized');
+        expect(changed.detail!.toLowerCase(), contains('raw'));
+        expect(changed.hunks, isEmpty);
+      }
+      expect(await file.readAsBytes(), bytes);
+      expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+    },
+  );
+
+  test(
+    'Uncommitted keeps staged new text beside a clean oversized binary',
+    () async {
+      final binary = File('${repository.path}/large.bin');
+      final bytes = _binaryBytes();
+      await binary.writeAsBytes(bytes);
+      await _git(repository, ['add', 'large.bin']);
+      await _git(repository, ['commit', '-m', 'Large binary']);
+      await File(
+        '${repository.path}/new.txt',
+      ).writeAsString('staged addition\n');
+      await _git(repository, ['add', 'new.txt']);
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+
+      final result = await uncommitted(
+        limits: const GitChangeSetLimits(totalBytes: 1024, files: 1),
+      );
+
+      expect(result.staged.files.single.relativePath, 'new.txt');
+      expect(result.staged.files.single.changeKind, 'added');
+      expect(result.staged.files.single.contentStatus, 'text');
+      expect(
+        result.staged.files.single.hunks.single.lines.single.text,
+        'staged addition',
+      );
+      expect(result.unstaged.files, isEmpty);
+      expect(result.conflicts, isEmpty);
+      expect(await binary.readAsBytes(), bytes);
+      expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+    },
+  );
+
   test('stat-dirty unchanged binary and invalid UTF-8 are omitted', () async {
     for (final name in ['binary', 'encoding']) {
       await File(
@@ -1983,6 +2468,18 @@ exec /usr/bin/git "\$@"
     ]);
     await snapshot();
     expect(await sentinel.exists(), isFalse);
+    final clean = await snapshot(
+      limits: const GitChangeSetLimits(fileBytes: 1),
+    );
+    expect(clean.files.where((file) => file.relativePath == 'racy'), isEmpty);
+    await target.writeAsString('changed raw content\n');
+    final oversized = (await snapshot(
+      limits: const GitChangeSetLimits(fileBytes: 1),
+    )).files.singleWhere((file) => file.relativePath == 'racy');
+    expect(oversized.changeKind, 'modified');
+    expect(oversized.contentStatus, 'oversized');
+    expect(oversized.hunks, isEmpty);
+    expect(await sentinel.exists(), isFalse);
   });
 
   test('core autocrlf never fabricates a raw-byte text edit', () async {
@@ -2006,6 +2503,14 @@ exec /usr/bin/git "\$@"
       ]),
       isEmpty,
     );
+    final oversized = (await snapshot(
+      limits: const GitChangeSetLimits(fileBytes: 1),
+    )).files.single;
+    expect(oversized.relativePath, 'crlf');
+    expect(oversized.changeKind, 'modified');
+    expect(oversized.contentStatus, 'oversized');
+    expect(oversized.detail, contains('raw'));
+    expect(oversized.hunks, isEmpty);
   });
 
   test(
@@ -2627,6 +3132,68 @@ exec /usr/bin/git "\$@"
 
 Matcher _code(String code) =>
     isA<ChangeSetFailure>().having((failure) => failure.code, 'code', code);
+
+Uint8List _binaryBytes([int length = 1054288]) => Uint8List.fromList(
+  List<int>.generate(length, (i) => (i * 31 + i ~/ 256) & 255),
+);
+
+final class _ReadOverrides extends IOOverrides {
+  _ReadOverrides(this.path, this.onRead, this.onClose);
+
+  final String path;
+  final Future<int> Function(RandomAccessFile, List<int>, int, int) onRead;
+  final void Function() onClose;
+  final Zone originalZone = Zone.current;
+
+  @override
+  Future<FileSystemEntityType> fseGetType(String path, bool followLinks) =>
+      originalZone.run(
+        () => FileSystemEntity.type(path, followLinks: followLinks),
+      );
+
+  @override
+  File createFile(String path) {
+    final file = super.createFile(path);
+    return path == this.path ? _ReadFile(file, this) : file;
+  }
+}
+
+final class _ReadFile implements File {
+  _ReadFile(this.file, this.overrides);
+
+  final File file;
+  final _ReadOverrides overrides;
+
+  @override
+  Future<RandomAccessFile> open({FileMode mode = FileMode.read}) async =>
+      _ReadHandle(await file.open(mode: mode), overrides);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _ReadHandle implements RandomAccessFile {
+  _ReadHandle(this.file, this.overrides);
+
+  final RandomAccessFile file;
+  final _ReadOverrides overrides;
+
+  @override
+  Future<int> readInto(List<int> buffer, [int start = 0, int? end]) =>
+      overrides.onRead(file, buffer, start, end ?? buffer.length);
+
+  @override
+  Future<int> length() => file.length();
+
+  @override
+  Future<void> close() async {
+    await file.close();
+    overrides.onClose();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 final class _Authority implements AuthorizedEnvironmentReadService {
   _Authority(this.environmentId);

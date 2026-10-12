@@ -207,24 +207,34 @@ removed. Git executable selection through PATH is trusted, not sandboxed.
 Default per-operation limits are 4,096 retained inventory paths
 (baseline/HEAD trees, index records and their union with untracked paths are bounded),
 256 returned entries across all selected layers and conflicts,
-1 MiB per file side, 2 MiB collected stdout per command/patch, 64 KiB stderr counted
-without retaining diagnostics,
+1 MiB per rendered file side, 2 MiB collected stdout per command/patch, 64 KiB
+stderr counted without retaining diagnostics,
 8 MiB total compared inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
 escaped-text/DTO transport budget below the host frame limit. Each Git process has
 a 10-second deadline including pipe completion; the entire operation has a
 30-second deadline. Output is bounded during collection, not after an unbounded
 `Process.run`. Per-file size/patch excess is an oversized placeholder; enumeration,
-file-count, aggregate, process, and malformed-output failures reject the whole
-snapshot rather than returning a deceptively complete truncated result. An
-oversized tracked working file has explicitly unknown change state because its
-bytes cannot be compared within the bound, even if an external observer knows it
-is unchanged. Equal inspected files do not consume the changed-result byte budget.
+file-count, content/patch aggregate, process, and malformed-output failures reject
+the whole snapshot rather than returning a deceptively complete truncated result.
+Ordinary oversized tracked regular files have a separate streamed verification
+budget: 16 MiB per file and 64 MiB across the operation. A reusable 64 KiB buffer
+feeds the raw Git blob header and bytes into SHA-1 or SHA-256 according to the
+indexed OID, without retaining the file or executing Git conversions/filters.
+Only a complete matching identity with consistent metadata and indexed mode is
+confirmed unchanged and omitted. Raw mismatches remain oversized entries without
+hunks; untracked oversized files likewise remain explicit additions. A file beyond
+either verification budget, or whose read fails, remains oversized with explicitly
+unknown change state (`unsupported`), never an inferred clean result. Detected
+size/metadata changes reject the snapshot. Verification checks operation liveness
+between bounded reads and retains omitted files in the final observation checks.
+These scan budgets do not consume content/patch or DTO budgets. Equal inspected
+files do not consume the changed-result byte budget.
 For Uncommitted and Task these are shared operation limits, not fresh allowances
 for each layer. A path appearing in committed, staged, and unstaged layers counts
-three times toward the returned-entry limit. Content read for nontext placeholders
-is also charged by both layered scopes;
-Unstaged retains its existing text-result accounting. Aggregate overflow rejects
-the whole result, not just one section.
+three times toward the returned-entry limit. Nontext file sides collected within
+the rendering limit are also charged by both layered scopes;
+Unstaged retains its existing text-result accounting. Content/patch aggregate
+overflow rejects the whole result, not just one section.
 
 Line-ending configuration, enumeration and direct-path/stat observations are checked
 again before publication. Inspected tracked symlinks, including clean ones omitted
