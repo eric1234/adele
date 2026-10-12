@@ -18,6 +18,8 @@ final class GitChangeSetLimits {
     this.files = 256,
     this.inventoryEntries = 4096,
     this.fileBytes = 1024 * 1024,
+    this.verificationFileBytes = 16 * 1024 * 1024,
+    this.verificationTotalBytes = 64 * 1024 * 1024,
     this.outputBytes = 2 * 1024 * 1024,
     this.stderrBytes = 64 * 1024,
     this.totalBytes = 8 * 1024 * 1024,
@@ -29,6 +31,8 @@ final class GitChangeSetLimits {
   final int files;
   final int inventoryEntries;
   final int fileBytes;
+  final int verificationFileBytes;
+  final int verificationTotalBytes;
   final int outputBytes;
   final int stderrBytes;
   final int totalBytes;
@@ -51,6 +55,8 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
       (limits.files, defaults.files),
       (limits.inventoryEntries, defaults.inventoryEntries),
       (limits.fileBytes, defaults.fileBytes),
+      (limits.verificationFileBytes, defaults.verificationFileBytes),
+      (limits.verificationTotalBytes, defaults.verificationTotalBytes),
       (limits.outputBytes, defaults.outputBytes),
       (limits.stderrBytes, defaults.stderrBytes),
       (limits.totalBytes, defaults.totalBytes),
@@ -168,6 +174,7 @@ final class _SnapshotOperation {
   late Directory _worktreeRoot;
   bool _closed = false;
   int _totalBytes = 0;
+  int _verificationBytes = 0;
   int _lines = 0;
   bool _contentConversion = false;
   bool _fileMode = true;
@@ -623,20 +630,6 @@ final class _SnapshotOperation {
         'The path is missing, changed type, or is not a regular file.',
       );
     }
-    if (state.size > limits.fileBytes) {
-      if (change.kind == 'modified') {
-        change = (
-          oldMode: change.oldMode,
-          newMode: change.newMode,
-          oid: change.oid,
-          kind: 'unsupported',
-        );
-      }
-      return placeholder(
-        'oversized',
-        'The working file exceeds the supported size; content change state is unavailable.',
-      );
-    }
     if (!deleted &&
         change.kind == 'modified' &&
         _fileMode &&
@@ -651,6 +644,36 @@ final class _SnapshotOperation {
       return placeholder(
         'unsupported',
         'File mode changes are not rendered as text.',
+      );
+    }
+    if (state.size > limits.fileBytes) {
+      if (change.kind == 'modified') {
+        final matches =
+            const {'100644', '100755'}.contains(change.oldMode) &&
+                change.newMode == change.oldMode
+            ? await _matchesIndex(root, path, state, change.oid)
+            : null;
+        if (matches == true) return null;
+        if (matches == false) {
+          return placeholder(
+            'oversized',
+            'The working file exceeds the supported size; raw content differs from the index.',
+          );
+        }
+        change = (
+          oldMode: change.oldMode,
+          newMode: change.newMode,
+          oid: change.oid,
+          kind: 'unsupported',
+        );
+        return placeholder(
+          'oversized',
+          'The oversized working file could not be verified; content change state is unavailable.',
+        );
+      }
+      return placeholder(
+        'oversized',
+        'The working file exceeds the supported size.',
       );
     }
     final current = deleted ? Uint8List(0) : await _readFile(root, path);
@@ -948,6 +971,82 @@ final class _SnapshotOperation {
     } finally {
       await file.close();
     }
+  }
+
+  Future<bool?> _matchesIndex(
+    Directory root,
+    String path,
+    FileStat state,
+    String oid,
+  ) async {
+    if (state.size > limits.verificationFileBytes ||
+        state.size > limits.verificationTotalBytes - _verificationBytes) {
+      return null;
+    }
+    // Reserve the entire scan, including failed attempts, separately from DTOs
+    // and rendered content. No repository conversion is used to settle equality.
+    _verificationBytes += state.size;
+    if (!_sameState(state, await _directState(root, path))) {
+      throw _failure(
+        'snapshot_changed',
+        'A working file changed before reading.',
+      );
+    }
+    bool? matches;
+    try {
+      checkOpen();
+      final file = await File('${root.path}/$path').open();
+      try {
+        checkOpen();
+        late Digest digest;
+        final hash = oid.length == 64 ? sha256 : sha1;
+        final sink = hash.startChunkedConversion(
+          ChunkedConversionSink<Digest>.withCallback(
+            (values) => digest = values.single,
+          ),
+        )..add(utf8.encode('blob ${state.size}\u0000'));
+        final buffer = Uint8List(65536);
+        var count = 0;
+        while (count < state.size) {
+          checkOpen();
+          final read = await file.readInto(
+            buffer,
+            0,
+            (state.size - count).clamp(1, buffer.length),
+          );
+          checkOpen();
+          if (read == 0) {
+            throw _failure(
+              'snapshot_changed',
+              'A working file ended before its observed size.',
+            );
+          }
+          count += read;
+          sink.addSlice(buffer, 0, read, false);
+        }
+        if (count != state.size || await file.length() != state.size) {
+          throw _failure(
+            'snapshot_changed',
+            'A working file changed size during verification.',
+          );
+        }
+        sink.close();
+        matches = digest.toString() == oid;
+      } finally {
+        await file.close();
+      }
+    } on FileSystemException {
+      // A failed read is unknown, not evidence that tracked content is clean.
+      matches = null;
+    }
+    checkOpen();
+    if (!_sameState(state, await _directState(root, path))) {
+      throw _failure(
+        'snapshot_changed',
+        'A working file changed during verification.',
+      );
+    }
+    return matches;
   }
 
   Future<String?> _directLinkTarget(Directory root, String path) async {

@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
@@ -281,6 +282,100 @@ void main() {
       await _selectScope(tester, 'Unstaged changes');
       await _visible(tester, 'No unstaged changes');
       expect(find.textContaining('d staged.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'stock Uncommitted scope omits an unchanged 1054288-byte binary image beside a staged text hunk',
+    (tester) async {
+      const imagePath = 'unchanged.bmp';
+      const imageLength = 1054288;
+      const pixelOffset = 592;
+      // A 24-bit 1024 x 343 BMP, padded before its deterministic pixel data.
+      final image = ByteData(imageLength)
+        ..setUint16(0, 0x4d42, Endian.little)
+        ..setUint32(2, imageLength, Endian.little)
+        ..setUint32(10, pixelOffset, Endian.little)
+        ..setUint32(14, 40, Endian.little)
+        ..setInt32(18, 1024, Endian.little)
+        ..setInt32(22, 343, Endian.little)
+        ..setUint16(26, 1, Endian.little)
+        ..setUint16(28, 24, Endian.little)
+        ..setUint32(34, imageLength - pixelOffset, Endian.little);
+      final bytes = image.buffer.asUint8List();
+      for (var i = pixelOffset; i < bytes.length; i++) {
+        bytes[i] = (i * 31 + i ~/ 256) & 255;
+      }
+      final stagedBefore = await tester.runAsync(() async {
+        await fixture.file(imagePath).writeAsBytes(bytes);
+        expect(await fixture.file(imagePath).length(), imageLength);
+        await _git(fixture.additionalRoot, ['add', imagePath]);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'Track unchanged large image',
+        ]);
+        await fixture.write(
+          'd staged.txt',
+          'Staged text beside unchanged image\n',
+        );
+        await _git(fixture.additionalRoot, ['add', 'd staged.txt']);
+        expect(
+          await _git(fixture.additionalRoot, [
+            'diff',
+            'HEAD',
+            '--name-only',
+            '--',
+            imagePath,
+          ]),
+          isEmpty,
+        );
+        return _git(fixture.additionalRoot, ['diff', '--cached', '--binary']);
+      });
+
+      await mount(tester);
+      await _visible(tester, 'No unstaged changes');
+      expect(find.textContaining(imagePath), findsNothing);
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, '+Staged text beside unchanged image');
+      expect(find.text('Staged changes'), findsOneWidget);
+      expect(find.text('d staged.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('-Staged baseline'), findsOneWidget);
+      expect(find.textContaining('@@ -1,1 +1,1 @@'), findsOneWidget);
+      expect(find.textContaining('No unstaged changes'), findsOneWidget);
+      for (final absent in [
+        imagePath,
+        'binary',
+        'oversized',
+        'Unable to load',
+      ]) {
+        expect(find.textContaining(absent), findsNothing);
+      }
+      expect(
+        fixture.store
+            .requireSessionAuthority(fixture.additionalSession.id)
+            .environmentId,
+        fixture.additional.id,
+      );
+      expect(fixture.additional.role, EnvironmentRole.additional);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      await tester.runAsync(() async {
+        expect(await fixture.file(imagePath).readAsBytes(), bytes);
+        expect(
+          await _git(fixture.additionalRoot, ['diff', '--cached', '--binary']),
+          stagedBefore,
+        );
+        expect(
+          await _git(fixture.additionalRoot, ['diff', '--name-only']),
+          isEmpty,
+        );
+      });
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
