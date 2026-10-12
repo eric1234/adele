@@ -25,7 +25,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
 final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
   GlobalSettingsService? _service;
   GlobalSettingsView? _view;
-  bool _busy = true;
+  bool _busy = false;
   bool _requiresReload = false;
   String? _error;
   String _query = '';
@@ -38,6 +38,7 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
   }
 
   Future<void> _reload() async {
+    if (_busy) return;
     setState(() {
       _busy = true;
       _error = null;

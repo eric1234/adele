@@ -840,6 +840,136 @@ void main() {
     skip: !Platform.isLinux,
   );
 
+  testWidgets(
+    'Reload admits one operation and retains a valid editable revision',
+    (tester) {
+      return tester.runAsync(() async {
+        final service = _GatedSettingsService(catalog: catalog, roots: roots);
+        services.add(service);
+        seed('"$_enabled" = false # original\n');
+        await mount(tester, service: () async => service);
+        await loaded(tester);
+        expect(service.loads, 1);
+        await tap(tester, _input(_enabled));
+        final save = tester
+            .widget<ButtonStyleButton>(_save(_enabled))
+            .onPressed!;
+        final reset = tester
+            .widget<ButtonStyleButton>(_reset(_enabled))
+            .onPressed!;
+        final reload = tester.widget<ButtonStyleButton>(_reload).onPressed!;
+        final pending = Completer<void>();
+        service.gate = pending.future;
+        try {
+          reload();
+          reload();
+          expect(service.loads, 2);
+          // Callbacks captured before rebuilding must obey the same fence.
+          save();
+          reset();
+          expect(service.saves, 0);
+          expect(service.resets, 0);
+          await tester.pump();
+          expect(_buttonEnabled(tester, _reload), isFalse);
+          expect(_buttonEnabled(tester, _save(_enabled)), isFalse);
+          expect(_buttonEnabled(tester, _reset(_enabled)), isFalse);
+          expect(tester.widget<Switch>(_input(_enabled)).onChanged, isNull);
+          expect(tester.widget<Switch>(_input(_enabled)).value, isTrue);
+          expect(find.byType(LinearProgressIndicator), findsOneWidget);
+          expect(
+            settingsFile().readAsStringSync(),
+            '"$_enabled" = false # original\n',
+          );
+        } finally {
+          service.gate = null;
+          pending.complete();
+        }
+        await loaded(tester);
+        expect(service.loads, 2);
+        expect(tester.widget<Switch>(_input(_enabled)).value, isFalse);
+        await tap(tester, _input(_enabled));
+        await tap(tester, _save(_enabled));
+        expect(_rowText(_enabled, 'Effective value: true'), findsOneWidget);
+        await expectPersisted(_enabled, true, SettingValueSource.global);
+        await tap(tester, _reset(_enabled));
+        expect(_rowText(_enabled, 'Default'), findsOneWidget);
+        await expectPersisted(_enabled, false, SettingValueSource.defaultValue);
+        expect(find.textContaining('Not saved'), findsNothing);
+        expect(find.textContaining('Could not confirm'), findsNothing);
+
+        // Failure clears admission too, without enabling editing of the old view.
+        final failed = Completer<void>();
+        service.gate = failed.future;
+        final reloadAgain = tester
+            .widget<ButtonStyleButton>(_reload)
+            .onPressed!;
+        reloadAgain();
+        reloadAgain();
+        expect(service.loads, 3);
+        failed.completeError(
+          const FileSystemException('Controlled reload failure'),
+        );
+        service.gate = null;
+        await loaded(tester);
+        expect(
+          find.textContaining('Controlled reload failure'),
+          findsOneWidget,
+        );
+        expect(_input(_enabled), findsNothing);
+        seed('"$_enabled" = true\n');
+        await tap(tester, _reload);
+        expect(service.loads, 4);
+        expect(_rowText(_enabled, 'Effective value: true'), findsOneWidget);
+        expect(find.textContaining('Controlled reload failure'), findsNothing);
+        await tap(tester, _reset(_enabled));
+        await expectPersisted(_enabled, false, SettingValueSource.defaultValue);
+        await unmount(tester);
+      });
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'captured Reload callbacks cannot overlap Save or Reset',
+    (tester) {
+      return tester.runAsync(() async {
+        final service = _GatedSettingsService(catalog: catalog, roots: roots);
+        services.add(service);
+        await mount(tester, service: () async => service);
+        await loaded(tester);
+        for (final action in [_save(_enabled), _reset(_enabled)]) {
+          final reload = tester.widget<ButtonStyleButton>(_reload).onPressed!;
+          final commit = tester.widget<ButtonStyleButton>(action).onPressed!;
+          final pending = Completer<void>();
+          service.gate = pending.future;
+          try {
+            commit();
+            reload();
+            reload();
+            expect(service.loads, 1);
+            await tester.pump();
+            expect(_buttonEnabled(tester, _reload), isFalse);
+            expect(_buttonEnabled(tester, action), isFalse);
+            expect(tester.widget<Switch>(_input(_enabled)).onChanged, isNull);
+          } finally {
+            service.gate = null;
+            pending.complete();
+          }
+          await loaded(tester);
+        }
+        expect(service.saves, 1);
+        expect(service.resets, 1);
+        expect(_rowText(_enabled, 'Default'), findsOneWidget);
+        await tap(tester, _reload);
+        expect(service.loads, 2);
+        expect(_rowText(_enabled, 'Default'), findsOneWidget);
+        expect(find.textContaining('Not saved'), findsNothing);
+        await unmount(tester);
+      });
+    },
+    skip: !Platform.isLinux,
+  );
+
   testWidgets('closing during pending service load ignores late completion', (
     tester,
   ) {
@@ -971,6 +1101,44 @@ void main() {
     },
     skip: !Platform.isLinux,
   );
+}
+
+// Gate admission deterministically while retaining real native persistence.
+final class _GatedSettingsService extends GlobalSettingsService {
+  _GatedSettingsService({required super.catalog, required super.roots});
+
+  Future<void>? gate;
+  int loads = 0;
+  int saves = 0;
+  int resets = 0;
+
+  @override
+  Future<GlobalSettingsView> load() async {
+    loads++;
+    await gate;
+    return super.load();
+  }
+
+  @override
+  Future<GlobalSettingsView> save(
+    GlobalSettingsView expected,
+    SettingId id,
+    Object value,
+  ) async {
+    saves++;
+    await gate;
+    return super.save(expected, id, value);
+  }
+
+  @override
+  Future<GlobalSettingsView> reset(
+    GlobalSettingsView expected,
+    SettingId id,
+  ) async {
+    resets++;
+    await gate;
+    return super.reset(expected, id);
+  }
 }
 
 // Model a cleanup/transport failure after the real native transaction commits.

@@ -271,12 +271,13 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         if (_preparingExit) return AppExitResponse.cancel;
         setState(() => _preparingExit = true);
         _dismissCommandPalette();
-        _dismissSettings();
         try {
           if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
           _retainingPresentations.value = true;
           _frontends.retainPresentations();
           await _closeAndReport();
+          // Keep text-field lifecycle observers alive through async cleanup.
+          _dismissSettings();
           return AppExitResponse.exit;
         } finally {
           if (mounted) setState(() => _preparingExit = false);

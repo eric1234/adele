@@ -5,7 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' show Abi;
 import 'dart:io';
-import 'dart:ui' show AppExitResponse;
+import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
@@ -847,6 +847,73 @@ void main() {
         expect(find.byType(RunExecutionStatus), findsNothing);
         expect(owner.isDisposed, isFalse);
 
+        final settingsFile = File(
+          '${fixture.configurationRoots.configurationRoot}/settings.toml',
+        );
+        final settings = find.byType(GlobalSettingsDialog);
+        final search = find.byKey(const ValueKey('settings-search'));
+        final folding = find.byKey(
+          const ValueKey('setting-input-$_foldingSetting'),
+        );
+        Future<void> openSettings() async {
+          await _terminalTap(
+            tester,
+            find.byKey(const ValueKey('settings-button')),
+          );
+          await _terminalUntil(
+            tester,
+            () => folding.evaluate().isNotEmpty,
+            'Settings loads the real Source folding declaration',
+          );
+          expect(tester.widget<Switch>(folding).value, isFalse);
+        }
+
+        await openSettings();
+        await tester.enterText(search, 'folding');
+        await _terminalTap(tester, folding);
+        final settingsElement = tester.element(settings);
+        final settingsState = tester.state(settings);
+        final settingsRoute = ModalRoute.of(settingsElement)!;
+        final searchInput = find.descendant(
+          of: search,
+          matching: find.byType(EditableText),
+        );
+        final searchElement = tester.element(searchInput);
+        final searchState = tester.state<EditableTextState>(searchInput);
+        final searchController = tester
+            .widget<EditableText>(searchInput)
+            .controller;
+        final searchValue = searchController.value;
+        final foldingElement = tester.element(folding);
+        const settingsWorkerName = 'dev.adele.global-settings-owner';
+        final settingsWorker = IsolateNameServer.lookupPortByName(
+          settingsWorkerName,
+        );
+        expect(settingsWorker, isNotNull);
+        expect(await settingsFile.exists(), isFalse);
+
+        void expectRetainedSettings() {
+          expect(settingsElement.mounted, isTrue);
+          expect(settingsState.mounted, isTrue);
+          expect(tester.element(settings), same(settingsElement));
+          expect(tester.state(settings), same(settingsState));
+          expect(ModalRoute.of(settingsElement), same(settingsRoute));
+          expect(settingsRoute.isActive, isTrue);
+          expect(tester.element(searchInput), same(searchElement));
+          expect(tester.state(searchInput), same(searchState));
+          expect(
+            tester.widget<EditableText>(searchInput).controller,
+            same(searchController),
+          );
+          expect(searchController.value, searchValue);
+          expect(tester.element(folding), same(foldingElement));
+          expect(tester.widget<Switch>(folding).value, isTrue);
+          expect(
+            IsolateNameServer.lookupPortByName(settingsWorkerName),
+            settingsWorker,
+          );
+        }
+
         final exiting = tester.binding.handleRequestAppExit();
         await _terminalUntil(
           tester,
@@ -857,6 +924,8 @@ void main() {
           tester,
           'Discard unsaved changes in 1 Source Document(s) and exit?\n$_sourcePath (${environmentA.id.value})',
         );
+        expectRetainedSettings();
+        expect(settingsRoute.isCurrent, isFalse);
         expect(connection.isClosed, isFalse);
         expect(runtime.store.runRecord(runId), isNull);
         await _terminalTap(tester, find.widgetWithText(TextButton, 'Cancel'));
@@ -864,6 +933,9 @@ void main() {
           await exiting.timeout(const Duration(seconds: 15)),
           AppExitResponse.cancel,
         );
+        expectRetainedSettings();
+        expect(settingsRoute.isCurrent, isTrue);
+        expect(await settingsFile.exists(), isFalse);
         expect(runtime.plugins.state, ApplicationPluginState.ready);
         expect(connection.isClosed, isFalse);
         expect(owner.isDisposed, isFalse);
@@ -897,16 +969,33 @@ void main() {
           'Review-owned confirmation after accepted Source advice',
         );
         _expectReviewConfirmation();
+        expectRetainedSettings();
+        expect(settingsRoute.isCurrent, isFalse);
         await _terminalTap(
           tester,
           find.widgetWithText(TextButton, 'Keep reviewing'),
         );
         expect(await reviewCancelledExit, AppExitResponse.cancel);
+        expectRetainedSettings();
+        expect(settingsRoute.isCurrent, isTrue);
+        expect(await settingsFile.exists(), isFalse);
         expect(runtime.plugins.state, ApplicationPluginState.ready);
         expect(connection.isClosed, isFalse);
         expect(owner.isDisposed, isFalse);
         expect(owner.snapshot()['text'], _taskText.substring(1));
         expect(runtime.store.runRecord(runId), isNull);
+
+        // Cancellation leaves the original Settings editors usable, not restored
+        // from persisted values in a replacement dialog.
+        await tester.enterText(search, 'Source');
+        await _terminalTap(tester, folding);
+        expect(tester.widget<Switch>(folding).value, isFalse);
+        await tester.enterText(search, 'folding');
+        await _terminalTap(tester, folding);
+        expectRetainedSettings();
+        expect(await settingsFile.exists(), isFalse);
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        expect(settingsElement.mounted, isFalse);
 
         await _terminalTap(tester, _sessionRow(session.id));
         await _terminalUntil(
@@ -975,6 +1064,12 @@ void main() {
         );
         expect(find.byType(AlertDialog), findsNothing);
         expect(tester.takeException(), isNull);
+        await openSettings();
+        await tester.enterText(search, 'folding');
+        await _terminalTap(tester, folding);
+        final acceptedSettingsElement = tester.element(settings);
+        final acceptedSettingsState = tester.state(settings);
+        final acceptedSettingsRoute = ModalRoute.of(acceptedSettingsElement)!;
         final acceptedExit = tester.binding.handleRequestAppExit();
         await _terminalUntil(
           tester,
@@ -982,11 +1077,23 @@ void main() {
           'Review confirmation remains retryable',
         );
         _expectReviewConfirmation();
+        expect(tester.element(settings), same(acceptedSettingsElement));
+        expect(tester.state(settings), same(acceptedSettingsState));
+        expect(acceptedSettingsRoute.isActive, isTrue);
+        expect(acceptedSettingsRoute.isCurrent, isFalse);
+        expect(tester.widget<Switch>(folding).value, isTrue);
         await _terminalTap(
           tester,
           find.widgetWithText(TextButton, 'Leave review'),
         );
         expect(await acceptedExit, AppExitResponse.exit);
+        await tester.pump();
+        expect(settings, findsNothing);
+        expect(acceptedSettingsElement.mounted, isFalse);
+        expect(acceptedSettingsState.mounted, isFalse);
+        expect(acceptedSettingsRoute.isActive, isFalse);
+        expect(IsolateNameServer.lookupPortByName(settingsWorkerName), isNull);
+        expect(await settingsFile.exists(), isFalse);
         expect(connection.isClosed, isTrue);
         await tester.pumpWidget(const SizedBox.shrink());
 
