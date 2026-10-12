@@ -77,12 +77,20 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
 
   @override
   Future<ChangeSetSnapshot> snapshotUnstaged() =>
-      _snapshot(false).then((snapshot) => snapshot.unstaged);
+      _snapshot(false).then((snapshot) => snapshot.uncommitted.unstaged);
 
   @override
-  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() => _snapshot(true);
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() =>
+      _snapshot(true).then((snapshot) => snapshot.uncommitted);
 
-  Future<UncommittedChangeSetSnapshot> _snapshot(bool includeStaged) async {
+  @override
+  Future<TaskChangeSetSnapshot> snapshotTaskChanges() =>
+      _snapshot(true, includeCommitted: true);
+
+  Future<TaskChangeSetSnapshot> _snapshot(
+    bool includeStaged, {
+    bool includeCommitted = false,
+  }) async {
     final operation = _SnapshotOperation(limits, _parentEnvironment);
     try {
       return await (() async {
@@ -103,6 +111,7 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
         final result = await operation.snapshot(
           environment,
           includeStaged: includeStaged,
+          includeCommitted: includeCommitted,
         );
         if (!identical(resolve(), environment)) {
           throw _failure(
@@ -198,9 +207,10 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<UncommittedChangeSetSnapshot> snapshot(
+  Future<TaskChangeSetSnapshot> snapshot(
     WorktreeEnvironment environment, {
     required bool includeStaged,
+    required bool includeCommitted,
   }) async {
     final root = environment.root;
     if (environment.gitDirectory == null ||
@@ -241,15 +251,39 @@ final class _SnapshotOperation {
         (effectiveSettings.containsKey('core.autocrlf') &&
             !falseValues.contains(effectiveSettings['core.autocrlf']));
     if (includeStaged) _head = await _readHead(root);
+    if (includeCommitted) {
+      await _validateBaseline(root, environment.baselineCommit);
+      if (_head!.reference.isEmpty) {
+        throw _failure(
+          'detached_head',
+          'Task changes require the retained branch.',
+        );
+      }
+      if (environment.branch == null || environment.branch!.isEmpty) {
+        throw _failure(
+          'branch_unavailable',
+          'The live Environment has no retained Task branch.',
+        );
+      }
+      if (_head!.reference != 'refs/heads/${environment.branch}\n') {
+        throw _failure(
+          'unexpected_branch',
+          'HEAD is not on the retained Task branch.',
+        );
+      }
+    }
+    final baseline = includeCommitted
+        ? await _tree(root, environment.baselineCommit!)
+        : <String, GitIndexEntry>{};
     final head = includeStaged
-        ? await _headTree(root)
+        ? await _tree(root, _head!.commit)
         : <String, GitIndexEntry>{};
     final before = await _enumerate(root);
     // Retain every stage identity, including stages 2/3 collapsed into the one
     // conflict row. Comparing that row alone would miss conflict-side races.
     final indexDescription = _indexDescription;
-    final paths = {...head.keys};
-    for (final path in before.keys) {
+    final paths = <String>{};
+    for (final path in [baseline, head, before].expand((tree) => tree.keys)) {
       paths.add(path);
       if (paths.length > limits.inventoryEntries) {
         throw _failure(
@@ -259,11 +293,12 @@ final class _SnapshotOperation {
       }
     }
     final ordered = paths.toList()..sort();
+    final committed = <ChangedFile>[];
     final staged = <ChangedFile>[];
     final files = <ChangedFile>[];
     final conflicts = <ChangedFile>[];
     var fileCount = 0;
-    var wireBytes = includeStaged ? 256 : 64;
+    var wireBytes = includeCommitted ? 384 : (includeStaged ? 256 : 64);
     void retain(ChangedFile? file, List<ChangedFile> layer) {
       if (file != null) {
         // Leave framing/DTO headroom below the host's bounded transport. Count
@@ -294,12 +329,18 @@ final class _SnapshotOperation {
     for (final path in ordered) {
       checkOpen();
       final entry = before[path];
+      if (includeCommitted) {
+        retain(
+          await _objectFile(root, path, baseline[path], head[path]),
+          committed,
+        );
+      }
       if (includeStaged && entry?.kind == 'conflicted') {
         retain(await _file(root, path, entry!), conflicts);
         continue;
       }
       if (includeStaged) {
-        retain(await _stagedFile(root, path, head[path], entry), staged);
+        retain(await _objectFile(root, path, head[path], entry), staged);
       }
       if (entry != null) retain(await _file(root, path, entry), files);
     }
@@ -333,6 +374,9 @@ final class _SnapshotOperation {
       await _validateRoot(root);
       await _validateRoot(_gitDirectory);
       await _validateRoot(_worktreeRoot);
+      if (includeCommitted) {
+        await _validateBaseline(root, environment.baselineCommit);
+      }
       if (_head != null && _head != await _readHead(root)) {
         throw _failure('snapshot_changed', 'HEAD changed during the snapshot.');
       }
@@ -340,11 +384,45 @@ final class _SnapshotOperation {
 
     if (includeStaged) _settlementValidation = validate;
     await validate();
-    return UncommittedChangeSetSnapshot(
-      staged: ChangeSetSnapshot(files: staged),
-      unstaged: ChangeSetSnapshot(files: files),
-      conflicts: conflicts,
+    return TaskChangeSetSnapshot(
+      committed: ChangeSetSnapshot(files: committed),
+      uncommitted: UncommittedChangeSetSnapshot(
+        staged: ChangeSetSnapshot(files: staged),
+        unstaged: ChangeSetSnapshot(files: files),
+        conflicts: conflicts,
+      ),
     );
+  }
+
+  Future<void> _validateBaseline(Directory root, String? baseline) async {
+    if (baseline == null) {
+      throw _failure(
+        'baseline_unavailable',
+        'The live Environment has no retained Task baseline.',
+      );
+    }
+    if (!RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(baseline)) {
+      throw _failure(
+        'invalid_baseline',
+        'The retained Task baseline is not an exact commit identity.',
+      );
+    }
+    final String type;
+    try {
+      type = _decode((await git(root, ['cat-file', '-t', baseline])).bytes);
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'git_failed') rethrow;
+      throw _failure(
+        'baseline_unavailable',
+        'The retained Task baseline commit is unavailable.',
+      );
+    }
+    if (type != 'commit\n') {
+      throw _failure(
+        'invalid_baseline',
+        'The retained Task baseline is not an exact commit identity.',
+      );
+    }
   }
 
   Future<({String commit, String reference})> _readHead(Directory root) async {
@@ -364,16 +442,12 @@ final class _SnapshotOperation {
     return (commit: commit.trim(), reference: reference);
   }
 
-  Future<Map<String, GitIndexEntry>> _headTree(Directory root) async {
+  Future<Map<String, GitIndexEntry>> _tree(
+    Directory root,
+    String commit,
+  ) async {
     final raw = _decode(
-      (await git(root, [
-        'ls-tree',
-        '-r',
-        '-z',
-        _head!.commit,
-        '--',
-        '.',
-      ])).bytes,
+      (await git(root, ['ls-tree', '-r', '-z', commit, '--', '.'])).bytes,
     );
     final entries = <String, GitIndexEntry>{};
     final header = RegExp(
@@ -384,7 +458,7 @@ final class _SnapshotOperation {
       if (entries.length >= limits.inventoryEntries) {
         throw _failure(
           'inventory_too_large',
-          'The HEAD inventory exceeds the supported entry count.',
+          'The tree inventory exceeds the supported entry count.',
         );
       }
       final nul = raw.indexOf('\u0000', offset);
@@ -602,7 +676,7 @@ final class _SnapshotOperation {
         return null;
       }
     }
-    // D3 charges inspected changed sides even if the other side is oversized;
+    // Layered snapshots charge changed sides even if the other is oversized;
     // D1 retains its text-only accounting in _textFile.
     if (_head != null) _chargeContent(current.length);
     final old = await _blob(root, change.oid);
@@ -622,14 +696,14 @@ final class _SnapshotOperation {
     return result;
   }
 
-  Future<ChangedFile?> _stagedFile(
+  Future<ChangedFile?> _objectFile(
     Directory root,
     String path,
     GitIndexEntry? old,
     GitIndexEntry? current,
   ) async {
-    // Intent-to-add and untracked records have no staged blob. The cached
-    // inventory, never worktree bytes, supplies the right side of this layer.
+    // Immutable tree/index inventories supply both sides, never worktree bytes.
+    // Intent-to-add and untracked records have no staged blob.
     if (current?.oid.isEmpty ?? false) current = null;
     if (old == null && current == null) return null;
     if (old != null &&
@@ -678,7 +752,7 @@ final class _SnapshotOperation {
     if (left == null || right == null) {
       return placeholder(
         'oversized',
-        'A staged file side exceeds the supported size.',
+        'A file side exceeds the supported size.',
       );
     }
     return _textFile(root, path, kind, left, right);
@@ -933,6 +1007,8 @@ final class _SnapshotOperation {
         readOnlyInspection: true,
       ),
       'PWD': directory.path,
+      // Also deny transports on Git versions predating GIT_NO_LAZY_FETCH.
+      'GIT_ALLOW_PROTOCOL': '',
       if (detached) 'GIT_CEILING_DIRECTORIES': directory.parent.path,
       if (detached) ...{
         'GIT_CONFIG_NOSYSTEM': '1',

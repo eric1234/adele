@@ -15,6 +15,8 @@ final class WorktreeEnvironment {
     Directory root, {
     Directory? gitWorktreeRoot,
     Directory? gitDirectory,
+    this.baselineCommit,
+    this.branch,
   }) : root = _canonicalRoot(root),
        gitWorktreeRoot = gitWorktreeRoot == null
            ? null
@@ -27,6 +29,9 @@ final class WorktreeEnvironment {
   // Provider-established repository identity, never inferred from caller paths.
   final Directory? gitWorktreeRoot;
   final Directory? gitDirectory;
+  // Exact retained provider state. Filesystem-only fixtures need neither value.
+  final String? baselineCommit;
+  final String? branch;
   Future<void> _pendingMutation = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {

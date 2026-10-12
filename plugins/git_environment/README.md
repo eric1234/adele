@@ -69,6 +69,13 @@ directory, exact branch, exact baseline commit, and confined selected source sco
 before binding a fresh `WorktreeEnvironment`. Successful restoration returns
 canonical relative v1 state, normally unchanged by a move.
 
+Establishment and restoration copy the exact retained `baselineCommit` and `branch`
+into that live object alongside its canonical filesystem and Git roots. Later
+commits do not advance this baseline. Independent Environments, including ones in
+the same Task, retain their own baselines; no Task-wide registry or current-Project
+HEAD lookup supplies change review authority. This metadata changes neither the
+provider-state schema nor ordinary filesystem, execution, or terminal operations.
+
 A missing worktree fails explicitly. Restore never creates a replacement
 Environment, branch, worktree, or collision suffix. Unsupported/failed repair
 returns an Environment failure with bounded Git diagnostics. There is no global
@@ -97,8 +104,8 @@ core-owned lifecycle boundary.
 
 The same stock AOT backend advertises the Diff-owned
 `adele.diff.change-set-source` v1 Capability through
-`diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`
-and `snapshotUncommitted` methods.
+`diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`,
+`snapshotUncommitted`, and `snapshotTaskChanges` methods.
 Its separate `dev.adele.git.change-set-source` provider is explicitly associated
 with this generation's actual Git Environment provider. The contextual dispatcher
 uses `AuthorizedEnvironmentReadService.authority()` to select only an existing
@@ -140,15 +147,28 @@ in the separate conflicts collection, never as ordinary staged approval or
 unstaged changes. Existing unsupported index flags and modes remain conservative
 placeholders rather than fabricated hunks.
 
-Both layers are computed inside one contextual operation with one captured live
-Environment and repository identity, not independently resolved calls. The provider
-requires an established baseline commit; an unavailable current HEAD fails rather
-than manufacturing an empty history. HEAD is revalidated before settlement, along
-with the existing index, configuration, filesystem and authority checks.
+Task / Branch adds the net retained-baseline-tree to captured-HEAD-tree comparison
+as a separate committed layer, using the same bounded source-scoped tree enumeration,
+immutable blob reads, classification, and private patch generation as staged changes.
+It is not a log or a baseline-to-working-tree patch. Committed additions/deletions,
+mode changes and nontext placeholders remain distinct from later index and working
+edits, including changes that reverse earlier layers. Conflict paths are excluded
+from ordinary staged/unstaged layers without erasing independent committed changes.
 
-Text patches are actual deterministic Git unified hunks over bounded HEAD/index
-blobs and direct working-file snapshots. A private temporary directory outside the
-worktree supplies `git diff --no-index` with fixed literal filenames; Git does not
+All selected layers are computed inside one contextual operation with one captured
+live Environment and repository identity, not independently resolved calls. Task
+requires an exact, available baseline commit from that live object and an attached
+HEAD matching its retained provider branch. Missing/invalid baseline information,
+missing objects, detached HEAD and unexpected checkout fail explicitly; there is
+no HEAD substitution, merge-base inference, repair or branch switching. Unstaged
+and Uncommitted remain available without Task metadata. Uncommitted and Task require
+a valid current HEAD. HEAD, baseline availability for Task, index, configuration,
+observed files, exact live binding and authority are revalidated before settlement.
+
+Text patches are actual deterministic Git unified hunks over bounded
+baseline/HEAD/index blobs and direct working-file snapshots. A private temporary
+directory outside the worktree supplies `git diff --no-index` with fixed literal
+filenames; Git does not
 run repository clean filters, textconv, external diff, or attribute-selected diff
 drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
 used: both can execute clean filters while checking stat-racy files, even without
@@ -164,8 +184,9 @@ omitted before content classification. Newline absence is
 retained on the corresponding hunk line; line text otherwise preserves CR and LF
 semantics rather than normalizing file content. Effective `core.filemode=false`
 suppresses working-file executable-bit-only differences; actual HEAD/index mode
-differences remain visible in the staged layer. Repository settings override lower
-configuration scopes. Git executable state uses only the owner-execute bit.
+differences and baseline-to-HEAD mode differences remain visible in their layers.
+Repository settings override lower configuration scopes. Git executable state
+uses only the owner-execute bit.
 
 The snapshot subprocess path is separate from Environment foreground execution.
 `git_process_environment.dart` shares the existing placement isolation boundary,
@@ -184,8 +205,8 @@ or writes the source worktree; only its temporary snapshot copies are written an
 removed. Git executable selection through PATH is trusted, not sandboxed.
 
 Default per-operation limits are 4,096 retained inventory paths
-(HEAD and index records and their union with untracked paths are bounded),
-256 returned entries across both layers and conflicts,
+(baseline/HEAD trees, index records and their union with untracked paths are bounded),
+256 returned entries across all selected layers and conflicts,
 1 MiB per file side, 2 MiB collected stdout per command/patch, 64 KiB stderr counted
 without retaining diagnostics,
 8 MiB total compared inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
@@ -198,9 +219,10 @@ snapshot rather than returning a deceptively complete truncated result. An
 oversized tracked working file has explicitly unknown change state because its
 bytes cannot be compared within the bound, even if an external observer knows it
 is unchanged. Equal inspected files do not consume the changed-result byte budget.
-For Uncommitted these are shared operation limits, not fresh allowances for each
-layer. A path appearing in both layers counts twice toward the returned-entry
-limit. Content read for nontext placeholders is also charged by Uncommitted;
+For Uncommitted and Task these are shared operation limits, not fresh allowances
+for each layer. A path appearing in committed, staged, and unstaged layers counts
+three times toward the returned-entry limit. Content read for nontext placeholders
+is also charged by both layered scopes;
 Unstaged retains its existing text-result accounting. Aggregate overflow rejects
 the whole result, not just one section.
 

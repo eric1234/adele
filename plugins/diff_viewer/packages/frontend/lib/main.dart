@@ -58,7 +58,8 @@ class DiffPaneState extends State<DiffPane> {
     if (disposed) return;
     abandon();
     final captured = revision;
-    final uncommitted = scope == 'uncommitted';
+    final task = scope == 'task';
+    final uncommitted = task || scope == 'uncommitted';
     setState(() {
       status = 'loading';
       rows = [];
@@ -83,9 +84,16 @@ class DiffPaneState extends State<DiffPane> {
     final ChangeSetSourceServiceClient client = ChangeSetSourceServiceClient(
       EnvironmentCapabilityRequestChannel(selected),
     );
-    final result = await settleEnvironmentCapabilityOperation(
-      uncommitted ? client.snapshotUncommitted() : client.snapshotUnstaged(),
-    );
+    // Keep the selected Future in a local: nested conditionals misbox on the pin.
+    Future<Object?> operation;
+    if (task) {
+      operation = client.snapshotTaskChanges();
+    } else if (uncommitted) {
+      operation = client.snapshotUncommitted();
+    } else {
+      operation = client.snapshotUnstaged();
+    }
+    final result = await settleEnvironmentCapabilityOperation(operation);
     releaseEnvironmentCapabilityProvider(selected);
     if (disposed || captured != revision) return;
     handle = '';
@@ -96,9 +104,18 @@ class DiffPaneState extends State<DiffPane> {
       return;
     }
     final List<List<String>> next = [];
-    bool clean = false;
+    bool clean = true;
+    if (task) {
+      final snapshot = result[1] as TaskChangeSetSnapshot;
+      next.add(['section', 'Committed changes']);
+      appendFiles(next, snapshot.committed.files, false);
+      clean = snapshot.committed.files.isEmpty;
+      if (clean) next.add(['status', 'No committed changes.']);
+    }
     if (uncommitted) {
-      final snapshot = result[1] as UncommittedChangeSetSnapshot;
+      final snapshot = task
+          ? (result[1] as TaskChangeSetSnapshot).uncommitted
+          : result[1] as UncommittedChangeSetSnapshot;
       next.add(['section', 'Staged changes']);
       appendFiles(next, snapshot.staged.files, false);
       if (snapshot.staged.files.isEmpty) {
@@ -113,6 +130,7 @@ class DiffPaneState extends State<DiffPane> {
       appendFiles(next, snapshot.conflicts, false);
       if (snapshot.conflicts.isEmpty) next.add(['status', 'No conflicts.']);
       clean =
+          clean &&
           snapshot.staged.files.isEmpty &&
           snapshot.unstaged.files.isEmpty &&
           snapshot.conflicts.isEmpty;
@@ -291,9 +309,23 @@ class DiffPaneState extends State<DiffPane> {
               ),
             ),
           ),
-          TextButton(onPressed: refresh, child: Text('Refresh')),
+          Expanded(
+            flex: 1,
+            child: TextButton(
+              onPressed: () => selectScope('task'),
+              child: Text(
+                'Task / Branch',
+                style: TextStyle(
+                  fontWeight: scope == 'task'
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
+          ),
         ],
       ),
+      TextButton(onPressed: refresh, child: Text('Refresh')),
       if (status == 'loading') Text('Loading $scope changes...'),
       if (status == 'unavailable')
         Text('Diff unavailable for this Environment.'),
