@@ -4,9 +4,9 @@ Role: Canonical architecture
 
 Implementation status: Declarative ordinary scalar settings, immutable catalogs,
 default/global resolution, conditional global TOML persistence, and prepared-plugin
-declaration discovery are implemented. Desktop Main Content frontends can read
-owner-scoped startup values; Source Editor folding is the first consumer.
-Settings UI and Profiles remain unimplemented.
+declaration discovery are implemented, with an application-owned Global Settings
+dialog. Desktop Main Content frontends read owner-scoped startup values; Source
+Editor folding is the first consumer. Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -124,7 +124,7 @@ collisions fail catalog aggregation explicitly. See [plugin layout](plugin-layou
 and the [runtime schema owner](../../packages/plugin_runtime/README.md#prepared-catalog).
 
 The desktop captures default/global resolution once at frontend startup, with
-synchronous store/document operations in a short-lived host I/O isolate. Prepared
+synchronous store/document operations in its shared host I/O worker. Prepared
 Main Content receives read-only scalar access bound to its exact owning installation
 and validated declarations, including finite operations before panes are published.
 Invalid known values fail the owning frontend, not a silent default or a backend
@@ -200,6 +200,38 @@ type-specific validation, label, optional description, and product category/sect
 Category and section need not follow plugin ownership. Future declarations may add
 search metadata, allowed scopes, merge/apply behavior, and portability/sensitivity
 metadata; these remain illustrative categories, not implemented API fields.
+
+The application header opens a host-owned **Global Settings** dialog, independently
+of Project, Session, or executable frontend availability. It uses the same prepared
+installation catalog as normal startup, without rediscovery. Categories and sections
+come from declaration metadata, not plugin IDs. Generic Boolean, bounded integer,
+multiline string, and enumeration controls edit drafts; enum labels are presentation
+only and stable values are persisted. Effective values and Default/Global provenance
+remain separate from unsaved drafts. Search filters labels, descriptions, categories,
+sections, and IDs without discarding hidden drafts.
+
+Each setting has explicit Save and Reset actions. Save validates through its
+definition and creates an explicit Global override, even when equal to the default.
+Reset removes a supported scalar override instead of writing a default. The dialog
+loads current disk contents when opened; Reload deliberately replaces the editing
+snapshot and discards drafts. These snapshots are separate from startup consumer
+values. Opening or dismissing Settings does not navigate a Session or reconstruct
+its workbench. Saved changes require restarting ADELE, including for Source editors
+opened later in the same application; no live notification or reconfiguration is
+implemented.
+
+Malformed TOML and I/O failures prevent editing, rather than becoming an empty
+document. Invalid known overrides have no displayed effective value and can be
+reset when the existing scalar document API supports removal. Unsupported structures
+remain explicit failures requiring manual correction. Diagnostics include the
+configuration path where available. Schema issues remain visible without hiding
+healthy declarations; duplicate IDs reject aggregation rather than choosing a
+winner. Installation repairs require restart, while configuration repairs can be
+reloaded. Whole-document save conflicts leave external content untouched and require
+explicit Reload; there is no retry, merge, or file watcher.
+Other save failures also require Reload: cleanup or transport can fail after
+publication, so an unconfirmed result must not be presented as proof that nothing
+was persisted. The prior loaded values remain visible until that explicit read.
 
 Plugins may supply custom editors where generic editing is inadequate. Such UI
 must use host-owned configuration and persistence APIs, not establish a separate
@@ -328,9 +360,24 @@ propagates whole-document conflicts without retry or merge. Unknown values are
 not scanned or rewritten. Unsupported known TOML values fail explicitly instead
 of causing structural repair, and no syntax/type coercion is performed. Ordinary
 scalar edits and explicit reset use the existing document operations and their
-preservation limits. The adapter remains synchronous on the owning host isolate;
-desktop startup runs its read-only load/resolve work off the UI isolate. Runtime
-bridges receive resolved immutable values, not the store or document.
+preservation limits. The adapter remains synchronous on the owning host isolate.
+Desktop [`GlobalSettingsService`](../../app/lib/core/global_settings_service.dart)
+leases one retained worker from the Flutter root isolate; all application owners
+share its serialized store operations, including owners with separate editing
+baselines. Independent root-isolate writers are rejected rather than relying on
+same-process filesystem locks. Only immutable scalar results, provenance, errors,
+and opaque view revisions cross back to presentation. Stores and whole-document
+baselines remain in the worker. Startup and Settings use the same captured storage
+roots; tests inject temporary roots at application composition.
+
+Closing the dialog only disposes presentation, not the service or an admitted
+transaction. Application shutdown fences new requests, drains admitted work, and
+awaits worker exit when the last owner releases it. Reopening Settings queues a
+fresh read after any previous admitted operation. Linux remains the changed-save
+path; other platforms report unsupported writes rather than success. Runtime
+bridges receive resolved immutable values, not the store or document. The standalone
+read-only prepared snapshot loader can still use a short-lived isolate for isolated
+hosts/tests; it is not an additional application writer.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
@@ -431,6 +478,9 @@ Implemented foundations and current limits:
   Editor applies folding availability at native editor construction. Settings-file
   changes require an application restart, and retained documents are not recreated
   or live-updated to change folding.
+- The host-owned Global Settings dialog edits those declarations through the shared
+  asynchronous configuration owner, with current persisted provenance, per-setting
+  save/reset, explicit reload, and non-destructive error/conflict handling.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
@@ -443,7 +493,7 @@ Implemented foundations and current limits:
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
 Not implemented: Profile manager/persistence, profile-aware activation,
-Settings UI, configured-instance management UI,
+configured-instance management UI,
 profile-aware provider routing, or production workbench-state persistence.
 
 ## Deferred decisions

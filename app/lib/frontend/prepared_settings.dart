@@ -7,10 +7,45 @@ import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../core/global_settings_service.dart';
+
 /// One read-only startup snapshot, not a watcher or a configuration writer.
-/// Only ordinary immutable values/errors cross the short-lived host I/O isolate.
+/// Normal startup captures the application's settings owner; standalone loading
+/// uses a short-lived read-only isolate for independent prepared-host consumers.
 final class PreparedSettingsSnapshot {
   PreparedSettingsSnapshot._(this._catalog, this._values, this._failures);
+
+  factory PreparedSettingsSnapshot.fromView(
+    PreparedPluginCatalog catalog,
+    GlobalSettingsView view,
+  ) {
+    final definitions = catalog.settings.definitions;
+    if (definitions.length != view.catalog.definitions.length ||
+        definitions.any(
+          (definition) =>
+              !identical(definition, view.catalog.definition(definition.id)),
+        )) {
+      throw ArgumentError(
+        'Settings belong to another prepared catalog snapshot.',
+      );
+    }
+    return PreparedSettingsSnapshot._(catalog, view.values, view.failures);
+  }
+
+  factory PreparedSettingsSnapshot.fromFailure(
+    PreparedPluginCatalog catalog,
+    Object error,
+  ) => PreparedSettingsSnapshot._(
+    catalog,
+    const {},
+    Map.unmodifiable({
+      for (final installation in catalog.installations)
+        for (final definition
+            in installation.settingsSchema?.definitions ??
+                <SettingDefinition<Object>>[])
+          definition.id: error,
+    }),
+  );
 
   final PreparedPluginCatalog _catalog;
   final Map<SettingId, ResolvedSetting<Object>> _values;
