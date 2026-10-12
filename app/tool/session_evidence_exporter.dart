@@ -33,6 +33,7 @@ final class SessionEvidenceExporter {
   late final StreamSubscription<ApplicationPluginState> _changes;
   InstalledBackendActivation? _backend;
   ExtensionRegistration? _registration;
+  StreamController<void>? _availabilityChanges;
   void Function()? _detachBackend;
   DialogRoute<bool>? _confirmation;
   bool _pending = false;
@@ -57,6 +58,7 @@ final class SessionEvidenceExporter {
     _retireCommand();
     if (ready == null) return;
     final backend = _backend = ready;
+    final changes = _availabilityChanges = StreamController<void>.broadcast();
     _detachBackend = backend.onRetire(_retireCommand);
     _registration = runtime.extensions.register(
       point: commandContributions,
@@ -65,7 +67,8 @@ final class SessionEvidenceExporter {
         id: exportSessionEvidenceCommandId,
         label: 'Export Session Evidence...',
         availability: () => _availability(backend),
-        invoke: () => _export(backend),
+        availabilityChanges: changes.stream,
+        invoke: () => _export(backend, changes),
       ),
     );
   }
@@ -94,6 +97,9 @@ final class SessionEvidenceExporter {
     final registration = _registration;
     _registration = null;
     if (registration != null) unawaited(registration.close());
+    final changes = _availabilityChanges;
+    _availabilityChanges = null;
+    if (changes != null) unawaited(changes.close());
   }
 
   void _validateWindow() {
@@ -102,7 +108,10 @@ final class SessionEvidenceExporter {
     }
   }
 
-  Future<void> _export(InstalledBackendActivation backend) async {
+  Future<void> _export(
+    InstalledBackendActivation backend,
+    StreamController<void> changes,
+  ) async {
     // Capture both selection epoch and route synchronously at Command admission.
     _validateWindow();
     if (_pending) throw StateError('An export is already pending.');
@@ -118,6 +127,7 @@ final class SessionEvidenceExporter {
     );
     final client = SessionEvaluatorServiceClient(_EvidenceChannel(channel));
     _pending = true;
+    changes.add(null);
     try {
       if (!await _confirm()) return;
       channel.validate();
@@ -146,6 +156,7 @@ final class SessionEvidenceExporter {
     } finally {
       _writing = null;
       _pending = false;
+      if (!_closed && context.isActive && !changes.isClosed) changes.add(null);
     }
   }
 

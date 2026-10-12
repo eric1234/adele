@@ -847,7 +847,11 @@ and Escape dismisses the dialog. Query edits select the best result; registry
 changes rerank membership while preserving only exact selections. Keyed rows
 retain Tab-focus identity across reordering; a replacement requires fresh user
 selection and cannot inherit the retired row's callback authority.
-Availability is reevaluated on build and before invocation, not polled.
+Availability is reevaluated on build and before invocation, not polled. The palette
+also listens to optional `availabilityChanges` signals from unique live Command
+registrations, including hidden and search-filtered entries, to refresh their
+current callback state. It cancels subscriptions on conflict, retirement, or palette
+disposal; signals never replace exact invocation admission.
 
 Dismissal returns an exact resolved Command to application dispatch, allowing the
 invoked operation to present its own input. Navigation and exit dismiss/fence the

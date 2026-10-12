@@ -920,6 +920,146 @@ void main() {
       expectNoStaging();
     });
 
+    for (final outcome in ['cancel', 'success', 'collection failure']) {
+      testWidgets('pending export $outcome refreshes the same searched palette '
+          'row and permits another selection', (tester) async {
+        final other = otherSession();
+        late Map<String, Object?> expected;
+        await tester.runAsync(() async {
+          await chat.appendUserMessage(session.id.value, 'ONLY-A');
+          await chat.appendUserMessage(other.id.value, 'ONLY-B');
+          expected = await collect(session);
+        });
+        if (outcome == 'collection failure') {
+          _inspect(
+            source,
+            (database) => database.execute(
+              'UPDATE adele_schema_versions SET version = 99 WHERE owner_id = ?',
+              [_chatPlugin],
+            ),
+            write: true,
+          );
+        }
+        final before = _inspect(source, _snapshot);
+        final destination = File('${source.path}/live-availability.json')
+          ..writeAsStringSync('previous destination');
+        final selection = Completer<FileSaveLocation?>();
+        picker.pick = () => selection.future;
+        window.presentSession(session);
+        await mount(tester);
+        final command = commands.resolve(exportSessionEvidenceCommandId);
+        final availability = command.binding.value.availabilityChanges!;
+        expect(availability.isBroadcast, isTrue);
+        final changes = <CommandAvailability>[];
+        final subscription = availability.listen(
+          (_) => changes.add(command.availability),
+        );
+        addTearDown(subscription.cancel);
+
+        await openPalette(tester);
+        await tester.tap(find.text('Export Session Evidence...'));
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          final selected = (await paletteSelection)!;
+          expect(selected.binding.isSameRegistration(command.binding), isTrue);
+          exporting = selected.invoke();
+        });
+        await tester.pumpAndSettle();
+        window.presentSession(other);
+        await continueExport(tester);
+        await openPalette(tester);
+        final search = find.byKey(const ValueKey('command-palette-search'));
+        await tester.enterText(search, 'session evidence');
+        await tester.pumpAndSettle();
+        final palette = tester.element(find.byType(CommandPalette));
+        final row = find.widgetWithText(ListTile, 'Export Session Evidence...');
+        final rowElement = tester.element(row);
+        final field = tester.widget<TextField>(search);
+        final pendingRow = tester.widget<ListTile>(row);
+        expect(pendingRow.enabled, isFalse);
+        expect(pendingRow.onTap, isNull);
+        expect(pendingRow.selected, isTrue);
+        expect(find.text('Unavailable'), findsOneWidget);
+        expect(changes, [CommandAvailability.disabled]);
+        await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+        expect(picker.calls, 1);
+        expect(destination.readAsStringSync(), 'previous destination');
+
+        // No typing, navigation, or palette reopening after the pending row is
+        // rendered: only the contribution's invalidation can refresh its state.
+        selection.complete(
+          outcome == 'cancel' ? null : FileSaveLocation(destination.path),
+        );
+        await finish(tester);
+        expect(tester.element(find.byType(CommandPalette)), same(palette));
+        expect(tester.element(row), same(rowElement));
+        final refreshedField = tester.widget<TextField>(search);
+        expect(refreshedField.controller, same(field.controller));
+        expect(refreshedField.controller!.text, 'session evidence');
+        expect(refreshedField.focusNode, same(field.focusNode));
+        expect(refreshedField.focusNode!.hasFocus, isTrue);
+        final enabledRow = tester.widget<ListTile>(row);
+        expect(enabledRow.key, pendingRow.key);
+        expect(enabledRow.enabled, isTrue);
+        expect(enabledRow.onTap, isNotNull);
+        expect(enabledRow.selected, isTrue);
+        expect(find.text('Unavailable'), findsNothing);
+        expect(changes, [
+          CommandAvailability.disabled,
+          CommandAvailability.enabled,
+        ]);
+        expect(runtime.extensions.discover(commandContributions), hasLength(1));
+        expect(
+          commands
+              .resolve(exportSessionEvidenceCommandId)
+              .binding
+              .isSameRegistration(command.binding),
+          isTrue,
+        );
+        expect(window.context.snapshot.session, same(other));
+        if (outcome == 'success') {
+          expect(destination.readAsStringSync(), jsonEncode(expected));
+          expect(_map(expected['identity'])['session_id'], session.id.value);
+          expect(destination.readAsStringSync(), isNot(contains('ONLY-B')));
+          expect(find.text('Session evidence exported.'), findsOneWidget);
+        } else {
+          expect(destination.readAsStringSync(), 'previous destination');
+          if (outcome == 'collection failure') {
+            expect(
+              find.text('Session evidence could not be exported.'),
+              findsOneWidget,
+            );
+          } else {
+            expectNoFeedback();
+          }
+        }
+
+        await tester.tap(row);
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          final selected = (await paletteSelection)!;
+          expect(selected.binding.isSameRegistration(command.binding), isTrue);
+          exporting = selected.invoke();
+        });
+        await tester.pumpAndSettle();
+        expect(find.byType(CommandPalette), findsNothing);
+        expect(find.text('Export Session Evidence'), findsOneWidget);
+        expect(command.availability, CommandAvailability.disabled);
+        await tester.tap(find.text('Cancel'));
+        await finish(tester);
+        expect(command.availability, CommandAvailability.enabled);
+        expect(changes, [
+          CommandAvailability.disabled,
+          CommandAvailability.enabled,
+          CommandAvailability.disabled,
+          CommandAvailability.enabled,
+        ]);
+        expect(picker.calls, 1);
+        expect(_inspect(source, _snapshot), before);
+        expectNoStaging();
+      });
+    }
+
     testWidgets('captures A before confirmation and picker; B and A reentry '
         'never redirect the export, and a fresh command captures B', (
       tester,
@@ -1111,12 +1251,21 @@ void main() {
         window.presentSession(session);
         await mount(tester);
         final command = commands.resolve(exportSessionEvidenceCommandId);
+        final signals = <String>[];
+        final subscription = command.binding.value.availabilityChanges!.listen(
+          (_) => signals.add('changed'),
+          onDone: () => signals.add('closed'),
+        );
+        addTearDown(subscription.cancel);
         await invoke(tester);
         await continueExport(tester);
+        expect(signals, ['changed']);
         await tester.runAsync(() async {
           await (closeExporter ? exporter.close() : runtime.plugins.close())
               .timeout(const Duration(seconds: 10));
         });
+        await tester.pumpAndSettle();
+        expect(signals, ['changed', 'closed']);
         expect(selection.isCompleted, isFalse);
         expect(
           () => commands.resolve(exportSessionEvidenceCommandId),
@@ -1128,6 +1277,7 @@ void main() {
         );
         selection.complete(FileSaveLocation(destination.path));
         await finish(tester);
+        expect(signals, ['changed', 'closed']);
         expect(destination.readAsStringSync(), 'untouched destination');
         expect(_inspect(source, _snapshot), before);
         expect(picker.calls, 1);
@@ -1152,9 +1302,18 @@ void main() {
     ) async {
       window.presentSession(session);
       await mount(tester);
+      final command = commands.resolve(exportSessionEvidenceCommandId);
+      final signals = <String>[];
+      final subscription = command.binding.value.availabilityChanges!.listen(
+        (_) => signals.add('changed'),
+        onDone: () => signals.add('closed'),
+      );
+      addTearDown(subscription.cancel);
       await invoke(tester);
+      expect(signals, ['changed']);
       await tester.runAsync(exporter.close);
       await finish(tester);
+      expect(signals, ['changed', 'closed']);
       expect(find.byType(AlertDialog), findsNothing);
       expect(picker.calls, 0);
       expectNoFeedback();

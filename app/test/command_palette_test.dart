@@ -36,6 +36,7 @@ void main() {
     String id,
     String label, {
     CommandAvailability Function()? availability,
+    Stream<void>? availabilityChanges,
     FutureOr<void> Function()? invoke,
     String? registrationId,
   }) {
@@ -46,6 +47,7 @@ void main() {
         id: CommandId('test.command.$id'),
         label: label,
         availability: availability ?? () => CommandAvailability.enabled,
+        availabilityChanges: availabilityChanges,
         invoke: invoke ?? () {},
       ),
     );
@@ -758,6 +760,240 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'availability invalidation preserves query ranking and exact selection',
+    (tester) async {
+      final changes = StreamController<void>.broadcast();
+      addTearDown(changes.close);
+      var enabled = true;
+      final calls = <String>[];
+      contribute('first', 'NT', invoke: () => calls.add('first'));
+      contribute(
+        'changing',
+        'New Terminal',
+        availability: () => enabled
+            ? CommandAvailability.enabled
+            : CommandAvailability.disabled,
+        availabilityChanges: changes.stream,
+        invoke: () => calls.add('changing'),
+      );
+      await mount(tester);
+      await open(tester);
+      await tester.enterText(search, ' nt ');
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      final order = resultIds(tester);
+      final row = find.widgetWithText(ListTile, 'New Terminal');
+      final element = tester.element(row);
+      final focus = FocusManager.instance.primaryFocus;
+      final command = commands.resolve(CommandId('test.command.changing'));
+      for (final value in [false, true]) {
+        enabled = value;
+        changes.add(null);
+        await tester.pumpAndSettle();
+        expect(tester.widget<ListTile>(row).enabled, value);
+        expect(tester.widget<ListTile>(row).selected, isTrue);
+        expect(tester.element(row), same(element));
+        expect(FocusManager.instance.primaryFocus, same(focus));
+        expect(tester.widget<TextField>(search).controller!.text, ' nt ');
+        expect(resultIds(tester), order);
+        expect(
+          command.binding.isSameRegistration(
+            commands.resolve(command.id).binding,
+          ),
+          isTrue,
+        );
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(calls, ['changing']);
+      expect(changes.hasListener, isFalse);
+      await open(tester);
+      expect(changes.hasListener, isTrue);
+      await tester.tap(find.text('NT'));
+      await tester.pumpAndSettle();
+      expect(calls, ['changing', 'first']);
+      expect(changes.hasListener, isFalse);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'availability subscriptions follow unique membership not result filtering',
+    (tester) async {
+      var listens = 0;
+      var cancellations = 0;
+      final changes = StreamController<void>.broadcast(
+        onListen: () => listens++,
+        onCancel: () => cancellations++,
+      );
+      final conflictChanges = StreamController<void>.broadcast();
+      addTearDown(changes.close);
+      addTearDown(conflictChanges.close);
+      var availability = CommandAvailability.hidden;
+      contribute(
+        'signaled',
+        'Signaled operation',
+        availability: () => availability,
+        availabilityChanges: changes.stream,
+      );
+      contribute('plain', 'Plain operation');
+      await mount(tester);
+      expect(changes.hasListener, isFalse);
+      await open(tester);
+      expect(changes.hasListener, isTrue);
+      expect(listens, 1);
+      await tester.enterText(search, 'plain');
+      await tester.pumpAndSettle();
+      expect(changes.hasListener, isTrue);
+      await tester.enterText(search, 'signaled');
+      await tester.pumpAndSettle();
+      expect(find.text('Signaled operation'), findsNothing);
+      availability = CommandAvailability.enabled;
+      changes.add(null);
+      await tester.pumpAndSettle();
+      expect(find.text('Signaled operation'), findsOneWidget);
+      expect(listens, 1);
+
+      final conflict = contribute(
+        'signaled',
+        'Conflicting operation',
+        registrationId: 'test.conflicting-signal',
+        availabilityChanges: conflictChanges.stream,
+      );
+      changes.add(null);
+      await tester.pumpAndSettle();
+      expect(find.text('Signaled operation'), findsNothing);
+      expect(changes.hasListener, isFalse);
+      expect(conflictChanges.hasListener, isFalse);
+      expect(cancellations, 1);
+      await conflict.close();
+      await tester.pumpAndSettle();
+      expect(find.text('Signaled operation'), findsOneWidget);
+      expect(changes.hasListener, isTrue);
+      expect(listens, 2);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(changes.hasListener, isFalse);
+      expect(cancellations, 2);
+      changes.add(null);
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
+      await open(tester);
+      expect(listens, 3);
+      await unmount(tester);
+      expect(changes.hasListener, isFalse);
+      expect(cancellations, 3);
+    },
+  );
+
+  testWidgets('availability refresh retains a live result row focus', (
+    tester,
+  ) async {
+    final changes = StreamController<void>.broadcast();
+    addTearDown(changes.close);
+    contribute(
+      'focused',
+      'Focused operation',
+      availabilityChanges: changes.stream,
+    );
+    await mount(tester);
+    await open(tester);
+    await tester.enterText(search, 'fop');
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    final row = find.widgetWithText(ListTile, 'Focused operation');
+    final element = tester.element(row);
+    final focus = FocusManager.instance.primaryFocus!;
+    expect(
+      find.ancestor(
+        of: find.byElementPredicate((element) => element == focus.context),
+        matching: row,
+      ),
+      findsOneWidget,
+    );
+    changes.add(null);
+    await tester.pumpAndSettle();
+    expect(tester.element(row), same(element));
+    expect(FocusManager.instance.primaryFocus, same(focus));
+    expect(focus.hasPrimaryFocus, isTrue);
+    expect(tester.widget<TextField>(search).controller!.text, 'fop');
+    await unmount(tester);
+  });
+
+  testWidgets('retired invalidations cannot refresh or select a replacement', (
+    tester,
+  ) async {
+    final oldChanges = StreamController<void>.broadcast();
+    final newChanges = StreamController<void>.broadcast();
+    addTearDown(oldChanges.close);
+    addTearDown(newChanges.close);
+    var oldCalls = 0;
+    var newCalls = 0;
+    var evaluations = 0;
+    var enabled = false;
+    final old = contribute(
+      'reused',
+      'Reused operation',
+      availabilityChanges: oldChanges.stream,
+      invoke: () => oldCalls++,
+    );
+    await mount(tester);
+    await open(tester);
+    final row = find.widgetWithText(ListTile, 'Reused operation');
+    final oldElement = tester.element(row);
+    final staleTap = tester.widget<ListTile>(row).onTap!;
+    final staleCommand = commands.resolve(CommandId('test.command.reused'));
+    oldChanges.add(null);
+    await old.close();
+    expect(oldChanges.hasListener, isFalse);
+    contribute(
+      'reused',
+      'Reused operation',
+      availabilityChanges: newChanges.stream,
+      availability: () {
+        evaluations++;
+        return enabled
+            ? CommandAvailability.enabled
+            : CommandAvailability.disabled;
+      },
+      invoke: () => newCalls++,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.element(row), isNot(same(oldElement)));
+    expect(tester.widget<ListTile>(row).selected, isFalse);
+    expect(tester.widget<ListTile>(row).enabled, isFalse);
+    expect(newChanges.hasListener, isTrue);
+    final priorEvaluations = evaluations;
+    enabled = true;
+    oldChanges.add(null);
+    await tester.pumpAndSettle();
+    expect(evaluations, priorEvaluations);
+    expect(tester.widget<ListTile>(row).enabled, isFalse);
+    await expectLater(
+      staleCommand.invoke(),
+      throwsA(isA<StaleExtensionBinding>()),
+    );
+    staleTap();
+    await tester.pumpAndSettle();
+    expect(oldCalls, 0);
+    expect(newCalls, 0);
+    newChanges.add(null);
+    await tester.pumpAndSettle();
+    expect(tester.widget<ListTile>(row).enabled, isTrue);
+    expect(tester.widget<ListTile>(row).selected, isFalse);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(newCalls, 0);
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(newCalls, 1);
+    expect(newChanges.hasListener, isFalse);
+    await unmount(tester);
+  });
 
   testWidgets('invocation re-evaluates availability without a notification', (
     tester,

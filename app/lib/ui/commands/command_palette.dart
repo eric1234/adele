@@ -26,6 +26,7 @@ final class CommandPalette extends StatefulWidget {
 final class _CommandPaletteState extends State<CommandPalette> {
   late final CommandResolver _commands = CommandResolver(widget.extensions);
   late final StreamSubscription<void> _changes;
+  final _availabilityObservers = <ResolvedCommand, void Function()>{};
   final _search = TextEditingController();
   final _focus = FocusNode();
   final _scroll = ScrollController();
@@ -38,13 +39,65 @@ final class _CommandPaletteState extends State<CommandPalette> {
   void initState() {
     super.initState();
     _changes = widget.extensions.changes.listen((_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        _observeAvailability();
+        setState(() {});
+      }
     });
+    _observeAvailability();
+  }
+
+  void _observeAvailability() {
+    final commands = _commands.discover();
+    for (final command in _availabilityObservers.keys.toList()) {
+      if (!commands.any(
+        (current) => current.binding.isSameRegistration(command.binding),
+      )) {
+        _availabilityObservers.remove(command)!();
+      }
+    }
+    // Hidden and search-filtered commands must also be able to invalidate.
+    for (final command in commands) {
+      final changes = command.binding.value.availabilityChanges;
+      if (changes == null ||
+          _availabilityObservers.keys.any(
+            (current) => current.binding.isSameRegistration(command.binding),
+          )) {
+        continue;
+      }
+      void invalidate() {
+        if (!mounted || !_availabilityObservers.containsKey(command)) return;
+        try {
+          final current = _commands.resolve(command.id);
+          if (!current.binding.isSameRegistration(command.binding)) return;
+        } on Object {
+          return;
+        }
+        setState(() {});
+      }
+
+      final subscription = changes.listen(
+        (_) => invalidate(),
+        onError: (Object _) => invalidate(),
+      );
+      final detach = command.binding.onRetire(() {
+        _availabilityObservers.remove(command)?.call();
+      });
+      _availabilityObservers[command] = () {
+        detach();
+        unawaited(subscription.cancel());
+      };
+    }
   }
 
   @override
   void dispose() {
     unawaited(_changes.cancel());
+    final observers = _availabilityObservers.values.toList();
+    _availabilityObservers.clear();
+    for (final detach in observers) {
+      detach();
+    }
     _search.dispose();
     _focus.dispose();
     _scroll.dispose();
