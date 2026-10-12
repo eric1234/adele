@@ -788,6 +788,7 @@ Future<void> main(List<String> arguments) async {
               if (arguments.first == 'run') '-d',
               target,
               '--$mode',
+              if (target == 'linux') '--target=tool/development_main.dart',
               ...defines,
             ],
             workingDirectory: 'app',

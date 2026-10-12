@@ -30,6 +30,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/backend_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
+import '../tool/development_main.dart' as development;
 import '../tool/task_browser_frontend_compiler.dart';
 import 'fixtures/window_session_command.dart';
 import 'support/command_palette_shortcut.dart';
@@ -538,35 +539,41 @@ void main() {
     );
   }
 
-  testWidgets('normal entrypoint renders the pre-Project shell', (
-    WidgetTester tester,
-  ) async {
-    application.main();
-    await tester.pumpAndSettle();
+  for (final (name, launch) in [
+    ('normal', application.main),
+    ('development', development.main),
+  ]) {
+    testWidgets('$name entrypoint renders the pre-Project shell', (
+      WidgetTester tester,
+    ) async {
+      launch();
+      await tester.pumpAndSettle();
 
-    final theme = Theme.of(tester.element(find.byType(Scaffold)));
-    expect(theme.useMaterial3, isTrue);
-    expect(theme.brightness, Brightness.light);
-    expect(find.text('ADELE'), findsOneWidget);
-    expect(find.text('No Project is open'), findsOneWidget);
-    expect(find.text('Open Local Directory...'), findsNothing);
-    expect(find.text('No Project selectors are available.'), findsOneWidget);
-    expect(find.text('No workspace is open'), findsNothing);
-    expect(find.text('No plugins are loaded'), findsNothing);
-    expect(find.text('Phase 0'), findsNothing);
+      final theme = Theme.of(tester.element(find.byType(Scaffold)));
+      expect(theme.useMaterial3, isTrue);
+      expect(theme.brightness, Brightness.light);
+      expect(find.text('ADELE'), findsOneWidget);
+      expect(find.text('No Project is open'), findsOneWidget);
+      expect(find.text('Open Local Directory...'), findsNothing);
+      expect(find.text('No Project selectors are available.'), findsOneWidget);
+      expect(find.text('No workspace is open'), findsNothing);
+      expect(find.text('No plugins are loaded'), findsNothing);
+      expect(find.text('Phase 0'), findsNothing);
 
-    await tester.binding.setSurfaceSize(const Size(360, 640));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pump();
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      await tester.binding.setSurfaceSize(const Size(360, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
 
   testWidgets('owns one provider-free runtime across rebuilds and disposal', (
     WidgetTester tester,
   ) async {
     final NativeAdeleRuntime runtime = NativeAdeleRuntime();
     int creations = 0;
+    final navigator = GlobalKey<NavigatorState>();
     final contexts = <WindowSessionContext>[];
     var detachments = 0;
     void Function() attach(WindowSessionContext context) {
@@ -593,8 +600,11 @@ void main() {
       AdeleApplication(
         createRuntime: createRuntime,
         attachSessionContext: attach,
+        navigatorKey: navigator,
       ),
     );
+    final mountedNavigator = navigator.currentState;
+    expect(mountedNavigator, isNotNull);
     final context = contexts.single;
     expect(context.snapshot.session, isNull);
     expect(context.snapshot.revision, 0);
@@ -617,8 +627,10 @@ void main() {
       AdeleApplication(
         createRuntime: createRuntime,
         attachSessionContext: attach,
+        navigatorKey: GlobalKey<NavigatorState>(),
       ),
     );
+    expect(navigator.currentState, same(mountedNavigator));
     expect(creations, 1);
     expect(contexts, [same(context)]);
     expect(detachments, 0);
@@ -629,6 +641,7 @@ void main() {
     expect(() => context.snapshot, throwsStateError);
     expect(() => context.observe((_) {}), throwsStateError);
     expect(detachments, 1);
+    expect(navigator.currentState, isNull);
     expect(
       runtime.extensions.discover(orchestrationStrategyContributions),
       isEmpty,

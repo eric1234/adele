@@ -36,6 +36,11 @@ void main() {
       await _gitOutput(fixture.source, <String>['rev-parse', 'HEAD']),
     );
     final WorktreeEnvironment firstLive = liveObjects.resolve(first.id);
+    expect(
+      firstLive.baselineCommit,
+      firstResult.providerState['baselineCommit'],
+    );
+    expect(firstLive.branch, firstResult.providerState['branch']);
     final String retainedPath = firstLive.root.path;
     expect(retainedPath, isNot(fixture.source.path));
     expect(
@@ -165,6 +170,15 @@ void main() {
     );
 
     expect(generationB.liveObjects.resolve(first.id).root.path, retainedPath);
+    expect(
+      generationB.liveObjects.resolve(first.id).baselineCommit,
+      firstLive.baselineCommit,
+    );
+    expect(generationB.liveObjects.resolve(first.id).branch, firstLive.branch);
+    expect(
+      identical(generationB.liveObjects.resolve(first.id), firstLive),
+      isFalse,
+    );
     expect(restored.providerState, firstResult.providerState);
     expect(
       (await generationB.readFile(first.id, 'README.md')).text,
@@ -178,6 +192,121 @@ void main() {
       branch,
     );
   });
+
+  test(
+    'retains independent baselines after commits and fresh restoration',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final generationA = GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final first = _environment(
+        fixture.source.uri,
+        taskId: 'task-baselines',
+        environmentId: 'first-baseline',
+        title: 'Independent baselines',
+      );
+      final firstState = (await generationA.establish(first)).providerState;
+      final firstLive = generationA.liveObjects.resolve(first.id);
+      final baselineA = await _gitOutput(fixture.source, ['rev-parse', 'HEAD']);
+      expect(firstLive.baselineCommit, baselineA);
+
+      await File(
+        '${firstLive.root.path}/README.md',
+      ).writeAsString('Task commit\n');
+      await _gitOutput(firstLive.root, ['add', 'README.md']);
+      await _gitOutput(firstLive.root, ['commit', '-m', 'Task work']);
+      final taskHead = await _gitOutput(firstLive.root, ['rev-parse', 'HEAD']);
+      expect(taskHead, isNot(baselineA));
+      expect(firstLive.baselineCommit, baselineA);
+
+      await File(
+        '${fixture.source.path}/README.md',
+      ).writeAsString('New baseline\n');
+      await _gitOutput(fixture.source, ['add', 'README.md']);
+      await _gitOutput(fixture.source, [
+        'commit',
+        '-m',
+        'Advance Project source',
+      ]);
+      final baselineB = await _gitOutput(fixture.source, ['rev-parse', 'HEAD']);
+      final second = LocalEnvironment(
+        project: first.task.project,
+        task: first.task.value,
+        value: Environment(
+          id: EnvironmentId('second-baseline'),
+          taskId: first.task.id,
+          role: EnvironmentRole.additional,
+          providerId: first.providerId,
+          providerState: null,
+        ),
+      );
+      final secondState = (await generationA.establish(second)).providerState;
+      final secondLive = generationA.liveObjects.resolve(second.id);
+      expect(baselineB, isNot(baselineA));
+      expect(secondLive.baselineCommit, baselineB);
+      expect(secondLive.branch, isNot(firstLive.branch));
+      expect(firstLive.baselineCommit, baselineA);
+      _expectProviderState(first, firstState);
+      _expectProviderState(second, secondState);
+
+      await generationA.close();
+      expect(generationA.liveObjects.contains(first.id), isFalse);
+      expect(
+        () => generationA.readFile(first.id, 'README.md'),
+        throwsA(_failureWithCode('environment_provider_closed')),
+      );
+      final generationB = GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      for (final entry in [
+        (first, firstState, firstLive),
+        (second, secondState, secondLive),
+      ]) {
+        final restored = await generationB.restore(
+          _retainedEnvironment(entry.$1, entry.$2),
+        );
+        final live = generationB.liveObjects.resolve(entry.$1.id);
+        expect(restored.providerState, entry.$2);
+        expect(live.baselineCommit, entry.$3.baselineCommit);
+        expect(live.branch, entry.$3.branch);
+        expect(live.root.path, entry.$3.root.path);
+        expect(live.gitDirectory!.path, entry.$3.gitDirectory!.path);
+        expect(identical(live, entry.$3), isFalse);
+      }
+      expect(await _gitOutput(firstLive.root, ['rev-parse', 'HEAD']), taskHead);
+      expect(
+        (await generationB.readFile(first.id, 'README.md')).text,
+        'Task commit\n',
+      );
+      expect(
+        (await generationB.readFile(second.id, 'README.md')).text,
+        'New baseline\n',
+      );
+      final created = await generationB.createTextFile(
+        first.id,
+        'local.txt',
+        'local\n',
+      );
+      final replaced = await generationB.replaceExistingTextFile(
+        first.id,
+        'local.txt',
+        'edited\n',
+        created.revision,
+      );
+      expect(
+        (await generationB.readFile(first.id, 'local.txt')).revision,
+        replaced.revision,
+      );
+      expect(
+        generationB.liveObjects.resolve(first.id).baselineCommit,
+        baselineA,
+      );
+      expect(
+        generationB.liveObjects.resolve(second.id).baselineCommit,
+        baselineB,
+      );
+    },
+  );
 
   test('allocates distinct resources for colliding Environment IDs', () async {
     final ({Directory container, Directory source}) fixture =
@@ -714,6 +843,14 @@ void main() {
         expect(restored.providerState, state);
         expect(established.providerState, state);
         expect(generationB.liveObjects.length, 1);
+        expect(
+          generationB.liveObjects.resolve(environment.id).baselineCommit,
+          state['baselineCommit'],
+        );
+        expect(
+          generationB.liveObjects.resolve(environment.id).branch,
+          state['branch'],
+        );
         expect(
           generationB.liveObjects.resolve(environment.id).root.path,
           scope.isEmpty ? movedWorktree.path : '${movedWorktree.path}/$scope',

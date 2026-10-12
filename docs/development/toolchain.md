@@ -324,6 +324,14 @@ and build-side descriptor metadata in
 [`tools/stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart).
 Prepared installations share one fresh root; the host snapshot is beside it.
 Backend-only, frontend-only, and combined installations use the same catalog.
+Ordinary Linux `run` and `build` commands also prepare the trusted development-only
+Session Evaluator as `session-evaluator/backend.aot`, with semantic identity
+`dev.adele.plugin.session-evaluator` and no frontend or extra startup arguments.
+No opt-in flag is required. Those commands select
+`app/tool/development_main.dart` automatically, including explicit debug/profile/release
+modes. This is development composition, not release packaging; existing absolute
+artifact paths and platform/build limitations remain. Other platform commands and
+the separate runtime smoke retain their existing entrypoints and preparation paths.
 The stock Task Browser and Terminal are frontend-only and need no owning backend
 startup configuration or additional runtime deployment define. Terminal execution
 still requires its selected Environment provider's prepared support. Both host and

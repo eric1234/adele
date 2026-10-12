@@ -463,13 +463,22 @@ review registry. Provider absence is unavailable, distinct from a successful emp
 snapshot. Unsupported files remain represented; bounds or inspection failure must
 not be published as a complete clean result.
 
-The service retains `snapshotUnstaged()` for working tree relative to index plus
-nonignored untracked additions, and adds `snapshotUncommitted()` with separate
+The service provides `snapshotUnstaged()` for working tree relative to index plus
+nonignored untracked additions, and `snapshotUncommitted()` with separate
 staged and unstaged snapshots and a conflict collection. Uncommitted is a layered
 union, not a net working-tree comparison: a path may occur in both layers even
 when the edits cancel relative to HEAD. Unmerged entries are conflicts, not
-ordinary staged approval. Both layers share one bounded backend observation,
-canonical Environment capture, index observation, and captured HEAD identity;
+ordinary staged approval. `snapshotTaskChanges()` composes a committed snapshot
+with that same uncommitted result. Committed means the net tree difference from
+the selected Git Environment's exact retained baseline to captured HEAD, not
+commit history or a flattened baseline-to-working-tree patch. Baseline and branch
+provenance remain private to the Git provider's established/restored live object;
+they are neither caller-selected contract parameters nor Task-wide inferred state.
+Missing or inconsistent Task baseline/branch identity fails without substitution,
+independently of the other scopes' availability.
+
+All layers in a request share one bounded backend observation, canonical
+Environment capture, aggregate limits, index observation, and captured HEAD identity;
 the frontend does not concatenate independent calls. The methods take no authority
 parameters and share the same Capability and generated service. Matching native
 and EVC artifacts are rebuilt under the pre-release compatibility policy.

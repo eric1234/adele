@@ -37,8 +37,16 @@ final class CommandContribution {
     required this.label,
     required this.availability,
     required this.invoke,
+    this.availabilityChanges,
   }) {
     validateLabel(label);
+    if (availabilityChanges?.isBroadcast == false) {
+      throw ArgumentError.value(
+        availabilityChanges,
+        'availabilityChanges',
+        'Must be a broadcast stream.',
+      );
+    }
   }
 
   /// Validates display metadata without constructing an executable contribution.
@@ -61,9 +69,16 @@ final class CommandContribution {
   final String label;
 
   /// A cheap, synchronous, read-only evaluation of current owner state.
-  /// State changes do not notify consumers; hosts reevaluate when presenting or
-  /// invoking commands, and observe [ExtensionRegistry.changes] for membership.
+  /// Hosts reevaluate when presenting or invoking commands, and may observe
+  /// [availabilityChanges] while presenting an exact live registration.
   final CommandAvailability Function() availability;
+
+  /// Optional broadcast invalidations: reevaluate [availability], not a supplied
+  /// value, context, or authority. Membership still uses [ExtensionRegistry.changes].
+  /// Non-broadcast streams are rejected at construction with [ArgumentError].
+  /// Signal lifetime is owner-managed; consumers cancel on retirement or disposal.
+  /// Without a signal, presentation and invocation checks work as before.
+  final Stream<void>? availabilityChanges;
 
   /// Concrete domain behavior. Consumers use [ResolvedCommand.invoke] to enforce
   /// current availability and exact registration admission.

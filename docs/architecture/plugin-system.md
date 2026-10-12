@@ -378,10 +378,16 @@ authority. Neither availability nor input opening executes an Environment read,
 and later display failures remain in the Source input UI.
 
 Registry membership changes use existing `ExtensionRegistry.changes`. Consumers
-reevaluate availability when presenting/refreshing and at admission, without
-polling or a general state-notification/context-expression protocol. General
-contextual frontend authority, Command arguments, and automatic projection
-of presentation actions remain deferred.
+reevaluate availability when presenting/refreshing and at admission. A contribution
+may supply a broadcast `Stream<void>` through optional `availabilityChanges` to
+request reevaluation of its synchronous callback. The signal carries no availability
+value, changes no registry membership or exact binding identity, and grants no
+invocation authority; synchronous admission checks remain mandatory. Contributions
+without a signal retain the same evaluation and invocation behavior. This local
+invalidation adds no polling, interpreted frontend/AOT backend notification
+transport, or general context-expression protocol. General contextual frontend
+authority, Command arguments, and automatic projection of presentation actions
+remain deferred.
 The application implements one fixed desktop shortcut for Show Command Palette,
 using the same live resolution and admission as its button, within shell-route
 focus and modal ownership. This is an input consumer, not a public keybinding
