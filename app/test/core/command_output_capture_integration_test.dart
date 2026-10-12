@@ -18,6 +18,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart'
@@ -26,15 +27,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
 import '../../tool/command_output_frontend_compiler.dart';
 import '../fixtures/command_output_process.dart'
-    show captureBulk, captureMarker;
+    show captureBlocks, captureBulk, captureEvidenceBlocks, captureMarker;
 
 const _gitId = 'dev.adele.plugin.git-environment';
 const _projectId = 'dev.adele.plugin.local-directory-project';
 const _commandId = 'dev.adele.plugin.command-tools';
+const _evaluatorId = 'dev.adele.plugin.session-evaluator';
 const _deadline = Duration(seconds: 45);
 final _strategyId = OrchestrationStrategyId('dev.adele.test.command-capture');
 final _projectProvider = ProviderId('dev.adele.project.local-directory');
@@ -57,6 +60,8 @@ void main() {
           'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
       _commandId:
           'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+      _evaluatorId:
+          'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
     }.entries) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -83,425 +88,1001 @@ void main() {
     return backends;
   }
 
-  testWidgets(
-    'T3a full capture crosses real AOT process/storage, EVC observation and fresh Project reopen',
-    (tester) => tester.runAsync(() async {
-      final source = await Directory.systemTemp.createTemp(
-        'adele-capture-project-',
-      );
-      addTearDown(() => source.delete(recursive: true));
-      await File(
-        '${source.path}/baseline.txt',
-      ).writeAsString('Capture baseline.\n');
-      await _git(source, ['init', '--initial-branch=main']);
-      await _git(source, ['add', 'baseline.txt']);
-      await _git(source, ['commit', '-m', 'Capture fixture']);
-      final backends = await start(git: true);
-      final command = await backends.activate(_commandId);
-      final runtime = backends.runtime;
-      late _Execution execution;
-      final registration = runtime.extensions.register(
-        point: orchestrationStrategyContributions,
-        id: ExtensionId(_strategyId.value),
-        value: OrchestrationStrategyContribution(
-          strategyId: _strategyId,
-          materialize: (context) => execution = _Execution(context.host),
-        ),
-      );
-      addTearDown(registration.close);
-      final project = await runtime.lifecycle.openProject(
-        sourceLocation: source.uri,
-        provider: runtime.lifecycle.resolveProjectProvider(_projectProvider),
-      );
-      final task = await runtime.lifecycle.createTask(
-        projectId: project.id,
-        title: 'Complete command output',
-      );
-      final session = runtime.lifecycle.createSession(
-        taskId: task.task.id,
-        strategyId: _strategyId,
-      );
-      final environment = task.environment;
-      final worktree = Directory.fromUri(
-        source.uri.resolve(
-          environment.providerState!['worktreeRelativePath']! as String,
-        ),
-      );
-      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final connections = StreamIterator(server);
-      final children = <_Child>[];
-      addTearDown(() async {
-        for (final child in children) {
-          child.socket.destroy();
-          await child.lines.cancel();
-        }
-        await connections.cancel();
-        await server.close();
-      });
-      final arguments = <String, Object?>{
-        'program': aotRuntime,
-        'arguments': ['${artifacts.path}/child.aot', '${server.port}'],
-        'workingDirectory': '',
-        'timeoutSeconds': 600,
-      };
-      final model = _Model(arguments);
-      final catalog = await buildModelToolCatalogForSession(
-        sessionId: session.id,
-        environmentRuntime: runtime.lifecycle.environmentRuntime,
-        extensions: runtime.extensions,
-      );
-      expect(
-        catalog.materialize().tools.single.modelDefinition.alias,
-        'run_command',
-      );
-      expect(
-        runtime.lifecycle.environmentRuntime
-            .currentMaterialization(environment.id)!
-            .provider,
-        isA<GeneratedEnvironmentProvider>(),
-      );
-      final run = await createSessionOrchestrationRun(
-        lifecycle: runtime.lifecycle,
-        sessionId: session.id,
-        runId: RunId('capture-run'),
-        contextComposer: runtime.contextComposer,
-        model: model,
-        toolCatalog: catalog,
-        policy: const _AllowCommand(),
-      );
-      addTearDown(() async {
-        execution.release();
-        for (final child in children) {
-          if (child.active && child.pid != null) {
-            Process.killPid(child.pid!, ProcessSignal.sigterm);
-          }
-          child.socket.destroy();
-        }
-        await run.close().timeout(_deadline);
-      });
-      final advancing = run.start();
-      // Observe failures without creating an unhandled asynchronous error while
-      // an external child handshake is pending.
-      advancing.ignore();
-      final client = _client(command.connection);
-      final captures = <_Capture>[];
-      final completeStates = <CommandCaptureState>[];
-      final bulk = {
-        for (final stream in ['stdout', 'stderr']) stream: captureBulk(stream),
-      };
-      final bulkUnits = bulk.values.fold(0, (sum, text) => sum + text.length);
-      expect(bulkUnits, greaterThan(24 * 1024 * 1024));
-      PreparedFrontend? frontend;
-      final frontendArtifact = File('${artifacts.path}/command.evc');
-
-      for (var index = 0; index < 2; index++) {
-        expect(
-          await Future.any([
-            connections.moveNext(),
-            advancing.then<bool>(
-              (_) => throw StateError('Run settled before child connection.'),
-            ),
-          ]).timeout(_deadline),
-          isTrue,
+  for (final exportable in [false, true]) {
+    testWidgets(
+      exportable
+          ? 'E3 exact command export crosses real AOT process/storage and evaluator-only Project reopen'
+          : 'T3a full capture crosses real AOT process/storage, EVC observation and fresh Project reopen',
+      (tester) => tester.runAsync(() async {
+        final source = await Directory.systemTemp.createTemp(
+          'adele-capture-project-',
         );
-        final child = _Child(connections.current);
-        children.add(child);
-        await child.expectStage('connected');
-        final tool = run.activity.snapshot.tools.last;
-        if (index == 0) {
-          await compileCommandOutputFrontend(
-            repositoryRoot: Directory.current.parent,
-            artifact: frontendArtifact,
-            sessionId: session.id.value,
-            runId: run.run.id.value,
-            toolInvocationId: tool.id.value,
-          );
-          frontend = await PreparedFrontend.load(frontendArtifact);
-          addTearDown(frontend.invalidate);
-          expect(frontend.failure, isNull);
-        }
-        child.release('produce');
-        await child.expectStage('started');
-        if (index == 0) {
-          await _mount(tester, frontend!, command.connection);
-          await _visible(tester, 'codeUnits:${_markerUnits('START')}');
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
-        child.release('bulk');
-        try {
-          await Future.any([
-            child.expectStage('bulk', timeout: const Duration(minutes: 2)),
-            advancing.then<void>(
-              (_) => throw StateError('Run settled before bulk output.'),
+        addTearDown(() => source.delete(recursive: true));
+        await File(
+          '${source.path}/baseline.txt',
+        ).writeAsString('Capture baseline.\n');
+        await _git(source, ['init', '--initial-branch=main']);
+        await _git(source, ['add', 'baseline.txt']);
+        await _git(source, ['commit', '-m', 'Capture fixture']);
+        final backends = await start(git: true);
+        final command = await backends.activate(_commandId);
+        final evaluator = _evaluator(
+          (await backends.activate(_evaluatorId)).connection,
+        );
+        final runtime = backends.runtime;
+        late _Execution execution;
+        final registration = runtime.extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId(_strategyId.value),
+          value: OrchestrationStrategyContribution(
+            strategyId: _strategyId,
+            materialize: (context) => execution = _Execution(context.host),
+          ),
+        );
+        addTearDown(registration.close);
+        final project = await runtime.lifecycle.openProject(
+          sourceLocation: source.uri,
+          provider: runtime.lifecycle.resolveProjectProvider(_projectProvider),
+        );
+        final task = await runtime.lifecycle.createTask(
+          projectId: project.id,
+          title: 'Complete command output',
+        );
+        final session = runtime.lifecycle.createSession(
+          taskId: task.task.id,
+          strategyId: _strategyId,
+        );
+        final environment = task.environment;
+        final worktree = Directory.fromUri(
+          source.uri.resolve(
+            environment.providerState!['worktreeRelativePath']! as String,
+          ),
+        );
+        final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final connections = StreamIterator(server);
+        final children = <_Child>[];
+        addTearDown(() async {
+          for (final child in children) {
+            child.socket.destroy();
+            await child.lines.cancel();
+          }
+          await connections.cancel();
+          await server.close();
+        });
+        final arguments = <String, Object?>{
+          'program': aotRuntime,
+          'arguments': [
+            '${artifacts.path}/child.aot',
+            '${server.port}',
+            if (exportable) 'evidence',
+          ],
+          'workingDirectory': '',
+          'timeoutSeconds': 600,
+        };
+        final model = _Model(arguments);
+        final catalog = await buildModelToolCatalogForSession(
+          sessionId: session.id,
+          environmentRuntime: runtime.lifecycle.environmentRuntime,
+          extensions: runtime.extensions,
+        );
+        expect(
+          catalog.materialize().tools.single.modelDefinition.alias,
+          'run_command',
+        );
+        expect(
+          runtime.lifecycle.environmentRuntime
+              .currentMaterialization(environment.id)!
+              .provider,
+          isA<GeneratedEnvironmentProvider>(),
+        );
+        final run = await createSessionOrchestrationRun(
+          lifecycle: runtime.lifecycle,
+          sessionId: session.id,
+          runId: RunId('capture-run'),
+          contextComposer: runtime.contextComposer,
+          model: model,
+          toolCatalog: catalog,
+          policy: const _AllowCommand(),
+        );
+        addTearDown(() async {
+          execution.release();
+          for (final child in children) {
+            if (child.active && child.pid != null) {
+              Process.killPid(child.pid!, ProcessSignal.sigterm);
+            }
+            child.socket.destroy();
+          }
+          await run.close().timeout(_deadline);
+        });
+        final advancing = run.start();
+        // Observe failures without creating an unhandled asynchronous error while
+        // an external child handshake is pending.
+        advancing.ignore();
+        final client = _client(command.connection);
+        final captures = <_Capture>[];
+        final completeStates = <CommandCaptureState>[];
+        final bulk = {
+          for (final stream in ['stdout', 'stderr'])
+            stream: captureBulk(
+              stream,
+              blocks: exportable ? captureEvidenceBlocks : captureBlocks,
             ),
-          ]);
-        } on TimeoutException {
-          final state = await client
-              .getState(
-                session.id.value,
-                run.run.id.value,
-                run.lastToolInvocation!.id.value,
+        };
+        final bulkUnits = bulk.values.fold(0, (sum, text) => sum + text.length);
+        if (exportable) {
+          expect(
+            bulkUnits,
+            greaterThan(2 * maximumRetainedCommandOutputCharacters),
+          );
+          expect(bulkUnits, lessThan(128 * 1024));
+        } else {
+          expect(bulkUnits, greaterThan(24 * 1024 * 1024));
+        }
+        PreparedFrontend? frontend;
+        final frontendArtifact = File('${artifacts.path}/command.evc');
+
+        for (var index = 0; index < 2; index++) {
+          expect(
+            await Future.any([
+              connections.moveNext(),
+              advancing.then<bool>(
+                (_) => throw StateError('Run settled before child connection.'),
+              ),
+            ]).timeout(_deadline),
+            isTrue,
+          );
+          final child = _Child(connections.current);
+          children.add(child);
+          await child.expectStage('connected');
+          final tool = run.activity.snapshot.tools.last;
+          if (index == 0) {
+            await compileCommandOutputFrontend(
+              repositoryRoot: Directory.current.parent,
+              artifact: frontendArtifact,
+              sessionId: session.id.value,
+              runId: run.run.id.value,
+              toolInvocationId: tool.id.value,
+            );
+            frontend = await PreparedFrontend.load(frontendArtifact);
+            addTearDown(frontend.invalidate);
+            expect(frontend.failure, isNull);
+          }
+          child.release('produce');
+          await child.expectStage('started');
+          if (index == 0) {
+            await _mount(tester, frontend!, command.connection);
+            await _visible(tester, 'codeUnits:${_markerUnits('START')}');
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+          child.release('bulk');
+          try {
+            await Future.any([
+              child.expectStage('bulk', timeout: const Duration(minutes: 2)),
+              advancing.then<void>(
+                (_) => throw StateError('Run settled before bulk output.'),
+              ),
+            ]);
+          } on TimeoutException {
+            final state = await client
+                .getState(
+                  session.id.value,
+                  run.run.id.value,
+                  run.lastToolInvocation!.id.value,
+                )
+                .timeout(_deadline);
+            fail(
+              'Bulk handshake timed out: ${state.state}, '
+              '${state.totalCodeUnits}/$bulkUnits code units, '
+              'cursor ${state.highWater}, failure ${state.failure}.',
+            );
+          }
+          expect(child.workingDirectory, await worktree.resolveSymbolicLinks());
+          expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          final capture = _Capture(
+            client,
+            session.id.value,
+            run.run.id.value,
+            tool.id.value,
+          );
+          captures.add(capture);
+          expect(tool.canonicalArguments, arguments);
+          expect(
+            tool.changes.any(
+              (change) => change.kind == ToolActivityKind.executionStarted,
+            ),
+            isTrue,
+          );
+
+          // The child emitted multi-MB output without any mounted consumer. Reads
+          // wait on committed extent, not a delay or process completion.
+          final live = await capture.waitFor(
+            (state) => state.totalCodeUnits == bulkUnits,
+          );
+          expect(live.state, 'capturing');
+          expect(live.environmentId, environment.id.value);
+          expect(live.program, aotRuntime);
+          expect(jsonDecode(live.argumentsJson!), arguments['arguments']);
+          if (index == 0) expect(await _readAll(capture, live), bulk);
+          expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          expect(run.run.state, RunState.running);
+
+          if (exportable && index == 0) {
+            final before = _databaseSnapshot(source);
+            final document = await readSessionEvidence(
+              evaluator,
+              session.id.value,
+            );
+            expect(document['schema'], 'dev.adele.session-evidence.v2');
+            expect(document['runs'], isEmpty);
+            expect(document['command_tools'], _storedCommands(source, session));
+            final exported = _maps(
+              _map(document['command_tools'])['captures'],
+            ).single;
+            expect(_map(exported['header'])['state'], 'capturing');
+            expect(exported['completeness'], 'unsealed_liveness_unknown');
+            expect(
+              exported['terminal_provenance'],
+              'terminal_evidence_unavailable',
+            );
+            expect(_map(document['coverage'])['command_transcripts'], {
+              'status': 'partial',
+              'invocations_without_capture': <Object?>[],
+            });
+            expect(_databaseSnapshot(source), before);
+            expect(run.run.state, RunState.running);
+            expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          }
+
+          if (index == 0) {
+            await _mount(tester, frontend!, command.connection);
+            await _visible(tester, 'codeUnits:$bulkUnits');
+            for (final stream in bulk.keys) {
+              expect(find.text('$stream:START=true'), findsOneWidget);
+              expect(find.text('$stream:MIDDLE=true'), findsOneWidget);
+            }
+            expect(find.text('state:capturing'), findsOneWidget);
+          }
+
+          child.release('late');
+          await child.expectStage('late');
+          final lateUnits = bulkUnits + _markerUnits('LATE');
+          final late = await capture.waitFor(
+            (state) => state.totalCodeUnits == lateUnits,
+          );
+          expect(late.state, 'capturing');
+          final tail = await capture.client
+              .readBefore(
+                capture.sessionId,
+                capture.runId,
+                capture.invocationId,
+                null,
+                commandOutputPageChunks,
+                commandOutputPageCodeUnits,
               )
               .timeout(_deadline);
-          fail(
-            'Bulk handshake timed out: ${state.state}, '
-            '${state.totalCodeUnits}/$bulkUnits code units, '
-            'cursor ${state.highWater}, failure ${state.failure}.',
-          );
-        }
-        expect(child.workingDirectory, await worktree.resolveSymbolicLinks());
-        expect(await Directory('/proc/${child.pid}').exists(), isTrue);
-        final capture = _Capture(
-          client,
-          session.id.value,
-          run.run.id.value,
-          tool.id.value,
-        );
-        captures.add(capture);
-        expect(tool.canonicalArguments, arguments);
-        expect(
-          tool.changes.any(
-            (change) => change.kind == ToolActivityKind.executionStarted,
-          ),
-          isTrue,
-        );
-
-        // The child emitted multi-MB output without any mounted consumer. Reads
-        // wait on committed extent, not a delay or process completion.
-        final live = await capture.waitFor(
-          (state) => state.totalCodeUnits == bulkUnits,
-        );
-        expect(live.state, 'capturing');
-        expect(live.environmentId, environment.id.value);
-        expect(live.program, aotRuntime);
-        expect(jsonDecode(live.argumentsJson!), arguments['arguments']);
-        if (index == 0) expect(await _readAll(capture, live), bulk);
-        expect(await Directory('/proc/${child.pid}').exists(), isTrue);
-        expect(run.run.state, RunState.running);
-
-        if (index == 0) {
-          await _mount(tester, frontend!, command.connection);
-          await _visible(tester, 'codeUnits:$bulkUnits');
+          _expectPage(tail);
           for (final stream in bulk.keys) {
-            expect(find.text('$stream:START=true'), findsOneWidget);
-            expect(find.text('$stream:MIDDLE=true'), findsOneWidget);
+            expect(
+              tail.chunks
+                  .where((chunk) => chunk.stream == stream)
+                  .map((chunk) => chunk.text)
+                  .join(),
+              contains(captureMarker(stream, 'LATE')),
+            );
           }
-          expect(find.text('state:capturing'), findsOneWidget);
-        }
-
-        child.release('late');
-        await child.expectStage('late');
-        final lateUnits = bulkUnits + _markerUnits('LATE');
-        final late = await capture.waitFor(
-          (state) => state.totalCodeUnits == lateUnits,
-        );
-        expect(late.state, 'capturing');
-        final tail = await capture.client
-            .readBefore(
-              capture.sessionId,
-              capture.runId,
-              capture.invocationId,
-              null,
-              commandOutputPageChunks,
-              commandOutputPageCodeUnits,
-            )
-            .timeout(_deadline);
-        _expectPage(tail);
-        for (final stream in bulk.keys) {
-          expect(
-            tail.chunks
-                .where((chunk) => chunk.stream == stream)
-                .map((chunk) => chunk.text)
-                .join(),
-            contains(captureMarker(stream, 'LATE')),
+          if (index == 0) {
+            await _visible(tester, 'stdout:LATE=true');
+            await _visible(tester, 'stderr:LATE=true');
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+          expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          // Unmount cancels only observation. More output is captured while hidden.
+          child.release('hidden');
+          await child.expectStage('hidden');
+          final fullUnits = lateUnits + _markerUnits('HIDDEN');
+          final hidden = await capture.waitFor(
+            (state) => state.totalCodeUnits == fullUnits,
           );
+          expect(hidden.state, 'capturing');
+          if (index == 0) {
+            await _mount(tester, frontend!, command.connection);
+            await _visible(tester, 'codeUnits:$fullUnits');
+            expect(find.text('stdout:HIDDEN=true'), findsOneWidget);
+            expect(find.text('stderr:HIDDEN=true'), findsOneWidget);
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+          expect(await Directory('/proc/${child.pid}').exists(), isTrue);
+          child.release('exit');
+          await execution.completed[index].future.timeout(_deadline);
+          child.active = false;
+          final complete = await capture.waitFor(
+            (state) => state.state == 'complete',
+          );
+          completeStates.add(complete);
+          expect(complete.totalCodeUnits, fullUnits);
+          expect(complete.termination, 'exited');
+          expect(complete.exitCode, exportable ? 23 : 0);
+          expect(complete.failure, isNull);
+          expect(await Directory('/proc/${child.pid}').exists(), isFalse);
+          expect(run.run.state, RunState.running);
+          expect(
+            runtime.store.runRecord(run.run.id),
+            isNull,
+            reason:
+                'Command history must be readable before terminal Run retention.',
+          );
+          final expected = {
+            for (final stream in bulk.keys)
+              stream:
+                  bulk[stream]! +
+                  captureMarker(stream, 'LATE') +
+                  captureMarker(stream, 'HIDDEN'),
+          };
+          expect(await _readAll(capture, complete), expected);
+          expect(await _readBackwards(capture, complete), expected);
+          _expectBoundedEvidence(run);
+          if (exportable && index == 0) {
+            final before = _databaseSnapshot(source);
+            final document = await readSessionEvidence(
+              evaluator,
+              session.id.value,
+            );
+            expect(document['runs'], isEmpty);
+            expect(document['command_tools'], _storedCommands(source, session));
+            final exported = _maps(
+              _map(document['command_tools'])['captures'],
+            ).single;
+            expect(exported['completeness'], 'complete');
+            expect(
+              exported['terminal_provenance'],
+              'terminal_evidence_unavailable',
+            );
+            expect(_map(exported['header'])['exit_code'], 23);
+            expect(_databaseSnapshot(source), before);
+          }
+          if (index == 0) execution.nextCommand.complete();
         }
-        if (index == 0) {
-          await _visible(tester, 'stdout:LATE=true');
-          await _visible(tester, 'stderr:LATE=true');
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
-        expect(await Directory('/proc/${child.pid}').exists(), isTrue);
-        // Unmount cancels only observation. More output is captured while hidden.
-        child.release('hidden');
-        await child.expectStage('hidden');
-        final fullUnits = lateUnits + _markerUnits('HIDDEN');
-        final hidden = await capture.waitFor(
-          (state) => state.totalCodeUnits == fullUnits,
-        );
-        expect(hidden.state, 'capturing');
-        if (index == 0) {
-          await _mount(tester, frontend!, command.connection);
-          await _visible(tester, 'codeUnits:$fullUnits');
-          expect(find.text('stdout:HIDDEN=true'), findsOneWidget);
-          expect(find.text('stderr:HIDDEN=true'), findsOneWidget);
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
-        expect(await Directory('/proc/${child.pid}').exists(), isTrue);
-        child.release('exit');
-        await execution.completed[index].future.timeout(_deadline);
-        child.active = false;
-        final complete = await capture.waitFor(
-          (state) => state.state == 'complete',
-        );
-        completeStates.add(complete);
-        expect(complete.totalCodeUnits, fullUnits);
-        expect(complete.termination, 'exited');
-        expect(complete.exitCode, 0);
-        expect(complete.failure, isNull);
-        expect(await Directory('/proc/${child.pid}').exists(), isFalse);
-        expect(run.run.state, RunState.running);
-        expect(
-          runtime.store.runRecord(run.run.id),
-          isNull,
-          reason:
-              'Command history must be readable before terminal Run retention.',
-        );
-        final expected = {
-          for (final stream in bulk.keys)
-            stream:
-                bulk[stream]! +
-                captureMarker(stream, 'LATE') +
-                captureMarker(stream, 'HIDDEN'),
-        };
-        expect(await _readAll(capture, complete), expected);
-        expect(await _readBackwards(capture, complete), expected);
-        _expectBoundedEvidence(run);
-        if (index == 0) execution.nextCommand.complete();
-      }
 
-      expect(captures[0].invocationId, isNot(captures[1].invocationId));
-      expect(
-        run.activity.snapshot.tools.map((tool) => tool.canonicalArguments),
-        [arguments, arguments],
-      );
-      expect(model.calls, 1);
-      execution.finish.complete();
-      await advancing.timeout(_deadline);
-      expect(run.run.state, RunState.completed);
-      expect(
-        runtime.store.runRecord(run.run.id)!.state,
-        RunTerminalState.completed,
-      );
-      final savedActivity = runtime.lifecycle.runActivity(run.run.id)!;
-      final inventory = await _git(source, ['worktree', 'list', '--porcelain']);
-      final marker = await File('${worktree.path}/.git').readAsBytes();
-      final inspection = sqlite3.open('${source.path}/.adele/data.db');
-      try {
+        expect(captures[0].invocationId, isNot(captures[1].invocationId));
         expect(
-          inspection
-              .select('SELECT owner_id FROM adele_schema_versions')
-              .map((row) => row['owner_id']),
-          contains(_commandId),
+          run.activity.snapshot.tools.map((tool) => tool.canonicalArguments),
+          [arguments, arguments],
         );
-      } finally {
-        inspection.close();
-      }
-      await backends.close();
-      expect(command.connection.isClosed, isTrue);
-
-      final fresh = await start(git: false);
-      expect(
-        fresh.runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(
-        fresh.runtime.extensions.discover(orchestrationStrategyContributions),
-        isEmpty,
-      );
-      final reopened = await fresh.runtime.lifecycle.openProject(
-        sourceLocation: source.uri,
-        provider: fresh.runtime.lifecycle.resolveProjectProvider(
-          _projectProvider,
-        ),
-      );
-      expect(reopened.id, project.id);
-      expect(fresh.runtime.store.session(session.id)!.strategyId, _strategyId);
-      await fresh.activations.single.close();
-      final replacement = await fresh.activate(_commandId);
-      expect(replacement.connection, isNot(same(command.connection)));
-      expect(fresh.activations.map((item) => item.connection.pluginId), [
-        _projectId,
-        _commandId,
-      ]);
-      expect(
-        fresh.activations
-            .where((item) => !item.connection.isClosed)
-            .map((item) => item.connection.pluginId),
-        [_commandId],
-      );
-      final restoredClient = _client(replacement.connection);
-      for (var index = 0; index < captures.length; index++) {
-        final original = captures[index];
-        final restored = _Capture(
-          restoredClient,
-          original.sessionId,
-          original.runId,
-          original.invocationId,
+        expect(model.calls, 1);
+        execution.finish.complete();
+        await advancing.timeout(_deadline);
+        expect(run.run.state, RunState.completed);
+        expect(
+          runtime.store.runRecord(run.run.id)!.state,
+          RunTerminalState.completed,
         );
-        final state = await restored.state();
-        expect(state.state, 'complete');
-        expect(state.version, completeStates[index].version);
-        expect(state.highWater, completeStates[index].highWater);
-        expect(state.totalCodeUnits, completeStates[index].totalCodeUnits);
-        expect(await _readAll(restored, state), {
-          for (final stream in bulk.keys)
-            stream:
+        Map<String, Object?>? exportedDocument;
+        if (exportable) {
+          final before = _databaseSnapshot(source);
+          final document = exportedDocument = await readSessionEvidence(
+            evaluator,
+            session.id.value,
+          );
+          expect(document['schema'], 'dev.adele.session-evidence.v2');
+          expect(document['command_tools'], _storedCommands(source, session));
+          final exported = _maps(_map(document['command_tools'])['captures']);
+          expect(exported, hasLength(2));
+          for (final capture in exported) {
+            expect(capture['completeness'], 'complete');
+            expect(capture['terminal_provenance'], 'matched');
+            final header = _map(capture['header']);
+            expect(header['run_id'], run.run.id.value);
+            expect(header['session_id'], session.id.value);
+            expect(header['environment_id'], environment.id.value);
+            expect(header['program'], aotRuntime);
+            expect(
+              header['arguments_json'],
+              jsonEncode(arguments['arguments']),
+            );
+            expect(header['working_directory'], '');
+            expect(header['timeout_seconds'], 600);
+            expect(header['state'], 'complete');
+            expect(header['termination'], 'exited');
+            expect(header['exit_code'], 23);
+            expect(header['failure'], isNull);
+            final chunks = _maps(capture['chunks']);
+            expect(
+              chunks.map((chunk) => chunk['position']),
+              List.generate(header['high_water']! as int, (i) => i + 1),
+            );
+            expect(
+              chunks.fold(
+                0,
+                (sum, chunk) => sum + (chunk['text']! as String).length,
+              ),
+              header['total_code_units'],
+            );
+            for (final stream in bulk.keys) {
+              final text = chunks
+                  .where((chunk) => chunk['stream'] == stream)
+                  .map((chunk) => chunk['text']! as String)
+                  .join();
+              expect(
+                text,
                 bulk[stream]! +
-                captureMarker(stream, 'LATE') +
-                captureMarker(stream, 'HIDDEN'),
-        });
-      }
-      final freshFrontend = await PreparedFrontend.load(frontendArtifact);
-      addTearDown(freshFrontend.invalidate);
-      await _mount(tester, freshFrontend, replacement.connection);
-      await _visible(
-        tester,
-        'codeUnits:${completeStates.first.totalCodeUnits}',
-      );
-      expect(find.text('state:complete'), findsOneWidget);
-      expect(find.text('stdout:HIDDEN=true'), findsOneWidget);
-      expect(find.text('stderr:MIDDLE=true'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-      expect(
-        fresh.runtime.lifecycle.environmentRuntime.currentMaterialization(
-          environment.id,
-        ),
-        isNull,
-      );
-      final restoredActivity = fresh.runtime.lifecycle.runActivity(run.run.id)!;
-      expect(
-        restoredActivity.tools.map((tool) => tool.id),
-        savedActivity.tools.map((tool) => tool.id),
-      );
-      for (var index = 0; index < restoredActivity.tools.length; index++) {
-        final restoredTool = restoredActivity.tools[index];
+                    captureMarker(stream, 'LATE') +
+                    captureMarker(stream, 'HIDDEN'),
+              );
+              expect(text, contains(captureMarker(stream, 'MIDDLE')));
+            }
+          }
+          expect(_map(document['coverage'])['command_transcripts'], {
+            'status': 'complete_retained_captures',
+            'invocations_without_capture': <Object?>[],
+          });
+          expect(_map(document['coverage'])['status'], 'partial');
+          expect(
+            _map(document['coverage'])['retained_session_evidence'],
+            'partial',
+          );
+          expect(
+            _map(document['conversation'])['status'],
+            'unsupported_strategy',
+          );
+          final export = File('${source.path}/command-evidence.json');
+          await export.writeAsString(jsonEncode(document));
+          expect(jsonDecode(await export.readAsString()), document);
+          expect(_databaseSnapshot(source), before);
+          final other = runtime.lifecycle.createSession(
+            taskId: task.task.id,
+            strategyId: _strategyId,
+          );
+          final isolatedBefore = _databaseSnapshot(source);
+          final isolated = await readSessionEvidence(evaluator, other.id.value);
+          expect(isolated['command_tools'], {
+            'status': 'available',
+            'schema_version': 1,
+            'captures': <Object?>[],
+          });
+          expect(isolated['runs'], isEmpty);
+          expect(_map(isolated['coverage'])['command_transcripts'], {
+            'status': 'complete_retained_captures',
+            'invocations_without_capture': <Object?>[],
+          });
+          expect(_databaseSnapshot(source), isolatedBefore);
+          // Creating the other Session is the only intentional storage change.
+          expect(
+            isolatedBefore['adele_command_captures'],
+            before['adele_command_captures'],
+          );
+          expect(
+            isolatedBefore['adele_command_chunks'],
+            before['adele_command_chunks'],
+          );
+          await _expectIndexedCommandHeaders(
+            source: source,
+            evaluator: evaluator,
+            storage: backends.evaluatorStorage,
+            session: other,
+            foreignSession: runtime.lifecycle.createSession(
+              taskId: task.task.id,
+              strategyId: _strategyId,
+            ),
+            template: captures.first,
+          );
+        } else {
+          final database = sqlite3.open(
+            '${source.path}/.adele/data.db',
+            mode: OpenMode.readOnly,
+          );
+          try {
+            final version = database
+                .select('PRAGMA data_version')
+                .single['data_version'];
+            final emitted = <String>[];
+            await expectLater(
+              evaluator.collectSession(session.id.value).forEach(emitted.add),
+              throwsA(
+                isA<SessionEvidenceFailure>().having(
+                  (failure) => failure.code,
+                  'code',
+                  'collection_limit',
+                ),
+              ),
+            );
+            expect(
+              emitted,
+              isEmpty,
+              reason:
+                  'Oversize transcripts must fail before publishing any JSON.',
+            );
+            expect(
+              database.select('PRAGMA data_version').single['data_version'],
+              version,
+            );
+          } finally {
+            database.close();
+          }
+        }
+        final savedActivity = runtime.lifecycle.runActivity(run.run.id)!;
+        final inventory = await _git(source, [
+          'worktree',
+          'list',
+          '--porcelain',
+        ]);
+        final marker = await File('${worktree.path}/.git').readAsBytes();
+        final inspection = sqlite3.open('${source.path}/.adele/data.db');
+        try {
+          expect(
+            inspection
+                .select('SELECT owner_id FROM adele_schema_versions')
+                .map((row) => row['owner_id']),
+            contains(_commandId),
+          );
+        } finally {
+          inspection.close();
+        }
+        await backends.close();
+        expect(command.connection.isClosed, isTrue);
+
+        final fresh = await start(git: false);
         expect(
-          restoredTool.outcome!.hostData,
-          savedActivity.tools[index].outcome!.hostData,
-        );
-        expect(
-          restoredTool.outcome!.modelContent,
-          savedActivity.tools[index].outcome!.modelContent,
-        );
-        expect(
-          restoredTool.changes.where(
-            (change) => change.kind == ToolActivityKind.progress,
-          ),
+          fresh.runtime.registry.providersFor(environmentProviderCapability),
           isEmpty,
         );
-      }
-      expect(
-        await _git(source, ['worktree', 'list', '--porcelain']),
-        inventory,
-      );
-      expect(await File('${worktree.path}/.git').readAsBytes(), marker);
-      expect(tester.takeException(), isNull);
-      await fresh.close();
-    }),
-    skip: !Platform.isLinux,
-    timeout: const Timeout(Duration(minutes: 6)),
+        expect(
+          fresh.runtime.extensions.discover(orchestrationStrategyContributions),
+          isEmpty,
+        );
+        final reopened = await fresh.runtime.lifecycle.openProject(
+          sourceLocation: source.uri,
+          provider: fresh.runtime.lifecycle.resolveProjectProvider(
+            _projectProvider,
+          ),
+        );
+        expect(reopened.id, project.id);
+        expect(
+          fresh.runtime.store.session(session.id)!.strategyId,
+          _strategyId,
+        );
+        await fresh.activations.single.close();
+        if (exportable) {
+          final restoredEvaluator = await fresh.activate(_evaluatorId);
+          expect(
+            fresh.activations
+                .where((item) => !item.connection.isClosed)
+                .map((item) => item.connection.pluginId),
+            [_evaluatorId],
+          );
+          expect(
+            fresh.runtime.extensions.discover(modelToolContributions),
+            isEmpty,
+          );
+          final before = _databaseSnapshot(source);
+          expect(
+            await readSessionEvidence(
+              _evaluator(restoredEvaluator.connection),
+              session.id.value,
+            ),
+            exportedDocument,
+          );
+          expect(_databaseSnapshot(source), before);
+          expect(
+            fresh.runtime.lifecycle.environmentRuntime.currentMaterialization(
+              environment.id,
+            ),
+            isNull,
+          );
+          await restoredEvaluator.close();
+        }
+        final replacement = await fresh.activate(_commandId);
+        expect(replacement.connection, isNot(same(command.connection)));
+        expect(fresh.activations.map((item) => item.connection.pluginId), [
+          _projectId,
+          if (exportable) _evaluatorId,
+          _commandId,
+        ]);
+        expect(
+          fresh.activations
+              .where((item) => !item.connection.isClosed)
+              .map((item) => item.connection.pluginId),
+          [_commandId],
+        );
+        final restoredClient = _client(replacement.connection);
+        for (var index = 0; index < captures.length; index++) {
+          final original = captures[index];
+          final restored = _Capture(
+            restoredClient,
+            original.sessionId,
+            original.runId,
+            original.invocationId,
+          );
+          final state = await restored.state();
+          expect(state.state, 'complete');
+          expect(state.version, completeStates[index].version);
+          expect(state.highWater, completeStates[index].highWater);
+          expect(state.totalCodeUnits, completeStates[index].totalCodeUnits);
+          expect(await _readAll(restored, state), {
+            for (final stream in bulk.keys)
+              stream:
+                  bulk[stream]! +
+                  captureMarker(stream, 'LATE') +
+                  captureMarker(stream, 'HIDDEN'),
+          });
+        }
+        final freshFrontend = await PreparedFrontend.load(frontendArtifact);
+        addTearDown(freshFrontend.invalidate);
+        await _mount(tester, freshFrontend, replacement.connection);
+        await _visible(
+          tester,
+          'codeUnits:${completeStates.first.totalCodeUnits}',
+        );
+        expect(find.text('state:complete'), findsOneWidget);
+        expect(find.text('stdout:HIDDEN=true'), findsOneWidget);
+        expect(find.text('stderr:MIDDLE=true'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(
+          fresh.runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+        final restoredActivity = fresh.runtime.lifecycle.runActivity(
+          run.run.id,
+        )!;
+        expect(
+          restoredActivity.tools.map((tool) => tool.id),
+          savedActivity.tools.map((tool) => tool.id),
+        );
+        for (var index = 0; index < restoredActivity.tools.length; index++) {
+          final restoredTool = restoredActivity.tools[index];
+          expect(
+            restoredTool.outcome!.hostData,
+            savedActivity.tools[index].outcome!.hostData,
+          );
+          expect(
+            restoredTool.outcome!.modelContent,
+            savedActivity.tools[index].outcome!.modelContent,
+          );
+          expect(
+            restoredTool.changes.where(
+              (change) => change.kind == ToolActivityKind.progress,
+            ),
+            isEmpty,
+          );
+        }
+        expect(
+          await _git(source, ['worktree', 'list', '--porcelain']),
+          inventory,
+        );
+        expect(await File('${worktree.path}/.git').readAsBytes(), marker);
+        expect(tester.takeException(), isNull);
+        await fresh.close();
+      }),
+      skip: !Platform.isLinux,
+      timeout: const Timeout(Duration(minutes: 6)),
+    );
+  }
+}
+
+SessionEvaluatorServiceClient _evaluator(PluginBackendConnection connection) =>
+    SessionEvaluatorServiceClient(
+      connection.channelFor(
+        connection.defaultConfigurationContext,
+        sessionEvaluatorServiceId,
+      ),
+    );
+
+Map<String, Object?> _map(Object? value) =>
+    Map<String, Object?>.from(value! as Map);
+List<Map<String, Object?>> _maps(Object? value) =>
+    (value! as List).map(_map).toList();
+
+Map<String, Object?> _databaseSnapshot(Directory source) {
+  final database = sqlite3.open(
+    '${source.path}/.adele/data.db',
+    mode: OpenMode.readOnly,
   );
+  try {
+    return {
+      'schema': [
+        for (final row in database.select(
+          'SELECT * FROM sqlite_master ORDER BY name',
+        ))
+          Map<String, Object?>.from(row),
+      ],
+      for (final table in database.select(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+      ))
+        table['name']! as String: [
+          for (final row in database.select(
+            'SELECT * FROM ${table['name']} ORDER BY 1, 2',
+          ))
+            Map<String, Object?>.from(row),
+        ],
+    };
+  } finally {
+    database.close();
+  }
+}
+
+Map<String, Object?> _storedCommands(Directory source, Session session) {
+  final database = sqlite3.open(
+    '${source.path}/.adele/data.db',
+    mode: OpenMode.readOnly,
+  );
+  try {
+    return {
+      'status': 'available',
+      'schema_version': 1,
+      'captures': [
+        for (final header in database.select(
+          'SELECT * FROM adele_command_captures WHERE session_id = ? ORDER BY invocation_id, run_id',
+          [session.id.value],
+        ))
+          {
+            'header': Map<String, Object?>.from(header),
+            'chunks': [
+              for (final chunk in database.select(
+                'SELECT position, stream, text FROM adele_command_chunks WHERE run_id = ? AND invocation_id = ? ORDER BY position',
+                [header['run_id'], header['invocation_id']],
+              ))
+                Map<String, Object?>.from(chunk),
+            ],
+            'completeness': switch (header['state']) {
+              'complete' => 'complete',
+              'failed' => 'incomplete',
+              _ => 'unsealed_liveness_unknown',
+            },
+            'terminal_provenance':
+                database.select(
+                  'SELECT id FROM adele_product_runs WHERE id = ?',
+                  [header['run_id']],
+                ).isEmpty
+                ? 'terminal_evidence_unavailable'
+                : 'matched',
+            'consistency': 'committed_high_water_snapshot',
+          },
+      ],
+    };
+  } finally {
+    database.close();
+  }
+}
+
+Future<void> _expectIndexedCommandHeaders({
+  required Directory source,
+  required SessionEvaluatorServiceClient evaluator,
+  required _RecordingProjectStorage storage,
+  required Session session,
+  required Session foreignSession,
+  required _Capture template,
+}) async {
+  // Seeded test data, not additional process executions: clone genuine metadata
+  // in the v1 schema already initialized by the real Command Tools AOT producer.
+  // Invocation IDs repeat across Runs/Sessions; Run order opposes invocation
+  // order, with foreign headers before, between and after the requested rows.
+  final seeded = [
+    for (var group = 0; group < 64; group++)
+      for (var run = 0; run < 5; run++)
+        (
+          sessionId: run.isOdd ? session.id.value : foreignSession.id.value,
+          invocationId: 'seeded-plan-invocation-${'$group'.padLeft(3, '0')}',
+          runId: 'seeded-plan-run-${'${64 - group}'.padLeft(3, '0')}-$run',
+        ),
+  ];
+  final expected = seeded
+      .where((key) => key.sessionId == session.id.value)
+      .toList();
+  final database = sqlite3.open('${source.path}/.adele/data.db');
+  try {
+    database.execute('PRAGMA foreign_keys = ON');
+    final header = database.prepare('''
+INSERT INTO adele_command_captures
+  (invocation_id, session_id, run_id, environment_id, program, arguments_json,
+   working_directory, timeout_seconds, state, version, high_water,
+   total_code_units, termination, exit_code, failure)
+SELECT ?, ?, ?, environment_id, program, arguments_json,
+       working_directory, timeout_seconds, state, 3, 2, ?,
+       termination, exit_code, failure
+FROM adele_command_captures WHERE invocation_id = ? AND run_id = ?
+''');
+    final chunk = database.prepare('''
+INSERT INTO adele_command_chunks (invocation_id, run_id, position, stream, text)
+VALUES (?, ?, ?, ?, ?)
+''');
+    try {
+      database.execute('BEGIN');
+      for (final key in seeded.reversed) {
+        final stdout = 'seeded stdout:${key.invocationId}/${key.runId}\n';
+        final stderr = 'seeded stderr:${key.invocationId}/${key.runId}\n';
+        header.execute([
+          key.invocationId,
+          key.sessionId,
+          key.runId,
+          stdout.length + stderr.length,
+          template.invocationId,
+          template.runId,
+        ]);
+        expect(database.updatedRows, 1);
+        chunk.execute([key.invocationId, key.runId, 1, 'stdout', stdout]);
+        chunk.execute([key.invocationId, key.runId, 2, 'stderr', stderr]);
+      }
+      database.execute('COMMIT');
+    } finally {
+      header.close();
+      chunk.close();
+    }
+    final before = _databaseSnapshot(source);
+    final version = database
+        .select('PRAGMA data_version')
+        .single['data_version'];
+    storage.queries.clear();
+    final document = await readSessionEvidence(evaluator, session.id.value);
+    expect(document['runs'], isEmpty);
+    expect(document['command_tools'], _storedCommands(source, session));
+    final exported = _maps(_map(document['command_tools'])['captures']);
+    expect(exported, hasLength(128));
+    expect(
+      exported.map((capture) {
+        final header = _map(capture['header']);
+        return (header['invocation_id'], header['run_id']);
+      }),
+      expected.map((key) => (key.invocationId, key.runId)),
+    );
+    for (var index = 0; index < expected.length; index++) {
+      final key = expected[index];
+      expect(exported[index]['chunks'], [
+        {
+          'position': 1,
+          'stream': 'stdout',
+          'text': 'seeded stdout:${key.invocationId}/${key.runId}\n',
+        },
+        {
+          'position': 2,
+          'stream': 'stderr',
+          'text': 'seeded stderr:${key.invocationId}/${key.runId}\n',
+        },
+      ]);
+      expect(exported[index]['completeness'], 'complete');
+      expect(
+        exported[index]['terminal_provenance'],
+        'terminal_evidence_unavailable',
+      );
+    }
+    expect(storage.queries, isNotEmpty);
+    for (final query in storage.queries) {
+      expect(query.sessionId, session.id.value);
+      expect(query.accessMode, ProjectStorageAccessMode.durable);
+    }
+    final pages = storage.queries
+        .where(
+          (query) =>
+              query.sql.contains('FROM adele_command_captures h') &&
+              query.sql.contains('ORDER BY h.'),
+        )
+        .toList();
+    // One initial page and one successor per header, the last returning EOF.
+    expect(pages, hasLength(expected.length + 1));
+    for (var index = 0; index < pages.length; index++) {
+      final query = pages[index];
+      final sql = query.sql.replaceAll(RegExp(r'\s+'), ' ').trim();
+      expect(sql, contains('ORDER BY h.invocation_id, h.run_id LIMIT 1'));
+      expect(sql, isNot(contains(' OR ')));
+      expect(query.rowCount, index < expected.length ? 1 : 0);
+      if (index == 0) {
+        expect(query.parameters, {':session': session.id.value});
+        expect(sql, isNot(contains(':after_')));
+      } else {
+        final previous = expected[index - 1];
+        expect(query.parameters, {
+          ':session': session.id.value,
+          ':after_invocation': previous.invocationId,
+          ':after_run': previous.runId,
+        });
+        expect(
+          sql,
+          contains(
+            'AND (h.invocation_id, h.run_id) > (:after_invocation, :after_run)',
+          ),
+        );
+      }
+      // EXPLAIN runs only on this test-owned connection, never via plugin SQL.
+      final explain = database.prepare('EXPLAIN QUERY PLAN ${query.sql}');
+      try {
+        final details = explain
+            .selectWith(StatementParameters.named(query.parameters))
+            .map((row) => row['detail']! as String)
+            .toList();
+        // SQLite may scan/sort once for the initial page. Every successor,
+        // including EOF and reused invocation IDs, must range-seek without sort.
+        if (index > 0) {
+          expect(
+            details.any(
+              (detail) => RegExp(r'USE TEMP B-TREE.*ORDER BY').hasMatch(detail),
+            ),
+            isFalse,
+            reason: details.join('\n'),
+          );
+          expect(
+            details.any((detail) => RegExp(r'\bSCAN h\b').hasMatch(detail)),
+            isFalse,
+            reason: details.join('\n'),
+          );
+          expect(
+            details.any(
+              (detail) => RegExp(
+                r'^SEARCH h USING INDEX \S+ '
+                r'\(\(invocation_id,run_id\)>\(\?,\?\)\)$',
+              ).hasMatch(detail),
+            ),
+            isTrue,
+            reason: details.join('\n'),
+          );
+        }
+      } finally {
+        explain.close();
+      }
+    }
+    expect(
+      database.select('PRAGMA data_version').single['data_version'],
+      version,
+    );
+    expect(_databaseSnapshot(source), before);
+  } finally {
+    database.close();
+  }
+}
+
+final class _RecordingProjectStorage implements ProjectStorageService {
+  _RecordingProjectStorage(this.delegate);
+  final ProjectStorageHost delegate;
+  final queries =
+      <
+        ({
+          String sessionId,
+          String sql,
+          Map<String, Object?> parameters,
+          ProjectStorageAccessMode accessMode,
+          int rowCount,
+        })
+      >[];
+
+  @override
+  Future<bool> isDurableSession(String sessionId) =>
+      delegate.isDurableSession(sessionId);
+
+  @override
+  Future<void> ensureSchemaForSession(
+    String sessionId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.ensureSchemaForSession(sessionId, migrations, accessMode);
+
+  @override
+  Future<List<RelationalRow>> queryForSession(
+    String sessionId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    final rows = await delegate.queryForSession(
+      sessionId,
+      sql,
+      parameters,
+      accessMode,
+    );
+    queries.add((
+      sessionId: sessionId,
+      sql: sql,
+      parameters: Map<String, Object?>.of(parameters),
+      accessMode: accessMode,
+      rowCount: rows.length,
+    ));
+    return rows;
+  }
+
+  @override
+  Future<void> transactionForSession(
+    String sessionId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.transactionForSession(sessionId, statements, accessMode);
 }
 
 final class _Backends {
@@ -510,14 +1091,30 @@ final class _Backends {
   final PluginBackendHost host;
   final Directory artifacts;
   final activations = <PluginBackendActivation>[];
+  late _RecordingProjectStorage evaluatorStorage;
   Future<void>? _closing;
 
   Future<PluginBackendActivation> activate(String pluginId) async {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: File('${artifacts.path}/$pluginId.aot').uri,
-      createInfrastructureServices: (connection) =>
-          projectStorageServices(runtime.lifecycle, connection),
+      createInfrastructureServices: (connection) {
+        if (pluginId != _evaluatorId) {
+          return projectStorageServices(runtime.lifecycle, connection);
+        }
+        evaluatorStorage = _RecordingProjectStorage(
+          ProjectStorageHost(
+            lifecycle: runtime.lifecycle,
+            owner: PluginId(connection.pluginId),
+            validateAccess: connection.validateInfrastructureContext,
+          ),
+        );
+        return {
+          projectStorageServiceId: ProjectStorageServiceDispatcher(
+            evaluatorStorage,
+          ),
+        };
+      },
     );
     final activation = await PluginBackendActivation.registerAdvertised(
       connection: connection,

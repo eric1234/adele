@@ -4,6 +4,8 @@ import '../session_evaluator_contract.dart';
 
 /// Returns one bounded evidence document only after successful stream completion.
 /// Collection and transport errors propagate without returning a partial map.
+/// Accepts only [sessionEvidenceSchema]; v1 coverage did not include command
+/// transcripts and must not be interpreted as v2 completeness.
 Future<Map<String, Object?>> readSessionEvidence(
   SessionEvaluatorService service,
   String sessionId,

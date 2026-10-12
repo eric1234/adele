@@ -12,7 +12,7 @@ void main() {
       'dev.adele.plugin.session-evaluator',
     );
     expect(sessionEvaluatorServiceId, 'dev.adele.session-evaluator');
-    expect(sessionEvidenceSchema, 'dev.adele.session-evidence.v1');
+    expect(sessionEvidenceSchema, 'dev.adele.session-evidence.v2');
     expect(sessionEvidenceMaxBytes, 16 * 1024 * 1024);
     expect(sessionEvidenceChunkCodeUnits, 16 * 1024);
     expect(sessionEvidenceMaxRows, 100000);
@@ -105,6 +105,20 @@ void main() {
             reason: source,
           );
         }
+      },
+    );
+
+    test(
+      'rejects v1 even when its older coverage claims completeness',
+      () async {
+        final source = jsonEncode({
+          'schema': 'dev.adele.session-evidence.v1',
+          'coverage': {'status': 'complete_retained_evidence'},
+        });
+        await expectLater(
+          readSessionEvidence(_Service((_) => Stream.value(source)), 'session'),
+          throwsFormatException,
+        );
       },
     );
 

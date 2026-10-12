@@ -169,8 +169,9 @@ final class SessionEvidenceExporter {
         title: const Text('Export Session Evidence'),
         content: const Text(
           'Evidence may contain conversation prompts and responses, source code '
-          'and tool arguments, model usage and provider details, and other '
-          'potentially sensitive development information. Continue only if you '
+          'and tool arguments, full command stdout/stderr that may include '
+          'secrets, model usage and provider details, and other potentially '
+          'sensitive development information. Continue only if you '
           'intend to save this information locally.',
         ),
         actions: [

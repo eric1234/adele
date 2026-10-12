@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 const captureBlocks = 3200;
+const captureEvidenceBlocks = 12;
 
 String captureBlock(String stream, int index) =>
     '$stream:${index.toString().padLeft(4, '0')}:${'x' * 4080}\n';
@@ -10,10 +11,10 @@ String captureBlock(String stream, int index) =>
 String captureMarker(String stream, String stage) =>
     '$stream:$stage\r\u001b[32m\u03bb\u{1f680}\u001b[0m\n';
 
-String captureBulk(String stream) {
+String captureBulk(String stream, {int blocks = captureBlocks}) {
   final text = StringBuffer(captureMarker(stream, 'START'));
-  for (var index = 0; index < captureBlocks; index++) {
-    if (index == captureBlocks ~/ 2) {
+  for (var index = 0; index < blocks; index++) {
+    if (index == blocks ~/ 2) {
       text.write(captureMarker(stream, 'MIDDLE'));
     }
     text.write(captureBlock(stream, index));
@@ -23,6 +24,14 @@ String captureBulk(String stream) {
 
 /// The socket is an external test handshake, never an output transport.
 Future<void> main(List<String> arguments) async {
+  if (arguments.length == 1 && arguments.single == 'export') {
+    stdout.write(captureBulk('stdout', blocks: captureEvidenceBlocks));
+    stderr.write(captureBulk('stderr', blocks: captureEvidenceBlocks));
+    await stdout.flush();
+    await stderr.flush();
+    exitCode = 23;
+    return;
+  }
   if (arguments.length == 3 && arguments[1] == 'concurrent') {
     await _concurrent(int.parse(arguments.first), arguments.last);
     return;
@@ -31,9 +40,11 @@ Future<void> main(List<String> arguments) async {
     await _presentation(int.parse(arguments.first));
     return;
   }
+  final evidence = arguments.length == 2 && arguments.last == 'evidence';
+  final blocks = evidence ? captureEvidenceBlocks : captureBlocks;
   final socket = await Socket.connect(
     InternetAddress.loopbackIPv4,
-    int.parse(arguments.single),
+    int.parse(evidence ? arguments.first : arguments.single),
   ).timeout(const Duration(seconds: 30));
   final releases = StreamIterator(
     socket
@@ -58,8 +69,8 @@ Future<void> main(List<String> arguments) async {
   await gate('started', 'bulk');
   for (final stream in ['stdout', 'stderr']) {
     final sink = stream == 'stdout' ? stdout : stderr;
-    for (var index = 0; index < captureBlocks; index++) {
-      if (index == captureBlocks ~/ 2) {
+    for (var index = 0; index < blocks; index++) {
+      if (index == blocks ~/ 2) {
         sink.write(captureMarker(stream, 'MIDDLE'));
       }
       sink.write(captureBlock(stream, index));
@@ -82,6 +93,7 @@ Future<void> main(List<String> arguments) async {
   await gate('hidden', 'exit');
   await releases.cancel();
   socket.destroy();
+  if (evidence) exitCode = 23;
 }
 
 // The normal application proof needs observable intermediate states, not the

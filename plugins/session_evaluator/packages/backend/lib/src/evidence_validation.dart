@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 
@@ -14,6 +15,119 @@ void evidenceRequire(bool valid, String message) {
 bool _nonblank(Object? value) => value is String && value.trim().isNotEmpty;
 bool _identity(Object? value) =>
     _nonblank(value) && value == (value as String).trim();
+
+void validateCommandHeader(Map<String, Object?> row) {
+  evidenceRequire(
+    row.length == commandCaptures.columns.length &&
+        row.keys.toSet().containsAll(commandCaptures.columns),
+    'Unexpected command capture columns.',
+  );
+  for (final key in commandCaptures.text) {
+    evidenceRequire(row[key] is String, 'Invalid command capture $key.');
+  }
+  for (final key in [
+    'session_id',
+    'run_id',
+    'invocation_id',
+    'environment_id',
+  ]) {
+    evidenceRequire(_identity(row[key]), 'Invalid command identity $key.');
+  }
+  for (final key in commandCaptures.integers) {
+    evidenceRequire(row[key] is int, 'Invalid command capture $key.');
+  }
+  try {
+    final arguments = jsonDecode(row['arguments_json'] as String);
+    evidenceRequire(
+      arguments is List && arguments.every((value) => value is String),
+      'Invalid command argv.',
+    );
+    EnvironmentForegroundProcessRequest(
+      program: row['program'] as String,
+      arguments: List<String>.from(arguments as List),
+      relativeWorkingDirectory: row['working_directory'] as String,
+      timeoutSeconds: row['timeout_seconds'] as int,
+    );
+  } on FormatException {
+    evidenceRequire(false, 'Malformed command metadata.');
+  }
+  final directory = row['working_directory'] as String;
+  evidenceRequire(
+    directory.isEmpty ||
+        directory
+            .split('/')
+            .every((part) => part.isNotEmpty && part != '.' && part != '..'),
+    'Noncanonical command working directory.',
+  );
+  final highWater = row['high_water'] as int;
+  final units = row['total_code_units'] as int;
+  evidenceRequire(
+    (row['version'] as int) >= 1 &&
+        highWater >= 0 &&
+        units >= 0 &&
+        (highWater == 0) == (units == 0) &&
+        units >= highWater &&
+        units <= highWater * commandChunkCodeUnits,
+    'Invalid command committed extent/version.',
+  );
+  final validOutcome = switch ((row['termination'], row['exit_code'])) {
+    (null, null) || ('exited', int()) || ('timedOut', null) => true,
+    _ => false,
+  };
+  final validState = switch (row['state']) {
+    'capturing' => row['termination'] == null && row['failure'] == null,
+    'complete' => row['termination'] != null && row['failure'] == null,
+    'failed' =>
+      row['failure'] is String && (row['failure'] as String).isNotEmpty,
+    _ => false,
+  };
+  evidenceRequire(
+    validOutcome && validState,
+    'Invalid persisted capture state/outcome.',
+  );
+  // Match the producer's admission budget, not a new collector metadata limit.
+  evidenceRequire(
+    utf8
+            .encode(
+              jsonEncode({
+                ':id': row['invocation_id'],
+                ':session': row['session_id'],
+                ':run': row['run_id'],
+                ':environment': row['environment_id'],
+                ':program': row['program'],
+                ':arguments': row['arguments_json'],
+                ':directory': row['working_directory'],
+                ':timeout': row['timeout_seconds'],
+              }),
+            )
+            .length <=
+        128 * 1024,
+    'Command metadata exceeds its producing bound.',
+  );
+}
+
+void validateCommandChunk(Map<String, Object?> chunk, int position) {
+  evidenceRequire(
+    chunk.length == 3 &&
+        chunk['position'] is int &&
+        chunk['position'] == position &&
+        const ['stdout', 'stderr'].contains(chunk['stream']) &&
+        chunk['text'] is String &&
+        (chunk['text'] as String).isNotEmpty &&
+        (chunk['text'] as String).length <= commandChunkCodeUnits,
+    'Invalid or noncontiguous command chunk.',
+  );
+  try {
+    EnvironmentProcessOutput(
+      stream: EnvironmentProcessOutputStream.values.byName(
+        chunk['stream'] as String,
+      ),
+      text: chunk['text'] as String,
+    );
+  } on FormatException {
+    evidenceRequire(false, 'Malformed decoded command output.');
+  }
+}
 
 void validateSessionIdentity(Map<String, Object?> identity) {
   // These product-domain IDs share the nonempty/no-outer-whitespace invariant.

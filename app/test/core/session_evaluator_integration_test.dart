@@ -10,6 +10,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
@@ -30,9 +31,12 @@ import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
 import '../../tool/session_evidence_exporter.dart';
+import '../fixtures/command_output_process.dart'
+    show captureBulk, captureEvidenceBlocks, captureMarker;
 import '../support/project_provider.dart';
 
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
+const _commandPlugin = 'dev.adele.plugin.command-tools';
 const _evaluatorPlugin = 'dev.adele.plugin.session-evaluator';
 const _instructions = 'Preserve exact evidence; use the deterministic fixture.';
 const _opaque = 'opaque-native-payload-must-not-be-exported';
@@ -51,6 +55,7 @@ void main() {
   late Session session;
   late ChatSessionServiceClient chat;
   late SessionEvaluatorServiceClient evaluator;
+  late _EnvironmentChannel processes;
 
   setUpAll(() async {
     artifacts = await Directory.systemTemp.createTemp('adele-evidence-aot-');
@@ -61,10 +66,13 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     for (final entry in const {
       'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
+      'child': 'app/test/fixtures/command_output_process.dart',
       _chatPlugin:
           'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
       _evaluatorPlugin:
           'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
+      _commandPlugin:
+          'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
     }.entries) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -78,6 +86,7 @@ void main() {
     installations = await _install(artifacts, 'initial', [
       _chatPlugin,
       _evaluatorPlugin,
+      _commandPlugin,
     ]);
     evaluatorOnly = await _install(artifacts, 'replacement', [
       _evaluatorPlugin,
@@ -121,7 +130,7 @@ void main() {
         serviceId: environmentProviderServiceId,
       ),
       endpoint: AdeleRequestChannelEndpoint(
-        channel: _EnvironmentChannel(),
+        channel: processes = _EnvironmentChannel(source),
         serviceId: environmentProviderServiceId,
         isAvailable: () => true,
       ),
@@ -165,6 +174,7 @@ void main() {
     ToolPolicyDecision decision = ToolPolicyDecision.allow,
     ToolId? toolId,
     _Tool? tool,
+    ToolCatalog? toolCatalog,
   }) async {
     final run = await createSessionOrchestrationRun(
       lifecycle: runtime.lifecycle,
@@ -172,21 +182,22 @@ void main() {
       runId: RunId(id),
       contextComposer: runtime.contextComposer,
       model: model,
-      toolCatalog: ToolCatalog()
-        ..register(
-          ToolRegistration(
-            definition: ToolDefinition(
-              id: toolId ?? ToolId('dev.adele.test.evidence-tool'),
-              description: 'Deterministic evidence tool',
+      toolCatalog:
+          toolCatalog ??
+          (ToolCatalog()..register(
+            ToolRegistration(
+              definition: ToolDefinition(
+                id: toolId ?? ToolId('dev.adele.test.evidence-tool'),
+                description: 'Deterministic evidence tool',
+              ),
+              modelDefinition: ModelToolDefinition(
+                alias: 'evidence_tool',
+                description: 'Deterministic evidence tool',
+                argumentsSchema: const {},
+              ),
+              executable: tool ?? _Tool(),
             ),
-            modelDefinition: ModelToolDefinition(
-              alias: 'evidence_tool',
-              description: 'Deterministic evidence tool',
-              argumentsSchema: const {},
-            ),
-            executable: tool ?? _Tool(),
-          ),
-        ),
+          )),
       policy: _Policy(decision),
     );
     addTearDown(run.close);
@@ -304,7 +315,11 @@ void main() {
       )['arguments_json'],
       jsonEncode({'value': 7}),
     );
-    expect(_map(document['coverage'])['status'], 'complete_retained_evidence');
+    expect(_map(document['coverage'])['status'], 'partial');
+    expect(
+      _map(document['coverage'])['retained_session_evidence'],
+      'complete_retained_evidence',
+    );
     expect(_inspect(source, _snapshot), before);
   });
 
@@ -342,7 +357,12 @@ void main() {
     await otherRun.start();
     final before = _inspect(source, _snapshot);
     final document = await collect(session);
-    expect(document['schema'], 'dev.adele.session-evidence.v1');
+    expect(document['schema'], 'dev.adele.session-evidence.v2');
+    expect(document['command_tools'], {
+      'status': 'unavailable',
+      'schema_version': null,
+      'captures': <Object?>[],
+    });
     expect(document['identity'], {
       'session_id': session.id.value,
       'task_id': task.task.id.value,
@@ -430,7 +450,12 @@ void main() {
       'Safe native summary',
     );
     final coverage = _map(document['coverage']);
-    expect(coverage['status'], 'complete_retained_evidence');
+    expect(coverage['status'], 'partial');
+    expect(coverage['retained_session_evidence'], 'complete_retained_evidence');
+    expect(coverage['command_transcripts'], {
+      'status': 'unavailable',
+      'invocations_without_capture': <Object?>[],
+    });
     expect(coverage['associated_runs_without_terminal_evidence'], isEmpty);
     expect(coverage['consistency'], 'independent_reads_not_atomic_snapshot');
     expect(coverage['run_order'], 'lexical_id_not_chronology');
@@ -482,6 +507,19 @@ void main() {
       'entries': <Object?>[],
     });
     expect(unavailable['runs'], isEmpty);
+    expect(unavailable['command_tools'], {
+      'status': 'unavailable',
+      'schema_version': null,
+      'captures': <Object?>[],
+    });
+    expect(
+      _map(unavailable['coverage'])['retained_session_evidence'],
+      'partial',
+    );
+    expect(_map(unavailable['coverage'])['command_transcripts'], {
+      'status': 'unavailable',
+      'invocations_without_capture': <Object?>[],
+    });
     expect(_inspect(source, _snapshot), absent);
 
     final other = otherSession();
@@ -532,6 +570,7 @@ void main() {
       );
       final coverage = _map(document['coverage']);
       expect(coverage['status'], 'partial');
+      expect(coverage['retained_session_evidence'], 'partial');
       expect(coverage['associated_runs_without_terminal_evidence'], [
         'pending-run',
       ]);
@@ -817,70 +856,189 @@ void main() {
       );
     }
 
-    testWidgets('palette exports the exact E1 document from retained Chat/Run '
-        'without collecting a draft or changing storage', (tester) async {
-      final model = _Model('Exact retained answer.', withTools: true);
-      late Map<String, Object?> expected;
-      await tester.runAsync(() async {
-        await chat.configureSession(session.id.value, _instructions, 4);
-        await chat.appendUserMessage(session.id.value, '  Exact question.\n');
-        final run = await createRun(session, 'native-export-run', model);
-        await run.start();
-        expect(run.run.state, RunState.completed);
-        await chat.setDraftRequest(
-          session.id.value,
-          'Unsubmitted private draft',
+    testWidgets(
+      'palette exports the exact v2 document from retained Chat/Run '
+      'and full Command output without collecting a draft or changing storage',
+      (tester) async {
+        final arguments = <String, Object?>{
+          'program': aotRuntime,
+          'arguments': ['${artifacts.path}/child.aot', 'export'],
+          'workingDirectory': '',
+          'timeoutSeconds': 30,
+        };
+        final model = _Model(
+          'Exact retained answer.',
+          withTools: true,
+          commandArguments: arguments,
         );
-        final other = otherSession();
-        await chat.appendUserMessage(other.id.value, 'OTHER-SESSION');
-        expected = await collect(session);
-      });
-      final before = _inspect(source, _snapshot);
-      final destination = File('${source.path}/chosen-evidence.json')
-        ..writeAsStringSync('previous destination');
-      picker.pick = () async => FileSaveLocation(destination.path);
-      window.presentSession(session);
-      await mount(tester);
-      await openPalette(tester);
-      expect(find.text('Export Session Evidence...'), findsOneWidget);
-      await tester.tap(find.text('Export Session Evidence...'));
-      await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        final command = await paletteSelection;
-        expect(command!.id, exportSessionEvidenceCommandId);
-        exporting = command.invoke();
-      });
-      await tester.pumpAndSettle();
-      expect(find.byType(CommandPalette), findsNothing);
-      expect(find.text('Export Session Evidence'), findsOneWidget);
-      expect(find.textContaining('potentially sensitive'), findsOneWidget);
-      expect(picker.calls, 0);
-      expect(destination.readAsStringSync(), 'previous destination');
+        late Map<String, Object?> expected;
+        late SessionOrchestrationRun denied;
+        await tester.runAsync(() async {
+          await chat.configureSession(session.id.value, _instructions, 4);
+          await chat.appendUserMessage(session.id.value, '  Exact question.\n');
+          final catalog = await buildModelToolCatalogForSession(
+            sessionId: session.id,
+            environmentRuntime: runtime.lifecycle.environmentRuntime,
+            extensions: runtime.extensions,
+          );
+          final run = await createRun(
+            session,
+            'native-export-run',
+            model,
+            toolCatalog: catalog,
+          );
+          await run.start();
+          expect(run.run.state, RunState.completed);
+          final outcome = run.activity.snapshot.tools.single.outcome!;
+          expect(outcome.disposition, ToolOutcomeDisposition.success);
+          expect(outcome.hostData['exitCode'], 23);
+          for (final stream in ['stdout', 'stderr']) {
+            expect(outcome.hostData['${stream}Truncated'], isTrue);
+            expect(
+              outcome.hostData[stream]! as String,
+              isNot(contains(captureMarker(stream, 'MIDDLE'))),
+            );
+          }
+          await chat.appendUserMessage(
+            session.id.value,
+            'Deny the same command.',
+          );
+          denied = await createRun(
+            session,
+            'native-denied-run',
+            _Model(
+              'Denied without execution.',
+              withTools: true,
+              commandArguments: arguments,
+            ),
+            toolCatalog: catalog,
+            decision: ToolPolicyDecision.deny,
+          );
+          await denied.start();
+          expect(denied.run.state, RunState.completed);
+          expect(
+            denied.activity.snapshot.tools.single.changes.where(
+              (change) => change.kind == ToolActivityKind.executionStarted,
+            ),
+            isEmpty,
+          );
+          expect(processes.calls, 1);
+          await chat.setDraftRequest(
+            session.id.value,
+            'Unsubmitted private draft',
+          );
+          final other = otherSession();
+          await chat.appendUserMessage(other.id.value, 'OTHER-SESSION');
+          expected = await collect(session);
+        });
+        final before = _inspect(source, _snapshot);
+        final destination = File('${source.path}/chosen-evidence.json')
+          ..writeAsStringSync('previous destination');
+        picker.pick = () async => FileSaveLocation(destination.path);
+        window.presentSession(session);
+        await mount(tester);
+        await openPalette(tester);
+        expect(find.text('Export Session Evidence...'), findsOneWidget);
+        await tester.tap(find.text('Export Session Evidence...'));
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          final command = await paletteSelection;
+          expect(command!.id, exportSessionEvidenceCommandId);
+          exporting = command.invoke();
+        });
+        await tester.pumpAndSettle();
+        expect(find.byType(CommandPalette), findsNothing);
+        expect(find.text('Export Session Evidence'), findsOneWidget);
+        expect(find.textContaining('potentially sensitive'), findsOneWidget);
+        expect(
+          find.textContaining('full command stdout/stderr'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('may include secrets'), findsOneWidget);
+        expect(picker.calls, 0);
+        expect(destination.readAsStringSync(), 'previous destination');
 
-      await continueExport(tester);
-      await finish(tester);
-      expect(picker.calls, 1);
-      expect(picker.options!.suggestedName, 'session-evidence.json');
-      expect(picker.typeGroups!.single.extensions, ['json']);
-      expect(destination.readAsStringSync(), jsonEncode(expected));
-      expect(expected['schema'], 'dev.adele.session-evidence.v1');
-      expect(
-        _map(expected['coverage'])['status'],
-        'complete_retained_evidence',
-      );
-      final encoded = destination.readAsStringSync();
-      expect(encoded, isNot(contains(_opaque)));
-      expect(encoded, isNot(contains('OTHER-SESSION')));
-      expect(encoded, isNot(contains('Unsubmitted private draft')));
-      expect(model.calls, 2);
-      expect(_inspect(source, _snapshot), before);
-      expectNoStaging();
-      expect(find.text('Session evidence exported.'), findsOneWidget);
-      expect(
-        find.text('Session evidence could not be exported.'),
-        findsNothing,
-      );
-    });
+        await continueExport(tester);
+        await finish(tester);
+        expect(picker.calls, 1);
+        expect(picker.options!.suggestedName, 'session-evidence.json');
+        expect(picker.typeGroups!.single.extensions, ['json']);
+        expect(destination.readAsStringSync(), jsonEncode(expected));
+        expect(expected['schema'], 'dev.adele.session-evidence.v2');
+        expect(
+          _map(expected['coverage'])['status'],
+          'complete_retained_evidence',
+        );
+        expect(
+          _map(expected['coverage'])['retained_session_evidence'],
+          'complete_retained_evidence',
+        );
+        expect(_map(expected['coverage'])['command_transcripts'], {
+          'status': 'complete_retained_captures',
+          'invocations_without_capture': [
+            {
+              'run_id': denied.run.id.value,
+              'invocation_id': denied.activity.snapshot.tools.single.id.value,
+              'execution': 'not_executed',
+            },
+          ],
+        });
+        final commands = _map(expected['command_tools']);
+        expect(commands['status'], 'available');
+        expect(commands['schema_version'], 1);
+        final capture = _maps(commands['captures']).single;
+        expect(
+          capture['header'],
+          _inspect(
+            source,
+            (database) => _rows(
+              database,
+              'SELECT * FROM adele_command_captures WHERE session_id = ?',
+              [session.id.value],
+            ).single,
+          ),
+        );
+        expect(
+          capture['chunks'],
+          _inspect(
+            source,
+            (database) => _rows(
+              database,
+              'SELECT position, stream, text FROM adele_command_chunks WHERE run_id = ? AND invocation_id = ? ORDER BY position',
+              [
+                _map(capture['header'])['run_id'],
+                _map(capture['header'])['invocation_id'],
+              ],
+            ),
+          ),
+        );
+        expect(capture['completeness'], 'complete');
+        expect(capture['terminal_provenance'], 'matched');
+        expect(capture['consistency'], 'committed_high_water_snapshot');
+        final chunks = _maps(capture['chunks']);
+        for (final stream in ['stdout', 'stderr']) {
+          expect(
+            chunks
+                .where((chunk) => chunk['stream'] == stream)
+                .map((chunk) => chunk['text'])
+                .join(),
+            captureBulk(stream, blocks: captureEvidenceBlocks),
+          );
+        }
+        final encoded = destination.readAsStringSync();
+        expect(encoded, isNot(contains(_opaque)));
+        expect(encoded, isNot(contains('OTHER-SESSION')));
+        expect(encoded, isNot(contains('Unsubmitted private draft')));
+        expect(model.calls, 2);
+        expect(_inspect(source, _snapshot), before);
+        expectNoStaging();
+        expect(find.text('Session evidence exported.'), findsOneWidget);
+        expect(
+          find.text('Session evidence could not be exported.'),
+          findsNothing,
+        );
+      },
+    );
 
     testWidgets('no Session is hidden; confirmation and save cancellation are '
         'silent and reject duplicate pending admission', (tester) async {
@@ -1204,10 +1362,7 @@ void main() {
           session.id.value,
           'Valid retained evidence.',
         );
-        expect(
-          _map((await collect(session))['coverage'])['status'],
-          'complete_retained_evidence',
-        );
+        expect(_map((await collect(session))['coverage'])['status'], 'partial');
       });
       final before = _inspect(source, _snapshot);
       final destination = Directory('${source.path}/private-save-target')
@@ -1551,11 +1706,60 @@ Map<String, Object?> _evidence(Database database, String runId) {
   };
 }
 
-final class _EnvironmentChannel implements AdeleRequestChannel {
+final class _EnvironmentChannel implements AdeleStreamChannel {
+  _EnvironmentChannel(this.source);
+  final Directory source;
+  int calls = 0;
+
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     expect(method, environmentProviderServiceEstablishId);
     return {'providerState': <String, Object?>{}};
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) async* {
+    expect(method, environmentProviderServiceRunForegroundProcessId);
+    final request = _map(payload['request']);
+    expect(request['relativeWorkingDirectory'], '');
+    calls++;
+    // Only the Environment adapter is local: Command admission, capture, sealing,
+    // and evaluator collection use the real AOT backends and Project storage.
+    final result = await Process.run(
+      request['program']! as String,
+      List<String>.from(request['arguments']! as List),
+      workingDirectory: source.path,
+    ).timeout(Duration(seconds: request['timeoutSeconds']! as int));
+    for (final (stream, text) in [
+      ('stdout', result.stdout as String),
+      ('stderr', result.stderr as String),
+    ]) {
+      for (var start = 0; start < text.length;) {
+        var end = start + environmentProcessTextLimit;
+        if (end > text.length) end = text.length;
+        if (end < text.length &&
+            text.codeUnitAt(end - 1) >= 0xd800 &&
+            text.codeUnitAt(end - 1) <= 0xdbff) {
+          end--;
+        }
+        yield {
+          'kind': 'output',
+          'output': {'stream': stream, 'text': text.substring(start, end)},
+          'completed': null,
+        };
+        start = end;
+      }
+    }
+    yield {
+      'kind': 'completed',
+      'output': null,
+      'completed': {
+        'termination': 'exited',
+        'exitCode': result.exitCode,
+        'stdoutTruncated': false,
+        'stderrTruncated': false,
+      },
+    };
   }
 }
 
@@ -1567,9 +1771,10 @@ final class _Policy implements ToolPolicy {
 }
 
 final class _Model implements ModelPort {
-  _Model(this.answer, {this.withTools = false});
+  _Model(this.answer, {this.withTools = false, this.commandArguments});
   final String answer;
   final bool withTools;
+  final Map<String, Object?>? commandArguments;
   int calls = 0;
 
   @override
@@ -1596,14 +1801,17 @@ final class _Model implements ModelPort {
           ),
         ),
       );
-      for (final alias in ['evidence_tool', 'unknown_tool']) {
+      for (final alias in [
+        commandArguments == null ? 'evidence_tool' : 'run_command',
+        'unknown_tool',
+      ]) {
         yield ModelOutputItemCompleted(
           invocationId: request.invocationId,
           item: ModelToolProposalOutput(
             ProviderToolProposal(
               providerCallId: 'call-$alias',
               alias: alias,
-              arguments: const {'value': 7},
+              arguments: commandArguments ?? const {'value': 7},
             ),
           ),
         );
