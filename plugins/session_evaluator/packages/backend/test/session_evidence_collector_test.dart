@@ -877,16 +877,16 @@ void main() {
           [
             ('run-a', 'a'),
             ('run-a', 'same'),
-            ('run-a', 'z'),
             ('run-z', 'same'),
+            ('run-a', 'z'),
           ],
         );
         expect(storage.headerCursors, [
           (null, null),
-          ('run-a', 'a'),
-          ('run-a', 'same'),
-          ('run-a', 'z'),
-          ('run-z', 'same'),
+          ('a', 'run-a'),
+          ('same', 'run-a'),
+          ('same', 'run-z'),
+          ('z', 'run-a'),
         ]);
         for (final capture in captures) {
           final header = capture['header'] as _Row;
@@ -929,6 +929,98 @@ void main() {
     );
 
     test(
+      'many interleaved Session headers traverse every composite key once',
+      () async {
+        final expected = <(String, String)>[];
+        for (var index = 0; index < 40; index++) {
+          final invocation = 'command-${index.toString().padLeft(2, '0')}';
+          for (final run in ['run-a', 'run-m', 'run-z']) {
+            expected.add((invocation, run));
+          }
+        }
+        // Insert opposite to enumeration order, with foreign captures sharing the
+        // leading invocation key. Run-first enumeration would produce another list.
+        for (final (invocation, run) in expected.reversed) {
+          storage.capture(
+            run: run,
+            invocation: invocation,
+            output: [('stdout', '$invocation/$run'), ('stderr', '\r\n')],
+          );
+        }
+        for (var index = 0; index < 40; index++) {
+          storage.capture(
+            run: 'run-b',
+            invocation: 'command-${index.toString().padLeft(2, '0')}',
+            session: 'other-session',
+            output: [('stdout', 'SECRET-FOREIGN')],
+          );
+        }
+        final document = await read();
+        final captures = _captures(document);
+        expect(captures, hasLength(expected.length));
+        expect(
+          captures.map((capture) {
+            final header = capture['header'] as _Row;
+            return (header['invocation_id'], header['run_id']);
+          }),
+          expected,
+        );
+        expect(storage.headerCursors, [(null, null), ...expected]);
+        expect(storage.finalHeaderQueries, hasLength(expected.length));
+        for (var i = 0; i < captures.length; i++) {
+          expect(captures[i]['chunks'], [
+            {
+              'position': 1,
+              'stream': 'stdout',
+              'text': '${expected[i].$1}/${expected[i].$2}',
+            },
+            {'position': 2, 'stream': 'stderr', 'text': '\r\n'},
+          ]);
+        }
+        expect(jsonEncode(document), isNot(contains('SECRET-FOREIGN')));
+      },
+    );
+
+    for (final addition in [false, true]) {
+      test(
+        'concurrent ${addition ? 'addition' : 'removal'} beyond the cursor fails the discovery count',
+        () async {
+          storage.capture(invocation: 'a');
+          storage.capture(invocation: 'z');
+          storage.beforeQuery = (sql, parameters) {
+            if (parameters[':after_invocation'] != 'a') return;
+            storage.beforeQuery = null;
+            if (addition) {
+              storage.capture(invocation: 'm');
+            } else {
+              storage.rows[commandCaptures.name]!.removeWhere(
+                (row) => row['invocation_id'] == 'z',
+              );
+            }
+          };
+          await _expectUnpublishedFailure(collector, 'malformed_data');
+          expect(storage.headerCursors, [
+            (null, null),
+            ('a', 'run'),
+            if (addition) ...[('m', 'run'), ('z', 'run')],
+          ]);
+        },
+      );
+    }
+
+    test(
+      'successor query failure does not emit an already read capture',
+      () async {
+        storage.capture(invocation: 'a', output: [('stdout', 'retained')]);
+        storage.capture(invocation: 'b');
+        storage.failQuery = (_, parameters) =>
+            parameters[':after_invocation'] == 'a';
+        await _expectUnpublishedFailure(collector, 'storage_query_failed');
+        expect(storage.finalHeaderQueries, hasLength(1));
+      },
+    );
+
+    test(
       'other Session headers, chunks and Runs cannot leak into export',
       () async {
         storage.capture(output: [('stdout', 'ours')]);
@@ -956,7 +1048,7 @@ void main() {
         expect(document['runs'], isEmpty);
         expect(jsonEncode(document), isNot(contains('SECRET-')));
         expect(storage.chunkQueries.single[':run'], 'run');
-        expect(storage.headerCursors, [(null, null), ('run', 'command')]);
+        expect(storage.headerCursors, [(null, null), ('command', 'run')]);
       },
     );
 
@@ -1404,8 +1496,7 @@ void main() {
         storage.capture(output: [('stdout', 'committed')]);
         storage.failQuery = (sql, parameters) => switch (phase) {
           'headers' =>
-            sql.contains('as chunk_count') &&
-                parameters.containsKey(':after_run'),
+            sql.contains('as chunk_count') && !parameters.containsKey(':run'),
           'chunks' => sql.startsWith('select c.position'),
           _ => sql.contains('as chunk_count') && parameters.containsKey(':run'),
         };
@@ -2281,37 +2372,42 @@ final class _QueryFixture implements ProjectStorageService {
         'Headers require exact columns and atomic correlated COUNT/MIN/MAX.',
       );
       Iterable<_Row> selected;
-      if (parameters.containsKey(':after_run')) {
-        _require(
-          sql.contains(
-                'and (:after_run is null or h.run_id > :after_run '
-                'or (h.run_id = :after_run and h.invocation_id > :after_invocation)) '
-                'order by h.run_id, h.invocation_id limit 1',
-              ) &&
-              parameters.length == 3,
-          'Command discovery requires exclusive composite keyset pagination.',
-        );
-        final afterRun = parameters[':after_run'] as String?;
+      if (sql.endsWith('order by h.invocation_id, h.run_id limit 1')) {
         final afterInvocation = parameters[':after_invocation'] as String?;
-        headerCursors.add((afterRun, afterInvocation));
+        final afterRun = parameters[':after_run'] as String?;
+        _require(
+          afterInvocation == null
+              ? parameters.length == 1 &&
+                    sql.endsWith(
+                      'where h.session_id = :session '
+                      'order by h.invocation_id, h.run_id limit 1',
+                    )
+              : afterRun != null &&
+                    parameters.length == 3 &&
+                    sql.endsWith(
+                      'where h.session_id = :session '
+                      'and (h.invocation_id, h.run_id) > (:after_invocation, :after_run) '
+                      'order by h.invocation_id, h.run_id limit 1',
+                    ),
+          'Command discovery requires separate initial and indexed exclusive successor pages.',
+        );
+        headerCursors.add((afterInvocation, afterRun));
         scoped.sort((a, b) {
-          final run = (a['run_id'] as String).compareTo(b['run_id'] as String);
-          return run != 0
-              ? run
-              : (a['invocation_id'] as String).compareTo(
-                  b['invocation_id'] as String,
-                );
+          final invocation = (a['invocation_id'] as String).compareTo(
+            b['invocation_id'] as String,
+          );
+          return invocation != 0
+              ? invocation
+              : (a['run_id'] as String).compareTo(b['run_id'] as String);
         });
         selected = scoped
             .where(
               (row) =>
-                  afterRun == null ||
-                  (row['run_id'] as String).compareTo(afterRun) > 0 ||
-                  (row['run_id'] == afterRun &&
-                      (row['invocation_id'] as String).compareTo(
-                            afterInvocation!,
-                          ) >
-                          0),
+                  afterInvocation == null ||
+                  (row['invocation_id'] as String).compareTo(afterInvocation) >
+                      0 ||
+                  (row['invocation_id'] == afterInvocation &&
+                      (row['run_id'] as String).compareTo(afterRun!) > 0),
             )
             .take(1);
       } else {

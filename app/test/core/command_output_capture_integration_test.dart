@@ -18,6 +18,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart'
@@ -553,6 +554,17 @@ void main() {
             isolatedBefore['adele_command_chunks'],
             before['adele_command_chunks'],
           );
+          await _expectIndexedCommandHeaders(
+            source: source,
+            evaluator: evaluator,
+            storage: backends.evaluatorStorage,
+            session: other,
+            foreignSession: runtime.lifecycle.createSession(
+              taskId: task.task.id,
+              strategyId: _strategyId,
+            ),
+            template: captures.first,
+          );
         } else {
           final database = sqlite3.open(
             '${source.path}/.adele/data.db',
@@ -800,7 +812,7 @@ Map<String, Object?> _storedCommands(Directory source, Session session) {
       'schema_version': 1,
       'captures': [
         for (final header in database.select(
-          'SELECT * FROM adele_command_captures WHERE session_id = ? ORDER BY run_id, invocation_id',
+          'SELECT * FROM adele_command_captures WHERE session_id = ? ORDER BY invocation_id, run_id',
           [session.id.value],
         ))
           {
@@ -833,20 +845,276 @@ Map<String, Object?> _storedCommands(Directory source, Session session) {
   }
 }
 
+Future<void> _expectIndexedCommandHeaders({
+  required Directory source,
+  required SessionEvaluatorServiceClient evaluator,
+  required _RecordingProjectStorage storage,
+  required Session session,
+  required Session foreignSession,
+  required _Capture template,
+}) async {
+  // Seeded test data, not additional process executions: clone genuine metadata
+  // in the v1 schema already initialized by the real Command Tools AOT producer.
+  // Invocation IDs repeat across Runs/Sessions; Run order opposes invocation
+  // order, with foreign headers before, between and after the requested rows.
+  final seeded = [
+    for (var group = 0; group < 64; group++)
+      for (var run = 0; run < 5; run++)
+        (
+          sessionId: run.isOdd ? session.id.value : foreignSession.id.value,
+          invocationId: 'seeded-plan-invocation-${'$group'.padLeft(3, '0')}',
+          runId: 'seeded-plan-run-${'${64 - group}'.padLeft(3, '0')}-$run',
+        ),
+  ];
+  final expected = seeded
+      .where((key) => key.sessionId == session.id.value)
+      .toList();
+  final database = sqlite3.open('${source.path}/.adele/data.db');
+  try {
+    database.execute('PRAGMA foreign_keys = ON');
+    final header = database.prepare('''
+INSERT INTO adele_command_captures
+  (invocation_id, session_id, run_id, environment_id, program, arguments_json,
+   working_directory, timeout_seconds, state, version, high_water,
+   total_code_units, termination, exit_code, failure)
+SELECT ?, ?, ?, environment_id, program, arguments_json,
+       working_directory, timeout_seconds, state, 3, 2, ?,
+       termination, exit_code, failure
+FROM adele_command_captures WHERE invocation_id = ? AND run_id = ?
+''');
+    final chunk = database.prepare('''
+INSERT INTO adele_command_chunks (invocation_id, run_id, position, stream, text)
+VALUES (?, ?, ?, ?, ?)
+''');
+    try {
+      database.execute('BEGIN');
+      for (final key in seeded.reversed) {
+        final stdout = 'seeded stdout:${key.invocationId}/${key.runId}\n';
+        final stderr = 'seeded stderr:${key.invocationId}/${key.runId}\n';
+        header.execute([
+          key.invocationId,
+          key.sessionId,
+          key.runId,
+          stdout.length + stderr.length,
+          template.invocationId,
+          template.runId,
+        ]);
+        expect(database.updatedRows, 1);
+        chunk.execute([key.invocationId, key.runId, 1, 'stdout', stdout]);
+        chunk.execute([key.invocationId, key.runId, 2, 'stderr', stderr]);
+      }
+      database.execute('COMMIT');
+    } finally {
+      header.close();
+      chunk.close();
+    }
+    final before = _databaseSnapshot(source);
+    final version = database
+        .select('PRAGMA data_version')
+        .single['data_version'];
+    storage.queries.clear();
+    final document = await readSessionEvidence(evaluator, session.id.value);
+    expect(document['runs'], isEmpty);
+    expect(document['command_tools'], _storedCommands(source, session));
+    final exported = _maps(_map(document['command_tools'])['captures']);
+    expect(exported, hasLength(128));
+    expect(
+      exported.map((capture) {
+        final header = _map(capture['header']);
+        return (header['invocation_id'], header['run_id']);
+      }),
+      expected.map((key) => (key.invocationId, key.runId)),
+    );
+    for (var index = 0; index < expected.length; index++) {
+      final key = expected[index];
+      expect(exported[index]['chunks'], [
+        {
+          'position': 1,
+          'stream': 'stdout',
+          'text': 'seeded stdout:${key.invocationId}/${key.runId}\n',
+        },
+        {
+          'position': 2,
+          'stream': 'stderr',
+          'text': 'seeded stderr:${key.invocationId}/${key.runId}\n',
+        },
+      ]);
+      expect(exported[index]['completeness'], 'complete');
+      expect(
+        exported[index]['terminal_provenance'],
+        'terminal_evidence_unavailable',
+      );
+    }
+    expect(storage.queries, isNotEmpty);
+    for (final query in storage.queries) {
+      expect(query.sessionId, session.id.value);
+      expect(query.accessMode, ProjectStorageAccessMode.durable);
+    }
+    final pages = storage.queries
+        .where(
+          (query) =>
+              query.sql.contains('FROM adele_command_captures h') &&
+              query.sql.contains('ORDER BY h.'),
+        )
+        .toList();
+    // One initial page and one successor per header, the last returning EOF.
+    expect(pages, hasLength(expected.length + 1));
+    for (var index = 0; index < pages.length; index++) {
+      final query = pages[index];
+      final sql = query.sql.replaceAll(RegExp(r'\s+'), ' ').trim();
+      expect(sql, contains('ORDER BY h.invocation_id, h.run_id LIMIT 1'));
+      expect(sql, isNot(contains(' OR ')));
+      expect(query.rowCount, index < expected.length ? 1 : 0);
+      if (index == 0) {
+        expect(query.parameters, {':session': session.id.value});
+        expect(sql, isNot(contains(':after_')));
+      } else {
+        final previous = expected[index - 1];
+        expect(query.parameters, {
+          ':session': session.id.value,
+          ':after_invocation': previous.invocationId,
+          ':after_run': previous.runId,
+        });
+        expect(
+          sql,
+          contains(
+            'AND (h.invocation_id, h.run_id) > (:after_invocation, :after_run)',
+          ),
+        );
+      }
+      // EXPLAIN runs only on this test-owned connection, never via plugin SQL.
+      final explain = database.prepare('EXPLAIN QUERY PLAN ${query.sql}');
+      try {
+        final details = explain
+            .selectWith(StatementParameters.named(query.parameters))
+            .map((row) => row['detail']! as String)
+            .toList();
+        // SQLite may scan/sort once for the initial page. Every successor,
+        // including EOF and reused invocation IDs, must range-seek without sort.
+        if (index > 0) {
+          expect(
+            details.any(
+              (detail) => RegExp(r'USE TEMP B-TREE.*ORDER BY').hasMatch(detail),
+            ),
+            isFalse,
+            reason: details.join('\n'),
+          );
+          expect(
+            details.any((detail) => RegExp(r'\bSCAN h\b').hasMatch(detail)),
+            isFalse,
+            reason: details.join('\n'),
+          );
+          expect(
+            details.any(
+              (detail) => RegExp(
+                r'^SEARCH h USING INDEX \S+ '
+                r'\(\(invocation_id,run_id\)>\(\?,\?\)\)$',
+              ).hasMatch(detail),
+            ),
+            isTrue,
+            reason: details.join('\n'),
+          );
+        }
+      } finally {
+        explain.close();
+      }
+    }
+    expect(
+      database.select('PRAGMA data_version').single['data_version'],
+      version,
+    );
+    expect(_databaseSnapshot(source), before);
+  } finally {
+    database.close();
+  }
+}
+
+final class _RecordingProjectStorage implements ProjectStorageService {
+  _RecordingProjectStorage(this.delegate);
+  final ProjectStorageHost delegate;
+  final queries =
+      <
+        ({
+          String sessionId,
+          String sql,
+          Map<String, Object?> parameters,
+          ProjectStorageAccessMode accessMode,
+          int rowCount,
+        })
+      >[];
+
+  @override
+  Future<bool> isDurableSession(String sessionId) =>
+      delegate.isDurableSession(sessionId);
+
+  @override
+  Future<void> ensureSchemaForSession(
+    String sessionId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.ensureSchemaForSession(sessionId, migrations, accessMode);
+
+  @override
+  Future<List<RelationalRow>> queryForSession(
+    String sessionId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    final rows = await delegate.queryForSession(
+      sessionId,
+      sql,
+      parameters,
+      accessMode,
+    );
+    queries.add((
+      sessionId: sessionId,
+      sql: sql,
+      parameters: Map<String, Object?>.of(parameters),
+      accessMode: accessMode,
+      rowCount: rows.length,
+    ));
+    return rows;
+  }
+
+  @override
+  Future<void> transactionForSession(
+    String sessionId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.transactionForSession(sessionId, statements, accessMode);
+}
+
 final class _Backends {
   _Backends(this.runtime, this.host, this.artifacts);
   final AdeleRuntime runtime;
   final PluginBackendHost host;
   final Directory artifacts;
   final activations = <PluginBackendActivation>[];
+  late _RecordingProjectStorage evaluatorStorage;
   Future<void>? _closing;
 
   Future<PluginBackendActivation> activate(String pluginId) async {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: File('${artifacts.path}/$pluginId.aot').uri,
-      createInfrastructureServices: (connection) =>
-          projectStorageServices(runtime.lifecycle, connection),
+      createInfrastructureServices: (connection) {
+        if (pluginId != _evaluatorId) {
+          return projectStorageServices(runtime.lifecycle, connection);
+        }
+        evaluatorStorage = _RecordingProjectStorage(
+          ProjectStorageHost(
+            lifecycle: runtime.lifecycle,
+            owner: PluginId(connection.pluginId),
+            validateAccess: connection.validateInfrastructureContext,
+          ),
+        );
+        return {
+          projectStorageServiceId: ProjectStorageServiceDispatcher(
+            evaluatorStorage,
+          ),
+        };
+      },
     );
     final activation = await PluginBackendActivation.registerAdvertised(
       connection: connection,

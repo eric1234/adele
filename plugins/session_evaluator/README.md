@@ -103,10 +103,11 @@ Each capture has these fields:
 `version`, `high_water`, `total_code_units`, `termination`, `exit_code`, and
 `failure`, including nullable values. Command metadata and argv boundaries are
 not rewritten. Capture identity is the composite Run/invocation pair, not command
-text or an invocation string alone. Captures sort lexically by Run then invocation,
-not execution chronology. Chunk positions are contiguous one-based ordinals in
-recorded combined pipe-arrival order, not byte offsets or a stronger cross-pipe
-ordering guarantee. Each stored chunk contains at most 4,096 UTF-16 code units.
+text or an invocation string alone. Captures sort lexically by invocation then Run,
+matching the existing primary-key index, not Run chronology or command execution
+order. Chunk positions are contiguous one-based ordinals in recorded combined
+pipe-arrival order, not byte offsets or a stronger cross-pipe ordering guarantee.
+Each stored chunk contains at most 4,096 UTF-16 code units.
 
 Completeness maps persisted `complete` to `complete`, `failed` to `incomplete`,
 and `capturing` to `unsealed_liveness_unknown`. A failed capture's validated
@@ -177,7 +178,7 @@ or missing captures without established nonexecution make command coverage
 its commands succeeded.
 
 General evidence reads use ordered single-row keyset pages. Command headers use
-one-header pages ordered by the composite Run/invocation key, and command chunks
+one-header pages ordered by the composite invocation/Run key, and command chunks
 use bounded multirow keyset pages of at most 32 rows. Chunk queries scope the exact
 Run/invocation through its Session-owned header and never exceed the initially
 observed `high_water`. No path assumes 1,000 messages or one response can hold a
@@ -186,6 +187,14 @@ gaps caused by duplicate keys or changed extents. All paths, including schema,
 header, extent, and final validation reads, share one collection budget of 100,000
 returned query rows and 16 MiB of encoded query results. The final JSON separately
 has a 16 MiB UTF-8 limit. Oversize data is an error, never truncated.
+
+Header discovery uses separate initial and successor queries. Successors use the
+strict `(invocation_id, run_id) > (:after_invocation, :after_run)` range over the
+producer's existing index, retaining explicit Session filtering without a nullable
+cursor `OR` or repeated full scan/sort. SQLite may scan/sort for the initial page;
+successors range-seek instead. Other Sessions can occupy index entries between
+this Session's captures; no Session-leading index or producer migration is
+introduced.
 
 For each capture, the initial header and chunk count/minimum/maximum position are
 read atomically in one SQL statement to validate its committed extent. Paging

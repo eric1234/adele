@@ -77,18 +77,19 @@ ${commandCaptures.columns.map((column) => 'h.$column').join(', ')},
       );
     }
     final retained = {for (final run in runs) run['id']: run};
-    String? afterRun;
     String? afterInvocation;
+    String? afterRun;
     final seen = <(String, String)>{};
     while (true) {
+      // Match the producer's primary-key order. Keep the initial query separate:
+      // a nullable-cursor OR can prevent SQLite from range-seeking the index.
       final page = await query(
         'command capture headers',
         'SELECT $_captureProjection FROM adele_command_captures h '
             'WHERE h.session_id = :session '
-            'AND (:after_run IS NULL OR h.run_id > :after_run '
-            'OR (h.run_id = :after_run AND h.invocation_id > :after_invocation)) '
-            'ORDER BY h.run_id, h.invocation_id LIMIT 1',
-        {':after_run': afterRun, ':after_invocation': afterInvocation},
+            '${afterInvocation == null ? '' : 'AND (h.invocation_id, h.run_id) > (:after_invocation, :after_run) '}'
+            'ORDER BY h.invocation_id, h.run_id LIMIT 1',
+        {':after_invocation': ?afterInvocation, ':after_run': ?afterRun},
       );
       evidenceRequire(page.length <= 1, 'Invalid command header page.');
       if (page.isEmpty) break;
@@ -252,8 +253,8 @@ ${commandCaptures.columns.map((column) => 'h.$column').join(', ')},
             : 'matched',
         'consistency': 'committed_high_water_snapshot',
       });
-      afterRun = runId;
       afterInvocation = invocationId;
+      afterRun = runId;
     }
     evidenceRequire(
       captures.length == expected,
