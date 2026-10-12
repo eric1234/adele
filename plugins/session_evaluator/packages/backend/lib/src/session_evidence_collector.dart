@@ -6,6 +6,8 @@ import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'evidence_tables.dart';
 import 'evidence_validation.dart';
 
+part 'command_evidence.dart';
+
 /// Trusted development diagnostic. SQL ownership knowledge is intentional;
 /// connection ownership, authority, and lifetime stay with the storage host.
 final class SessionEvidenceCollector implements SessionEvaluatorService {
@@ -314,15 +316,26 @@ WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
       );
       missing.add(runId);
     }
+    final commands = await readCommands(identity, runs);
+    final commandCoverage = commandTranscriptCoverage(commands, runs);
+    final retainedStatus =
+        conversation['status'] == 'available' && missing.isEmpty
+        ? 'complete_retained_evidence'
+        : 'partial';
     return {
       'schema': sessionEvidenceSchema,
       'identity': identity,
       'conversation': conversation,
       'runs': runs,
+      'command_tools': commands,
       'coverage': {
-        'status': conversation['status'] == 'available' && missing.isEmpty
+        'status':
+            retainedStatus == 'complete_retained_evidence' &&
+                commandCoverage['status'] == 'complete_retained_captures'
             ? 'complete_retained_evidence'
             : 'partial',
+        'retained_session_evidence': retainedStatus,
+        'command_transcripts': commandCoverage,
         'consistency': 'independent_reads_not_atomic_snapshot',
         'run_order': 'lexical_id_not_chronology',
         'associated_runs_without_terminal_evidence': missing,
@@ -330,7 +343,6 @@ WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
           'unsent_chat_draft',
           'environment_provider_state',
           'provider_native_opaque_compatibility_and_data',
-          'full_command_stdout_stderr_transcripts',
           'git_and_task_worktree_contents',
           'live_or_waiting_run_observation',
         ],
@@ -343,6 +355,11 @@ WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
           'Unassociated orphan execution rows cannot be attributed to this Session.',
           'Current Chat configuration is not historical per-Run configuration.',
           'JSON-text columns preserve their source encoding; null usage is unreported.',
+          'Command snapshots cover only their observed committed high-water; later output is not included.',
+          'Unavailable schema or unobserved capture is not proof that no command executed.',
+          'Stored capture state does not establish process liveness or current Run/approval state.',
+          'Decoded command chunks preserve recorded arrival order, not cross-pipe OS ordering or original bytes.',
+          'Full retained transcripts must fit the shared row and document bounds; oversize exports fail without truncation.',
         ],
       },
     };

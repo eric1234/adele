@@ -8,7 +8,7 @@ export 'src/read_session_evidence.dart';
 
 part 'session_evaluator_contract.g.dart';
 
-const String sessionEvidenceSchema = 'dev.adele.session-evidence.v1';
+const String sessionEvidenceSchema = 'dev.adele.session-evidence.v2';
 const int sessionEvidenceMaxBytes = 16 * 1024 * 1024;
 const int sessionEvidenceChunkCodeUnits = 16 * 1024;
 const int sessionEvidenceMaxRows = 100000;

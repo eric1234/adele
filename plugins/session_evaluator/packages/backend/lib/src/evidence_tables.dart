@@ -1,4 +1,4 @@
-// Deliberate knowledge of the current product, Chat, and execution v1 schemas.
+// Deliberate knowledge of product, Chat, execution, and Command Tools v1 schemas.
 // These are selected diagnostic fields, not an arbitrary SQL export facility.
 final class EvidenceTable {
   const EvidenceTable(
@@ -45,6 +45,33 @@ const productRuns = EvidenceTable(
   'adele_product_runs',
   'id',
   text: ['id', 'session_id', 'terminal_state'],
+);
+const commandSchemaOwner = 'dev.adele.plugin.command-tools';
+const commandToolId = '$commandSchemaOwner.run-command';
+// Command Tools splits well-formed decoded output at this UTF-16 bound.
+const commandChunkCodeUnits = 4096;
+const commandCaptures = EvidenceTable(
+  'adele_command_captures',
+  'invocation_id',
+  text: [
+    'session_id',
+    'run_id',
+    'invocation_id',
+    'environment_id',
+    'program',
+    'arguments_json',
+    'working_directory',
+    'state',
+  ],
+  integers: ['timeout_seconds', 'version', 'high_water', 'total_code_units'],
+  nullableText: ['termination', 'failure'],
+  nullableIntegers: ['exit_code'],
+);
+const commandChunks = EvidenceTable(
+  'adele_command_chunks',
+  'position',
+  text: ['invocation_id', 'run_id', 'stream', 'text'],
+  integers: ['position'],
 );
 const executionTables = <String, EvidenceTable>{
   'root': EvidenceTable(
