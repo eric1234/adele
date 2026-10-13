@@ -779,11 +779,15 @@ void main() {
       addTearDown(() => FileSelectorPlatform.instance = original);
     });
 
-    Future<void> mount(WidgetTester tester, {AdeleRuntime? owner}) async {
+    Future<void> mount(
+      WidgetTester tester, {
+      AdeleRuntime? owner,
+      WindowSessionContext? sessionContext,
+    }) async {
       final host = mountedRuntime = owner ?? runtime;
       exporter = SessionEvidenceExporter(
         runtime: host,
-        context: window.context,
+        context: sessionContext ?? window.context,
         navigatorKey: navigatorKey,
         outputRoot: outputRoot,
       );
@@ -1689,6 +1693,41 @@ void main() {
       );
     });
 
+    for (final retirement in ['window', 'backend']) {
+      testWidgets('closing $retirement after final writer validation '
+          'removes the unpublished complete handoff', (tester) async {
+        window.presentSession(session);
+        Future<void>? closing;
+        final completion = _RetiringHandoffContext(
+          window.context,
+          outputRoot,
+          () {
+            if (retirement == 'window') {
+              window.close();
+            } else {
+              closing = runtime.plugins.close();
+            }
+          },
+        );
+        await mount(tester, sessionContext: completion);
+        await invoke(tester);
+        await continueExport(tester);
+        await finish(tester);
+        await tester.runAsync(() async => await closing);
+        expect(completion.retired, isTrue);
+        expect(handoffs(), isEmpty);
+        expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+        if (retirement == 'backend') {
+          expect(
+            find.text('Evaluation handoff could not be prepared.'),
+            findsOneWidget,
+          );
+        } else {
+          expectNoFeedback();
+        }
+      });
+    }
+
     for (final retirement in ['exporter', 'window', 'backend']) {
       testWidgets('closing $retirement during a real evidence write '
           'fences publication and cleans the incomplete handoff', (
@@ -1931,6 +1970,39 @@ final class _EvidenceWriteGate extends IOOverrides {
         ? _GatedEvidenceFile(file, this)
         : file;
   }
+}
+
+final class _RetiringHandoffContext implements WindowSessionContext {
+  _RetiringHandoffContext(this.delegate, this.root, this.retire);
+  final WindowSessionContext delegate;
+  final Directory root;
+  final void Function() retire;
+  int _completeChecks = 0;
+  bool retired = false;
+
+  @override
+  bool get isActive {
+    if (!retired &&
+        root.existsSync() &&
+        root.listSync().any(
+          (entry) => File('${entry.path}/README.md').existsSync(),
+        )) {
+      // Permit the writer's final check, then inject retirement at the
+      // exporter's separate publication check, after both files are complete.
+      if (++_completeChecks == 2) {
+        retired = true;
+        retire();
+      }
+    }
+    return delegate.isActive;
+  }
+
+  @override
+  WindowSessionSnapshot get snapshot => delegate.snapshot;
+
+  @override
+  void Function() observe(void Function(WindowSessionSnapshot) listener) =>
+      delegate.observe(listener);
 }
 
 final class _GatedEvidenceFile implements File {

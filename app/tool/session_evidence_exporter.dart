@@ -164,7 +164,17 @@ final class SessionEvidenceExporter {
           if (handoff.worktreeRoot case final path?) Directory(path),
         ],
       ));
-      channel.validate();
+      try {
+        channel.validate();
+      } on Object {
+        // Ownership can retire between writer completion and this continuation.
+        try {
+          await destination.delete(recursive: true);
+        } on FileSystemException {
+          // Best effort, just as for an incomplete write; never publish success.
+        }
+        rethrow;
+      }
       _notify(
         'Evaluation handoff ready: ${destination.path}',
         action: SnackBarAction(

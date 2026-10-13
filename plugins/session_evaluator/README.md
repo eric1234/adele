@@ -346,7 +346,8 @@ it does not interpret, redact, wrap, or truncate evidence. Both files must finis
 writing with flush requested and ownership validation must succeed before
 completion is reported.
 Failed writing or validation attempts best-effort removal of the new directory;
-earlier successful handoffs are not overwritten or removed.
+this includes retirement after writing but before publishing the completed path.
+Earlier successful handoffs are not overwritten or removed.
 
 There is no automatic pruning, export history, durable registry, archive, or
 power-loss durability guarantee. Only the maintained Linux launch path provisions
