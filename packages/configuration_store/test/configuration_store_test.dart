@@ -1,10 +1,9 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
+import 'package:adele_configuration_store/src/linux_directory.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_toml_document/adele_toml_document.dart';
 import 'package:path/path.dart' as p;
@@ -1130,6 +1129,78 @@ void main() {
       },
     );
 
+    test(
+      'bounded Linux scans retain unusual user names and close on overflow',
+      () async {
+        file.parent.createSync(recursive: true);
+        for (final name in ['.hidden', 'line\nbreak', 'caf\u00e9.toml']) {
+          File(p.join(file.parent.path, name)).writeAsStringSync('keep');
+        }
+        File.fromRawPath(
+          Uint8List.fromList([
+            ...utf8.encode('${file.parent.path}/invalid-'),
+            0xff,
+          ]),
+        ).writeAsStringSync('keep');
+        final expected =
+            file.parent
+                .listSync(followLinks: false)
+                .map((entry) => p.basename(entry.path))
+                .toList()
+              ..sort();
+        expect(
+          (await settings.listCollection(
+            'providers',
+          )).map((entry) => entry.name),
+          expected,
+        );
+        final descriptors = Directory('/proc/self/fd').listSync().length;
+        for (var index = 0; index < 100; index++) {
+          expect(linuxDirectoryNames(file.parent.path, 1), hasLength(2));
+        }
+        expect(Directory('/proc/self/fd').listSync(), hasLength(descriptors));
+        expect(
+          () => linuxDirectoryNames('${file.parent.path}\u0000ignored', 1),
+          throwsArgumentError,
+        );
+        expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'abandoned staging remains explicit user-visible debris, never adopted',
+      () async {
+        seed('value = 0\n');
+        final kernel = await _prepareWriter(root);
+        final writer = await _Writer.start(
+          kernel,
+          root.path,
+          'pause',
+          '1',
+          'work',
+        );
+        await writer.expectLine('loaded');
+        writer.process.stdin.writeln('save');
+        await writer.expectLine('saving');
+        await writer.expectLine('staged');
+        writer.process.kill(ProcessSignal.sigkill);
+        await writer.process.exitCode;
+        final staging = file.parent.listSync().whereType<Directory>().single;
+        final names = (await settings.listCollection(
+          'providers',
+        )).map((entry) => entry.name);
+        expect(names, contains(p.basename(staging.path)));
+        expect(names, hasLength(2));
+        expect(file.readAsStringSync(), 'value = 0\n');
+        expect(
+          File(p.join(staging.path, 'work.toml')).readAsStringSync(),
+          'value = 1\n',
+        );
+        expect(store.load().document.readScalar(['value']), 0);
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+
     for (final modes in [
       ['pause', 'delete'],
       ['pause-delete', 'write'],
@@ -1175,6 +1246,244 @@ void main() {
         timeout: const Timeout(Duration(minutes: 3)),
       );
     }
+
+    for (final scope in ['collection', 'root']) {
+      test(
+        'two process creates cannot exceed the last $scope slot',
+        () async {
+          final directory = scope == 'collection'
+              ? file.parent
+              : Directory(roots.configurationRoot);
+          directory.createSync(recursive: true);
+          for (
+            var index = 0;
+            index < ConfigurationStore.maxCollectionEntries - 1;
+            index++
+          ) {
+            File(
+              p.join(directory.path, '.user-$index'),
+            ).writeAsStringSync('keep');
+          }
+          final kernel = await _prepareWriter(root);
+          final first = await _Writer.start(
+            kernel,
+            root.path,
+            'pause-create',
+            '1',
+            'work',
+          );
+          final second = await _Writer.start(
+            kernel,
+            root.path,
+            'create',
+            '2',
+            'personal',
+            scope == 'root' ? 'agents' : 'providers',
+          );
+          await first.expectLine('loaded');
+          await second.expectLine('loaded');
+          first.process.stdin.writeln('save');
+          await first.expectLine('saving');
+          await first.expectLine('staged');
+          final probe = await _Writer.start(kernel, root.path, 'probe');
+          await probe.expectLine('locked');
+          await probe.expectExit();
+          second.process.stdin.writeln('save');
+          await second.expectLine('saving');
+          first.process.stdin.writeln('publish');
+          await first.expectLine('committed');
+          await second.expectLine('limit');
+          await first.expectExit();
+          await second.expectExit();
+          expect(
+            directory.listSync(),
+            hasLength(ConfigurationStore.maxCollectionEntries),
+          );
+          expect(store.load().document.readScalar(['value']), 1);
+          expect(
+            File(p.join(file.parent.path, 'personal.toml')).existsSync(),
+            isFalse,
+          );
+          expect(
+            Directory(p.join(roots.configurationRoot, 'agents')).existsSync(),
+            isFalse,
+          );
+          for (
+            var index = 0;
+            index < ConfigurationStore.maxCollectionEntries - 1;
+            index++
+          ) {
+            expect(
+              File(p.join(directory.path, '.user-$index')).readAsStringSync(),
+              'keep',
+            );
+          }
+        },
+        timeout: const Timeout(Duration(minutes: 3)),
+      );
+    }
+
+    test('absent-baseline save cannot bypass insertion capacity', () {
+      file.parent.createSync(recursive: true);
+      final baseline = store.load();
+      for (
+        var index = 0;
+        index < ConfigurationStore.maxCollectionEntries;
+        index++
+      ) {
+        File(p.join(file.parent.path, '$index')).writeAsStringSync('keep');
+      }
+      expect(
+        () => store.save(baseline, baseline.document.setScalar(['value'], 1)),
+        throwsA(isA<ConfigurationLimitException>()),
+      );
+      expect(file.existsSync(), isFalse);
+      expect(
+        file.parent.listSync(),
+        hasLength(ConfigurationStore.maxCollectionEntries),
+      );
+    });
+
+    for (final atCapacity in [false, true]) {
+      for (final settingsWrite in [false, true]) {
+        test(
+          'listing excludes ${settingsWrite ? 'settings' : 'record'} staging at capacity=$atCapacity',
+          () async {
+            seed('value = 0\n');
+            File(settings.filePath).writeAsStringSync('value = 0\n');
+            final count = atCapacity
+                ? ConfigurationStore.maxCollectionEntries
+                : 1;
+            for (var index = 1; index < count; index++) {
+              File(
+                p.join(file.parent.path, '.user-$index'),
+              ).writeAsStringSync('keep');
+            }
+            if (atCapacity) {
+              for (
+                var index = 2;
+                index < ConfigurationStore.maxCollectionEntries;
+                index++
+              ) {
+                File(
+                  p.join(roots.configurationRoot, '.root-$index'),
+                ).writeAsStringSync('keep');
+              }
+            }
+            final kernel = await _prepareWriter(root);
+            final writer = await _Writer.start(
+              kernel,
+              root.path,
+              'pause',
+              '1',
+              settingsWrite ? null : 'work',
+            );
+            await writer.expectLine('loaded');
+            writer.process.stdin.writeln('save');
+            await writer.expectLine('saving');
+            await writer.expectLine('staged');
+            final reader = await _Writer.start(kernel, root.path, 'list');
+            await reader.expectLine('listing');
+            // This handshake occurs at the real shared-lock call, not a timer.
+            // Release before awaiting the scan which legitimately waits on it.
+            await reader.expectLine('waiting');
+            writer.process.stdin.writeln('publish');
+            await writer.expectLine('committed');
+            await reader.expectLine('listed:$count');
+            await writer.expectExit();
+            await reader.expectExit();
+            expect(
+              await settings.listCollection('providers'),
+              hasLength(count),
+            );
+            expect(file.parent.listSync(), hasLength(count));
+            expect(
+              (settingsWrite ? settings : store).load().document.readScalar([
+                'value',
+              ]),
+              1,
+            );
+          },
+          timeout: const Timeout(Duration(minutes: 3)),
+        );
+      }
+    }
+
+    for (final mode in ['first-list', 'opening-list']) {
+      test(
+        'first writer appearing during $mode is rechecked under lock',
+        () async {
+          seed('value = 0\n');
+          for (
+            var index = 1;
+            index < ConfigurationStore.maxCollectionEntries;
+            index++
+          ) {
+            File(p.join(file.parent.path, '$index')).writeAsStringSync('keep');
+          }
+          final kernel = await _prepareWriter(root);
+          final reader = await _Writer.start(kernel, root.path, mode);
+          await reader.expectLine('listing');
+          await reader.expectLine('unlocked');
+          final writer = await _Writer.start(
+            kernel,
+            root.path,
+            'pause',
+            '1',
+            'work',
+          );
+          await writer.expectLine('loaded');
+          writer.process.stdin.writeln('save');
+          await writer.expectLine('saving');
+          await writer.expectLine('staged');
+          reader.process.stdin.writeln('scan');
+          await reader.expectLine('waiting');
+          writer.process.stdin.writeln('publish');
+          await writer.expectLine('committed');
+          await reader.expectLine(
+            'listed:${ConfigurationStore.maxCollectionEntries}',
+          );
+          await writer.expectExit();
+          await reader.expectExit();
+        },
+        timeout: const Timeout(Duration(minutes: 3)),
+      );
+    }
+
+    test(
+      'failed staging at capacity cleans up without affecting later listings',
+      () async {
+        seed('value = 0\n');
+        for (
+          var index = 1;
+          index < ConfigurationStore.maxCollectionEntries;
+          index++
+        ) {
+          File(p.join(file.parent.path, '$index')).writeAsStringSync('keep');
+        }
+        final baseline = store.load();
+        expect(
+          () => IOOverrides.runWithIOOverrides(
+            () =>
+                store.save(baseline, baseline.document.setScalar(['value'], 1)),
+            StagingOverrides(
+              beforeRename: (_) =>
+                  throw const FileSystemException('Injected rename failure'),
+            ),
+          ),
+          throwsA(isA<FileSystemException>()),
+        );
+        expect(
+          await settings.listCollection('providers'),
+          hasLength(ConfigurationStore.maxCollectionEntries),
+        );
+        expect(
+          file.parent.listSync(),
+          hasLength(ConfigurationStore.maxCollectionEntries),
+        );
+        expect(file.readAsStringSync(), 'value = 0\n');
+      },
+    );
 
     test(
       'independently baselined records coordinate across processes without conflict',
@@ -1236,70 +1545,10 @@ String _inode(File file) {
 }
 
 Future<String> _prepareWriter(Directory root) async {
-  // Reuse assets prepared by `dart test`. Nested `dart run` invocations on this
-  // SDK recopy bundled libraries, unsafe while the parent has them mapped.
-  final sdk = File(Platform.resolvedExecutable).parent.parent.path;
-  final kernel = p.join(root.path, 'writer.dill');
-  final result = await Process.run(p.join(sdk, 'bin', 'dartaotruntime'), [
-    p.join(sdk, 'bin', 'snapshots', 'gen_kernel_aot.dart.snapshot'),
-    '--platform=${p.join(sdk, 'lib', '_internal', 'vm_platform_strong.dill')}',
-    '--packages=${(await Isolate.packageConfig)!.toFilePath()}',
-    '--native-assets=${p.absolute('.dart_tool', 'native_assets.yaml')}',
-    '--output=$kernel',
-    'test/fixtures/writer.dart',
-  ]);
-  expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
-  return kernel;
+  return prepareWriter(root);
 }
 
-final class _Writer {
-  _Writer(this.process)
-    : lines = StreamIterator(
-        process.stdout.transform(utf8.decoder).transform(const LineSplitter()),
-      ),
-      errors = process.stderr.transform(utf8.decoder).join();
-
-  final Process process;
-  final StreamIterator<String> lines;
-  final Future<String> errors;
-
-  static Future<_Writer> start(
-    String kernel,
-    String root,
-    String mode, [
-    String? value,
-    String? recordId,
-  ]) async {
-    final writer = _Writer(
-      await Process.start(Platform.resolvedExecutable, [
-        '--disable-dart-dev',
-        kernel,
-        root,
-        mode,
-        ?value,
-        ?recordId,
-      ]),
-    );
-    addTearDown(() async {
-      writer.process.kill(ProcessSignal.sigkill);
-      await writer.process.exitCode;
-      await writer.lines.cancel();
-    });
-    return writer;
-  }
-
-  Future<void> expectLine(String expected) async {
-    expect(await lines.moveNext().timeout(const Duration(minutes: 1)), isTrue);
-    expect(lines.current, expected);
-  }
-
-  Future<void> expectExit() async {
-    await process.stdin.close();
-    final code = await process.exitCode.timeout(const Duration(minutes: 1));
-    expect(code, 0, reason: await errors);
-    expect(await errors, isEmpty);
-  }
-}
+typedef _Writer = ConfigurationWriter;
 
 final class _ReadOverrides extends IOOverrides {
   _ReadOverrides(this.path, this.reportedLength, this.onRead);

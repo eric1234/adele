@@ -9,8 +9,8 @@ import 'package:adele_toml_document/adele_toml_document.dart';
 ///
 /// The supplied store carries explicit roots. Route these operations through the
 /// same owning isolate as scalar settings, never an independent UI-isolate writer.
-/// Enumeration is asynchronous to bound directory iteration; transactions reuse
-/// the synchronous configuration store and its stable cross-process lock.
+/// Enumeration retains a Future API; Linux scans and transactions run
+/// synchronously under the configuration store's stable cross-process lock.
 final class ConfigurationRecordStore {
   const ConfigurationRecordStore({required this.store, required this.catalog});
 

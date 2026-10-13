@@ -5,7 +5,8 @@ conditional persistence of global `settings.toml` and bounded record files. It
 combines explicit
 [`adele_platform_storage`](../platform_storage/README.md) roots with the real
 Rust-backed [`adele_toml_document`](../toml_document/README.md) editor. It adds no
-parser, native bridge, build hook, application consumer, or plugin-facing service.
+parser, custom native build hook, application consumer, or plugin-facing service.
+Its bounded synchronous Linux directory reader uses libc through Dart FFI.
 
 Settings/record declarations and resolution, Profiles, credentials, provider
 semantics, local application-state persistence, and Project storage are not
@@ -66,6 +67,14 @@ through `lpt9`) are rejected. This is lexical path safety, not schema validation
 Record stores expose the same `filePath`, `load`, and `save`. `create(document)`
 requires absence, including when the existing bytes are malformed or empty;
 existing content is checked without parsing. It can create an empty file.
+Before any record insertion (including `save` with an absent baseline), the
+existing write lock protects a fresh capacity check through publication. An
+existing collection needs a free entry; creating a collection also needs a free
+configuration-root entry. Both limits are inclusive at 1024. Overflow raises
+`ConfigurationLimitException` for that directory before creating a collection or
+staging a file. Occupied identities still conflict first. Updates and deletes
+need no free slot, and a full root does not prevent insertion into an existing
+collection with capacity.
 `delete(expected)` checks the exact file baseline under the shared lock before
 deletion and returns a missing snapshot. An absent delete is an artifact-free
 no-op that still rejects a stale baseline. Create/delete are record-only; settings
@@ -77,20 +86,35 @@ check encoded size before acquiring the lock or staging. Only regular files are
 accepted; file and collection-directory symlinks are rejected for all record
 operations, including loads and no-ops. The configuration root may be symlinked.
 
-`await store.listCollection('providers')` streams a bounded, immediate listing,
+`await store.listCollection('providers')` returns a bounded, immediate listing,
 returning sorted immutable `ConfigurationCollectionEntry` values (`name`, `type`).
 It follows no entry symlinks, parses no content, filters no names, and creates no
 artifacts. Missing directories return an empty list. Any error rejects the whole
 listing, never a successful prefix. Both the configuration-root preflight and the
 collection listing have a 1024-entry limit. The root preflight rejects collection
-names that differ only by ASCII case or trailing spaces/periods.
+names that differ only by ASCII case or trailing spaces/periods. On Linux it
+acquires a shared lock on the existing stable lock file and scans synchronously:
+an ordinary writer's transient staging is gone before either directory is read.
+This applies to every host identity preflight as well as enumeration, including
+settings-file staging in the configuration root. No hidden names are filtered.
+
+Readers never create the lock. If it does not yet exist, a scan is optimistic;
+if a first writer creates it during that scan, the reader repeats the observation
+under the now-existing lock, including after a scan failure. This is read-side
+coordination, not a stale-write retry. Missing directories still create nothing.
+The portable read-only path retains Dart's streamed listing; changed writes remain
+unsupported outside Linux.
 
 The semantic host must preflight each record operation through this listing and
 diagnose record-filename aliases/unexpected names before the synchronous file
-operation. The low-level file API addresses only its canonical lexical path; it
-does not synchronously scan siblings. This avoids an unbounded `listSync` or a new
-native filesystem bridge. Cooperating writers only create canonical names; an
-external editor can still change entries after enumeration or the final byte check.
+operation. Insertions additionally count entries inside the transaction lock;
+cooperating writers cannot both claim the last collection/root slot. Linux uses a
+bounded libc `opendir`/`readdir64` read, closing its descriptor even on overflow,
+rather than an eager `listSync` or an `await` while holding a process-scoped lock.
+The Linux `dirent64` layout is validated on the maintained Linux x64 path. No
+custom native library/build hook or additional worker/lock is introduced.
+Cooperating writers only create canonical names; an external editor can still
+change entries after enumeration or the final byte check.
 
 Errors are explicit:
 
@@ -129,6 +153,9 @@ in other isolates. Never delete/replace the lock while writers may run: its inod
 must remain stable. A process exit releases the OS lock; an empty persistent lock
 file does not mean the store is locked. The lock intentionally remains outside
 Git-managed configuration, including when the configuration root is symlinked.
+Linux collection scans hold a shared lock only for their bounded synchronous
+directory observation; they do not make enumeration and later record reads an
+atomic collection snapshot. Keep these reads in the same owning isolate too.
 
 Conflicts cover the whole document, not individual keys. Byte equality, not mtime,
 defines identity; deleting and recreating identical bytes is not a conflict.
@@ -167,8 +194,11 @@ The staged file is fsynced through Dart's flush API, but the containing director
 is not fsynced. This is atomic visibility on the maintained Linux filesystem path,
 not a promise that a rename, deletion, or newly created directories survive every
 power loss. Abrupt termination can leave private staging directories; automatic orphan
-cleanup is not implemented. Errors during post-publication cleanup/unlock can mean
-the commit already happened: reload to establish its outcome before retrying.
+cleanup is not implemented. Such abandoned entries remain explicit unexpected
+entries (and count toward directory limits), never silently filtered or adopted
+as valid records. They require deliberate external cleanup. Errors during
+post-publication cleanup/unlock can mean the commit already happened: reload to
+establish its outcome before retrying.
 
 ## Validation
 
@@ -192,6 +222,9 @@ Record tests additionally cover independent file baselines, conditional create a
 delete, pipe rejection (`mkfifo`), filename/type enumeration, collection aliases,
 symlink policy, and bounded I/O. Process gates cover same-record update/delete in
 both orders and independently baselined records under the shared settings lock.
+Exact-capacity tests also gate competing creates and read-lock acquisition during
+record/settings staging, including first-writer races, full directories, ordinary
+failure cleanup, and abrupt process termination.
 
 The contention fixture is compiled to a temporary JIT kernel using the pinned
 SDK's kernel generator and the native asset map already prepared by `dart test`.

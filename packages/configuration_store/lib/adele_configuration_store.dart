@@ -6,6 +6,8 @@ import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_toml_document/adele_toml_document.dart';
 import 'package:path/path.dart' as p;
 
+import 'src/linux_directory.dart';
+
 /// Internal host configuration persistence, not a plugin storage service.
 ///
 /// Use one owning isolate per process for all configuration operations. The
@@ -55,8 +57,9 @@ final class ConfigurationStore {
 
   /// Lists immediate names and non-followed types without reading their content.
   ///
-  /// Absence returns an empty list without artifacts. Enumeration is streamed so
-  /// more than [maxCollectionEntries] fails without an unbounded `listSync`.
+  /// Absence returns an empty list without artifacts. Enumeration is bounded
+  /// without an eager `listSync`. Linux scans wait behind an existing writer's
+  /// lock so private staging cannot affect public entries or their allowance.
   /// Errors apply to the whole listing; no partial result is returned. Names are
   /// not filtered: the caller owns record declarations and filename diagnostics.
   /// A bounded configuration-root preflight also rejects collection path aliases.
@@ -64,8 +67,38 @@ final class ConfigurationStore {
     String collectionId,
   ) async {
     _validateSegment(collectionId);
+    if (Platform.isLinux) {
+      final locked = _listCollectionLocked(collectionId);
+      if (locked != null) return locked;
+      // Readers must not create the lock. If a first writer starts during an
+      // unlocked scan, redo it under that now-existing lock, even on scan error.
+      final List<ConfigurationCollectionEntry> entries;
+      try {
+        entries = _listCollectionSync(collectionId);
+      } on Exception {
+        final locked = _listCollectionLocked(collectionId);
+        if (locked != null) return locked;
+        rethrow;
+      }
+      return _listCollectionLocked(collectionId) ?? entries;
+    }
     final path = p.join(_configurationRoot, collectionId);
-    for (final entry in await _listEntries(_configurationRoot)) {
+    _checkCollectionAliases(
+      collectionId,
+      await _listEntries(_configurationRoot),
+    );
+    _checkCollectionDirectory(path);
+    final entries = await _listEntries(path);
+    _checkCollectionDirectory(path);
+    return entries;
+  }
+
+  void _checkCollectionAliases(
+    String collectionId,
+    List<ConfigurationCollectionEntry> entries,
+  ) {
+    final path = p.join(_configurationRoot, collectionId);
+    for (final entry in entries) {
       if (entry.name != collectionId &&
           entry.name.replaceFirst(RegExp(r'[ .]+$'), '').toLowerCase() ==
               collectionId) {
@@ -75,10 +108,68 @@ final class ConfigurationStore {
         );
       }
     }
+  }
+
+  List<ConfigurationCollectionEntry> _listCollectionSync(String collectionId) {
+    final path = p.join(_configurationRoot, collectionId);
+    _checkCollectionAliases(collectionId, _listEntriesSync(_configurationRoot));
     _checkCollectionDirectory(path);
-    final entries = await _listEntries(path);
+    final entries = _listEntriesSync(path);
     _checkCollectionDirectory(path);
     return entries;
+  }
+
+  List<ConfigurationCollectionEntry>? _listCollectionLocked(
+    String collectionId,
+  ) {
+    RandomAccessFile handle;
+    try {
+      handle = File(lockPath).openSync();
+    } on FileSystemException catch (error) {
+      if (_isMissing(error, lockPath)) return null;
+      // A first writer may have created the stable file after our failed open.
+      if (error.osError?.errorCode != 2 ||
+          FileSystemEntity.typeSync(lockPath, followLinks: false) !=
+              FileSystemEntityType.file) {
+        rethrow;
+      }
+      handle = File(lockPath).openSync();
+    }
+    try {
+      handle.lockSync(FileLock.blockingShared);
+      try {
+        return _listCollectionSync(collectionId);
+      } finally {
+        handle.unlockSync();
+      }
+    } finally {
+      handle.closeSync();
+    }
+  }
+
+  static List<ConfigurationCollectionEntry> _listEntriesSync(String path) {
+    final entries = <ConfigurationCollectionEntry>[];
+    try {
+      for (final name in linuxDirectoryNames(path, maxCollectionEntries)) {
+        if (entries.length == maxCollectionEntries) {
+          throw ConfigurationLimitException(
+            path,
+            maxCollectionEntries,
+            'entries',
+          );
+        }
+        entries.add(
+          ConfigurationCollectionEntry._(
+            name,
+            FileSystemEntity.typeSync(p.join(path, name), followLinks: false),
+          ),
+        );
+      }
+    } on FileSystemException catch (error) {
+      if (entries.isNotEmpty || !_isMissing(error, path)) rethrow;
+    }
+    entries.sort((a, b) => a.name.compareTo(b.name));
+    return List.unmodifiable(entries);
   }
 
   static Future<List<ConfigurationCollectionEntry>> _listEntries(
@@ -186,6 +277,9 @@ final class ConfigurationStore {
     return _withLock(() {
       _rejectFileSymlink();
       _checkBaseline(expected);
+      if (_collectionPath != null && !expected.exists) {
+        _checkCreateCapacity();
+      }
       final file = File(filePath);
       file.parent.createSync(recursive: true);
       _checkRecordPath();
@@ -223,6 +317,28 @@ final class ConfigurationStore {
         staging.deleteSync(recursive: true);
       }
     });
+  }
+
+  void _checkCreateCapacity() {
+    final collection = _collectionPath!;
+    final rootEntries = _listEntriesSync(_configurationRoot);
+    _checkCollectionAliases(p.basename(collection), rootEntries);
+    if (FileSystemEntity.typeSync(collection, followLinks: false) ==
+            FileSystemEntityType.notFound &&
+        rootEntries.length == maxCollectionEntries) {
+      throw ConfigurationLimitException(
+        _configurationRoot,
+        maxCollectionEntries,
+        'entries',
+      );
+    }
+    if (_listEntriesSync(collection).length == maxCollectionEntries) {
+      throw ConfigurationLimitException(
+        collection,
+        maxCollectionEntries,
+        'entries',
+      );
+    }
   }
 
   T _withLock<T>(T Function() operation) {

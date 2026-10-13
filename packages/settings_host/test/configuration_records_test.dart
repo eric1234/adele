@@ -11,6 +11,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 import '../../../tools/backend_artifacts.dart';
+import '../../configuration_store/test/support.dart';
 
 void main() {
   final providers = RecordCollectionId('providers');
@@ -224,6 +225,359 @@ void main() {
   );
 
   group('conditional record CRUD', () {
+    group('exact directory capacity', () {
+      void fillWithUserFiles(Directory directory, int totalEntries) {
+        directory.createSync(recursive: true);
+        final fixtures = <File, List<int>>{};
+        // Seed directly: only a few entries need native parsing/schema validation.
+        for (
+          var index = directory.listSync().length;
+          index < totalEntries;
+          index++
+        ) {
+          final name = '${index.isEven ? '.' : ''}user-$index.txt';
+          final fixture = File(p.join(directory.path, name));
+          final bytes = 'malformed user content = [$index\n'.codeUnits;
+          fixture.writeAsBytesSync(bytes);
+          fixtures[fixture] = bytes;
+        }
+        expect(directory.listSync(), hasLength(totalEntries));
+        addTearDown(() {
+          for (final entry in fixtures.entries) {
+            expect(
+              entry.key.readAsBytesSync(),
+              entry.value,
+              reason:
+                  'Unrelated user file must be preserved: ${entry.key.path}',
+            );
+          }
+          expect(
+            Directory(roots.configurationRoot)
+                .listSync(recursive: true, followLinks: false)
+                .whereType<Directory>()
+                .map((entry) => entry.path),
+            everyElement(file(work).parent.path),
+          );
+          expect(File(persistence.filePath).existsSync(), isFalse);
+          expect(Directory(roots.localDataRoot).existsSync(), isFalse);
+          expect(Directory(roots.cacheRoot).existsSync(), isFalse);
+        });
+      }
+
+      test('collection grows from 1023 to 1024 usable entries', () async {
+        seed(work, source('display-name = "Work"\n'));
+        final workBytes = file(work).readAsBytesSync();
+        final collection = file(work).parent;
+        fillWithUserFiles(collection, 1023);
+
+        final created = await host.create(openai, personal, {
+          'display-name': 'Personal',
+        });
+
+        expect(collection.listSync(), hasLength(1024));
+        expect(Directory(roots.configurationRoot).listSync(), hasLength(1));
+        expect(file(work).readAsBytesSync(), workBytes);
+        expect((await host.load(providers, personal)).values, created.values);
+        final result = await host.enumerate(providers);
+        expect(result.records.map((record) => record.id), [personal, work]);
+        expect(result.diagnostics, hasLength(1022));
+        expect(
+          result.diagnostics.map((failure) => failure.error),
+          everyElement(isA<FormatException>()),
+        );
+        expect(
+          result.diagnostics.map((failure) => failure.fileName),
+          contains('.user-2.txt'),
+        );
+      });
+
+      test(
+        'collection at 1024 rejects the next identity without growth',
+        () async {
+          seed(work, source('display-name = "Work"\n'));
+          final workBytes = file(work).readAsBytesSync();
+          final collection = file(work).parent;
+          fillWithUserFiles(collection, 1024);
+
+          await expectLater(
+            host.create(openai, personal, {'display-name': 'Personal'}),
+            throwsA(
+              isA<ConfigurationLimitException>()
+                  .having((error) => error.path, 'path', collection.path)
+                  .having((error) => error.limit, 'bound', 1024)
+                  .having((error) => error.unit, 'unit', 'entries'),
+            ),
+          );
+
+          expect(file(personal).existsSync(), isFalse);
+          expect(collection.listSync(), hasLength(1024));
+          expect(Directory(roots.configurationRoot).listSync(), hasLength(1));
+          expect(file(work).readAsBytesSync(), workBytes);
+          expect(
+            (await host.load(providers, work)).values['display-name'],
+            'Work',
+          );
+          final result = await host.enumerate(providers);
+          expect(result.records.single.id, work);
+          expect(result.diagnostics, hasLength(1023));
+        },
+      );
+
+      test(
+        'full root and collection still allow existing updates and deletes',
+        () async {
+          seed(work, source('display-name = "Work"\n'));
+          seed(personal, source('display-name = "Personal"\n'));
+          final personalBytes = file(personal).readAsBytesSync();
+          final collection = file(work).parent;
+          final root = Directory(roots.configurationRoot);
+          fillWithUserFiles(collection, 1024);
+          fillWithUserFiles(root, 1024);
+          final loadedWork = await host.load(providers, work);
+          final loadedPersonal = await host.load(providers, personal);
+
+          final updated = await host.update(loadedWork, {
+            'display-name': 'Renamed',
+          });
+
+          expect(collection.listSync(), hasLength(1024));
+          expect(root.listSync(), hasLength(1024));
+          expect(file(personal).readAsBytesSync(), personalBytes);
+          expect((await host.load(providers, work)).values, updated.values);
+          var result = await host.enumerate(providers);
+          expect(result.records.map((record) => record.id), [personal, work]);
+          expect(result.diagnostics, hasLength(1022));
+          final workBytes = file(work).readAsBytesSync();
+
+          await host.delete(loadedPersonal);
+
+          expect(file(personal).existsSync(), isFalse);
+          expect(collection.listSync(), hasLength(1023));
+          expect(root.listSync(), hasLength(1024));
+          expect(file(work).readAsBytesSync(), workBytes);
+          result = await host.enumerate(providers);
+          expect(result.records.single.values['display-name'], 'Renamed');
+          expect(result.diagnostics, hasLength(1022));
+        },
+      );
+
+      test('full collection never overwrites an occupied identity', () async {
+        seed(work, source('display-name = "Work"\n'));
+        seed(personal, 'malformed = [');
+        final workBytes = file(work).readAsBytesSync();
+        final personalBytes = file(personal).readAsBytesSync();
+        final collection = file(work).parent;
+        fillWithUserFiles(collection, 1024);
+
+        for (final id in [work, personal]) {
+          await expectLater(
+            host.create(openai, id, {'display-name': 'Replacement'}),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+        }
+
+        expect(collection.listSync(), hasLength(1024));
+        expect(Directory(roots.configurationRoot).listSync(), hasLength(1));
+        expect(file(work).readAsBytesSync(), workBytes);
+        expect(file(personal).readAsBytesSync(), personalBytes);
+        expect(
+          (await host.load(providers, work)).values['display-name'],
+          'Work',
+        );
+        final result = await host.enumerate(providers);
+        expect(result.records.single.id, work);
+        expect(result.diagnostics, hasLength(1023));
+        expect(
+          result.diagnostics
+              .singleWhere((failure) => failure.recordId == personal)
+              .error,
+          isA<TomlException>(),
+        );
+      });
+
+      test('root at 1023 admits its first collection as entry 1024', () async {
+        final root = Directory(roots.configurationRoot);
+        final collection = file(work).parent;
+        fillWithUserFiles(root, 1023);
+        expect(collection.existsSync(), isFalse);
+
+        final created = await host.create(openai, work, {
+          'display-name': 'Work',
+        });
+
+        expect(root.listSync(), hasLength(1024));
+        expect(collection.listSync().map((entry) => p.basename(entry.path)), [
+          'work-openai.toml',
+        ]);
+        expect((await host.load(providers, work)).values, created.values);
+        final result = await host.enumerate(providers);
+        expect(result.records.single.id, work);
+        expect(result.diagnostics, isEmpty);
+      });
+
+      test(
+        'root at 1024 rejects a missing collection without creating it',
+        () async {
+          final root = Directory(roots.configurationRoot);
+          final collection = file(work).parent;
+          fillWithUserFiles(root, 1024);
+          expect(collection.existsSync(), isFalse);
+
+          await expectLater(
+            host.create(openai, work, {'display-name': 'Work'}),
+            throwsA(
+              isA<ConfigurationLimitException>()
+                  .having((error) => error.path, 'path', root.path)
+                  .having((error) => error.limit, 'bound', 1024)
+                  .having((error) => error.unit, 'unit', 'entries'),
+            ),
+          );
+
+          expect(root.listSync(), hasLength(1024));
+          expect(collection.existsSync(), isFalse);
+          expect(file(work).existsSync(), isFalse);
+          final result = await host.enumerate(providers);
+          expect(result.records, isEmpty);
+          expect(result.diagnostics, isEmpty);
+        },
+      );
+
+      test(
+        'root at 1024 admits a record into an existing collection at 1023',
+        () async {
+          seed(work, source('display-name = "Work"\n'));
+          final workBytes = file(work).readAsBytesSync();
+          final collection = file(work).parent;
+          final root = Directory(roots.configurationRoot);
+          fillWithUserFiles(collection, 1023);
+          fillWithUserFiles(root, 1024);
+
+          final created = await host.create(openai, personal, {
+            'display-name': 'Personal',
+          });
+
+          expect(root.listSync(), hasLength(1024));
+          expect(collection.listSync(), hasLength(1024));
+          expect(file(work).readAsBytesSync(), workBytes);
+          expect((await host.load(providers, personal)).values, created.values);
+          final result = await host.enumerate(providers);
+          expect(result.records.map((record) => record.id), [personal, work]);
+          expect(result.diagnostics, hasLength(1022));
+        },
+      );
+
+      group('staged publication readers', () {
+        late Directory build;
+        late String kernel;
+
+        setUpAll(() async {
+          build = Directory.systemTemp.createTempSync('adele-record-readers-');
+          kernel = await prepareWriter(
+            build,
+            source: 'test/fixtures/record_reader.dart',
+          );
+        });
+        tearDownAll(() => build.deleteSync(recursive: true));
+
+        for (final atCapacity in [false, true]) {
+          test(
+            'enumerate and load exclude staging ${atCapacity ? 'at 1024 root and collection entries' : 'below capacity'}',
+            () async {
+              seed(work, source('display-name = "Work"\n'));
+              seed(personal, source('display-name = "Personal"\n'));
+              final workBytes = file(work).readAsBytesSync();
+              final personalBytes = file(personal).readAsBytesSync();
+              final collection = file(work).parent;
+              final root = Directory(roots.configurationRoot);
+              final collectionCount = atCapacity ? 1024 : 4;
+              final rootCount = atCapacity ? 1024 : 3;
+              fillWithUserFiles(collection, collectionCount);
+              fillWithUserFiles(root, rootCount);
+              final before = await host.enumerate(providers);
+              expect(before.records.map((record) => record.id), [
+                personal,
+                work,
+              ]);
+              expect(before.diagnostics, hasLength(collectionCount - 2));
+
+              final writer = await ConfigurationWriter.start(
+                kernel,
+                temporary.path,
+                'pause',
+                '1',
+                work.value,
+                providers.value,
+              );
+              await writer.expectLine('loaded');
+              writer.process.stdin.writeln('save');
+              await writer.expectLine('saving');
+              await writer.expectLine('staged');
+              expect(file(work).readAsBytesSync(), workBytes);
+              expect(collection.listSync(), hasLength(collectionCount + 1));
+              expect(
+                collection.listSync().whereType<Directory>(),
+                hasLength(1),
+              );
+
+              final listing = await ConfigurationWriter.start(
+                kernel,
+                temporary.path,
+                'host-list',
+                '0',
+                personal.value,
+                providers.value,
+                installations.path,
+              );
+              await listing.expectLine('listing');
+              await listing.expectLine('waiting');
+              final loading = await ConfigurationWriter.start(
+                kernel,
+                temporary.path,
+                'host-load',
+                '0',
+                personal.value,
+                providers.value,
+                installations.path,
+              );
+              await loading.expectLine('loading');
+              await loading.expectLine('waiting');
+
+              // Both actual host preflights reached the held read-lock boundary.
+              // Publishing earlier would let an unlocked reader pass by chance.
+              writer.process.stdin.writeln('publish');
+              await writer.expectLine('committed');
+              await listing.expectLine('listed:2:${collectionCount - 2}');
+              await loading.expectLine('loaded:personal-openai:Personal');
+              await writer.expectExit();
+              await listing.expectExit();
+              await loading.expectExit();
+
+              expect(collection.listSync(), hasLength(collectionCount));
+              expect(root.listSync(), hasLength(rootCount));
+              expect(file(personal).readAsBytesSync(), personalBytes);
+              final after = await host.enumerate(providers);
+              expect(after.records.map((record) => record.id), [
+                personal,
+                work,
+              ]);
+              expect(
+                after.diagnostics.map((failure) => failure.fileName),
+                before.diagnostics.map((failure) => failure.fileName),
+              );
+              expect(
+                after.diagnostics.map((failure) => failure.error),
+                everyElement(isA<FormatException>()),
+              );
+              final updated = await host.load(providers, work);
+              expect(updated.values['display-name'], 'Work');
+              expect(updated.document.readScalar(['value']), 1);
+            },
+            timeout: const Timeout(Duration(minutes: 3)),
+          );
+        }
+      });
+    });
+
     test(
       'two real OpenAI records retain independent identity and bytes across restart',
       () async {

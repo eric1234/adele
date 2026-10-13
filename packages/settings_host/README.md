@@ -146,10 +146,13 @@ fails before saving rather than publishing a record without the required table.
 
 ### Enumeration and Safety
 
-All record operations return Futures because they first perform a bounded,
-nonrecursive directory scan. The actual reads and transactions remain synchronous
-on the owning host isolate; no additional actor is created. Future desktop editing
-must route these operations through the established serialized host I/O owner,
+All record operations return Futures and first perform a bounded, nonrecursive
+directory scan. On Linux the scan waits behind any ordinary writer using the
+existing stable shared lock, then runs synchronously without exposing transaction
+staging in either collection or configuration-root entries. The actual reads and
+transactions remain synchronous on the owning host isolate; no additional actor
+is created. Future desktop editing must route these operations through the
+established serialized host I/O owner,
 not construct a writer in the UI isolate alongside the Settings worker.
 
 `enumerate` returns immutable filename-sorted `records` and `diagnostics`. A bad
@@ -170,6 +173,11 @@ no-op updates, require explicit reload, with no retry or field-level merge.
 
 The underlying store bounds each record at 1 MiB and scans at 1024 immediate entries
 per configuration-root/collection directory, including unrelated entries. These
+limits include the entry a create will add: capacity is rechecked inside the
+existing write lock before creating a collection or staging, so cooperating
+creates cannot overflow either directory. Full directories still permit existing
+record updates/deletes; a full root permits new records in an existing collection
+with room. No hidden/unexpected user names are excluded from the count. These
 are fixed safeguards, not quotas or a query API. A collection result additionally
 retains at most 16 MiB of valid record source; exceeding that bound rejects the
 whole result, not a successful truncated list. External path changes after the

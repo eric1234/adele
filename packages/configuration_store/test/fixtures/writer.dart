@@ -4,12 +4,33 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 
 import '../support.dart';
 
-void main(List<String> arguments) {
+Future<void> main(List<String> arguments) async {
   final settings = ConfigurationStore(rootsAt(arguments[0]));
   final store = arguments.length > 3
-      ? settings.recordFile(collectionId: 'providers', recordId: arguments[3])
+      ? settings.recordFile(
+          collectionId: arguments.length > 4 ? arguments[4] : 'providers',
+          recordId: arguments[3],
+        )
       : settings;
   final mode = arguments[1];
+  if (mode == 'list' || mode == 'first-list' || mode == 'opening-list') {
+    void scan() {
+      stdout.writeln('unlocked');
+      if (stdin.readLineSync() != 'scan') throw StateError('Expected scan');
+    }
+
+    stdout.writeln('listing');
+    final entries = await IOOverrides.runWithIOOverrides(
+      () => settings.listCollection('providers'),
+      StagingOverrides(
+        beforeLock: () => stdout.writeln('waiting'),
+        missingLock: mode == 'opening-list' ? scan : null,
+        afterMissingLock: mode == 'first-list' ? scan : null,
+      ),
+    );
+    stdout.writeln('listed:${entries.length}');
+    return;
+  }
   if (mode == 'probe') {
     final lock = File(store.lockPath).openSync(mode: FileMode.append);
     try {
@@ -48,14 +69,20 @@ void main(List<String> arguments) {
     IOOverrides.runWithIOOverrides(
       () => mode.contains('delete')
           ? store.delete(snapshot)
+          : mode.contains('create')
+          ? store.create(edited)
           : store.save(snapshot, edited),
       StagingOverrides(
-        beforeRename: mode == 'pause' ? pause : null,
+        beforeRename: mode.startsWith('pause') && !mode.contains('delete')
+            ? pause
+            : null,
         beforeDelete: mode == 'pause-delete' ? pause : null,
       ),
     );
     stdout.writeln('committed');
   } on ConfigurationConflictException {
     stdout.writeln('conflict');
+  } on ConfigurationLimitException {
+    stdout.writeln('limit');
   }
 }
