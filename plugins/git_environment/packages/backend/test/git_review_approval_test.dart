@@ -19,6 +19,441 @@ void main() {
   setUp(() async => fixture = await _Repository.create());
   tearDown(() async => fixture.close());
 
+  for (final mutation in [false, true]) {
+    test(
+      'independent verification budgets allow publication, changed=$mutation',
+      () async {
+        await fixture.write('file', 'old\n');
+        await fixture.write('unrelated', 'o' * 48);
+        await fixture.write('ordinary', 'p' * 48);
+        await fixture.write('large-a', 'a' * 120);
+        await fixture.write('large-b', 'b' * 120);
+        await fixture.git(['add', '.']);
+        await fixture.git(['commit', '-m', 'Independent verification budgets']);
+        await fixture.write('file', 'new\n');
+        const limits = GitChangeSetLimits(
+          fileBytes: 64,
+          verificationFileBytes: 128,
+          verificationTotalBytes: 256,
+        );
+        final source = GitChangeSetSourceService(
+          provider: fixture.provider,
+          authorizedRead: fixture.authority,
+          parentEnvironment: fixture.environment,
+          limits: limits,
+        );
+        final snapshot = await source.snapshotUnstaged();
+        expect(snapshot.reviewRevision, isNotNull);
+        expect(snapshot.files.single.reviewEligible, isTrue);
+        final index = await fixture.index.readAsBytes();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        fixture.authority.onRead = (call) async {
+          if (call == 4) {
+            entered.complete();
+            await release.future;
+          }
+        };
+        final pending = fixture
+            .reviewWith(limits: limits)
+            .approve(_select(snapshot, 'file', path: 'file'));
+        await entered.future;
+        if (mutation) {
+          final large = File('${fixture.worktree.path}/large-a');
+          final modified = (await large.stat()).modified;
+          await large.writeAsString('z' * 120);
+          await large.setLastModified(modified);
+        }
+        release.complete();
+        expect((await pending).status, mutation ? 'stale' : 'applied');
+        if (mutation) {
+          expect(await fixture.index.readAsBytes(), index);
+        } else {
+          expect(await fixture.indexText('file'), 'new\n');
+        }
+        expect(await fixture.read('file'), 'new\n');
+        expect(await fixture.read('unrelated'), 'o' * 48);
+        expect(await fixture.read('ordinary'), 'p' * 48);
+        expect(await fixture.read('large-a'), (mutation ? 'z' : 'a') * 120);
+        expect(await fixture.read('large-b'), 'b' * 120);
+        expect(await fixture.lock.exists(), isFalse);
+      },
+    );
+  }
+
+  for (final category in ['ordinary', 'streamed', 'per-file']) {
+    test('$category verification excess withholds approval', () async {
+      await fixture.write('file', 'old\n');
+      await fixture.write('unrelated', 'o' * 48);
+      await fixture.write('large-a', 'a' * 120);
+      await fixture.write('large-b', 'b' * 120);
+      if (category == 'ordinary') {
+        for (var i = 0; i < 5; i++) {
+          await fixture.write('ordinary-$i', 'p' * 48);
+        }
+      }
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Verification budget excess']);
+      await fixture.write('file', 'new\n');
+      final limits = GitChangeSetLimits(
+        fileBytes: 64,
+        verificationFileBytes: category == 'per-file' ? 119 : 128,
+        verificationTotalBytes: category == 'streamed' ? 239 : 256,
+      );
+      final source = GitChangeSetSourceService(
+        provider: fixture.provider,
+        authorizedRead: fixture.authority,
+        parentEnvironment: fixture.environment,
+        limits: limits,
+      );
+      final snapshot = await source.snapshotUnstaged();
+      expect(snapshot.reviewRevision, isNull);
+      expect(snapshot.files.every((file) => !file.reviewEligible), isTrue);
+      expect(
+        snapshot.files.singleWhere((file) => file.relativePath == 'file').hunks,
+        isNotEmpty,
+      );
+      final index = await fixture.index.readAsBytes();
+      expect(
+        (await fixture
+                .reviewWith(limits: limits)
+                .approve(_select(snapshot, 'file', path: 'file')))
+            .status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), index);
+      expect(await fixture.read('file'), 'new\n');
+      expect(await fixture.lock.exists(), isFalse);
+    });
+  }
+
+  for (final (attributeSource, gate) in [
+    ('info', 'read'),
+    ('info', 'review'),
+    ('ancestor', 'read'),
+    ('ignored', 'read'),
+    ('global', 'read'),
+    ('relative-global', 'read'),
+    ('config', 'read'),
+    ('replacement', 'read'),
+    ('deletion', 'read'),
+  ]) {
+    test(
+      'final $gate authority gate fences $attributeSource attributes',
+      () async {
+        await fixture.write('scope/file', 'old\n');
+        await fixture.git(['add', '.']);
+        await fixture.git(['commit', '-m', 'Scoped attribute fixture']);
+        fixture.bind(scope: 'scope');
+        await fixture.write('scope/file', 'reviewed\n');
+        final info = '${fixture.repository.path}/.git/info/attributes';
+        final path = switch (attributeSource) {
+          'ancestor' => '${fixture.worktree.path}/.gitattributes',
+          'ignored' => '${fixture.worktree.path}/scope/.gitattributes',
+          'relative-global' => '${fixture.worktree.path}/attributes.rules',
+          'global' ||
+          'config' => '${fixture.container.path}/external-attributes',
+          _ => info,
+        };
+        final attributes = File(path);
+        final changed = attributeSource == 'ignored'
+            ? 'file -diff\n'
+            : 'scope/file -diff\n';
+        if (attributeSource != 'info') {
+          await attributes.writeAsString('#${' ' * (changed.length - 2)}\n');
+        }
+        if (attributeSource == 'global' ||
+            attributeSource == 'relative-global') {
+          await fixture.git([
+            'config',
+            'core.attributesFile',
+            attributeSource == 'relative-global' ? 'attributes.rules' : path,
+          ]);
+        }
+        if (attributeSource == 'config') {
+          await attributes.writeAsString(changed);
+        }
+        if (attributeSource == 'ignored') {
+          await File(
+            '${fixture.repository.path}/.git/info/exclude',
+          ).writeAsString('/scope/.gitattributes\n');
+        }
+        final marker = File('${fixture.container.path}/executed');
+        if (attributeSource == 'deletion') {
+          await fixture.write(
+            '.gitattributes',
+            'scope/file filter=reviewtrap\n',
+          );
+          await attributes.writeAsString('scope/file -filter\n');
+          await fixture.git([
+            'config',
+            'filter.reviewtrap.clean',
+            'touch "${marker.path}"; cat',
+          ]);
+          await fixture.git([
+            'config',
+            'filter.reviewtrap.process',
+            'touch "${marker.path}"; exit 1',
+          ]);
+          await fixture.git([
+            'config',
+            'diff.reviewtrap.textconv',
+            'touch "${marker.path}"; cat',
+          ]);
+          if (!Platform.isWindows) {
+            final hooks = await Directory(
+              '${fixture.container.path}/hooks',
+            ).create();
+            final hook = File('${hooks.path}/post-index-change');
+            await hook.writeAsString('#!/bin/sh\n: > "${marker.path}"\n');
+            await Process.run('chmod', ['755', hook.path]);
+            await fixture.git(['config', 'core.hooksPath', hooks.path]);
+          }
+        }
+        if (await attributes.exists()) {
+          await attributes.setLastModified(DateTime.utc(2000));
+        }
+        final snapshot = await fixture.source.snapshotUnstaged();
+        expect(snapshot.reviewRevision, isNotNull);
+        expect(snapshot.files.single.reviewEligible, isTrue);
+        final index = await fixture.index.readAsBytes();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        Future<void> pause(int call) async {
+          if (call == (gate == 'read' ? 4 : 2)) {
+            entered.complete();
+            await release.future;
+          }
+        }
+
+        if (gate == 'read') {
+          fixture.authority.onRead = pause;
+        } else {
+          fixture.authority.onReview = pause;
+        }
+        final pending = fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        );
+        await Future.any([
+          entered.future,
+          pending.then<void>(
+            (result) => throw StateError(
+              'Unexpected early mutation result: ${result.status}',
+            ),
+          ),
+        ]);
+        final modified = (await attributes.stat()).modified;
+        if (attributeSource == 'config') {
+          await fixture.git(['config', 'core.attributesFile', path]);
+        } else if (attributeSource == 'deletion') {
+          await attributes.delete();
+        } else if (attributeSource == 'replacement') {
+          final replacement = File('${fixture.container.path}/replacement');
+          await replacement.writeAsString(changed);
+          await replacement.setLastModified(modified);
+          await replacement.rename(path);
+        } else {
+          await attributes.writeAsString(changed);
+          if (attributeSource != 'info') {
+            await attributes.setLastModified(modified);
+          }
+        }
+        release.complete();
+        expect((await pending).status, 'stale');
+        expect(await fixture.index.readAsBytes(), index);
+        expect(await fixture.read('scope/file'), 'reviewed\n');
+        expect(await fixture.lock.exists(), isFalse);
+        final fresh = await fixture.source.snapshotUnstaged();
+        expect(
+          fresh.files.single.contentStatus,
+          attributeSource == 'deletion' ? 'unsupported' : 'binary',
+        );
+        expect(fresh.files.single.reviewEligible, isFalse);
+        expect(await marker.exists(), isFalse);
+      },
+    );
+  }
+
+  test(
+    'unmonitored config includes disable review but retain text inspection',
+    () async {
+      final included = File('${fixture.container.path}/included-config');
+      await included.writeAsString('[core]\n  filemode = true\n');
+      await fixture.git(['config', 'include.path', included.path]);
+      await fixture.write('file', 'reviewed\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      expect(snapshot.files.single.hunks, isNotEmpty);
+      expect(snapshot.reviewRevision, isNull);
+      expect(snapshot.files.single.reviewEligible, isFalse);
+      final index = await fixture.index.readAsBytes();
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        )).status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), index);
+    },
+  );
+
+  test(
+    'attribute contents bind revisions despite unchanged effective values',
+    () async {
+      await fixture.write('scope/file', 'old\n');
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Attribute revision fixture']);
+      fixture.bind(scope: 'scope');
+      await fixture.write('scope/file', 'reviewed\n');
+      final attributes = File(
+        '${fixture.repository.path}/.git/info/attributes',
+      );
+      await attributes.writeAsString('# first\n');
+      await attributes.setLastModified(DateTime.utc(2000));
+      final previous = await fixture.source.snapshotUnstaged();
+      final state = await attributes.stat();
+      await attributes.writeAsString('# other\n');
+      await attributes.setLastModified(state.modified);
+      expect((await attributes.stat()).modified, state.modified);
+      expect(await attributes.length(), state.size);
+      final current = await fixture.source.snapshotUnstaged();
+      expect(current.reviewRevision, isNotNull);
+      expect(current.reviewRevision, isNot(previous.reviewRevision));
+      expect(current.files.single.reviewEligible, isTrue);
+      final index = await fixture.index.readAsBytes();
+      expect(
+        (await fixture.review.approve(
+          _select(previous, 'file', path: 'file'),
+        )).status,
+        'stale',
+      );
+      expect(await fixture.index.readAsBytes(), index);
+      expect(
+        (await fixture.review.approve(
+          _select(current, 'file', path: 'file'),
+        )).status,
+        'applied',
+      );
+      expect(await fixture.indexText('scope/file'), 'reviewed\n');
+      expect(await fixture.read('scope/file'), 'reviewed\n');
+    },
+  );
+
+  test(
+    'tree-sourced attributes disable review without hiding text inspection',
+    () async {
+      await fixture.git([
+        'update-ref',
+        'refs/heads/attribute-policy',
+        fixture.baseline,
+      ]);
+      await fixture.git(['config', 'attr.tree', 'refs/heads/attribute-policy']);
+      await fixture.write('file', 'reviewed\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      expect(snapshot.files.single.hunks, isNotEmpty);
+      expect(snapshot.reviewRevision, isNull);
+      expect(snapshot.files.single.reviewEligible, isFalse);
+      final index = await fixture.index.readAsBytes();
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        )).status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), index);
+    },
+  );
+
+  for (final exitCode in [129, 128]) {
+    test(
+      'optional Git variable discovery handles exit $exitCode narrowly',
+      () async {
+        await fixture.write('file', 'reviewed\n');
+        final wrapper = await fixture.shim('''
+case " \$* " in
+  *" var GIT_CONFIG_"*|*" var GIT_ATTR_"*) exit $exitCode;;
+esac
+exec /usr/bin/git "\$@"
+''');
+        final environment = {
+          ...fixture.environment,
+          'PATH': '${wrapper.path}:/usr/bin:/bin',
+        };
+        final source = GitChangeSetSourceService(
+          provider: fixture.provider,
+          authorizedRead: fixture.authority,
+          parentEnvironment: environment,
+        );
+        final index = await fixture.index.readAsBytes();
+        if (exitCode == 129) {
+          final snapshot = await source.snapshotUnstaged();
+          expect(snapshot.files.single.hunks, isNotEmpty);
+          expect(snapshot.reviewRevision, isNull);
+          expect(snapshot.files.single.reviewEligible, isFalse);
+          expect(
+            (await fixture
+                    .reviewWith(parentEnvironment: environment)
+                    .approve(_select(snapshot, 'file', path: 'file')))
+                .status,
+            'ineligible',
+          );
+        } else {
+          await expectLater(
+            source.snapshotUnstaged(),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                'git_failed',
+              ),
+            ),
+          );
+        }
+        expect(await fixture.index.readAsBytes(), index);
+        expect(await fixture.lock.exists(), isFalse);
+      },
+      skip: Platform.isWindows,
+    );
+  }
+
+  test(
+    'aggregate attribute source bounds disable approval without hiding hunks',
+    () async {
+      await fixture.write('scope/file', 'old\n');
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Attribute budget fixture']);
+      fixture.bind(scope: 'scope');
+      await fixture.write('scope/file', 'reviewed\n');
+      await File(
+        '${fixture.repository.path}/.git/info/attributes',
+      ).writeAsString('#${' ' * 1100}\n');
+      await fixture.write('.gitattributes', '#${' ' * 1100}\n');
+      const limits = GitChangeSetLimits(reviewMetadataBytes: 2048);
+      expect(
+        await fixture.index.length(),
+        lessThan(limits.reviewMetadataBytes),
+      );
+      final source = GitChangeSetSourceService(
+        provider: fixture.provider,
+        authorizedRead: fixture.authority,
+        parentEnvironment: fixture.environment,
+        limits: limits,
+      );
+      final snapshot = await source.snapshotUnstaged();
+      expect(snapshot.files.single.hunks, isNotEmpty);
+      expect(snapshot.reviewRevision, isNull);
+      expect(snapshot.files.single.reviewEligible, isFalse);
+      final index = await fixture.index.readAsBytes();
+      expect(
+        (await fixture
+                .reviewWith(limits: limits)
+                .approve(_select(snapshot, 'file', path: 'file')))
+            .status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), index);
+    },
+  );
+
   test(
     'separate hunk approval and unapproval use exact coordinates and leave working bytes',
     () async {
@@ -1498,8 +1933,10 @@ ReviewSelection _select(
 
 final class _Authority implements AuthorizedEnvironmentReadService {
   int reads = 0;
+  int reviewReads = 0;
   bool revoked = false;
   FutureOr<void> Function(int)? onRead;
+  FutureOr<void> Function(int)? onReview;
   @override
   Future<AuthorizedEnvironmentIdentity> authority() async {
     reads++;
@@ -1524,6 +1961,7 @@ final class _Proof implements AuthorizedEnvironmentReviewService {
   final _Authority read;
   @override
   Future<AuthorizedEnvironmentIdentity> authority() async {
+    await read.onReview?.call(++read.reviewReads);
     if (read.revoked) throw StateError('Review grant revoked');
     return AuthorizedEnvironmentIdentity(
       sessionId: 'session',

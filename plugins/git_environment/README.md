@@ -290,6 +290,37 @@ Directory membership checks respect Git ignores, skip symlinks and nested
 repositories, and retain tracked-parent checks without traversing ignored build
 artifacts. This is bounded observation, not a filesystem watcher.
 
+Review metadata is optional for inspection, but mandatory for mutation. A complete
+index beyond the 16 MiB review-metadata bound, an indirect index, or unsupported
+index/reference storage disables review revisions and displayed eligibility,
+not otherwise-supported scoped read-only snapshots. Scoped inventory, consistency,
+content and transport limits still apply; no entries or hunks are omitted to fit
+the review policy. Unstaged remains an index-to-working-tree comparison on an
+unborn HEAD, including nonignored additions, without approval. Uncommitted and
+Task/Branch retain their valid-HEAD requirements; no substitute empty tree is used.
+
+Revisions are issued only after their bounded verification prerequisites are
+available. Ordinary observed-file verification and oversized-file streaming have
+independent 64 MiB aggregate allowances, each retaining the 16 MiB per-file bound.
+Final synchronous publication uses the same independent accounting and still
+rechecks every captured content digest. These allowances do not increase the
+existing rendering, patch, inventory or transport budgets.
+
+Eligible observation captures bounded contents and state for relevant worktree
+`.gitattributes` files, from the worktree root through the selected file's parent
+(including ancestors outside a nested Project source), and the common Git
+`info/attributes` file. Git-discovered system/global attributes and system/global,
+repository and per-worktree configuration sources are captured too. Source-content
+fingerprints participate in each file's revision. Attribute/configuration contents
+are bounded to 16 MiB in aggregate and by the existing inventory-path bound.
+Configuration includes, `attr.tree`, indirect/nonregular sources, or source
+discovery that cannot be verified safely make approval unavailable while retaining
+inspection.
+Git versions without the optional attribute/configuration discovery variables
+likewise retain read-only inspection without approval. Relative configured attribute
+paths are resolved against Git's bound worktree root, not a nested Project source.
+This is a deliberately bounded review policy, not a general configuration watcher.
+
 Supported targets are fully inspected ordinary UTF-8 text modifications, additions
 (including nonignored untracked files), and deletions. Empty additions/deletions
 have file/layer support without invented hunks. Hunk reconstruction uses exact
@@ -324,7 +355,10 @@ Every hunk, file or whole-layer request uses one mechanism:
    unselected entry; Git's implicit directory/file replacement is not permission
    to alter an unselected path.
 4. Flush the prospective bytes to the held lockfile, revalidate source observations,
-   HEAD/index identity, canonical authority and live generation, then atomically
+   HEAD/index identity, canonical authority and live generation, then recheck the
+   captured attribute/configuration source bytes and state synchronously. Appearance,
+   disappearance, replacement and same-length edits are checked without trusting
+   metadata alone. The earlier effective-attribute validation is retained. Atomically
    rename the lockfile over the actual index without another asynchronous suspension.
 
 Preparation failure leaves the authoritative index unchanged. Object-store writes

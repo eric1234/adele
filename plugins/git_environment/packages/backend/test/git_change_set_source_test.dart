@@ -121,6 +121,382 @@ void main() {
     );
   }
 
+  for (final representation in [
+    'oversized index',
+    'indirect index',
+    'split index',
+    'oversized refs',
+  ]) {
+    test(
+      'review metadata $representation preserves scoped readonly snapshots',
+      () async {
+        final selected = await Directory(
+          '${repository.path}/selected',
+        ).create();
+        final file = File('${selected.path}/file');
+        await file.writeAsString('HEAD content\n');
+        if (representation == 'oversized index') {
+          final outside = await Directory(
+            '${repository.path}/outside',
+          ).create();
+          for (var i = 0; i < 40; i++) {
+            await File('${outside.path}/entry-$i').writeAsString('outside\n');
+          }
+        }
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Scoped metadata fixture']);
+        final head = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+        bindTask(baseline: head, retainedBranch: branch, root: selected);
+        await file.writeAsString('index content\n');
+        await _git(repository, ['add', 'selected/file']);
+        await file.writeAsString('working content\n');
+        final outsideChange = File('${repository.path}/baseline');
+        await outsideChange.writeAsString('outside staged\n');
+        await _git(repository, ['add', 'baseline']);
+        await outsideChange.writeAsString('outside working\n');
+        await File(
+          '${repository.path}/untracked-outside',
+        ).writeAsString('outside new\n');
+        final index = File('${repository.path}/.git/index');
+        if (representation == 'indirect index') {
+          final retained = await index.rename(
+            '${container.path}/retained-index',
+          );
+          await Link(index.path).create(retained.path);
+        } else if (representation == 'split index') {
+          await _git(repository, ['update-index', '--split-index']);
+        } else if (representation == 'oversized refs') {
+          await _git(
+            repository,
+            ['update-ref', '--stdin'],
+            input: List.generate(
+              40,
+              (i) => 'update refs/tags/metadata-$i $head\n',
+            ).join(),
+          );
+          await _git(repository, ['pack-refs', '--all']);
+        }
+        const limits = GitChangeSetLimits(
+          reviewMetadataBytes: 1024,
+          inventoryEntries: 1,
+        );
+        if (representation == 'oversized index') {
+          expect(await index.length(), greaterThan(limits.reviewMetadataBytes));
+        } else if (representation == 'oversized refs') {
+          expect(await index.length(), lessThan(limits.reviewMetadataBytes));
+          expect(
+            await File('${repository.path}/.git/packed-refs').length(),
+            greaterThan(limits.reviewMetadataBytes),
+          );
+        }
+        final originalIndex = await index.readAsBytes();
+        final indexType = await FileSystemEntity.type(
+          index.path,
+          followLinks: false,
+        );
+        for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+          final result = await workingChanges(scope, limits: limits);
+          expect(result.reviewRevision, isNull);
+          final changed = result.files.single;
+          expect(changed.relativePath, 'file');
+          expect(changed.contentStatus, 'text');
+          expect(changed.reviewEligible, isFalse);
+          expect(
+            changed.hunks.single.lines.map(
+              (line) => '${line.kind}:${line.text}',
+            ),
+            ['deletion:index content', 'addition:working content'],
+          );
+        }
+        final layered = await uncommitted(limits: limits);
+        expect(layered.staged.reviewRevision, isNull);
+        expect(layered.staged.files.single.reviewEligible, isFalse);
+        expect(
+          layered.staged.files.single.hunks.single.lines.map(
+            (line) => '${line.kind}:${line.text}',
+          ),
+          ['deletion:HEAD content', 'addition:index content'],
+        );
+        final review = GitReviewApprovalService(
+          provider: provider,
+          authorizedRead: authority,
+          authorizedReview: authority,
+          limits: limits,
+          parentEnvironment: {
+            'PATH': Platform.environment['PATH']!,
+            'HOME': container.path,
+            'XDG_CONFIG_HOME': '${container.path}/config',
+          },
+        );
+        final selection = ReviewSelection(
+          expectedRevision: '0' * 64,
+          granularity: 'file',
+          relativePath: 'file',
+          hunkIndex: null,
+        );
+        expect((await review.approve(selection)).status, 'ineligible');
+        expect((await review.unapprove(selection)).status, 'ineligible');
+        expect(await index.readAsBytes(), originalIndex);
+        expect(
+          await FileSystemEntity.type(index.path, followLinks: false),
+          indexType,
+        );
+        expect(await File('${index.path}.lock').exists(), isFalse);
+        expect(await file.readAsString(), 'working content\n');
+        expect(await outsideChange.readAsString(), 'outside working\n');
+      },
+      skip: Platform.isWindows && representation == 'indirect index',
+    );
+  }
+
+  for (final indexed in [false, true]) {
+    test(
+      'unborn HEAD preserves Unstaged with ${indexed ? 'an index' : 'no index'}',
+      () async {
+        repository = await Directory('${container.path}/unborn').create();
+        await _git(repository, ['init']);
+        final file = File('${repository.path}/file');
+        if (indexed) {
+          await file.writeAsString('indexed\n');
+          await _git(repository, ['add', 'file']);
+        }
+        await file.writeAsString('working\n');
+        await File('${repository.path}/empty').writeAsString('');
+        bindTask(baseline: null, retainedBranch: null);
+        final index = File('${repository.path}/.git/index');
+        final before = await index.exists() ? await index.readAsBytes() : null;
+        final result = await snapshot();
+        expect(result.reviewRevision, isNull);
+        expect(result.files.map((entry) => entry.relativePath), [
+          'empty',
+          'file',
+        ]);
+        expect(result.files.every((entry) => !entry.reviewEligible), isTrue);
+        expect(result.files.first.hunks, isEmpty);
+        expect(result.files.last.changeKind, indexed ? 'modified' : 'added');
+        expect(
+          result.files.last.hunks.single.lines.map(
+            (line) => '${line.kind}:${line.text}',
+          ),
+          [if (indexed) 'deletion:indexed', 'addition:working'],
+        );
+        await expectLater(uncommitted(), throwsA(_code('git_failed')));
+        await expectLater(taskChanges(), throwsA(_code('git_failed')));
+        final review = GitReviewApprovalService(
+          provider: provider,
+          authorizedRead: authority,
+          authorizedReview: authority,
+          parentEnvironment: {
+            'PATH': Platform.environment['PATH']!,
+            'HOME': container.path,
+            'XDG_CONFIG_HOME': '${container.path}/config',
+          },
+        );
+        await expectLater(
+          review.approve(
+            ReviewSelection(
+              expectedRevision: '0' * 64,
+              granularity: 'file',
+              relativePath: 'file',
+              hunkIndex: null,
+            ),
+          ),
+          throwsA(
+            isA<ReviewApprovalFailure>().having(
+              (error) => error.code,
+              'code',
+              'git_failed',
+            ),
+          ),
+        );
+        expect(await index.exists(), before != null);
+        if (before != null) expect(await index.readAsBytes(), before);
+        expect(await File('${index.path}.lock').exists(), isFalse);
+        expect(await file.readAsString(), 'working\n');
+
+        await _git(repository, ['add', '.']);
+        await _git(repository, [
+          '-c',
+          'user.name=ADELE Test',
+          '-c',
+          'user.email=adele@example.invalid',
+          'commit',
+          '-m',
+          'Establish valid HEAD',
+        ]);
+        await file.writeAsString('next working\n');
+        final restored = await snapshot();
+        expect(restored.reviewRevision, isNotNull);
+        expect(restored.files.single.reviewEligible, isTrue);
+        expect(
+          (await review.approve(
+            ReviewSelection(
+              expectedRevision: restored.reviewRevision!,
+              granularity: 'file',
+              relativePath: 'file',
+              hunkIndex: null,
+            ),
+          )).status,
+          'applied',
+        );
+        expect(await _git(repository, ['show', ':file']), 'next working\n');
+        expect(await file.readAsString(), 'next working\n');
+      },
+    );
+  }
+
+  test(
+    'review metadata read unavailability does not hide real Git snapshots',
+    () async {
+      await File('${repository.path}/baseline').writeAsString('working\n');
+      final index = File('${repository.path}/.git/index');
+      final before = await index.readAsBytes();
+      final result = await IOOverrides.runWithIOOverrides(
+        snapshot,
+        _UnavailableIndexRead(index.path),
+      );
+      expect(result.reviewRevision, isNull);
+      expect(result.files.single.reviewEligible, isFalse);
+      expect(result.files.single.contentStatus, 'text');
+      expect(result.files.single.hunks.single.lines.last.text, 'working');
+      expect(await index.readAsBytes(), before);
+    },
+  );
+
+  for (final mutation in ['index debug state', 'inventory']) {
+    test(
+      'review metadata fallback still rejects late $mutation changes',
+      () async {
+        await File('${repository.path}/baseline').writeAsString('working\n');
+        final oid = (await _git(repository, ['rev-parse', ':baseline'])).trim();
+        final description = await _git(repository, [
+          'ls-files',
+          '--stage',
+          '--debug',
+          '-z',
+        ]);
+        authority.onRead = (call) async {
+          if (call != 2) return;
+          if (mutation == 'index debug state') {
+            await _git(repository, [
+              'update-index',
+              '--cacheinfo',
+              '100644',
+              oid,
+              'baseline',
+            ]);
+            expect(
+              await _git(repository, ['ls-files', '--stage', '--debug', '-z']),
+              isNot(description),
+            );
+          } else {
+            await File('${repository.path}/new-file').writeAsString('late\n');
+          }
+        };
+        await expectLater(
+          snapshot(limits: const GitChangeSetLimits(reviewMetadataBytes: 1)),
+          throwsA(_code('snapshot_changed')),
+        );
+      },
+    );
+  }
+
+  test(
+    'review metadata becoming unavailable after capture remains stale',
+    () async {
+      await File('${repository.path}/baseline').writeAsString('working\n');
+      authority.onRead = (call) async {
+        if (call != 2) return;
+        final index = File('${repository.path}/.git/index');
+        final retained = await index.rename('${container.path}/late-index');
+        await Link(index.path).create(retained.path);
+      };
+      await expectLater(snapshot(), throwsA(_code('snapshot_changed')));
+    },
+    skip: Platform.isWindows,
+  );
+
+  for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+    test('review metadata fallback preserves $scope HEAD dependency', () async {
+      await File('${repository.path}/baseline').writeAsString('working\n');
+      final tree = (await _git(repository, [
+        'rev-parse',
+        'HEAD^{tree}',
+      ])).trim();
+      final index = File('${repository.path}/.git/index');
+      final before = await index.readAsBytes();
+      authority.onRead = (call) async {
+        if (call != 2) return;
+        final next = (await _git(repository, [
+          'commit-tree',
+          tree,
+          '-p',
+          baselineCommit,
+          '-m',
+          'Late HEAD',
+        ])).trim();
+        await _git(repository, ['update-ref', 'HEAD', next]);
+        expect(await index.readAsBytes(), before);
+      };
+      final pending = workingChanges(
+        scope,
+        limits: const GitChangeSetLimits(reviewMetadataBytes: 1),
+      );
+      if (scope == 'Unstaged') {
+        final result = await pending;
+        expect(result.reviewRevision, isNull);
+        expect(result.files.single.hunks.single.lines.last.text, 'working');
+      } else {
+        await expectLater(pending, throwsA(_code('snapshot_changed')));
+      }
+    });
+  }
+
+  for (final failure in ['git_failed', 'git_timeout']) {
+    test(
+      'review metadata fallback does not swallow $failure',
+      () async {
+        await File('${repository.path}/baseline').writeAsString('working\n');
+        final gate = '${container.path}/metadata-timeout-gate';
+        if (failure == 'git_timeout') {
+          final result = await Process.run('mkfifo', [gate]);
+          expect(result.exitCode, 0);
+        }
+        final wrapper = await _shim(container, '''
+case " \$* " in
+  *" ls-files --cached "*) ${failure == 'git_timeout' ? 'exec /bin/cat "$gate"' : 'exit 93'} ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+        await expectLater(
+          snapshot(
+            limits: const GitChangeSetLimits(
+              reviewMetadataBytes: 1,
+              processTimeout: Duration(seconds: 1),
+            ),
+            parentEnvironment: {'PATH': '${wrapper.path}:/usr/bin:/bin'},
+          ),
+          throwsA(_code(failure)),
+        );
+      },
+      skip: Platform.isWindows,
+    );
+  }
+
+  for (final invalid in ['non-commit', 'missing-object', 'detached-missing']) {
+    test('unborn HEAD handling does not hide $invalid HEAD failure', () async {
+      final oid = invalid == 'non-commit'
+          ? (await _git(repository, ['rev-parse', 'HEAD^{tree}'])).trim()
+          : 'f' * 40;
+      await File(
+        invalid == 'detached-missing'
+            ? '${repository.path}/.git/HEAD'
+            : '${repository.path}/.git/refs/heads/$branch',
+      ).writeAsString('$oid\n');
+      await expectLater(snapshot(), throwsA(_code('git_failed')));
+    });
+  }
+
   test('Task is clean at baseline and exposes committed-only work', () async {
     final clean = await taskChanges(
       limits: const GitChangeSetLimits(
@@ -2194,7 +2570,12 @@ exec /usr/bin/git "\$@"
     expect(defaults.verificationTotalBytes, 64 * 1024 * 1024);
     expect(defaults.fileBytes, 1024 * 1024);
     expect(defaults.totalBytes, 8 * 1024 * 1024);
+    expect(defaults.reviewMetadataBytes, 16 * 1024 * 1024);
+    expect(defaults.inventoryEntries, 4096);
     for (final limits in [
+      const GitChangeSetLimits(reviewMetadataBytes: 0),
+      const GitChangeSetLimits(reviewMetadataBytes: -1),
+      GitChangeSetLimits(reviewMetadataBytes: defaults.reviewMetadataBytes + 1),
       const GitChangeSetLimits(verificationFileBytes: 0),
       const GitChangeSetLimits(verificationTotalBytes: 0),
       GitChangeSetLimits(
@@ -3163,6 +3544,40 @@ final class _ReadOverrides extends IOOverrides {
   }
 }
 
+final class _UnavailableIndexRead extends IOOverrides {
+  _UnavailableIndexRead(this.path);
+  final String path;
+  final Zone originalZone = Zone.current;
+
+  @override
+  Future<FileSystemEntityType> fseGetType(String path, bool followLinks) =>
+      originalZone.run(
+        () => FileSystemEntity.type(path, followLinks: followLinks),
+      );
+
+  @override
+  File createFile(String path) {
+    final file = super.createFile(path);
+    return path == this.path ? _UnavailableIndexFile(file) : file;
+  }
+}
+
+final class _UnavailableIndexFile implements File {
+  _UnavailableIndexFile(this.file);
+  final File file;
+  @override
+  String get path => file.path;
+  @override
+  Future<String> resolveSymbolicLinks() => file.resolveSymbolicLinks();
+  @override
+  Future<FileStat> stat() => file.stat();
+  @override
+  Future<RandomAccessFile> open({FileMode mode = FileMode.read}) async =>
+      throw FileSystemException('Review metadata read unavailable', path);
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 final class _ReadFile implements File {
   _ReadFile(this.file, this.overrides);
 
@@ -3200,7 +3615,10 @@ final class _ReadHandle implements RandomAccessFile {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-final class _Authority implements AuthorizedEnvironmentReadService {
+final class _Authority
+    implements
+        AuthorizedEnvironmentReadService,
+        AuthorizedEnvironmentReviewService {
   _Authority(this.environmentId);
   String environmentId;
   String sessionId = 'session';

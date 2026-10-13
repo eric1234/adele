@@ -20,6 +20,7 @@ final class GitChangeSetLimits {
   const GitChangeSetLimits({
     this.files = 256,
     this.inventoryEntries = 4096,
+    this.reviewMetadataBytes = _maximumReviewMetadataBytes,
     this.fileBytes = 1024 * 1024,
     this.verificationFileBytes = 16 * 1024 * 1024,
     this.verificationTotalBytes = 64 * 1024 * 1024,
@@ -33,6 +34,7 @@ final class GitChangeSetLimits {
 
   final int files;
   final int inventoryEntries;
+  final int reviewMetadataBytes;
   final int fileBytes;
   final int verificationFileBytes;
   final int verificationTotalBytes;
@@ -57,6 +59,7 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
     for (final (value, maximum) in [
       (limits.files, defaults.files),
       (limits.inventoryEntries, defaults.inventoryEntries),
+      (limits.reviewMetadataBytes, defaults.reviewMetadataBytes),
       (limits.fileBytes, defaults.fileBytes),
       (limits.verificationFileBytes, defaults.verificationFileBytes),
       (limits.verificationTotalBytes, defaults.verificationTotalBytes),
@@ -195,11 +198,17 @@ final class _SnapshotOperation {
   final Map<String, String> _workingDigests = {};
   bool _reviewContentComplete = true;
   final Map<String, String> _attributes = {};
+  final Map<String, ({FileStat state, Uint8List? bytes})>
+  _reviewAttributeFiles = {};
+  final Map<String, List<String>> _reviewAttributePaths = {};
+  List<String>? _reviewGlobalAttributePaths;
   final Map<String, Uint8List?> _headFiles = {};
   final Map<String, FileStat> _reviewDirectories = {};
   final Set<String> _reviewFlaggedPaths = {};
   String? _reviewLayer;
-  late Uint8List _indexBytes;
+  // Empty means complete review metadata was unavailable, never a replacement
+  // index. Read snapshots still use Git's bounded, source-scoped inventory.
+  Uint8List _indexBytes = Uint8List(0);
   final Map<({String path, int stage}), Uint8List> _completeIndexEntries = {};
   bool _indexReviewable = false;
   ({String commit, String reference})? _reviewHead;
@@ -272,7 +281,11 @@ final class _SnapshotOperation {
       );
     }
     await _validateRoot(root);
-    _indexBytes = await _readIndex();
+    try {
+      _indexBytes = await _readIndex();
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'review_metadata_unavailable') rethrow;
+    }
     final settings = await _settings(root);
     final effectiveSettings = <String, String>{};
     for (final entry in _nulRecords(settings)) {
@@ -289,8 +302,12 @@ final class _SnapshotOperation {
         effectiveSettings.containsKey('core.eol') ||
         (effectiveSettings.containsKey('core.autocrlf') &&
             !falseValues.contains(effectiveSettings['core.autocrlf']));
-    _reviewHead = await _readHead(root);
+    if (includeStaged || _indexBytes.isNotEmpty) {
+      _reviewHead = await _readHead(root, allowUnborn: !includeStaged);
+    }
     _indexReviewable =
+        _indexBytes.isNotEmpty &&
+        _reviewHead != null &&
         _supportedReviewIndex(
           _indexBytes,
           _reviewHead!.commit.length ~/ 2,
@@ -343,7 +360,7 @@ final class _SnapshotOperation {
         ? await _tree(root, _head!.commit)
         : <String, GitIndexEntry>{};
     final before = await _enumerate(root);
-    await _captureReviewDirectories(root, before);
+    if (_indexReviewable) await _captureReviewDirectories(root, before);
     // Retain every stage identity, including stages 2/3 collapsed into the one
     // conflict row. Comparing that row alone would miss conflict-side races.
     final indexDescription = _indexDescription;
@@ -414,10 +431,25 @@ final class _SnapshotOperation {
       if (entry != null) retain(await _file(root, path, entry), files);
     }
     Future<void> validate() async {
+      if (_indexReviewable) {
+        try {
+          if (!_bytesEqual(_indexBytes, await _readIndex())) {
+            throw _failure(
+              'snapshot_changed',
+              'The complete Git index changed.',
+            );
+          }
+        } on ChangeSetFailure catch (error) {
+          if (error.code != 'review_metadata_unavailable') rethrow;
+          throw _failure(
+            'snapshot_changed',
+            'The captured Git index became unavailable.',
+          );
+        }
+      }
       final after = await _enumerate(root);
       if (settings != await _settings(root) ||
-          !_bytesEqual(_indexBytes, await _readIndex()) ||
-          (includeStaged && indexDescription != _indexDescription) ||
+          indexDescription != _indexDescription ||
           before.length != after.length ||
           before.entries.any((entry) => after[entry.key] != entry.value)) {
         throw _failure(
@@ -442,8 +474,10 @@ final class _SnapshotOperation {
         }
       }
       await _validateWorkingContent(root);
-      _validateHeadFilesSync();
-      _validateReviewDirectoriesSync();
+      if (_indexReviewable) {
+        _validateHeadFilesSync();
+        _validateReviewDirectoriesSync();
+      }
       for (final entry in _attributes.entries) {
         if (entry.value != await _readAttributes(root, entry.key)) {
           throw _failure('snapshot_changed', 'Git attributes changed.');
@@ -455,7 +489,8 @@ final class _SnapshotOperation {
       if (includeCommitted) {
         await _validateBaseline(root, environment.baselineCommit);
       }
-      if (_reviewHead != await _readHead(root)) {
+      if ((includeStaged || _indexReviewable) &&
+          _reviewHead != await _readHead(root, allowUnborn: !includeStaged)) {
         throw _failure('snapshot_changed', 'HEAD changed during the snapshot.');
       }
     }
@@ -517,10 +552,40 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<({String commit, String reference})> _readHead(Directory root) async {
-    final commit = _decode(
-      (await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).bytes,
-    );
+  Future<({String commit, String reference})?> _readHead(
+    Directory root, {
+    bool allowUnborn = false,
+  }) async {
+    final result = await git(root, [
+      'rev-parse',
+      '--verify',
+      if (allowUnborn) '--quiet',
+      'HEAD^{commit}',
+    ], allowDifference: allowUnborn);
+    if (result.exitCode == 1) {
+      final symbolic = await git(root, [
+        'symbolic-ref',
+        '--quiet',
+        'HEAD',
+      ], allowDifference: true);
+      final reference = _decode(symbolic.bytes);
+      if (symbolic.exitCode == 0 &&
+          reference.startsWith('refs/') &&
+          reference.endsWith('\n')) {
+        final exists = await git(root, [
+          'show-ref',
+          '--verify',
+          '--quiet',
+          reference.trim(),
+        ], allowDifference: true);
+        if (exists.exitCode == 1) return null;
+      }
+      throw _failure(
+        'git_failed',
+        'Git could not resolve the current HEAD commit.',
+      );
+    }
+    final commit = _decode(result.bytes);
     if (!RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\n$').hasMatch(commit)) {
       throw _malformed();
     }
@@ -956,6 +1021,7 @@ final class _SnapshotOperation {
       hunks: const [],
       reviewEligible: false,
     );
+    if (_indexReviewable) await _captureReviewAttributeSources(root, path);
     final rawAttributes = await _readAttributes(root, path);
     _attributes[path] = rawAttributes;
     final attributes = _nulRecords(rawAttributes);
@@ -1244,12 +1310,28 @@ final class _SnapshotOperation {
     int? maximum,
     bool detached = false,
     bool allowDifference = false,
+    bool allowUnknownVariable = false,
     bool requireCleanStderr = false,
     String? privateIndex,
     Uint8List? input,
   }) async {
     checkOpen();
     final mutation = privateIndex != null;
+    if (allowUnknownVariable &&
+        (mutation ||
+            detached ||
+            arguments.length != 2 ||
+            arguments.first != 'var' ||
+            !const {
+              'GIT_CONFIG_SYSTEM',
+              'GIT_CONFIG_GLOBAL',
+              'GIT_ATTR_SYSTEM',
+              'GIT_ATTR_GLOBAL',
+            }.contains(arguments.last))) {
+      throw StateError(
+        'Unknown-variable tolerance is only for optional Git metadata discovery.',
+      );
+    }
     // check-ignore rejects global literal pathspec magic. Its private stdin
     // paths have a ./ prefix, so none can introduce magic themselves.
     final directoryIgnore = arguments.first == 'check-ignore';
@@ -1451,7 +1533,9 @@ final class _SnapshotOperation {
           'Git reported an object inspection error.',
         );
       }
-      if (result.exitCode != 0 && !(allowDifference && result.exitCode == 1)) {
+      if (result.exitCode != 0 &&
+          !(allowDifference && result.exitCode == 1) &&
+          !(allowUnknownVariable && result.exitCode == 129)) {
         throw _failure(
           'git_failed',
           'Git could not produce the change snapshot.',

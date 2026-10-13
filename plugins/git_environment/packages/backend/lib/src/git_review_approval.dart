@@ -618,6 +618,7 @@ extension _ReviewSnapshot on _SnapshotOperation {
   }
 
   Future<void> _captureHeadFiles(Directory root) async {
+    if (!_indexReviewable || _reviewHead == null) return;
     final storage = _decode(
       (await git(root, [
         'config',
@@ -645,32 +646,48 @@ extension _ReviewSnapshot on _SnapshotOperation {
       );
       if (!output.endsWith('\n')) throw _malformed();
       final path = output.substring(0, output.length - 1);
-      _headFiles[path] = _readOptionalMetadataSync(path);
+      try {
+        _headFiles[path] = _readOptionalMetadataSync(path);
+      } on ChangeSetFailure catch (error) {
+        if (error.code != 'review_metadata_unavailable') rethrow;
+        _indexReviewable = false;
+        _headFiles.clear();
+        return;
+      }
     }
   }
 
   Uint8List? _readOptionalMetadataSync(String path) {
-    var parent = File(path).parent;
-    while (!parent.existsSync() && parent.path != parent.parent.path) {
-      parent = parent.parent;
-    }
-    if (parent.resolveSymbolicLinksSync() != parent.path) {
+    checkOpen();
+    try {
+      var parent = File(path).parent;
+      while (!parent.existsSync() && parent.path != parent.parent.path) {
+        parent = parent.parent;
+      }
+      if (parent.resolveSymbolicLinksSync() != parent.path) {
+        throw _failure(
+          'review_metadata_unavailable',
+          'Review metadata is indirect.',
+        );
+      }
+      final type = FileSystemEntity.typeSync(path, followLinks: false);
+      if (type == FileSystemEntityType.notFound) return null;
+      final file = File(path);
+      if (type != FileSystemEntityType.file ||
+          (file.statSync().mode & 0xf000) != 0x8000 ||
+          file.lengthSync() > limits.reviewMetadataBytes) {
+        throw _failure(
+          'review_metadata_unavailable',
+          'Review metadata cannot be safely inspected.',
+        );
+      }
+      return _readBoundedSync(file, limits.reviewMetadataBytes);
+    } on FileSystemException {
       throw _failure(
-        'snapshot_changed',
-        'Git reference metadata became indirect.',
+        'review_metadata_unavailable',
+        'Review metadata could not be read.',
       );
     }
-    final type = FileSystemEntity.typeSync(path, followLinks: false);
-    if (type == FileSystemEntityType.notFound) return null;
-    final file = File(path);
-    if (type != FileSystemEntityType.file ||
-        file.lengthSync() > _maximumReviewMetadataBytes) {
-      throw _failure(
-        'snapshot_changed',
-        'Git reference metadata cannot be safely inspected.',
-      );
-    }
-    return _readBoundedSync(file, _maximumReviewMetadataBytes);
   }
 
   void _validateHeadFilesSync() {
@@ -686,31 +703,39 @@ extension _ReviewSnapshot on _SnapshotOperation {
 
   Future<Uint8List> _readBoundedMetadata(File file) async {
     checkOpen();
-    if (await FileSystemEntity.type(file.path, followLinks: false) !=
-            FileSystemEntityType.file ||
-        await file.resolveSymbolicLinks() != file.path) {
-      throw _failure(
-        'snapshot_changed',
-        'Git index metadata is not a direct file.',
-      );
-    }
-    final opened = await file.open();
     try {
-      final length = await opened.length();
-      if (length > _maximumReviewMetadataBytes) {
+      if (await FileSystemEntity.type(file.path, followLinks: false) !=
+              FileSystemEntityType.file ||
+          await file.resolveSymbolicLinks() != file.path ||
+          ((await file.stat()).mode & 0xf000) != 0x8000) {
         throw _failure(
-          'index_too_large',
-          'The complete Git index exceeds the review limit.',
+          'review_metadata_unavailable',
+          'Review index metadata is not a direct file.',
         );
       }
-      final bytes = await opened.read(length + 1);
-      checkOpen();
-      if (bytes.length != length) {
-        throw _failure('snapshot_changed', 'Git index metadata changed.');
+      final opened = await file.open();
+      try {
+        final length = await opened.length();
+        if (length > limits.reviewMetadataBytes) {
+          throw _failure(
+            'review_metadata_unavailable',
+            'The complete Git index exceeds the review limit.',
+          );
+        }
+        final bytes = await opened.read(length + 1);
+        checkOpen();
+        if (bytes.length != length) {
+          throw _failure('snapshot_changed', 'Git index metadata changed.');
+        }
+        return bytes;
+      } finally {
+        await opened.close();
       }
-      return bytes;
-    } finally {
-      await opened.close();
+    } on FileSystemException {
+      throw _failure(
+        'review_metadata_unavailable',
+        'Review index metadata could not be read.',
+      );
     }
   }
 
@@ -732,6 +757,155 @@ extension _ReviewSnapshot on _SnapshotOperation {
     ])).bytes,
   );
 
+  Future<void> _captureReviewAttributeSources(
+    Directory root,
+    String path,
+  ) async {
+    if (_reviewAttributePaths.containsKey(path)) return;
+    Never unavailable() => throw _failure(
+      'review_metadata_unavailable',
+      'Git attribute sources cannot be safely inspected.',
+    );
+    try {
+      void capture(String source) {
+        if (_reviewAttributeFiles.containsKey(source)) return;
+        checkOpen();
+        if (_reviewAttributeFiles.length >= limits.inventoryEntries) {
+          unavailable();
+        }
+        final state = FileStat.statSync(source);
+        final bytes = _readOptionalMetadataSync(source);
+        if (!_sameState(state, FileStat.statSync(source))) {
+          throw _failure('snapshot_changed', 'Git attribute sources changed.');
+        }
+        _reviewAttributeFiles[source] = (state: state, bytes: bytes);
+        if (_reviewAttributeFiles.values.fold<int>(
+              0,
+              (total, value) => total + (value.bytes?.length ?? 0),
+            ) >
+            limits.reviewMetadataBytes) {
+          unavailable();
+        }
+      }
+
+      Future<List<String>> sources(String variable, int maximum) async {
+        final value = await git(
+          root,
+          ['var', variable],
+          allowDifference: true,
+          allowUnknownVariable: true,
+        );
+        if (value.exitCode != 0) unavailable();
+        final output = _decode(value.bytes);
+        if (!output.endsWith('\n')) unavailable();
+        final paths = output.substring(0, output.length - 1).split('\n');
+        if (paths.length > maximum || paths.any((path) => path.isEmpty)) {
+          unavailable();
+        }
+        return [
+          for (final path in paths)
+            // Explicit Git repository setup changes a nested cwd to the bound
+            // worktree root before resolving relative core.attributesFile paths.
+            File.fromUri(_worktreeRoot.uri.resolveUri(File(path).uri)).path,
+        ];
+      }
+
+      if (_reviewGlobalAttributePaths == null) {
+        // These are the only config locations under the sanitized Git process
+        // policy. Includes and attribute trees require broader discovery and
+        // are not reviewed; in particular an attr.tree ref can move independently.
+        if ([
+          'HOME',
+          'XDG_CONFIG_HOME',
+          'USERPROFILE',
+        ].any((key) => parentEnvironment[key]?.contains('\n') ?? false)) {
+          unavailable();
+        }
+        final global = <String>[
+          '${_commonDirectory!.path}/config',
+          '${_gitDirectory.path}/config.worktree',
+        ];
+        for (final source in global) {
+          capture(source);
+        }
+        for (final (variable, maximum) in [
+          ('GIT_CONFIG_SYSTEM', 1),
+          ('GIT_CONFIG_GLOBAL', 2),
+        ]) {
+          for (final source in await sources(variable, maximum)) {
+            capture(source);
+            global.add(source);
+          }
+        }
+        final unsupportedConfig = await git(root, [
+          'config',
+          '--includes',
+          '--null',
+          '--get-regexp',
+          r'^(include\.path|includeif\..*\.path|attr\.tree)$',
+        ], allowDifference: true);
+        if (unsupportedConfig.bytes.isNotEmpty) unavailable();
+        for (final variable in ['GIT_ATTR_SYSTEM', 'GIT_ATTR_GLOBAL']) {
+          for (final source in await sources(variable, 1)) {
+            capture(source);
+            global.add(source);
+          }
+        }
+        final info = '${_commonDirectory!.path}/info/attributes';
+        capture(info);
+        global.add(info);
+        _reviewGlobalAttributePaths = global;
+      }
+      final relevant = {..._reviewGlobalAttributePaths!};
+      var directory = File('${root.path}/$path').parent;
+      while (true) {
+        final source = '${directory.path}/.gitattributes';
+        capture(source);
+        relevant.add(source);
+        if (directory.path == _worktreeRoot.path) break;
+        if (!directory.path.startsWith(
+          '${_worktreeRoot.path}${Platform.pathSeparator}',
+        )) {
+          unavailable();
+        }
+        directory = directory.parent;
+      }
+      _reviewAttributePaths[path] = relevant.toList()..sort();
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'review_metadata_unavailable') rethrow;
+      _indexReviewable = false;
+    } on FileSystemException {
+      _indexReviewable = false;
+    }
+  }
+
+  void _validateReviewAttributesSync() {
+    try {
+      for (final entry in _reviewAttributeFiles.entries) {
+        checkOpen();
+        final current = _readOptionalMetadataSync(entry.key);
+        if (!_sameState(entry.value.state, FileStat.statSync(entry.key)) ||
+            (entry.value.bytes == null
+                ? current != null
+                : current == null ||
+                      !_bytesEqual(current, entry.value.bytes!))) {
+          throw _failure('snapshot_changed', 'Git attribute sources changed.');
+        }
+      }
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'review_metadata_unavailable') rethrow;
+      throw _failure(
+        'snapshot_changed',
+        'Git attribute sources cannot be verified.',
+      );
+    } on FileSystemException {
+      throw _failure(
+        'snapshot_changed',
+        'Git attribute sources cannot be verified.',
+      );
+    }
+  }
+
   String? _reviewRevision(
     WorktreeEnvironment environment,
     List<int> key,
@@ -739,7 +913,12 @@ extension _ReviewSnapshot on _SnapshotOperation {
     List<ChangedFile> files,
     List<ChangedFile> conflicts,
   ) {
-    if (!_indexReviewable || !_reviewContentComplete) return null;
+    if (!_indexReviewable ||
+        !_reviewContentComplete ||
+        _reviewHead == null ||
+        _indexBytes.isEmpty) {
+      return null;
+    }
     if (layer == 'unstaged' &&
         files.any(
           (file) =>
@@ -760,12 +939,21 @@ extension _ReviewSnapshot on _SnapshotOperation {
     )) {
       return null;
     }
+    final attributeDigests = {
+      for (final entry in _reviewAttributeFiles.entries)
+        entry.key: entry.value.bytes == null
+            ? null
+            : sha256.convert(entry.value.bytes!).toString(),
+    };
     Object describe(ChangedFile file) => [
       file.relativePath,
       file.changeKind,
       file.contentStatus,
       file.reviewEligible,
       _attributes[file.relativePath],
+      for (final source
+          in _reviewAttributePaths[file.relativePath] ?? const <String>[])
+        [source, attributeDigests[source]],
       for (final hunk in file.hunks)
         [
           hunk.oldStart,
@@ -885,7 +1073,7 @@ extension _ReviewSnapshot on _SnapshotOperation {
                     contentStatus: file.contentStatus,
                     detail:
                         file.detail ??
-                        'Review is unavailable because the complete index or working state cannot be safely updated.',
+                        'Review is unavailable because required Git metadata or working state cannot be safely verified.',
                     reviewEligible: false,
                     hunks: file.hunks,
                   ),
@@ -956,7 +1144,8 @@ extension _ReviewSnapshot on _SnapshotOperation {
         )) {
       throw _failure('snapshot_changed', 'The complete index changed.');
     }
-    var total = 0;
+    var ordinaryTotal = 0;
+    var streamedTotal = 0;
     for (final entry in _observed.entries) {
       var path = environment.root.path;
       for (final component in entry.key.split('/')) {
@@ -974,8 +1163,11 @@ extension _ReviewSnapshot on _SnapshotOperation {
       if (digest == null || state.type == FileSystemEntityType.notFound) {
         continue;
       }
+      final total = digest.startsWith('git:')
+          ? (streamedTotal += state.size)
+          : (ordinaryTotal += state.size);
       if (state.size > limits.verificationFileBytes ||
-          (total += state.size) > limits.verificationTotalBytes ||
+          total > limits.verificationTotalBytes ||
           !_matchesWorkingDigest(
             _readBoundedSync(File(path), limits.verificationFileBytes),
             digest,
@@ -999,6 +1191,7 @@ extension _ReviewSnapshot on _SnapshotOperation {
         );
       }
     }
+    _validateReviewAttributesSync();
   }
 }
 
