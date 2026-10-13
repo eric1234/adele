@@ -40,11 +40,22 @@ asynchronous plugin bootstrap.
 The maintained Linux checkout launcher instead selects
 [`tool/development_main.dart`](tool/development_main.dart). It mounts the same
 `AdeleApplication`, with a caller-owned Navigator key and native Session-context
-consumer for development evidence export. The evaluator-specific contract remains
-outside `app/lib`; ordinary preparation includes its backend-only installation and
-ordinary bootstrap activates it. See the
-[Session Evaluator procedure](../plugins/session_evaluator/README.md#desktop-export)
-for Command availability, sensitive-data confirmation, file semantics, and limits.
+consumer for development evaluation handoffs. The evaluator-specific contract
+remains outside `app/lib`; ordinary preparation includes its backend-only
+installation and ordinary bootstrap activates it. See the
+[Session Evaluator procedure](../plugins/session_evaluator/README.md#desktop-handoff)
+for Command availability, sensitive-data confirmation, directory semantics, and
+limits.
+
+[`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart) owns
+the native **Prepare Evaluation Handoff...** Command, bounded evidence collection,
+local-state output directory, and completion path/clipboard feedback.
+[`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart)
+captures the selected canonical Session's Environment association and validates
+stock Git v1 source hints for the companion README without materializing that
+Environment or changing Git state. Both stay outside `app/lib` and the legacy
+headless runner; the helper does not import the runner. Handoffs contain a README
+and unchanged evidence JSON, not a source snapshot or portable archive.
 
 ```text
 Flutter application
@@ -1558,7 +1569,9 @@ headless entrypoints. Runner, topology, and report owners live under
 they know concrete plugins. They reuse application/core runtime composition and
 normal remote execution boundaries, not desktop frontend composition.
 
-See [developer self-hosting](../docs/development/self-hosting.md) for usage,
+This legacy workflow remains separate from desktop evaluation handoff preparation;
+the desktop Command does not launch it. See
+[developer self-hosting](../docs/development/self-hosting.md) for usage,
 prerequisites, provider presets, topology, retained outputs, and validation.
 
 ## Focused validation
@@ -1640,4 +1653,5 @@ repository-wide deferred-feature ledger here.
 | Inspection/compact hosts | [`lib/ui/inspection/`](lib/ui/inspection/), [`lib/ui/activity/`](lib/ui/activity/) |
 | Temporary provider/model choice | [`lib/plugins/temporary_chatgpt_selection.dart`](lib/plugins/temporary_chatgpt_selection.dart) |
 | Source-checkout frontend compilation | [`tool/`](tool/): compiler harnesses listed [above](#prepared-chat-frontend) |
+| Development evaluation handoff | [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart), [`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart); [procedure and limits](../plugins/session_evaluator/README.md#desktop-handoff) |
 | Self-hosting | [`bin/adele_self_host.dart`](bin/adele_self_host.dart), [`tool/self_hosting/`](tool/self_hosting/) |

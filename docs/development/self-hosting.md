@@ -2,15 +2,43 @@
 
 Role: Current repository development procedure
 
-ADELE's developer-only headless workflow asks the normal ADELE
-runtime/plugin/execution stack to modify an isolated copy of ADELE itself and
-retain evidence. It is developer infrastructure and an important self-hosting
-proof/workflow, not the final product CLI, normal desktop application, a security
-sandbox, or an automatic commit/push/PR system.
+An ordinary development desktop Session can prepare a local evaluation handoff
+for independent review. The separate legacy developer-only headless workflow asks
+the normal ADELE runtime/plugin/execution stack to modify an isolated copy of ADELE
+itself and retain evidence. The headless runner is developer infrastructure and an
+important self-hosting proof/workflow, not the final product CLI, normal desktop
+application, a security sandbox, or an automatic commit/push/PR system.
 
 Current source/tests define behavior. The [application map](../../app/README.md)
 owns local composition; this document owns the runner's usage, topology, and
-retained-evidence procedure.
+retained-evidence procedure and distinguishes it from desktop handoff preparation.
+
+## Desktop Evaluation Handoff
+
+For work performed in a normal durable ADELE Session, let work settle and invoke
+**Prepare Evaluation Handoff...** from the Command Palette. The sensitive-data
+dialog requires **Continue**; **Cancel** writes nothing. There is no Save dialog
+or format/destination picker. On successful completion, use **Copy path** in the
+snackbar to obtain the absolute directory path and direct the evaluator to its
+`README.md` and `evidence.json`.
+
+The [Session Evaluator procedure](../../plugins/session_evaluator/README.md#desktop-handoff)
+owns output placement, lifecycle/failure semantics, source-hint validation, and
+evidence limits. Each handoff has a new private `session-*` directory under the
+platform local-state `evaluations/` root. Its README explains the captured Session
+and Environment, retained-evidence coverage, and source availability. Where valid,
+use its quoted Git commands to inspect the exact live worktree and selected-source
+scope, including committed, staged, unstaged, and untracked work separately.
+
+This does not launch the headless runner below or clone, snapshot, or archive source.
+The live worktree may be shared by multiple Sessions or may change after preparation;
+current changes are not proof of Session authorship. Partial retained evidence stays
+partial. Review unredacted prompts, responses, source, tool arguments, full command
+output, and provider details before sharing. Handoffs are not automatically pruned
+or registered as durable history; retain or remove the local directories deliberately.
+
+The remaining sections describe the unchanged legacy headless runner, whose isolated
+clone and retained reports differ from a desktop handoff's live-source references.
 
 ## Entrypoints
 

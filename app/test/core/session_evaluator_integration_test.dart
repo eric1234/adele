@@ -24,6 +24,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -38,6 +39,7 @@ import '../support/project_provider.dart';
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
 const _commandPlugin = 'dev.adele.plugin.command-tools';
 const _evaluatorPlugin = 'dev.adele.plugin.session-evaluator';
+const _gitPlugin = 'dev.adele.plugin.git-environment';
 const _instructions = 'Preserve exact evidence; use the deterministic fixture.';
 const _opaque = 'opaque-native-payload-must-not-be-exported';
 final _environmentProvider = ProviderId('dev.adele.test.evidence-environment');
@@ -48,6 +50,7 @@ void main() {
   late File hostArtifact;
   late Directory installations;
   late Directory evaluatorOnly;
+  late Directory gitInstallations;
   late Directory source;
   late AdeleRuntime runtime;
   late Project project;
@@ -73,6 +76,8 @@ void main() {
           'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
       _commandPlugin:
           'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+      _gitPlugin:
+          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
     }.entries) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -90,6 +95,11 @@ void main() {
     ]);
     evaluatorOnly = await _install(artifacts, 'replacement', [
       _evaluatorPlugin,
+    ]);
+    gitInstallations = await _install(artifacts, 'git', [
+      _chatPlugin,
+      _evaluatorPlugin,
+      _gitPlugin,
     ]);
   });
 
@@ -746,17 +756,21 @@ void main() {
     );
   });
 
-  group('native evidence export', () {
+  group('local evaluation handoff', () {
     late WindowSessionContextHost window;
     late GlobalKey<NavigatorState> navigatorKey;
     late SessionEvidenceExporter exporter;
     late CommandResolver commands;
     late AdeleRuntime mountedRuntime;
     late _SavePicker picker;
+    late Directory outputRoot;
     late Future<void> exporting;
     late Future<ResolvedCommand?> paletteSelection;
 
-    setUp(() {
+    setUp(() async {
+      final output = await Directory.systemTemp.createTemp('adele-handoff-');
+      addTearDown(() => output.delete(recursive: true));
+      outputRoot = Directory('${output.path}/evaluations');
       window = WindowSessionContextHost();
       addTearDown(window.close);
       navigatorKey = GlobalKey<NavigatorState>();
@@ -771,6 +785,7 @@ void main() {
         runtime: host,
         context: window.context,
         navigatorKey: navigatorKey,
+        outputRoot: outputRoot,
       );
       commands = CommandResolver(host.extensions);
       addTearDown(exporter.close);
@@ -812,21 +827,21 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    Future<void> invoke(WidgetTester tester) async {
+    Future<void> invoke(WidgetTester tester, {IOOverrides? overrides}) async {
       // AOT I/O and its continuations use real async; only UI animation is fake.
       await tester.runAsync(() async {
-        exporting = commands.resolve(exportSessionEvidenceCommandId).invoke();
+        final command = commands.resolve(exportSessionEvidenceCommandId);
+        exporting = overrides == null
+            ? command.invoke()
+            : IOOverrides.runWithIOOverrides(command.invoke, overrides);
       });
       await tester.pumpAndSettle();
-      expect(find.text('Export Session Evidence'), findsOneWidget);
+      expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
     }
 
     Future<void> continueExport(WidgetTester tester) async {
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => picker.opened.future.timeout(const Duration(seconds: 10)),
-      );
     }
 
     Future<void> finish(WidgetTester tester) async {
@@ -835,24 +850,51 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+      expect(picker.calls, 0);
+      expect(find.byType(AlertDialog), findsNothing);
     }
 
     void expectNoFeedback() {
-      expect(find.text('Session evidence exported.'), findsNothing);
+      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
       expect(
-        find.text('Session evidence could not be exported.'),
+        find.text('Evaluation handoff could not be prepared.'),
         findsNothing,
       );
     }
 
-    void expectNoStaging() {
-      expect(
-        source.listSync().where(
-          (entry) => entry.uri.pathSegments.any(
-            (segment) => segment.startsWith('.adele-session-evidence-'),
+    List<Directory> handoffs() {
+      if (!outputRoot.existsSync()) return [];
+      final entries = outputRoot.listSync();
+      expect(entries, everyElement(isA<Directory>()));
+      for (final entry in entries) {
+        expect(
+          entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
+          matches(r'^session-[A-Za-z0-9_-]+$'),
+        );
+        expect(
+          (entry as Directory).listSync().map(
+            (file) => file.uri.pathSegments.last,
           ),
-        ),
-        isEmpty,
+          unorderedEquals(['evidence.json', 'README.md']),
+        );
+      }
+      return entries.cast<Directory>();
+    }
+
+    File evidence(Directory handoff) => File('${handoff.path}/evidence.json');
+
+    String readme(Directory handoff) =>
+        File('${handoff.path}/README.md').readAsStringSync();
+
+    void expectReady(Directory handoff) {
+      expect(
+        find.text('Evaluation handoff ready: ${handoff.absolute.path}'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(SnackBarAction, 'Copy path'), findsOneWidget);
+      expect(
+        find.text('Evaluation handoff could not be prepared.'),
+        findsNothing,
       );
     }
 
@@ -932,14 +974,25 @@ void main() {
           expected = await collect(session);
         });
         final before = _inspect(source, _snapshot);
-        final destination = File('${source.path}/chosen-evidence.json')
-          ..writeAsStringSync('previous destination');
-        picker.pick = () async => FileSaveLocation(destination.path);
+        final clipboard = <MethodCall>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') clipboard.add(call);
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
         window.presentSession(session);
         await mount(tester);
         await openPalette(tester);
-        expect(find.text('Export Session Evidence...'), findsOneWidget);
-        await tester.tap(find.text('Export Session Evidence...'));
+        expect(find.text('Prepare Evaluation Handoff...'), findsOneWidget);
+        await tester.tap(find.text('Prepare Evaluation Handoff...'));
         await tester.pumpAndSettle();
         await tester.runAsync(() async {
           final command = await paletteSelection;
@@ -948,7 +1001,7 @@ void main() {
         });
         await tester.pumpAndSettle();
         expect(find.byType(CommandPalette), findsNothing);
-        expect(find.text('Export Session Evidence'), findsOneWidget);
+        expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
         expect(find.textContaining('potentially sensitive'), findsOneWidget);
         expect(
           find.textContaining('full command stdout/stderr'),
@@ -956,14 +1009,23 @@ void main() {
         );
         expect(find.textContaining('may include secrets'), findsOneWidget);
         expect(picker.calls, 0);
-        expect(destination.readAsStringSync(), 'previous destination');
+        expect(outputRoot.existsSync(), isFalse);
 
         await continueExport(tester);
         await finish(tester);
-        expect(picker.calls, 1);
-        expect(picker.options!.suggestedName, 'session-evidence.json');
-        expect(picker.typeGroups!.single.extensions, ['json']);
+        final handoff = handoffs().single;
+        final destination = evidence(handoff);
         expect(destination.readAsStringSync(), jsonEncode(expected));
+        final instructions = readme(handoff);
+        expect(instructions, contains(session.id.value));
+        expect(instructions, contains(task.task.id.value));
+        expect(instructions, contains(project.id.value));
+        expect(instructions, contains(task.environment.id.value));
+        expect(instructions, contains(_environmentProvider.value));
+        expect(instructions, contains('evidence.json'));
+        expect(instructions.toLowerCase(), contains('unavailable'));
+        expect(instructions, isNot(contains('Unsubmitted private draft')));
+        expect(instructions, isNot(contains('OTHER-SESSION')));
         expect(expected['schema'], 'dev.adele.session-evidence.v2');
         expect(
           _map(expected['coverage'])['status'],
@@ -1031,24 +1093,265 @@ void main() {
         expect(encoded, isNot(contains('Unsubmitted private draft')));
         expect(model.calls, 2);
         expect(_inspect(source, _snapshot), before);
-        expectNoStaging();
-        expect(find.text('Session evidence exported.'), findsOneWidget);
-        expect(
-          find.text('Session evidence could not be exported.'),
-          findsNothing,
-        );
+        expectReady(handoff);
+        expect(clipboard, isEmpty);
+        await tester.tap(find.text('Copy path'));
+        await tester.pumpAndSettle();
+        expect(clipboard.single.arguments, {'text': handoff.absolute.path});
+        expect(picker.calls, 0);
       },
     );
 
-    testWidgets('no Session is hidden; confirmation and save cancellation are '
-        'silent and reject duplicate pending admission', (tester) async {
+    testWidgets('stock Git handoff uses the nonprimary Session Environment and '
+        'nested source scope without changing Git or materializing a checkout', (
+      tester,
+    ) async {
+      late Directory repository;
+      late Directory gitSource;
+      late Directory primaryRoot;
+      late Directory selectedRoot;
+      late AdeleRuntime gitRuntime;
+      late TaskCreationResult created;
+      late Environment additional;
+      late Session selected;
+      late Map<String, Object?> expected;
+      late Map<String, Object?> beforeGit;
+
+      Future<Map<String, Object?>> gitSnapshot() async => {
+        'branches': await _git(repository, [
+          'for-each-ref',
+          '--format=%(refname) %(objectname)',
+          'refs/heads',
+        ]),
+        'worktrees': await _git(repository, [
+          'worktree',
+          'list',
+          '--porcelain',
+        ]),
+        for (final root in [repository, primaryRoot, selectedRoot])
+          root.path: {
+            'head': await _git(root, ['rev-parse', 'HEAD']),
+            'branch': await _git(root, ['symbolic-ref', 'HEAD']),
+            'status': await _git(root, ['status', '--porcelain=v1', '-z']),
+            'staged': await _git(root, ['diff', '--cached', '--binary']),
+            'unstaged': await _git(root, ['diff', '--binary']),
+          },
+        'primary_marker': File('${primaryRoot.path}/.git').readAsStringSync(),
+        'selected_marker': File('${selectedRoot.path}/.git').readAsStringSync(),
+        'selected_text': File(
+          '${selectedRoot.path}/nested source/tracked.txt',
+        ).readAsStringSync(),
+        'untracked_text': File(
+          '${selectedRoot.path}/nested source/new.txt',
+        ).readAsStringSync(),
+      };
+
+      await tester.runAsync(() async {
+        repository = await Directory('${source.path}/repository').create();
+        gitSource = await Directory(
+          '${repository.path}/nested source',
+        ).create();
+        await File('${gitSource.path}/tracked.txt').writeAsString('Baseline\n');
+        await File('${repository.path}/outside.txt').writeAsString('Outside\n');
+        await _git(repository, ['init', '--initial-branch=main']);
+        await _git(repository, ['add', '.']);
+        await _git(repository, ['commit', '-m', 'Handoff fixture baseline']);
+
+        final establishing = AdeleRuntime(
+          ids: MonotonicProductIdSource(seed: 'git-handoff'),
+        );
+        addTearDown(establishing.close);
+        final projectProvider = TestProjectProvider(establishing.registry);
+        addTearDown(projectProvider.close);
+        await start(establishing.plugins, gitInstallations);
+        final opened = await establishing.lifecycle.openProject(
+          sourceLocation: gitSource.uri,
+          provider: establishing.lifecycle.resolveProjectProvider(
+            testProjectProviderId,
+          ),
+        );
+        created = await establishing.lifecycle.createTask(
+          projectId: opened.id,
+          title: 'Real Git handoff Task',
+          providerId: ProviderId('dev.adele.environment.git-worktree'),
+        );
+        primaryRoot = Directory.fromUri(
+          gitSource.uri.resolve(
+            created.environment.providerState!['worktreeRelativePath']!
+                as String,
+          ),
+        );
+        await _git(repository, [
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Independent additional baseline',
+        ]);
+        final binding = establishing.registry.resolve(
+          environmentProviderCapability,
+        );
+        final provider = GeneratedEnvironmentProvider(
+          providerId: binding.provider.id,
+          service: EnvironmentProviderServiceClient(binding.requestChannel),
+        );
+        final value = Environment(
+          id: EnvironmentId('additional-handoff'),
+          taskId: created.task.id,
+          role: EnvironmentRole.additional,
+          providerId: binding.provider.id,
+          providerState: null,
+        );
+        final established = await provider.establish(
+          LocalEnvironment(project: opened, task: created.task, value: value),
+        );
+        additional = Environment(
+          id: value.id,
+          taskId: value.taskId,
+          role: value.role,
+          providerId: value.providerId,
+          providerState: established.providerState,
+        );
+        // There is no public additional-Environment creation lifecycle yet.
+        // Retain the real provider result, then load the normal durable graph.
+        _inspect(
+          gitSource,
+          (database) => database.execute(
+            'INSERT INTO adele_product_environments '
+            '(id, task_id, role, provider_id, provider_state_json) '
+            'VALUES (?, ?, ?, ?, ?)',
+            [
+              additional.id.value,
+              additional.taskId.value,
+              additional.role.name,
+              additional.providerId.value,
+              jsonEncode(additional.providerState),
+            ],
+          ),
+          write: true,
+        );
+        selectedRoot = Directory.fromUri(
+          gitSource.uri.resolve(
+            additional.providerState!['worktreeRelativePath']! as String,
+          ),
+        );
+        await _git(selectedRoot, [
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Selected Environment progress',
+        ]);
+        final tracked = File('${selectedRoot.path}/nested source/tracked.txt');
+        await tracked.writeAsString('Staged\n');
+        await _git(selectedRoot, ['add', 'nested source/tracked.txt']);
+        await tracked.writeAsString('Working\n');
+        await File(
+          '${selectedRoot.path}/nested source/new.txt',
+        ).writeAsString('Untracked\n');
+        await establishing.close();
+
+        gitRuntime = AdeleRuntime();
+        addTearDown(gitRuntime.close);
+        final freshProvider = TestProjectProvider(gitRuntime.registry);
+        addTearDown(freshProvider.close);
+        await start(gitRuntime.plugins, gitInstallations);
+        await gitRuntime.lifecycle.openProject(
+          sourceLocation: gitSource.uri,
+          provider: gitRuntime.lifecycle.resolveProjectProvider(
+            testProjectProviderId,
+          ),
+        );
+        selected = gitRuntime.lifecycle.createSession(
+          taskId: created.task.id,
+          strategyId: chatStrategyId,
+          environmentId: additional.id,
+        );
+        final connection = _connection(gitRuntime.plugins, _chatPlugin);
+        final gitChat = ChatSessionServiceClient(
+          connection.channelFor(
+            connection.defaultConfigurationContext,
+            chatSessionServiceId,
+          ),
+        );
+        await gitChat.appendUserMessage(
+          selected.id.value,
+          'Inspect this exact checkout.',
+        );
+        expected = await readSessionEvidence(
+          _client(_connection(gitRuntime.plugins, _evaluatorPlugin)),
+          selected.id.value,
+        );
+        beforeGit = await gitSnapshot();
+      });
+      final beforeStorage = _inspect(gitSource, _snapshot);
+      window.presentSession(selected);
+      await mount(tester, owner: gitRuntime);
+      await invoke(tester);
+      expect(outputRoot.existsSync(), isFalse);
+      await continueExport(tester);
+      await finish(tester);
+
+      final handoff = handoffs().single;
+      expect(jsonDecode(evidence(handoff).readAsStringSync()), expected);
+      expect(_map(expected['identity'])['environment_id'], additional.id.value);
+      expect(_map(expected['identity'])['environment_role'], 'additional');
+      final instructions = readme(handoff);
+      for (final value in [
+        selected.id.value,
+        created.task.id.value,
+        additional.id.value,
+        selectedRoot.path,
+        '${selectedRoot.path}/nested source',
+        additional.providerState!['baselineCommit']! as String,
+        additional.providerState!['branch']! as String,
+      ]) {
+        expect(instructions, contains(value));
+      }
+      expect(
+        instructions,
+        contains('Source-relative scope: `"nested source"`'),
+      );
+      expect(instructions, contains(':(top,literal)nested source'));
+      expect(instructions, isNot(contains(primaryRoot.path)));
+      expect(
+        instructions,
+        isNot(
+          contains(
+            created.environment.providerState!['baselineCommit']! as String,
+          ),
+        ),
+      );
+      expect(
+        instructions.toLowerCase(),
+        isNot(contains('metadata unavailable')),
+      );
+      for (final environment in [created.environment, additional]) {
+        expect(
+          gitRuntime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+      }
+      expect(_inspect(gitSource, _snapshot), beforeStorage);
+      await tester.runAsync(() async {
+        expect(await gitSnapshot(), beforeGit);
+        expect(
+          (await _git(selectedRoot, ['rev-parse', 'HEAD'])).trim(),
+          isNot(additional.providerState!['baselineCommit']),
+        );
+      });
+      expectReady(handoff);
+    });
+
+    testWidgets('no Session is hidden; confirmation cancellation is '
+        'silent and rejects duplicate pending admission', (tester) async {
       final before = _inspect(source, _snapshot);
       await mount(tester);
       final command = commands.resolve(exportSessionEvidenceCommandId);
       expect(command.availability, CommandAvailability.hidden);
       await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
       await openPalette(tester);
-      expect(find.text('Export Session Evidence...'), findsNothing);
+      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
       navigatorKey.currentState!.pop();
       await tester.pumpAndSettle();
 
@@ -1062,20 +1365,8 @@ void main() {
       expect(picker.calls, 0);
       expect(command.availability, CommandAvailability.enabled);
       expectNoFeedback();
-
-      final selection = Completer<FileSaveLocation?>();
-      picker.pick = () => selection.future;
-      await invoke(tester);
-      await continueExport(tester);
-      expect(command.availability, CommandAvailability.disabled);
-      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
-      expect(picker.calls, 1);
-      selection.complete(null);
-      await finish(tester);
-      expect(command.availability, CommandAvailability.enabled);
-      expectNoFeedback();
       expect(_inspect(source, _snapshot), before);
-      expectNoStaging();
+      expect(outputRoot.existsSync(), isFalse);
     });
 
     for (final outcome in ['cancel', 'success', 'collection failure']) {
@@ -1099,10 +1390,6 @@ void main() {
           );
         }
         final before = _inspect(source, _snapshot);
-        final destination = File('${source.path}/live-availability.json')
-          ..writeAsStringSync('previous destination');
-        final selection = Completer<FileSaveLocation?>();
-        picker.pick = () => selection.future;
         window.presentSession(session);
         await mount(tester);
         final command = commands.resolve(exportSessionEvidenceCommandId);
@@ -1115,7 +1402,7 @@ void main() {
         addTearDown(subscription.cancel);
 
         await openPalette(tester);
-        await tester.tap(find.text('Export Session Evidence...'));
+        await tester.tap(find.text('Prepare Evaluation Handoff...'));
         await tester.pumpAndSettle();
         await tester.runAsync(() async {
           final selected = (await paletteSelection)!;
@@ -1123,14 +1410,19 @@ void main() {
           exporting = selected.invoke();
         });
         await tester.pumpAndSettle();
+        final confirmation = ModalRoute.of<bool>(
+          tester.element(find.byType(AlertDialog)),
+        )!;
         window.presentSession(other);
-        await continueExport(tester);
         await openPalette(tester);
         final search = find.byKey(const ValueKey('command-palette-search'));
-        await tester.enterText(search, 'session evidence');
+        await tester.enterText(search, 'evaluation handoff');
         await tester.pumpAndSettle();
         final palette = tester.element(find.byType(CommandPalette));
-        final row = find.widgetWithText(ListTile, 'Export Session Evidence...');
+        final row = find.widgetWithText(
+          ListTile,
+          'Prepare Evaluation Handoff...',
+        );
         final rowElement = tester.element(row);
         final field = tester.widget<TextField>(search);
         final pendingRow = tester.widget<ListTile>(row);
@@ -1140,20 +1432,21 @@ void main() {
         expect(find.text('Unavailable'), findsOneWidget);
         expect(changes, [CommandAvailability.disabled]);
         await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
-        expect(picker.calls, 1);
-        expect(destination.readAsStringSync(), 'previous destination');
+        expect(picker.calls, 0);
+        expect(outputRoot.existsSync(), isFalse);
 
         // No typing, navigation, or palette reopening after the pending row is
         // rendered: only the contribution's invalidation can refresh its state.
-        selection.complete(
-          outcome == 'cancel' ? null : FileSaveLocation(destination.path),
+        navigatorKey.currentState!.removeRoute<bool>(
+          confirmation,
+          outcome != 'cancel',
         );
         await finish(tester);
         expect(tester.element(find.byType(CommandPalette)), same(palette));
         expect(tester.element(row), same(rowElement));
         final refreshedField = tester.widget<TextField>(search);
         expect(refreshedField.controller, same(field.controller));
-        expect(refreshedField.controller!.text, 'session evidence');
+        expect(refreshedField.controller!.text, 'evaluation handoff');
         expect(refreshedField.focusNode, same(field.focusNode));
         expect(refreshedField.focusNode!.hasFocus, isTrue);
         final enabledRow = tester.widget<ListTile>(row);
@@ -1176,15 +1469,19 @@ void main() {
         );
         expect(window.context.snapshot.session, same(other));
         if (outcome == 'success') {
+          final handoff = handoffs().single;
+          final destination = evidence(handoff);
           expect(destination.readAsStringSync(), jsonEncode(expected));
           expect(_map(expected['identity'])['session_id'], session.id.value);
           expect(destination.readAsStringSync(), isNot(contains('ONLY-B')));
-          expect(find.text('Session evidence exported.'), findsOneWidget);
+          expect(readme(handoff), contains(session.id.value));
+          expect(readme(handoff), isNot(contains(other.id.value)));
+          expectReady(handoff);
         } else {
-          expect(destination.readAsStringSync(), 'previous destination');
+          expect(outputRoot.existsSync(), isFalse);
           if (outcome == 'collection failure') {
             expect(
-              find.text('Session evidence could not be exported.'),
+              find.text('Evaluation handoff could not be prepared.'),
               findsOneWidget,
             );
           } else {
@@ -1201,7 +1498,7 @@ void main() {
         });
         await tester.pumpAndSettle();
         expect(find.byType(CommandPalette), findsNothing);
-        expect(find.text('Export Session Evidence'), findsOneWidget);
+        expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
         expect(command.availability, CommandAvailability.disabled);
         await tester.tap(find.text('Cancel'));
         await finish(tester);
@@ -1212,13 +1509,13 @@ void main() {
           CommandAvailability.disabled,
           CommandAvailability.enabled,
         ]);
-        expect(picker.calls, 1);
+        expect(picker.calls, 0);
         expect(_inspect(source, _snapshot), before);
-        expectNoStaging();
+        expect(handoffs(), hasLength(outcome == 'success' ? 1 : 0));
       });
     }
 
-    testWidgets('captures A before confirmation and picker; B and A reentry '
+    testWidgets('captures A before confirmation; B and A reentry '
         'never redirect the export, and a fresh command captures B', (
       tester,
     ) async {
@@ -1232,36 +1529,48 @@ void main() {
         expectedB = await collect(other);
       });
       final before = _inspect(source, _snapshot);
-      final first = File('${source.path}/a.json');
-      final second = File('${source.path}/b.json');
-      final selection = Completer<FileSaveLocation?>();
-      picker.pick = () => selection.future;
       window.presentSession(session);
       final firstRevision = window.context.snapshot.revision;
       await mount(tester);
       await invoke(tester);
       window.presentSession(other);
-      await continueExport(tester);
-      expect(first.existsSync(), isFalse);
+      expect(outputRoot.existsSync(), isFalse);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.disabled,
       );
       window.presentSession(session);
       expect(window.context.snapshot.revision, firstRevision + 2);
-      selection.complete(FileSaveLocation(first.path));
+      await continueExport(tester);
       await finish(tester);
+      final firstHandoff = handoffs().single;
+      final first = evidence(firstHandoff);
       expect(jsonDecode(first.readAsStringSync()), expectedA);
+      final firstReadme = readme(firstHandoff);
+      expect(firstReadme, contains(session.id.value));
+      expect(firstReadme, isNot(contains(other.id.value)));
 
       window.presentSession(other);
-      picker.pick = () async => FileSaveLocation(second.path);
+      ScaffoldMessenger.of(
+        tester.element(find.byType(Scaffold)),
+      ).removeCurrentSnackBar();
       await invoke(tester);
       await continueExport(tester);
       await finish(tester);
+      final directories = handoffs();
+      expect(directories, hasLength(2));
+      final secondHandoff = directories.singleWhere(
+        (entry) => entry.path != firstHandoff.path,
+      );
+      final second = evidence(secondHandoff);
       expect(jsonDecode(second.readAsStringSync()), expectedB);
-      expect(picker.calls, 2);
+      expect(readme(secondHandoff), contains(other.id.value));
+      expect(readme(secondHandoff), isNot(contains(session.id.value)));
+      expect(jsonDecode(first.readAsStringSync()), expectedA);
+      expect(readme(firstHandoff), firstReadme);
+      expectReady(secondHandoff);
+      expect(picker.calls, 0);
       expect(_inspect(source, _snapshot), before);
-      expectNoStaging();
     });
 
     testWidgets('exports partial evidence without completing a waiting Run', (
@@ -1282,13 +1591,13 @@ void main() {
         expected = await collect(session);
       });
       final before = _inspect(source, _snapshot);
-      final destination = File('${source.path}/partial.json');
-      picker.pick = () async => FileSaveLocation(destination.path);
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
       await continueExport(tester);
       await finish(tester);
+      final handoff = handoffs().single;
+      final destination = evidence(handoff);
       final document = _map(jsonDecode(destination.readAsStringSync()));
       expect(document, expected);
       expect(document['runs'], isEmpty);
@@ -1301,11 +1610,10 @@ void main() {
       expect(runtime.store.runRecord(run.run.id), isNull);
       expect(model.calls, 1);
       expect(_inspect(source, _snapshot), before);
-      expect(find.text('Session evidence exported.'), findsOneWidget);
-      expectNoStaging();
+      expectReady(handoff);
     });
 
-    testWidgets('collection failure keeps an existing destination intact and '
+    testWidgets('collection failure creates no evaluation directory and '
         'shows only safe feedback', (tester) async {
       await tester.runAsync(() async {
         await chat.appendUserMessage(
@@ -1328,25 +1636,18 @@ void main() {
         write: true,
       );
       final before = _inspect(source, _snapshot);
-      final destination = File('${source.path}/existing.json')
-        ..writeAsStringSync('existing destination must survive');
-      picker.pick = () async => FileSaveLocation(destination.path);
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
       await continueExport(tester);
       await finish(tester);
-      expect(
-        destination.readAsStringSync(),
-        'existing destination must survive',
-      );
+      expect(outputRoot.existsSync(), isFalse);
       expect(_inspect(source, _snapshot), before);
-      expectNoStaging();
       expect(
-        find.text('Session evidence could not be exported.'),
+        find.text('Evaluation handoff could not be prepared.'),
         findsOneWidget,
       );
-      expect(find.text('Session evidence exported.'), findsNothing);
+      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
       expect(find.textContaining('private-invalid-json'), findsNothing);
       expect(find.textContaining('SessionEvidenceFailure'), findsNothing);
       expect(
@@ -1355,7 +1656,7 @@ void main() {
       );
     });
 
-    testWidgets('write failure preserves a nonempty destination directory and '
+    testWidgets('write failure preserves an existing output-root file and '
         'reports failure without exposing its path', (tester) async {
       await tester.runAsync(() async {
         await chat.appendUserMessage(
@@ -1365,27 +1666,22 @@ void main() {
         expect(_map((await collect(session))['coverage'])['status'], 'partial');
       });
       final before = _inspect(source, _snapshot);
-      final destination = Directory('${source.path}/private-save-target')
-        ..createSync();
-      final existing = File('${destination.path}/keep.txt')
-        ..writeAsStringSync('existing directory contents');
-      picker.pick = () async => FileSaveLocation(destination.path);
+      final existing = File(outputRoot.path)
+        ..writeAsStringSync('existing output-root file');
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
       await continueExport(tester);
       await finish(tester);
-      expect(destination.existsSync(), isTrue);
-      expect(existing.readAsStringSync(), 'existing directory contents');
-      expect(destination.listSync(), hasLength(1));
+      expect(existing.readAsStringSync(), 'existing output-root file');
+      expect(outputRoot.parent.listSync(), hasLength(1));
       expect(_inspect(source, _snapshot), before);
-      expectNoStaging();
       expect(
-        find.text('Session evidence could not be exported.'),
+        find.text('Evaluation handoff could not be prepared.'),
         findsOneWidget,
       );
-      expect(find.text('Session evidence exported.'), findsNothing);
-      expect(find.textContaining('private-save-target'), findsNothing);
+      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.textContaining(outputRoot.path), findsNothing);
       expect(find.textContaining('FileSystemException'), findsNothing);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
@@ -1393,18 +1689,21 @@ void main() {
       );
     });
 
-    for (final closeExporter in [false, true]) {
-      testWidgets('${closeExporter ? 'closing exporter' : 'retiring backend'} '
-          'while the native picker is pending fences publication', (
+    for (final retirement in ['exporter', 'window', 'backend']) {
+      testWidgets('closing $retirement during a real evidence write '
+          'fences publication and cleans the incomplete handoff', (
         tester,
       ) async {
         final before = _inspect(source, _snapshot);
-        final destination = File('${source.path}/pending.json')
-          ..writeAsStringSync('untouched destination');
-        final selection = Completer<FileSaveLocation?>();
-        picker.pick = () => selection.future;
+        late _EvidenceWriteGate gate;
+        await tester.runAsync(() async {
+          gate = _EvidenceWriteGate(outputRoot);
+        });
         window.presentSession(session);
         await mount(tester);
+        addTearDown(() {
+          if (!gate.release.isCompleted) gate.release.complete();
+        });
         final command = commands.resolve(exportSessionEvidenceCommandId);
         final signals = <String>[];
         final subscription = command.binding.value.availabilityChanges!.listen(
@@ -1412,47 +1711,72 @@ void main() {
           onDone: () => signals.add('closed'),
         );
         addTearDown(subscription.cancel);
-        await invoke(tester);
+        await invoke(tester, overrides: gate);
         await continueExport(tester);
+        await tester.runAsync(
+          () => gate.entered.future.timeout(const Duration(seconds: 20)),
+        );
+        expect(tester.takeException(), isNull);
+        expect(gate.entered.isCompleted, isTrue);
         expect(signals, ['changed']);
+        expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+        expect(command.availability, CommandAvailability.disabled);
+        await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+        late Future<void> closing;
         await tester.runAsync(() async {
-          await (closeExporter ? exporter.close() : runtime.plugins.close())
-              .timeout(const Duration(seconds: 10));
+          if (retirement == 'window') {
+            window.close();
+            closing = Future<void>.value();
+          } else {
+            closing = retirement == 'exporter'
+                ? exporter.close()
+                : runtime.plugins.close();
+            if (retirement == 'backend') {
+              await closing.timeout(const Duration(seconds: 10));
+            }
+          }
         });
         await tester.pumpAndSettle();
-        expect(signals, ['changed', 'closed']);
-        expect(selection.isCompleted, isFalse);
-        expect(
-          () => commands.resolve(exportSessionEvidenceCommandId),
-          throwsA(isA<CommandNotFound>()),
-        );
-        await expectLater(
-          command.invoke(),
-          throwsA(isA<StaleExtensionBinding>()),
-        );
-        selection.complete(FileSaveLocation(destination.path));
-        await finish(tester);
-        expect(signals, ['changed', 'closed']);
-        expect(destination.readAsStringSync(), 'untouched destination');
-        expect(_inspect(source, _snapshot), before);
-        expect(picker.calls, 1);
-        expectNoStaging();
-        if (closeExporter) {
-          expectNoFeedback();
-          // The cached close Future belongs to the real-async zone too.
-          await tester.runAsync(
-            () => exporter.close().timeout(const Duration(seconds: 10)),
+        expect(gate.release.isCompleted, isFalse);
+        if (retirement == 'window') {
+          expect(command.availability, CommandAvailability.hidden);
+        } else {
+          expect(signals, ['changed', 'closed']);
+          expect(
+            () => commands.resolve(exportSessionEvidenceCommandId),
+            throwsA(isA<CommandNotFound>()),
           );
+          await expectLater(
+            command.invoke(),
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+        }
+        await tester.runAsync(() async {
+          gate.release.complete();
+        });
+        await finish(tester);
+        await tester.runAsync(
+          () => closing.timeout(const Duration(seconds: 10)),
+        );
+        expect(
+          signals,
+          retirement == 'window' ? ['changed'] : ['changed', 'closed'],
+        );
+        expect(handoffs(), isEmpty);
+        expect(_inspect(source, _snapshot), before);
+        expect(picker.calls, 0);
+        if (retirement != 'backend') {
+          expectNoFeedback();
         } else {
           expect(
-            find.text('Session evidence could not be exported.'),
+            find.text('Evaluation handoff could not be prepared.'),
             findsOneWidget,
           );
         }
       });
     }
 
-    testWidgets('close dismisses its confirmation without opening the picker', (
+    testWidgets('close dismisses its confirmation without creating output', (
       tester,
     ) async {
       window.presentSession(session);
@@ -1471,6 +1795,7 @@ void main() {
       expect(signals, ['changed', 'closed']);
       expect(find.byType(AlertDialog), findsNothing);
       expect(picker.calls, 0);
+      expect(outputRoot.existsSync(), isFalse);
       expectNoFeedback();
       expect(commands.discover(), isEmpty);
     });
@@ -1521,7 +1846,7 @@ void main() {
           throwsA(isA<CommandNotFound>()),
         );
         expect(find.byType(CommandPalette), findsOneWidget);
-        expect(find.text('Export Session Evidence...'), findsNothing);
+        expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
         expect(picker.calls, 0);
         expectNoFeedback();
         expect(tester.takeException(), isNull);
@@ -1534,13 +1859,13 @@ void main() {
       await mount(tester, owner: fresh);
       expect(commands.discover(), isEmpty);
       await openPalette(tester);
-      expect(find.text('Export Session Evidence...'), findsNothing);
+      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
       await tester.runAsync(() => start(fresh.plugins, installations));
       await tester.pumpAndSettle();
       final command = commands.resolve(exportSessionEvidenceCommandId);
       expect(command.availability, CommandAvailability.enabled);
       expect(fresh.extensions.discover(commandContributions), hasLength(1));
-      expect(find.text('Export Session Evidence...'), findsOneWidget);
+      expect(find.text('Prepare Evaluation Handoff...'), findsOneWidget);
 
       await tester.runAsync(() async {
         final retired = fresh.plugins.changes.firstWhere(
@@ -1565,11 +1890,11 @@ void main() {
             .isSameRegistration(command.binding),
         isTrue,
       );
-      expect(find.text('Export Session Evidence...'), findsOneWidget);
+      expect(find.text('Prepare Evaluation Handoff...'), findsOneWidget);
       await tester.runAsync(fresh.plugins.close);
       await tester.pumpAndSettle();
       expect(find.byType(CommandPalette), findsOneWidget);
-      expect(find.text('Export Session Evidence...'), findsNothing);
+      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
       expect(fresh.extensions.discover(commandContributions), isEmpty);
       await expectLater(
         command.invoke(),
@@ -1582,10 +1907,6 @@ void main() {
 
 final class _SavePicker extends FileSelectorPlatform {
   int calls = 0;
-  final opened = Completer<void>();
-  SaveDialogOptions? options;
-  List<XTypeGroup>? typeGroups;
-  Future<FileSaveLocation?> Function() pick = () async => null;
 
   @override
   Future<FileSaveLocation?> getSaveLocation({
@@ -1593,11 +1914,59 @@ final class _SavePicker extends FileSelectorPlatform {
     SaveDialogOptions options = const SaveDialogOptions(),
   }) {
     calls++;
-    this.options = options;
-    typeGroups = acceptedTypeGroups;
-    if (!opened.isCompleted) opened.complete();
-    return pick();
+    throw StateError('Evaluation handoffs must not open a native Save dialog.');
   }
+}
+
+final class _EvidenceWriteGate extends IOOverrides {
+  _EvidenceWriteGate(this.root);
+  final Directory root;
+  final entered = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  File createFile(String path) {
+    final file = super.createFile(path);
+    return path.startsWith('${root.path}/') && path.endsWith('/evidence.json')
+        ? _GatedEvidenceFile(file, this)
+        : file;
+  }
+}
+
+final class _GatedEvidenceFile implements File {
+  _GatedEvidenceFile(this.file, this.gate);
+  final File file;
+  final _EvidenceWriteGate gate;
+
+  @override
+  Future<File> writeAsBytes(
+    List<int> bytes, {
+    FileMode mode = FileMode.write,
+    bool flush = false,
+  }) async {
+    await file.writeAsBytes(bytes, mode: mode, flush: flush);
+    gate.entered.complete();
+    await gate.release.future;
+    return this;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+Future<String> _git(Directory directory, List<String> arguments) async {
+  final result = await Process.run('git', [
+    '--no-optional-locks',
+    '-c',
+    'user.name=ADELE Test',
+    '-c',
+    'user.email=adele-test@example.invalid',
+    '-c',
+    'commit.gpgsign=false',
+    ...arguments,
+  ], workingDirectory: directory.path);
+  expect(result.exitCode, 0, reason: '${result.stderr}');
+  return result.stdout as String;
 }
 
 Future<Directory> _install(
