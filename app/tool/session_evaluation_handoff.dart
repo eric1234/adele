@@ -210,9 +210,9 @@ Retained Session evidence: [evidence.json](evidence.json)
     } else {
       final scope = sourceRelativePath!;
       final git = 'git -C ${_shellQuote(root)}';
-      final pathspec = _shellQuote(
-        ':(top,literal)${scope.isEmpty ? '.' : scope}',
-      );
+      final scopeArguments = scope.isEmpty
+          ? ''
+          : ' -- ${_shellQuote(':(top,literal)$scope')}';
       result.write('''- Worktree root: ${_code(root)}
 - Source-relative scope: ${scope.isEmpty ? 'repository root (empty retained scope)' : _code(scope)}
 - Selected source directory: ${_code(selectedSourceDirectory!)}
@@ -225,15 +225,16 @@ current branch observation. Capture checked state, direct paths and the checkout
 marker, not Git registration, commit availability, or checkout integrity.
 
 Suggested POSIX-shell inspection commands (not executed by export), run from the
-worktree root via -C and limited to the literal selected scope:
+worktree root via -C. An empty scope inspects the entire worktree; a nonempty
+scope uses a top-anchored literal pathspec:
 
 ```sh
-$git status --short --untracked-files=all -- $pathspec
-$git log --oneline ${_shellQuote('${baselineCommit!}..HEAD')} -- $pathspec
-$git diff --no-ext-diff --no-textconv ${_shellQuote(baselineCommit!)} HEAD -- $pathspec
-$git diff --no-ext-diff --no-textconv --cached -- $pathspec
-$git diff --no-ext-diff --no-textconv -- $pathspec
-$git ls-files --others --exclude-standard -- $pathspec
+$git status --short --untracked-files=all$scopeArguments
+$git log --oneline ${_shellQuote('${baselineCommit!}..HEAD')}$scopeArguments
+$git diff --no-ext-diff --no-textconv ${_shellQuote(baselineCommit!)} HEAD$scopeArguments
+$git diff --no-ext-diff --no-textconv --cached$scopeArguments
+$git diff --no-ext-diff --no-textconv$scopeArguments
+$git ls-files --others --exclude-standard$scopeArguments
 ```
 
 Compare committed baseline-to-HEAD, staged and unstaged changes separately; one

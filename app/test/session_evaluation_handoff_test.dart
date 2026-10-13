@@ -456,7 +456,7 @@ void main() {
       '[evidence.json](evidence.json)',
       'repository root (empty retained scope)',
       "'${'a' * 40}..HEAD'",
-      "-- ':(top,literal).'",
+      'An empty scope inspects the entire worktree',
       'not a current HEAD',
       'AGENTS.md',
       'implementation and tests',
@@ -477,6 +477,7 @@ void main() {
     ]) {
       expect(readme, contains(value));
     }
+    expect(readme, isNot(contains(':(top,literal)')));
   });
 
   test('escapes control characters and Markdown in identity text', () {
@@ -486,6 +487,148 @@ void main() {
     expect(readme, isNot(contains('Title\n```sh')));
     expect(readme, isNot(contains('\x00')));
   });
+
+  for (final scope in ['', 'nested source/[x]*?']) {
+    test(
+      'real Git inspection commands cover ${scope.isEmpty ? 'root' : 'nested'} '
+      'changes without a false clean result',
+      () async {
+        source = source.renameSync(
+          "${temporary.path}/source with 'quotes' \$(literal);[x]*?",
+        );
+        final fixture = _Fixture(source, scope: scope);
+        // Replace the filesystem-only fixture with a registered linked checkout.
+        fixture.worktree.deleteSync(recursive: true);
+        final environment = {
+          'PATH': Platform.environment['PATH']!,
+          'HOME': temporary.path,
+          'LC_ALL': 'C',
+          'GIT_CONFIG_NOSYSTEM': '1',
+          'GIT_CONFIG_GLOBAL': '/dev/null',
+          'GIT_AUTHOR_NAME': 'ADELE Test',
+          'GIT_AUTHOR_EMAIL': 'adele-test@example.invalid',
+          'GIT_COMMITTER_NAME': 'ADELE Test',
+          'GIT_COMMITTER_EMAIL': 'adele-test@example.invalid',
+          'GIT_AUTHOR_DATE': '2026-10-13T00:00:00Z',
+          'GIT_COMMITTER_DATE': '2026-10-13T00:00:00Z',
+        };
+        Future<String> git(Directory directory, List<String> arguments) async {
+          final result = await Process.run(
+            'git',
+            ['--literal-pathspecs', '-C', directory.path, ...arguments],
+            environment: environment,
+            includeParentEnvironment: false,
+          );
+          expect(result.exitCode, 0, reason: '${result.stderr}');
+          return result.stdout as String;
+        }
+
+        final scopes = {
+          'selected': scope.isEmpty ? '' : '$scope/',
+          // This sibling would match the selected scope if treated as a glob.
+          if (scope.isNotEmpty) 'sibling': 'nested source/x-other/',
+        };
+        await git(source, ['init', '-b', 'main']);
+        File(
+          '${source.path}/.gitignore',
+        ).writeAsStringSync('.adele/\nignored.txt\n');
+        for (final entry in scopes.entries) {
+          for (final layer in ['committed', 'staged', 'unstaged']) {
+            final file = File(
+              '${source.path}/${entry.value}${entry.key}-$layer.txt',
+            );
+            file.parent.createSync(recursive: true);
+            file.writeAsStringSync('${entry.key} $layer baseline\n');
+          }
+        }
+        await git(source, ['add', '.']);
+        await git(source, ['commit', '-m', 'Baseline']);
+        final baseline = (await git(source, ['rev-parse', 'HEAD'])).trim();
+        await git(source, [
+          'worktree',
+          'add',
+          '-b',
+          'adele-primary',
+          fixture.worktree.path,
+          baseline,
+        ]);
+        fixture.replaceState({
+          ...fixture.environment.providerState!,
+          'baselineCommit': baseline,
+        });
+        for (final entry in scopes.entries) {
+          final committed = '${entry.value}${entry.key}-committed.txt';
+          File(
+            '${fixture.worktree.path}/$committed',
+          ).writeAsStringSync('${entry.key} committed change\n');
+          await git(fixture.worktree, ['add', '--', committed]);
+          await git(fixture.worktree, [
+            'commit',
+            '-m',
+            '${entry.key} post-baseline commit',
+          ]);
+        }
+        for (final entry in scopes.entries) {
+          for (final layer in ['staged', 'unstaged', 'untracked']) {
+            final path = '${entry.value}${entry.key}-$layer.txt';
+            File(
+              '${fixture.worktree.path}/$path',
+            ).writeAsStringSync('${entry.key} $layer change\n');
+            if (layer == 'staged') {
+              await git(fixture.worktree, ['add', '--', path]);
+            }
+          }
+        }
+        File(
+          '${fixture.selected.path}/ignored.txt',
+        ).writeAsStringSync('ignored');
+
+        final handoff = fixture.capture();
+        expect(handoff.worktreeRoot, fixture.worktree.path);
+        expect(handoff.sourceRelativePath, scope);
+        final commands = handoff
+            .readme(createdAt)
+            .split('```sh\n')[1]
+            .split('```')[0]
+            .trim()
+            .split('\n');
+        expect(commands, hasLength(6));
+        final output = <String>[];
+        for (final command in commands) {
+          final result = await Process.run(
+            'sh',
+            ['-c', command],
+            workingDirectory: temporary.path,
+            environment: environment,
+            includeParentEnvironment: false,
+          );
+          expect(result.exitCode, 0, reason: '$command\n${result.stderr}');
+          output.add(result.stdout as String);
+        }
+        expect(output[0], contains('M  '));
+        expect(output[0], contains(' M '));
+        expect(output[0], contains('?? '));
+        for (final layer in ['staged', 'unstaged', 'untracked']) {
+          expect(output[0], contains('selected-$layer.txt'));
+        }
+        expect(output[1], contains('selected post-baseline commit'));
+        for (final (index, layer) in [
+          (2, 'committed'),
+          (3, 'staged'),
+          (4, 'unstaged'),
+        ]) {
+          expect(output[index], contains('selected-$layer.txt'));
+          expect(output[index], contains('+selected $layer change'));
+        }
+        expect(output[5].trim(), '${scopes['selected']}selected-untracked.txt');
+        for (final result in output) {
+          expect(result, isNot(contains('sibling')));
+          expect(result, isNot(contains('ignored.txt')));
+        }
+      },
+      skip: Platform.isWindows,
+    );
+  }
 
   test(
     'shell quoting keeps metacharacters literal in every scoped command',
