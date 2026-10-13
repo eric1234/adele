@@ -89,12 +89,14 @@ final class InstalledBackendActivation {
     CapabilityKey capability, {
     required ProviderBinding associatedWith,
     ProviderId? providerId,
+    bool requireUnique = false,
   }) {
     validate();
     return _activation!.resolveAssociatedProvider(
       capability,
       associatedWith: associatedWith,
       providerId: providerId,
+      requireUnique: requireUnique,
     );
   }
 

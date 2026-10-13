@@ -443,6 +443,45 @@ second transport or provider registry. Contextual streaming, contextual backend
 consumers, cross-backend Environment delegation, and portable arbitrary plugin-owned
 Extension Point contributions remain outside this boundary.
 
+### Prepared contextual review operations
+
+Mounted Main Content panes may independently declare `environmentReviewCapabilities`,
+a default-empty allowlist of exact Capability ID/major pairs. This is explicit
+permission to consume a provider's review-domain operation. Neither
+`environmentReadCapabilities` nor ordinary `capabilities` implies review access.
+Initializers, input actions, finite operations, unmounted code and other
+presentation roles do not receive it. The declaration is not a general writable
+Capability framework, Profile or OS sandbox.
+
+`resolveEnvironmentReviewCapability` extends the existing contextual bridge,
+not the transport or registry. It captures the mounted pane's canonical Session
+and exact Environment association. Without an explicit Provider ID, review
+selection requires exactly one eligible associated provider; absent or ambiguous
+access performs no call. Explicit selection retains no-fallback semantics. The
+generated unary client uses the same request-only channel, bounded local handle
+table, operation-scoped authority and exact-generation/presentation checks as
+contextual reads. It cannot provide a Session/Environment selector or substitute
+another provider after failure. Review access supplies no arbitrary host
+filesystem mutation, process, storage or execution service.
+
+The distinction is between a host-supplied identity proof and a provider's own
+explicitly authorized review effect. Review admission supplies the identity-only
+`AuthorizedEnvironmentReviewService.authority()`, returning the existing canonical
+Environment identity through a fresh operation-scoped allowlist. Ordinary read
+admission does not supply this service: putting an approval Capability into a read
+declaration cannot authorize the effect. The proof has no filesystem mutation or
+process methods and uses the existing generated reverse request channel. A provider
+associated with its own Environment implementation uses this proof to resolve that
+exact live object and perform the review operation inside its own backend.
+Application code does not import the review contract, decode its DTOs or implement an SCM adapter.
+Cross-backend contextual mutation remains unsupported.
+
+Release, navigation, retirement and shutdown fence new calls and late publication
+through the existing contextual lifetime. Revocation does not cancel a unary
+operation or roll back an already-published provider effect. Consumers require an
+explicit domain acknowledgement for success and never retry against replacement
+providers. Safe failure messages disclose no native diagnostics or absolute paths.
+
 ### Plugin-owned change snapshots
 
 The stock [Diff Viewer](../../plugins/diff_viewer/README.md) owns the public
@@ -485,8 +524,22 @@ and EVC artifacts are rebuilt under the pre-release compatibility policy.
 
 Review semantics belong to Diff, while Git-specific enumeration and limitations
 belong to the [Git provider](../../plugins/git_environment/README.md). This read-only
-boundary grants no staging, approval, mutation, process, or execution authority to
+service grants no staging, approval, mutation, process, or execution authority to
 the frontend and does not establish arbitrary portable Extension Point transport.
+
+Diff separately owns `ReviewApprovalService`, advertised under its own Capability
+and exact Git Environment-provider association. Its `approve` and `unapprove`
+methods accept bounded hunk/file/layer selections, not patches, Git arguments,
+object IDs or filesystem authority. A snapshot may carry a nullable opaque review
+revision and per-file eligibility; read-only providers need not supply usable
+revisions. Committed layers and unresolved conflicts have no ordinary review action.
+Providers reobserve and validate the revision and exact selected content before
+effects, reconstruct changes themselves, and report applied, stale or ineligible
+outcomes. Whole-layer operations are one all-or-nothing request, never a client loop
+that silently skips unsupported targets. The Git implementation uses its actual
+index as approval state, without an ADELE approval database or working-tree writes.
+Its transaction, concurrency and supported-content guarantees belong to the
+[Git review implementation](../../plugins/git_environment/README.md#review-approval).
 
 ## Own-backend frontend requests
 
@@ -672,6 +725,14 @@ an explicit trusted host authorization point, not itself a plugin permission
 declaration or an interpreted bridge. Native host callers can use it directly;
 the prepared contextual bridge calls it only after its distinct declaration and
 mounted-presentation admission checks.
+
+The narrow `invokeEnvironmentCapabilityForReview` admission shares the same capture,
+transport and retirement mechanics but grants the identity-only
+`AuthorizedEnvironmentReviewService` alongside the existing read service, never
+general mutation or process facets. The provider must request that proof before its
+review effect and validate it again before publication. Native consumers explicitly choose this trusted
+authorization point; prepared panes reach it only through their independent review
+declaration. Reusing the identity value does not make read admission review authority.
 
 The runtime binds a single-use, request-only channel to that actual configured
 channel and a fresh `PluginHostInvocation` on the same connection. The optional

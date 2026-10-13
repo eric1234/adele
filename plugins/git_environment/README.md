@@ -251,9 +251,122 @@ platform for this snapshot path; other platforms remain unvalidated.
 
 Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
 `backend_host_integration_test.dart` additionally compiles the actual shared host
-and stock Git AOT, checks both ready advertisements and their exact association,
+and stock Git AOT, checks ready advertisements and their exact associations,
 and exercises generated contextual requests for independent live Environments.
 The existing `git_environment_backend` maintained target discovers both files.
+
+## Review Approval
+
+The backend independently advertises `adele.diff.review-approval` v1 as
+`dev.adele.git.review-approval`, explicitly associated with the same exact Git
+Environment provider as the snapshot service. Diff's public `ReviewApprovalService`
+is implemented by `GitReviewApprovalService`; `git_review_approval.dart` shares the
+private bounded snapshot machinery rather than introducing a general Git command
+service. Approve means stage, Unapprove means unstage. Working files and HEAD are
+never written, and committed changes are never direct targets.
+
+The contextual-only dispatcher requires an operation-scoped
+`AuthorizedEnvironmentReviewService.authority()` proof in addition to the ordinary
+authorized read identity. Both must name the same captured Session/Environment.
+This proof is granted only by explicit review admission: context-free access or
+putting the approval Capability in a read-only declaration cannot authorize a
+mutation. The backend selects only the existing live object from its own generation
+and revalidates proof, identity and liveness before index publication. Missing or
+ambiguous review-provider access does not disable snapshots.
+
+### Revisions And Eligibility
+
+Reviewable staged/unstaged snapshots carry an opaque HMAC-SHA-256 revision keyed to
+the provider generation and exact live Environment generation. Its input includes
+the bound source/worktree identity, captured HEAD and branch, complete raw index
+identity, layer, ordered files/hunks/lines, relevant attributes and observed working
+content identities. No filesystem paths or authority are exposed in the token,
+and no snapshot registry is retained. A hunk selector is only an index into that
+exact ordered revision. Reobservation under the index lock must produce the same
+revision; stale requests return `stale` without publishing an index. Changes outside
+the selected hunk, or unrelated index updates, can conservatively require Refresh.
+That includes a Git stat-cache refresh even when its blob IDs are unchanged.
+Directory membership checks respect Git ignores, skip symlinks and nested
+repositories, and retain tracked-parent checks without traversing ignored build
+artifacts. This is bounded observation, not a filesystem watcher.
+
+Supported targets are fully inspected ordinary UTF-8 text modifications, additions
+(including nonignored untracked files), and deletions. Empty additions/deletions
+have file/layer support without invented hunks. Hunk reconstruction uses exact
+provider-retained bytes and validated coordinates, preserving CRLF and missing
+final newline; no frontend patch, fuzzy application or automatic rebase is used.
+Approving one hunk starts from the index version; unapproving one starts from the
+staged version and reverses only that HEAD-relative hunk. Unrelated hunks remain.
+
+Binary/invalid UTF-8, incomplete or oversized inspection, conversion/diff attributes,
+mode/type transitions, symlinks, gitlinks, unresolved stages, intent/unsupported
+index flags, ambiguous directory/file replacements and unsupported index storage
+cannot be reviewed. Ordinary file modes
+are preserved; arbitrary mode or binary staging is not supplied. Whole-layer
+operations require all targets to be eligible and no unresolved conflicts; they
+never silently skip unsupported files. Read-only snapshot placeholders remain
+available even when review is unavailable. A complete current HEAD and supported
+file-based reference storage are required for review revisions.
+
+### Index Transaction
+
+Every hunk, file or whole-layer request uses one mechanism:
+
+1. Exclusively create the bound linked-worktree Git directory's actual `index.lock`
+   using Git's cooperative lockfile protocol. Lock contention fails without retry.
+2. Reobserve HEAD, the complete index and scoped working content while holding that
+   lock, validate the expected revision and resolve every selected target.
+3. Copy the complete original index to a private temporary index. Reuse exact-byte
+   verified existing blobs without freshening them, prepare missing raw blobs
+   with `hash-object --no-filters -w --stdin`, verify their content, and update that private index with one
+   NUL-framed `update-index --index-info` request against an empty scratch worktree.
+   Paths and data are not shell text. Check the prospective index preserves every
+   unselected entry; Git's implicit directory/file replacement is not permission
+   to alter an unselected path.
+4. Flush the prospective bytes to the held lockfile, revalidate source observations,
+   HEAD/index identity, canonical authority and live generation, then atomically
+   rename the lockfile over the actual index without another asynchronous suspension.
+
+Preparation failure leaves the authoritative index unchanged. Object-store writes
+may remain as unreachable prepared objects; those are not a successful approval.
+Git writers honoring `index.lock` cannot be overwritten. The copied index preserves
+unrelated entries, modes and flags; Git maintains supported `TREE` and `REUC`
+extensions. Index versions 2 through 4 and SHA-1/SHA-256 are supported; split/sparse,
+fsmonitor, untracked-cache and unknown extensions are explicitly unavailable rather
+than discarded. A successful operation acknowledges only the single publication,
+not intermediate object or temporary-index writes. There is no sequential
+multi-file partial-success path.
+
+The mutation process policy is separate from read-only inspection. It strips
+inherited Git routing variables, uses the provider's exact Git/worktree roots and
+its private index, permits only raw object/index preparation, and disables hooks,
+filters, fsmonitor, external diff/textconv and lazy fetching. Neither `git add` nor
+working-tree patch application is used. A nested Project source updates only its
+selected paths, preserving entries elsewhere in the checkout.
+The empty preparation worktree also prevents Git's index-write racy-stat checks
+from reading unrelated real files or invoking their conversion filters.
+The common Git directory is retained from provider establishment/restoration;
+changed `commondir` routing, object alternates, dual-format object storage, indirect
+object storage (including loose-object leaves and packs) and unexpected blob identities are rejected
+before index publication. These storage restrictions prevent object preparation
+from following symlinks or freshening objects outside the bound store.
+
+Shutdown fences new review admissions and drains existing cleanup. Navigation or
+retirement can revoke acknowledgement and prevent pre-publication admission, but
+does not undo a published index. Lost acknowledgement requires authoritative
+Refresh, never automatic retry through a replacement provider.
+
+These guarantees cover cooperating Git index writers, not hostile same-user
+processes that ignore locks or replace filesystem paths between checks. Working
+files and HEAD have no portable joint transaction with the index; bounded content,
+metadata and reference checks immediately before publication detect observed
+changes, but cannot lock arbitrary external filesystem writers. Atomic publication
+is not a power-loss durability claim. Linux is the validated platform.
+
+`git_review_approval_test.dart` uses real repositories and index contents for hunk,
+file and layer operations, stale revisions, deterministic competing writers and
+preparation faults. The prepared product workflow and authority boundaries are
+mapped in [testing](../../docs/development/testing.md#focused-diff-checks).
 
 ## Filesystem and processes
 

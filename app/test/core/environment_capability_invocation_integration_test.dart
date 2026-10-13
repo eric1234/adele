@@ -84,7 +84,10 @@ void main() {
   tearDownAll(() => artifacts.delete(recursive: true));
 
   late _Harness h;
-  Future<_Harness> start({CapabilityRegistry? registry}) async {
+  Future<_Harness> start({
+    CapabilityRegistry? registry,
+    bool ambiguous = false,
+  }) async {
     final capabilities = registry ?? CapabilityRegistry();
     final backends = ApplicationPluginBootstrap(
       capabilities,
@@ -97,7 +100,7 @@ void main() {
       hostArtifactPath: hostArtifact.path,
       startupArguments: {
         _plugin: [
-          jsonEncode({'exposures': _exposures()}),
+          jsonEncode({'exposures': _exposures(ambiguous: ambiguous)}),
         ],
       },
     );
@@ -679,7 +682,7 @@ void main() {
     },
   );
 
-  for (final route in ['helper', 'bridge']) {
+  for (final route in ['helper', 'bridge', 'review']) {
     for (final kind in ['callable', 'environment']) {
       test(
         '$route observes isolated $kind retirement before reverse-read cleanup',
@@ -696,10 +699,11 @@ void main() {
           var otherRetirements = 0;
           addTearDown(owner.onRetire(() => ownerRetirements++));
           addTearDown(other.onRetire(() => otherRetirements++));
-          final bridge = route == 'bridge' ? _bridge(h) : null;
+          final review = route == 'review';
+          final bridge = route == 'helper' ? null : _bridge(h, review: review);
           final handle = bridge == null
               ? null
-              : (await _resolveBridge(bridge))!;
+              : (await _resolveBridge(bridge, review: review))!;
           Future<ResourceInspection> inspect(String path) => bridge == null
               ? h.inspectPath(selected, path)
               : _inspectBridge(bridge, handle!, path);
@@ -729,6 +733,12 @@ void main() {
           // Nothing retires the owner or the other binding. Only the production
           // helper's observer on this exact target can revoke the held reverse call.
           await h.denied(token);
+          await h.denied(
+            token,
+            service: authorizedEnvironmentReviewServiceId,
+            method: authorizedEnvironmentReviewServiceAuthorityId,
+            arguments: const {},
+          );
           await failed.timeout(_bound);
           await retiring;
           expect(publications, 0);
@@ -739,8 +749,11 @@ void main() {
           await expectLater(inspect('stale'), throwsA(_revocationFailure));
           expect((await h.snapshot())['reads'], hasLength(1));
 
-          final sibling = _bridge(h, session: h.sessionB);
-          final siblingHandle = (await _resolveBridge(sibling))!;
+          final sibling = _bridge(h, session: h.sessionB, review: review);
+          final siblingHandle = (await _resolveBridge(
+            sibling,
+            review: review,
+          ))!;
           expect(
             (await _inspectBridge(
               sibling,
@@ -771,8 +784,12 @@ void main() {
           final replacement = await start(registry: h.capabilities);
           await replacement.denied(token);
           await expectLater(inspect('replaced'), throwsA(_revocationFailure));
-          final fresh = _bridge(h, backends: replacement.backends);
-          final freshHandle = (await _resolveBridge(fresh))!;
+          final fresh = _bridge(
+            h,
+            backends: replacement.backends,
+            review: review,
+          );
+          final freshHandle = (await _resolveBridge(fresh, review: review))!;
           expect(
             (await _inspectBridge(fresh, freshHandle, 'fresh')).providerLabel,
             'callable-a',
@@ -804,6 +821,117 @@ void main() {
   }
 
   group('native Environment Capability bridge', () {
+    test(
+      'review refuses ambiguous implicit targets but preserves explicit selection',
+      () async {
+        final harness = await start(ambiguous: true);
+        final read = _bridge(harness);
+        final review = _bridge(harness, review: true);
+        expect(await _resolveBridge(read), isA<String>());
+        expect(await _resolveBridge(review, review: true), isNull);
+        expect((await harness.snapshot())['reads'], isEmpty);
+        final handle = (await _resolveBridge(
+          review,
+          review: true,
+          providerId: 'test.callable.a',
+        ))!;
+        expect(
+          (await _inspectBridge(review, handle, 'explicit')).providerLabel,
+          'callable-a',
+        );
+        expect(
+          await _resolveBridge(
+            review,
+            review: true,
+            providerId: 'test.callable.b',
+          ),
+          isNull,
+        );
+      },
+    );
+
+    for (final review in [false, true]) {
+      test(
+        'only explicit review admission supplies review identity proof, review=$review',
+        () async {
+          final bridge = _bridge(h, review: review);
+          final handle = (await _resolveBridge(bridge, review: review))!;
+          await h.control('hold', {'key': 'after:proof'});
+          final pending = _inspectBridge(bridge, handle, 'proof');
+          await h.control('wait', {'key': 'after:proof'});
+          final token = await h.token('proof');
+          final proof = await h.control('attack', {
+            'token': token,
+            'service': authorizedEnvironmentReviewServiceId,
+            'method': authorizedEnvironmentReviewServiceAuthorityId,
+            'arguments': <String, Object?>{},
+          });
+          expect((proof! as Map)['ok'], review);
+          await h.denied(
+            token,
+            service: authorizedEnvironmentReviewServiceId,
+            method: authorizedEnvironmentReviewServiceAuthorityId,
+            arguments: {'environmentId': 'primary'},
+          );
+          await h.control('release', {'key': 'after:proof'});
+          expect((await pending).providerLabel, 'callable-a');
+          await h.denied(
+            token,
+            service: authorizedEnvironmentReviewServiceId,
+            method: authorizedEnvironmentReviewServiceAuthorityId,
+            arguments: const {},
+          );
+        },
+      );
+    }
+
+    test('read and review declarations never imply one another', () async {
+      for (final review in [false, true]) {
+        final bridge = _bridge(h, review: review);
+        expect(await _resolveBridge(bridge, review: !review), isNull);
+        expect(
+          await bridge.resolveReview(
+            resourceInspectCapability.id.value,
+            resourceInspectCapability.majorVersion + 1,
+            resourceInspectorServiceId,
+            null,
+          ),
+          isNull,
+        );
+        final handle = (await _resolveBridge(bridge, review: review))!;
+        final result = await _inspectBridge(bridge, handle, 'mode-$review');
+        expect(result.providerLabel, 'callable-a');
+        expect(
+          (jsonDecode(result.summary) as Map)['environmentId'],
+          'additional',
+        );
+        bridge.release(handle);
+      }
+    });
+
+    test(
+      'review grants authorized identity/read but no host effect services',
+      () async {
+        final bridge = _bridge(h, review: true);
+        final handle = (await _resolveBridge(bridge, review: true))!;
+        await h.control('hold', {'key': 'after:review'});
+        final pending = _inspectBridge(bridge, handle, 'review');
+        await h.control('wait', {'key': 'after:review'});
+        final token = await h.token('review');
+        for (final service in [
+          authorizedEnvironmentMutationServiceId,
+          authorizedEnvironmentProcessServiceId,
+          'projectStorage',
+          'unlisted',
+        ]) {
+          await h.denied(token, service: service);
+        }
+        await h.control('release', {'key': 'after:review'});
+        expect((await pending).providerLabel, 'callable-a');
+        await h.denied(token);
+      },
+    );
+
     test('denies undeclared or unavailable canonical authority', () async {
       for (final unavailable in [
         'undeclared',
@@ -830,10 +958,18 @@ void main() {
           capabilities: unavailable == 'undeclared'
               ? const []
               : [resourceInspectCapability],
+          reviewCapabilities: unavailable == 'undeclared'
+              ? const []
+              : [resourceInspectCapability],
           isActive: () => unavailable != 'inactive',
         );
         addTearDown(bridge.invalidate);
         expect(await _resolveBridge(bridge), isNull, reason: unavailable);
+        expect(
+          await _resolveBridge(bridge, review: true),
+          isNull,
+          reason: unavailable,
+        );
         expect(bridge.release('invented'), isFalse);
         await expectLater(
           _inspectBridge(bridge, 'invented', 'denied'),
@@ -1045,19 +1181,23 @@ void main() {
       },
     );
 
-    for (final retirement in ['release', 'invalidate', 'inactive']) {
+    for (final (retirement, review) in [
+      for (final retirement in ['release', 'invalidate', 'inactive'])
+        for (final review in [false, true]) (retirement, review),
+    ]) {
       test(
-        '$retirement revokes all handle calls before reverse-read cleanup',
+        '$retirement revokes all handle calls before reverse-read cleanup, review=$review',
         () async {
           var active = true;
           var invalidations = 0;
           final bridge = _bridge(
             h,
+            review: review,
             isActive: () => active,
             onInvalidate: () => invalidations++,
           );
-          final handle = (await _resolveBridge(bridge))!;
-          final sibling = (await _resolveBridge(bridge))!;
+          final handle = (await _resolveBridge(bridge, review: review))!;
+          final sibling = (await _resolveBridge(bridge, review: review))!;
           for (final path in ['retire-one', 'retire-two']) {
             await h.control('hold', {'key': 'read:$path'});
           }
@@ -1096,6 +1236,12 @@ void main() {
           expect(invalidations, retirement == 'release' ? 0 : 1);
           for (final token in tokens) {
             await h.denied(token);
+            await h.denied(
+              token,
+              service: authorizedEnvironmentReviewServiceId,
+              method: authorizedEnvironmentReviewServiceAuthorityId,
+              arguments: const {},
+            );
           }
           await expectLater(
             _inspectBridge(bridge, handle, 'late'),
@@ -1202,6 +1348,7 @@ void main() {
 
 EnvironmentCapabilityAccessBridge _bridge(
   _Harness harness, {
+  bool review = false,
   Session? session,
   ApplicationPluginBootstrap? backends,
   bool Function()? isActive,
@@ -1211,7 +1358,8 @@ EnvironmentCapabilityAccessBridge _bridge(
     session: session ?? harness.sessionA,
     environmentRuntime: harness.environmentRuntime,
     backends: backends ?? harness.backends,
-    capabilities: [resourceInspectCapability],
+    capabilities: review ? const [] : [resourceInspectCapability],
+    reviewCapabilities: review ? [resourceInspectCapability] : const [],
     isActive: isActive ?? () => true,
     onInvalidate: onInvalidate,
   );
@@ -1221,9 +1369,10 @@ EnvironmentCapabilityAccessBridge _bridge(
 
 Future<String?> _resolveBridge(
   EnvironmentCapabilityAccessBridge bridge, {
+  bool review = false,
   String? serviceId,
   String? providerId,
-}) => bridge.resolve(
+}) => (review ? bridge.resolveReview : bridge.resolve)(
   resourceInspectCapability.id.value,
   resourceInspectCapability.majorVersion,
   serviceId ?? resourceInspectorServiceId,
@@ -1354,11 +1503,13 @@ final class _Harness {
   Future<void> denied(
     String token, {
     String? service,
+    String? method,
     Map<String, Object?>? arguments,
   }) async {
     final result = await control('attack', {
       'token': token,
       'service': ?service,
+      'method': ?method,
       'arguments': ?arguments,
     });
     expect((result! as Map)['ok'], isFalse);
@@ -1387,7 +1538,21 @@ final class _Harness {
   ).timeout(_bound);
 }
 
-List<Map<String, Object?>> _exposures() => [
+List<Map<String, Object?>> _exposures({bool ambiguous = false}) => [
+  if (ambiguous)
+    AdeleCapabilityExposure(
+      providerId: 'test.callable.a-alternative',
+      capabilityId: resourceInspectCapability.id.value,
+      capabilityMajorVersion: resourceInspectCapability.majorVersion,
+      serviceId: resourceInspectorServiceId,
+      displayName: 'Another eligible provider',
+      configurationContext: 'callable-a',
+      association: AdeleProviderAssociation(
+        capabilityId: environmentProviderCapability.id.value,
+        capabilityMajorVersion: environmentProviderCapability.majorVersion,
+        providerId: 'test.environment.a',
+      ),
+    ).toMap(),
   for (final id in ['a', 'b', 'context-free'])
     AdeleCapabilityExposure(
       providerId: 'test.callable.$id',

@@ -42,6 +42,7 @@ void main() {
         repository,
         gitWorktreeRoot: repository,
         gitDirectory: Directory('${repository.path}/.git'),
+        gitCommonDirectory: Directory('${repository.path}/.git'),
         baselineCommit: baselineCommit,
         branch: branch,
       ),
@@ -113,6 +114,7 @@ void main() {
         root ?? repository,
         gitWorktreeRoot: repository,
         gitDirectory: Directory('${repository.path}/.git'),
+        gitCommonDirectory: Directory('${repository.path}/.git'),
         baselineCommit: baseline,
         branch: retainedBranch,
       ),
@@ -1150,6 +1152,7 @@ exec /usr/bin/git "\$@"
           nested,
           gitWorktreeRoot: repository,
           gitDirectory: Directory('${repository.path}/.git'),
+          gitCommonDirectory: Directory('${repository.path}/.git'),
         ),
       );
       await _git(nested, ['init']);
@@ -1615,6 +1618,7 @@ exec /usr/bin/git "\$@"
           nested,
           gitWorktreeRoot: repository,
           gitDirectory: Directory('${repository.path}/.git'),
+          gitCommonDirectory: Directory('${repository.path}/.git'),
         ),
       );
       provider.liveObjects.bind(
@@ -1623,6 +1627,7 @@ exec /usr/bin/git "\$@"
           sibling,
           gitWorktreeRoot: repository,
           gitDirectory: Directory('${repository.path}/.git'),
+          gitCommonDirectory: Directory('${repository.path}/.git'),
         ),
       );
       await File('${nested.path}/same').writeAsString('selected after\n');

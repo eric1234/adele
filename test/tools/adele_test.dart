@@ -1599,6 +1599,9 @@ void main() {
             'environmentReadCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
             ],
+            'environmentReviewCapabilities': [
+              {'id': 'adele.diff.review-approval', 'majorVersion': 1},
+            ],
           },
         ]);
         expect(

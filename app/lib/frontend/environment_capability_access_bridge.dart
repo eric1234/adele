@@ -38,22 +38,26 @@ class EnvironmentCapabilityAccessDeclarations implements EvalPlugin {
       nullable: true,
     );
     for (final (name, returns, parameters) in [
-      (
+      for (final name in [
         'resolveEnvironmentCapabilityProvider',
-        const BridgeTypeAnnotation(
-          BridgeTypeRef(CoreTypes.future, [nullableString]),
-        ),
-        const [
-          BridgeParameter('capabilityId', string, false),
-          BridgeParameter(
-            'majorVersion',
-            BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.int)),
-            false,
+        'resolveEnvironmentReviewCapability',
+      ])
+        (
+          name,
+          const BridgeTypeAnnotation(
+            BridgeTypeRef(CoreTypes.future, [nullableString]),
           ),
-          BridgeParameter('serviceId', string, false),
-          BridgeParameter('providerId', nullableString, false),
-        ],
-      ),
+          const [
+            BridgeParameter('capabilityId', string, false),
+            BridgeParameter(
+              'majorVersion',
+              BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.int)),
+              false,
+            ),
+            BridgeParameter('serviceId', string, false),
+            BridgeParameter('providerId', nullableString, false),
+          ],
+        ),
       (
         'releaseEnvironmentCapabilityProvider',
         const BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
@@ -105,7 +109,9 @@ class EnvironmentCapabilityAccessDeclarations implements EvalPlugin {
 }
 
 /// Mounted-pane selections over one host-captured canonical Session. A handle
-/// retains eligibility, not authority: each request opens its own read grant.
+/// retains eligibility and its declared access mode, not reusable authority.
+/// Review requests additionally grant explicit review identity proof. Effects
+/// stay with the selected provider, never host mutation or process services.
 final class EnvironmentCapabilityAccessBridge
     extends EnvironmentCapabilityAccessDeclarations
     implements PreparedFrontendBridge {
@@ -114,12 +120,14 @@ final class EnvironmentCapabilityAccessBridge
     required EnvironmentRuntime? environmentRuntime,
     required ApplicationPluginBootstrap? backends,
     required Iterable<CapabilityKey> capabilities,
+    Iterable<CapabilityKey> reviewCapabilities = const [],
     required bool Function() isActive,
     void Function()? onInvalidate,
   }) : _session = session,
        _environmentRuntime = environmentRuntime,
        _backends = backends,
        _capabilities = Set.unmodifiable(capabilities),
+       _reviewCapabilities = Set.unmodifiable(reviewCapabilities),
        _isActive = isActive,
        _onInvalidate = onInvalidate;
 
@@ -128,6 +136,7 @@ final class EnvironmentCapabilityAccessBridge
   final EnvironmentRuntime? _environmentRuntime;
   final ApplicationPluginBootstrap? _backends;
   final Set<CapabilityKey> _capabilities;
+  final Set<CapabilityKey> _reviewCapabilities;
   final bool Function() _isActive;
   final void Function()? _onInvalidate;
   final Zone _nativeZone = Zone.current;
@@ -163,10 +172,12 @@ final class EnvironmentCapabilityAccessBridge
     }
   }
 
-  void _authorize(CapabilityKey key) {
+  void _authorize(CapabilityKey key, {required bool review}) {
     _validate();
-    if (!_capabilities.contains(key)) {
-      throw StateError('Environment-read Capability access is not declared.');
+    if (!(review ? _reviewCapabilities : _capabilities).contains(key)) {
+      throw StateError(
+        'The contextual Capability access mode is not declared.',
+      );
     }
   }
 
@@ -175,14 +186,29 @@ final class EnvironmentCapabilityAccessBridge
     int majorVersion,
     String serviceId,
     String? providerId,
-  ) async {
+  ) => _resolve(id, majorVersion, serviceId, providerId, review: false);
+
+  Future<String?> resolveReview(
+    String id,
+    int majorVersion,
+    String serviceId,
+    String? providerId,
+  ) => _resolve(id, majorVersion, serviceId, providerId, review: true);
+
+  Future<String?> _resolve(
+    String id,
+    int majorVersion,
+    String serviceId,
+    String? providerId, {
+    required bool review,
+  }) async {
     var reserved = false;
     try {
       final key = CapabilityKey(
         id: CapabilityId(id),
         majorVersion: majorVersion,
       );
-      _authorize(key);
+      _authorize(key, review: review);
       final session = _session;
       final environmentRuntime = _environmentRuntime;
       final backends = _backends;
@@ -199,9 +225,10 @@ final class EnvironmentCapabilityAccessBridge
         environmentRuntime: environmentRuntime,
         backends: backends,
         session: session,
+        requireUnique: review,
       );
       final selection = await capture.resolve(key, providerId: provider);
-      _authorize(key);
+      _authorize(key, review: review);
       if (selection.binding.provider.serviceId != serviceId) return null;
       selection.binding.requestChannel;
       final handle = '$_scope:${_nextHandle++}';
@@ -210,7 +237,8 @@ final class EnvironmentCapabilityAccessBridge
         selection: selection,
         backends: backends,
         serviceId: serviceId,
-        validatePresentation: () => _authorize(key),
+        review: review,
+        validatePresentation: () => _authorize(key, review: review),
         isPresentationActive: () => isActive,
       );
       return handle;
@@ -240,15 +268,14 @@ final class EnvironmentCapabilityAccessBridge
       throw StateError('Environment Capability bridge is bound.');
     }
     _configured = true;
-    runtime
-      ..registerBridgeFunc(_library, 'resolveEnvironmentCapabilityProvider', (
-        _,
-        _,
-        args,
-      ) {
+    for (final (name, resolveAccess) in [
+      ('resolveEnvironmentCapabilityProvider', resolve),
+      ('resolveEnvironmentReviewCapability', resolveReview),
+    ]) {
+      runtime.registerBridgeFunc(_library, name, (_, _, args) {
         final completion = Completer<$Value>();
         _nativeZone.run(() {
-          resolve(
+          resolveAccess(
             args[0]!.$value as String,
             args[1]!.$value as int,
             args[2]!.$value as String,
@@ -260,7 +287,9 @@ final class EnvironmentCapabilityAccessBridge
           });
         });
         return $Future<$Value>.wrap(completion.future);
-      })
+      });
+    }
+    runtime
       ..registerBridgeFunc(
         _library,
         'releaseEnvironmentCapabilityProvider',
@@ -299,6 +328,7 @@ final class _EnvironmentCapabilityAccess implements AdeleRequestChannel {
     required this.selection,
     required this.backends,
     required this.serviceId,
+    required this.review,
     required this.validatePresentation,
     required bool Function() isPresentationActive,
   }) {
@@ -316,6 +346,7 @@ final class _EnvironmentCapabilityAccess implements AdeleRequestChannel {
   final EnvironmentCapabilitySelection selection;
   final ApplicationPluginBootstrap backends;
   final String serviceId;
+  final bool review;
   final void Function() validatePresentation;
   late final BackendInvocationBridge transport;
   final Set<void Function()> _retirements = {};
@@ -341,7 +372,9 @@ final class _EnvironmentCapabilityAccess implements AdeleRequestChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
     validate();
-    return invokeEnvironmentCapabilityWithRead(
+    return (review
+        ? invokeEnvironmentCapabilityForReview
+        : invokeEnvironmentCapabilityWithRead)<Object?>(
       selection: selection,
       backends: backends,
       serviceId: serviceId,

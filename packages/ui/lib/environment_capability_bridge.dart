@@ -14,6 +14,21 @@ Future<String?> resolveEnvironmentCapabilityProvider(
   String? providerId,
 ) => throw UnsupportedError('Interpreted host only.');
 
+/// Explicit review-operation access, separate from Environment-read access.
+/// Requires the mounted pane's exact `environmentReviewCapabilities` declaration.
+/// Without [providerId], exactly one eligible provider must exist. Ambiguity,
+/// denial, or absence returns null, never a ranked mutation target or fallback.
+/// Each request supplies separate host-bound review identity proof alongside the
+/// read facet, never host mutation or process services. Providers must require
+/// that proof; an ordinary read declaration cannot produce it.
+/// Uses the same request-only channel, settlement, and release API as reads.
+Future<String?> resolveEnvironmentReviewCapability(
+  String capabilityId,
+  int majorVersion,
+  String serviceId,
+  String? providerId,
+) => throw UnsupportedError('Interpreted host only.');
+
 /// Releases this presentation's handle and revokes its operation grants, without
 /// cancelling independently owned backend work. Release handles when no longer
 /// needed; the host bounds simultaneous handles.

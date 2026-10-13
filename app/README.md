@@ -320,15 +320,26 @@ isolates exact binding, bounded scope, admission/settlement, and stream lifetime
 [`EnvironmentCapabilityAccessBridge`](lib/frontend/environment_capability_access_bridge.dart)
 is the separate contextual policy over the same `BackendInvocationBridge` transport.
 `PreparedMainContentHost` supplies the actual mounted pane's Session and the
-descriptor's `environmentReadCapabilities`, independently of ordinary `capabilities`.
+descriptor's independent `environmentReadCapabilities` and
+`environmentReviewCapabilities`, separately from ordinary `capabilities`.
 Explicit resolution freshly captures canonical Environment eligibility; handles
 retain the selected registrations without re-resolution. Each request calls the
-native helper below for its own read grant. The request-only public channel cannot
-open a contextual stream. Handle release and bridge invalidation synchronously
+native helper below for its own read or review-identity grant. The request-only
+public channel cannot open a contextual stream. Handle release and bridge invalidation synchronously
 notify all outstanding operations; the host also revokes contextual access before
 asynchronous frontend retirement cleanup. An exact `ExtensionBinding.onRetire`
 subscription covers direct registration closure too, without requiring a frame or
 registry-change delivery.
+
+The review resolver checks only the explicit default-empty review declaration and
+requires a unique eligible provider for implicit selection. It does not infer
+mutation access from read declarations, decode a Diff DTO, recognize a Git command,
+or import either plugin. The provider performs the explicitly requested review
+operation; the host supplies the identity-only `AuthorizedEnvironmentReviewService`
+proof for review admission, never generic writable filesystem or process authority
+to interpreted code. Initializers, finite
+operations, input actions and other presentation roles receive neither contextual
+mode. Approval absence leaves snapshot and Source navigation services independent.
 
 [`prepared_environment_capability_integration_test.dart`](test/prepared_environment_capability_integration_test.dart)
 uses the same authored scalar/value-DTO proof contract with independently prepared

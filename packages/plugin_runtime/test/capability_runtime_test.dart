@@ -131,6 +131,39 @@ void main() {
         );
         expect(selected.provider.id.value, 'dev.adele.provider.a-first');
         expect(
+          () => activation.resolveAssociatedProvider(
+            capability,
+            associatedWith: a,
+            requireUnique: true,
+          ),
+          throwsStateError,
+        );
+        expect(
+          activation
+              .resolveAssociatedProvider(
+                capability,
+                associatedWith: b,
+                requireUnique: true,
+              )
+              .provider
+              .id
+              .value,
+          'dev.adele.provider.b-top',
+        );
+        expect(
+          activation
+              .resolveAssociatedProvider(
+                capability,
+                associatedWith: a,
+                providerId: ProviderId('dev.adele.provider.a-low'),
+                requireUnique: true,
+              )
+              .provider
+              .id
+              .value,
+          'dev.adele.provider.a-low',
+        );
+        expect(
           activation.associationFor(selected)!.isSameRegistration(a),
           isTrue,
         );

@@ -257,6 +257,8 @@ final class PreparedMainContentHost {
                       environmentRuntime: environmentRuntime,
                       backends: backends,
                       capabilities: descriptor.environmentReadCapabilities,
+                      reviewCapabilities:
+                          descriptor.environmentReviewCapabilities,
                       isActive: () => collection.isActive,
                       onInvalidate: () {
                         final active = _contextualAccess[descriptor];

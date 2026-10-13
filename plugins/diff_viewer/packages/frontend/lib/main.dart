@@ -24,9 +24,15 @@ class DiffPaneState extends State<DiffPane> {
   String handle = '';
   String scope = 'unstaged';
   String status = 'loading';
+  // Action rows retain source path at 2, then review label, revision,
+  // granularity, raw path and hunk index at 3..7. Never parse display paths.
   List<List<String>> rows = [];
   bool sourcePending = false;
   String sourceMessage = '';
+  String reviewHandle = '';
+  bool reviewPending = false;
+  bool reviewBlocked = false;
+  String reviewMessage = '';
   Future<bool> Function() departure = () async => true;
 
   @override
@@ -48,9 +54,16 @@ class DiffPaneState extends State<DiffPane> {
   void abandon() {
     revision++;
     sourceMessage = '';
+    reviewMessage = '';
+    reviewBlocked = false;
     if (handle != '') {
       releaseEnvironmentCapabilityProvider(handle);
       handle = '';
+    }
+    if (reviewHandle != '') {
+      // Release fences publication, not independently admitted provider effects.
+      releaseEnvironmentCapabilityProvider(reviewHandle);
+      reviewHandle = '';
     }
   }
 
@@ -108,7 +121,7 @@ class DiffPaneState extends State<DiffPane> {
     if (task) {
       final snapshot = result[1] as TaskChangeSetSnapshot;
       next.add(['section', 'Committed changes']);
-      appendFiles(next, snapshot.committed.files, false);
+      appendFiles(next, snapshot.committed.files, false, '', null);
       clean = snapshot.committed.files.isEmpty;
       if (clean) next.add(['status', 'No committed changes.']);
     }
@@ -116,18 +129,30 @@ class DiffPaneState extends State<DiffPane> {
       final snapshot = task
           ? (result[1] as TaskChangeSetSnapshot).uncommitted
           : result[1] as UncommittedChangeSetSnapshot;
-      next.add(['section', 'Staged changes']);
-      appendFiles(next, snapshot.staged.files, false);
+      appendLayer(
+        next,
+        snapshot.staged,
+        'Staged changes',
+        'Unapprove',
+        false,
+        snapshot.conflicts.isEmpty,
+      );
       if (snapshot.staged.files.isEmpty) {
         next.add(['status', 'No staged changes.']);
       }
-      next.add(['section', 'Unstaged changes']);
-      appendFiles(next, snapshot.unstaged.files, true);
+      appendLayer(
+        next,
+        snapshot.unstaged,
+        'Unstaged changes',
+        'Approve',
+        true,
+        snapshot.conflicts.isEmpty,
+      );
       if (snapshot.unstaged.files.isEmpty) {
         next.add(['status', 'No unstaged changes.']);
       }
       next.add(['section', 'Conflicts']);
-      appendFiles(next, snapshot.conflicts, false);
+      appendFiles(next, snapshot.conflicts, false, '', null);
       if (snapshot.conflicts.isEmpty) next.add(['status', 'No conflicts.']);
       clean =
           clean &&
@@ -136,13 +161,19 @@ class DiffPaneState extends State<DiffPane> {
           snapshot.conflicts.isEmpty;
     } else {
       final snapshot = result[1] as ChangeSetSnapshot;
-      appendFiles(next, snapshot.files, true);
+      appendLayer(next, snapshot, '', 'Approve', true, true);
       clean = snapshot.files.isEmpty;
     }
     setState(() {
       rows = next;
       status = clean ? 'clean' : 'ready';
     });
+    for (final row in next) {
+      if (row.length > 3) {
+        resolveReview(captured);
+        return;
+      }
+    }
   }
 
   void selectScope(String selected) {
@@ -155,11 +186,14 @@ class DiffPaneState extends State<DiffPane> {
     List<List<String>> next,
     List<ChangedFile> files,
     bool currentWorking,
+    String verb,
+    String? expectedRevision,
   ) {
     for (final file in files) {
       final List<String> header = [
         'file',
         '${file.relativePath}  [${file.changeKind}]',
+        '',
       ];
       if (currentWorking &&
           file.contentStatus == 'text' &&
@@ -167,7 +201,21 @@ class DiffPaneState extends State<DiffPane> {
               file.changeKind == 'modified' ||
               file.changeKind == 'typeChanged')) {
         // Keep the typed path separate from the human-readable header.
-        header.add(file.relativePath);
+        header[2] = file.relativePath;
+      }
+      final eligible =
+          verb != '' &&
+          expectedRevision != null &&
+          expectedRevision != '' &&
+          reviewEligible(file);
+      if (eligible) {
+        header.addAll([
+          '$verb File',
+          expectedRevision,
+          'file',
+          file.relativePath,
+          '',
+        ]);
       }
       next.add(header);
       if (file.contentStatus != 'text') {
@@ -175,11 +223,23 @@ class DiffPaneState extends State<DiffPane> {
       }
       final detail = file.detail;
       if (detail != null) next.add(['status', detail]);
-      for (final hunk in file.hunks) {
-        next.add([
+      for (int hunkIndex = 0; hunkIndex < file.hunks.length; hunkIndex++) {
+        final hunk = file.hunks[hunkIndex];
+        final List<String> hunkRow = [
           'hunk',
           '@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@',
-        ]);
+          '',
+        ];
+        if (eligible) {
+          hunkRow.addAll([
+            verb,
+            expectedRevision,
+            'hunk',
+            file.relativePath,
+            '$hunkIndex',
+          ]);
+        }
+        next.add(hunkRow);
         int oldLine = hunk.oldStart;
         int newLine = hunk.newStart;
         for (final line in hunk.lines) {
@@ -206,6 +266,125 @@ class DiffPaneState extends State<DiffPane> {
         }
       }
     }
+  }
+
+  bool reviewEligible(ChangedFile file) =>
+      file.reviewEligible &&
+      file.contentStatus == 'text' &&
+      (file.changeKind == 'added' ||
+          file.changeKind == 'modified' ||
+          file.changeKind == 'deleted');
+
+  void appendLayer(
+    List<List<String>> next,
+    ChangeSetSnapshot snapshot,
+    String label,
+    String verb,
+    bool currentWorking,
+    bool wholeLayer,
+  ) {
+    final expectedRevision = snapshot.reviewRevision;
+    bool eligible =
+        expectedRevision != null &&
+        expectedRevision != '' &&
+        snapshot.files.isNotEmpty &&
+        wholeLayer;
+    for (final file in snapshot.files) {
+      if (!reviewEligible(file)) eligible = false;
+    }
+    final List<String> section = ['section', label, ''];
+    if (eligible) {
+      section.addAll([
+        currentWorking ? 'Approve All Unstaged' : 'Unapprove All Staged',
+        expectedRevision!,
+        'layer',
+        '',
+        '',
+      ]);
+    }
+    if (label != '' || eligible) next.add(section);
+    appendFiles(next, snapshot.files, currentWorking, verb, expectedRevision);
+  }
+
+  void resolveReview(int captured) async {
+    final selected = await resolveEnvironmentReviewCapability(
+      'adele.diff.review-approval',
+      1,
+      reviewApprovalServiceId,
+      null,
+    );
+    if (disposed || captured != revision) {
+      if (selected != null) releaseEnvironmentCapabilityProvider(selected);
+      return;
+    }
+    if (selected != null) {
+      setState(() {
+        reviewHandle = selected;
+      });
+    }
+  }
+
+  void changeReview(List<String> row, int captured) async {
+    if (disposed ||
+        captured != revision ||
+        status != 'ready' ||
+        reviewHandle == '' ||
+        reviewPending ||
+        reviewBlocked) {
+      return;
+    }
+    final client = ReviewApprovalServiceClient(
+      EnvironmentCapabilityRequestChannel(reviewHandle),
+    );
+    // Nullable conditional expressions misbox on the pinned evaluator.
+    String? path;
+    int? hunkIndex;
+    if (row[5] != 'layer') path = row[6];
+    if (row[5] == 'hunk') hunkIndex = int.parse(row[7]);
+    final selection = ReviewSelection(
+      expectedRevision: row[4],
+      granularity: row[5],
+      relativePath: path,
+      hunkIndex: hunkIndex,
+    );
+    setState(() {
+      reviewPending = true;
+      reviewMessage = '';
+    });
+    Future<Object?> operation;
+    if (row[3].startsWith('Unapprove')) {
+      operation = client.unapprove(selection);
+    } else {
+      operation = client.approve(selection);
+    }
+    final result = await settleEnvironmentCapabilityOperation(operation);
+    if (disposed) return;
+    setState(() {
+      reviewPending = false;
+    });
+    if (captured != revision) return;
+    String outcome = 'failed';
+    if (result[0] == true) {
+      outcome = (result[1] as ReviewApprovalResult).status;
+    }
+    if (outcome == 'applied') {
+      refresh();
+      return;
+    }
+    String message =
+        'Unable to update review approval. Refresh to check changes.';
+    if (outcome == 'stale') {
+      message = 'Changes are stale. Refresh before reviewing again.';
+    } else if (outcome == 'ineligible') {
+      message =
+          'Changes are not eligible for review approval. Refresh to check changes.';
+    }
+    releaseEnvironmentCapabilityProvider(reviewHandle);
+    setState(() {
+      reviewHandle = '';
+      reviewBlocked = true;
+      reviewMessage = message;
+    });
   }
 
   String sourceStatusMessage(String state) {
@@ -334,6 +513,8 @@ class DiffPaneState extends State<DiffPane> {
       if (status == 'error' || status == 'unavailable')
         TextButton(onPressed: refresh, child: Text('Retry')),
       if (sourceMessage != '') Text(sourceMessage),
+      if (reviewPending) Text('Updating review approval...'),
+      if (reviewMessage != '') Text(reviewMessage),
       Expanded(
         flex: 1,
         child: ListView.builder(
@@ -341,6 +522,15 @@ class DiffPaneState extends State<DiffPane> {
           itemBuilder: (context, index) {
             final row = rows[index];
             final captured = revision;
+            final hasSource = row.length > 2 && row[2] != '';
+            final hasReview =
+                row.length > 3 &&
+                reviewHandle != '' &&
+                !reviewPending &&
+                !reviewBlocked;
+            if (row[0] == 'section' && row[1] == '' && !hasReview) {
+              return SizedBox();
+            }
             final label = Text(
               row[1],
               style: row[0] == 'section'
@@ -355,13 +545,22 @@ class DiffPaneState extends State<DiffPane> {
             return Container(
               color: background,
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              child: row.length > 2
+              child: hasSource || hasReview
                   ? Row(
                       children: [
                         Expanded(flex: 2, child: label),
                         Expanded(
                           flex: 1,
-                          child: sourceAction(row[2], captured),
+                          child: Column(
+                            children: [
+                              if (hasSource) sourceAction(row[2], captured),
+                              if (hasReview)
+                                TextButton(
+                                  onPressed: () => changeReview(row, captured),
+                                  child: Text(row[3]),
+                                ),
+                            ],
+                          ),
                         ),
                       ],
                     )

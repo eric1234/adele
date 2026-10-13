@@ -15,6 +15,7 @@ final class WorktreeEnvironment {
     Directory root, {
     Directory? gitWorktreeRoot,
     Directory? gitDirectory,
+    Directory? gitCommonDirectory,
     this.baselineCommit,
     this.branch,
   }) : root = _canonicalRoot(root),
@@ -23,15 +24,24 @@ final class WorktreeEnvironment {
            : _canonicalRoot(gitWorktreeRoot),
        gitDirectory = gitDirectory == null
            ? null
-           : _canonicalRoot(gitDirectory);
+           : _canonicalRoot(gitDirectory),
+       gitCommonDirectory = gitCommonDirectory == null
+           ? null
+           : _canonicalRoot(gitCommonDirectory);
 
   final Directory root;
   // Provider-established repository identity, never inferred from caller paths.
   final Directory? gitWorktreeRoot;
   final Directory? gitDirectory;
+  final Directory? gitCommonDirectory;
   // Exact retained provider state. Filesystem-only fixtures need neither value.
   final String? baselineCommit;
   final String? branch;
+  // A restored/rebound object must never accept a previous object's review token.
+  final String reviewGeneration = List.generate(
+    32,
+    (_) => math.Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
   Future<void> _pendingMutation = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {

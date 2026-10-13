@@ -47,6 +47,9 @@ void main() {
   tearDown(() async {
     frontend.invalidate();
     await port.dispatcher.close();
+    for (final service in port.reviewServices) {
+      await service.dispatcher.close();
+    }
   });
 
   ExtensionRegistration registerSource({String id = 'test.source'}) {
@@ -162,11 +165,13 @@ void main() {
         ('modified', 'conflicted', false),
       ]) {
         port.service.value = ChangeSetSnapshot(
+          reviewRevision: null,
           files: [
             ChangedFile(
               relativePath: 'file.txt',
               changeKind: entry.$1,
               contentStatus: entry.$2,
+              reviewEligible: false,
               detail: null,
               hunks: [],
             ),
@@ -357,7 +362,7 @@ void main() {
       expect(port.service.calls, 1);
       expect(find.text('Loading unstaged changes...'), findsOneWidget);
       expect(port.handles, hasLength(1));
-      held.complete(ChangeSetSnapshot(files: []));
+      held.complete(ChangeSetSnapshot(files: [], reviewRevision: null));
       await tester.pumpAndSettle();
       expect(find.text('No unstaged changes.'), findsOneWidget);
       expect(port.handles, isEmpty);
@@ -391,11 +396,13 @@ void main() {
     'generated eval decoder rejects malformed nested DTOs and retry resolves anew',
     (tester) async {
       port.wireResponse = {
+        'reviewRevision': null,
         'files': [
           {
             'relativePath': 'invalid.txt',
             'changeKind': 'modified',
             'contentStatus': 'text',
+            'reviewEligible': false,
             'detail': null,
             'hunks': [
               {
@@ -511,6 +518,7 @@ void main() {
     'non-text statuses are explicit and large text builds rows lazily',
     (tester) async {
       port.service.value = ChangeSetSnapshot(
+        reviewRevision: null,
         files: [
           for (final status in [
             'binary',
@@ -520,6 +528,7 @@ void main() {
           ])
             ChangedFile(
               relativePath: '$status.dat',
+              reviewEligible: false,
               changeKind: 'unsupported',
               contentStatus: status,
               detail: 'Not displayed: $status',
@@ -538,9 +547,11 @@ void main() {
         expect(find.text('Not displayed: $status'), findsOneWidget);
       }
       port.service.value = ChangeSetSnapshot(
+        reviewRevision: null,
         files: [
           ChangedFile(
             relativePath: 'large.txt',
+            reviewEligible: false,
             changeKind: 'added',
             contentStatus: 'text',
             detail: null,
@@ -1218,6 +1229,7 @@ void main() {
           {
             ...wire,
             layer: {
+              'reviewRevision': null,
               'files': [
                 {...((wire[layer] as Map)['files'] as List).single as Map}
                   ..remove('detail'),
@@ -1298,11 +1310,13 @@ void main() {
         for (final layer in ['committed', 'staged', 'unstaged'])
           for (final bad in [
             {
+              'reviewRevision': null,
               'files': [
                 {...file}..remove('detail'),
               ],
             },
             {
+              'reviewRevision': null,
               'files': [
                 {
                   ...file,
@@ -1345,19 +1359,692 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final scope in ['unstaged', 'uncommitted', 'task']) {
+    for (final action in [
+      ('Approve', 'approve', 'hunk'),
+      ('Approve File', 'approve', 'file'),
+      ('Approve All Unstaged', 'approve', 'layer'),
+      if (scope != 'unstaged') ...[
+        ('Unapprove', 'unapprove', 'hunk'),
+        ('Unapprove File', 'unapprove', 'file'),
+        ('Unapprove All Staged', 'unapprove', 'layer'),
+      ],
+    ]) {
+      testWidgets(
+        '$scope ${action.$1} sends exact selection and reloads that scope',
+        (tester) async {
+          await tester.binding.setSurfaceSize(const Size(900, 1400));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          registerSource();
+          const path = 'dir/two words [deleted]\t\u03bb\nfile.txt';
+          port.service.value = _reviewSnapshot(path: path);
+          port.service.uncommitted = _uncommitted(
+            staged: _reviewSnapshot(path: path, revision: 'staged-1'),
+            unstaged: port.service.value,
+          );
+          port.service.task = _task(
+            committed: _reviewSnapshot(path: 'committed.txt'),
+            uncommitted: port.service.uncommitted,
+          );
+          await mount(tester);
+          if (scope != 'unstaged') {
+            await tester.tap(
+              find.widgetWithText(
+                TextButton,
+                scope == 'task' ? 'Task / Branch' : 'Uncommitted changes',
+              ),
+            );
+            await tester.pumpAndSettle();
+          }
+          final old = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, action.$1),
+          );
+          final calls = port.methods.length;
+          final resolutions = port.reviewResolutions;
+          final previousHandle = port.handles.single;
+          port.service.value = _reviewSnapshot(
+            path: 'authoritative.txt',
+            revision: 'unstaged-2',
+          );
+          port.service.uncommitted = _uncommitted(unstaged: port.service.value);
+          port.service.task = _task(uncommitted: port.service.uncommitted);
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          final (method, selection) = port.review.selections.single;
+          expect(method, action.$2);
+          expect(
+            selection.expectedRevision,
+            action.$2 == 'approve' ? 'unstaged-1' : 'staged-1',
+          );
+          expect(selection.granularity, action.$3);
+          expect(selection.relativePath, action.$3 == 'layer' ? null : path);
+          expect(selection.hunkIndex, action.$3 == 'hunk' ? 0 : null);
+          expect(port.methods.length, calls + 1);
+          expect(port.methods.last, switch (scope) {
+            'task' => changeSetSourceServiceSnapshotTaskChangesId,
+            'uncommitted' => changeSetSourceServiceSnapshotUncommittedId,
+            _ => changeSetSourceServiceSnapshotUnstagedId,
+          });
+          expect(find.text('authoritative.txt  [modified]'), findsOneWidget);
+          expect(find.text('$path  [modified]'), findsNothing);
+          expect(source.paths, isEmpty);
+          expect(port.releases, contains(previousHandle));
+          expect(port.reviewResolutions, resolutions + 1);
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          expect(port.review.selections, hasLength(1));
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'hunk controls retain their zero-based index, not their rendered position',
+    (tester) async {
+      final file = _reviewSnapshot().files.single;
+      port.service.value = ChangeSetSnapshot(
+        reviewRevision: 'two-hunks',
+        files: [
+          ChangedFile(
+            relativePath: file.relativePath,
+            changeKind: file.changeKind,
+            contentStatus: file.contentStatus,
+            detail: null,
+            reviewEligible: true,
+            hunks: [file.hunks.single, file.hunks.single],
+          ),
+        ],
+      );
+      await mount(tester);
+      await tester.tap(find.widgetWithText(TextButton, 'Approve').last);
+      await tester.pumpAndSettle();
+      expect(port.review.selections.single.$2.hunkIndex, 1);
+      expect(port.review.selections.single.$2.expectedRevision, 'two-hunks');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final kind in ['added', 'deleted']) {
+    testWidgets(
+      'eligible empty $kind files retain both file and layer controls',
+      (tester) async {
+        port.service.uncommitted = _uncommitted(
+          staged: _reviewSnapshot(
+            kind: kind,
+            empty: true,
+            revision: 'staged-1',
+          ),
+          unstaged: _reviewSnapshot(kind: kind, empty: true),
+        );
+        await mount(tester);
+        await tester.tap(
+          find.widgetWithText(TextButton, 'Uncommitted changes'),
+        );
+        await tester.pumpAndSettle();
+        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Unapprove'), findsNothing);
+        for (final label in [
+          'Approve File',
+          'Unapprove File',
+          'Approve All Unstaged',
+          'Unapprove All Staged',
+        ]) {
+          expect(find.widgetWithText(TextButton, label), findsOneWidget);
+        }
+        await tester.tap(find.text('Approve File'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Unapprove File'));
+        await tester.pumpAndSettle();
+        expect(port.review.selections.map((entry) => entry.$1), [
+          'approve',
+          'unapprove',
+        ]);
+        expect(
+          port.review.selections.map((entry) => entry.$2.granularity),
+          everyElement('file'),
+        );
+        expect(
+          port.review.selections.map((entry) => entry.$2.hunkIndex),
+          everyElement(isNull),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'review eligibility requires a revision, supported text and provider eligibility',
+    (tester) async {
+      registerSource();
+      await mount(tester);
+      for (final entry in [
+        ('modified', 'text', true, 'revision', true),
+        ('added', 'text', true, 'revision', true),
+        ('deleted', 'text', true, 'revision', true),
+        ('modified', 'text', false, 'revision', false),
+        ('modified', 'text', true, null, false),
+        ('modified', 'text', true, '', false),
+        ('typeChanged', 'text', true, 'revision', false),
+        ('unsupported', 'text', true, 'revision', false),
+        ('conflicted', 'text', true, 'revision', false),
+        ('modified', 'binary', true, 'revision', false),
+        ('modified', 'oversized', true, 'revision', false),
+        ('modified', 'unsupported', true, 'revision', false),
+        ('modified', 'conflicted', true, 'revision', false),
+      ]) {
+        final before = port.reviewResolutions;
+        port.service.value = _reviewSnapshot(
+          kind: entry.$1,
+          content: entry.$2,
+          eligible: entry.$3,
+          revision: entry.$4,
+        );
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        for (final label in [
+          'Approve',
+          'Approve File',
+          'Approve All Unstaged',
+        ]) {
+          expect(
+            find.widgetWithText(TextButton, label),
+            entry.$5 ? findsOneWidget : findsNothing,
+            reason: '$entry / $label',
+          );
+        }
+        expect(port.reviewResolutions, before + (entry.$5 ? 1 : 0));
+      }
+      expect(port.review.selections, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'whole layer never skips unsupported or conflicted targets and committed rows never act',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final eligible = _reviewSnapshot(path: 'eligible.txt', empty: true);
+      final unsupported = _reviewSnapshot(
+        path: 'unsupported.txt',
+        content: 'binary',
+        empty: true,
+      );
+      await mount(tester);
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      for (final conflicts in [false, true]) {
+        final layer = ChangeSetSnapshot(
+          reviewRevision: 'mixed',
+          files: [...eligible.files, if (!conflicts) ...unsupported.files],
+        );
+        port.service.task = _task(
+          // Even bogus actionable metadata in committed/conflicts cannot offer actions.
+          committed: eligible,
+          uncommitted: _uncommitted(
+            staged: layer,
+            unstaged: layer,
+            conflicts: conflicts ? eligible.files : [],
+          ),
+        );
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(find.text('Approve All Unstaged'), findsNothing);
+        expect(find.text('Unapprove All Staged'), findsNothing);
+        expect(find.text('Approve File'), findsOneWidget);
+        expect(find.text('Unapprove File'), findsOneWidget);
+        expect(
+          find.text('eligible.txt  [modified]'),
+          findsNWidgets(conflicts ? 4 : 3),
+        );
+      }
+      port.service.task = _task(committed: _reviewSnapshot());
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(port.handles, isEmpty);
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Unapprove'), findsNothing);
+      expect(find.text('Approve File'), findsNothing);
+      expect(find.text('Unapprove File'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'absent review access does not block snapshots or Source and is not silently retried',
+    (tester) async {
+      registerSource();
+      port.reviewAvailable = false;
+      port.service.value = _reviewSnapshot();
+      await mount(tester);
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Approve File'), findsNothing);
+      expect(find.text('Approve All Unstaged'), findsNothing);
+      expect(port.handles, isEmpty);
+      expect(port.reviewResolutions, 1);
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt']);
+      port.reviewAvailable = true;
+      await tester.pumpAndSettle();
+      expect(port.reviewResolutions, 1);
+      expect(find.text('Approve'), findsNothing);
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      expect(find.text('Approve'), findsOneWidget);
+      expect(port.reviewResolutions, 2);
+      expect(port.service.calls, 2);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final outcome in [
+    'stale',
+    'ineligible',
+    'failed',
+    'unknown',
+    'malformed',
+  ]) {
+    testWidgets(
+      '$outcome review retains snapshot and requires deliberate Refresh',
+      (tester) async {
+        registerSource();
+        port.service.value = _reviewSnapshot();
+        if (outcome == 'failed') {
+          port.review.failure = true;
+        } else if (outcome == 'malformed') {
+          port.review.wireResponse = {'status': true};
+        } else {
+          port.review.status = outcome;
+        }
+        await mount(tester);
+        final old = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Approve'),
+        );
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        expect(find.text('notes.txt  [modified]'), findsOneWidget);
+        expect(find.text('   4      -before'), findsOneWidget);
+        expect(port.service.calls, 1);
+        expect(port.reviewResolutions, 1);
+        expect(port.handles, isEmpty);
+        expect(port.review.applied, 0);
+        final message = switch (outcome) {
+          'stale' => 'Changes are stale. Refresh before reviewing again.',
+          'ineligible' =>
+            'Changes are not eligible for review approval. Refresh to check changes.',
+          _ => 'Unable to update review approval. Refresh to check changes.',
+        };
+        expect(find.text(message), findsOneWidget);
+        expect(find.textContaining('private'), findsNothing);
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        expect(port.review.requests, 1);
+        expect(find.text('Approve'), findsNothing);
+        await tester.tap(find.text('Open in Source'));
+        await tester.pumpAndSettle();
+        expect(source.paths, ['notes.txt']);
+        port.service.value = _reviewSnapshot(
+          path: 'current.txt',
+          revision: 'unstaged-2',
+        );
+        port.review.failure = false;
+        port.review.status = 'applied';
+        port.review.wireResponse = null;
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(find.text(message), findsNothing);
+        expect(find.text('current.txt  [modified]'), findsOneWidget);
+        expect(find.text('Approve'), findsOneWidget);
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        expect(port.review.requests, 1);
+        await tester.tap(find.text('Approve'));
+        await tester.pumpAndSettle();
+        expect(port.review.selections.last.$2.expectedRevision, 'unstaged-2');
+        expect(port.review.requests, 2);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'one pending review suppresses all duplicate controls while Source remains independent',
+    (tester) async {
+      registerSource();
+      port.service.value = _reviewSnapshot();
+      final held = Completer<ReviewApprovalResult>();
+      port.review.pending = held.future;
+      await mount(tester);
+      final buttons = [
+        for (final label in ['Approve', 'Approve File', 'Approve All Unstaged'])
+          tester.widget<TextButton>(find.widgetWithText(TextButton, label)),
+      ];
+      for (final button in buttons) {
+        button.onPressed!();
+        button.onPressed!();
+      }
+      await tester.pumpAndSettle();
+      expect(port.review.selections, hasLength(1));
+      expect(port.reviewResolutions, 1);
+      expect(find.text('Updating review approval...'), findsOneWidget);
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Approve File'), findsNothing);
+      expect(find.text('Approve All Unstaged'), findsNothing);
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      await tester.tap(find.text('Open in Source'));
+      await tester.pumpAndSettle();
+      expect(source.paths, ['notes.txt']);
+      held.complete(const ReviewApprovalResult(status: 'applied'));
+      await tester.pumpAndSettle();
+      expect(port.service.calls, 2);
+      expect(find.text('Updating review approval...'), findsNothing);
+      expect(port.releases, contains('review-1'));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final target in ['Refresh', 'Uncommitted changes', 'Task / Branch']) {
+    for (final succeeds in [true, false]) {
+      testWidgets(
+        '$target fences old pending review success=$succeeds without undoing work',
+        (tester) async {
+          port.service.value = _reviewSnapshot();
+          final held = Completer<ReviewApprovalResult>();
+          port.review.pending = held.future;
+          await mount(tester);
+          final old = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, 'Approve'),
+          );
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          port.service.value = _reviewSnapshot(
+            path: 'current.txt',
+            revision: 'current',
+          );
+          port.service.uncommitted = _uncommitted(unstaged: port.service.value);
+          port.service.task = _task(uncommitted: port.service.uncommitted);
+          await tester.tap(find.widgetWithText(TextButton, target));
+          await tester.pumpAndSettle();
+          expect(port.releases, contains('review-1'));
+          expect(find.text('current.txt  [modified]'), findsOneWidget);
+          expect(find.text('Updating review approval...'), findsOneWidget);
+          expect(find.text('Approve'), findsNothing);
+          old.onPressed!();
+          expect(port.review.selections, hasLength(1));
+          final calls = port.methods.length;
+          if (succeeds) {
+            held.complete(const ReviewApprovalResult(status: 'applied'));
+          } else {
+            held.completeError(StateError('private old mutation failure'));
+          }
+          await tester.pumpAndSettle();
+          expect(port.review.applied, succeeds ? 1 : 0);
+          expect(port.methods, hasLength(calls));
+          expect(find.text('current.txt  [modified]'), findsOneWidget);
+          expect(find.text('Updating review approval...'), findsNothing);
+          expect(
+            find.textContaining('Refresh to check changes.'),
+            findsNothing,
+          );
+          expect(find.text('Approve'), findsOneWidget);
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          expect(port.review.selections, hasLength(1));
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final ending in ['departure', 'dispose', 'retirement']) {
+    for (final resolving in [true, false]) {
+      testWidgets(
+        'review resolving=$resolving releases on $ending and late completion cannot publish',
+        (tester) async {
+          port.service.value = _reviewSnapshot();
+          final resolution = Completer<void>();
+          final mutation = Completer<ReviewApprovalResult>();
+          if (resolving) {
+            port.resolvingReview = resolution.future;
+          } else {
+            port.review.pending = mutation.future;
+          }
+          await mount(tester);
+          expect(find.text('notes.txt  [modified]'), findsOneWidget);
+          if (!resolving) {
+            await tester.tap(find.text('Approve'));
+            await tester.pumpAndSettle();
+          }
+          if (ending == 'departure') {
+            await lifecycle.prepareToDeactivate();
+          } else if (ending == 'dispose') {
+            await tester.pumpWidget(const SizedBox());
+          } else {
+            frontend.invalidate();
+            await tester.pumpAndSettle();
+          }
+          expect(port.handles, isEmpty);
+          if (resolving) {
+            resolution.complete();
+          } else {
+            mutation.complete(const ReviewApprovalResult(status: 'applied'));
+          }
+          await tester.pumpAndSettle();
+          expect(port.handles, isEmpty);
+          expect(port.releases, contains('review-1'));
+          expect(port.review.selections, hasLength(resolving ? 0 : 1));
+          expect(port.review.applied, resolving ? 0 : 1);
+          expect(port.service.calls, 1);
+          expect(find.text('notes.txt  [modified]'), findsNothing);
+          if (ending == 'departure') {
+            port.service.value = _reviewSnapshot(path: 'reopened.txt');
+            await tester.tap(find.text('Refresh'));
+            await tester.pumpAndSettle();
+            expect(find.text('reopened.txt  [modified]'), findsOneWidget);
+            expect(find.text('Approve'), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'superseded review resolution releases its exact late handle without replacing current access',
+    (tester) async {
+      port.service.value = _reviewSnapshot();
+      final resolution = Completer<void>();
+      port.resolvingReview = resolution.future;
+      await mount(tester);
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      expect(find.text('Approve'), findsNothing);
+      port.service.task = _task(
+        uncommitted: _uncommitted(
+          unstaged: _reviewSnapshot(path: 'current.txt'),
+        ),
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(port.handles, {'review-2'});
+      resolution.complete();
+      await tester.pumpAndSettle();
+      expect(port.handles, {'review-2'});
+      expect(port.releases, contains('review-1'));
+      expect(find.text('current.txt  [modified]'), findsOneWidget);
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+      expect(port.review.selections.single.$2.relativePath, 'current.txt');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'retired exact review provider never migrates or retries until deliberate Refresh',
+    (tester) async {
+      port.service.value = _reviewSnapshot();
+      await mount(tester);
+      final original = port.review;
+      port.retiredReviewHandles.add('review-1');
+      port.review = _ReviewService();
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+      expect(original.requests, 0);
+      expect(port.review.requests, 0);
+      expect(port.reviewResolutions, 1);
+      expect(port.service.calls, 1);
+      expect(
+        find.text(
+          'Unable to update review approval. Refresh to check changes.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('notes.txt  [modified]'), findsOneWidget);
+      expect(port.handles, isEmpty);
+      await tester.tap(find.text('Refresh'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+      expect(original.requests, 0);
+      expect(port.review.requests, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'review action uses the provider retained with its snapshot, not a newly preferred provider',
+    (tester) async {
+      port.service.value = _reviewSnapshot();
+      await mount(tester);
+      final original = port.review;
+      port.review = _ReviewService();
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+      expect(original.requests, 1);
+      expect(original.selections.single.$2.expectedRevision, 'unstaged-1');
+      expect(port.review.requests, 0);
+      expect(port.reviewResolutions, 2);
+      await tester.tap(find.text('Approve File'));
+      await tester.pumpAndSettle();
+      expect(port.review.requests, 1);
+      expect(original.requests, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'late review success cannot refresh a replacement Session presentation',
+    (tester) async {
+      port.service.value = _reviewSnapshot();
+      final held = Completer<ReviewApprovalResult>();
+      port.review.pending = held.future;
+      await mount(tester);
+      await tester.tap(find.text('Approve'));
+      await tester.pumpAndSettle();
+      final previous = port;
+      await tester.pumpWidget(const SizedBox());
+      expect(previous.handles, isEmpty);
+      port = _Port()..service.value = _reviewSnapshot(path: 'new-session.txt');
+      lifecycle = SessionPresentationLifecycleBridge(isActive: () => true);
+      await mount(tester, key: const ValueKey('new-session'));
+      held.complete(const ReviewApprovalResult(status: 'applied'));
+      await tester.pumpAndSettle();
+      expect(previous.review.applied, 1);
+      expect(previous.service.calls, 1);
+      expect(port.service.calls, 1);
+      expect(port.review.requests, 0);
+      expect(find.text('new-session.txt  [modified]'), findsOneWidget);
+      expect(find.text('Updating review approval...'), findsNothing);
+      expect(find.text('Approve'), findsOneWidget);
+      await previous.dispatcher.close();
+      await previous.review.dispatcher.close();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'review controls fit narrow panes alongside unchanged Source actions',
+    (tester) async {
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      registerSource();
+      port.service.value = _reviewSnapshot();
+      port.service.uncommitted = _uncommitted(
+        staged: _reviewSnapshot(),
+        unstaged: port.service.value,
+      );
+      port.service.task = _task(uncommitted: port.service.uncommitted);
+      await mount(tester);
+      for (final width in [320.0, 480.0, 900.0]) {
+        await tester.binding.setSurfaceSize(Size(width, 1200));
+        for (final scope in [
+          'Unstaged changes',
+          'Uncommitted changes',
+          'Task / Branch',
+        ]) {
+          await tester.tap(find.widgetWithText(TextButton, scope));
+          await tester.pumpAndSettle();
+          for (final label in [
+            'Approve',
+            'Approve File',
+            'Approve All Unstaged',
+            'Open in Source',
+            if (scope != 'Unstaged changes') ...[
+              'Unapprove',
+              'Unapprove File',
+              'Unapprove All Staged',
+            ],
+          ]) {
+            final button = find.widgetWithText(TextButton, label);
+            expect(button, findsOneWidget);
+            expect(tester.getRect(button).left, greaterThanOrEqualTo(0));
+            expect(tester.getRect(button).right, lessThanOrEqualTo(width));
+          }
+          expect(tester.takeException(), isNull, reason: '$width / $scope');
+        }
+      }
+    },
+  );
 }
+
+ChangeSetSnapshot _reviewSnapshot({
+  String path = 'notes.txt',
+  String? revision = 'unstaged-1',
+  bool eligible = true,
+  String kind = 'modified',
+  String content = 'text',
+  bool empty = false,
+}) => ChangeSetSnapshot(
+  reviewRevision: revision,
+  files: [
+    ChangedFile(
+      relativePath: path,
+      changeKind: kind,
+      contentStatus: content,
+      detail: null,
+      reviewEligible: eligible,
+      hunks: empty ? [] : _snapshot().files.single.hunks,
+    ),
+  ],
+);
 
 ChangeSetSnapshot _snapshot({
   String path = 'notes.txt',
   String before = 'before',
   String after = 'after',
+  String? reviewRevision,
+  bool reviewEligible = false,
 }) => ChangeSetSnapshot(
+  reviewRevision: reviewRevision,
   files: [
     ChangedFile(
       relativePath: path,
       changeKind: 'modified',
       contentStatus: 'text',
       detail: null,
+      reviewEligible: reviewEligible,
       hunks: [
         DiffHunk(
           oldStart: 3,
@@ -1380,12 +2067,13 @@ UncommittedChangeSetSnapshot _uncommitted({
   ChangeSetSnapshot? unstaged,
   List<ChangedFile> conflicts = const [],
 }) => UncommittedChangeSetSnapshot(
-  staged: staged ?? ChangeSetSnapshot(files: []),
-  unstaged: unstaged ?? ChangeSetSnapshot(files: []),
+  staged: staged ?? ChangeSetSnapshot(files: [], reviewRevision: null),
+  unstaged: unstaged ?? ChangeSetSnapshot(files: [], reviewRevision: null),
   conflicts: conflicts,
 );
 
 ChangedFile _conflict() => ChangedFile(
+  reviewEligible: false,
   relativePath: 'conflict.txt',
   changeKind: 'conflicted',
   contentStatus: 'conflicted',
@@ -1397,12 +2085,12 @@ TaskChangeSetSnapshot _task({
   ChangeSetSnapshot? committed,
   UncommittedChangeSetSnapshot? uncommitted,
 }) => TaskChangeSetSnapshot(
-  committed: committed ?? ChangeSetSnapshot(files: []),
+  committed: committed ?? ChangeSetSnapshot(files: [], reviewRevision: null),
   uncommitted: uncommitted ?? _uncommitted(),
 );
 
 class _Service implements ChangeSetSourceService {
-  ChangeSetSnapshot value = ChangeSetSnapshot(files: []);
+  ChangeSetSnapshot value = ChangeSetSnapshot(files: [], reviewRevision: null);
   UncommittedChangeSetSnapshot uncommitted = _uncommitted();
   TaskChangeSetSnapshot task = _task();
   Future<ChangeSetSnapshot>? pending;
@@ -1470,6 +2158,13 @@ class _Source {
 class _Port extends EnvironmentCapabilityAccessDeclarations
     implements PreparedFrontendBridge, AdeleRequestChannel {
   final _Service service = _Service();
+  _ReviewService review = _ReviewService();
+  final Set<_ReviewService> reviewServices = {};
+  final Map<String, _ReviewService> reviewHandles = {};
+  final Set<String> retiredReviewHandles = {};
+  bool reviewAvailable = true;
+  int reviewResolutions = 0;
+  Future<void>? resolvingReview;
   late final dispatcher = ChangeSetSourceServiceDispatcher(
     service,
     concurrent: true,
@@ -1485,7 +2180,12 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
   final List<String> methods = [];
   Future<void>? resolving;
   late final transport = BackendInvocationBridge(
-    channelFor: (handle) => handles.contains(handle) ? this : null,
+    channelFor: (handle) {
+      if (!handles.contains(handle) || retiredReviewHandles.contains(handle)) {
+        return null;
+      }
+      return reviewHandles[handle] ?? this;
+    },
     validateAdmission: () {},
     validateSettlement: () {},
     isPresentationActive: () => active,
@@ -1500,10 +2200,10 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
         _,
         args,
       ) {
-        expect(args[0]!.$value, changeSetSourceCapability.id.value);
-        expect(args[1]!.$value, 1);
-        expect(args[2]!.$value, changeSetSourceServiceId);
-        expect(args[3]!.$value, isNull);
+        expectSync(args[0]!.$value, changeSetSourceCapability.id.value);
+        expectSync(args[1]!.$value, 1);
+        expectSync(args[2]!.$value, changeSetSourceServiceId);
+        expectSync(args[3]!.$value, isNull);
         final handle = 'handle-${++resolutions}';
         final wait = resolving;
         resolving = null;
@@ -1513,6 +2213,33 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
           if (available) handles.add(handle);
           completion.complete(
             wrapStructuredBridgeData(available ? handle : null),
+          );
+        });
+        return $Future<$Value>.wrap(completion.future);
+      })
+      ..registerBridgeFunc(library, 'resolveEnvironmentReviewCapability', (
+        _,
+        _,
+        args,
+      ) {
+        expectSync(args[0]!.$value, reviewApprovalCapability.id.value);
+        expectSync(args[1]!.$value, 1);
+        expectSync(args[2]!.$value, reviewApprovalServiceId);
+        expectSync(args[3]!.$value, isNull);
+        final handle = 'review-${++reviewResolutions}';
+        final selected = review;
+        final wait = resolvingReview;
+        resolvingReview = null;
+        final completion = Completer<$Value>();
+        zone.run(() async {
+          if (wait != null) await wait;
+          if (reviewAvailable) {
+            handles.add(handle);
+            reviewHandles[handle] = selected;
+            reviewServices.add(selected);
+          }
+          completion.complete(
+            wrapStructuredBridgeData(reviewAvailable ? handle : null),
           );
         });
         return $Future<$Value>.wrap(completion.future);
@@ -1541,7 +2268,7 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
-    expect(
+    expectSync(
       method,
       isIn([
         changeSetSourceServiceSnapshotUnstagedId,
@@ -1550,7 +2277,7 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
       ]),
     );
     methods.add(method);
-    expect(payload, isEmpty);
+    expectSync(payload, isEmpty);
     if (wireResponse != null) return wireResponse;
     final result = await dispatcher.dispatch({
       'kind': 'request',
@@ -1566,5 +2293,61 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
   void invalidate() {
     active = false;
     transport.invalidate();
+  }
+}
+
+class _ReviewService implements ReviewApprovalService, AdeleRequestChannel {
+  late final dispatcher = ReviewApprovalServiceDispatcher(
+    this,
+    concurrent: true,
+  );
+  final List<(String, ReviewSelection)> selections = [];
+  Future<ReviewApprovalResult>? pending;
+  String status = 'applied';
+  bool failure = false;
+  Map<String, Object?>? wireResponse;
+  int applied = 0;
+  int requests = 0;
+
+  @override
+  Future<ReviewApprovalResult> approve(ReviewSelection selection) =>
+      _apply('approve', selection);
+
+  @override
+  Future<ReviewApprovalResult> unapprove(ReviewSelection selection) =>
+      _apply('unapprove', selection);
+
+  Future<ReviewApprovalResult> _apply(
+    String method,
+    ReviewSelection selection,
+  ) async {
+    selections.add((method, selection));
+    final held = pending;
+    pending = null;
+    if (failure) throw StateError('private mutation failure');
+    final result = held == null
+        ? ReviewApprovalResult(status: status)
+        : await held;
+    if (result.status == 'applied') applied++;
+    return result;
+  }
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    requests++;
+    expectSync(
+      method,
+      isIn([reviewApprovalServiceApproveId, reviewApprovalServiceUnapproveId]),
+    );
+    expectSync(payload.keys, ['selection']);
+    if (wireResponse != null) return wireResponse;
+    final result = await dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': selections.length + 1,
+      'method': method,
+      'payload': payload,
+    });
+    if (result['ok'] != true) throw StateError('private mutation failure');
+    return result['payload'];
   }
 }

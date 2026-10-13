@@ -94,10 +94,12 @@ final class PluginCapabilityActivation {
   }
 
   /// Uses registry ordering only among exact siblings of [associatedWith].
+  /// Effectful callers may require an unambiguous implicit selection instead.
   ProviderBinding resolveAssociatedProvider(
     CapabilityKey capability, {
     required ProviderBinding associatedWith,
     ProviderId? providerId,
+    bool requireUnique = false,
   }) {
     if (!owns(associatedWith)) {
       throw const InvalidProviderRegistration(
@@ -127,6 +129,9 @@ final class PluginCapabilityActivation {
       );
     }
     if (eligible.isEmpty) throw CapabilityUnavailable(capability);
+    if (requireUnique && eligible.length != 1) {
+      throw StateError('The eligible Capability provider is ambiguous.');
+    }
     return eligible.first;
   }
 

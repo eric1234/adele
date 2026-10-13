@@ -266,7 +266,8 @@ native implementations supply their behavior; calling a stub natively throws
   see [Capability consumption](../../docs/architecture/contracts-and-capabilities.md#prepared-frontend-capability-consumption)
   for the exact cross-system lifetime and authority rules.
 - `environment_capability_bridge.dart` is a separate contextual unary path for
-  Main Content panes declaring `environmentReadCapabilities`; it does not widen
+  Main Content panes declaring `environmentReadCapabilities` or the independent
+  `environmentReviewCapabilities`; it does not widen
   `capability_bridge.dart` or the `capabilities` allowlist. Initializers, input
   actions, finite operations, and other presentation roles receive no access.
   `resolveEnvironmentCapabilityProvider(id, major, serviceId, providerId)` returns
@@ -274,12 +275,21 @@ native implementations supply their behavior; calling a stub natively throws
   unavailable, incompatible, or exhausted access. Resolution captures the canonical
   Session Environment and selects only an exact associated provider; explicit
   selection never falls back. There is no discovery API or caller-selected
-  Environment. `EnvironmentCapabilityRequestChannel(handle)` implements only
+  Environment. `resolveEnvironmentReviewCapability(id, major, serviceId, providerId)`
+  uses only the explicit review declaration and requires a unique eligible provider
+  when no Provider ID is selected. Missing, ambiguous or denied review access does
+  not prevent read access. This is opt-in to a provider-owned review operation,
+  not a grant to arbitrary host mutation or process services.
+  `EnvironmentCapabilityRequestChannel(handle)` implements only
   `AdeleRequestChannel`, forwarding generated unary calls through
   `requestEnvironmentCapability(handle, method, payload)`, with no streaming API.
-  Each request admits a fresh operation-scoped Environment read grant; no host
-  token, configuration route, mutation, process, storage, execution, or approval
-  service is exposed. `releaseEnvironmentCapabilityProvider(handle)` releases
+  Each request admits a fresh operation-scoped grant: the read service for read
+  access, or that service plus `AuthorizedEnvironmentReviewService` identity proof
+  for review access.
+  A read declaration cannot obtain the review proof. No host
+  token, configuration route, host mutation, process, storage, or execution
+  service is exposed. The separately authorized review provider owns any review
+  effect and its freshness/transaction guarantees. `releaseEnvironmentCapabilityProvider(handle)` releases
   bounded handle bookkeeping and revokes its grants without cancelling independent
   backend work. Stale handles never follow replacements. Unlike context-free
   admitted unary calls, contextual success requires the captured selection and

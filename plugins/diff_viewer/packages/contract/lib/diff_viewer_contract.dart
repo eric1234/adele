@@ -1,4 +1,4 @@
-/// Diff-owned, bounded read-only change snapshots.
+/// Diff-owned change snapshots and explicit revision-bound review operations.
 library;
 
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
@@ -9,6 +9,12 @@ part 'diff_viewer_contract.g.dart';
 final capabilities.CapabilityKey changeSetSourceCapability =
     capabilities.CapabilityKey(
       id: capabilities.CapabilityId('adele.diff.change-set-source'),
+      majorVersion: 1,
+    );
+
+final capabilities.CapabilityKey reviewApprovalCapability =
+    capabilities.CapabilityKey(
+      id: capabilities.CapabilityId('adele.diff.review-approval'),
       majorVersion: 1,
     );
 
@@ -38,10 +44,16 @@ final class UncommittedChangeSetSnapshot {
 
 @AdeleValue('diff.changeSetSnapshot')
 final class ChangeSetSnapshot {
-  ChangeSetSnapshot({required List<ChangedFile> files})
-    : files = List<ChangedFile>.unmodifiable(files);
+  ChangeSetSnapshot({
+    required List<ChangedFile> files,
+    required this.reviewRevision,
+  }) : files = List<ChangedFile>.unmodifiable(files);
 
   final List<ChangedFile> files;
+
+  /// Opaque provider revision for this exact reviewable layer, never authority.
+  /// Null means review is unavailable, including committed history.
+  final String? reviewRevision;
 }
 
 @AdeleValue('diff.changedFile')
@@ -51,6 +63,7 @@ final class ChangedFile {
     required this.changeKind,
     required this.contentStatus,
     required this.detail,
+    required this.reviewEligible,
     required List<DiffHunk> hunks,
   }) : hunks = List<DiffHunk>.unmodifiable(hunks);
 
@@ -65,6 +78,10 @@ final class ChangedFile {
   final String contentStatus;
   final String? detail;
   final List<DiffHunk> hunks;
+
+  /// Provider evidence that this complete file can participate in review.
+  /// Consumers must still require a layer revision and separate review access.
+  final bool reviewEligible;
 }
 
 @AdeleValue('diff.hunk')
@@ -111,6 +128,65 @@ abstract interface class ChangeSetSourceService {
   /// Committed Task/branch changes and the separate uncommitted layers.
   @AdeleMethod('snapshotTaskChanges')
   Future<TaskChangeSetSnapshot> snapshotTaskChanges();
+}
+
+@AdeleValue('diff.reviewSelection')
+final class ReviewSelection {
+  const ReviewSelection({
+    required this.expectedRevision,
+    required this.granularity,
+    required this.relativePath,
+    required this.hunkIndex,
+  });
+
+  /// The unchanged revision of the displayed layer, not a caller-selected root.
+  final String expectedRevision;
+
+  /// hunk, file, or layer. Providers reject any other value before effects.
+  final String granularity;
+
+  /// Required for hunk/file; null for layer. Never an absolute path.
+  final String? relativePath;
+
+  /// Zero-based displayed hunk index for hunk; null for file/layer.
+  final int? hunkIndex;
+}
+
+@AdeleValue('diff.reviewApprovalResult')
+final class ReviewApprovalResult {
+  const ReviewApprovalResult({required this.status});
+
+  /// applied, stale, or ineligible. Unknown statuses must not imply success.
+  final String status;
+}
+
+@AdeleService('diff.reviewApproval')
+abstract interface class ReviewApprovalService {
+  /// Approves exactly the selected unstaged change, conditional on its revision.
+  /// Invalid combinations and unsupported selections produce no partial effects.
+  @AdeleMethod('approve')
+  Future<ReviewApprovalResult> approve(ReviewSelection selection);
+
+  /// Removes approval from exactly the selected staged change without rewriting
+  /// working content. Environment authority comes only from contextual admission.
+  @AdeleMethod('unapprove')
+  Future<ReviewApprovalResult> unapprove(ReviewSelection selection);
+}
+
+@AdeleFailure('diff.reviewApprovalFailure')
+final class ReviewApprovalFailure implements Exception {
+  const ReviewApprovalFailure({
+    required this.code,
+    required this.message,
+    this.details = const {},
+  });
+
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+
+  @override
+  String toString() => 'ReviewApprovalFailure($code): $message';
 }
 
 @AdeleFailure('diff.changeSetFailure')

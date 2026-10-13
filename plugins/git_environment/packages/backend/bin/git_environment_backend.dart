@@ -56,6 +56,20 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             ),
           ),
         ),
+        reviewApprovalServiceId: AdeleContextualServiceDispatcher(
+          hostRequests: hostRequests,
+          createDispatcher: (context) => ReviewApprovalServiceDispatcher(
+            GitReviewApprovalService(
+              provider: provider,
+              authorizedReview: AuthorizedEnvironmentReviewServiceClient(
+                context.bind(authorizedEnvironmentReviewServiceId),
+              ),
+              authorizedRead: AuthorizedEnvironmentReadServiceClient(
+                context.bind(authorizedEnvironmentReadServiceId),
+              ),
+            ),
+          ),
+        ),
       },
     },
   );
@@ -79,6 +93,19 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         capabilityMajorVersion: changeSetSourceCapability.majorVersion,
         serviceId: changeSetSourceServiceId,
         displayName: 'Git Changes',
+        configurationContext: defaultConfigurationContext,
+        association: AdeleProviderAssociation(
+          capabilityId: environmentProviderCapability.id.value,
+          capabilityMajorVersion: environmentProviderCapability.majorVersion,
+          providerId: gitWorktreeEnvironmentProviderId,
+        ),
+      ).toMap(),
+      AdeleCapabilityExposure(
+        providerId: gitReviewApprovalProviderId,
+        capabilityId: reviewApprovalCapability.id.value,
+        capabilityMajorVersion: reviewApprovalCapability.majorVersion,
+        serviceId: reviewApprovalServiceId,
+        displayName: 'Git Review Approval',
         configurationContext: defaultConfigurationContext,
         association: AdeleProviderAssociation(
           capabilityId: environmentProviderCapability.id.value,
