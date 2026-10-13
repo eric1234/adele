@@ -83,6 +83,19 @@ fn operate(request: &str) -> Result<Json, Failure> {
     let (key, parents) = path
         .split_last()
         .ok_or_else(|| Failure::new("path", "The key path must not be empty."))?;
+    if operation == "requireTable" {
+        let mut table = document.as_table();
+        for key in path {
+            table = table
+                .get(key)
+                .ok_or_else(|| Failure::new("path", format!("Key {key:?} does not exist.")))?
+                .as_table()
+                .ok_or_else(|| {
+                    Failure::new("type", format!("Key {key:?} is not a regular table."))
+                })?;
+        }
+        return Ok(json!({"document": source}));
+    }
     let table = parent_table(document.as_table_mut(), parents)?;
     match operation {
         "read" => {
@@ -173,6 +186,34 @@ pub unsafe extern "C" fn adele_toml_free(response: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requires_regular_tables_without_synthesizing_or_traversing_values() {
+        for source in ["[values]\n", "values.name = 'one'\n", "[values.child]\n"] {
+            let result = operate(
+                &json!({"operation": "requireTable", "document": source, "path": ["values"]})
+                    .to_string(),
+            )
+            .unwrap_or_else(|failure| panic!("{}", failure.message));
+            assert_eq!(result["document"], source);
+        }
+        for (source, path, kind) in [
+            ("", vec!["values"], "path"),
+            ("[values]\n", vec!["missing", "values"], "path"),
+            ("values = {}\n", vec!["values"], "type"),
+            ("values = 1\n", vec!["values"], "type"),
+            ("values = []\n", vec!["values"], "type"),
+            ("[[values]]\n", vec!["values"], "type"),
+            ("values = {child = {}}\n", vec!["values", "child"], "type"),
+            ("[values]\n", vec![], "path"),
+        ] {
+            let failure = operate(
+                &json!({"operation": "requireTable", "document": source, "path": path}).to_string(),
+            )
+            .unwrap_err();
+            assert_eq!(failure.kind, kind);
+        }
+    }
 
     #[test]
     fn ffi_reports_malformed_requests_and_releases_responses() {

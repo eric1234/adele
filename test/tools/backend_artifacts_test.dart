@@ -8,6 +8,7 @@ import '../../packages/plugin_builder/lib/plugin_builder.dart';
 // ignore: avoid_relative_lib_imports
 import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
 import '../../tools/adele.dart' as tooling;
+import '../../tools/backend_artifacts.dart';
 import '../../tools/contract_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import 'code_editor_dependency_test.dart'
@@ -90,6 +91,7 @@ void main() {
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
       'plugins/git_environment/packages/backend/native/git_pty_helper.c',
+      'plugins/openai/records.schema.json',
       'plugins/source_editor/settings.schema.json',
     ]) {
       final File destination = File('${root.path}/$path');
@@ -807,6 +809,153 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
+    'stock OpenAI records are discoverable without executable components or auth',
+    () async {
+      final installations = Directory('${root.path}/published');
+      final directory = Directory.fromUri(installations.uri.resolve('openai/'));
+      await publishStockPluginInstallation(
+        repositoryRoot: root,
+        installationDirectory: directory,
+        pluginId: 'dev.adele.openai',
+        displayName: 'OpenAI',
+      );
+      expect(commands.existsSync(), isFalse);
+      expect(directory.listSync(), hasLength(2));
+      expect(
+        jsonDecode(
+          File.fromUri(
+            directory.uri.resolve('adele_plugin.installation.json'),
+          ).readAsStringSync(),
+        ),
+        {
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'dev.adele.openai',
+            'version': '0.1.0',
+            'displayName': 'OpenAI',
+          },
+          'recordsSchema': 'records.schema.json',
+          'components': <String, Object?>{},
+        },
+      );
+      final schemaFile = File.fromUri(
+        directory.uri.resolve('records.schema.json'),
+      );
+      expect(
+        schemaFile.readAsBytesSync(),
+        File('plugins/openai/records.schema.json').readAsBytesSync(),
+      );
+      expect(jsonDecode(schemaFile.readAsStringSync()), {
+        'schemaVersion': 1,
+        'recordTypes': [
+          {
+            'id': 'dev.adele.openai.api-key',
+            'collection': 'providers',
+            'collectionLabel': 'Providers',
+            'label': 'OpenAI API',
+            'description': 'An OpenAI API-key provider configuration.',
+            'fields': [
+              {
+                'id': 'display-name',
+                'label': 'Name',
+                'type': 'string',
+                'required': true,
+              },
+              {
+                'id': 'endpoint',
+                'label': 'API endpoint',
+                'type': 'string',
+                'required': false,
+              },
+            ],
+          },
+        ],
+      });
+
+      final catalog = await PreparedPluginCatalog.discover(installations.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.frontend, isNull);
+      expect(installation.settingsSchema, isNull);
+      expect(catalog.settings.definitions, isEmpty);
+      final schema = installation.recordsSchema!;
+      expect(schema.artifactUri, schemaFile.uri);
+      final type = schema.definitions.single;
+      expect(catalog.records.definitions, [type]);
+      expect(type.id.value, 'dev.adele.openai.api-key');
+      expect(type.owner.value, installation.metadata.id.value);
+      expect(type.collection.value, 'providers');
+      expect(type.collectionLabel, 'Providers');
+      expect(type.label, 'OpenAI API');
+      expect(type.description, 'An OpenAI API-key provider configuration.');
+      expect(type.fields.map((field) => field.id.value), [
+        'display-name',
+        'endpoint',
+      ]);
+      expect(type.fields.map((field) => field.label), ['Name', 'API endpoint']);
+      expect(type.fields.map((field) => field.required), [true, false]);
+      expect(type.fields.map((field) => field.description), [null, null]);
+      expect(commands.existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'stock catalog without OpenAI keeps records absent and settings intact',
+    () async {
+      final installations = Directory('${root.path}/published');
+      for (final plugin in [
+        (
+          directory: 'source-editor',
+          id: 'dev.adele.source-editor',
+          name: 'Source',
+        ),
+        (
+          directory: 'session-evaluator',
+          id: 'dev.adele.plugin.session-evaluator',
+          name: 'Session Evaluator',
+        ),
+      ]) {
+        final directory = Directory.fromUri(
+          installations.uri.resolve('${plugin.directory}/'),
+        );
+        await publishStockPluginInstallation(
+          repositoryRoot: root,
+          installationDirectory: directory,
+          pluginId: plugin.id,
+          displayName: plugin.name,
+        );
+        final manifest =
+            jsonDecode(
+                  File.fromUri(
+                    directory.uri.resolve('adele_plugin.installation.json'),
+                  ).readAsStringSync(),
+                )
+                as Map<String, dynamic>;
+        expect(manifest.containsKey('recordsSchema'), isFalse);
+        expect(
+          File.fromUri(
+            directory.uri.resolve('records.schema.json'),
+          ).existsSync(),
+          isFalse,
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(installations.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(2));
+      expect(catalog.records.definitions, isEmpty);
+      expect(catalog.installations.map((item) => item.recordsSchema), [
+        null,
+        null,
+      ]);
+      final setting = catalog.settings.definitions.single;
+      expect(setting.id.value, 'dev.adele.source-editor.enable-folding');
+      expect(catalog.settings.resolve(setting.id).value, isFalse);
+      expect(commands.existsSync(), isFalse);
+    },
+  );
+
+  test(
     'Linux development launcher prepares evaluator and existing stock catalog without opt-in',
     () async {
       for (final path in [
@@ -1129,6 +1278,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             },
             if (plugin.directory == 'source-editor')
               'settingsSchema': 'settings.schema.json',
+            if (plugin.directory == 'openai')
+              'recordsSchema': 'records.schema.json',
             'components': {
               if (plugin.backend) 'backend': {'artifact': 'backend.aot'},
               if (hasFrontend)
@@ -1146,6 +1297,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (plugin.backend ? 1 : 0) +
                   (hasFrontend ? 1 : 0) +
                   (plugin.directory == 'source-editor' ? 1 : 0) +
+                  (plugin.directory == 'openai' ? 1 : 0) +
                   (plugin.directory == 'git-environment' ? 1 : 0),
             ),
           );
@@ -1181,6 +1333,24 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             (installation) => installation.frontend != null,
           ),
           hasLength(9),
+        );
+        final recordsInstallation = catalog.installations.singleWhere(
+          (installation) => installation.recordsSchema != null,
+        );
+        expect(recordsInstallation.metadata.id.value, 'dev.adele.openai');
+        final recordsSchema = recordsInstallation.recordsSchema!;
+        expect(
+          recordsSchema.artifactUri,
+          installations.uri.resolve('openai/records.schema.json'),
+        );
+        expect(
+          File.fromUri(recordsSchema.artifactUri).readAsBytesSync(),
+          File('plugins/openai/records.schema.json').readAsBytesSync(),
+        );
+        expect(catalog.records.definitions, recordsSchema.definitions);
+        expect(
+          catalog.records.definitions.single.id.value,
+          'dev.adele.openai.api-key',
         );
         final evaluator = catalog.installations.singleWhere(
           (installation) =>
@@ -1765,40 +1935,46 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
-  for (final failure in ['missing', 'empty', 'directory']) {
-    test(
-      'stock settings schema $failure prevents Source publication and launch',
-      () async {
-        final schema = File(
-          '${root.path}/plugins/source_editor/settings.schema.json',
-        );
-        if (failure == 'empty') {
-          schema.writeAsBytesSync([]);
-        } else {
-          schema.deleteSync();
-          if (failure == 'directory') Directory(schema.path).createSync();
-        }
-        final result = await invoke(['run', 'linux']);
-        expect(result.exitCode, 1);
-        expect(result.stderr, contains('settings schema'));
-        expect(result.stderr, contains('settings.schema.json'));
-        expect(launchArguments.existsSync(), isFalse);
-        expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
-        final builds = Directory(
-          '${root.path}/.dart_tool/adele/desktop-plugins',
-        );
-        for (final build in builds.listSync().whereType<Directory>()) {
-          expect(
-            File.fromUri(
-              build.uri.resolve(
-                'installations/source-editor/adele_plugin.installation.json',
-              ),
-            ).existsSync(),
-            isFalse,
+  for (final declaration in [
+    (kind: 'settings', source: 'source_editor', installation: 'source-editor'),
+    (kind: 'records', source: 'openai', installation: 'openai'),
+  ]) {
+    for (final failure in ['missing', 'empty', 'directory']) {
+      test(
+        'stock ${declaration.kind} schema $failure prevents ${declaration.installation} publication and launch',
+        () async {
+          final filename = '${declaration.kind}.schema.json';
+          final schema = File(
+            '${root.path}/plugins/${declaration.source}/$filename',
           );
-        }
-      },
-    );
+          if (failure == 'empty') {
+            schema.writeAsBytesSync([]);
+          } else {
+            schema.deleteSync();
+            if (failure == 'directory') Directory(schema.path).createSync();
+          }
+          final result = await invoke(['run', 'linux']);
+          expect(result.exitCode, 1);
+          expect(result.stderr, contains('${declaration.kind} schema'));
+          expect(result.stderr, contains(filename));
+          expect(launchArguments.existsSync(), isFalse);
+          expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+          final builds = Directory(
+            '${root.path}/.dart_tool/adele/desktop-plugins',
+          );
+          for (final build in builds.listSync().whereType<Directory>()) {
+            expect(
+              File.fromUri(
+                build.uri.resolve(
+                  'installations/${declaration.installation}/adele_plugin.installation.json',
+                ),
+              ).existsSync(),
+              isFalse,
+            );
+          }
+        },
+      );
+    }
   }
 
   for (final String failedEntrypoint in _backendEntrypoints) {

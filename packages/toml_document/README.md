@@ -31,6 +31,9 @@ final text = removed.source;
 - Paths are nonempty lists of literal keys, not expressions. Dots and empty strings
   inside a segment are valid literal keys. Parent tables must already exist;
   dotted-key tables work, but inline tables and arrays are not traversed.
+- `requireTable(path)` verifies an existing regular table without editing text.
+  Missing segments report `path`; inline tables, arrays, or scalar segments report
+  `type`. Implicit dotted-key tables count as regular tables.
 - Equal-value writes and absent-leaf removals return the same snapshot without
   reserialization. A missing parent is an error, including during removal.
 - Failures expose `TomlException.kind` (`parse`, `path`, `type`, or `edit`) and

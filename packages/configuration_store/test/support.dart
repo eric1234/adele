@@ -14,19 +14,48 @@ PlatformStorageRoots rootsAt(String root, {String? configurationRoot}) =>
 
 /// Test-only fault/gate injection at real filesystem boundaries, not a fake store.
 final class StagingOverrides extends IOOverrides {
-  StagingOverrides({this.beforeWrite, this.beforeOpen, this.beforeRename});
+  StagingOverrides({
+    this.beforeWrite,
+    this.beforeOpen,
+    this.beforeRename,
+    this.beforeDelete,
+  });
 
   final void Function(File)? beforeWrite;
   final void Function(File)? beforeOpen;
   final void Function(File)? beforeRename;
+  final void Function(File)? beforeDelete;
 
   @override
   File createFile(String path) {
     final file = super.createFile(path);
-    return path.contains('${p.separator}.settings.toml.')
-        ? _StagedFile(file, this)
+    if (path.contains(RegExp(r'[/\\]\.[^/\\]+\.toml\.'))) {
+      return _StagedFile(file, this);
+    }
+    return beforeDelete != null && path.endsWith('.toml')
+        ? _DeletedFile(file, beforeDelete!)
         : file;
   }
+}
+
+final class _DeletedFile implements File {
+  _DeletedFile(this.file, this.beforeDelete);
+
+  final File file;
+  final void Function(File) beforeDelete;
+
+  @override
+  RandomAccessFile openSync({FileMode mode = FileMode.read}) =>
+      file.openSync(mode: mode);
+
+  @override
+  void deleteSync({bool recursive = false}) {
+    beforeDelete(file);
+    file.deleteSync(recursive: recursive);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 final class _StagedFile implements File {

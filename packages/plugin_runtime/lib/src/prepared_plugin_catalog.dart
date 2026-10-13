@@ -18,6 +18,7 @@ final class PreparedPluginInstallation {
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     this.frontend,
     this.settingsSchema,
+    this.recordsSchema,
   }) : backendConsumedCapabilities = _backendConsumedCapabilityKeys(
          backendConsumedCapabilities,
        ) {
@@ -32,6 +33,12 @@ final class PreparedPluginInstallation {
         ) ??
         false) {
       throw const FormatException('Settings schema owner must match PluginId.');
+    }
+    if (recordsSchema?.definitions.any(
+          (definition) => definition.owner != metadata.id,
+        ) ??
+        false) {
+      throw const FormatException('Records schema owner must match PluginId.');
     }
   }
 
@@ -48,6 +55,9 @@ final class PreparedPluginInstallation {
 
   /// Installation-level declarations, independent of executable components.
   final PreparedSettingsSchema? settingsSchema;
+
+  /// Named-record declarations, independent of settings and executable components.
+  final PreparedRecordsSchema? recordsSchema;
 
   /// Encodes the backend's consumesCapabilities array, copying mutable data.
   List<Map<String, Object?>> backendConsumedCapabilitiesToJson() => [
@@ -75,6 +85,28 @@ final class PreparedSettingsSchema {
 
   /// Immutable definitions in setting-ID order; owners derive from PluginId.
   final List<SettingDefinition<Object>> definitions;
+}
+
+/// Validated named-record declarations captured without executing plugin code.
+final class PreparedRecordsSchema {
+  PreparedRecordsSchema._({
+    required this.artifactUri,
+    required Iterable<RecordTypeDefinition> definitions,
+  }) : definitions = RecordCatalog(definitions).definitions;
+
+  static const schemaVersion = 1;
+  static const maxBytes = 1024 * 1024;
+  static const maxRecordTypes = 256;
+  static const maxFields = 128;
+  static const maxEnumOptions = 128;
+  static const maxIdLength = 256;
+  static const maxLabelLength = 160;
+  static const maxDescriptionLength = 4096;
+
+  final Uri artifactUri;
+
+  /// Immutable definitions in type-ID order; field order remains authored order.
+  final List<RecordTypeDefinition> definitions;
 }
 
 /// Prepared locations and descriptors, without reading or decoding bytecode.
@@ -536,18 +568,23 @@ final class PreparedPluginCatalogIssue {
     this.pluginId,
     this.component,
     this.isSettingsSchemaIssue = false,
+    this.isRecordsSchemaIssue = false,
   });
 
   final Directory installationDirectory;
   final String message;
   final PluginId? pluginId;
 
-  /// Null for installation-wide failures or a settings schema failure.
+  /// Null for installation-wide failures or a declaration schema failure.
   final PreparedPluginComponent? component;
 
   /// True only when an installation's whole settings schema was rejected.
   /// The installation and its healthy executable components remain discoverable.
   final bool isSettingsSchemaIssue;
+
+  /// True only when an installation's whole records schema was rejected.
+  /// Settings and healthy executable components remain discoverable.
+  final bool isRecordsSchemaIssue;
 
   @override
   String toString() => '${installationDirectory.path}: $message';
@@ -571,6 +608,13 @@ final class PreparedPluginCatalog {
   SettingsCatalog get settings => SettingsCatalog([
     for (final installation in installations)
       ...?installation.settingsSchema?.definitions,
+  ]);
+
+  /// Aggregates record declarations without starting plugins or reading values.
+  /// Duplicate types and inconsistent collection labels fail explicitly.
+  RecordCatalog get records => RecordCatalog([
+    for (final installation in installations)
+      ...?installation.recordsSchema?.definitions,
   ]);
 
   /// Empty/unconfigured and missing roots are empty catalogs. Root I/O failures
@@ -625,6 +669,7 @@ final class PreparedPluginCatalog {
           'metadata',
           'components',
           'settingsSchema',
+          'recordsSchema',
         });
         if (document['manifestVersion'] is! int ||
             document['manifestVersion'] != 1) {
@@ -656,6 +701,7 @@ final class PreparedPluginCatalog {
         List<CapabilityKey> backendConsumedCapabilities = const [];
         PreparedFrontendComponent? frontend;
         PreparedSettingsSchema? settingsSchema;
+        PreparedRecordsSchema? recordsSchema;
         for (final component in PreparedPluginComponent.values) {
           if (!components.containsKey(component.name)) continue;
           try {
@@ -735,6 +781,33 @@ final class PreparedPluginCatalog {
             );
           }
         }
+        if (document.containsKey('recordsSchema')) {
+          try {
+            recordsSchema = await _recordsSchema(
+              document['recordsSchema'],
+              resolvedDirectory,
+              pluginMetadata.id,
+            );
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isRecordsSchemaIssue: true,
+                message: 'Invalid records schema: ${error.message}',
+              ),
+            );
+          } on FileSystemException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isRecordsSchemaIssue: true,
+                message: 'Unable to read records schema: $error',
+              ),
+            );
+          }
+        }
         installations.add(
           PreparedPluginInstallation(
             metadata: pluginMetadata,
@@ -743,6 +816,7 @@ final class PreparedPluginCatalog {
             backendConsumedCapabilities: backendConsumedCapabilities,
             frontend: frontend,
             settingsSchema: settingsSchema,
+            recordsSchema: recordsSchema,
           ),
         );
       } on FormatException catch (error) {
@@ -792,21 +866,10 @@ Future<PreparedSettingsSchema> _settingsSchema(
   PluginId pluginId,
 ) async {
   final uri = await _artifact(reference, 'settingsSchema', directory);
-  // Limit the read itself, not only the decoded document or a prior file stat.
-  final bytes = BytesBuilder(copy: false);
-  await for (final chunk in File.fromUri(
+  final document = await _schemaDocument(
     uri,
-  ).openRead(0, PreparedSettingsSchema.maxBytes + 1)) {
-    bytes.add(chunk);
-    if (bytes.length > PreparedSettingsSchema.maxBytes) {
-      throw const FormatException(
-        'settingsSchema must not exceed ${PreparedSettingsSchema.maxBytes} bytes.',
-      );
-    }
-  }
-  final document = _object(
-    jsonDecode(utf8.decode(bytes.takeBytes())),
     'settingsSchema',
+    PreparedSettingsSchema.maxBytes,
     {'schemaVersion', 'definitions'},
   );
   if (document['schemaVersion'] is! int ||
@@ -845,6 +908,172 @@ Future<PreparedSettingsSchema> _settingsSchema(
   }
 }
 
+Future<Map<String, Object?>> _schemaDocument(
+  Uri uri,
+  String label,
+  int maxBytes,
+  Set<String> fields,
+) async {
+  // Limit the read itself, not only the decoded document or a prior file stat.
+  final bytes = BytesBuilder(copy: false);
+  await for (final chunk in File.fromUri(uri).openRead(0, maxBytes + 1)) {
+    bytes.add(chunk);
+    if (bytes.length > maxBytes) {
+      throw FormatException('$label must not exceed $maxBytes bytes.');
+    }
+  }
+  return _object(jsonDecode(utf8.decode(bytes.takeBytes())), label, fields);
+}
+
+Future<PreparedRecordsSchema> _recordsSchema(
+  Object? reference,
+  Directory directory,
+  PluginId owner,
+) async {
+  final uri = await _artifact(reference, 'recordsSchema', directory);
+  final document = await _schemaDocument(
+    uri,
+    'recordsSchema',
+    PreparedRecordsSchema.maxBytes,
+    {'schemaVersion', 'recordTypes'},
+  );
+  if (document['schemaVersion'] is! int ||
+      document['schemaVersion'] != PreparedRecordsSchema.schemaVersion) {
+    throw const FormatException(
+      'recordsSchema.schemaVersion must be integer 1.',
+    );
+  }
+  final definitions = document['recordTypes'];
+  if (definitions is! List<Object?> ||
+      definitions.length > PreparedRecordsSchema.maxRecordTypes) {
+    throw const FormatException(
+      'recordsSchema.recordTypes must be an array with at most '
+      '${PreparedRecordsSchema.maxRecordTypes} entries.',
+    );
+  }
+  try {
+    return PreparedRecordsSchema._(
+      artifactUri: uri,
+      definitions: [
+        for (var index = 0; index < definitions.length; index++)
+          _recordTypeDefinition(
+            definitions[index],
+            'recordsSchema.recordTypes[$index]',
+            owner,
+          ),
+      ],
+    );
+  } on ArgumentError catch (error) {
+    throw FormatException('recordsSchema: ${error.message}');
+  } on DuplicateRecordTypeId catch (error) {
+    throw FormatException('recordsSchema: $error');
+  } on ConflictingRecordCollectionLabel catch (error) {
+    throw FormatException('recordsSchema: $error');
+  }
+}
+
+RecordTypeDefinition _recordTypeDefinition(
+  Object? value,
+  String label,
+  PluginId owner,
+) {
+  final definition = _object(value, label, {
+    'id',
+    'collection',
+    'collectionLabel',
+    'label',
+    'description',
+    'fields',
+  });
+  final fields = definition['fields'];
+  if (fields is! List<Object?> ||
+      fields.length > PreparedRecordsSchema.maxFields) {
+    throw FormatException(
+      '$label.fields must be an array with at most '
+      '${PreparedRecordsSchema.maxFields} entries.',
+    );
+  }
+  return RecordTypeDefinition(
+    id: RecordTypeId(
+      _schemaText(
+        definition['id'],
+        '$label.id',
+        PreparedRecordsSchema.maxIdLength,
+      ),
+    ),
+    owner: owner,
+    collection: RecordCollectionId(
+      _text(definition['collection'], '$label.collection'),
+    ),
+    collectionLabel: _schemaText(
+      definition['collectionLabel'],
+      '$label.collectionLabel',
+      PreparedRecordsSchema.maxLabelLength,
+    ),
+    label: _schemaText(
+      definition['label'],
+      '$label.label',
+      PreparedRecordsSchema.maxLabelLength,
+    ),
+    description: definition.containsKey('description')
+        ? _schemaText(
+            definition['description'],
+            '$label.description',
+            PreparedRecordsSchema.maxDescriptionLength,
+          )
+        : null,
+    fields: [
+      for (var index = 0; index < fields.length; index++)
+        _recordFieldDefinition(fields[index], '$label.fields[$index]'),
+    ],
+  );
+}
+
+RecordFieldDefinition<Object> _recordFieldDefinition(
+  Object? value,
+  String label,
+) {
+  if (value is! Map<String, Object?>) {
+    throw FormatException('$label must be an object.');
+  }
+  final kind = _text(value['type'], '$label.type');
+  _object(value, label, {
+    'id',
+    'label',
+    'description',
+    'type',
+    'required',
+    if (kind == 'integer') ...['minimum', 'maximum'],
+    if (kind == 'enum') 'options',
+  });
+  final required = value['required'];
+  if (required is! bool) {
+    throw FormatException('$label.required must be a boolean.');
+  }
+  return RecordFieldDefinition(
+    id: RecordFieldId(_text(value['id'], '$label.id')),
+    label: _schemaText(
+      value['label'],
+      '$label.label',
+      PreparedRecordsSchema.maxLabelLength,
+    ),
+    description: value.containsKey('description')
+        ? _schemaText(
+            value['description'],
+            '$label.description',
+            PreparedRecordsSchema.maxDescriptionLength,
+          )
+        : null,
+    type: _scalarType(
+      value,
+      label,
+      maxEnumOptions: PreparedRecordsSchema.maxEnumOptions,
+      maxLabelLength: PreparedRecordsSchema.maxLabelLength,
+    ),
+    required: required,
+  );
+}
+
 SettingDefinition<Object> _settingDefinition(
   Object? value,
   String label,
@@ -867,6 +1096,54 @@ SettingDefinition<Object> _settingDefinition(
     if (kind == 'enum') 'options',
   };
   _object(definition, label, allowed);
+  return SettingDefinition(
+    id: SettingId(
+      _schemaText(
+        definition['id'],
+        '$label.id',
+        PreparedSettingsSchema.maxIdLength,
+      ),
+    ),
+    owner: owner,
+    label: _schemaText(
+      definition['label'],
+      '$label.label',
+      PreparedSettingsSchema.maxLabelLength,
+    ),
+    category: _schemaText(
+      definition['category'],
+      '$label.category',
+      PreparedSettingsSchema.maxLabelLength,
+    ),
+    section: _schemaText(
+      definition['section'],
+      '$label.section',
+      PreparedSettingsSchema.maxLabelLength,
+    ),
+    description: definition.containsKey('description')
+        ? _schemaText(
+            definition['description'],
+            '$label.description',
+            PreparedSettingsSchema.maxDescriptionLength,
+          )
+        : null,
+    type: _scalarType(
+      definition,
+      label,
+      maxEnumOptions: PreparedSettingsSchema.maxEnumOptions,
+      maxLabelLength: PreparedSettingsSchema.maxLabelLength,
+    ),
+    defaultValue: definition['default'],
+  );
+}
+
+SettingType<Object> _scalarType(
+  Map<String, Object?> definition,
+  String label, {
+  required int maxEnumOptions,
+  required int maxLabelLength,
+}) {
+  final kind = _text(definition['type'], '$label.type');
   int? bound(String field) {
     if (!definition.containsKey(field)) return null;
     final value = definition[field];
@@ -889,59 +1166,41 @@ SettingDefinition<Object> _settingDefinition(
       type = const StringSettingType();
     case 'enum':
       final options = definition['options'];
-      if (options is! List<Object?> ||
-          options.length > PreparedSettingsSchema.maxEnumOptions) {
+      if (options is! List<Object?> || options.length > maxEnumOptions) {
         throw FormatException(
           '$label.options must be an array with at most '
-          '${PreparedSettingsSchema.maxEnumOptions} entries.',
+          '$maxEnumOptions entries.',
         );
       }
       type = EnumSettingType([
         for (var index = 0; index < options.length; index++)
-          _settingEnumOption(options[index], '$label.options[$index]'),
+          _settingEnumOption(
+            options[index],
+            '$label.options[$index]',
+            maxLabelLength,
+          ),
       ]);
     default:
       throw FormatException('$label.type is unsupported.');
   }
-  return SettingDefinition(
-    id: SettingId(
-      _settingsText(
-        definition['id'],
-        '$label.id',
-        PreparedSettingsSchema.maxIdLength,
-      ),
-    ),
-    owner: owner,
-    label: _settingsText(definition['label'], '$label.label'),
-    category: _settingsText(definition['category'], '$label.category'),
-    section: _settingsText(definition['section'], '$label.section'),
-    description: definition.containsKey('description')
-        ? _settingsText(
-            definition['description'],
-            '$label.description',
-            PreparedSettingsSchema.maxDescriptionLength,
-          )
-        : null,
-    type: type,
-    defaultValue: definition['default'],
-  );
+  return type;
 }
 
-SettingEnumOption _settingEnumOption(Object? value, String label) {
+SettingEnumOption _settingEnumOption(
+  Object? value,
+  String label,
+  int maxLabelLength,
+) {
   final option = _object(value, label, {'value', 'label'});
   return SettingEnumOption(
-    _settingsText(option['value'], '$label.value'),
+    _schemaText(option['value'], '$label.value', maxLabelLength),
     label: option.containsKey('label')
-        ? _settingsText(option['label'], '$label.label')
+        ? _schemaText(option['label'], '$label.label', maxLabelLength)
         : null,
   );
 }
 
-String _settingsText(
-  Object? value,
-  String label, [
-  int limit = PreparedSettingsSchema.maxLabelLength,
-]) {
+String _schemaText(Object? value, String label, int limit) {
   final text = _text(value, label, blank: true);
   if (text.length > limit) {
     throw FormatException('$label must not exceed $limit UTF-16 code units.');

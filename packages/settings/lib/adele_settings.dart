@@ -1,5 +1,7 @@
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
+part 'src/records.dart';
+
 /// Stable setting identity, independent of its presentation or stored value.
 final class SettingId {
   factory SettingId(String value) {
@@ -49,32 +51,39 @@ sealed class SettingType<T extends Object> {
   const SettingType._();
 
   T _validate(SettingId id, Object? value) {
+    final violation = _violation(value);
+    if (violation != null) throw InvalidSettingValue(id, violation);
+    return value as T;
+  }
+
+  // Scalar semantics do not depend on a setting or record-field identity.
+  String? _violation(Object? value) {
     switch (this) {
       case BooleanSettingType():
         if (value is! bool) {
-          throw InvalidSettingValue(id, 'Expected a boolean.');
+          return 'Expected a boolean.';
         }
       case IntegerSettingType(:final minimum, :final maximum):
         if (value is! int) {
-          throw InvalidSettingValue(id, 'Expected a native Dart int.');
+          return 'Expected a native Dart int.';
         }
         if (minimum != null && value < minimum) {
-          throw InvalidSettingValue(id, 'Must be at least $minimum.');
+          return 'Must be at least $minimum.';
         }
         if (maximum != null && value > maximum) {
-          throw InvalidSettingValue(id, 'Must be at most $maximum.');
+          return 'Must be at most $maximum.';
         }
       case StringSettingType():
         if (value is! String) {
-          throw InvalidSettingValue(id, 'Expected a string.');
+          return 'Expected a string.';
         }
       case EnumSettingType(:final options):
         if (value is! String ||
             !options.any((option) => option.value == value)) {
-          throw InvalidSettingValue(id, 'Expected a declared enum string.');
+          return 'Expected a declared enum string.';
         }
     }
-    return value as T;
+    return null;
   }
 }
 

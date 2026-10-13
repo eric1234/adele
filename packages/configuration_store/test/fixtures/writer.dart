@@ -5,7 +5,10 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 import '../support.dart';
 
 void main(List<String> arguments) {
-  final store = ConfigurationStore(rootsAt(arguments[0]));
+  final settings = ConfigurationStore(rootsAt(arguments[0]));
+  final store = arguments.length > 3
+      ? settings.recordFile(collectionId: 'providers', recordId: arguments[3])
+      : settings;
   final mode = arguments[1];
   if (mode == 'probe') {
     final lock = File(store.lockPath).openSync(mode: FileMode.append);
@@ -35,17 +38,20 @@ void main(List<String> arguments) {
   if (stdin.readLineSync() != 'save') throw StateError('Expected save command');
   stdout.writeln('saving');
   try {
+    void pause(File _) {
+      stdout.writeln('staged');
+      if (stdin.readLineSync() != 'publish') {
+        throw StateError('Expected publish command');
+      }
+    }
+
     IOOverrides.runWithIOOverrides(
-      () => store.save(snapshot, edited),
+      () => mode.contains('delete')
+          ? store.delete(snapshot)
+          : store.save(snapshot, edited),
       StagingOverrides(
-        beforeRename: mode == 'pause'
-            ? (_) {
-                stdout.writeln('staged');
-                if (stdin.readLineSync() != 'publish') {
-                  throw StateError('Expected publish command');
-                }
-              }
-            : null,
+        beforeRename: mode == 'pause' ? pause : null,
+        beforeDelete: mode == 'pause-delete' ? pause : null,
       ),
     );
     stdout.writeln('committed');

@@ -6,7 +6,9 @@ Implementation status: Declarative ordinary scalar settings, immutable catalogs,
 default/global resolution, conditional global TOML persistence, and prepared-plugin
 declaration discovery are implemented, with an application-owned Global Settings
 dialog. Desktop Main Content frontends read owner-scoped startup values; Source
-Editor folding is the first consumer. Profiles remain unimplemented.
+Editor folding is the first scalar consumer. Headless declarative configuration
+records share scalar validation and conditional persistence; the OpenAI plugin
+declares the first nonsecret provider record. Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -131,6 +133,60 @@ Invalid known values fail the owning frontend, not a silent default or a backend
 startup dependency. No Profile filtering, live notification, mutation API, or
 backend settings delivery is implied. The [application boundary](../../app/README.md#prepared-settings)
 owns startup and failure details.
+
+## Declarative Configuration Records
+
+The single implicit global configuration layer also contains collections of
+identified, structured definitions. A **configuration record** is durable data,
+not an installation, live provider, routing context, active Session selection,
+credential, Profile, or Agent execution. The host owns generic validation and
+persistence; plugins own data-only declarations. The OpenAI plugin's
+`dev.adele.openai.api-key` declaration is the first real type, not host-embedded
+provider logic. It can exist with no credentials or running backend.
+
+Collections group compatible types for later presentation. Collection identity
+(`providers`), record-type identity (`dev.adele.openai.api-key`) and record identity
+(`work-openai`) are distinct. A record ID is unique within its collection across
+all types and independent of its display name. Type IDs use the shared public-ID
+grammar and belong to the declaring installation's plugin namespace. Collection
+and record IDs use a narrow portable lowercase grammar rather than arbitrary
+paths; the [semantic owner](../../packages/settings/README.md) specifies it.
+Catalog aggregation rejects duplicate types and conflicting collection labels,
+never choosing a winner by installation order.
+
+Fields are ordered declarations with local identity, label, optional description,
+required/optional presence, and existing Boolean, integer, string or string-enum
+types. They are not synthetic global `SettingId`s. Both models use the same scalar
+validation primitive. Required values must be explicit; optional absence stays
+distinct from false, zero and empty strings. There are no field defaults, explicit
+nulls, nested values, executable validators or cross-record validation. Unknown
+persisted data remains untouched, including when an owner is unavailable.
+
+Prepared installations optionally reference `recordsSchema`, separately versioned
+from scalar schemas and independent of executable activation. Discovery extends
+the existing catalog; one invalid schema does not disable healthy executable or
+scalar components. The [runtime schema contract](../../packages/plugin_runtime/README.md#prepared-catalog)
+owns exact declaration fields and limits.
+
+Records use `<configurationRoot>/<collection>/<record-id>.toml` beside global
+`settings.toml`. A fixed version/type header and regular `[values]` table are edited
+by the existing native TOML document API. The
+[host adapter](../../packages/settings_host/README.md#configuration-records) owns
+the exact format, CRUD API, diagnostics and bounds. Each record has its own
+existence/byte baseline; independent-record changes do not conflict. Update supplies
+the complete known-field set, removing omitted optional fields and preserving
+unknown content. Delete removes only that layer's file, not a tombstone or mask.
+Stale update/delete and no-op writes fail explicitly and require deliberate reload.
+Enumeration retains healthy records alongside attributable bad-file diagnostics;
+directory-wide failures remain errors. Aliased identities never select a winner.
+
+This is headless infrastructure, with no record Settings UI or provider activation.
+The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
+strings, not an API key or credential reference. Existing OpenAI authentication
+behavior is unchanged. Future Profiles may contain the same kinds of collections,
+but no Profile identity, ordered record composition or merge rules exist yet.
+Future record UI must use the established host-owned serialized I/O boundary, not
+create another writer isolate or persistence service.
 
 ## Shared context, distinct composition
 
@@ -320,12 +376,15 @@ validation and narrow immutable scalar document edits. It provides no filesystem
 service, setting declarations, effective-value resolution, or Profile semantics.
 
 [`adele_configuration_store`](../../packages/configuration_store/README.md) owns
-the narrow host persistence boundary for `settings.toml` under the configuration
-root. Loading validates existing TOML or represents absence as an empty document,
+the narrow host persistence boundary for `settings.toml` and independently
+identified record files under the explicit configuration root. Loading validates
+existing TOML or represents absence as an empty document,
 without creating directories or artifacts. Malformed content and I/O failures
 remain distinct errors; neither causes repair or substitution with defaults.
 Snapshots retain content/existence baselines. Saves reject stale whole-document
 edits, skip unchanged content, and return an updated baseline after publication.
+Conditional deletion and create-without-overwrite share that same transaction
+boundary rather than another atomic-write implementation.
 
 Cooperating host writers use a stable advisory lock under the **local-state** root,
 not inside potentially Git-managed configuration. Each process routes operations
@@ -334,6 +393,8 @@ locks coordinate processes. Complete staged content is flushed and replaced on
 the same filesystem. Linux is the maintained write path; other platforms reject
 changed saves pending validation. Symlinked configuration directories work, but
 changed saves reject file-level symlinks rather than destroying their arrangement.
+Record operations additionally reject symlinked collection directories and file
+entries rather than discovering records through unexpected links.
 External editors/Git can race the final content check, so this is not unconditional
 compare-and-swap against uncooperative writers. The local README owns the exact
 placement, permission, crash-durability, and coordination limits.
@@ -481,6 +542,9 @@ Implemented foundations and current limits:
 - The host-owned Global Settings dialog edits those declarations through the shared
   asynchronous configuration owner, with current persisted provenance, per-setting
   save/reset, explicit reload, and non-destructive error/conflict handling.
+- Plugin-declared records support generic validation and headless independent-file
+  CRUD in the same global layer. OpenAI supplies a nonsecret API-key provider
+  configuration declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
@@ -513,8 +577,8 @@ profile-aware provider routing, or production workbench-state persistence.
 
 These deferrals do not reopen ordered flat Profile composition or the product
 identities accepted by ADRs 0029 and 0031. Beyond the global roots, TOML document
-boundary, and scalar global `settings.toml` representation above, broader
-configuration file layouts, record schemas, migration protocols, and settings APIs
+boundary, scalar global `settings.toml` and identified collection representation
+above, broader configuration layouts, migration protocols, and settings APIs
 remain open; ADRs
 [0033](../adr/0033-durable-project-storage-and-provider-backing.md) and
 [0034](../adr/0034-plugin-owned-relational-session-storage.md) separately settle
