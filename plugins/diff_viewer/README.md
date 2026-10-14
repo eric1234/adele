@@ -62,9 +62,12 @@ edits working files or discards changes; committed history is not an approval ta
 The source service remains read-only and usable without an approval provider.
 
 Each `ChangeSetSnapshot` carries a nullable opaque `reviewRevision`; null means it
-supplies no mutation precondition. Each `ChangedFile.reviewEligible` explicitly
-describes supported complete content. A `ReviewSelection` contains the unchanged
-`expectedRevision`, `granularity` (`hunk`, `file`, or `layer`), an Environment-relative
+supplies no mutation precondition. `ChangedFile.reviewEligible` is the provider's
+evidence that the complete file can participate in review.
+Diff does not infer review eligibility from content status or change kind: another
+provider can support binary or type-only changes without changing Git's supported
+subset. A `ReviewSelection` contains the unchanged `expectedRevision`,
+`granularity` (`hunk`, `file`, or `layer`), an Environment-relative
 `relativePath` for hunk/file selection, and a zero-based `hunkIndex` only for a hunk.
 All wire fields are required, including nullable fields. No Environment/Session ID,
 Git path, object ID, command, or caller-provided patch is accepted. The hunk index
@@ -129,6 +132,13 @@ appears in the default scope; layered scopes expose it separately from
 be eligible and no unresolved conflicts. They submit one revision-bound provider
 operation, never a loop of file or hunk requests. Committed and conflict sections
 are not actionable.
+
+File and layer controls honor provider-declared eligibility independently of text
+rendering. Hunk controls require actual provider-supplied hunks; no hunks are invented
+for nontext content. Revision, explicit live review access, presentation lifetime
+and pending-operation checks still apply. **Open in Source** retains its separate
+text/current-working-file restrictions below; review eligibility does not grant
+Source navigation.
 
 Approval access resolves independently of snapshot loading and Source navigation,
 and is retained only for the current presentation/snapshot epoch. Missing access,

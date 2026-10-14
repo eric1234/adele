@@ -207,7 +207,7 @@ class DiffPaneState extends State<DiffPane> {
           verb != '' &&
           expectedRevision != null &&
           expectedRevision != '' &&
-          reviewEligible(file);
+          file.reviewEligible;
       if (eligible) {
         header.addAll([
           '$verb File',
@@ -268,13 +268,6 @@ class DiffPaneState extends State<DiffPane> {
     }
   }
 
-  bool reviewEligible(ChangedFile file) =>
-      file.reviewEligible &&
-      file.contentStatus == 'text' &&
-      (file.changeKind == 'added' ||
-          file.changeKind == 'modified' ||
-          file.changeKind == 'deleted');
-
   void appendLayer(
     List<List<String>> next,
     ChangeSetSnapshot snapshot,
@@ -290,7 +283,7 @@ class DiffPaneState extends State<DiffPane> {
         snapshot.files.isNotEmpty &&
         wholeLayer;
     for (final file in snapshot.files) {
-      if (!reviewEligible(file)) eligible = false;
+      if (!file.reviewEligible) eligible = false;
     }
     final List<String> section = ['section', label, ''];
     if (eligible) {

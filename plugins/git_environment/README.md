@@ -279,9 +279,9 @@ ambiguous review-provider access does not disable snapshots.
 Reviewable staged/unstaged snapshots carry an opaque HMAC-SHA-256 revision keyed to
 the provider generation and exact live Environment generation. Its input includes
 the bound source/worktree identity, captured HEAD and branch, complete raw index
-identity, layer, ordered files/hunks/lines, relevant attributes and observed working
-content identities. No filesystem paths or authority are exposed in the token,
-and no snapshot registry is retained. A hunk selector is only an index into that
+identity, layer, ordered files/hunks/lines, relevant attribute/ignore sources and
+observed working content identities. No filesystem paths or authority are exposed
+in the token, and no snapshot registry is retained. A hunk selector is only an index into that
 exact ordered revision. Reobservation under the index lock must produce the same
 revision; stale requests return `stale` without publishing an index. Changes outside
 the selected hunk, or unrelated index updates, can conservatively require Refresh.
@@ -311,8 +311,9 @@ Eligible observation captures bounded contents and state for relevant worktree
 (including ancestors outside a nested Project source), and the common Git
 `info/attributes` file. Git-discovered system/global attributes and system/global,
 repository and per-worktree configuration sources are captured too. Source-content
-fingerprints participate in each file's revision. Attribute/configuration contents
-are bounded to 16 MiB in aggregate and by the existing inventory-path bound.
+fingerprints participate in each file's revision. Attribute, ignore and configuration
+source contents share the 16 MiB aggregate metadata allowance and the existing
+inventory-path bound.
 Configuration includes, `attr.tree`, indirect/nonregular sources, or source
 discovery that cannot be verified safely make approval unavailable while retaining
 inspection.
@@ -320,6 +321,18 @@ Git versions without the optional attribute/configuration discovery variables
 likewise retain read-only inspection without approval. Relative configured attribute
 paths are resolved against Git's bound worktree root, not a nested Project source.
 This is a deliberately bounded review policy, not a general configuration watcher.
+
+Ignore inputs are captured before Git relies on them to enumerate or prune the
+review set: the bound common Git directory's `info/exclude`, relevant worktree
+`.gitignore` files and ancestors above a nested Project source, and the configured
+or normal global excludes file together with its governing configuration. Missing
+source paths are retained so appearance is detectable. Git still interprets all
+patterns; the provider does not implement ignore matching or traverse ignored
+subtrees merely to watch them. Stable ordered source fingerprints participate in
+the review revision. Snapshot settlement and final synchronous publication both
+check source bytes and state, so changing exclusions cannot turn an acknowledged
+whole-layer operation into a partial selection. Unverifiable or over-budget review
+sources make approval unavailable without hiding the original read-only snapshot.
 
 Supported targets are fully inspected ordinary UTF-8 text modifications, additions
 (including nonignored untracked files), and deletions. Empty additions/deletions
@@ -356,8 +369,8 @@ Every hunk, file or whole-layer request uses one mechanism:
    to alter an unselected path.
 4. Flush the prospective bytes to the held lockfile, revalidate source observations,
    HEAD/index identity, canonical authority and live generation, then recheck the
-   captured attribute/configuration source bytes and state synchronously. Appearance,
-   disappearance, replacement and same-length edits are checked without trusting
+   captured attribute/ignore/configuration source bytes and state synchronously.
+   Appearance, disappearance, replacement and same-length edits are checked without trusting
    metadata alone. The earlier effective-attribute validation is retained. Atomically
    rename the lockfile over the actual index without another asynchronous suspension.
 
@@ -389,6 +402,14 @@ Shutdown fences new review admissions and drains existing cleanup. Navigation or
 retirement can revoke acknowledgement and prevent pre-publication admission, but
 does not undo a published index. Lost acknowledgement requires authoritative
 Refresh, never automatic retry through a replacement provider.
+
+One monotonic operation deadline covers preparation and all authority waits. Each
+initial or final authority call receives only the remaining budget, with active
+state checked before the call and again on completion. Expiry unwinds the index
+lock and temporary-file cleanup without waiting for a late authority response or
+starting another authority call. A timed-out underlying Future may still complete,
+but it cannot retain the lock or resume publication. Cleanup may add bounded
+overhead; individual authority calls never reset the operation timeout.
 
 These guarantees cover cooperating Git index writers, not hostile same-user
 processes that ignore locks or replace filesystem paths between checks. Working

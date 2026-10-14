@@ -3585,6 +3585,9 @@ final class _ReadFile implements File {
   final _ReadOverrides overrides;
 
   @override
+  Directory get parent => file.parent;
+
+  @override
   Future<RandomAccessFile> open({FileMode mode = FileMode.read}) async =>
       _ReadHandle(await file.open(mode: mode), overrides);
 

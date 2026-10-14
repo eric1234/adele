@@ -198,8 +198,10 @@ final class _SnapshotOperation {
   final Map<String, String> _workingDigests = {};
   bool _reviewContentComplete = true;
   final Map<String, String> _attributes = {};
-  final Map<String, ({FileStat state, Uint8List? bytes})>
-  _reviewAttributeFiles = {};
+  final Map<String, ({FileStat state, Uint8List? bytes})> _reviewMetadataFiles =
+      {};
+  List<String>? _reviewConfigPaths;
+  final Set<String> _reviewIgnorePaths = {};
   final Map<String, List<String>> _reviewAttributePaths = {};
   List<String>? _reviewGlobalAttributePaths;
   final Map<String, Uint8List?> _headFiles = {};
@@ -215,12 +217,25 @@ final class _SnapshotOperation {
   late String _reviewEnvironmentId;
 
   void checkOpen() {
-    if (_closed || _elapsed.elapsed > limits.operationTimeout) {
+    if (_closed || _elapsed.elapsed >= limits.operationTimeout) {
       throw _failure(
         'operation_timeout',
         'The change snapshot is no longer active.',
       );
     }
+  }
+
+  Future<AuthorizedEnvironmentIdentity> awaitAuthority(
+    Future<AuthorizedEnvironmentIdentity> Function() request,
+  ) async {
+    checkOpen();
+    final pending = request();
+    final remaining = limits.operationTimeout - _elapsed.elapsed;
+    final identity = await pending.timeout(
+      remaining > Duration.zero ? remaining : Duration.zero,
+    );
+    checkOpen();
+    return identity;
   }
 
   void expire() {
@@ -359,8 +374,7 @@ final class _SnapshotOperation {
     final head = includeStaged
         ? await _tree(root, _head!.commit)
         : <String, GitIndexEntry>{};
-    final before = await _enumerate(root);
-    if (_indexReviewable) await _captureReviewDirectories(root, before);
+    final before = await _enumerate(root, captureReviewIgnores: true);
     // Retain every stage identity, including stages 2/3 collapsed into the one
     // conflict row. Comparing that row alone would miss conflict-side races.
     final indexDescription = _indexDescription;
@@ -432,6 +446,7 @@ final class _SnapshotOperation {
     }
     Future<void> validate() async {
       if (_indexReviewable) {
+        _validateReviewMetadataSync(_reviewIgnorePaths);
         try {
           if (!_bytesEqual(_indexBytes, await _readIndex())) {
             throw _failure(
@@ -477,6 +492,7 @@ final class _SnapshotOperation {
       if (_indexReviewable) {
         _validateHeadFilesSync();
         _validateReviewDirectoriesSync();
+        _validateReviewMetadataSync(_reviewIgnorePaths);
       }
       for (final entry in _attributes.entries) {
         if (entry.value != await _readAttributes(root, entry.key)) {
@@ -662,7 +678,10 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<Map<String, GitIndexEntry>> _enumerate(Directory root) async {
+  Future<Map<String, GitIndexEntry>> _enumerate(
+    Directory root, {
+    bool captureReviewIgnores = false,
+  }) async {
     // Cached inventory never hashes worktree content or invokes clean filters.
     // --modified/diff-files are unsafe here, even when only raw output is asked.
     _indexDescription = _decode(
@@ -688,6 +707,9 @@ final class _SnapshotOperation {
         _reviewFlaggedPaths.add(match[1]!);
       }
     }
+    if (captureReviewIgnores && _indexReviewable) {
+      await _captureReviewIgnoreSources(root, changes);
+    }
     final untracked = await git(root, [
       'ls-files',
       '--others',
@@ -701,6 +723,20 @@ final class _SnapshotOperation {
       changes,
       maximumEntries: limits.inventoryEntries,
     );
+    if (captureReviewIgnores && _indexReviewable) {
+      for (final entry in changes.entries) {
+        if (entry.value.kind == 'untrackedRepository' ||
+            entry.value.oldMode == '160000') {
+          continue;
+        }
+        if (!_reviewIgnorePaths.contains(
+          '${File('${root.path}/${entry.key}').parent.path}/.gitignore',
+        )) {
+          _indexReviewable = false;
+          break;
+        }
+      }
+    }
     return changes;
   }
 

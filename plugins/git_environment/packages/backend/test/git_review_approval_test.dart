@@ -19,6 +19,838 @@ void main() {
   setUp(() async => fixture = await _Repository.create());
   tearDown(() async => fixture.close());
 
+  for (final gate in ['review', 'read']) {
+    test(
+      'final $gate gate fences ignored directory becoming visible',
+      () async {
+        await fixture.write('scope/file', 'old\n');
+        await fixture.git(['add', '.']);
+        await fixture.git(['commit', '-m', 'Ignore authority fixture']);
+        fixture.bind(scope: 'scope');
+        await fixture.write('scope/file', 'reviewed\n');
+        await fixture.write('scope/cache/hidden', 'newly visible\n');
+        final excludes = File('${fixture.repository.path}/.git/info/exclude');
+        await excludes.writeAsString('scope/cache/\n');
+        await excludes.setLastModified(DateTime.utc(2000));
+        final snapshot = await fixture.source.snapshotUnstaged();
+        expect(snapshot.files.map((file) => file.relativePath), ['file']);
+        expect(snapshot.reviewRevision, isNotNull);
+        final before = await fixture.index.readAsBytes();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        Future<void> pause(int call) async {
+          if (call == (gate == 'review' ? 2 : 4)) {
+            entered.complete();
+            await release.future;
+          }
+        }
+
+        if (gate == 'review') {
+          fixture.authority.onReview = pause;
+        } else {
+          fixture.authority.onRead = pause;
+        }
+        final pending = fixture.review.approve(_select(snapshot, 'layer'));
+        await Future.any([
+          entered.future,
+          pending.then<void>(
+            (value) => throw StateError(
+              'Review completed before final gate: ${value.status}',
+            ),
+          ),
+        ]);
+        final state = await excludes.stat();
+        await excludes.writeAsString('#${' ' * (state.size - 2)}\n');
+        await excludes.setLastModified(state.modified);
+        release.complete();
+        expect((await pending).status, 'stale');
+        expect(await fixture.index.readAsBytes(), before);
+        expect(await fixture.read('scope/file'), 'reviewed\n');
+        expect(await fixture.read('scope/cache/hidden'), 'newly visible\n');
+        expect(await fixture.lock.exists(), isFalse);
+        final fresh = await fixture.source.snapshotUnstaged();
+        expect(fresh.files.map((file) => file.relativePath), [
+          'cache/hidden',
+          'file',
+        ]);
+      },
+    );
+
+    test(
+      'final $gate authority uses the original operation deadline',
+      () async {
+        await fixture.write('file', 'deadline change\n');
+        final snapshot = await fixture.source.snapshotUnstaged();
+        final before = await fixture.index.readAsBytes();
+        const budget = Duration(seconds: 5);
+        const cleanup = Duration(milliseconds: 800);
+        final clock = Stopwatch()..start();
+        final first = Completer<void>();
+        final entered = Completer<void>();
+        final late = Completer<void>();
+        final consumeBudget = Timer(const Duration(seconds: 2), first.complete);
+        fixture.authority.onReview = (call) async {
+          if (call == 1) await first.future;
+          if (gate == 'review' && call == 2) {
+            entered.complete();
+            await late.future;
+          }
+        };
+        fixture.authority.onRead = (call) async {
+          if (gate == 'read' && call == 4) {
+            entered.complete();
+            await late.future;
+          }
+        };
+        final pending = fixture
+            .reviewWith(
+              limits: const GitChangeSetLimits(operationTimeout: budget),
+            )
+            .approve(_select(snapshot, 'file', path: 'file'));
+        final settled = pending.then<Object>(
+          (value) => value,
+          onError: (Object error, StackTrace stack) => error,
+        );
+        Object? atDeadline;
+        var lockHeldPastDeadline = false;
+        try {
+          await Future.any([
+            entered.future,
+            settled.then<void>(
+              (value) =>
+                  throw StateError('Review did not reach final gate: $value'),
+            ),
+          ]);
+          expect(
+            clock.elapsed,
+            greaterThanOrEqualTo(const Duration(seconds: 2)),
+          );
+          expect(await fixture.lock.exists(), isTrue);
+          final remaining = budget + cleanup - clock.elapsed;
+          expect(remaining, greaterThan(Duration.zero));
+          atDeadline = await settled.timeout(
+            remaining,
+            onTimeout: () => _Unsettled(),
+          );
+          lockHeldPastDeadline = await fixture.lock.exists();
+          expect(await fixture.index.readAsBytes(), before);
+          expect(await fixture.read('file'), 'deadline change\n');
+          if (atDeadline is ReviewApprovalFailure) {
+            expect(atDeadline.code, 'operation_timeout');
+            expect(lockHeldPastDeadline, isFalse);
+            fixture.authority.onRead = null;
+            fixture.authority.onReview = null;
+            await fixture.git(['add', 'unrelated']);
+            final fresh = await fixture.source.snapshotUnstaged();
+            expect(
+              (await fixture
+                      .reviewWith(
+                        limits: const GitChangeSetLimits(
+                          operationTimeout: budget,
+                        ),
+                      )
+                      .approve(_select(fresh, 'file', path: 'file')))
+                  .status,
+              'applied',
+            );
+            final published = await fixture.index.readAsBytes();
+            final reads = fixture.authority.reads;
+            late.complete();
+            await Future<void>.delayed(Duration.zero);
+            expect(fixture.authority.reads, reads);
+            expect(await fixture.index.readAsBytes(), published);
+            expect(await fixture.indexText('file'), 'deadline change\n');
+          }
+        } finally {
+          consumeBudget.cancel();
+          if (!first.isCompleted) first.complete();
+          if (!late.isCompleted) late.complete();
+          await settled;
+        }
+        expect(
+          atDeadline,
+          isA<ReviewApprovalFailure>().having(
+            (error) => error.code,
+            'code',
+            'operation_timeout',
+          ),
+          reason: 'Authority waits must not renew the overall budget.',
+        );
+        expect(lockHeldPastDeadline, isFalse);
+        expect(await fixture.lock.exists(), isFalse);
+      },
+    );
+  }
+
+  test(
+    'ignore bytes bind revision even with identical effective patterns and mtime',
+    () async {
+      await fixture.write('file', 'reviewed\n');
+      final excludes = File('${fixture.repository.path}/.git/info/exclude');
+      await excludes.writeAsString('# first\ncache/\n');
+      await excludes.setLastModified(DateTime.utc(2000));
+      final previous = await fixture.source.snapshotUnstaged();
+      final state = await excludes.stat();
+      await excludes.writeAsString('# other\ncache/\n');
+      await excludes.setLastModified(state.modified);
+      final current = await fixture.source.snapshotUnstaged();
+      expect(await excludes.length(), state.size);
+      expect((await excludes.stat()).modified, state.modified);
+      expect(current.reviewRevision, isNot(previous.reviewRevision));
+      final before = await fixture.index.readAsBytes();
+      expect(
+        (await fixture.review.approve(
+          _select(previous, 'file', path: 'file'),
+        )).status,
+        'stale',
+      );
+      expect(await fixture.index.readAsBytes(), before);
+    },
+  );
+
+  test(
+    'Git excluded directory local rules cannot unignore its parent',
+    () async {
+      await fixture.write('.gitignore', 'cache/\n');
+      await fixture.write('cache/.gitignore', '!hidden\n!../cache/\n');
+      await fixture.write('cache/hidden', 'ignored\n');
+      expect(
+        await fixture.git(['ls-files', '--others', '--exclude-standard']),
+        '.gitignore\n',
+      );
+      expect(
+        (await fixture.runGit(['check-ignore', '--quiet', 'cache/'])).exitCode,
+        0,
+      );
+      expect(
+        await fixture.git([
+          '-C',
+          'cache',
+          'ls-files',
+          '--others',
+          '--exclude-standard',
+          '--',
+          '.',
+        ]),
+        isEmpty,
+      );
+      // Ignoring only the contents is different: the directory must be visited,
+      // including local rules even when all its files were previously invisible.
+      await fixture.write('.gitignore', 'cache/*\n');
+      await fixture.write('cache/.gitignore', '!hidden\n');
+      expect(
+        await fixture.git(['ls-files', '--others', '--exclude-standard']),
+        '.gitignore\ncache/hidden\n',
+      );
+    },
+  );
+
+  for (final kind in [
+    'ancestor',
+    'nested',
+    'configured',
+    'relative-configured',
+    'default-xdg',
+    'default-home',
+    'appearance',
+    'deletion',
+    'replacement',
+    'config-switch',
+    'symlink',
+    'parent-symlink',
+  ]) {
+    test(
+      'final authority fences $kind ignore source',
+      () async {
+        await fixture.write('scope/file', 'old\n');
+        await fixture.git(['add', '.']);
+        await fixture.git(['commit', '-m', 'Scoped ignore policy']);
+        fixture.bind(scope: 'scope');
+        await fixture.write('scope/file', 'reviewed\n');
+        final nested = kind == 'nested';
+        final hidden = nested
+            ? 'scope/empty/cache/hidden'
+            : 'scope/cache/hidden';
+        await fixture.write(hidden, 'newly visible\n');
+        final info = File('${fixture.repository.path}/.git/info/exclude');
+        final path = switch (kind) {
+          'ancestor' || 'appearance' => '${fixture.worktree.path}/.gitignore',
+          'nested' => '${fixture.worktree.path}/scope/empty/.gitignore',
+          'configured' ||
+          'config-switch' => '${fixture.container.path}/ignore.rules',
+          'parent-symlink' => '${fixture.container.path}/policy/ignore.rules',
+          'relative-configured' => '${fixture.worktree.path}/ignore.rules',
+          'default-xdg' => '${fixture.container.path}/config/git/ignore',
+          'default-home' => '${fixture.container.path}/.config/git/ignore',
+          _ => info.path,
+        };
+        final rules = File(path);
+        await rules.parent.create(recursive: true);
+        final policy = nested ? '.gitignore\ncache/\n' : 'scope/cache/\n';
+        if (kind == 'appearance') {
+          await info.writeAsString(policy);
+        } else {
+          await rules.writeAsString(policy);
+          await rules.setLastModified(DateTime.utc(2000));
+        }
+        if (kind == 'configured' ||
+            kind == 'relative-configured' ||
+            kind == 'config-switch' ||
+            kind == 'parent-symlink') {
+          await fixture.git([
+            'config',
+            'core.excludesFile',
+            kind == 'relative-configured' ? 'ignore.rules' : path,
+          ]);
+        }
+        final environment = {
+          ...fixture.environment,
+          if (kind == 'default-home') 'XDG_CONFIG_HOME': '',
+        };
+        final source = GitChangeSetSourceService(
+          provider: fixture.provider,
+          authorizedRead: fixture.authority,
+          parentEnvironment: environment,
+        );
+        final marker = File('${fixture.container.path}/executed');
+        if (kind == 'ancestor') {
+          await fixture.write(
+            '.gitattributes',
+            'scope/cache/* filter=trap diff=trap\n',
+          );
+          await fixture.git([
+            'config',
+            'filter.trap.clean',
+            'touch "${marker.path}"; cat',
+          ]);
+          await fixture.git([
+            'config',
+            'filter.trap.process',
+            'touch "${marker.path}"; exit 1',
+          ]);
+          await fixture.git([
+            'config',
+            'diff.trap.textconv',
+            'touch "${marker.path}"; cat',
+          ]);
+          final hooks = await Directory(
+            '${fixture.container.path}/hooks',
+          ).create();
+          final hook = File('${hooks.path}/post-index-change');
+          await hook.writeAsString('#!/bin/sh\n: > "${marker.path}"\n');
+          await Process.run('chmod', ['755', hook.path]);
+          await fixture.git(['config', 'core.hooksPath', hooks.path]);
+        }
+        final snapshot = await source.snapshotUnstaged();
+        expect(snapshot.files.map((file) => file.relativePath), ['file']);
+        expect(snapshot.reviewRevision, isNotNull);
+        final before = await fixture.index.readAsBytes();
+        fixture.authority.onRead = (call) async {
+          if (call != 4) return;
+          final changed = nested
+              ? '.gitignore\n#     \n'
+              : '#${' ' * (policy.length - 2)}\n';
+          if (kind == 'appearance') {
+            await rules.writeAsString('!scope/cache/\n');
+          } else if (kind == 'deletion') {
+            await rules.delete();
+          } else if (kind == 'config-switch') {
+            final alternative = File('${fixture.container.path}/other.rules');
+            await alternative.writeAsString(changed);
+            await fixture.git([
+              'config',
+              'core.excludesFile',
+              alternative.path,
+            ]);
+          } else if (kind == 'symlink' || kind == 'parent-symlink') {
+            final alternative = await Directory(
+              '${fixture.container.path}/policy-alias',
+            ).create();
+            final target = File('${alternative.path}/ignore.rules');
+            await target.writeAsString(changed);
+            if (kind == 'symlink') {
+              await rules.delete();
+              await Link(path).create(target.path);
+            } else {
+              await rules.parent.rename('${fixture.container.path}/old-policy');
+              await Link(rules.parent.path).create(alternative.path);
+            }
+          } else {
+            final modified = (await rules.stat()).modified;
+            if (kind == 'replacement') {
+              final replacement = File('${fixture.container.path}/replacement');
+              await replacement.writeAsString(changed);
+              await replacement.setLastModified(modified);
+              await replacement.rename(path);
+            } else {
+              await rules.writeAsString(changed);
+              await rules.setLastModified(modified);
+            }
+          }
+        };
+        expect(
+          (await fixture
+                  .reviewWith(parentEnvironment: environment)
+                  .approve(_select(snapshot, 'layer')))
+              .status,
+          'stale',
+        );
+        expect(await fixture.index.readAsBytes(), before);
+        expect(await fixture.lock.exists(), isFalse);
+        expect(await fixture.read('scope/file'), 'reviewed\n');
+        expect(await fixture.read(hidden), 'newly visible\n');
+        expect(await marker.exists(), isFalse);
+        final fresh = await source.snapshotUnstaged();
+        expect(
+          fresh.files.map((file) => file.relativePath),
+          contains(hidden.substring('scope/'.length)),
+        );
+        expect(await marker.exists(), isFalse);
+      },
+      skip:
+          Platform.isWindows &&
+          ['ancestor', 'symlink', 'parent-symlink'].contains(kind),
+    );
+  }
+
+  test(
+    'snapshot settlement revalidates ignore bytes even when inventory is unchanged',
+    () async {
+      await fixture.write('file', 'reviewed\n');
+      final excludes = File('${fixture.repository.path}/.git/info/exclude');
+      await excludes.writeAsString('# first\n');
+      await excludes.setLastModified(DateTime.utc(2000));
+      final before = await fixture.index.readAsBytes();
+      fixture.authority.onRead = (call) async {
+        if (call == 2) {
+          final modified = (await excludes.stat()).modified;
+          await excludes.writeAsString('# other\n');
+          await excludes.setLastModified(modified);
+        }
+      };
+      await expectLater(
+        fixture.source.snapshotUnstaged(),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'snapshot_changed',
+          ),
+        ),
+      );
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.read('file'), 'reviewed\n');
+    },
+  );
+
+  for (final phase in ['untracked', 'directory-pruning']) {
+    test('ignore capture precedes $phase Git discovery', () async {
+      await fixture.write('file', 'reviewed\n');
+      final rules = phase == 'untracked'
+          ? File('${fixture.repository.path}/.git/info/exclude')
+          : File('${fixture.worktree.path}/empty/.gitignore');
+      if (phase == 'directory-pruning') {
+        await fixture.write('empty/cache/hidden', 'ignored\n');
+      }
+      await rules.writeAsString('# first\n.gitignore\ncache/\n');
+      final marker = File('${fixture.container.path}/discovery-mutated');
+      final first = File('${fixture.container.path}/first-prune');
+      final shim = await fixture.shim('''
+case " \$* " in
+  *" ${phase == 'untracked' ? 'ls-files --others --exclude-standard' : 'check-ignore'} "*)
+    ${phase == 'directory-pruning' ? "if ! test -f '${first.path}'; then : > '${first.path}'; exec /usr/bin/git \"\$@\"; fi" : ''}
+    if ! test -f '${marker.path}'; then
+      printf '# other\\n.gitignore\\ncache/\\n' > '${rules.path}'
+      : > '${marker.path}'
+    fi
+    ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+      final before = await fixture.index.readAsBytes();
+      final source = GitChangeSetSourceService(
+        provider: fixture.provider,
+        authorizedRead: fixture.authority,
+        parentEnvironment: {
+          ...fixture.environment,
+          'PATH': '${shim.path}:/usr/bin:/bin',
+        },
+      );
+      await expectLater(
+        source.snapshotUnstaged(),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'snapshot_changed',
+          ),
+        ),
+      );
+      expect(await marker.exists(), isTrue);
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.read('file'), 'reviewed\n');
+    }, skip: Platform.isWindows);
+  }
+
+  for (final unsupported in [
+    'aggregate',
+    'indirect',
+    'indirect-parent',
+    'nonregular',
+  ]) {
+    test(
+      '$unsupported ignore metadata disables only review',
+      () async {
+        await fixture.write('scope/file', 'old\n');
+        await fixture.git(['add', '.']);
+        await fixture.git(['commit', '-m', 'Unsupported ignore fixture']);
+        fixture.bind(scope: 'scope');
+        await fixture.write('scope/file', 'reviewed\n');
+        final rules = File('${fixture.container.path}/ignore.rules');
+        await rules.writeAsString('# safe\n');
+        if (unsupported == 'aggregate') {
+          await File(
+            '${fixture.repository.path}/.git/info/exclude',
+          ).writeAsString('#${' ' * 1100}\n');
+          await fixture.write('.gitignore', '#${' ' * 1100}\n');
+        } else if (unsupported == 'indirect') {
+          final link = Link('${fixture.container.path}/ignore-link');
+          await link.create(rules.path);
+          await fixture.git(['config', 'core.excludesFile', link.path]);
+        } else if (unsupported == 'indirect-parent') {
+          final actual = await Directory(
+            '${fixture.container.path}/actual',
+          ).create();
+          await File('${actual.path}/ignore').writeAsString('# safe\n');
+          final link = Link('${fixture.container.path}/ignore-parent');
+          await link.create(actual.path);
+          await fixture.git([
+            'config',
+            'core.excludesFile',
+            '${link.path}/ignore',
+          ]);
+        } else {
+          await fixture.git(['config', 'core.excludesFile', '/dev/null']);
+        }
+        const limits = GitChangeSetLimits(reviewMetadataBytes: 2048);
+        final source = GitChangeSetSourceService(
+          provider: fixture.provider,
+          authorizedRead: fixture.authority,
+          parentEnvironment: fixture.environment,
+          limits: limits,
+        );
+        final snapshot = await source.snapshotUnstaged();
+        expect(snapshot.files.single.hunks, isNotEmpty);
+        expect(snapshot.files.single.reviewEligible, isFalse);
+        expect(snapshot.reviewRevision, isNull);
+        final before = await fixture.index.readAsBytes();
+        expect(
+          (await fixture
+                  .reviewWith(limits: limits)
+                  .approve(_select(snapshot, 'layer')))
+              .status,
+          'ineligible',
+        );
+        expect(await fixture.index.readAsBytes(), before);
+        expect(await fixture.read('scope/file'), 'reviewed\n');
+        expect(await fixture.lock.exists(), isFalse);
+      },
+      skip: Platform.isWindows && unsupported != 'aggregate',
+    );
+  }
+
+  test(
+    'inactive default ignore source does not invalidate configured policy',
+    () async {
+      final configured = File('${fixture.container.path}/configured-ignore');
+      await configured.writeAsString('cache/\n');
+      await fixture.git(['config', 'core.excludesFile', configured.path]);
+      final inactive = File('${fixture.container.path}/config/git/ignore');
+      await inactive.parent.create(recursive: true);
+      await inactive.writeAsString('# first\n');
+      await fixture.write('cache/hidden', 'ignored\n');
+      await fixture.write('file', 'reviewed\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      fixture.authority.onRead = (call) async {
+        if (call == 4) await inactive.writeAsString('# other\n');
+      };
+      expect(
+        (await fixture.review.approve(_select(snapshot, 'layer'))).status,
+        'applied',
+      );
+      final staged = await fixture.source.snapshotUncommitted();
+      expect(
+        (await fixture.review.unapprove(
+          _select(staged.staged, 'layer'),
+        )).status,
+        'applied',
+      );
+      expect(await fixture.indexText('file'), fixture.original);
+      expect(await fixture.read('file'), 'reviewed\n');
+      expect(await fixture.read('cache/hidden'), 'ignored\n');
+    },
+  );
+
+  test(
+    'tracked deletion with missing parent directories remains reviewable',
+    () async {
+      await fixture.write('removed/nested/file', 'old\n');
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Nested deletion fixture']);
+      await Directory(
+        '${fixture.worktree.path}/removed',
+      ).delete(recursive: true);
+      final snapshot = await fixture.source.snapshotUnstaged();
+      expect(snapshot.files.single.reviewEligible, isTrue);
+      expect(
+        (await fixture.review.approve(_select(snapshot, 'layer'))).status,
+        'applied',
+      );
+      final staged = await fixture.source.snapshotUncommitted();
+      expect(
+        (await fixture.review.unapprove(
+          _select(staged.staged, 'layer'),
+        )).status,
+        'applied',
+      );
+      expect(await fixture.indexText('removed/nested/file'), 'old\n');
+      expect(
+        await Directory('${fixture.worktree.path}/removed').exists(),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'ignored tracked parents do not require walking unrelated cache contents',
+    () async {
+      await fixture.write('cache/tracked/file', 'old\n');
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Tracked cache fixture']);
+      await File(
+        '${fixture.repository.path}/.git/info/exclude',
+      ).writeAsString('cache/\n');
+      for (var i = 0; i < 4100; i++) {
+        await fixture.write('cache/generated/$i', 'ignored\n');
+      }
+      await fixture.write('cache/tracked/file', 'reviewed\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      expect(snapshot.files.single.reviewEligible, isTrue);
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'cache/tracked/file'),
+        )).status,
+        'applied',
+      );
+      expect(await fixture.indexText('cache/tracked/file'), 'reviewed\n');
+    },
+  );
+
+  test(
+    'bounded ignore discovery excess retains the complete readonly projection',
+    () async {
+      await fixture.write('.gitignore', '.gitignore\nignored-*\n');
+      for (var i = 0; i < 40; i++) {
+        await fixture.write('ignored-$i', 'ignored\n');
+      }
+      await fixture.write('file', 'reviewed\n');
+      const limits = GitChangeSetLimits(inventoryEntries: 32);
+      final source = GitChangeSetSourceService(
+        provider: fixture.provider,
+        authorizedRead: fixture.authority,
+        parentEnvironment: fixture.environment,
+        limits: limits,
+      );
+      final snapshot = await source.snapshotUnstaged();
+      expect(snapshot.files.single.relativePath, 'file');
+      expect(snapshot.files.single.hunks, isNotEmpty);
+      expect(snapshot.reviewRevision, isNull);
+      expect(snapshot.files.single.reviewEligible, isFalse);
+      final before = await fixture.index.readAsBytes();
+      expect(
+        (await fixture
+                .reviewWith(limits: limits)
+                .approve(_select(snapshot, 'layer')))
+            .status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.lock.exists(), isFalse);
+    },
+  );
+
+  test(
+    'an ignored nested source root reviews tracked files without walking its cache',
+    () async {
+      await fixture.write('scope/tracked', 'old\n');
+      await fixture.git(['add', '.']);
+      await fixture.git(['commit', '-m', 'Ignored source root']);
+      await File(
+        '${fixture.repository.path}/.git/info/exclude',
+      ).writeAsString('scope/\n');
+      fixture.bind(scope: 'scope');
+      for (var i = 0; i < 4100; i++) {
+        await fixture.write('scope/generated-$i', 'ignored\n');
+      }
+      await fixture.write('scope/tracked', 'reviewed\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      expect(snapshot.files.single.reviewEligible, isTrue);
+      expect(
+        (await fixture.review.approve(_select(snapshot, 'layer'))).status,
+        'applied',
+      );
+      expect(await fixture.indexText('scope/tracked'), 'reviewed\n');
+    },
+  );
+
+  test(
+    'Git preparation consumes the same deadline before final authority',
+    () async {
+      await fixture.write('file', 'preparation deadline\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      final before = await fixture.index.readAsBytes();
+      final fifo = File('${fixture.container.path}/prepare-gate');
+      expect((await Process.run('mkfifo', [fifo.path])).exitCode, 0);
+      // RDWR keeps both FIFO endpoints open without a blocking writer handshake.
+      final gate = await fifo.open(mode: FileMode.write);
+      final marker = File('${fixture.container.path}/prepare-entered');
+      final preparation = Completer<void>();
+      final watch = fixture.container
+          .watch(events: FileSystemEvent.create)
+          .listen((event) {
+            if (event.path == marker.path && !preparation.isCompleted) {
+              preparation.complete();
+            }
+          });
+      final shim = await fixture.shim('''
+case " \$* " in
+  *" hash-object "*)
+    if ! test -f '${marker.path}'; then
+      : > '${marker.path}'
+      read -r proceed < '${fifo.path}'
+    fi
+    ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+      final entered = Completer<void>();
+      final late = Completer<void>();
+      fixture.authority.onReview = (call) async {
+        if (call == 2) {
+          entered.complete();
+          await late.future;
+        }
+      };
+      const budget = Duration(seconds: 5);
+      const grace = Duration(milliseconds: 800);
+      final clock = Stopwatch()..start();
+      final settled = fixture
+          .reviewWith(
+            limits: const GitChangeSetLimits(operationTimeout: budget),
+            parentEnvironment: {'PATH': '${shim.path}:/usr/bin:/bin'},
+          )
+          .approve(_select(snapshot, 'file', path: 'file'))
+          .then<Object>(
+            (value) => value,
+            onError: (Object error, StackTrace stack) => error,
+          );
+      Timer? resume;
+      Future<void>? resumed;
+      Object? atDeadline;
+      var lockHeldPastDeadline = false;
+      try {
+        await Future.any([
+          preparation.future,
+          settled.then<void>(
+            (value) => throw StateError(
+              'Review did not reach Git preparation: $value',
+            ),
+          ),
+        ]);
+        expect(await fixture.lock.exists(), isTrue);
+        final remainingDelay = const Duration(seconds: 2) - clock.elapsed;
+        resume = Timer(
+          remainingDelay > Duration.zero ? remainingDelay : Duration.zero,
+          () => resumed = gate.writeString('resume\n').then<void>((_) {}),
+        );
+        await Future.any([
+          entered.future,
+          settled.then<void>(
+            (value) =>
+                throw StateError('Review did not reach final proof: $value'),
+          ),
+        ]);
+        final finalProofAt = clock.elapsed;
+        expect(clock.elapsed, greaterThanOrEqualTo(const Duration(seconds: 2)));
+        expect(fixture.authority.reads, 3);
+        final remaining = budget + grace - clock.elapsed;
+        expect(remaining, greaterThan(Duration.zero));
+        atDeadline = await settled.timeout(
+          remaining,
+          onTimeout: () => _Unsettled(),
+        );
+        lockHeldPastDeadline = await fixture.lock.exists();
+        expect(await fixture.index.readAsBytes(), before);
+        expect(await fixture.read('file'), 'preparation deadline\n');
+        final checkedLockAt = clock.elapsed;
+        expect(
+          fixture.authority.reads,
+          3,
+          reason: 'The expired final proof must not start the final read.',
+        );
+        if (atDeadline is ReviewApprovalFailure) {
+          expect(atDeadline.code, 'operation_timeout');
+          expect(lockHeldPastDeadline, isFalse);
+          expect(checkedLockAt, lessThanOrEqualTo(budget + grace));
+          print(
+            'Locked preparation deadline: final proof ${finalProofAt.inMilliseconds}ms; '
+            'timeout settled and lock released by ${checkedLockAt.inMilliseconds}ms '
+            '(budget ${budget.inMilliseconds}ms, cleanup allowance ${grace.inMilliseconds}ms).',
+          );
+          await fixture.git(['add', 'unrelated']);
+          fixture.authority.onReview = null;
+          final fresh = await fixture.source.snapshotUnstaged();
+          expect(
+            (await fixture
+                    .reviewWith(
+                      limits: const GitChangeSetLimits(
+                        operationTimeout: budget,
+                      ),
+                    )
+                    .approve(_select(fresh, 'file', path: 'file')))
+                .status,
+            'applied',
+          );
+          final published = await fixture.index.readAsBytes();
+          final reads = fixture.authority.reads;
+          late.complete();
+          await Future<void>.delayed(Duration.zero);
+          expect(fixture.authority.reads, reads);
+          expect(await fixture.index.readAsBytes(), published);
+        }
+      } finally {
+        resume?.cancel();
+        await resumed;
+        await gate.writeString('cleanup\n');
+        if (!late.isCompleted) late.complete();
+        await settled;
+        await gate.close();
+        await watch.cancel();
+      }
+      expect(
+        atDeadline,
+        isA<ReviewApprovalFailure>().having(
+          (error) => error.code,
+          'code',
+          'operation_timeout',
+        ),
+      );
+      expect(lockHeldPastDeadline, isFalse);
+      expect(await fixture.lock.exists(), isFalse);
+    },
+    skip: Platform.isWindows,
+  );
+
   for (final mutation in [false, true]) {
     test(
       'independent verification budgets allow publication, changed=$mutation',
@@ -1930,6 +2762,8 @@ ReviewSelection _select(
   relativePath: path,
   hunkIndex: hunk,
 );
+
+final class _Unsettled {}
 
 final class _Authority implements AuthorizedEnvironmentReadService {
   int reads = 0;
