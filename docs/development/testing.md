@@ -346,7 +346,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Session Evaluator retained evidence and native export | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT, durable Chat/Run evidence and proposal provenance, actual native Command Palette/confirmation/platform Save adapter including local-child command captures, exact JSON, Session capture across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, readiness/retirement, read-only SQL snapshots, pagination, and exact-generation replacement; deterministic model/Environment adapter, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure); [`test/session_evidence_file_test.dart`](../../app/test/session_evidence_file_test.dart) (real temporary staging, partial-write/rename fault injection, pre-commit revocation, cleanup, existing-destination preservation, and bounds). See [focused checks](#focused-session-evaluator-checks); normal catalog/launcher selection belongs to tooling tests. |
+| Session Evaluator retained evidence and native handoff | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT, durable Chat/Run evidence and proposal provenance, actual native Command Palette/confirmation/directory handoff including local-child command captures, exact JSON plus README, absolute completion path and Copy path, Session capture across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, readiness/retirement, read-only SQL snapshots, pagination, and exact-generation replacement; injected temporary output roots and deterministic model/Environment adapter, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure); [`test/session_evidence_file_test.dart`](../../app/test/session_evidence_file_test.dart) (unique temporary two-file directories, write fault injection, ownership revocation, cleanup, prior-handoff preservation, and bounds); [`test/session_evaluation_handoff_test.dart`](../../app/test/session_evaluation_handoff_test.dart) (canonical nonprimary Environment capture, validated stock Git v1 source metadata, direct filesystem/no-symlink checks, explicit unavailable cases, and README inspection guidance). See [focused checks](#focused-session-evaluator-checks); normal catalog/launcher selection belongs to tooling tests. |
 | Prepared Chat applicability/composer/history | [`chat_strategy_frontend/test/chat_frontend_eval_test.dart`](../../plugins/chat_strategy/packages/frontend/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
 | Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
@@ -389,13 +389,27 @@ owns read-only schema discovery, exact retained rows/text, command coverage and
 provenance, composite identity/Session isolation, bounded chunk pagination,
 initial/final committed-extent validation, safe growth versus corruption, and
 whole-document query/size failures without publishing a successful prefix.
-These do not replace the real prepared-backend/native-file boundary tests.
+These do not replace the real prepared-backend/native-directory boundary tests.
 
-For collector/export integration changes, run from `app/`, serializing Flutter
+The [metadata suite](../../app/test/session_evaluation_handoff_test.dart) owns the
+development-only helper's canonical Session association and source/README behavior,
+independently of the legacy runner. The
+[directory writer suite](../../app/test/session_evidence_file_test.dart) owns unique
+allocation, exact two-file output, incomplete-write cleanup, revocation, and size
+bounds. Native Command integration uses an injected temporary `outputRoot`, not
+real user local-state storage; a rejecting Save-picker spy verifies that no picker
+is invoked. It checks complete handoff publication and safe completion feedback
+without changing the evidence schema or collector limits. Its real stock Git AOT
+fixture uses a reopened nonprimary Session Environment with a nested Project source
+and compares Git state before and after preparation without materialization.
+These are deterministic source/integration checks, not a human desktop or
+macOS/Windows acceptance claim.
+
+For collector/handoff integration changes, run from `app/`, serializing Flutter
 invocations sharing its build directory:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evidence_file_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evidence_file_test.dart test/session_evaluation_handoff_test.dart
 ```
 
 The existing `adele_desktop` target and CI shards discover these files. Command

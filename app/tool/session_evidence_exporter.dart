@@ -6,11 +6,14 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
+
+import 'session_evaluation_handoff.dart';
 
 final exportSessionEvidenceCommandId = CommandId(
   'dev.adele.session-evaluator.export-session-evidence',
@@ -22,6 +25,7 @@ final class SessionEvidenceExporter {
     required this.runtime,
     required this.context,
     required this.navigatorKey,
+    this.outputRoot,
   }) {
     _changes = runtime.plugins.changes.listen((_) => _reconcile());
     _reconcile();
@@ -30,6 +34,7 @@ final class SessionEvidenceExporter {
   final AdeleRuntime runtime;
   final WindowSessionContext context;
   final GlobalKey<NavigatorState> navigatorKey;
+  final Directory? outputRoot;
   late final StreamSubscription<ApplicationPluginState> _changes;
   InstalledBackendActivation? _backend;
   ExtensionRegistration? _registration;
@@ -38,7 +43,7 @@ final class SessionEvidenceExporter {
   DialogRoute<bool>? _confirmation;
   bool _pending = false;
   bool _closed = false;
-  Future<void>? _writing;
+  Future<Directory>? _writing;
   Future<void>? _closing;
 
   void _reconcile() {
@@ -65,7 +70,7 @@ final class SessionEvidenceExporter {
       id: ExtensionId(exportSessionEvidenceCommandId.value),
       value: CommandContribution(
         id: exportSessionEvidenceCommandId,
-        label: 'Export Session Evidence...',
+        label: 'Prepare Evaluation Handoff...',
         availability: () => _availability(backend),
         availabilityChanges: changes.stream,
         invoke: () => _export(backend, changes),
@@ -131,28 +136,61 @@ final class SessionEvidenceExporter {
     try {
       if (!await _confirm()) return;
       channel.validate();
-      final destination = await getSaveLocation(
-        suggestedName: 'session-evidence.json',
-        acceptedTypeGroups: const [
-          XTypeGroup(label: 'JSON evidence', extensions: ['json']),
-        ],
-      );
-      channel.validate();
-      if (destination == null) return;
+      final handoff = SessionEvaluationHandoff.capture(runtime.store, session);
       final document = await readSessionEvidence(client, session.id.value);
       channel.validate();
       final bytes = utf8.encode(jsonEncode(document));
       if (bytes.length > sessionEvidenceMaxBytes) {
         throw const FormatException('Session evidence exceeds its byte bound.');
       }
-      await (_writing = writeSessionEvidenceFile(
-        File(destination.path),
+      var root = outputRoot;
+      if (root == null) {
+        final roots = PlatformStorageRoots.resolve(
+          operatingSystem: Platform.operatingSystem,
+          environment: Platform.environment,
+        );
+        root = Directory(
+          '${roots.localStateRoot}${Platform.pathSeparator}evaluations',
+        );
+      }
+      final destination = await (_writing = writeSessionEvaluationHandoff(
+        root,
         bytes,
+        readme: handoff.readme(DateTime.now().toUtc()),
         validate: channel.validate,
+        excludedDirectories: [
+          if (handoff.project.sourceLocation.scheme == 'file')
+            Directory.fromUri(handoff.project.sourceLocation),
+          if (handoff.worktreeRoot case final path?) Directory(path),
+        ],
       ));
-      _notify('Session evidence exported.');
+      try {
+        channel.validate();
+      } on Object {
+        // Ownership can retire between writer completion and this continuation.
+        try {
+          await destination.delete(recursive: true);
+        } on FileSystemException {
+          // Best effort, just as for an incomplete write; never publish success.
+        }
+        rethrow;
+      }
+      _notify(
+        'Evaluation handoff ready: ${destination.path}',
+        action: SnackBarAction(
+          label: 'Copy path',
+          onPressed: () async {
+            if (_closed || !context.isActive) return;
+            try {
+              await Clipboard.setData(ClipboardData(text: destination.path));
+            } on Object {
+              _notify('The handoff path could not be copied.');
+            }
+          },
+        ),
+      );
     } on Object {
-      _notify('Session evidence could not be exported.');
+      _notify('Evaluation handoff could not be prepared.');
     } finally {
       _writing = null;
       _pending = false;
@@ -166,7 +204,7 @@ final class SessionEvidenceExporter {
     final route = DialogRoute<bool>(
       context: navigator.context,
       builder: (context) => AlertDialog(
-        title: const Text('Export Session Evidence'),
+        title: const Text('Prepare Evaluation Handoff'),
         content: const Text(
           'Evidence may contain conversation prompts and responses, source code '
           'and tool arguments, full command stdout/stderr that may include '
@@ -194,17 +232,26 @@ final class SessionEvidenceExporter {
     }
   }
 
-  void _notify(String message) {
+  void _notify(String message, {SnackBarAction? action}) {
     if (_closed || !context.isActive) return;
     final ui = navigatorKey.currentContext;
     if (ui == null) return;
-    ScaffoldMessenger.maybeOf(
-      ui,
-    )?.showSnackBar(SnackBar(content: Text(message)));
+    final messenger = ScaffoldMessenger.maybeOf(ui);
+    messenger?.removeCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(
+        content: SelectableText(message),
+        action: action,
+        showCloseIcon: action != null,
+        duration: action == null
+            ? const Duration(seconds: 4)
+            : const Duration(days: 1),
+      ),
+    );
   }
 
-  /// Fence immediately. Never join confirmation, picker, or collection futures.
-  /// A submitted rename may finish, but no later phase or UI publication starts.
+  /// Fence immediately. Never join confirmation or collection futures.
+  /// A submitted write may finish, but no later phase or UI publication starts.
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
@@ -215,7 +262,7 @@ final class SessionEvidenceExporter {
       _changes.cancel(),
       if (_writing case final writing?)
         writing
-            .catchError((Object _) {})
+            .then<void>((_) {}, onError: (Object _) {})
             .timeout(const Duration(seconds: 2), onTimeout: () {}),
     ]).then((_) {});
   }
@@ -234,35 +281,116 @@ final class _EvidenceChannel implements AdeleStreamChannel {
       owner.stream(sessionEvaluatorServiceId, method, payload);
 }
 
-/// Stage a complete bounded document beside its destination, then POSIX rename.
-/// No delete-before-replace fallback, cross-volume copy, or durability guarantee.
-Future<void> writeSessionEvidenceFile(
-  File destination,
+/// Write only to a newly allocated private directory, never a previous handoff.
+/// Failure cleanup is best effort, not crash recovery or power-loss durability.
+Future<Directory> writeSessionEvaluationHandoff(
+  Directory outputRoot,
   List<int> bytes, {
+  required String readme,
   required void Function() validate,
+  required Iterable<Directory> excludedDirectories,
 }) async {
-  if (!Platform.isLinux && !Platform.isMacOS) {
-    throw UnsupportedError('Safe evidence replacement is unsupported.');
-  }
   if (bytes.length > sessionEvidenceMaxBytes) {
     throw const FormatException('Session evidence exceeds its byte bound.');
   }
-  Directory? staging;
+  final excluded = excludedDirectories
+      .map((directory) => Directory(_resolvedOutputPath(directory)))
+      .toList();
+  void validateLocation(Directory directory) {
+    final path = _resolvedOutputPath(directory);
+    // Reject any enclosing checkout, not just a selected nested source scope.
+    var ancestor = Directory(path);
+    while (true) {
+      if (FileSystemEntity.typeSync(
+            '${ancestor.path}${Platform.pathSeparator}.git',
+            followLinks: false,
+          ) !=
+          FileSystemEntityType.notFound) {
+        throw StateError('Evaluation output must be outside source checkouts.');
+      }
+      final parent = ancestor.parent;
+      if (parent.path == ancestor.path) break;
+      ancestor = parent;
+    }
+    final segments = Directory(path).uri.pathSegments;
+    if (excluded.any(
+          (root) =>
+              path == root.path ||
+              path.startsWith(
+                root.path.endsWith(Platform.pathSeparator)
+                    ? root.path
+                    : '${root.path}${Platform.pathSeparator}',
+              ),
+        ) ||
+        List.generate(segments.length - 1, (index) => index).any(
+          (index) =>
+              segments[index] == '.adele' && segments[index + 1] == 'worktrees',
+        )) {
+      throw StateError('Evaluation output must be outside source checkouts.');
+    }
+    validate();
+  }
+
+  Directory? destination;
+  var complete = false;
   try {
-    validate();
-    staging = await destination.parent.createTemp('.adele-session-evidence-');
-    validate();
-    final file = File('${staging.path}/evidence.json');
-    await file.writeAsBytes(bytes, flush: true);
-    validate();
-    await file.rename(destination.path);
+    validateLocation(outputRoot);
+    final root = Directory(_resolvedOutputPath(outputRoot));
+    await root.create(recursive: true);
+    validateLocation(root);
+    destination = await root.createTemp('session-');
+    validateLocation(destination);
+    if (Platform.isLinux || Platform.isMacOS) {
+      // Dart's createTemp uses the umask, not necessarily owner-only access.
+      final permissions = await Process.run('chmod', ['700', destination.path]);
+      if (permissions.exitCode != 0) {
+        throw FileSystemException('Could not protect the handoff directory.');
+      }
+      validateLocation(destination);
+    }
+    await File(
+      '${destination.path}${Platform.pathSeparator}evidence.json',
+    ).writeAsBytes(bytes, flush: true);
+    validateLocation(destination);
+    await File(
+      '${destination.path}${Platform.pathSeparator}README.md',
+    ).writeAsBytes(utf8.encode(readme), flush: true);
+    validateLocation(destination);
+    complete = true;
+    return destination;
   } finally {
-    if (staging != null) {
+    if (!complete && destination != null) {
       try {
-        await staging.delete(recursive: true);
+        await destination.delete(recursive: true);
       } on FileSystemException {
-        // Best effort after failure or commit; never touch the destination here.
+        // Never report success for incomplete output, even if cleanup fails.
       }
     }
   }
+}
+
+// Resolve existing ancestors before creating anything, including output aliases
+// into a checkout. Missing final components are appended without filesystem I/O.
+String _resolvedOutputPath(Directory directory) {
+  var absolute = Directory.fromUri(directory.absolute.uri.normalizePath());
+  // A trailing separator makes lstat follow a directory symlink on POSIX.
+  // Inspect the entry itself so a dangling alias is not treated as absent.
+  if (absolute.path.endsWith(Platform.pathSeparator) &&
+      absolute.parent.path != absolute.path) {
+    absolute = Directory(absolute.path.substring(0, absolute.path.length - 1));
+  }
+  if (FileSystemEntity.typeSync(absolute.path, followLinks: false) !=
+      FileSystemEntityType.notFound) {
+    return absolute.resolveSymbolicLinksSync();
+  }
+  final parent = absolute.parent;
+  if (parent.path == absolute.path) {
+    throw FileSystemException('Missing output filesystem root.');
+  }
+  final name = absolute.uri.pathSegments.where((part) => part.isNotEmpty).last;
+  return Directory.fromUri(
+    Directory(
+      _resolvedOutputPath(parent),
+    ).uri.resolveUri(Uri(pathSegments: [name, ''])),
+  ).path;
 }

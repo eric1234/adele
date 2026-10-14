@@ -4,9 +4,9 @@ Session Evaluator (`dev.adele.plugin.session-evaluator`) is a **trusted,
 development-only diagnostic**, not a model tool or production export workflow.
 It collects retained evidence for an explicit durable Session without resolving
 its strategy, materializing its Environment, starting a Run, or initializing state.
-The development desktop can export evidence after using a normal ADELE Chat
-Session and give it to an independent evaluator. This plugin does not evaluate,
-score, or interpret the evidence, and does not replace the legacy headless runner.
+The development desktop can prepare a local evaluation handoff after using a
+normal ADELE Chat Session. This plugin does not evaluate, score, or interpret the
+evidence, and does not replace the separate legacy headless runner.
 
 ## Ownership
 
@@ -16,8 +16,12 @@ selected SQL schema knowledge, validation, and native entrypoint. There is no
 frontend, Capability, strategy, backend Command, storage schema, or file-writing
 service. The development-only native adapter in
 [`app/tool/session_evidence_exporter.dart`](../../app/tool/session_evidence_exporter.dart)
-owns the desktop Command, confirmation, native Save dialog, and local file commit.
-Production `app/lib` imports no evaluator contract or implementation.
+owns the desktop Command, sensitive-data confirmation, local directory writing,
+and completion feedback. Its development-only
+[`session_evaluation_handoff.dart`](../../app/tool/session_evaluation_handoff.dart)
+helper captures canonical source metadata and renders the companion README; it
+does not depend on the legacy runner. Production `app/lib` imports no evaluator
+contract or implementation.
 
 The backend obtains the public `ProjectStorageService` through its exact
 generation's infrastructure context. It calls only `queryForSession`, in `durable`
@@ -231,13 +235,15 @@ Project-wide orphan rows that cannot be attributed to this Session.
 
 Git/worktree evidence, Environment provider state, live/waiting Run observation,
 provider replay data, Markdown reports, and evaluation questions are deliberately
-absent from the evidence. Retained command captures can exist without terminal Run
-evidence; their inclusion does not add live Run observation. This JSON document is
-not a portable reproduction bundle. Any later portable-bundle work must account
-for those missing artifacts and sensitive output; this format does not introduce
-a bundle design or promise reproducibility.
+absent from the JSON evidence. Retained command captures can exist without terminal
+Run evidence; their inclusion does not add live Run observation. The desktop
+handoff's companion README supplies source-inspection guidance separately, without
+changing this schema or its collection bounds. Neither file is a source snapshot
+or a portable reproduction bundle, and neither promises reproducibility.
 
-## Desktop Export
+<a id="desktop-export"></a>
+
+## Desktop Handoff
 
 With the [pinned toolchain](../../docs/development/toolchain.md), run from the
 repository root:
@@ -251,7 +257,8 @@ The ordinary Linux development preparation compiles the evaluator AOT backend an
 publishes `session-evaluator/backend.aot` in the same prepared installation catalog
 as the other plugins. Normal bootstrap activates it without a feature switch,
 special startup arguments, or artificial advertisements. Its absence or failure
-leaves export unavailable, not a prerequisite for unrelated application behavior.
+leaves handoff preparation unavailable, not a prerequisite for unrelated application
+behavior.
 The launcher selects `app/tool/development_main.dart`, which mounts the ordinary
 `AdeleApplication` and attaches the native adapter through `attachSessionContext`.
 Direct `app/lib/main.dart` remains plugin-neutral and does not attach the exporter.
@@ -259,66 +266,128 @@ Direct `app/lib/main.dart` remains plugin-neutral and does not attach the export
 1. Open a durable Project and a Session. Use ADELE normally, preferably letting
    work settle before collecting its retained evidence.
 2. Open the Command Palette with the AppBar button or its platform shortcut and
-   select **Export Session Evidence...**
-3. Read the sensitive-data confirmation and explicitly choose **Continue**.
-4. Choose a local destination in the native Save dialog, which suggests
-   `session-evidence.json`. Cancellation at either dialog writes nothing.
-5. Wait for **Session evidence exported.** before using the file. Failure feedback
-   is generic and never includes evidence contents or backend/SQL diagnostics.
+   select **Prepare Evaluation Handoff...**
+3. Read the sensitive-data warning and explicitly choose **Continue**. **Cancel**
+   writes nothing. There is no Save dialog, destination picker, or format selector.
+4. Wait for the completion snackbar, which displays the absolute handoff directory
+   path and offers **Copy path**. Use its `README.md` as the evaluator entrypoint
+   and `evidence.json` as the complete collected document. Failure feedback is
+   generic and never includes evidence contents or backend/SQL diagnostics.
 
 The ordinary semantic Command ID is
 `dev.adele.session-evaluator.export-session-evidence`. The adapter registers exactly
 one Command when the evaluator becomes ready and retires it with that generation;
 bootstrap and registration notifications refresh an open palette without polling.
 Before readiness or after failure/retirement it is not registered. With a ready
-backend but no Session it is hidden; while an export is pending it is disabled.
+backend but no Session it is hidden; while a handoff is pending it is disabled.
 No Main Content, Console, or Inspection participation is needed.
 
 ### Capture And Lifetime
 
 Command invocation synchronously captures the `WindowSessionSnapshot`, canonical
 Session, exact `InstalledBackendActivation`, and its default configuration/service
-route. `SessionEvaluatorServiceClient` and `readSessionEvidence` use that retained
-route through the existing generation-validated channel. No storage reader is
-linked into the adapter. Navigation, including leaving and reentering a Session,
+route. Metadata capture follows that retained Session's canonical same-Task
+Environment association, not an assumed Task-primary
+Environment. `SessionEvaluatorServiceClient` and `readSessionEvidence` use the
+retained route through the existing generation-validated channel. No storage reader
+is linked into the adapter. Navigation, including leaving and reentering a Session,
 does not replace the captured Session or retarget the backend. The selection
 revision is only an epoch, not execution or storage authority. Fresh invocation
 captures the new selection.
 
-Only one export may be pending per exporter/window, from confirmation through file
-commit. Success, cancellation, and failure clear pending state. Backend retirement
-fences collection and pre-commit validation; no replacement is silently selected.
-Valid partial evidence is exported unchanged with its existing coverage fields.
+Only one handoff may be pending per exporter/window, from confirmation through
+directory writing. Success, cancellation, and failure clear pending state. Backend
+retirement fences collection and writing; no replacement is silently selected.
+Valid partial evidence is written unchanged with its existing coverage fields;
+successful handoff preparation does not upgrade that coverage to complete.
 
 Window cleanup closes admission and removes the exact Command and bootstrap
 subscription immediately. It withdraws only its own confirmation route, suppresses
-late feedback, and does not await an unanswered native Save dialog or collection.
-Late picker results cannot start collection or writing. Backend shutdown settles
-the captured transport. In-flight file staging receives at most two seconds of
-shutdown joining; its next validation prevents commit and its `finally` cleanup
-removes staging where possible. A rename already submitted may complete, without
-a late success notification. Forced process termination can leave a private staging
-directory; this is not a crash-recovery or persistent-export-history mechanism.
+late feedback and clipboard actions, and does not await an unanswered confirmation
+or collection. Backend shutdown settles the captured transport. In-flight writing
+receives at most two seconds of shutdown joining; further validation rejects closed
+ownership and failure cleanup removes the new directory where possible. Shutdown never publishes
+a late successful handoff or reports an incomplete directory as successful. Forced
+process termination or failed cleanup can leave an incomplete directory.
 
-### File Semantics
+### Directory Semantics
 
-The complete versioned document is collected and validated before any staging file
-is created. The adapter preserves its structured data, schema, coverage, and bounds;
-it does not interpret, redact, wrap, or truncate evidence. It encodes JSON, flushes
-a staged file in a unique private `.adele-session-evidence-*` directory under the
-destination's parent, then renames the completed file over the destination.
-Collection, staging, or pre-commit validation failure leaves an existing destination
-intact. Failed finalization never deletes the destination as a fallback. Staging
-cleanup is best effort after both failure and success.
+The default output root is `evaluations/` beneath
+`PlatformStorageRoots.resolve(...).localStateRoot`, resolved with the host's
+`Platform.operatingSystem` and `Platform.environment`. This is local state, not
+configuration, cache, or a directory in the selected Project. See
+[platform storage paths](../../packages/platform_storage/README.md#paths) for the
+OS/environment policy. Tests inject a temporary `outputRoot` instead of writing
+real user storage. The writer resolves existing output aliases and rejects output
+inside the launching checkout, selected Project's enclosing repository, or a
+`.adele/worktrees/` hierarchy rather than falling back to another location.
+Unresolvable output-confinement paths, including dangling Project source aliases,
+fail preparation safely even when source metadata could otherwise be marked
+unavailable. There is no guessed exclusion or fallback output location.
 
-The writer uses POSIX same-filesystem rename on Linux/macOS; only Linux is tested
-and automatically provisioned by the maintained launcher. Other platforms fail
-cleanly before staging rather than claiming unsafe replacement semantics. This
-does not guarantee power-loss durability, preserve the previous file's metadata,
-or provide conflict detection against another writer. A destination symlink is
-replaced, not followed. The native dialog owns destination/overwrite interaction.
-Evidence is unredacted local development data; choose an appropriately protected
-destination and review it before sharing.
+For example, with the default Linux XDG state location:
+
+```text
+~/.local/state/adele/state/evaluations/
+  session-<random>/
+    README.md
+    evidence.json
+```
+
+The complete versioned document is collected and validated before creating a
+handoff directory. The writer uses `createTemp('session-')` to allocate a unique
+directory under the output root, containing `README.md` and `evidence.json`.
+On Linux/macOS it requires `chmod` on `PATH` and sets the directory to owner-only
+mode `0700` before writing sensitive contents; a permission-setting failure aborts
+the handoff and attempts cleanup. Windows instead inherits the output root's ACL;
+private Windows access has not been validated, and no POSIX-mode guarantee applies.
+The adapter preserves the document's structured data, schema, coverage, and bounds;
+it does not interpret, redact, wrap, or truncate evidence. Both files must finish
+writing with flush requested and ownership validation must succeed before
+completion is reported.
+Failed writing or validation attempts best-effort removal of the new directory;
+this includes retirement after writing but before publishing the completed path.
+Earlier successful handoffs are not overwritten or removed.
+
+There is no automatic pruning, export history, durable registry, archive, or
+power-loss durability guarantee. Only the maintained Linux launch path provisions
+this development workflow; platform path resolution is not cross-platform desktop
+acceptance evidence. Review sensitive content before sharing, and remove retained
+handoff directories manually when no longer needed.
+
+### Source Inspection
+
+The companion README records captured Project, Task, Session, and Environment
+identities plus validated local source hints when available. The development helper
+recognizes only the stock Git Environment provider's v1 retained state, validates
+its retained identity fields, relative paths, and selected-source scope against the
+Project source's nearest enclosing checkout marker. It resolves
+the Project source canonically, then requires direct derived worktree/scope paths
+and a direct checkout marker, rejecting symlinks in those derived paths. This is
+filesystem preflight and source-hint validation, not protection against concurrent
+path replacement or proof of current Git registration, baseline-object availability,
+branch, or HEAD. Unsupported providers or malformed, missing, or unsafe source
+metadata are explicitly unavailable, not replaced with the Task primary, current
+checkout, or a guessed repository. The helper neither materializes the Environment
+nor runs Git commands or changes Git state.
+An invalid canonical product graph fails capture rather than substituting another
+Session or Environment.
+
+For valid source hints, follow the README's quoted, source-scoped Git inspection
+commands. They distinguish retained baseline-to-HEAD changes, staged changes,
+unstaged changes, and nonignored untracked paths rather than treating one diff as
+all work. A Project selected from a repository subdirectory must be inspected in
+that scope, not across the entire linked checkout. These are instructions for a
+separate evaluator, not Git evidence collected during handoff preparation.
+
+Source paths refer to a **live worktree** that can change or disappear after
+preparation and can be shared by multiple Sessions. Its current changes are not
+automatically attributable to the captured Session. The handoff copies no source,
+patch, repository, or archive; unsaved editor buffers are not on-disk evidence.
+Retained evidence can be partial and is unredacted; source, prompts, responses,
+arguments, and full command output may be sensitive.
+Use the stated coverage and limitations rather than treating directory creation
+as proof of a complete, isolated, or reproducible evaluation.
 
 ## Exercise And Validate
 
@@ -329,19 +398,27 @@ compiles the real shared host, Chat, Command Tools, and evaluator AOT entrypoint
 assembles an explicit temporary backend-only installation, and uses normal
 application bootstrap plus the real Project storage host. Its deterministic local
 model/tools produce actual retained Chat and Run data without paid provider calls.
-The native export path includes command captures from a compiled local child
+The native handoff path includes command captures from a compiled local child
 executed through the fixture's deterministic Environment adapter. The test
-caller and native Command Palette workflow write JSON in temporary directories and
-check exact documents, read-only state, Session isolation, valid partial coverage,
-cancellation, failure, pending work, navigation, shutdown, and generation retirement.
+caller and native Command Palette workflow use temporary output roots and check
+exact evidence, the companion README, completion path and clipboard action,
+read-only state, Session isolation, valid partial coverage, cancellation, failure,
+pending work, navigation, shutdown, and generation retirement.
+A stock Git AOT fixture exercises a nonprimary Session Environment with nested
+source scope, retained baseline/branch hints, and unchanged Git state without
+materializing the reopened Environment.
 `app/test/core/command_output_capture_integration_test.dart` adds real Git/Command
 Tools/evaluator AOT and socket-gated process output: exact decoded transcripts
 beyond the model-result bound, an unsealed committed prefix, evaluator-only Project
 reopen without Command Tools activation, and an over-budget transcript that fails
 without emitting a successful prefix. These are separate from Chat strategy support
 and from a claim of process liveness.
-`app/test/session_evidence_file_test.dart` injects faults at real staging and rename
-boundaries. Tooling tests check the ordinary prepared catalog and launcher target;
+`app/test/session_evidence_file_test.dart` owns unique two-file directory writing,
+bounds, ownership revocation, and best-effort failure cleanup using real temporary
+files and injected write faults. `app/test/session_evaluation_handoff_test.dart`
+owns captured source metadata, canonical nonprimary association, stock Git v1
+validation, unsafe/unavailable source handling, and rendered inspection guidance.
+Tooling tests check the ordinary prepared catalog and launcher target;
 application tests check the plugin-neutral Navigator/context composition seams.
 
 From the repository root:
@@ -359,7 +436,7 @@ dart tools/adele.dart generate --check
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evidence_file_test.dart test/application_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evidence_file_test.dart test/session_evaluation_handoff_test.dart test/application_test.dart
 ```
 
 The packages participate in maintained analysis/test targets; the existing
