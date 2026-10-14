@@ -263,6 +263,175 @@ void main() {
     skip: !Platform.isLinux,
   );
 
+  for (final failure in [
+    'malformed records',
+    'missing records',
+    'scalar settings',
+    'installation',
+    'frontend',
+    'backend',
+  ]) {
+    testWidgets(
+      'Global Settings routes $failure discovery diagnostics independently',
+      (tester) => tester.runAsync(() async {
+        const owner = 'dev.adele.source-editor';
+        const setting = '$owner.enable-folding';
+        final recordFailure = failure.endsWith('records');
+        final scalarFailure = failure == 'scalar settings';
+        final installationFailure = failure == 'installation';
+        final componentFailure = failure == 'frontend' || failure == 'backend';
+        final hasSettings = !scalarFailure && !installationFailure;
+        final directory = await Directory.systemTemp.createTemp(
+          'adele-settings-diagnostics-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final roots = _configurationRoots(directory);
+        final installed = Directory('${directory.path}/installed/source');
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory.current.parent,
+          installationDirectory: installed,
+          pluginId: owner,
+          displayName: 'Source',
+        );
+        final manifestFile = File(
+          '${installed.path}/adele_plugin.installation.json',
+        );
+        final manifest =
+            jsonDecode(await manifestFile.readAsString())
+                as Map<String, dynamic>;
+        if (recordFailure) {
+          manifest['recordsSchema'] = 'records.schema.json';
+          if (failure == 'malformed records') {
+            await File(
+              '${installed.path}/records.schema.json',
+            ).writeAsString('{}');
+          }
+        } else if (scalarFailure) {
+          await File(
+            '${installed.path}/settings.schema.json',
+          ).writeAsString('{}');
+        } else if (installationFailure) {
+          manifest['manifestVersion'] = 2;
+        } else {
+          manifest['components'] = {
+            failure: {
+              'artifact': 'missing.${failure == 'frontend' ? 'evc' : 'aot'}',
+            },
+          };
+        }
+        await manifestFile.writeAsString(jsonEncode(manifest));
+
+        final runtime = NativeAdeleRuntime();
+        addTearDown(runtime.close);
+        try {
+          late Future<void> starting;
+          await tester.pumpWidget(
+            AdeleApplication(
+              createRuntime: () => runtime,
+              configurationRoots: roots,
+              readChatGptConfiguration: () => null,
+              bootstrapPlugins: (plugins) => starting = plugins.start(
+                installationRoot: '${directory.path}/installed',
+              ),
+            ),
+          );
+          await starting;
+          await tester.pumpAndSettle();
+          final catalog = runtime.plugins.catalog!;
+          final issue = catalog.issues.single;
+          expect(issue.installationDirectory.path, installed.path);
+          expect(issue.isRecordsSchemaIssue, recordFailure);
+          expect(issue.isSettingsSchemaIssue, scalarFailure);
+          expect(
+            issue.component,
+            componentFailure
+                ? failure == 'frontend'
+                      ? PreparedPluginComponent.frontend
+                      : PreparedPluginComponent.backend
+                : isNull,
+          );
+          expect(catalog.installations, hasLength(installationFailure ? 0 : 1));
+          expect(
+            catalog.settings.definitions.map((value) => value.id.value),
+            hasSettings ? [setting] : isEmpty,
+          );
+          if (!installationFailure) {
+            expect(catalog.installations.single.recordsSchema, isNull);
+            expect(catalog.installations.single.backendArtifactUri, isNull);
+            expect(catalog.installations.single.frontend, isNull);
+          }
+          expect(runtime.plugins.state, ApplicationPluginState.ready);
+          expect(runtime.plugins.host, isNull);
+          expect(runtime.plugins.backends, isEmpty);
+
+          await tester.tap(find.byKey(const ValueKey('settings-button')));
+          await _settingsUntil(
+            tester,
+            () => hasSettings
+                ? find.text('Enable Code Folding').evaluate().isNotEmpty
+                : find
+                      .text('No settings are available from installed plugins.')
+                      .evaluate()
+                      .isNotEmpty,
+          );
+          expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+          final warning = find.textContaining(
+            'Setting declarations unavailable',
+          );
+          expect(
+            warning,
+            scalarFailure || installationFailure
+                ? findsOneWidget
+                : findsNothing,
+          );
+          final dialog = tester.widget<GlobalSettingsDialog>(
+            find.byType(GlobalSettingsDialog),
+          );
+          expect(
+            dialog.declarationIssues!(),
+            scalarFailure || installationFailure
+                ? ['${issue.installationDirectory.path}: ${issue.message}']
+                : isEmpty,
+          );
+
+          if (hasSettings) {
+            final input = find.byKey(const ValueKey('setting-input-$setting'));
+            expect(tester.widget<Switch>(input).value, isFalse);
+            if (Platform.isLinux) {
+              await tester.ensureVisible(input);
+              await tester.tap(input);
+              final save = find.byKey(const ValueKey('setting-save-$setting'));
+              await tester.ensureVisible(save);
+              await tester.tap(save);
+              await _settingsUntil(
+                tester,
+                () => find.text('Effective value: true').evaluate().isNotEmpty,
+              );
+              expect(tester.widget<Switch>(input).value, isTrue);
+              expect(
+                await File(
+                  '${roots.configurationRoot}/settings.toml',
+                ).readAsString(),
+                contains('"$setting" = true'),
+              );
+            }
+          }
+          // Routing never consumes or deletes the original catalog diagnostic.
+          expect(runtime.plugins.catalog, same(catalog));
+          expect(catalog.issues.single, same(issue));
+          expect(tester.takeException(), isNull);
+          expect(
+            await tester.binding.handleRequestAppExit(),
+            AppExitResponse.exit,
+          );
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await runtime.close();
+        }
+      }),
+    );
+  }
+
   for (final bool missing in [false, true]) {
     testWidgets(
       '${missing ? 'missing' : 'empty'} installation root boots without plugins and accepts a later selector',

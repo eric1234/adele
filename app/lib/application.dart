@@ -422,7 +422,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           for (final issue
               in _runtime.plugins.catalog?.issues ??
                   <PreparedPluginCatalogIssue>[])
-            if (issue.isSettingsSchemaIssue || issue.component == null)
+            if (issue.isSettingsSchemaIssue ||
+                (issue.component == null && !issue.isRecordsSchemaIssue))
               '${issue.installationDirectory.path}: ${issue.message}',
         ],
       ),
