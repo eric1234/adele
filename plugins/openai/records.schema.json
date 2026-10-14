@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "recordTypes": [
+    {
+      "id": "dev.adele.openai.api-key",
+      "collection": "providers",
+      "collectionLabel": "Providers",
+      "label": "OpenAI API",
+      "description": "An OpenAI API-key provider configuration.",
+      "fields": [
+        {
+          "id": "display-name",
+          "label": "Name",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "endpoint",
+          "label": "API endpoint",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

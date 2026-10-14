@@ -66,15 +66,15 @@ reads a deterministic startup snapshot of immediate child directories'
 `adele_plugin.installation.json` files, not source `adele_plugin.yaml` manifests.
 The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
 `metadata` supplies `PluginMetadata`; optional installation-level `settingsSchema`
-references declarative settings. The required `components` object may be
-empty, retaining a metadata-only installation. A backend component supplies
+and `recordsSchema` reference independent declarative assets. The required
+`components` object may be empty, retaining a metadata-only installation. A backend component supplies
 an `artifact` path and optional `consumesCapabilities`; a frontend supplies an
 `artifact` path and descriptors.
-The in-memory catalog captures parsed metadata, settings declarations, and validated
-locations, not an atomic filesystem snapshot or executable artifact bytes. Later
+The in-memory catalog captures parsed metadata, setting/record declarations, and
+validated locations, not an atomic filesystem snapshot or executable artifact bytes. Later
 component loading can fail even after discovery succeeds.
-Discovery validates metadata, optional settings, and independently optional
-backend/frontend components with confined prepared files, without starting
+Discovery validates metadata, optional declaration schemas, and independently
+optional backend/frontend components with confined prepared files, without starting
 processes, compiling source, loading EVC, or watching for changes.
 `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
@@ -156,6 +156,88 @@ silently selecting a winner. The getter does not load user configuration, start
 plugins, or imply Settings UI, Profiles, or live reconfiguration.
 The [focused schema tests](test/prepared_settings_schema_test.dart) cover these
 boundaries independently of executable hosting.
+
+### Record Schemas
+
+An optional top-level `recordsSchema: "records.schema.json"` references a separate
+UTF-8 JSON asset. It is independent of `settingsSchema`, backend, and frontend;
+metadata-only installations may contribute either or both declaration schemas.
+The installation envelope remains version 1; the record asset has its own strict
+versioned envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "recordTypes": [
+    {
+      "id": "org.example.plugin.api",
+      "collection": "providers",
+      "collectionLabel": "Providers",
+      "label": "Example API",
+      "description": "A named API configuration.",
+      "fields": [
+        {
+          "id": "display-name",
+          "label": "Name",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "endpoint",
+          "label": "API endpoint",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
+`fields`; `description` is optional. Each field requires `id`, `label`, `type`, and
+an explicit Boolean `required`; `description` is optional. Field arrays retain
+authored order. Empty `recordTypes` and `fields` arrays are valid. `type` is exactly
+`boolean`, `integer`, `string`, or `enum`, reusing settings' scalar constructors.
+Only integers accept inclusive optional `minimum`/`maximum` native integer bounds.
+Only enums require nonempty `options`, with required stable `value` and optional
+display `label` per option. No unknown fields, nulls, coercion, defaults, secret
+metadata, validators, or executable hooks are accepted at any schema level.
+
+The installation's `PluginId` is the `RecordTypeDefinition.owner`; schemas cannot
+choose it. Type IDs must belong to that namespace at a dot boundary. Local IDs,
+required/optional semantics, labels, field uniqueness, enum values, and bounds use
+[`adele_settings` record contracts](../settings/README.md#named-records). Collection
+names are product organization, not owner names or activation selectors. These
+declarations do not configure or activate a provider, select an account, or supply
+credentials; persisted values and runtime consumption belong to separate owners.
+
+`PreparedRecordsSchema` owns independent input limits: 1 MiB of UTF-8 bytes with a
+bounded read, 256 record types, 128 fields per type, and 128 options per enum. Type
+IDs allow at most 256 UTF-16 code units; collection and field IDs follow the public
+64-character bound. Type/collection/field labels, enum values, and enum labels
+allow 160 UTF-16 code units each; descriptions allow 4096 and preserve arbitrary
+text, including empty, multiline, and control characters, unlike labels.
+Asset references use the same portable relative-path, canonical
+confinement, symlink, and regular-file checks as settings and executable artifacts.
+
+`PreparedPluginInstallation.recordsSchema` is null when absent or rejected;
+otherwise it holds the canonical `artifactUri` and immutable `definitions` sorted
+by record-type ID, with fields in source order. Discovery snapshots declarations
+without executing code or loading user configuration. Later asset edits cannot
+mutate that snapshot. Missing/unreadable assets, malformed/unsupported schemas,
+duplicate type or field IDs, and conflicting collection labels reject the **whole**
+record schema, never a partial set. `PreparedPluginCatalogIssue.isRecordsSchemaIssue`
+marks the failure (`component` is null), without discarding healthy settings or
+executable components. Failure in those siblings likewise preserves valid records.
+Duplicate installation PluginIds still exclude all conflicting installations.
+
+`PreparedPluginCatalog.records` aggregates surviving schemas into `RecordCatalog`.
+Cross-installation duplicate type IDs throw `DuplicateRecordTypeId`; inconsistent
+labels for one collection throw `ConflictingRecordCollectionLabel`. Neither failure
+silently chooses a winner or removes prepared components. The
+[focused record schema tests](test/prepared_records_schema_test.dart) cover strict
+parsing, atomic schema rejection, bounded reads, confinement, and independence.
 
 ### Component Declarations
 
@@ -404,8 +486,8 @@ while retaining the installation and healthy sibling. Invalid roles, kinds, or
 descriptors invalidate the frontend component. Readable valid identities are reserved before
 the remaining validation; duplicate PluginIds exclude all conflict members,
 including otherwise invalid manifests, without version selection. Schema failures
-instead use the settings-specific issue discriminator described above. Root I/O
-failures propagate instead of looking empty.
+instead use their settings- or records-specific issue discriminator described
+above. Root I/O failures propagate instead of looking empty.
 
 File confinement and existence do not establish executable EVC correctness.
 Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation.

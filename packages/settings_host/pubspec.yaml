@@ -1,5 +1,5 @@
 name: adele_settings_host
-description: Internal global scalar settings adapter over conditional TOML persistence.
+description: Internal scalar settings and configuration record adapters over conditional TOML persistence.
 publish_to: none
 version: 0.1.0
 
@@ -15,5 +15,7 @@ dependencies:
 
 dev_dependencies:
   adele_platform_storage: ^0.1.0
+  adele_plugin_api: ^0.1.0
   path: ^1.9.1
+  plugin_runtime: ^0.1.0
   test: ^1.26.3

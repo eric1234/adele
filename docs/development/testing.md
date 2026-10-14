@@ -246,7 +246,8 @@ the target uses coreutils `chmod` and `stat`. Linux x64 is the validated persist
 path, not macOS/Windows or unconditional power-loss durability evidence.
 
 The `adele_settings` target owns pure-Dart definition, catalog, and resolution
-checks without filesystem persistence or native TOML. The `adele_settings_host`
+checks, including record identity/presence and shared scalar validation, without
+filesystem persistence or native TOML. The `adele_settings_host`
 target owns the thin adapter boundary using actual configuration-store and native
 TOML operations with temporary roots, not a fake persistence layer. Semantic
 resolution checks do not substitute for native host integration checks; neither
@@ -257,6 +258,17 @@ covering independent schemas, scalar constraints, ownership, bounded metadata,
 asset confinement, whole-schema rejection, component isolation, and deterministic
 duplicate diagnostics. The tooling target exercises actual stock schema publication
 through the maintained installation helper, not just a hand-authored manifest.
+
+`packages/settings_host/test/configuration_records_test.dart` uses the real OpenAI
+record schema published by that helper and discovered through the prepared catalog,
+without backend startup or credentials. It checks two independently named records,
+rename without identity changes, optional absence, sibling byte preservation,
+delete/reconstruction, stale baselines including no-ops, unknown/comment retention,
+malformed-file diagnostics, aliases and symlink rejection. A test-only job type
+exercises Boolean, bounded integer and enum fields without a dummy production
+plugin. The existing host target already declares `nativeToml`; no additional
+target or worker is needed. The configuration-store suite separately exercises
+multi-file transactions, conditional create/delete and cross-process coordination.
 
 `app/test/prepared_settings_test.dart` loads the real Source declaration with
 temporary configuration roots and checks native persistence/provenance, explicit

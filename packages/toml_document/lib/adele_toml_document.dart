@@ -19,6 +19,11 @@ final class TomlDocument {
   /// Missing keys and unsupported value types fail rather than returning null.
   Object readScalar(List<String> path) => _invoke('read', path)['value']!;
 
+  /// Requires an existing regular table, including implicit dotted-key tables.
+  /// Missing keys fail with [TomlFailureKind.path]; scalars, inline tables and
+  /// arrays at any segment fail with [TomlFailureKind.type]. No text is changed.
+  void requireTable(List<String> path) => _invoke('requireTable', path);
+
   /// Inserts or updates a string, integer, or boolean under an existing table.
   /// An existing value must have the same scalar type. No tables are created.
   /// An equal value is a text-preserving no-op.

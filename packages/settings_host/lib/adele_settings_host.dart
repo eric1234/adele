@@ -2,6 +2,8 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_toml_document/adele_toml_document.dart';
 
+export 'src/configuration_records.dart';
+
 /// Internal, synchronous global settings editing, not a plugin filesystem API.
 ///
 /// Route all operations through CFG2's one owning host isolate per process, off

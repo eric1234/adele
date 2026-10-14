@@ -109,8 +109,8 @@ The installed manifest is not a source location or dependency graph, an activati
 decision, Profile state, general plugin/provider/account configuration, or a
 backend capability/extension exposure list. Hosting metadata belongs here;
 user configuration values and live advertisements belong at their own boundaries
-below. Optional data-only setting declarations describe installation availability,
-not persisted override values.
+below. Optional data-only setting and named-record declarations describe
+installation availability, not persisted configuration values.
 
 ## Prepared installation snapshot
 
@@ -126,20 +126,26 @@ parsed metadata, validated component locations/descriptors, and discovery issues
 not an atomic filesystem snapshot or immutable artifact bytes. Component owners
 acquire their generation-bound resources later.
 
-An installation may also reference a separately versioned JSON settings schema,
-independently of either executable component. Discovery validates it into the
-existing scalar `SettingDefinition` contract with its owner derived from the
-installation's `PluginId`; a schema cannot claim another owner's namespace.
+An installation may also reference separately versioned JSON settings and
+named-record schemas, independently of each other and either executable component.
+Discovery validates them into the public `SettingDefinition` and
+`RecordTypeDefinition` contracts with ownership derived from the installation's
+`PluginId`; a schema cannot claim another owner's namespace.
 Metadata-only installations can therefore contribute declarations without starting
 code. Prepared declaration availability is not plugin activation or Settings UI
 visibility, and user-editable values remain global TOML.
 
-Schema failure rejects that complete schema and records a settings-specific
-catalog issue without discarding healthy executable components. Artifact references
-use the same installation-relative confinement as executable artifacts. Aggregating
-valid schemas into `SettingsCatalog` rejects setting-ID conflicts explicitly rather
-than selecting by installation order. Exact fields, version, bounds, and failure
-behavior belong to the [runtime README](../../packages/plugin_runtime/README.md#prepared-catalog).
+Schema failure rejects that complete schema and records a schema-specific catalog
+issue without discarding a healthy sibling schema or executable components.
+Artifact references use the same installation-relative confinement as executable
+artifacts. Aggregating valid schemas into `SettingsCatalog` or `RecordCatalog`
+rejects identity conflicts explicitly rather than selecting by installation order.
+Record collection labels must also agree across declarations; collection grouping
+is product organization, not plugin ownership. Record fields retain declared order
+and reuse scalar validation without becoming ordinary setting IDs. Named-record
+declarations do not activate providers, route execution, or supply credentials.
+Exact fields, version, bounds, and failure behavior belong to the
+[runtime README](../../packages/plugin_runtime/README.md#prepared-catalog).
 
 Current discovery examines immediate child installations without recursing or
 watching for changes. An empty installation root is a valid zero-plugin

@@ -1,9 +1,10 @@
 # ADELE Settings
 
 `adele_settings` is an experimental public, pure-Dart package for immutable scalar
-setting declarations, a unique-ID catalog, and default/global value resolution.
+setting declarations, default/global value resolution, and named configuration
+record declarations with separate deterministic catalogs.
 Import `package:adele_settings/adele_settings.dart`. Its only production dependency
-is `adele_plugin_api`, for the shared public-ID validator.
+is `adele_plugin_api`, for the shared public-ID validator and record-type ownership.
 
 ## Declarations
 
@@ -71,6 +72,62 @@ known overrides also throw that error, never silently falling back. Unknown map
 entries are ignored. Results retain `id`, `value`, `source`, and independent
 `hasGlobalOverride` presence, including overrides equal to the default. Removing
 an override resumes the default; the catalog does not retain the caller's map.
+
+## Named Records
+
+Record declarations are separate from scalar settings and their default/global
+resolution. They describe user-named structured configuration, not Dart `Record`
+values, executable registrations, live providers, or plugin instances.
+
+| Identity | Contract |
+| --- | --- |
+| `RecordCollectionId` | Product-facing collection, shared across declaring plugins. |
+| `ConfigurationRecordId` | One named record within a collection, independent of its display name and type. |
+| `RecordTypeId` | ADELE public ID beneath the declaring `PluginId` namespace at a dot boundary. |
+| `RecordFieldId` | Local field identity, never a synthetic `SettingId`. |
+
+Collection, record, and field IDs use exact lowercase ASCII
+`[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, at most 64 characters. Collection and record IDs
+additionally reject Windows device names `con`, `prn`, `aux`, `nul`, `com1` through
+`com9`, and `lpt1` through `lpt9`. Reserved aliases such as `CON`, `con.txt`,
+`conin$`, `conout$`, `clock$`, trailing dots/spaces, and superscript digits already
+fail the grammar; no trimming or case normalization occurs. Field IDs are not
+paths and do not have the device-name restriction. Invalid IDs throw
+`FormatException`. Identity classes have value equality within their own type.
+
+`RecordFieldDefinition<T>` requires `id`, `label`, existing `SettingType<T>`, and
+an explicit `required` boolean; `description` is optional. Fields have no defaults,
+null values, callbacks, or nested structures. `RecordTypeDefinition` requires
+`id`, `owner: PluginId`, `collection`, `collectionLabel`, `label`, and `fields`;
+`description` is optional. Labels use the same presentation validation as settings;
+descriptions are optional prose. Fields are copied, immutable, duplicate-free,
+and retain declaration order. Empty field lists are valid. Ownership is declaration
+consistency, not activation or proof of trust.
+
+`type.validate(recordId, Map<String, Object?> values)` validates known fields and
+returns an immutable `Map<String, Object>` in declaration order. Required absence
+fails; optional absence remains absent; explicit null and wrong scalar values
+always fail. Scalar constraints use the same identity-independent primitive as
+ordinary settings, preserving `InvalidSettingValue` behavior and messages for
+existing consumers. Record failures instead throw `InvalidRecordValue` with
+`collection`, `recordId`, `fieldId`, and `message`. Hosts may use a null `fieldId`
+for record-wide/header errors.
+
+Unknown persisted keys are not inspected or mutated. The returned known-field
+projection is **not a replacement persistence document**: host adapters must retain
+unknown data and may reject unknown keys in desired edits. Validation neither reads
+nor rewrites persisted records.
+
+`RecordCatalog(definitions)` copies declarations and exposes immutable `definitions`
+sorted by type ID and `collections` sorted by collection ID. `definition(typeId)`
+throws `RecordTypeNotFound` when absent; `collectionLabel(collectionId)` throws an
+argument error for an undeclared collection. Duplicate type IDs throw
+`DuplicateRecordTypeId`, including both owners; different labels for the same
+collection throw `ConflictingRecordCollectionLabel`. Neither conflict selects a
+winner. Distinct types and plugins may share a collection when labels agree exactly.
+
+Prepared JSON declaration discovery is owned by
+[`plugin_runtime`](../plugin_runtime/README.md#record-schemas), not this package.
 
 ## Boundaries
 

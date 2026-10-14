@@ -408,12 +408,16 @@ and the same remote Chat backend, not an in-process strategy fallback.
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
 `backend.aot` and `frontend.evc`. The same stock publication helper copies the
-Source Editor's authoritative `settings.schema.json` and references it separately
-from executable components. Schema metadata is available before frontend startup;
-global user values remain in TOML, not generated installation artifacts. Runtime
-receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the
-temporary generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend
-or frontend artifact defines or source paths. Installed manifests are distinct from the draft
+Source Editor's authoritative `settings.schema.json` and OpenAI's authoritative
+`records.schema.json` byte-for-byte, referencing them through the independent
+installation-level `settingsSchema` and `recordsSchema` fields. Schema metadata is
+available without backend/frontend activation or authentication; the OpenAI record
+declaration contains no credential fields and does not change runtime startup
+configuration. Global user values remain in TOML, not generated installation
+artifacts. Runtime receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared
+runtime/host paths, and the temporary generic
+`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend or frontend artifact
+defines or source paths. Installed manifests are distinct from the draft
 `adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
 to it. See [`../architecture/plugin-layout.md`](../architecture/plugin-layout.md#prepared-installation-snapshot).
 

@@ -30,6 +30,46 @@ name = "one"
     expect(TomlDocument.parse(source).source, source);
   });
 
+  test(
+    'requires existing regular tables with distinct missing/type errors',
+    () {
+      for (final source in ['[values]\n', 'values.name = "one"\n']) {
+        final document = TomlDocument.parse(source);
+        document.requireTable(['values']);
+        expect(document.source, source);
+      }
+      TomlDocument.parse('["a.b".""]\n').requireTable(['a.b', '']);
+      for (final path in <List<String>>[
+        [],
+        ['missing'],
+        ['missing', 'values'],
+      ]) {
+        expect(
+          () => TomlDocument.parse('[values]\n').requireTable(path),
+          throwsA(failure(TomlFailureKind.path)),
+        );
+      }
+      for (final source in [
+        'values = {}\n',
+        'values = 1\n',
+        'values = []\n',
+        '[[values]]\n',
+      ]) {
+        final document = TomlDocument.parse(source);
+        for (final path in [
+          ['values'],
+          ['values', 'child'],
+        ]) {
+          expect(
+            () => document.requireTable(path),
+            throwsA(failure(TomlFailureKind.type)),
+          );
+        }
+        expect(document.source, source);
+      }
+    },
+  );
+
   test('parse failures contain useful native location diagnostics', () {
     expect(
       () => TomlDocument.parse('[tools]\nlimit =\n'),

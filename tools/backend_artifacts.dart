@@ -257,7 +257,7 @@ Future<List<String>> prepareDesktopPluginDefines({
 }
 
 /// Publishes stock metadata and authored assets after component preparation.
-/// Runtime discovery remains the sole settings-schema parser.
+/// Runtime discovery remains the sole declarative-schema parser.
 Future<void> publishStockPluginInstallation({
   required Directory repositoryRoot,
   required Directory installationDirectory,
@@ -266,28 +266,31 @@ Future<void> publishStockPluginInstallation({
   bool backend = false,
   bool frontend = false,
 }) async {
-  final schemaSource = switch (pluginId) {
-    'dev.adele.source-editor' => 'plugins/source_editor/settings.schema.json',
-    _ => null,
+  final schemaSources = switch (pluginId) {
+    'dev.adele.source-editor' => {
+      'settings': 'plugins/source_editor/settings.schema.json',
+    },
+    'dev.adele.openai' => {'records': 'plugins/openai/records.schema.json'},
+    _ => <String, String>{},
   };
   await installationDirectory.create(recursive: true);
-  if (schemaSource != null) {
+  for (final schema in schemaSources.entries) {
     final source = File.fromUri(
-      repositoryRoot.absolute.uri.resolve(schemaSource),
+      repositoryRoot.absolute.uri.resolve(schema.value),
     );
     try {
       final bytes = await source.readAsBytes();
       if (bytes.isEmpty) {
         throw PluginBuildFailure(
-          'Stock settings schema is empty: ${source.path}',
+          'Stock ${schema.key} schema is empty: ${source.path}',
         );
       }
       await File.fromUri(
-        installationDirectory.uri.resolve('settings.schema.json'),
+        installationDirectory.uri.resolve('${schema.key}.schema.json'),
       ).writeAsBytes(bytes);
     } on FileSystemException catch (error) {
       throw PluginBuildFailure(
-        'Unable to prepare stock settings schema: $error',
+        'Unable to prepare stock ${schema.key} schema: $error',
       );
     }
   }
@@ -301,7 +304,8 @@ Future<void> publishStockPluginInstallation({
         'version': '0.1.0',
         'displayName': displayName,
       },
-      if (schemaSource != null) 'settingsSchema': 'settings.schema.json',
+      for (final schema in schemaSources.keys)
+        '${schema}Schema': '$schema.schema.json',
       'components': <String, Object?>{
         if (backend) 'backend': <String, Object?>{'artifact': 'backend.aot'},
         if (frontend)

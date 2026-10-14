@@ -11,6 +11,7 @@ resolution: workspace
 dependencies:
   adele_platform_storage: ^0.1.0
   adele_toml_document: ^0.1.0
+  ffi: ^2.1.4
   path: ^1.9.1
 
 dev_dependencies:

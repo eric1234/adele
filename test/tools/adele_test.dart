@@ -1144,6 +1144,7 @@ void main() {
         unorderedEquals([
           'adele_platform_storage',
           'adele_toml_document',
+          'ffi',
           'path',
         ]),
       );
