@@ -299,6 +299,17 @@ the review policy. Unstaged remains an index-to-working-tree comparison on an
 unborn HEAD, including nonignored additions, without approval. Uncommitted and
 Task/Branch retain their valid-HEAD requirements; no substitute empty tree is used.
 
+Approve reconstructs only the Unstaged layer, matching `snapshotUnstaged()`, while
+retaining complete HEAD/index identity and revision checks. Unrelated staged hunks
+do not consume its rendering budgets. Unapprove still reconstructs Staged changes;
+Uncommitted and Task snapshots retain their existing layered rendering limits.
+
+Symbolic HEAD is reviewable only when its captured Git-written header directly
+names the resolved terminal reference. Chained or noncanonical symbolic headers
+remain inspectable but receive no approval revision; no recursive ref monitoring
+or branch substitution is performed. Detached HEAD can still support Unstaged and
+Uncommitted review, while Task/Branch retains its branch/baseline requirements.
+
 Revisions are issued only after their bounded verification prerequisites are
 available. Ordinary observed-file verification and oversized-file streaming have
 independent 64 MiB aggregate allowances, each retaining the 16 MiB per-file bound.
@@ -383,6 +394,20 @@ fsmonitor, untracked-cache and unknown extensions are explicitly unavailable rat
 than discarded. A successful operation acknowledges only the single publication,
 not intermediate object or temporary-index writes. There is no sequential
 multi-file partial-success path.
+
+On POSIX, publication preserves the authoritative index's existing ordinary
+permission bits (`0777`), including shared-group access under a restrictive umask.
+If adjustment is needed, a unique empty payload on the same filesystem is opened
+before mode preparation, so read-only modes can also be retained. Only trusted
+system `chmod` paths are used, with direct arguments, a clean environment and the
+remaining operation/process budgets. Exact mode is verified before writing the
+prospective contents and adopting the payload as the continuously reserved
+`index.lock`, before final authority checks. A delayed permission process cannot
+target a subsequent writer's reused lock pathname. Final synchronous checks verify
+both the original index mode and the intended lock mode before publication.
+Unavailable tooling or failed preparation cannot replace the index. Special mode
+bits are unsupported; ownership and ACLs are not administered. Windows retains
+its existing behavior without a POSIX-mode guarantee.
 
 The mutation process policy is separate from read-only inspection. It strips
 inherited Git routing variables, uses the provider's exact Git/worktree roots and

@@ -292,15 +292,15 @@ void main() {
             'XDG_CONFIG_HOME': '${container.path}/config',
           },
         );
+        final selection = ReviewSelection(
+          expectedRevision: '0' * 64,
+          granularity: 'file',
+          relativePath: 'file',
+          hunkIndex: null,
+        );
+        expect((await review.approve(selection)).status, 'ineligible');
         await expectLater(
-          review.approve(
-            ReviewSelection(
-              expectedRevision: '0' * 64,
-              granularity: 'file',
-              relativePath: 'file',
-              hunkIndex: null,
-            ),
-          ),
+          review.unapprove(selection),
           throwsA(
             isA<ReviewApprovalFailure>().having(
               (error) => error.code,

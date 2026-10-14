@@ -46,6 +46,7 @@ final class GitReviewApprovalService implements ReviewApprovalService {
     final deadline = Timer(limits.operationTimeout, operation.expire);
     File? lock;
     RandomAccessFile? lockHandle;
+    Directory? permissionDirectory;
     var ownsLock = false;
     try {
       return await (() async {
@@ -97,7 +98,7 @@ final class GitReviewApprovalService implements ReviewApprovalService {
         }
         final snapshot = await operation.snapshot(
           environment,
-          includeStaged: true,
+          includeStaged: reverse,
           includeCommitted: false,
           reviewKey: provider.reviewKey,
           reviewEnvironmentId: identity.environmentId,
@@ -109,6 +110,12 @@ final class GitReviewApprovalService implements ReviewApprovalService {
         if (layer.reviewRevision == null) return _reviewResult('ineligible');
         if (layer.reviewRevision != selection.expectedRevision) {
           return _reviewResult('stale');
+        }
+        final indexMode = Platform.isWindows
+            ? null
+            : FileStat.statSync('${gitDirectory.path}/index').mode & 0xfff;
+        if (indexMode != null && indexMode & 0xe00 != 0) {
+          return _reviewResult('ineligible');
         }
         final files = selection.granularity == 'layer'
             ? layer.files
@@ -286,8 +293,38 @@ final class GitReviewApprovalService implements ReviewApprovalService {
             'The index lock changed unexpectedly.',
           );
         }
-        lockHandle!.writeFromSync(prospective);
-        lockHandle!.flushSync();
+        if (indexMode != null &&
+            FileStat.statSync(lock!.path).mode & 0xfff != indexMode) {
+          // A permission child must never target the reusable index.lock path:
+          // even a late launch can only touch this operation's unique payload.
+          permissionDirectory = await gitDirectory.createTemp(
+            'review-index-mode-',
+          );
+          final payload = File('${permissionDirectory!.path}/index');
+          payload.createSync(exclusive: true);
+          final opened = payload.openSync(mode: FileMode.write);
+          try {
+            await operation._prepareIndexMode(payload, indexMode);
+            opened.writeFromSync(prospective);
+            opened.flushSync();
+          } finally {
+            opened.closeSync();
+          }
+          operation.checkOpen();
+          if (FileStat.statSync(payload.path).mode & 0xfff != indexMode) {
+            throw _reviewFailure(
+              'index_permissions_unavailable',
+              'The prepared index permissions could not be retained.',
+            );
+          }
+          lockHandle!.closeSync();
+          lockHandle = null;
+          // Same-directory-filesystem rename retains the reserved lock pathname.
+          payload.renameSync(lock!.path);
+        } else {
+          lockHandle!.writeFromSync(prospective);
+          lockHandle!.flushSync();
+        }
         await operation._settlementValidation!();
         final currentProof = await operation.awaitAuthority(
           authorizedReview.authority,
@@ -318,9 +355,11 @@ final class GitReviewApprovalService implements ReviewApprovalService {
         // No asynchronous suspension between final local admission and rename.
         // Cooperating Git writers cannot modify index until this rename removes
         // our lock. Direct, lock-ignoring filesystem attackers are not supported.
-        operation._validatePublicationSync(environment);
+        operation._validatePublicationSync(environment, indexMode: indexMode);
         if (FileSystemEntity.typeSync(lock!.path, followLinks: false) !=
                 FileSystemEntityType.file ||
+            (indexMode != null &&
+                FileStat.statSync(lock!.path).mode & 0xfff != indexMode) ||
             !_bytesEqual(
               prospective,
               _readBoundedSync(lock!, _maximumReviewMetadataBytes),
@@ -330,7 +369,7 @@ final class GitReviewApprovalService implements ReviewApprovalService {
             'The index lock changed unexpectedly.',
           );
         }
-        lockHandle!.closeSync();
+        lockHandle?.closeSync();
         lockHandle = null;
         operation.checkOpen();
         lock!.renameSync('${gitDirectory.path}/index');
@@ -365,6 +404,15 @@ final class GitReviewApprovalService implements ReviewApprovalService {
           lock!.deleteSync();
         } on FileSystemException {
           // A failed cleanup leaves a visible Git lock, never a partial index.
+        }
+      }
+      if (permissionDirectory != null) {
+        try {
+          await permissionDirectory!
+              .delete(recursive: true)
+              .timeout(const Duration(seconds: 1));
+        } on Object {
+          // Only this operation's bounded private permission payload remains.
         }
       }
     }
@@ -450,6 +498,108 @@ Uint8List _reconstructHunk(_ReviewFile file, DiffHunk hunk, bool reverse) {
 }
 
 extension _ReviewSnapshot on _SnapshotOperation {
+  Future<void> _prepareIndexMode(File payload, int mode) async {
+    checkOpen();
+    String? executable;
+    for (final candidate in ['/usr/bin/chmod', '/bin/chmod']) {
+      final stat = File(candidate).statSync();
+      if (stat.type == FileSystemEntityType.file && stat.mode & 0x49 != 0) {
+        executable = candidate;
+        break;
+      }
+    }
+    if (executable == null ||
+        FileSystemEntity.typeSync(payload.path, followLinks: false) !=
+            FileSystemEntityType.file ||
+        payload.parent.resolveSymbolicLinksSync() != payload.parent.path) {
+      throw _reviewFailure(
+        'index_permissions_unavailable',
+        'The index permissions cannot be safely prepared.',
+      );
+    }
+    final elapsed = Stopwatch()..start();
+    Duration remaining() {
+      checkOpen();
+      final micros = math.min(
+        (limits.operationTimeout - _elapsed.elapsed).inMicroseconds,
+        (limits.processTimeout - elapsed.elapsed).inMicroseconds,
+      );
+      if (micros <= 0) throw TimeoutException('Index permission deadline');
+      return Duration(microseconds: micros);
+    }
+
+    Process? process;
+    var completed = false;
+    var launchExpired = false;
+    try {
+      final startBudget = remaining();
+      process =
+          await Process.start(
+                executable,
+                ['--', mode.toRadixString(8), payload.path],
+                workingDirectory: _gitDirectory.path,
+                environment: const {'LC_ALL': 'C'},
+                includeParentEnvironment: false,
+                runInShell: false,
+              )
+              .then((started) {
+                if (_closed || launchExpired) {
+                  started.kill(ProcessSignal.sigkill);
+                }
+                return started;
+              })
+              .timeout(startBudget);
+      final started = process;
+      _processes.add(started);
+      checkOpen();
+      await started.stdin.close().timeout(remaining());
+      var output = 0;
+      Future<void> drain(Stream<List<int>> stream) => stream.forEach((chunk) {
+        if ((output += chunk.length) > limits.stderrBytes) {
+          throw _reviewFailure(
+            'index_permissions_unavailable',
+            'Index permission diagnostics exceeded their bound.',
+          );
+        }
+      });
+      int? exitCode;
+      final completionBudget = remaining();
+      await Future.wait<void>([
+        started.exitCode.then<void>((code) {
+          completed = true;
+          exitCode = code;
+        }),
+        drain(started.stdout),
+        drain(started.stderr),
+      ], eagerError: true).timeout(completionBudget);
+      checkOpen();
+      if (exitCode != 0 ||
+          FileStat.statSync(payload.path).mode & 0xfff != mode) {
+        throw _reviewFailure(
+          'index_permissions_unavailable',
+          'The existing index permissions could not be preserved.',
+        );
+      }
+    } on ProcessException {
+      throw _reviewFailure(
+        'index_permissions_unavailable',
+        'The index permission tool could not be started.',
+      );
+    } on TimeoutException {
+      checkOpen();
+      throw _reviewFailure(
+        'index_permissions_unavailable',
+        'Index permission preparation exceeded its deadline.',
+      );
+    } finally {
+      launchExpired = true;
+      if (process != null) {
+        if (!completed) process.kill(ProcessSignal.sigkill);
+        _processes.remove(process);
+      }
+    }
+  }
+
   Future<void> _validateObjectStore(String? oid) async {
     checkOpen();
     final objects = Directory('${_commonDirectory!.path}/objects');
@@ -668,6 +818,11 @@ extension _ReviewSnapshot on _SnapshotOperation {
 
   Future<void> _captureHeadFiles(Directory root) async {
     if (!_indexReviewable || _reviewHead == null) return;
+    final reference = _reviewHead!.reference;
+    if (reference.isNotEmpty && !reference.endsWith('\n')) {
+      _indexReviewable = false;
+      return;
+    }
     final storage = _decode(
       (await git(root, [
         'config',
@@ -683,7 +838,7 @@ extension _ReviewSnapshot on _SnapshotOperation {
       'HEAD',
       'packed-refs',
       'commondir',
-      if (_reviewHead!.reference.isNotEmpty) _reviewHead!.reference.trim(),
+      if (reference.isNotEmpty) reference.substring(0, reference.length - 1),
     ]) {
       final output = _decode(
         (await git(root, [
@@ -697,6 +852,18 @@ extension _ReviewSnapshot on _SnapshotOperation {
       final path = output.substring(0, output.length - 1);
       try {
         _headFiles[path] = _readOptionalMetadataSync(path);
+        // Compare captured Git-formatted bytes exactly: trimming can alias
+        // distinct legal ref names. Chains/noncanonical HEAD stay read-only.
+        if (name == 'HEAD' &&
+            reference.isNotEmpty &&
+            !_bytesEqual(
+              _headFiles[path] ?? const [],
+              utf8.encode('ref: $reference'),
+            )) {
+          _indexReviewable = false;
+          _headFiles.clear();
+          return;
+        }
       } on ChangeSetFailure catch (error) {
         if (error.code != 'review_metadata_unavailable') rethrow;
         _indexReviewable = false;
@@ -1307,7 +1474,10 @@ extension _ReviewSnapshot on _SnapshotOperation {
     }
   }
 
-  void _validatePublicationSync(WorktreeEnvironment environment) {
+  void _validatePublicationSync(
+    WorktreeEnvironment environment, {
+    required int? indexMode,
+  }) {
     checkOpen();
     _validateHeadFilesSync();
     _validateReviewDirectoriesSync();
@@ -1326,6 +1496,8 @@ extension _ReviewSnapshot on _SnapshotOperation {
     final index = File('${_gitDirectory.path}/index');
     if (FileSystemEntity.typeSync(index.path, followLinks: false) !=
             FileSystemEntityType.file ||
+        (indexMode != null &&
+            FileStat.statSync(index.path).mode & 0xfff != indexMode) ||
         index.lengthSync() != _indexBytes.length ||
         !_bytesEqual(
           _readBoundedSync(index, _maximumReviewMetadataBytes),
