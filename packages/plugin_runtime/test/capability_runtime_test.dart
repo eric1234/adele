@@ -52,6 +52,138 @@ void main() {
 
   for (final advertised in [false, true]) {
     test(
+      'Environment binding is exact and default-denied, advertised=$advertised',
+      () async {
+        final fake = _FakeHost.create(
+          contextEcho: true,
+          readyFields: {
+            'capabilityExposures': [
+              {...firstExposure, 'environmentBound': true},
+              {
+                ...firstExposure,
+                'providerId': secondExposure['providerId'],
+                'rank': 10,
+              },
+            ],
+          },
+        );
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        addTearDown(host.close);
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.provider',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final registry = CapabilityRegistry();
+        final activation = advertised
+            ? await PluginCapabilityActivation.registerAdvertised(
+                connection: connection,
+                registry: registry,
+              )
+            : await PluginCapabilityActivation.register(
+                connection: connection,
+                registry: registry,
+                exposures: connection.capabilityExposures.map(
+                  (exposure) => PluginCapabilityExposure(
+                    provider: _provider(
+                      capability,
+                      exposure.providerId,
+                      rank: exposure.rank,
+                    ),
+                    configurationContext: connection.configurationContext(
+                      exposure.configurationContext,
+                    ),
+                    environmentBound: exposure.environmentBound,
+                  ),
+                ),
+              );
+        addTearDown(activation.close);
+        final bound = registry.resolve(
+          capability,
+          providerId: ProviderId(firstExposure['providerId']! as String),
+        );
+        final ordinary = registry.resolve(capability);
+        expect(ordinary.provider.id.value, secondExposure['providerId']);
+        expect(activation.isEnvironmentBound(bound), isTrue);
+        expect(
+          activation.isEnvironmentBound(
+            registry.resolve(capability, providerId: bound.provider.id),
+          ),
+          isTrue,
+        );
+        expect(activation.isEnvironmentBound(ordinary), isFalse);
+        expect(activation.associationFor(bound), isNull);
+        expect(registry.providersFor(environment), isEmpty);
+        final endpoint = bound.endpointAs<AdeleRequestChannelEndpoint>();
+        final foreign = CapabilityRegistry();
+        final foreignRegistration = foreign.register(
+          provider: bound.provider,
+          endpoint: endpoint,
+        );
+        addTearDown(foreignRegistration.close);
+        expect(
+          activation.isEnvironmentBound(foreign.resolve(capability)),
+          isFalse,
+        );
+        expect(await bound.requestChannel.request('inspect', const {}), {
+          'configurationContext': 'opaque-first',
+          'serviceId': 'resourceInspector',
+          'payload': <String, Object?>{},
+        });
+
+        final stale = isA<ProviderUnavailable>().having(
+          (error) => error.stale,
+          'stale',
+          isTrue,
+        );
+        bound.onRetire(() {
+          expect(() => activation.isEnvironmentBound(bound), throwsA(stale));
+          expect(activation.owns(ordinary), isTrue);
+        });
+        await activation.retireProvider(bound);
+        final replacement = registry.register(
+          provider: bound.provider,
+          endpoint: endpoint,
+        );
+        // Even adopting an identical endpoint never transfers the old opt-in.
+        activation.registrations.add(replacement);
+        final fresh = registry.resolve(
+          capability,
+          providerId: bound.provider.id,
+        );
+        expect(activation.owns(fresh), isTrue);
+        expect(activation.isEnvironmentBound(fresh), isFalse);
+        expect(() => activation.isEnvironmentBound(bound), throwsA(stale));
+        await replacement.close();
+
+        final next = await PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: [
+            PluginCapabilityExposure(
+              provider: bound.provider,
+              configurationContext: connection.configurationContext(
+                'opaque-first',
+              ),
+              environmentBound: true,
+            ),
+          ],
+        );
+        addTearDown(next.close);
+        final nextBinding = registry.resolve(
+          capability,
+          providerId: bound.provider.id,
+        );
+        expect(next.isEnvironmentBound(nextBinding), isTrue);
+        expect(activation.isEnvironmentBound(nextBinding), isFalse);
+        expect(() => next.isEnvironmentBound(bound), throwsA(stale));
+        await activation.retire();
+        expect(next.isEnvironmentBound(nextBinding), isTrue);
+        expect(connection.isClosed, isFalse);
+      },
+    );
+
+    test(
       'exact sibling selection ignores shared routes and global rank, advertised=$advertised',
       () async {
         final fake = _FakeHost.create(
@@ -135,6 +267,8 @@ void main() {
           isTrue,
         );
         expect(activation.associationFor(a), isNull);
+        expect(activation.isEnvironmentBound(a), isFalse);
+        expect(activation.isEnvironmentBound(selected), isFalse);
         expect(activation.associationFor(registry.resolve(capability)), isNull);
         expect(
           registry.resolve(capability).provider.id.value,
@@ -225,6 +359,75 @@ void main() {
       },
     );
   }
+
+  test(
+    'direct dual-mode exposure rolls back only its registration attempt',
+    () async {
+      final fake = _FakeHost.create();
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final retained = await PluginCapabilityActivation.register(
+        connection: connection,
+        registry: registry,
+        exposures: [
+          PluginCapabilityExposure(
+            provider: _provider(environment, 'dev.adele.environment.retained'),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
+        ],
+      );
+      addTearDown(retained.close);
+      final sibling = registry.resolve(environment);
+      ProviderBinding? partial;
+      Iterable<PluginCapabilityExposure> exposures() sync* {
+        final first = _provider(capability, 'dev.adele.provider.first');
+        yield PluginCapabilityExposure(
+          provider: first,
+          configurationContext: connection.defaultConfigurationContext,
+          environmentBound: true,
+        );
+        partial = registry.resolve(capability, providerId: first.id);
+        yield PluginCapabilityExposure(
+          provider: _provider(environment, 'dev.adele.environment.a'),
+          configurationContext: connection.defaultConfigurationContext,
+        );
+        yield PluginCapabilityExposure(
+          provider: _provider(capability, 'dev.adele.provider.invalid'),
+          configurationContext: connection.defaultConfigurationContext,
+          environmentBound: true,
+          association: AdeleProviderAssociation(
+            capabilityId: environment.id.value,
+            capabilityMajorVersion: 1,
+            providerId: 'dev.adele.environment.a',
+          ),
+        );
+      }
+
+      await expectLater(
+        PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: exposures(),
+        ),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(registry.providersFor(capability), isEmpty);
+      expect(
+        () => partial!.requestChannel,
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(retained.owns(sibling), isTrue);
+      expect(registry.providersFor(environment), [sibling.provider]);
+      expect(retained.isEnvironmentBound(sibling), isFalse);
+      expect(connection.validateInfrastructureContext, returnsNormally);
+    },
+  );
 
   test(
     'invalid associations roll back only their lazy registration attempt',
@@ -391,6 +594,7 @@ void main() {
         expect(() => activation.retireProvider(binding), throwsA(stale));
       });
       expect(activation.owns(binding), isTrue);
+      expect(activation.isEnvironmentBound(binding), isFalse);
 
       available = false;
       expect(registration.isClosed, isFalse);
@@ -401,6 +605,10 @@ void main() {
       );
       expect(
         () => activation.owns(binding),
+        throwsA(isA<ProviderEndpointUnavailable>()),
+      );
+      expect(
+        () => activation.isEnvironmentBound(binding),
         throwsA(isA<ProviderEndpointUnavailable>()),
       );
       expect(
@@ -503,6 +711,11 @@ void main() {
             'capabilityExposures': [
               associatedExposure,
               environmentA,
+              {
+                ...firstExposure,
+                'providerId': 'dev.adele.provider.independent',
+                'environmentBound': true,
+              },
               secondExposure,
             ],
           },
@@ -546,6 +759,11 @@ void main() {
           capability,
           providerId: ProviderId(secondExposure['providerId']! as String),
         );
+        final independent = registry.resolve(
+          capability,
+          providerId: ProviderId('dev.adele.provider.independent'),
+        );
+        expect(activation.isEnvironmentBound(independent), isTrue);
         final peerBinding = registry.resolve(
           capability,
           providerId: ProviderId('dev.adele.provider.peer'),
@@ -565,6 +783,8 @@ void main() {
             throwsA(isA<InvalidProviderRegistration>()),
           );
           expect(activation.associationFor(source), isNull);
+          expect(() => independent.requestChannel, returnsNormally);
+          expect(activation.isEnvironmentBound(independent), isFalse);
           expect(
             () => activation.resolveAssociatedProvider(
               capability,
@@ -1184,7 +1404,10 @@ void main() {
       final fake = _FakeHost.create(
         failOnRequest: true,
         readyFields: {
-          'capabilityExposures': [firstExposure, secondExposure],
+          'capabilityExposures': [
+            firstExposure,
+            {...secondExposure, 'environmentBound': true},
+          ],
         },
       );
       addTearDown(fake.dispose);
@@ -1202,6 +1425,7 @@ void main() {
           );
       final oldBinding = registry.resolve(capability);
       expect(firstActivation.owns(oldBinding), isTrue);
+      expect(firstActivation.isEnvironmentBound(oldBinding), isTrue);
       final oldChannel = oldBinding.requestChannel;
       final oldContext = first.configurationContext('opaque-first');
       await expectLater(
@@ -1222,6 +1446,18 @@ void main() {
           );
       await firstActivation.close();
       expect(firstActivation.owns(registry.resolve(capability)), isFalse);
+      expect(
+        firstActivation.isEnvironmentBound(registry.resolve(capability)),
+        isFalse,
+      );
+      expect(
+        replacementActivation.isEnvironmentBound(registry.resolve(capability)),
+        isTrue,
+      );
+      expect(
+        () => firstActivation.isEnvironmentBound(oldBinding),
+        throwsA(isA<ProviderUnavailable>()),
+      );
       expect(replacementActivation.owns(registry.resolve(capability)), isTrue);
       expect(replacement.isClosed, isFalse);
       expect(registry.providersFor(capability), hasLength(2));

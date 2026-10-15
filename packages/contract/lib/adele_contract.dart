@@ -156,6 +156,7 @@ final class AdeleCapabilityExposure {
     required this.configurationContext,
     this.rank = 0,
     this.association,
+    this.environmentBound = false,
   }) {
     try {
       validateAdelePublicId(providerId, label: 'provider ID');
@@ -174,6 +175,11 @@ final class AdeleCapabilityExposure {
       throw const FormatException('Advertised display name must not be blank.');
     }
     adeleValidateConfigurationContext(configurationContext);
+    if (environmentBound && association != null) {
+      throw const FormatException(
+        'An Environment-bound provider cannot declare a sibling association.',
+      );
+    }
   }
 
   final String providerId;
@@ -184,6 +190,10 @@ final class AdeleCapabilityExposure {
   final String configurationContext;
   final int rank;
   final AdeleProviderAssociation? association;
+
+  /// Opts into host-selected Environment binding independently of a sibling.
+  /// Mutually exclusive with [association]; this declaration grants no authority.
+  final bool environmentBound;
 
   static List<AdeleCapabilityExposure> fromReady(Map<Object?, Object?> ready) {
     if (!ready.containsKey('capabilityExposures')) return const [];
@@ -200,7 +210,9 @@ final class AdeleCapabilityExposure {
             value['serviceId'] is! String ||
             value['displayName'] is! String ||
             value['configurationContext'] is! String ||
-            (value.containsKey('rank') && value['rank'] is! int)) {
+            (value.containsKey('rank') && value['rank'] is! int) ||
+            (value.containsKey('environmentBound') &&
+                value['environmentBound'] is! bool)) {
           throw const FormatException('Malformed capability exposure.');
         }
         return AdeleCapabilityExposure(
@@ -214,6 +226,9 @@ final class AdeleCapabilityExposure {
           association: value.containsKey('association')
               ? AdeleProviderAssociation._fromMap(value['association'])
               : null,
+          environmentBound: value.containsKey('environmentBound')
+              ? value['environmentBound'] as bool
+              : false,
         );
       }),
     );
@@ -228,6 +243,7 @@ final class AdeleCapabilityExposure {
     'configurationContext': configurationContext,
     'rank': rank,
     if (association != null) 'association': association!.toMap(),
+    if (environmentBound) 'environmentBound': true,
   };
 }
 

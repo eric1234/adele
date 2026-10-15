@@ -137,7 +137,7 @@ not host authority. During activation the host resolves that declaration once an
 checks actual registration ownership. Both direct host registration and ready
 advertisements use the same activation bookkeeping. Forward references are allowed;
 missing, incompatible, foreign, self, and chained references fail with activation
-rollback. No cross-backend delegation or association graph is supported.
+rollback. Associations do not cross backends or form a delegation graph.
 
 The retained relationship joins two exact live registrations, not their semantic
 descriptors, configuration contexts, or endpoint values. Multiple providers can
@@ -152,23 +152,34 @@ Environment association synchronously, validates its product graph, then acquire
 that Environment through `EnvironmentRuntime`. It retains one materialization
 attempt, including failure, and its exact provider binding. It never substitutes
 Task primary, follows later navigation, or re-resolves a retired captured binding.
-Only callable providers explicitly associated with that exact Environment provider
-are eligible. Selection preserves existing rank/Provider ID ordering within the
-eligible set; an explicit unavailable or ineligible provider fails without fallback.
-The result retains both bindings and validates the exact relationship, while the
-existing context-free `CapabilityRegistry.resolve` remains unchanged.
+Callable providers explicitly associated with that exact Environment provider are
+eligible. Alternatively, a ready Capability exposure can opt into `environmentBound`:
+it accepts a host-supplied Environment without naming or implementing its provider.
+This strict boolean defaults to false and cannot be combined with `association`.
+It neither implies a same-plugin relationship nor proves support for every
+Environment or operation; provider-specific applicability remains plugin-owned.
+
+Capability selection and Environment authorization are separate. An explicit
+Provider ID must name an eligible registration and never falls back. Without an
+explicit ID, existing eligible siblings retain rank/Provider ID ordering and take
+precedence; if there are none, exactly one independent Environment-bound provider
+is required. Absent or ambiguous independent selection performs no call, regardless
+of rank. This bounded rule is not a general applicability ranking system. The result
+retains both exact registrations and their actual backend activations, which may
+differ, while context-free `CapabilityRegistry.resolve` remains unchanged.
 
 Association validation proves live registration provenance and the backend's
 explicit declaration, not arbitrary native implementation semantics. It grants no
 Environment reads, mutations, processes, host-service access, or invocation token.
-Selected bindings support the existing context-free generated service route.
+Ordinary context-free generated service routing is unchanged; a contextual-only
+service still rejects calls without host authority.
 The separate [contextual unary admission](#contextual-unary-capability-invocation)
 can authorize an exact eligible selection; selection alone never grants it.
 The ordinary interpreted Capability bridge remains context-free; the separate
 [prepared contextual bridge](#prepared-contextual-environment-reads) explicitly
-authorizes eligible unary requests. A future adapter over another plugin's
-Environment requires a separate design; an SCM provider is not inherently an
-Environment owner.
+authorizes eligible unary requests. Environment-bound exposure grants no services
+on its own. Domain contracts and semantics remain entirely plugin-owned; a callable
+provider is not inherently an Environment owner.
 
 ## Live discovery and exact binding
 
@@ -409,9 +420,9 @@ The public `adele_ui/environment_capability_bridge.dart` API resolves an optiona
 explicit Provider ID asynchronously to an opaque presentation-local handle. The
 host captures the actual mounted pane's canonical Session, not caller-supplied
 identifiers. Each explicit resolution creates a fresh `CapturedEnvironmentCapabilities`
-before asynchronous provider work. It selects only providers associated with the
-actual materialized Environment provider, preserving ordering among eligible
-candidates; explicit ineligible/unavailable providers fail without fallback.
+before asynchronous provider work. It selects an exact sibling-associated or
+independent Environment-bound provider under the [eligibility rules](#provider-associations-and-environment-eligibility);
+explicit ineligible/unavailable providers fail without fallback.
 Nonprimary Session Environments work identically. Resolution validates the expected
 generated service identity and never exposes a backend, configuration context,
 native authority object, or invocation token to interpreted code.
@@ -440,8 +451,8 @@ resolution releases its slot, while explicit release or presentation teardown
 discards retained selections and operation observers. Shared `BackendInvocationBridge`
 owns structured copying and safe evaluator settlement, as for C1; there is no
 second transport or provider registry. Contextual streaming, contextual backend
-consumers, cross-backend Environment delegation, and portable arbitrary plugin-owned
-Extension Point contributions remain outside this boundary.
+consumers, and portable arbitrary plugin-owned Extension Point contributions remain
+outside this boundary.
 
 ### Plugin-owned change snapshots
 
@@ -663,15 +674,26 @@ its existing generated client and method call over `AdeleRequestChannel`; the
 application imports no provider-specific semantic contract.
 
 The app's `invokeEnvironmentCapabilityWithRead` validates the canonical Session
-capture, both exact live registrations, their retained association, actual backend
-ownership, and the expected service identity. Its only grant is the existing
-`AuthorizedEnvironmentReadService`. Reads use the very Environment materialization
+capture, both exact live registrations, their retained association or explicit
+Environment-bound declaration, actual backend ownership, and the expected service
+identity. Its only grant is the existing `AuthorizedEnvironmentReadService`.
+Reads use the very Environment materialization
 that established eligibility, not another selection from an Environment ID. No
 mutation, process, storage, execution, or approval service is granted. This API is
 an explicit trusted host authorization point, not itself a plugin permission
 declaration or an interpreted bridge. Native host callers can use it directly;
 the prepared contextual bridge calls it only after its distinct declaration and
 mounted-presentation admission checks.
+
+Invocation is sent to the selected Capability provider's captured backend, not the
+Environment backend. Its operation-scoped read requests return to the host over that
+connection's existing reverse channel. The host services them through the retained
+Environment materialization and its exact provider connection, even when that is an
+independent backend activation. Neither plugin imports the other's implementation
+or shares native Environment objects. The callable receives no private root path,
+process handle, or general peer RPC. Relative-path resolution and actual I/O remain
+with the Environment provider; transported identities and request data cannot
+retarget the host's capture, and the host never infers a path from an Environment ID.
 
 The runtime binds a single-use, request-only channel to that actual configured
 channel and a fresh `PluginHostInvocation` on the same connection. The optional
@@ -695,15 +717,19 @@ context channels become unusable when their operation settles or the wrapper
 closes.
 
 Host authority is revoked synchronously when either exact provider registration or
-the backend retires, on an optional enclosing domain retirement observation, and
-on unary success or failure before publication to the consumer. The enclosing
-admission also revokes on callback failure or completion.
+either backend activation retires, on an optional enclosing domain retirement
+observation, and on unary success or failure before publication to the consumer.
+The enclosing admission also revokes on callback failure or completion.
 Checks at actual host-service entry and read settlement fence queued or late
 work. Successful contextual publication requires the same selection to remain
 valid at settlement; no failed check triggers reselection or a same-ID replacement.
 Revocation precedes asynchronous dispatcher cleanup and does not cancel ordinary
 unary work or claim that already-admitted effects were rolled back. This stricter
 contextual settlement does not change context-free Capability or Command rules.
+Termination on either connection invalidates dependent reads and publication;
+same-ID replacement on either side cannot repair the captured selection. Each
+concurrent request has a distinct grant, bound to the originating Session and
+presentation rather than an ambient current Session or Environment.
 
 Only unary admission is supported here. Contextual stream opens are rejected,
 and the contextual channel does not implement `AdeleStreamChannel`. Ordinary

@@ -253,6 +253,111 @@ void main() {
   );
 
   test(
+    'independent eligibility preserves sibling order and explicit no-fallback selection',
+    () async {
+      final root = await Directory('${artifacts.path}/mixed').create();
+      for (final id in ['siblings', 'independent']) {
+        final directory = await Directory('${root.path}/$id').create();
+        await probeArtifact.copy('${directory.path}/backend.aot');
+        await File(
+          '${directory.path}/adele_plugin.installation.json',
+        ).writeAsString(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {
+              'id': 'test.$id',
+              'displayName': id,
+              'version': '0.1.0',
+              'description': 'Mixed eligibility fixture',
+            },
+            'components': {
+              'backend': {'artifact': 'backend.aot'},
+            },
+          }),
+        );
+      }
+      final bootstrap = ApplicationPluginBootstrap(capabilities, extensions);
+      addTearDown(bootstrap.close);
+      await bootstrap.start(
+        installationRoot: root.path,
+        dartaotruntimeExecutable: aotRuntime,
+        hostArtifactPath: hostArtifact.path,
+        startupArguments: {
+          'test.siblings': [
+            jsonEncode({
+              'exposures': _exposures().map((e) => e.toMap()).toList(),
+            }),
+          ],
+          'test.independent': [
+            jsonEncode({
+              'exposures': [
+                for (final id in [
+                  'test.independent.first',
+                  'test.independent.second',
+                ])
+                  _callable(
+                    id,
+                    'callable-a',
+                    rank: 1000,
+                    environmentBound: true,
+                  ).toMap(),
+              ],
+            }),
+          ],
+        },
+      );
+      expect(
+        bootstrap.backends.map((b) => b.state),
+        everyElement(InstalledBackendState.active),
+      );
+      final environment = capabilities.resolve(
+        environmentProviderCapability,
+        providerId: ProviderId('test.environment.a'),
+      );
+      ProviderBinding select([String? id]) =>
+          bootstrap.resolveEnvironmentCapabilityProvider(
+            resourceInspectCapability,
+            associatedWith: environment,
+            providerId: id == null ? null : ProviderId(id),
+          );
+      // Higher-ranked independent providers cannot change existing sibling order.
+      expect(select().provider.id.value, 'test.callable.a');
+      final independent = select('test.independent.first');
+      expect(
+        bootstrap.backendForProvider(independent),
+        isNot(same(bootstrap.backendForProvider(environment))),
+      );
+      expect(
+        select('test.callable.alternate').provider.id.value,
+        'test.callable.alternate',
+      );
+      for (final id in [
+        'test.missing',
+        'test.callable.b',
+        'test.callable.unassociated',
+      ]) {
+        expect(() => select(id), throwsA(isA<ProviderUnavailable>()));
+      }
+      final siblingOwner = bootstrap.backendForProvider(environment)!;
+      await siblingOwner.retireProvider(select('test.callable.a'));
+      expect(select().provider.id.value, 'test.callable.alternate');
+      await siblingOwner.retireProvider(select('test.callable.alternate'));
+      // Ranking is not a selection policy for independent providers.
+      expect(select, throwsStateError);
+      await bootstrap
+          .backendForProvider(independent)!
+          .retireProvider(independent);
+      expect(select().provider.id.value, 'test.independent.second');
+      expect(
+        () => select('test.independent.first'),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      await siblingOwner.retireProvider(environment);
+      expect(select, throwsA(isA<ProviderUnavailable>()));
+    },
+  );
+
+  test(
     'bootstrap contains rollback and canonical nonprimary selection survives navigation during real restore',
     () async {
       final root = await Directory('${artifacts.path}/installations').create();
@@ -477,6 +582,7 @@ AdeleCapabilityExposure _callable(
   String context, {
   String? target,
   int rank = 0,
+  bool environmentBound = false,
 }) => AdeleCapabilityExposure(
   providerId: id,
   capabilityId: resourceInspectCapability.id.value,
@@ -485,6 +591,7 @@ AdeleCapabilityExposure _callable(
   displayName: id,
   configurationContext: context,
   rank: rank,
+  environmentBound: environmentBound,
   association: target == null
       ? null
       : AdeleProviderAssociation(

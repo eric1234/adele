@@ -67,6 +67,87 @@ void main() {
     await activation.close();
   });
 
+  test(
+    'composite Environment opt-in validates exact owner and retirement',
+    () async {
+      final ready = {
+        'capabilityExposures': [
+          {..._capabilityExposure, 'environmentBound': true},
+          {..._capabilityExposure, 'providerId': 'dev.adele.test.ordinary'},
+        ],
+        'extensionExposures': [_exposure('sibling', 'default')],
+      };
+      final connection = await connect(ready);
+      final activation = await activate(connection);
+      final bound = capabilities.resolve(
+        _capability,
+        providerId: ProviderId(_capabilityExposure['providerId']! as String),
+      );
+      final ordinary = capabilities.resolve(
+        _capability,
+        providerId: ProviderId('dev.adele.test.ordinary'),
+      );
+      final extension = extensions.discover(_point).single;
+      expect(activation.isEnvironmentBound(bound), isTrue);
+      expect(activation.isEnvironmentBound(ordinary), isFalse);
+      expect(activation.associationFor(bound), isNull);
+      final foreign = CapabilityRegistry();
+      final registration = foreign.register(
+        provider: bound.provider,
+        endpoint: bound.endpointAs<AdeleRequestChannelEndpoint>(),
+      );
+      addTearDown(registration.close);
+      expect(
+        activation.isEnvironmentBound(foreign.resolve(_capability)),
+        isFalse,
+      );
+
+      final token = await connection.request('infrastructureContext', {});
+      final denied =
+          await bound.requestChannel.request('reverse', {
+                'contextKind': 'infrastructure',
+                'context': token,
+                'service': 'environmentRead',
+              })
+              as Map;
+      expect(denied['ok'], isFalse);
+      expect((denied['error'] as Map)['code'], 'service_unavailable');
+
+      await activation.retireProvider(bound);
+      expect(
+        () => activation.isEnvironmentBound(bound),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(activation.ownsProvider(ordinary), isTrue);
+      expect(extension.validate, returnsNormally);
+      activation.onRetire(() {
+        expect(
+          () => activation.isEnvironmentBound(ordinary),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+      });
+      await activation.close();
+      final replacement = await connect(ready);
+      final next = await activate(replacement);
+      final fresh = capabilities.resolve(
+        _capability,
+        providerId: bound.provider.id,
+      );
+      expect(next.isEnvironmentBound(fresh), isTrue);
+      expect(
+        () => activation.isEnvironmentBound(fresh),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(
+        () => next.isEnvironmentBound(bound),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      await activation.close();
+      expect(next.isEnvironmentBound(fresh), isTrue);
+      await next.close();
+    },
+  );
+
   group('generation infrastructure', () {
     Future<Map<String, Object?>> reverse(
       PluginBackendConnection connection, {

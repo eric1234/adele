@@ -345,8 +345,12 @@ registry-change delivery.
 uses the same authored scalar/value-DTO proof contract with independently prepared
 frontend-only EVC and backend-only AOT installations. Normal catalog/activation and
 Main Content attachment lead to genuine reverse reads from captured Environment
-materializations, with typed decoding in the interpreted frontend. Native bridge
-lifetime/bounds coverage shares the contextual AOT suite below. None of these proof
+materializations, with typed decoding in the interpreted frontend. It exercises
+both sibling-associated providers and three distinct installations: an Environment
+backend, an independent Environment-bound Capability backend, and the EVC consumer.
+The independent backend imports no Environment implementation and receives no root
+path or shared provider registry. Native bridge lifetime/bounds coverage shares
+the contextual AOT suite below. None of these proof
 contracts is imported by production application code.
 
 ### Environment-eligible Capability selection
@@ -357,10 +361,12 @@ It reuses `CapturedSessionEnvironment` from
 [`product_lifecycle.dart`](lib/core/product_lifecycle.dart), also used by text-file
 operations, to capture canonical authority before lazy materialization.
 `ApplicationPluginBootstrap.backendForProvider` finds the actual activation owner
-of that materialization's exact binding. The runtime's explicit sibling association
-then constrains selection. Each requested Capability/provider selection, including
+of that materialization's exact binding. `resolveEnvironmentCapabilityProvider`
+preserves explicit sibling eligibility and ordering, or selects a unique independent
+`environmentBound` provider when there are no eligible siblings. Explicit selection
+never falls back. Each requested Capability/provider selection, including
 failure, is retained within that capture; the result's `validate()` checks both
-bindings and their relationship without replacing either.
+bindings, captured backend owners, and declaration without replacing either.
 `InstalledBackendActivation.retireProvider(binding)` can retire one exact owned
 registration without closing its generation or siblings; contextual grants observe
 both callable and Environment registration retirement independently.
@@ -378,8 +384,10 @@ is the separate native host authorization point for one generated unary call ove
 that retained selection. The consumer supplies its generated client/method over a
 single-use channel; this production adapter knows only the public authorized-read
 contract. Its read implementation uses the selected materialization directly and
-observes exact callable, Environment-provider, and backend retirement before
-opening the operation grant. Grant revocation does not await provider cleanup.
+observes exact callable, Environment-provider, and both backend retirements before
+opening the operation grant on the callable's connection. Reverse reads use the
+Environment's retained provider, which can belong to another backend. Grant
+revocation does not await provider cleanup.
 The [contextual AOT integration](test/core/environment_capability_invocation_integration_test.dart)
 exercises normal bootstrap and actual reverse host requests using a synthetic
 implementation of a plugin-owned contract. Its optional `onRetire` observer lets

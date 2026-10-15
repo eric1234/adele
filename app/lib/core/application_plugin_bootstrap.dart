@@ -85,6 +85,11 @@ final class InstalledBackendActivation {
     return _activation!.associationFor(binding);
   }
 
+  bool isEnvironmentBound(ProviderBinding binding) {
+    validate();
+    return _activation!.isEnvironmentBound(binding);
+  }
+
   ProviderBinding resolveAssociatedProvider(
     CapabilityKey capability, {
     required ProviderBinding associatedWith,
@@ -219,6 +224,57 @@ final class ApplicationPluginBootstrap {
       }
     }
     return null;
+  }
+
+  /// Preserves sibling ordering; independent providers require unique selection.
+  /// Eligibility is not an invocation grant or a provider-applicability claim.
+  ProviderBinding resolveEnvironmentCapabilityProvider(
+    CapabilityKey capability, {
+    required ProviderBinding associatedWith,
+    ProviderId? providerId,
+  }) {
+    final environmentOwner = backendForProvider(associatedWith);
+    var siblingProviderIds = const <Object>[];
+    final independent = <ProviderBinding>[];
+    if (environmentOwner != null) {
+      try {
+        return environmentOwner.resolveAssociatedProvider(
+          capability,
+          associatedWith: associatedWith,
+          providerId: providerId,
+        );
+      } on CapabilityUnavailable {
+        // No eligible siblings. Independent declarations are a separate mode.
+      } on ProviderUnavailable catch (error) {
+        if (error.stale) rethrow;
+        siblingProviderIds = error.availableProviderIds;
+      }
+      for (final provider in registry.providersFor(capability)) {
+        final binding = registry.resolve(capability, providerId: provider.id);
+        final owner = backendForProvider(binding);
+        if (owner != null && owner.isEnvironmentBound(binding)) {
+          independent.add(binding);
+        }
+      }
+    }
+    if (providerId != null) {
+      for (final binding in independent) {
+        if (binding.provider.id == providerId) return binding;
+      }
+      throw ProviderUnavailable(
+        capability: capability,
+        providerId: providerId,
+        availableProviderIds: [
+          ...siblingProviderIds,
+          for (final binding in independent) binding.provider.id,
+        ],
+      );
+    }
+    if (independent.isEmpty) throw CapabilityUnavailable(capability);
+    if (independent.length != 1) {
+      throw StateError('Environment-bound Capability selection is ambiguous.');
+    }
+    return independent.single;
   }
 
   void _validateReady() {

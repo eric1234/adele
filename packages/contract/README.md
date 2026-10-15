@@ -17,6 +17,12 @@ not a connection, configuration route, live registration handle, or authority to
 The runtime validates ownership and captures the exact registration; the declaration
 alone is not eligibility evidence. See
 [provider associations](../../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
+The separate `environmentBound` boolean defaults to false; null and nonboolean
+wire values are rejected. True opts into host-supplied Environment context without
+naming an Environment provider and is mutually exclusive with `association`.
+`toMap()` omits false, preserving existing default advertisements. This declaration
+does not grant reads or other services, and is not a claim of universal Environment
+compatibility. Runtime retains it against the exact provider registration.
 `AdeleExtensionExposure` defines optional ready `extensionExposures`, with
 exactly `extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and
 `metadata`. Unknown keys are rejected; metadata is recursively copied into

@@ -133,7 +133,12 @@ resolution, generated transport, and remote invocation belong to
 Callable providers can explicitly declare a direct sibling association within one
 backend activation. The host captures the exact owned registrations, not a
 same-plugin or same-configuration inference. This enables native/host-side
-Environment eligibility without merging registries or granting invocation authority;
+Environment eligibility without merging registries or granting invocation authority.
+Independently, an explicitly Environment-bound Capability may operate through a
+host-supplied Environment from another backend activation, without implementing or
+associating with that Environment provider. Core binds the separate selections and
+mediates authorized operations; domain semantics remain plugin-owned. Both exact
+provider generations and backend lifetimes constrain the resulting access;
 see [provider associations](contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
 An explicit native host admission can separately authorize one contextual unary
 call over that selection, without importing the plugin-owned service contract;
@@ -585,9 +590,10 @@ resolver or execution owner.
 Cross-plugin Capability access is independent of owning-backend affinity. The
 context-free `capabilities` descriptor grants no Environment authority. The separate
 `environmentReadCapabilities` declaration permits only contextual unary reads from
-an exactly associated backend provider. Native hosting captures the mounted pane's
-canonical Session; each request receives its own grant and cannot follow later
-navigation. Handle release and presentation retirement synchronously revoke those
+an exactly associated or explicitly Environment-bound backend provider. Native
+hosting captures the mounted pane's canonical Session; each request receives its
+own grant and cannot follow later navigation. Handle release and presentation
+retirement synchronously revoke those
 grants without cancelling independently owned backend work. Initializers, input
 actions, and finite operations receive neither Capability bridge. Selection,
 settlement, and limitations belong to

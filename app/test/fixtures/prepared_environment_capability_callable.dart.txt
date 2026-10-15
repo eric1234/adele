@@ -1,0 +1,71 @@
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+
+import 'prepared_capability_contract.dart';
+import 'prepared_environment_capability_support.dart';
+
+// B knows only the public host-bound read contract, never A's implementation.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
+    runProbeBackend(arguments, bootstrapMessage, probeContexts);
+
+Map<String, Map<String, AdeleBackendDispatcher>> probeContexts(
+  ProbeState state,
+) => {
+  'callable-shared': {
+    capabilityProbeServiceId: AdeleContextualServiceDispatcher(
+      hostRequests: state.hostRequests,
+      createDispatcher: (context) => CapabilityProbeServiceDispatcher(
+        _Probe(state, context),
+        concurrent: true,
+      ),
+    ),
+  },
+  'context-free': {
+    capabilityProbeServiceId: CapabilityProbeServiceDispatcher(
+      _Probe(state, null),
+    ),
+  },
+};
+
+final class _Probe implements CapabilityProbeService {
+  const _Probe(this.state, this.context);
+  final ProbeState state;
+  final AdeleBackendOperationContext? context;
+
+  @override
+  Future<ProbeValue> read(String scope) async {
+    if (context == null) {
+      return ProbeValue(
+        provider: 'context-free',
+        configuration: 'context-free',
+        sequence: 0,
+        text: scope,
+      );
+    }
+    final read = AuthorizedEnvironmentReadServiceClient(
+      context!.bind(authorizedEnvironmentReadServiceId),
+    );
+    state.clients[scope] = read;
+    try {
+      await state.checkpoint('before:$scope');
+      final authority = await read.authority();
+      final file = await read.readFile(scope);
+      await state.checkpoint('after:$scope');
+      if (scope == 'backend-failure')
+        throw StateError('SECRET backend failure');
+      return ProbeValue(
+        provider: 'callable-shared',
+        configuration: '${authority.sessionId}:${authority.environmentId}',
+        sequence: file.sizeBytes,
+        text: file.text,
+      );
+    } finally {
+      await state.checkpoint('settled:$scope');
+    }
+  }
+
+  @override
+  Stream<ProbeValue> watch(String scope) =>
+      throw UnsupportedError('Unary only.');
+}

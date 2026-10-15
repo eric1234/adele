@@ -1,0 +1,159 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:isolate';
+
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+
+// Test transport/checkpoints only. Each AOT activation owns its own state;
+// implementations have no registry, shared roots, or access to another backend.
+Future<void> runProbeBackend(
+  List<String> arguments,
+  Object? bootstrapMessage,
+  Map<String, Map<String, AdeleBackendDispatcher>> Function(ProbeState)
+  contexts,
+) async {
+  final bootstrap = bootstrapMessage! as Map;
+  final responses = bootstrap['responsePort'] as SendPort;
+  final options = jsonDecode(arguments.single) as Map;
+  final exposures = AdeleCapabilityExposure.fromReady({
+    'capabilityExposures': options['exposures'],
+  });
+  final hostRequests = AdeleHostRequestMultiplexer(send: responses.send);
+  final state = ProbeState(hostRequests);
+  final router = AdeleConfigurationContextRouter(contexts: contexts(state));
+  final commands = ReceivePort();
+  (bootstrap['bootstrapPort'] as SendPort).send({
+    'kind': 'ready',
+    'commandPort': commands.sendPort,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    'capabilityExposures': exposures.map((e) => e.toMap()).toList(),
+  });
+  try {
+    await for (final Object? message in commands) {
+      if (hostRequests.handleResponse(message)) continue;
+      if (message is! Map) continue;
+      if (message['kind'] == 'request' && message['method'] == 'shutdown') {
+        state.releaseAll();
+        hostRequests.close();
+        await router.close();
+        responses.send({
+          'kind': 'response',
+          'requestId': message['requestId'],
+          'ok': true,
+          'payload': {'stopping': true},
+        });
+        break;
+      }
+      if (message['kind'] == 'request' && message['serviceId'] == 'probe') {
+        if (message['method'] == 'terminate') Isolate.exit();
+        unawaited(state.control(message, responses.send));
+        continue;
+      }
+      if (message['kind'] == 'request') {
+        state.requests.add({
+          'configurationContext': message['configurationContext'],
+          'serviceId': message['serviceId'],
+          'method': message['method'],
+          'hostInvocationContext': message['hostInvocationContext'],
+          'payload': message['payload'],
+        });
+      }
+      unawaited(router.handle(message, responses.send));
+    }
+  } finally {
+    state.releaseAll();
+    hostRequests.close();
+    commands.close();
+    await router.close();
+  }
+}
+
+final class ProbeState {
+  ProbeState(this.hostRequests);
+  final AdeleHostRequestMultiplexer hostRequests;
+  final requests = <Map<String, Object?>>[];
+  final reads = <Map<String, Object?>>[];
+  final clients = <String, AuthorizedEnvironmentReadServiceClient>{};
+  final _arrived = <String, Completer<void>>{};
+  final _gates = <String, Completer<void>>{};
+
+  Future<void> checkpoint(String key) async {
+    final arrived = _arrived.putIfAbsent(key, Completer<void>.new);
+    if (!arrived.isCompleted) arrived.complete();
+    await _gates[key]?.future;
+  }
+
+  void releaseAll() {
+    for (final gate in _gates.values) {
+      if (!gate.isCompleted) gate.complete();
+    }
+  }
+
+  Future<void> control(
+    Map command,
+    void Function(Map<String, Object?>) send,
+  ) async {
+    try {
+      final payload = command['payload'] as Map;
+      final key = payload['key'] as String?;
+      Object? result;
+      switch (command['method']) {
+        case 'hold':
+          _gates.putIfAbsent(key!, Completer<void>.new);
+        case 'wait':
+          await _arrived
+              .putIfAbsent(key!, Completer<void>.new)
+              .future
+              .timeout(const Duration(seconds: 10));
+        case 'release':
+          final gate = _gates[key]!;
+          if (!gate.isCompleted) gate.complete();
+        case 'snapshot':
+          result = {'requests': requests, 'reads': reads};
+        case 'retained':
+          try {
+            await clients[key]!.readFile('retained');
+            result = {'ok': true};
+          } on Object {
+            result = {'ok': false};
+          }
+        case 'attack':
+          try {
+            await hostRequests
+                .bind(
+                  hostInvocationContext: payload['token'] as String,
+                  serviceId:
+                      payload['service'] as String? ??
+                      authorizedEnvironmentReadServiceId,
+                )
+                .request(
+                  authorizedEnvironmentReadServiceReadFileId,
+                  Map<String, Object?>.from(
+                    payload['arguments'] as Map? ?? {'relativePath': 'attack'},
+                  ),
+                );
+            result = {'ok': true};
+          } on Object {
+            result = {'ok': false};
+          }
+        default:
+          throw StateError('Unknown probe command.');
+      }
+      send({
+        'kind': 'response',
+        'requestId': command['requestId'],
+        'ok': true,
+        'payload': jsonDecode(jsonEncode(result)),
+      });
+    } on Object catch (error) {
+      send({
+        'kind': 'response',
+        'requestId': command['requestId'],
+        'ok': false,
+        'error': {'code': 'probe_failure', 'message': error.toString()},
+      });
+    }
+  }
+}

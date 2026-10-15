@@ -21,10 +21,14 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
 }) async {
   selection.validate();
   final owner = backends.backendForProvider(selection.binding);
-  if (owner == null) {
-    throw StateError('The selected provider has no live backend owner.');
+  final environmentOwner = backends.backendForProvider(
+    selection.materialization.binding,
+  );
+  if (owner == null || environmentOwner == null) {
+    throw StateError('The selected providers require live backend owners.');
   }
   final connection = owner.connection!;
+  final environmentConnection = environmentOwner.connection!;
   final channel = selection.binding.requestChannel;
   if (selection.binding.provider.serviceId != serviceId) {
     throw StateError('The selected provider exposes a different service.');
@@ -42,12 +46,22 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     if (retired) throw StateError('The contextual operation has retired.');
     selection.validate();
     owner.validateProviderOwnership(selection.binding);
-    owner.validateProviderOwnership(selection.materialization.binding);
-    final associated = owner.associationFor(selection.binding);
+    environmentOwner.validateProviderOwnership(
+      selection.materialization.binding,
+    );
     if (!identical(owner.connection, connection) ||
-        associated == null ||
-        !associated.isSameRegistration(selection.materialization.binding)) {
-      throw StateError('The selected provider association is no longer valid.');
+        !identical(environmentOwner.connection, environmentConnection)) {
+      throw StateError('The selected backend connections are no longer valid.');
+    }
+    if (!owner.isEnvironmentBound(selection.binding)) {
+      final associated = owner.associationFor(selection.binding);
+      if (!identical(owner, environmentOwner) ||
+          associated == null ||
+          !associated.isSameRegistration(selection.materialization.binding)) {
+        throw StateError(
+          'The selected provider association is no longer valid.',
+        );
+      }
     }
   }
 
@@ -66,6 +80,9 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     detach.add(selection.binding.onRetire(revoke));
     detach.add(selection.materialization.binding.onRetire(revoke));
     detach.add(owner.onRetire(revoke));
+    if (!identical(owner, environmentOwner)) {
+      detach.add(environmentOwner.onRetire(revoke));
+    }
     if (onRetire != null) detach.add(onRetire(revoke));
     validateSelection();
     final opened = invocation = connection.openHostInvocation({

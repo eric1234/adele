@@ -25,11 +25,16 @@ final class PluginCapabilityExposure {
     required this.provider,
     required this.configurationContext,
     this.association,
+    this.environmentBound = false,
   });
 
   final ProviderDescriptor provider;
   final ConfigurationContextId configurationContext;
   final AdeleProviderAssociation? association;
+
+  /// Independent Environment binding, mutually exclusive with [association].
+  /// Registration validates this declaration; it grants no authority.
+  final bool environmentBound;
 }
 
 extension ProviderBindingRequestChannel on ProviderBinding {
@@ -51,13 +56,16 @@ final class PluginCapabilityActivation {
     required this.registrations,
     required CapabilityRegistry registry,
     required Map<ProviderBinding, ProviderBinding> associations,
+    required Set<ProviderBinding> environmentBound,
   }) : _registry = registry,
-       _associations = Map.unmodifiable(associations);
+       _associations = Map.unmodifiable(associations),
+       _environmentBound = Set.unmodifiable(environmentBound);
 
   final PluginBackendConnection connection;
   final CapabilityRegistrationGroup registrations;
   final CapabilityRegistry _registry;
   final Map<ProviderBinding, ProviderBinding> _associations;
+  final Set<ProviderBinding> _environmentBound;
   Future<void>? _retiring;
 
   bool owns(ProviderBinding binding) {
@@ -91,6 +99,15 @@ final class PluginCapabilityActivation {
       }
     }
     return null;
+  }
+
+  /// Returns the opt-in for this exact live registration, false if foreign.
+  /// Retirement fails validation, as for [associationFor]. No authority is granted.
+  bool isEnvironmentBound(ProviderBinding binding) {
+    if (!owns(binding)) return false;
+    return _environmentBound.any(
+      (declared) => declared.isSameRegistration(binding),
+    );
   }
 
   /// Uses registry ordering only among exact siblings of [associatedWith].
@@ -155,6 +172,7 @@ final class PluginCapabilityActivation {
           exposure.configurationContext,
         ),
         association: exposure.association,
+        environmentBound: exposure.environmentBound,
       ),
     ),
   );
@@ -183,9 +201,16 @@ final class PluginCapabilityActivation {
           })
         >[];
     final associations = <ProviderBinding, ProviderBinding>{};
+    final environmentBound = <ProviderBinding>{};
     try {
       for (final PluginCapabilityExposure exposure in exposures) {
         final ProviderDescriptor provider = exposure.provider;
+        if (exposure.environmentBound && exposure.association != null) {
+          throw InvalidProviderRegistration(
+            'Environment-bound provider ${provider.id} cannot declare a sibling '
+            'association.',
+          );
+        }
         if (provider.pluginId != connection.pluginId) {
           throw InvalidProviderRegistration(
             'Provider ${provider.id} belongs to ${provider.pluginId}, not '
@@ -218,6 +243,7 @@ final class PluginCapabilityActivation {
           registration: registration,
           binding: binding,
         ));
+        if (exposure.environmentBound) environmentBound.add(binding);
       }
       // Keep exposure iteration lazy, then allow forward sibling references.
       for (final source in acquired) {
@@ -269,6 +295,7 @@ final class PluginCapabilityActivation {
       registrations: registrations,
       registry: registry,
       associations: associations,
+      environmentBound: environmentBound,
     );
     unawaited(
       connection.terminated
