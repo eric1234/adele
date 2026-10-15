@@ -1,7 +1,7 @@
 # Diff Viewer
 
 Diff Viewer is a frontend-only stock plugin with a shared, pure-Dart public
-contract. It contributes one read-only `Diff` Main Content pane for any canonical
+contract. It contributes one `Diff` Main Content pane for any canonical
 Session, at order 200 between stock Chat and Source. It has no backend and does
 not require Chat, a strategy frontend, or a Run.
 
@@ -9,7 +9,7 @@ not require Chat, a strategy frontend, or a Run.
 
 `packages/contract/lib/diff_viewer_contract.dart` owns
 `ChangeSetSourceService.snapshotUnstaged()`, `snapshotUncommitted()`,
-`snapshotTaskChanges()`, and the structured immutable snapshot values. All methods
+`snapshotTaskChanges()`, and the structured immutable snapshot values. These read methods
 take no arguments: Session and Environment authority is captured by the host, not
 supplied in a request payload.
 The native library exports `changeSetSourceCapability`
@@ -52,12 +52,44 @@ The Diff frontend imports neither Git nor application/native-host implementation
 Other providers can implement the same contract without becoming dependencies
 of the frontend.
 
+## Review Approval Contract
+
+The independent `ReviewApprovalService` exposes generated unary `approve` and
+`unapprove` operations under `reviewApprovalCapability`
+(`adele.diff.review-approval`, major 1), with generated `reviewApprovalServiceId`.
+For Git, approval means staging and unapproval means unstaging. Neither operation
+edits working files or discards changes; committed history is not an approval target.
+The source service remains read-only and usable without an approval provider.
+
+Each `ChangeSetSnapshot` carries a nullable opaque `reviewRevision`; null means it
+supplies no mutation precondition. `ChangedFile.reviewEligible` is the provider's
+evidence that the complete file can participate in review.
+Diff does not infer review eligibility from content status or change kind: another
+provider can support binary or type-only changes without changing Git's supported
+subset. A `ReviewSelection` contains the unchanged `expectedRevision`,
+`granularity` (`hunk`, `file`, or `layer`), an Environment-relative
+`relativePath` for hunk/file selection, and a zero-based `hunkIndex` only for a hunk.
+All wire fields are required, including nullable fields. No Environment/Session ID,
+Git path, object ID, command, or caller-provided patch is accepted. The hunk index
+has meaning only within the provider's exact revision and ordered snapshot.
+
+Generated native/eval codecs strictly validate field presence and types. Providers
+must additionally bound and validate semantic selector combinations before effects,
+resolve them against their own fresh state, and reject unsupported selections.
+`ReviewApprovalResult.status` distinguishes `applied`, `stale`, and `ineligible`.
+Only explicit `applied` acknowledgement is success; unknown statuses and malformed
+responses are failures. `ReviewApprovalFailure` represents operational failure,
+not evidence that an unacknowledged effect was rolled back. Git's supported content,
+revision preconditions and atomic index publication are documented by the
+[provider](../git_environment/README.md#review-approval).
+
 ## Presentation
 
 `packages/frontend/lib/main.dart` supplies `initializeDiff()` and
 `buildDiffPane()`. Initialization opens only local pane ID `diff`; reinitializing
 does not duplicate it. The descriptor declares `environmentReadCapabilities`
-for the Diff capability and `canRequestSourceDisplay` for pane-only requests
+for the snapshot capability, independent `environmentReviewCapabilities` for
+approval, and `canRequestSourceDisplay` for pane-only requests
 through the public source-display point. There is no context-free capability
 grant, own-backend service, direct file access, process, terminal, editor, or
 execution grant.
@@ -92,6 +124,32 @@ confirmed modification: for example a provider may decline recursive submodule
 inspection and supply that explanation in `detail`. Such a snapshot is not a
 claim that the entire Environment was inspected or clean.
 
+Eligible unstaged hunk/file headers offer **Approve** and **Approve File**; staged
+headers offer **Unapprove** and **Unapprove File**. Empty ordinary text additions
+and deletions can use file controls without invented hunks. **Approve All Unstaged**
+appears in the default scope; layered scopes expose it separately from
+**Unapprove All Staged**. Whole-layer controls require every displayed target to
+be eligible and no unresolved conflicts. They submit one revision-bound provider
+operation, never a loop of file or hunk requests. Committed and conflict sections
+are not actionable.
+
+File and layer controls honor provider-declared eligibility independently of text
+rendering. Hunk controls require actual provider-supplied hunks; no hunks are invented
+for nontext content. Revision, explicit live review access, presentation lifetime
+and pending-operation checks still apply. **Open in Source** retains its separate
+text/current-working-file restrictions below; review eligibility does not grant
+Source navigation.
+
+Approval access resolves independently of snapshot loading and Source navigation,
+and is retained only for the current presentation/snapshot epoch. Missing access,
+missing revisions, unsupported targets, and pending mutations disable or omit
+actions. One pending mutation suppresses duplicate submission. The pane never
+optimistically removes hunks: after an acknowledged application it reloads the
+selected scope. Stale, ineligible, and failed mutations retain the displayed
+snapshot and show safe local feedback; stale state requires deliberate Refresh.
+Scope changes, refresh, departure and retirement fence old results and release
+handles without claiming to cancel or undo an already-admitted Git operation.
+
 Eligible unstaged current-working-file headers offer **Open in Source** through
 the public
 [`main_content_bridge.dart` source-display API](../../packages/ui/README.md#source-file-display),
@@ -112,8 +170,8 @@ invalidate old callbacks and feedback, not an admitted provider operation.
 Source owns document normalization, deduplication, dirty text, and native undo
 through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
-There is no automatic refresh, watcher, staging, apply/revert, editing within Diff,
-or side-by-side mode.
+There is no automatic watching, discard/revert, editing within Diff, review-comment
+submission, commit operation, or side-by-side mode.
 
 ## Preparation And Tests
 
@@ -133,14 +191,18 @@ dart tools/adele.dart test --target adele_tools
 ```
 
 The contract suite checks native and interpreted nested transport for all scopes,
-strict decoding, empty request payloads, declared failures, and list immutability.
+approval requests/results, strict decoding, empty read-request payloads, declared
+failures, and list immutability.
 The frontend suite compiles and mounts real EVC with generated native/eval codecs
 through a test-only contextual port, covering states, manual recovery, handle
 cleanup, held operation races, scope switching, separate
 committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. It does not
-substitute for authority validation:
+replace the real Git index checks. Approval cases cover hunk/file/layer controls,
+supported/unsupported states, pending suppression, stale/failure feedback,
+acknowledgement-driven refresh, scope/departure fencing and handle release. It does
+not substitute for authority validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
 consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
 real stock Git AOT plus independently prepared Diff and Source EVC through normal
@@ -148,7 +210,12 @@ catalog/Main Content hosting, including committed-only work, exact independently
 established baselines, staged-only and layered partial/cancelling changes,
 source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
-retirement/navigation. That cross-plugin suite requires the native CodeForge
+retirement/navigation. Its review workflow stages one of two separated hunks,
+unstages it, stages all eligible changes including an ordinary addition, and
+unstages the whole layer through the actual UI and generated service. It also exercises file controls,
+stale review, unavailable approval and admission retirement; read-only Git commands
+verify the actual nonprimary index, unchanged working bytes, HEAD/branch and
+unrelated outside-source entries. That suite requires the native CodeForge
 library; the isolated Diff frontend suite does not.
 The existing Source host suite remains the owner of Source document/operation
 behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)

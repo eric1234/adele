@@ -13,6 +13,9 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'environmentReadCapabilities': [
         {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
       ],
+      'environmentReviewCapabilities': [
+        {'id': 'adele.diff.review-approval', 'majorVersion': 1},
+      ],
     },
   ],
   'dev.adele.source-editor': [

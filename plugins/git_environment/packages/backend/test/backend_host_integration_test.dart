@@ -70,7 +70,18 @@ void main() {
         changeSetSourceCapability,
         providerId: ProviderId(gitChangeSetSourceProviderId),
       );
-      expect(connection.capabilityExposures, hasLength(2));
+      final review = registry.resolve(
+        reviewApprovalCapability,
+        providerId: ProviderId(gitReviewApprovalProviderId),
+      );
+      expect(connection.capabilityExposures, hasLength(3));
+      expect(review.provider.serviceId, reviewApprovalServiceId);
+      expect(
+        activation
+            .associationFor(review)!
+            .isSameRegistration(environmentBinding),
+        isTrue,
+      );
       expect(changes.provider.serviceId, changeSetSourceServiceId);
       expect(
         activation
@@ -303,6 +314,92 @@ void main() {
         ['additional working', 'additional newest'],
       );
       expect(allLayers.uncommitted.conflicts, isEmpty);
+      final selection = ReviewSelection(
+        expectedRevision: allLayers.uncommitted.unstaged.reviewRevision!,
+        granularity: 'file',
+        relativePath: 'same.txt',
+        hunkIndex: null,
+      );
+      await expectLater(
+        ReviewApprovalServiceClient(review.requestChannel).approve(selection),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'invalid_host_invocation_context',
+          ),
+        ),
+      );
+      Future<ReviewApprovalResult> invokeReview(
+        ReviewSelection selection, {
+        bool proof = true,
+        bool reverse = false,
+      }) async {
+        const identity = _DiffAuthority('additional');
+        final read = AuthorizedEnvironmentReadServiceDispatcher(identity);
+        final authorizedReview = AuthorizedEnvironmentReviewServiceDispatcher(
+          identity,
+        );
+        final invocation = connection.openHostInvocation({
+          authorizedEnvironmentReadServiceId: read,
+          if (proof) authorizedEnvironmentReviewServiceId: authorizedReview,
+        });
+        try {
+          final client = ReviewApprovalServiceClient(
+            connection.bindHostInvocation(
+              channel: review.requestChannel,
+              invocation: invocation,
+              validate: () {},
+            ),
+          );
+          return await (reverse
+              ? client.unapprove(selection)
+              : client.approve(selection));
+        } finally {
+          invocation.close();
+          await read.close();
+          await authorizedReview.close();
+        }
+      }
+
+      final beforeReview = await _git(roots['additional']!, [
+        'show',
+        ':./same.txt',
+      ]);
+      await expectLater(
+        invokeReview(selection, proof: false),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(
+        await _git(roots['additional']!, ['show', ':./same.txt']),
+        beforeReview,
+      );
+      expect((await invokeReview(selection)).status, 'applied');
+      expect(
+        await _git(roots['additional']!, ['show', ':./same.txt']),
+        'additional newest',
+      );
+      final approved = await uncommitted('additional');
+      expect(
+        (await invokeReview(
+          ReviewSelection(
+            expectedRevision: approved.staged.reviewRevision!,
+            granularity: 'layer',
+            relativePath: null,
+            hunkIndex: null,
+          ),
+          reverse: true,
+        )).status,
+        'applied',
+      );
+      expect(
+        await _git(roots['additional']!, ['show', ':./same.txt']),
+        'additional content',
+      );
+      expect(
+        (await provider.readFile(EnvironmentId('additional'), 'same.txt')).text,
+        'additional newest\n',
+      );
       await expectLater(
         taskChanges('not-materialized'),
         throwsA(
@@ -1093,7 +1190,10 @@ exec ${_shellQuote(git)} "\$@"
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
-final class _DiffAuthority implements AuthorizedEnvironmentReadService {
+final class _DiffAuthority
+    implements
+        AuthorizedEnvironmentReadService,
+        AuthorizedEnvironmentReviewService {
   const _DiffAuthority(this.environmentId);
   final String environmentId;
   @override

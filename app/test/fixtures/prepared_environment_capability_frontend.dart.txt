@@ -10,6 +10,36 @@ void initialize() {
   openMainContentPane('probe', 'Environment capability consumer', false);
 }
 
+Future<void> initializeReview() async {
+  await resolveEnvironmentReviewCapability(
+    capability,
+    1,
+    capabilityProbeServiceId,
+    null,
+  );
+  initialize();
+}
+
+Future<Map<String, Object?>> reviewOperation() async {
+  await resolveEnvironmentReviewCapability(
+    capability,
+    1,
+    capabilityProbeServiceId,
+    null,
+  );
+  return <String, Object?>{};
+}
+
+Widget buildReviewInput() {
+  resolveEnvironmentReviewCapability(
+    capability,
+    1,
+    capabilityProbeServiceId,
+    null,
+  );
+  return Text('Unexpected review input access');
+}
+
 Widget buildPane() => EnvironmentCapabilityProbe();
 
 class EnvironmentCapabilityProbe extends StatefulWidget {
@@ -26,13 +56,20 @@ class EnvironmentCapabilityProbeState
   List<String> handles = [];
   bool disposed = false;
 
-  void select(String? provider) async {
-    final handle = await resolveEnvironmentCapabilityProvider(
-      capability,
-      1,
-      capabilityProbeServiceId,
-      provider,
-    );
+  void select(String? provider, [bool review = false]) async {
+    final handle = review
+        ? await resolveEnvironmentReviewCapability(
+            capability,
+            1,
+            capabilityProbeServiceId,
+            provider,
+          )
+        : await resolveEnvironmentCapabilityProvider(
+            capability,
+            1,
+            capabilityProbeServiceId,
+            provider,
+          );
     if (disposed) return;
     if (handle == null) {
       setState(() {
@@ -190,6 +227,12 @@ class EnvironmentCapabilityProbeState
               select(null);
             },
             child: Text('Default'),
+          ),
+          TextButton(
+            onPressed: () {
+              select(null, true);
+            },
+            child: Text('Review'),
           ),
           TextButton(
             onPressed: () {

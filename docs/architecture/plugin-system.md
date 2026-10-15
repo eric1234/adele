@@ -139,7 +139,7 @@ An explicit native host admission can separately authorize one contextual unary
 call over that selection, without importing the plugin-owned service contract;
 see [contextual invocation](contracts-and-capabilities.md#contextual-unary-capability-invocation).
 Mounted prepared Main Content consumers can use the same admission through a
-separate explicit Environment-read declaration and presentation-bound bridge;
+separate explicit Environment-read or review declaration and presentation-bound bridge;
 ordinary context-free Capability access remains unchanged. See
 [prepared contextual reads](contracts-and-capabilities.md#prepared-contextual-environment-reads).
 
@@ -593,10 +593,20 @@ actions, and finite operations receive neither Capability bridge. Selection,
 settlement, and limitations belong to
 [prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 
+`environmentReviewCapabilities` is a separate default-empty opt-in for provider-owned
+review operations, not an implication of read or context-free access. It reuses
+the same exact association, canonical capture, unary transport and presentation
+liveness, with unique implicit review-provider selection. The host exposes no
+general filesystem mutation or process grant to the pane. See
+[review access](contracts-and-capabilities.md#prepared-contextual-review-operations).
+
 Stock [Diff Viewer](../../plugins/diff_viewer/README.md) uses this existing path as
 a frontend-only singleton contribution at order 200, between stock Chat and Source.
 It keeps its pane available without a compatible source, and loads read-only
-Unstaged snapshots on opening and manual Refresh through its own public contract.
+snapshots on opening, scope selection and manual Refresh through its own public contract.
+Its independent public review-approval Capability permits revision-bound hunk,
+file and whole-layer actions when an eligible provider is available; Git implements
+approval as staging and unapproval as unstaging without working-tree edits.
 The initializer opens the pane; provider resolution and the contextual handle
 belong to its mounted presentation. There is no Diff-specific host registration,
 renderer, or Git adapter.

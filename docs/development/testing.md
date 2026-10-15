@@ -331,6 +331,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared backend callable Capability consumption | [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) owns independent prepared consumer/provider AOT through normal catalog/bootstrap and the public generated semantic client; [`test/core/backend_capability_host_test.dart`](../../app/test/core/backend_capability_host_test.dart) owns exact binding, handle bounds, release/retirement, and admitted unary settlement. Public facade/mediation contract tests belong to `adele_plugin_backend_support`; strict backend declarations and generation infrastructure belong to `plugin_runtime`. See [focused checks](#focused-backend-capability-checks). |
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
+| Prepared contextual review authority | The same contextual invocation/prepared integration suites cover independent `environmentReviewCapabilities`, unique eligible review selection, denial through ordinary read access, operation-scoped review identity proof and presentation/provider retirement. Generated proof transport belongs to `adele_environment`; strict descriptor default/roundtrip validation belongs to `plugin_runtime`. The actual stock Git/Diff mutation workflow remains in `test/prepared_diff_git_integration_test.dart`, not a synthetic semantic adapter. |
 | Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns default Unstaged and selected Uncommitted/Task scopes, committed-only work, independent Environment baselines, real staged-only/partial/cancelling layers, source confinement, selected-scope refresh/retry including real commits, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement for all snapshot operations. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
@@ -454,12 +455,24 @@ scope/departure fencing, eligible/ineligible headers, unchanged unusual paths,
 availability, duplicate suppression, safe errors, and stale callbacks alongside
 snapshot rendering. Contract tests cover native and interpreted generated decoding,
 nested immutability, strict malformed responses, declared failures, and zero authority
-arguments for all methods. Real Git backend tests own baseline/HEAD/index/worktree comparison,
+arguments for snapshot methods. Approval transport tests cover explicit
+hunk/file/layer selector fields, nullable-field presence, applied/stale/ineligible
+outcomes, declared operational failures and malformed requests/responses. Semantic
+selector bounds and combinations are validated before effects in the real backend.
+Compiled EVC cases cover approval controls, whole-layer eligibility, pending
+suppression, absent access, stale/failure/unknown outcomes, refresh after explicit
+acknowledgement and scope/retirement handle fencing. Real Git backend tests own baseline/HEAD/index/worktree comparison,
 intent-to-add, unmerged entries, mode/nontext placeholders, immutable object reads,
 deterministic HEAD/index/worktree races, baseline/branch integrity and
 whole-observation resource bounds. Provider lifecycle tests verify exact live
 baseline propagation at establish/restore, unchanged baselines after commits and
 independent baselines across Environments without changing retained-state schema.
+`plugins/git_environment/packages/backend/test/git_review_approval_test.dart` owns
+actual index-before/after assertions for isolated hunks, file and whole-layer
+approval/unapproval, additions/deletions/empty content, stale revisions, concurrent
+Git writers and transaction-preparation failure. Safety cases exercise filters,
+hooks, inherited routing, confined nested sources, unsupported/conflicted targets
+and SHA-1/SHA-256 behavior. Tests use deterministic gates, not timed race assumptions.
 The generator's nested nonnullable-list storage regression belongs to
 [`contract_codegen`](../../packages/contract_codegen/README.md#generated-eval-clients).
 The injected frontend provider is not cross-plugin authority evidence
@@ -497,10 +510,24 @@ need `mkfifo` and a POSIX shell: the test-only PATH launcher forwards unchanged
 arguments to real Git and acknowledges arrival before releasing an actual snapshot.
 The Source read gate holds a real provider response, not substituted file contents;
 neither gate adds a production testing hook. These tests do not need a PTY.
+The actual Diff review workflow approves one of two separated hunks, verifies
+exact staged versus remaining unstaged content using Git inspection, unapproves
+it in Uncommitted, then approves and unapproves whole layers including an ordinary
+addition. File controls, stale rejection, missing approval and pre-publication
+navigation/retirement are exercised without faking approval results. It verifies
+unchanged working bytes, HEAD/branch, the primary index and unrelated staged
+entries outside the selected nested Project source.
+The unchanged 1,054,288-byte image regression also exercises text-file unapproval
+and approval without altering the oversized neighbor.
+Read-only Git inspection disables `diff.autoRefreshIndex` as well as optional
+locks; porcelain diff can otherwise refresh index stat bytes and legitimately
+invalidate an opaque review revision. The product test compares exact index bytes
+around inspection and uses full patches rather than stat-only name output to
+verify a clean working comparison.
 The ordinary `adele_desktop` target discovers both app files and prepares the native
 library/environment without a separate CI target. This is prepared-artifact
 coverage, not human desktop or non-Linux process acceptance. No live model,
-credentials, staging UI, or review submission is used.
+credentials, commit UI, or review-comment submission is used.
 
 ### Focused backend Capability checks
 

@@ -151,7 +151,8 @@ final class _State {
                       authorizedEnvironmentReadServiceId,
                 )
                 .request(
-                  authorizedEnvironmentReadServiceReadFileId,
+                  payload['method'] as String? ??
+                      authorizedEnvironmentReadServiceReadFileId,
                   Map<String, Object?>.from(
                     payload['arguments'] as Map? ?? {'relativePath': 'attack'},
                   ),

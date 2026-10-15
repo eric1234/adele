@@ -18,6 +18,40 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
   required String serviceId,
   required Future<T> Function(AdeleRequestChannel channel) invoke,
   void Function() Function(void Function())? onRetire,
+}) => _invokeEnvironmentCapability(
+  selection: selection,
+  backends: backends,
+  serviceId: serviceId,
+  invoke: invoke,
+  onRetire: onRetire,
+  review: false,
+);
+
+/// Explicit host review admission, distinct from a read declaration. The review
+/// identity proof and read facet share the same captured authority and lifetime;
+/// no host mutation or process service is supplied.
+Future<T> invokeEnvironmentCapabilityForReview<T>({
+  required EnvironmentCapabilitySelection selection,
+  required ApplicationPluginBootstrap backends,
+  required String serviceId,
+  required Future<T> Function(AdeleRequestChannel channel) invoke,
+  void Function() Function(void Function())? onRetire,
+}) => _invokeEnvironmentCapability(
+  selection: selection,
+  backends: backends,
+  serviceId: serviceId,
+  invoke: invoke,
+  onRetire: onRetire,
+  review: true,
+);
+
+Future<T> _invokeEnvironmentCapability<T>({
+  required EnvironmentCapabilitySelection selection,
+  required ApplicationPluginBootstrap backends,
+  required String serviceId,
+  required Future<T> Function(AdeleRequestChannel channel) invoke,
+  required bool review,
+  void Function() Function(void Function())? onRetire,
 }) async {
   selection.validate();
   final owner = backends.backendForProvider(selection.binding);
@@ -58,9 +92,14 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     }
   }
 
-  final dispatcher = AuthorizedEnvironmentReadServiceDispatcher(
-    _CapturedEnvironmentRead(selection, validateRead),
-  );
+  final authority = _CapturedEnvironmentRead(selection, validateRead);
+  final services = <String, AdeleBackendDispatcher>{
+    authorizedEnvironmentReadServiceId:
+        AuthorizedEnvironmentReadServiceDispatcher(authority),
+    if (review)
+      authorizedEnvironmentReviewServiceId:
+          AuthorizedEnvironmentReviewServiceDispatcher(authority),
+  };
   try {
     validateSelection();
     detach.add(selection.binding.onRetire(revoke));
@@ -68,9 +107,7 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     detach.add(owner.onRetire(revoke));
     if (onRetire != null) detach.add(onRetire(revoke));
     validateSelection();
-    final opened = invocation = connection.openHostInvocation({
-      authorizedEnvironmentReadServiceId: dispatcher,
-    });
+    final opened = invocation = connection.openHostInvocation(services);
     validateRead();
     final scoped = connection.bindHostInvocation(
       channel: channel,
@@ -86,14 +123,18 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
       remove();
     }
     // Revocation cannot wait for an already-admitted provider read to finish.
-    unawaited(dispatcher.close().catchError((Object _) {}));
+    for (final dispatcher in services.values) {
+      unawaited(dispatcher.close().catchError((Object _) {}));
+    }
   }
 }
 
 /// Reads use the very materialization that established eligibility, never a
 /// second Session lookup or a provider selected from a transported identity.
 final class _CapturedEnvironmentRead
-    implements AuthorizedEnvironmentReadService {
+    implements
+        AuthorizedEnvironmentReadService,
+        AuthorizedEnvironmentReviewService {
   _CapturedEnvironmentRead(this.selection, this.validate);
 
   final EnvironmentCapabilitySelection selection;

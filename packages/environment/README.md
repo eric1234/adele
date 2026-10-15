@@ -48,6 +48,16 @@ and returns the already-bound `sessionId` and `environmentId`. No method accepts
 authority-selection IDs or exposes mutation/process operations; this service is
 not a separately selected provider capability.
 
+`AuthorizedEnvironmentReviewService` is a separate generated identity-only proof
+for explicitly admitted provider-owned review operations. Its sole `authority()`
+method returns the same `AuthorizedEnvironmentIdentity`; it offers no file reads,
+writes, processes or caller-selected identity. Ordinary read grants do not include
+it. The review provider must obtain and revalidate this proof rather than treating
+read access as permission to mutate. The host uses existing operation-scoped
+allowlists and exact canonical materialization, not a new provider registry or
+transport. Review semantics and actual effects remain in the owning plugin;
+see [contextual review access](../../docs/architecture/contracts-and-capabilities.md#prepared-contextual-review-operations).
+
 Separate generated unary `AuthorizedEnvironmentMutationService` exposes only
 `createTextFile(relativePath, text)`, `replaceExistingTextFile(relativePath,
 replacementText, expectedRevision)`, and `deleteExistingTextFile(relativePath,

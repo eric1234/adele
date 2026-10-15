@@ -251,9 +251,234 @@ platform for this snapshot path; other platforms remain unvalidated.
 
 Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
 `backend_host_integration_test.dart` additionally compiles the actual shared host
-and stock Git AOT, checks both ready advertisements and their exact association,
+and stock Git AOT, checks ready advertisements and their exact associations,
 and exercises generated contextual requests for independent live Environments.
 The existing `git_environment_backend` maintained target discovers both files.
+
+## Review Approval
+
+The backend independently advertises `adele.diff.review-approval` v1 as
+`dev.adele.git.review-approval`, explicitly associated with the same exact Git
+Environment provider as the snapshot service. Diff's public `ReviewApprovalService`
+is implemented by `GitReviewApprovalService`; `git_review_approval.dart` shares the
+private bounded snapshot machinery rather than introducing a general Git command
+service. Approve means stage, Unapprove means unstage. Working files and HEAD are
+never written, and committed changes are never direct targets.
+
+The contextual-only dispatcher requires an operation-scoped
+`AuthorizedEnvironmentReviewService.authority()` proof in addition to the ordinary
+authorized read identity. Both must name the same captured Session/Environment.
+This proof is granted only by explicit review admission: context-free access or
+putting the approval Capability in a read-only declaration cannot authorize a
+mutation. The backend selects only the existing live object from its own generation
+and revalidates proof, identity and liveness before index publication. Missing or
+ambiguous review-provider access does not disable snapshots.
+
+### Revisions And Eligibility
+
+Reviewable staged/unstaged snapshots carry an opaque HMAC-SHA-256 revision keyed to
+the provider generation and exact live Environment generation. Its input includes
+the bound source/worktree identity, captured HEAD and branch, complete raw index
+identity, layer, ordered files/hunks/lines, relevant attribute/ignore sources and
+observed working content identities. No filesystem paths or authority are exposed
+in the token, and no snapshot registry is retained. A hunk selector is only an index into that
+exact ordered revision. Reobservation under the index lock must produce the same
+revision; stale requests return `stale` without publishing an index. Changes outside
+the selected hunk, or unrelated index updates, can conservatively require Refresh.
+That includes a Git stat-cache refresh even when its blob IDs are unchanged.
+Directory membership checks respect Git ignores, skip symlinks and nested
+repositories, and retain tracked-parent checks without traversing ignored build
+artifacts. This is bounded observation, not a filesystem watcher.
+
+Review metadata is optional for inspection, but mandatory for mutation. A complete
+index beyond the 16 MiB review-metadata bound, an indirect index, or unsupported
+index/reference storage disables review revisions and displayed eligibility,
+not otherwise-supported scoped read-only snapshots. Scoped inventory, consistency,
+content and transport limits still apply; no entries or hunks are omitted to fit
+the review policy. Unstaged remains an index-to-working-tree comparison on an
+unborn HEAD, including nonignored additions, without approval. Uncommitted and
+Task/Branch retain their valid-HEAD requirements; no substitute empty tree is used.
+
+Approve reconstructs only the Unstaged layer, matching `snapshotUnstaged()`, while
+retaining complete HEAD/index identity and revision checks. Unrelated staged hunks
+do not consume its rendering budgets. Unapprove still reconstructs Staged changes;
+Uncommitted and Task snapshots retain their existing layered rendering limits.
+
+Symbolic HEAD is reviewable only when its captured Git-written header directly
+names the resolved terminal reference. Chained or noncanonical symbolic headers
+remain inspectable but receive no approval revision; no recursive ref monitoring
+or branch substitution is performed. Detached HEAD can still support Unstaged and
+Uncommitted review, while Task/Branch retains its branch/baseline requirements.
+
+Revisions are issued only after their bounded verification prerequisites are
+available. Ordinary observed-file verification and oversized-file streaming have
+independent 64 MiB aggregate allowances, each retaining the 16 MiB per-file bound.
+Final synchronous publication uses the same independent accounting and still
+rechecks every captured content digest. These allowances do not increase the
+existing rendering, patch, inventory or transport budgets.
+
+Eligible observation captures bounded contents and state for relevant worktree
+`.gitattributes` files, from the worktree root through the selected file's parent
+(including ancestors outside a nested Project source), and the common Git
+`info/attributes` file. Git-discovered system/global attributes and system/global,
+repository and per-worktree configuration sources are captured too. Source-content
+fingerprints participate in each file's revision. Attribute, ignore and configuration
+source contents share the 16 MiB aggregate metadata allowance and the existing
+inventory-path bound.
+Configuration includes, `attr.tree`, indirect/nonregular sources, or source
+discovery that cannot be verified safely make approval unavailable while retaining
+inspection.
+Git versions without the optional attribute/configuration discovery variables
+likewise retain read-only inspection without approval. Relative configured attribute
+paths are resolved against Git's bound worktree root, not a nested Project source.
+This is a deliberately bounded review policy, not a general configuration watcher.
+
+Ignore inputs are captured before Git relies on them to enumerate or prune the
+review set: the bound common Git directory's `info/exclude`, relevant worktree
+`.gitignore` files and ancestors above a nested Project source, and the configured
+or normal global excludes file together with its governing configuration. Missing
+source paths are retained so appearance is detectable. Git still interprets all
+patterns; the provider does not implement ignore matching or traverse ignored
+subtrees merely to watch them. Stable ordered source fingerprints participate in
+the review revision. Snapshot settlement and final synchronous publication both
+check source bytes and state, so changing exclusions cannot turn an acknowledged
+whole-layer operation into a partial selection. Unverifiable or over-budget review
+sources make approval unavailable without hiding the original read-only snapshot.
+
+Supported targets are fully inspected ordinary UTF-8 text modifications, additions
+(including nonignored untracked files), and deletions. Empty additions/deletions
+have file/layer support without invented hunks. Hunk reconstruction uses exact
+provider-retained bytes and validated coordinates, preserving CRLF and missing
+final newline; no frontend patch, fuzzy application or automatic rebase is used.
+Approving one hunk starts from the index version; unapproving one starts from the
+staged version and reverses only that HEAD-relative hunk. Unrelated hunks remain.
+
+Binary/invalid UTF-8, incomplete or oversized inspection, conversion/diff attributes,
+mode/type transitions, symlinks, gitlinks, unresolved stages, intent/unsupported
+index flags, ambiguous directory/file replacements and unsupported index storage
+cannot be reviewed. Ordinary file modes
+are preserved; arbitrary mode or binary staging is not supplied. Whole-layer
+operations require all targets to be eligible and no unresolved conflicts; they
+never silently skip unsupported files. Read-only snapshot placeholders remain
+available even when review is unavailable. A complete current HEAD and supported
+file-based reference storage are required for review revisions.
+
+### Index Transaction
+
+Every hunk, file or whole-layer request uses one mechanism:
+
+1. Exclusively create the bound linked-worktree Git directory's actual `index.lock`
+   using Git's cooperative lockfile protocol. Lock contention fails without retry.
+2. Reobserve HEAD, the complete index and scoped working content while holding that
+   lock, validate the expected revision and resolve every selected target.
+3. Copy the complete original index to a private temporary index. Verify and protect
+   every selected nondeletion blob as described below, then update that private
+   index with one NUL-framed `update-index --index-info` request against an empty
+   scratch worktree.
+   Paths and data are not shell text. Check the prospective index preserves every
+   unselected entry; Git's implicit directory/file replacement is not permission
+   to alter an unselected path.
+4. Flush the prospective bytes to the held lockfile, revalidate source observations,
+   HEAD/index identity, canonical authority and live generation, then recheck the
+   captured attribute/ignore/configuration source bytes and state synchronously.
+   Appearance, disappearance, replacement and same-length edits are checked without trusting
+   metadata alone. The earlier effective-attribute validation is retained. Atomically
+   rename the lockfile over the actual index without another asynchronous suspension.
+
+Preparation failure leaves the authoritative index unchanged. Object-store writes
+may remain as unreachable prepared objects; those are not a successful approval.
+Git writers honoring `index.lock` cannot be overwritten. The copied index preserves
+unrelated entries, modes and flags; Git maintains supported `TREE` and `REUC`
+extensions. Index versions 2 through 4 and SHA-1/SHA-256 are supported; split/sparse,
+fsmonitor, untracked-cache and unknown extensions are explicitly unavailable rather
+than discarded. A successful operation acknowledges only the single publication,
+not intermediate object or temporary-index writes. There is no sequential
+multi-file partial-success path.
+
+Selected blobs are verified by type, exact expected OID and reconstructed bytes.
+Missing blobs use `hash-object --no-filters -w --stdin`. An existing loose blob
+without a retained root is freshened through that same Git operation, with its
+actual loose-file freshness verified afterward; success alone does not imply Git
+created a loose copy when the object is packed. Already rooted objects are reused
+without gratuitous freshness writes. Root proofs use the retained original index
+or captured HEAD tree/history, never unrelated mutable refs. Historical proof is
+bounded by the existing Git output/deadline policy and excludes unverified grafted
+history. Packed-only blobs without such a proof are explicitly ineligible; ordinary
+packed repositories, including normal unapproval from HEAD, remain supported.
+
+Per-operation loose-file or bounded pack-inventory witnesses are checked after
+Git verifies contents and again at publication. Ordinary GC may move a freshly
+protected loose blob into a pack. One bounded storage reobservation is allowed for
+that relocation, using the same selected bytes, revision, provider, deadline and
+continuously held index lock. It repeats settlement and both authority checks;
+then all final local validation and rename remain synchronous. Missing objects or
+further storage churn reject without publishing an index. No refs, object registry,
+background collector or object-format interpreter is introduced.
+
+Object protection relies on Git's normal freshness/reachability guarantees during
+ordinary cooperative GC, not deliberately aggressive pruning such as `--prune=now`,
+backdated object storage or malicious filesystem replacement. Prepared object writes
+or selected-object freshness updates are not rolled back on a rejected transaction.
+
+On POSIX, publication preserves the authoritative index's existing ordinary
+permission bits (`0777`), including shared-group access under a restrictive umask.
+If adjustment is needed, a unique empty payload on the same filesystem is opened
+before mode preparation, so read-only modes can also be retained. Only trusted
+system `chmod` paths are used, with direct arguments, a clean environment and the
+remaining operation/process budgets. Exact mode is verified before writing the
+prospective contents and adopting the payload as the continuously reserved
+`index.lock`, before final authority checks. A delayed permission process cannot
+target a subsequent writer's reused lock pathname. Final synchronous checks verify
+both the original index mode and the intended lock mode before publication.
+Unavailable tooling or failed preparation cannot replace the index. Special mode
+bits are unsupported; ownership and ACLs are not administered. Windows retains
+its existing behavior without a POSIX-mode guarantee.
+
+The mutation process policy is separate from read-only inspection. It strips
+inherited Git routing variables, uses the provider's exact Git/worktree roots and
+its private index, permits only raw object/index preparation, and disables hooks,
+filters, fsmonitor, external diff/textconv and lazy fetching. Neither `git add` nor
+working-tree patch application is used. A nested Project source updates only its
+selected paths, preserving entries elsewhere in the checkout.
+The empty preparation worktree also prevents Git's index-write racy-stat checks
+from reading unrelated real files or invoking their conversion filters.
+The common Git directory is retained from provider establishment/restoration;
+changed `commondir` routing, object alternates, dual-format object storage, indirect
+object storage (including loose-object leaves and packs) and unexpected blob identities are rejected
+before index publication. These storage restrictions prevent object preparation
+from following symlinks or freshening objects outside the bound store.
+
+Shutdown fences new review admissions and drains existing cleanup. Navigation or
+retirement can revoke acknowledgement and prevent pre-publication admission, but
+does not undo a published index. Lost acknowledgement requires authoritative
+Refresh, never automatic retry through a replacement provider.
+
+One monotonic operation deadline covers preparation and all authority waits. Each
+initial or final authority call receives only the remaining budget, with active
+state checked before the call and again on completion. Expiry unwinds the index
+lock and temporary-file cleanup without waiting for a late authority response or
+starting another authority call. A timed-out underlying Future may still complete,
+but it cannot retain the lock or resume publication. Cleanup may add bounded
+overhead; individual authority calls never reset the operation timeout.
+
+Git subprocess startup likewise receives the smaller of the remaining operation
+budget and the remaining per-process budget. Exhaustion prevents a new launch,
+and liveness is checked again immediately when a process handle arrives. A pending
+startup Future cannot keep the review index lock for another full process timeout;
+late handles are killed. This does not claim to preempt or roll back operating-system
+work that may already have started before its handle becomes available.
+
+These guarantees cover cooperating Git index writers, not hostile same-user
+processes that ignore locks or replace filesystem paths between checks. Working
+files and HEAD have no portable joint transaction with the index; bounded content,
+metadata and reference checks immediately before publication detect observed
+changes, but cannot lock arbitrary external filesystem writers. Atomic publication
+is not a power-loss durability claim. Linux is the validated platform.
+
+`git_review_approval_test.dart` uses real repositories and index contents for hunk,
+file and layer operations, stale revisions, deterministic competing writers and
+preparation faults. The prepared product workflow and authority boundaries are
+mapped in [testing](../../docs/development/testing.md#focused-diff-checks).
 
 ## Filesystem and processes
 

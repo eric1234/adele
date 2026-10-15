@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
@@ -12,11 +13,24 @@ import 'git_process_environment.dart';
 import 'git_worktree_environment_provider.dart';
 import 'worktree_environment.dart';
 
+part 'git_review_approval.dart';
+
+/// Native launch seam for deterministic startup-lifetime tests, never request data.
+typedef GitProcessStarter =
+    Future<Process> Function(
+      String executable,
+      List<String> arguments, {
+      required String workingDirectory,
+      required Map<String, String> environment,
+      required bool includeParentEnvironment,
+    });
+
 /// Provider-local bounds, not caller-selected request settings.
 final class GitChangeSetLimits {
   const GitChangeSetLimits({
     this.files = 256,
     this.inventoryEntries = 4096,
+    this.reviewMetadataBytes = _maximumReviewMetadataBytes,
     this.fileBytes = 1024 * 1024,
     this.verificationFileBytes = 16 * 1024 * 1024,
     this.verificationTotalBytes = 64 * 1024 * 1024,
@@ -30,6 +44,7 @@ final class GitChangeSetLimits {
 
   final int files;
   final int inventoryEntries;
+  final int reviewMetadataBytes;
   final int fileBytes;
   final int verificationFileBytes;
   final int verificationTotalBytes;
@@ -47,13 +62,16 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
     required this.authorizedRead,
     this.limits = const GitChangeSetLimits(),
     Map<String, String>? parentEnvironment,
-  }) : _parentEnvironment = Map.unmodifiable(
+    GitProcessStarter? startGit,
+  }) : _startGit = startGit ?? Process.start,
+       _parentEnvironment = Map.unmodifiable(
          parentEnvironment ?? Platform.environment,
        ) {
     const defaults = GitChangeSetLimits();
     for (final (value, maximum) in [
       (limits.files, defaults.files),
       (limits.inventoryEntries, defaults.inventoryEntries),
+      (limits.reviewMetadataBytes, defaults.reviewMetadataBytes),
       (limits.fileBytes, defaults.fileBytes),
       (limits.verificationFileBytes, defaults.verificationFileBytes),
       (limits.verificationTotalBytes, defaults.verificationTotalBytes),
@@ -80,6 +98,7 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
   final AuthorizedEnvironmentReadService authorizedRead;
   final GitChangeSetLimits limits;
   final Map<String, String> _parentEnvironment;
+  final GitProcessStarter _startGit;
 
   @override
   Future<ChangeSetSnapshot> snapshotUnstaged() =>
@@ -97,14 +116,14 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
     bool includeStaged, {
     bool includeCommitted = false,
   }) async {
-    final operation = _SnapshotOperation(limits, _parentEnvironment);
+    final operation = _SnapshotOperation(limits, _parentEnvironment, _startGit);
     try {
       return await (() async {
         final identity = await authorizedRead.authority();
         final id = EnvironmentId(identity.environmentId);
         WorktreeEnvironment resolve() {
           operation.checkOpen();
-          if (!provider.liveObjects.contains(id)) {
+          if (provider.isClosing || !provider.liveObjects.contains(id)) {
             throw _failure(
               'environment_not_live',
               'The Environment is no longer live.',
@@ -118,6 +137,8 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
           environment,
           includeStaged: includeStaged,
           includeCommitted: includeCommitted,
+          reviewKey: provider.reviewKey,
+          reviewEnvironmentId: identity.environmentId,
         );
         if (!identical(resolve(), environment)) {
           throw _failure(
@@ -160,10 +181,11 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
 }
 
 final class _SnapshotOperation {
-  _SnapshotOperation(this.limits, this.parentEnvironment);
+  _SnapshotOperation(this.limits, this.parentEnvironment, this._startGit);
 
   final GitChangeSetLimits limits;
   final Map<String, String> parentEnvironment;
+  final GitProcessStarter _startGit;
   final Set<Process> _processes = {};
   final Set<StreamSubscription<List<int>>> _pipes = {};
   final Set<void Function()> _abortProcesses = {};
@@ -172,7 +194,9 @@ final class _SnapshotOperation {
   Directory? _temporary;
   late Directory _gitDirectory;
   late Directory _worktreeRoot;
+  Directory? _commonDirectory;
   bool _closed = false;
+  final Stopwatch _elapsed = Stopwatch()..start();
   int _totalBytes = 0;
   int _verificationBytes = 0;
   int _lines = 0;
@@ -181,9 +205,33 @@ final class _SnapshotOperation {
   ({String commit, String reference})? _head;
   String _indexDescription = '';
   Future<void> Function()? _settlementValidation;
+  final Map<String, Map<String, _ReviewFile>> _reviewFiles = {
+    'staged': {},
+    'unstaged': {},
+  };
+  final Map<String, String> _workingDigests = {};
+  bool _reviewContentComplete = true;
+  final Map<String, String> _attributes = {};
+  final Map<String, ({FileStat state, Uint8List? bytes})> _reviewMetadataFiles =
+      {};
+  List<String>? _reviewConfigPaths;
+  final Set<String> _reviewIgnorePaths = {};
+  final Map<String, List<String>> _reviewAttributePaths = {};
+  List<String>? _reviewGlobalAttributePaths;
+  final Map<String, Uint8List?> _headFiles = {};
+  final Map<String, FileStat> _reviewDirectories = {};
+  final Set<String> _reviewFlaggedPaths = {};
+  String? _reviewLayer;
+  // Empty means complete review metadata was unavailable, never a replacement
+  // index. Read snapshots still use Git's bounded, source-scoped inventory.
+  Uint8List _indexBytes = Uint8List(0);
+  final Map<({String path, int stage}), Uint8List> _completeIndexEntries = {};
+  bool _indexReviewable = false;
+  ({String commit, String reference})? _reviewHead;
+  late String _reviewEnvironmentId;
 
   void checkOpen() {
-    if (_closed) {
+    if (_closed || _elapsed.elapsed >= limits.operationTimeout) {
       throw _failure(
         'operation_timeout',
         'The change snapshot is no longer active.',
@@ -191,7 +239,20 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<void> close() async {
+  Future<AuthorizedEnvironmentIdentity> awaitAuthority(
+    Future<AuthorizedEnvironmentIdentity> Function() request,
+  ) async {
+    checkOpen();
+    final pending = request();
+    final remaining = limits.operationTimeout - _elapsed.elapsed;
+    final identity = await pending.timeout(
+      remaining > Duration.zero ? remaining : Duration.zero,
+    );
+    checkOpen();
+    return identity;
+  }
+
+  void expire() {
     _closed = true;
     for (final abort in _abortProcesses.toList()) {
       abort();
@@ -202,6 +263,10 @@ final class _SnapshotOperation {
     for (final pipe in _pipes.toList()) {
       unawaited(pipe.cancel());
     }
+  }
+
+  Future<void> close() async {
+    expire();
     final temporary = _temporary;
     if (temporary != null) {
       try {
@@ -218,7 +283,10 @@ final class _SnapshotOperation {
     WorktreeEnvironment environment, {
     required bool includeStaged,
     required bool includeCommitted,
+    required List<int> reviewKey,
+    required String reviewEnvironmentId,
   }) async {
+    _reviewEnvironmentId = reviewEnvironmentId;
     final root = environment.root;
     if (environment.gitDirectory == null ||
         environment.gitWorktreeRoot == null) {
@@ -229,6 +297,7 @@ final class _SnapshotOperation {
     }
     _gitDirectory = environment.gitDirectory!;
     _worktreeRoot = environment.gitWorktreeRoot!;
+    _commonDirectory = environment.gitCommonDirectory;
     await _validateRoot(_gitDirectory);
     await _validateRoot(_worktreeRoot);
     if (root.path != _worktreeRoot.path &&
@@ -241,6 +310,11 @@ final class _SnapshotOperation {
       );
     }
     await _validateRoot(root);
+    try {
+      _indexBytes = await _readIndex();
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'review_metadata_unavailable') rethrow;
+    }
     final settings = await _settings(root);
     final effectiveSettings = <String, String>{};
     for (final entry in _nulRecords(settings)) {
@@ -257,7 +331,19 @@ final class _SnapshotOperation {
         effectiveSettings.containsKey('core.eol') ||
         (effectiveSettings.containsKey('core.autocrlf') &&
             !falseValues.contains(effectiveSettings['core.autocrlf']));
-    if (includeStaged) _head = await _readHead(root);
+    if (includeStaged || _indexBytes.isNotEmpty) {
+      _reviewHead = await _readHead(root, allowUnborn: !includeStaged);
+    }
+    _indexReviewable =
+        _indexBytes.isNotEmpty &&
+        _reviewHead != null &&
+        _supportedReviewIndex(
+          _indexBytes,
+          _reviewHead!.commit.length ~/ 2,
+          entries: _completeIndexEntries,
+        ) &&
+        _commonDirectory != null;
+    if (includeStaged) _head = _reviewHead;
     if (includeCommitted) {
       await _validateBaseline(root, environment.baselineCommit);
       if (_head!.reference.isEmpty) {
@@ -279,13 +365,30 @@ final class _SnapshotOperation {
         );
       }
     }
+    if (_commonDirectory case final Directory common) {
+      await _validateRoot(common);
+      final output = _decode(
+        (await git(root, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-common-dir',
+        ])).bytes,
+      );
+      if (output != '${common.path}\n') {
+        throw _failure(
+          'snapshot_changed',
+          'The bound Git common directory changed.',
+        );
+      }
+    }
+    await _captureHeadFiles(root);
     final baseline = includeCommitted
         ? await _tree(root, environment.baselineCommit!)
         : <String, GitIndexEntry>{};
     final head = includeStaged
         ? await _tree(root, _head!.commit)
         : <String, GitIndexEntry>{};
-    final before = await _enumerate(root);
+    final before = await _enumerate(root, captureReviewIgnores: true);
     // Retain every stage identity, including stages 2/3 collapsed into the one
     // conflict row. Comparing that row alone would miss conflict-side races.
     final indexDescription = _indexDescription;
@@ -337,24 +440,45 @@ final class _SnapshotOperation {
       checkOpen();
       final entry = before[path];
       if (includeCommitted) {
+        _reviewLayer = null;
         retain(
           await _objectFile(root, path, baseline[path], head[path]),
           committed,
         );
       }
       if (includeStaged && entry?.kind == 'conflicted') {
+        _reviewLayer = null;
         retain(await _file(root, path, entry!), conflicts);
         continue;
       }
       if (includeStaged) {
+        _reviewLayer = 'staged';
         retain(await _objectFile(root, path, head[path], entry), staged);
       }
+      _reviewLayer = 'unstaged';
       if (entry != null) retain(await _file(root, path, entry), files);
     }
     Future<void> validate() async {
+      if (_indexReviewable) {
+        _validateReviewMetadataSync(_reviewIgnorePaths);
+        try {
+          if (!_bytesEqual(_indexBytes, await _readIndex())) {
+            throw _failure(
+              'snapshot_changed',
+              'The complete Git index changed.',
+            );
+          }
+        } on ChangeSetFailure catch (error) {
+          if (error.code != 'review_metadata_unavailable') rethrow;
+          throw _failure(
+            'snapshot_changed',
+            'The captured Git index became unavailable.',
+          );
+        }
+      }
       final after = await _enumerate(root);
       if (settings != await _settings(root) ||
-          (includeStaged && indexDescription != _indexDescription) ||
+          indexDescription != _indexDescription ||
           before.length != after.length ||
           before.entries.any((entry) => after[entry.key] != entry.value)) {
         throw _failure(
@@ -378,24 +502,50 @@ final class _SnapshotOperation {
           );
         }
       }
+      await _validateWorkingContent(root);
+      if (_indexReviewable) {
+        _validateHeadFilesSync();
+        _validateReviewDirectoriesSync();
+        _validateReviewMetadataSync(_reviewIgnorePaths);
+      }
+      for (final entry in _attributes.entries) {
+        if (entry.value != await _readAttributes(root, entry.key)) {
+          throw _failure('snapshot_changed', 'Git attributes changed.');
+        }
+      }
       await _validateRoot(root);
       await _validateRoot(_gitDirectory);
       await _validateRoot(_worktreeRoot);
       if (includeCommitted) {
         await _validateBaseline(root, environment.baselineCommit);
       }
-      if (_head != null && _head != await _readHead(root)) {
+      if ((includeStaged || _indexReviewable) &&
+          _reviewHead != await _readHead(root, allowUnborn: !includeStaged)) {
         throw _failure('snapshot_changed', 'HEAD changed during the snapshot.');
       }
     }
 
-    if (includeStaged) _settlementValidation = validate;
+    _settlementValidation = validate;
     await validate();
     return TaskChangeSetSnapshot(
-      committed: ChangeSetSnapshot(files: committed),
+      committed: ChangeSetSnapshot(files: committed, reviewRevision: null),
       uncommitted: UncommittedChangeSetSnapshot(
-        staged: ChangeSetSnapshot(files: staged),
-        unstaged: ChangeSetSnapshot(files: files),
+        staged: includeStaged
+            ? _reviewSnapshot(
+                environment,
+                reviewKey,
+                'staged',
+                staged,
+                conflicts,
+              )
+            : ChangeSetSnapshot(files: staged, reviewRevision: null),
+        unstaged: _reviewSnapshot(
+          environment,
+          reviewKey,
+          'unstaged',
+          files,
+          conflicts,
+        ),
         conflicts: conflicts,
       ),
     );
@@ -432,10 +582,40 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<({String commit, String reference})> _readHead(Directory root) async {
-    final commit = _decode(
-      (await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).bytes,
-    );
+  Future<({String commit, String reference})?> _readHead(
+    Directory root, {
+    bool allowUnborn = false,
+  }) async {
+    final result = await git(root, [
+      'rev-parse',
+      '--verify',
+      if (allowUnborn) '--quiet',
+      'HEAD^{commit}',
+    ], allowDifference: allowUnborn);
+    if (result.exitCode == 1) {
+      final symbolic = await git(root, [
+        'symbolic-ref',
+        '--quiet',
+        'HEAD',
+      ], allowDifference: true);
+      final reference = _decode(symbolic.bytes);
+      if (symbolic.exitCode == 0 &&
+          reference.startsWith('refs/') &&
+          reference.endsWith('\n')) {
+        final exists = await git(root, [
+          'show-ref',
+          '--verify',
+          '--quiet',
+          reference.trim(),
+        ], allowDifference: true);
+        if (exists.exitCode == 1) return null;
+      }
+      throw _failure(
+        'git_failed',
+        'Git could not resolve the current HEAD commit.',
+      );
+    }
+    final commit = _decode(result.bytes);
     if (!RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\n$').hasMatch(commit)) {
       throw _malformed();
     }
@@ -512,7 +692,10 @@ final class _SnapshotOperation {
     }
   }
 
-  Future<Map<String, GitIndexEntry>> _enumerate(Directory root) async {
+  Future<Map<String, GitIndexEntry>> _enumerate(
+    Directory root, {
+    bool captureReviewIgnores = false,
+  }) async {
     // Cached inventory never hashes worktree content or invokes clean filters.
     // --modified/diff-files are unsafe here, even when only raw output is asked.
     _indexDescription = _decode(
@@ -530,6 +713,17 @@ final class _SnapshotOperation {
       _indexDescription,
       maximumEntries: limits.inventoryEntries,
     );
+    _reviewFlaggedPaths.clear();
+    for (final match in RegExp(
+      r'[0-7]{6} [0-9a-f]+ [0-3]\t([^\x00]+)\x00  ctime: [^\n]+\n  mtime: [^\n]+\n  dev: [^\n]+\n  uid: [^\n]+\n  size: \d+\tflags: ([0-9a-f]+)\n',
+    ).allMatches(_indexDescription)) {
+      if (int.parse(match[2]!, radix: 16) != 0) {
+        _reviewFlaggedPaths.add(match[1]!);
+      }
+    }
+    if (captureReviewIgnores && _indexReviewable) {
+      await _captureReviewIgnoreSources(root, changes);
+    }
     final untracked = await git(root, [
       'ls-files',
       '--others',
@@ -543,6 +737,20 @@ final class _SnapshotOperation {
       changes,
       maximumEntries: limits.inventoryEntries,
     );
+    if (captureReviewIgnores && _indexReviewable) {
+      for (final entry in changes.entries) {
+        if (entry.value.kind == 'untrackedRepository' ||
+            entry.value.oldMode == '160000') {
+          continue;
+        }
+        if (!_reviewIgnorePaths.contains(
+          '${File('${root.path}/${entry.key}').parent.path}/.gitignore',
+        )) {
+          _indexReviewable = false;
+          break;
+        }
+      }
+    }
     return changes;
   }
 
@@ -557,6 +765,7 @@ final class _SnapshotOperation {
       contentStatus: status,
       detail: detail,
       hunks: const [],
+      reviewEligible: false,
     );
     if (change.kind == 'untrackedRepository') {
       return ChangedFile(
@@ -565,6 +774,7 @@ final class _SnapshotOperation {
         contentStatus: 'unsupported',
         detail: 'Nested repository contents were not inspected.',
         hunks: const [],
+        reviewEligible: false,
       );
     }
     if (change.kind == 'conflicted') {
@@ -599,6 +809,19 @@ final class _SnapshotOperation {
       );
     }
     if (change.kind == 'typeChanged' || change.kind == 'unsupported') {
+      try {
+        final state = await _directState(root, path);
+        _observed[path] = state;
+        if (state.type == FileSystemEntityType.file &&
+            state.size <= limits.fileBytes) {
+          final bytes = await _readFile(root, path);
+          if (bytes != null) {
+            _workingDigests[path] = sha256.convert(bytes).toString();
+          }
+        }
+      } on ChangeSetFailure catch (error) {
+        if (error.code != 'symlink_path') rethrow;
+      }
       return placeholder(
         'unsupported',
         'File type, mode, or index flags prevent ordinary text inspection.',
@@ -635,6 +858,12 @@ final class _SnapshotOperation {
         _fileMode &&
         !Platform.isWindows &&
         ((state.mode & 0x40) != 0) != (change.oldMode == '100755')) {
+      if (state.size <= limits.fileBytes) {
+        final bytes = await _readFile(root, path);
+        if (bytes != null) {
+          _workingDigests[path] = sha256.convert(bytes).toString();
+        }
+      }
       change = (
         oldMode: change.oldMode,
         newMode: change.newMode,
@@ -683,6 +912,7 @@ final class _SnapshotOperation {
         'The working file exceeds the supported size.',
       );
     }
+    _workingDigests[path] = sha256.convert(current).toString();
     if (!_sameState(state, await _directState(root, path))) {
       throw _failure(
         'snapshot_changed',
@@ -709,7 +939,23 @@ final class _SnapshotOperation {
         'The index file exceeds the supported size.',
       );
     }
-    final result = await _textFile(root, path, change.kind, old, current);
+    final result = await _textFile(
+      root,
+      path,
+      change.kind,
+      old,
+      current,
+      oldMode: change.oldMode,
+      newMode: deleted
+          ? '000000'
+          : change.kind == 'added' &&
+                _fileMode &&
+                !Platform.isWindows &&
+                (state.mode & 0x40) != 0
+          ? '100755'
+          : change.newMode,
+      reviewEligible: !_reviewFlaggedPaths.contains(path),
+    );
     if (!_sameState(state, await _directState(root, path))) {
       throw _failure(
         'snapshot_changed',
@@ -752,6 +998,7 @@ final class _SnapshotOperation {
       contentStatus: status,
       detail: detail,
       hunks: const [],
+      reviewEligible: false,
     );
     const regular = {'100644', '100755'};
     if ((old != null && !regular.contains(old.oldMode)) ||
@@ -778,7 +1025,16 @@ final class _SnapshotOperation {
         'A file side exceeds the supported size.',
       );
     }
-    return _textFile(root, path, kind, left, right);
+    return _textFile(
+      root,
+      path,
+      kind,
+      left,
+      right,
+      oldMode: old?.oldMode ?? '000000',
+      newMode: current?.oldMode ?? '000000',
+      reviewEligible: !_reviewFlaggedPaths.contains(path),
+    );
   }
 
   Future<Uint8List?> _blob(Directory root, String oid) async {
@@ -802,31 +1058,23 @@ final class _SnapshotOperation {
     String path,
     String kind,
     Uint8List old,
-    Uint8List current,
-  ) async {
+    Uint8List current, {
+    required String oldMode,
+    required String newMode,
+    bool reviewEligible = true,
+  }) async {
     ChangedFile placeholder(String status, String detail) => ChangedFile(
       relativePath: path,
       changeKind: kind,
       contentStatus: status,
       detail: detail,
       hunks: const [],
+      reviewEligible: false,
     );
-    final attributes = _nulRecords(
-      _decode(
-        (await git(root, [
-          'check-attr',
-          '-z',
-          'diff',
-          'text',
-          'eol',
-          'working-tree-encoding',
-          'filter',
-          'ident',
-          '--',
-          path,
-        ])).bytes,
-      ),
-    );
+    if (_indexReviewable) await _captureReviewAttributeSources(root, path);
+    final rawAttributes = await _readAttributes(root, path);
+    _attributes[path] = rawAttributes;
+    final attributes = _nulRecords(rawAttributes);
     if (attributes.length != 18) throw _malformed();
     if (_contentConversion) {
       return placeholder(
@@ -935,12 +1183,24 @@ final class _SnapshotOperation {
         'The change snapshot exceeds its total output limit.',
       );
     }
+    final eligible = reviewEligible && _indexReviewable && _reviewLayer != null;
+    if (eligible) {
+      _reviewFiles[_reviewLayer]![path] = _ReviewFile(
+        old,
+        current,
+        oldMode,
+        newMode,
+      );
+    }
     return ChangedFile(
       relativePath: path,
       changeKind: kind,
       contentStatus: 'text',
-      detail: null,
+      detail: _reviewLayer != null && !reviewEligible
+          ? 'Index flags, including intent-to-add, are not eligible for review.'
+          : null,
       hunks: hunks,
+      reviewEligible: eligible,
     );
   }
 
@@ -1032,6 +1292,8 @@ final class _SnapshotOperation {
         }
         sink.close();
         matches = digest.toString() == oid;
+        // This digest is the full Git blob identity, with an explicit namespace.
+        _workingDigests[path] = 'git:$oid:${digest.toString()}';
       } finally {
         await file.close();
       }
@@ -1098,13 +1360,47 @@ final class _SnapshotOperation {
     int? maximum,
     bool detached = false,
     bool allowDifference = false,
+    bool allowUnknownVariable = false,
+    bool requireCleanStderr = false,
+    String? privateIndex,
+    Uint8List? input,
   }) async {
     checkOpen();
+    final mutation = privateIndex != null;
+    if (allowUnknownVariable &&
+        (mutation ||
+            detached ||
+            arguments.length != 2 ||
+            arguments.first != 'var' ||
+            !const {
+              'GIT_CONFIG_SYSTEM',
+              'GIT_CONFIG_GLOBAL',
+              'GIT_ATTR_SYSTEM',
+              'GIT_ATTR_GLOBAL',
+            }.contains(arguments.last))) {
+      throw StateError(
+        'Unknown-variable tolerance is only for optional Git metadata discovery.',
+      );
+    }
+    // check-ignore rejects global literal pathspec magic. Its private stdin
+    // paths have a ./ prefix, so none can introduce magic themselves.
+    final directoryIgnore = arguments.first == 'check-ignore';
+    if (mutation &&
+        (detached ||
+            !(arguments.join(' ') == 'hash-object --no-filters -w --stdin' ||
+                arguments.join(' ') == 'update-index -z --index-info'))) {
+      throw StateError('Unsupported review mutation command.');
+    }
     final environment = <String, String>{
-      ...gitProcessEnvironment(
-        parentEnvironment: parentEnvironment,
-        readOnlyInspection: true,
-      ),
+      ...mutation
+          ? gitReviewMutationEnvironment(
+              parentEnvironment: parentEnvironment,
+              privateIndex: privateIndex,
+            )
+          : gitProcessEnvironment(
+              parentEnvironment: parentEnvironment,
+              readOnlyInspection: true,
+            ),
       'PWD': directory.path,
       // Also deny transports on Git versions predating GIT_NO_LAZY_FETCH.
       'GIT_ALLOW_PROTOCOL': '',
@@ -1115,6 +1411,7 @@ final class _SnapshotOperation {
         'GIT_CONFIG_GLOBAL': _nullDevice,
         'GIT_ATTR_NOSYSTEM': '1',
       },
+      if (directoryIgnore) 'GIT_LITERAL_PATHSPECS': '0',
     };
     if (environment['PATH']!.isEmpty) {
       throw _failure(
@@ -1149,18 +1446,43 @@ final class _SnapshotOperation {
     Timer? timer;
     var launchExpired = false;
     try {
+      checkOpen();
+      final operationRemaining = limits.operationTimeout - _elapsed.elapsed;
+      final processRemaining = limits.processTimeout - watch.elapsed;
+      final operationLimited = operationRemaining <= processRemaining;
+      final startupBudget = operationLimited
+          ? operationRemaining
+          : processRemaining;
+      if (startupBudget <= Duration.zero) {
+        checkOpen();
+        throw _failure(
+          'git_timeout',
+          'Git could not start before its deadline.',
+        );
+      }
       final started =
-          await Process.start(
+          await _startGit(
                 'git',
                 [
                   '--no-pager',
-                  '--literal-pathspecs',
+                  if (!directoryIgnore) '--literal-pathspecs',
                   if (!detached) '--git-dir=${_gitDirectory.path}',
-                  if (!detached) '--work-tree=${_worktreeRoot.path}',
+                  if (!detached)
+                    '--work-tree=${mutation && arguments.first == 'update-index' ? '${File(privateIndex).parent.path}/empty-worktree' : _worktreeRoot.path}',
                   '-c',
                   'core.fsmonitor=false',
                   '-c',
                   'core.untrackedCache=false',
+                  '-c',
+                  'core.hooksPath=$_nullDevice',
+                  if (mutation) ...[
+                    '-c',
+                    'core.splitIndex=false',
+                    '-c',
+                    'index.sparse=false',
+                    '-c',
+                    'core.autocrlf=false',
+                  ],
                   if (detached) ...[
                     '-c',
                     'core.attributesFile=$_nullDevice',
@@ -1184,9 +1506,11 @@ final class _SnapshotOperation {
                 return started;
               })
               .timeout(
-                limits.processTimeout,
+                startupBudget,
                 onTimeout: () {
                   launchExpired = true;
+                  if (operationLimited) expire();
+                  checkOpen();
                   throw _failure(
                     'git_timeout',
                     'Git could not start before its deadline.',
@@ -1197,7 +1521,16 @@ final class _SnapshotOperation {
       checkOpen();
       _processes.add(started);
       _abortProcesses.add(abort);
-      unawaited(started.stdin.close());
+      unawaited(
+        (() async {
+          try {
+            if (input != null) started.stdin.add(input);
+            await started.stdin.close();
+          } on Object {
+            fail(_failure('git_failed', 'Git input could not be written.'));
+          }
+        })(),
+      );
       timer = Timer(
         limits.processTimeout - watch.elapsed,
         () => fail(
@@ -1260,7 +1593,15 @@ final class _SnapshotOperation {
       );
       final result = await complete.future;
       checkOpen();
-      if (result.exitCode != 0 && !(allowDifference && result.exitCode == 1)) {
+      if (requireCleanStderr && errors != 0) {
+        throw _failure(
+          'git_failed',
+          'Git reported an object inspection error.',
+        );
+      }
+      if (result.exitCode != 0 &&
+          !(allowDifference && result.exitCode == 1) &&
+          !(allowUnknownVariable && result.exitCode == 129)) {
         throw _failure(
           'git_failed',
           'Git could not produce the change snapshot.',

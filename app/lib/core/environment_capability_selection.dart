@@ -17,6 +17,7 @@ final class CapturedEnvironmentCapabilities {
     required EnvironmentRuntime environmentRuntime,
     required ApplicationPluginBootstrap backends,
     required Session session,
+    bool requireUnique = false,
   }) {
     InstalledBackendActivation? owner;
     return CapturedEnvironmentCapabilities.withResolvers(
@@ -39,6 +40,7 @@ final class CapturedEnvironmentCapabilities {
               capability,
               associatedWith: associatedWith,
               providerId: providerId,
+              requireUnique: requireUnique,
             );
           },
       associationFor: (binding) => owner!.associationFor(binding),

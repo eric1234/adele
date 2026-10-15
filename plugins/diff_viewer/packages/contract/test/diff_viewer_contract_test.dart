@@ -22,8 +22,218 @@ void main() {
   });
   tearDown(() => dispatcher.close());
 
+  test(
+    'review contract roundtrips exact selections and declared failures',
+    () async {
+      final service = _ReviewService();
+      final dispatcher = ReviewApprovalServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final client = ReviewApprovalServiceClient(channel);
+      expect(reviewApprovalCapability.id.value, 'adele.diff.review-approval');
+      expect(reviewApprovalCapability.majorVersion, 1);
+      expect(reviewApprovalServiceId, 'diff.reviewApproval');
+      for (final status in ['applied', 'stale', 'ineligible']) {
+        service.status = status;
+        for (final selection in _reviewSelections) {
+          for (final approve in [true, false]) {
+            final result = await (approve ? client.approve : client.unapprove)(
+              selection,
+            );
+            expect(result.status, status);
+            expect(
+              channel.method,
+              'diff.reviewApproval.${approve ? 'approve' : 'unapprove'}',
+            );
+            expect(channel.payload, {
+              'selection': {
+                'expectedRevision': selection.expectedRevision,
+                'granularity': selection.granularity,
+                'relativePath': selection.relativePath,
+                'hunkIndex': selection.hunkIndex,
+              },
+            });
+            expect(
+              service.selection!.expectedRevision,
+              selection.expectedRevision,
+            );
+            expect(service.selection!.granularity, selection.granularity);
+            expect(service.selection!.relativePath, selection.relativePath);
+            expect(service.selection!.hunkIndex, selection.hunkIndex);
+          }
+        }
+      }
+      service.failure = const ReviewApprovalFailure(
+        code: 'busy',
+        message: 'Review is busy.',
+      );
+      for (final invoke in [client.approve, client.unapprove]) {
+        await expectLater(
+          invoke(_reviewSelections.first),
+          throwsA(
+            isA<ReviewApprovalFailure>()
+                .having((failure) => failure.code, 'code', 'busy')
+                .having((failure) => failure.details, 'details', isEmpty),
+          ),
+        );
+      }
+    },
+  );
+
+  test(
+    'review dispatch rejects malformed selections before service admission',
+    () async {
+      final service = _ReviewService();
+      final dispatcher = ReviewApprovalServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      for (final method in [
+        reviewApprovalServiceApproveId,
+        reviewApprovalServiceUnapproveId,
+      ]) {
+        for (final payload in <Object?>[
+          null,
+          <String, Object?>{},
+          {'selection': _selectionWire, 'hostInvocationContext': 'forged'},
+          for (final selection in _invalidSelectionWires)
+            {'selection': selection},
+        ]) {
+          final response = await dispatcher.dispatch({
+            'kind': 'request',
+            'requestId': 1,
+            'method': method,
+            'payload': payload,
+          });
+          expect(response['ok'], isFalse, reason: '$payload');
+          expect((response['error']! as Map)['code'], 'invalid_request');
+        }
+      }
+      expect(service.selection, isNull);
+    },
+  );
+
+  test(
+    'native review result decoder rejects incomplete and incorrect fields',
+    () async {
+      for (final wire in _invalidResultWires) {
+        final client = ReviewApprovalServiceClient(_Response(wire));
+        for (final invoke in [client.approve, client.unapprove]) {
+          await expectLater(
+            invoke(_reviewSelections.first),
+            throwsA(isA<AdeleProtocolException>()),
+          );
+        }
+      }
+    },
+  );
+
+  test(
+    'native snapshot review fields are required and strictly typed',
+    () async {
+      await client.snapshotUnstaged();
+      final snapshot = channel.response! as Map<String, dynamic>;
+      final file = (snapshot['files'] as List).single as Map<String, dynamic>;
+      for (final wire in <Object?>[
+        {...snapshot}..remove('reviewRevision'),
+        for (final value in <Object?>[true, 1, [], {}])
+          {...snapshot, 'reviewRevision': value},
+        for (final invalidFile in [
+          {...file}..remove('reviewEligible'),
+          for (final value in <Object?>[null, 'true', 1, [], {}])
+            {...file, 'reviewEligible': value},
+        ])
+          {
+            ...snapshot,
+            'files': [invalidFile],
+          },
+      ]) {
+        await expectLater(
+          ChangeSetSourceServiceClient(_Response(wire)).snapshotUnstaged(),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'real eval codecs strictly decode review DTOs and snapshot opt-ins',
+    () async {
+      final generated = await const ContractGenerator().generateEvalClient(
+        File('lib/diff_viewer_contract.dart'),
+      );
+      await client.snapshotUnstaged();
+      final snapshot = channel.response! as Map<String, dynamic>;
+      final file = (snapshot['files'] as List).single as Map<String, dynamic>;
+      final cases = <(String, Object?, bool)>[
+        ('ReviewSelection', _selectionWire, true),
+        (
+          'ReviewSelection',
+          {
+            ..._selectionWire,
+            'granularity': 'layer',
+            'relativePath': null,
+            'hunkIndex': null,
+          },
+          true,
+        ),
+        for (final wire in _invalidSelectionWires)
+          ('ReviewSelection', wire, false),
+        for (final status in ['applied', 'stale', 'ineligible'])
+          ('ReviewApprovalResult', {'status': status}, true),
+        for (final wire in _invalidResultWires)
+          ('ReviewApprovalResult', wire, false),
+        ('ChangeSetSnapshot', snapshot, true),
+        ('ChangeSetSnapshot', {...snapshot, 'reviewRevision': null}, true),
+        ('ChangeSetSnapshot', {...snapshot}..remove('reviewRevision'), false),
+        ('ChangeSetSnapshot', {...snapshot, 'reviewRevision': false}, false),
+        ('ChangedFile', file, true),
+        ('ChangedFile', {...file, 'reviewEligible': false}, true),
+        ('ChangedFile', {...file}..remove('reviewEligible'), false),
+        ('ChangedFile', {...file, 'reviewEligible': null}, false),
+        ('ChangedFile', {...file, 'reviewEligible': 'true'}, false),
+      ];
+      // Exercise the actual emitted decoders synchronously, including parameter
+      // DTOs that a client normally only encodes. No native semantic adapter.
+      final probes = StringBuffer();
+      for (var i = 0; i < cases.length; i++) {
+        final (type, wire, _) = cases[i];
+        final decoder = RegExp(
+          '$type (_wire[0-9]+Decode)\\(',
+        ).firstMatch(generated)!.group(1)!;
+        probes.writeln(
+          'String probe$i() { try { $decoder(jsonDecode(${jsonEncode(jsonEncode(wire))})); return "accepted"; } catch (error) { return "rejected"; } }',
+        );
+      }
+      const library = 'package:diff_viewer_contract/diff_viewer_contract.dart';
+      final program =
+          (Compiler()
+                ..entrypoints.addAll([
+                  'package:adele_contract/adele_contract.dart',
+                  library,
+                ]))
+              .compile({
+                'adele_contract': {
+                  'adele_contract.dart': evalContractSupportSource,
+                },
+                'diff_viewer_contract': {
+                  'diff_viewer_contract.dart':
+                      "import 'dart:convert';\n$generated\n$probes",
+                },
+              });
+      final bytes = program.write().buffer.asByteData();
+      for (var i = 0; i < cases.length; i++) {
+        final result = Runtime(bytes).executeLib(library, 'probe$i') as $Value;
+        expect(
+          result.$reified,
+          cases[i].$3 ? 'accepted' : 'rejected',
+          reason: '${cases[i]}',
+        );
+      }
+    },
+  );
+
   test('generated transport roundtrips the complete nested snapshot', () async {
     final snapshot = await client.snapshotUnstaged();
+    expect(snapshot.reviewRevision, 'revision');
     expect(changeSetSourceCapability.id.value, 'adele.diff.change-set-source');
     expect(changeSetSourceCapability.majorVersion, 1);
     expect(channel.method, 'diff.changeSetSource.snapshotUnstaged');
@@ -33,6 +243,7 @@ void main() {
     expect(file.changeKind, 'modified');
     expect(file.contentStatus, 'text');
     expect(file.detail, isNull);
+    expect(file.reviewEligible, isTrue);
     final hunk = file.hunks.single;
     expect(
       [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -65,18 +276,19 @@ void main() {
       changeKind: 'added',
       contentStatus: 'text',
       detail: null,
+      reviewEligible: false,
       hunks: hunks,
     );
     final files = [file];
-    final snapshot = ChangeSetSnapshot(files: files);
+    final snapshot = ChangeSetSnapshot(files: files, reviewRevision: null);
     final conflicts = [file];
     final uncommitted = UncommittedChangeSetSnapshot(
       staged: snapshot,
-      unstaged: ChangeSetSnapshot(files: files),
+      unstaged: ChangeSetSnapshot(files: files, reviewRevision: null),
       conflicts: conflicts,
     );
     final task = TaskChangeSetSnapshot(
-      committed: ChangeSetSnapshot(files: files),
+      committed: ChangeSetSnapshot(files: files, reviewRevision: null),
       uncommitted: uncommitted,
     );
     lines.clear();
@@ -288,16 +500,19 @@ void main() {
         <String, Object?>{},
         {...snapshot, 'extra': true},
         {
+          ...snapshot,
           'files': [
             {...file}..remove('detail'),
           ],
         },
         {
+          ...snapshot,
           'files': [
             {...file, 'hunks': 'patch'},
           ],
         },
         {
+          ...snapshot,
           'files': [
             {
               ...file,
@@ -308,6 +523,7 @@ void main() {
           ],
         },
         {
+          ...snapshot,
           'files': [
             {
               ...file,
@@ -358,6 +574,7 @@ void main() {
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {...file}..remove('detail'),
               ],
@@ -366,6 +583,7 @@ void main() {
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {
                   ...file,
@@ -379,6 +597,7 @@ void main() {
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {
                   ...file,
@@ -484,6 +703,14 @@ import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 
 class Channel implements AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (method == '$reviewApprovalServiceApproveId' || method == '$reviewApprovalServiceUnapproveId') {
+      final selection = payload['selection'] as Map<String, Object?>;
+      if (selection['expectedRevision'] != 'revision' ||
+          !selection.containsKey('relativePath') || !selection.containsKey('hunkIndex')) {
+        throw StateError('Invalid review wire');
+      }
+      return <String, Object?>{'status': 'applied'};
+    }
     if (payload.isNotEmpty) throw StateError('Authority in request');
     if (method == '$changeSetSourceServiceSnapshotUnstagedId') {
       return jsonDecode(${jsonEncode(unstagedWire)});
@@ -508,17 +735,24 @@ String layer(ChangeSetSnapshot snapshot) {
 Future<String> run() async {
   final ChangeSetSourceServiceClient client = ChangeSetSourceServiceClient(Channel());
   final old = await client.snapshotUnstaged();
+  if (old.reviewRevision != 'revision' || !old.files[0].reviewEligible) {
+    throw StateError('Review evidence lost');
+  }
+  final ReviewApprovalServiceClient review = ReviewApprovalServiceClient(Channel());
+  final approved = await review.approve(ReviewSelection(expectedRevision: old.reviewRevision!, granularity: 'hunk', relativePath: old.files[0].relativePath, hunkIndex: 0));
+  final unapproved = await review.unapprove(ReviewSelection(expectedRevision: old.reviewRevision!, granularity: 'layer', relativePath: null, hunkIndex: null));
+  if (approved.status != 'applied' || unapproved.status != 'applied') throw StateError('Review result lost');
   final snapshot = await client.snapshotUncommitted();
   final task = await client.snapshotTaskChanges();
   final conflict = snapshot.conflicts[0];
   final lines = <DiffLine>[DiffLine(kind: 'addition', text: 'detached', noNewline: false)];
   final hunks = <DiffHunk>[DiffHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: 1, lines: lines)];
-  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: hunks)];
-  final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files), unstaged: ChangeSetSnapshot(files: files), conflicts: files);
-  final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files), uncommitted: copy);
+  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: hunks, reviewEligible: false)];
+  final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files, reviewRevision: null), unstaged: ChangeSetSnapshot(files: files, reviewRevision: null), conflicts: files);
+  final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files, reviewRevision: null), uncommitted: copy);
   lines[0] = DiffLine(kind: 'addition', text: 'changed', noNewline: false);
   hunks[0] = DiffHunk(oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: <DiffLine>[]);
-  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: <DiffHunk>[]);
+  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: <DiffHunk>[], reviewEligible: false);
   if (copy.staged.files[0].hunks[0].lines[0].text != 'detached' ||
       copy.unstaged.files[0].relativePath != 'copy.txt' || copy.conflicts[0].relativePath != 'copy.txt' ||
       taskCopy.committed.files[0].hunks[0].lines[0].text != 'detached') {
@@ -529,7 +763,7 @@ Future<String> run() async {
   collected.addAll(task.uncommitted.staged.files);
   collected.addAll(task.uncommitted.unstaged.files);
   collected.addAll(task.uncommitted.conflicts);
-  collected.addAll(ChangeSetSnapshot(files: <ChangedFile>[]).files);
+  collected.addAll(ChangeSetSnapshot(files: <ChangedFile>[], reviewRevision: null).files);
   final collectedHunks = <DiffHunk>[];
   collectedHunks.addAll(collected[0].hunks);
   collectedHunks.addAll(collected[3].hunks);
@@ -650,6 +884,7 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
       final bad = layer == 'conflicts'
           ? [invalidFile]
           : {
+              ...committed,
               'files': [invalidFile],
             };
       yield layer == 'committed'
@@ -660,6 +895,82 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
             };
     }
   }
+}
+
+const _reviewSelections = [
+  ReviewSelection(
+    expectedRevision: 'opaque:revision',
+    granularity: 'hunk',
+    relativePath: 'dir/two words.txt',
+    hunkIndex: 0,
+  ),
+  ReviewSelection(
+    expectedRevision: 'opaque:revision',
+    granularity: 'file',
+    relativePath: 'dir/two words.txt',
+    hunkIndex: null,
+  ),
+  ReviewSelection(
+    expectedRevision: 'opaque:revision',
+    granularity: 'layer',
+    relativePath: null,
+    hunkIndex: null,
+  ),
+];
+
+const _selectionWire = <String, Object?>{
+  'expectedRevision': 'opaque:revision',
+  'granularity': 'hunk',
+  'relativePath': 'dir/two words.txt',
+  'hunkIndex': 0,
+};
+
+Iterable<Object?> get _invalidSelectionWires sync* {
+  yield null;
+  yield 'selection';
+  yield <Object?>[];
+  yield {..._selectionWire, 'extra': true};
+  for (final field in _selectionWire.keys) {
+    yield {..._selectionWire}..remove(field);
+    for (final value in <Object?>[true, <Object?>[], <String, Object?>{}]) {
+      yield {..._selectionWire, field: value};
+    }
+  }
+  for (final field in ['expectedRevision', 'granularity']) {
+    yield {..._selectionWire, field: null};
+    yield {..._selectionWire, field: 1};
+  }
+  yield {..._selectionWire, 'relativePath': 1};
+  yield {..._selectionWire, 'hunkIndex': '0'};
+  yield {..._selectionWire, 'hunkIndex': 0.5};
+}
+
+const _invalidResultWires = <Object?>[
+  null,
+  'applied',
+  <Object?>[],
+  <String, Object?>{},
+  {'status': null},
+  {'status': true},
+  {'status': 1},
+  {'status': <Object?>[]},
+  {'status': 'applied', 'extra': true},
+];
+
+class _ReviewService implements ReviewApprovalService {
+  ReviewSelection? selection;
+  String status = 'applied';
+  Object? failure;
+  @override
+  Future<ReviewApprovalResult> approve(ReviewSelection selection) async {
+    this.selection = selection;
+    if (failure != null) throw failure!;
+    return ReviewApprovalResult(status: status);
+  }
+
+  @override
+  Future<ReviewApprovalResult> unapprove(ReviewSelection selection) =>
+      approve(selection);
 }
 
 class _Service implements ChangeSetSourceService {
@@ -698,6 +1009,7 @@ class _Service implements ChangeSetSourceService {
         changeKind: 'conflicted',
         contentStatus: 'conflicted',
         detail: 'Unmerged index entries.',
+        reviewEligible: false,
         hunks: [],
       ),
     ],
@@ -705,12 +1017,14 @@ class _Service implements ChangeSetSourceService {
 
   ChangeSetSnapshot _snapshot() {
     return ChangeSetSnapshot(
+      reviewRevision: 'revision',
       files: [
         ChangedFile(
           relativePath: 'dir/two words\t\u03bb.txt',
           changeKind: 'modified',
           contentStatus: 'text',
           detail: null,
+          reviewEligible: true,
           hunks: [
             DiffHunk(
               oldStart: 2,
@@ -736,7 +1050,7 @@ class _Service implements ChangeSetSourceService {
 
 class _Channel implements AdeleRequestChannel {
   _Channel(this.dispatcher);
-  final ChangeSetSourceServiceDispatcher dispatcher;
+  final AdeleBackendDispatcher dispatcher;
   String? method;
   Map<String, Object?>? payload;
   Object? response;

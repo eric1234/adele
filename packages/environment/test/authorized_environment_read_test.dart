@@ -255,6 +255,68 @@ void main() {
       );
     }
   });
+
+  test('review proof has an independent identity-only generated route', () async {
+    final reviewDispatcher = AuthorizedEnvironmentReviewServiceDispatcher(
+      service,
+    );
+    addTearDown(reviewDispatcher.close);
+    final reviewChannel = _Channel(reviewDispatcher);
+    final identity = await AuthorizedEnvironmentReviewServiceClient(
+      reviewChannel,
+    ).authority();
+    expect(authorizedEnvironmentReviewServiceId, 'authorizedEnvironmentReview');
+    expect(reviewChannel.method, 'authorizedEnvironmentReview.authority');
+    expect(reviewChannel.payload, isEmpty);
+    expect(identity.sessionId, service.identity.sessionId);
+    expect(identity.environmentId, service.identity.environmentId);
+    expect(identity, isNot(same(service.identity)));
+    // Supplying one dispatcher never makes the other service's method callable.
+    for (final (target, method) in [
+      (dispatcher, authorizedEnvironmentReviewServiceAuthorityId),
+      (reviewDispatcher, authorizedEnvironmentReadServiceAuthorityId),
+      (reviewDispatcher, authorizedEnvironmentReadServiceReadFileId),
+    ]) {
+      expect((await target.dispatch(_request(method, {})))['ok'], isFalse);
+    }
+  });
+
+  test(
+    'review proof rejects caller-selected authority and malformed results',
+    () async {
+      final reviewDispatcher = AuthorizedEnvironmentReviewServiceDispatcher(
+        service,
+      );
+      addTearDown(reviewDispatcher.close);
+      for (final key in [
+        'sessionId',
+        'environmentId',
+        'hostInvocationContext',
+      ]) {
+        expect(
+          (await reviewDispatcher.dispatch(
+            _request(authorizedEnvironmentReviewServiceAuthorityId, {
+              key: 'foreign',
+            }),
+          ))['ok'],
+          isFalse,
+        );
+      }
+      for (final payload in <Map<String, Object?>>[
+        {'sessionId': '', 'environmentId': 'environment'},
+        {'sessionId': 'session'},
+        {'sessionId': 'session', 'environmentId': 1},
+        {'sessionId': 'session', 'environmentId': 'environment', 'extra': true},
+      ]) {
+        await expectLater(
+          AuthorizedEnvironmentReviewServiceClient(
+            _ResponseChannel(payload),
+          ).authority(),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
 }
 
 Map<Object?, Object?> _request(String method, Map<String, Object?> payload) =>
@@ -265,7 +327,10 @@ Map<Object?, Object?> _request(String method, Map<String, Object?> payload) =>
       'payload': payload,
     };
 
-final class _ReadService implements AuthorizedEnvironmentReadService {
+final class _ReadService
+    implements
+        AuthorizedEnvironmentReadService,
+        AuthorizedEnvironmentReviewService {
   final identity = AuthorizedEnvironmentIdentity(
     sessionId: 'session-1',
     environmentId: 'environment-1',

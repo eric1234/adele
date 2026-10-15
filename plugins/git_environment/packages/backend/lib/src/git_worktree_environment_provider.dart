@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -40,6 +42,23 @@ final class GitWorktreeEnvironmentProvider
   final GitTerminalSupervisor _terminals;
   bool _closing = false;
   Future<void>? _closeFuture;
+  final List<int> reviewKey = List.unmodifiable(
+    List.generate(32, (_) => Random.secure().nextInt(256)),
+  );
+  bool get isClosing => _closing;
+  final Set<Future<void>> _reviews = {};
+
+  Future<T> runReview<T>(Future<T> Function() operation) async {
+    _requireOpen();
+    final settled = Completer<void>();
+    _reviews.add(settled.future);
+    try {
+      return await operation();
+    } finally {
+      _reviews.remove(settled.future);
+      settled.complete();
+    }
+  }
 
   @override
   Future<EnvironmentProviderResult> establish(
@@ -340,7 +359,11 @@ final class GitWorktreeEnvironmentProvider
 
   Future<void> _close() async {
     try {
-      await Future.wait<void>([_terminals.close(), _processes.close()]);
+      await Future.wait<void>([
+        _terminals.close(),
+        _processes.close(),
+        ..._reviews,
+      ]);
     } finally {
       liveObjects.clear();
     }
@@ -729,10 +752,17 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
       code: failureCode,
       message: failureMessage,
     );
+    final commonDirectory = await _gitOutput(
+      worktreeRoot,
+      const ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      code: failureCode,
+      message: failureMessage,
+    );
     live = WorktreeEnvironment(
       expectedScope,
       gitWorktreeRoot: worktreeRoot,
       gitDirectory: Directory(gitDirectory),
+      gitCommonDirectory: Directory(commonDirectory),
       baselineCommit: baselineCommit,
       branch: branch,
     );

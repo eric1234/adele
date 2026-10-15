@@ -45,6 +45,10 @@ final _changes = CapabilityKey(
   id: CapabilityId('adele.diff.change-set-source'),
   majorVersion: 1,
 );
+final _approval = CapabilityKey(
+  id: CapabilityId('adele.diff.review-approval'),
+  majorVersion: 1,
+);
 
 void main() {
   late Directory artifacts;
@@ -288,7 +292,7 @@ void main() {
   );
 
   testWidgets(
-    'stock Uncommitted scope omits an unchanged 1054288-byte binary image beside a staged text hunk',
+    'stock text review remains available beside an unchanged 1054288-byte binary image',
     (tester) async {
       const imagePath = 'unchanged.bmp';
       const imageLength = 1054288;
@@ -374,6 +378,32 @@ void main() {
         expect(
           await _git(fixture.additionalRoot, ['diff', '--name-only']),
           isEmpty,
+        );
+      });
+      await _pressReview(tester, 'Unapprove File');
+      await _visible(tester, 'No staged changes');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['diff', '--cached', '--patch']),
+          isEmpty,
+        );
+        expect(
+          await fixture.file('d staged.txt').readAsString(),
+          'Staged text beside unchanged image\n',
+        );
+        expect(await fixture.file(imagePath).readAsBytes(), bytes);
+      });
+      await _pressReview(tester, 'Approve File');
+      await _visible(tester, 'No unstaged changes');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['diff', '--cached', '--binary']),
+          stagedBefore,
+        );
+        expect(await fixture.file(imagePath).readAsBytes(), bytes);
+        expect(
+          await fixture.file('d staged.txt').readAsString(),
+          'Staged text beside unchanged image\n',
         );
       });
       expect(tester.takeException(), isNull);
@@ -685,6 +715,305 @@ void main() {
   );
 
   testWidgets(
+    'actual Diff approves and unapproves hunks files and whole layers in the nonprimary Git index',
+    (tester) async {
+      const path = 'a modified.txt';
+      const addition = 'b ordinary addition.txt';
+      final originalLines = List.generate(24, (i) => 'Baseline line $i\n');
+      final original = originalLines.join();
+      final workingLines = [...originalLines]
+        ..[1] = 'First reviewed change\n'
+        ..[20] = 'Second reviewed change\n';
+      final working = workingLines.join();
+      final firstApproved = [...originalLines]..[1] = 'First reviewed change\n';
+      late String head;
+      late String branch;
+      late String primaryIndex;
+      late String outsideIndex;
+      await tester.runAsync(() async {
+        await fixture.write(path, original);
+        await _git(fixture.additionalRoot, ['add', '--', path]);
+        await _git(fixture.additionalRoot, ['commit', '-m', 'Separated hunks']);
+        head = await _git(fixture.additionalRoot, ['rev-parse', 'HEAD']);
+        branch = await _git(fixture.additionalRoot, ['symbolic-ref', 'HEAD']);
+        primaryIndex = await _git(fixture.primaryRoot, ['ls-files', '--stage']);
+        await fixture.write(path, working);
+        await fixture.write(addition, 'Ordinary untracked text\n');
+        // Whole-layer means the selected Project source, not the whole checkout.
+        await File(
+          '${fixture.additionalWorktree.path}/outside.txt',
+        ).writeAsString('Unrelated staged outside source\n');
+        await _git(fixture.additionalWorktree, ['add', '--', 'outside.txt']);
+        outsideIndex = await _git(fixture.additionalWorktree, [
+          'ls-files',
+          '--stage',
+          '--',
+          'outside.txt',
+        ]);
+      });
+      await mount(tester);
+      await _visible(tester, '+First reviewed change');
+      await _pressReview(tester, 'Approve');
+      await _waitFor(
+        tester,
+        () =>
+            find.textContaining('+First reviewed change').evaluate().isEmpty &&
+            find
+                .textContaining('+Second reviewed change')
+                .evaluate()
+                .isNotEmpty,
+      );
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['show', ':nested source/$path']),
+          firstApproved.join(),
+        );
+        final staged = await _git(fixture.additionalRoot, [
+          'diff',
+          '--cached',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--',
+          path,
+        ]);
+        final unstaged = await _git(fixture.additionalRoot, [
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--',
+          path,
+        ]);
+        expect(staged, contains('+First reviewed change'));
+        expect(staged, isNot(contains('+Second reviewed change')));
+        expect(unstaged, contains('+Second reviewed change'));
+        expect(unstaged, isNot(contains('+First reviewed change')));
+        expect(await fixture.file(path).readAsString(), working);
+        expect(await _git(fixture.additionalRoot, ['rev-parse', 'HEAD']), head);
+      });
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, '+First reviewed change');
+      await _pressReview(tester, 'Unapprove');
+      await _visible(tester, 'No staged changes');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['show', ':nested source/$path']),
+          original,
+        );
+        expect(await fixture.file(path).readAsString(), working);
+      });
+
+      await _pressReview(tester, 'Approve All Unstaged');
+      await _visible(tester, 'No unstaged changes');
+      await tester.runAsync(() async {
+        final index = File(
+          (await _git(fixture.additionalRoot, [
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-path',
+            'index',
+          ])).trim(),
+        );
+        final approvedIndex = await index.readAsBytes();
+        expect(
+          await _git(fixture.additionalRoot, ['show', ':nested source/$path']),
+          working,
+        );
+        expect(
+          await _git(fixture.additionalRoot, [
+            'show',
+            ':nested source/$addition',
+          ]),
+          'Ordinary untracked text\n',
+        );
+        expect(
+          await _git(fixture.additionalRoot, [
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--patch',
+            '--',
+            '.',
+          ]),
+          isEmpty,
+        );
+        expect(
+          await index.readAsBytes(),
+          approvedIndex,
+          reason: 'Inspection must not refresh the approved index',
+        );
+      });
+
+      await _pressReview(tester, 'Unapprove All Staged');
+      await _visible(tester, 'No staged changes');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, [
+            'diff',
+            '--cached',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--name-only',
+            '--',
+            '.',
+          ]),
+          isEmpty,
+        );
+        expect(
+          await _git(fixture.additionalRoot, [
+            'ls-files',
+            '--others',
+            '--exclude-standard',
+            '--',
+            addition,
+          ]),
+          '$addition\n',
+        );
+        expect(await fixture.file(path).readAsString(), working);
+        expect(
+          await fixture.file(addition).readAsString(),
+          'Ordinary untracked text\n',
+        );
+      });
+
+      // The file control stages both hunks, without staging the adjacent new file.
+      await _pressReview(tester, 'Approve File');
+      await _visible(tester, 'Unapprove File');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['show', ':nested source/$path']),
+          working,
+        );
+        expect(
+          await _git(fixture.additionalRoot, [
+            'ls-files',
+            '--stage',
+            '--',
+            addition,
+          ]),
+          isEmpty,
+        );
+      });
+      await _pressReview(tester, 'Unapprove File');
+      await _visible(tester, 'No staged changes');
+      await tester.runAsync(() async {
+        expect(
+          await _git(fixture.additionalRoot, ['show', ':nested source/$path']),
+          original,
+        );
+        expect(await fixture.file(path).readAsString(), working);
+        expect(await _git(fixture.additionalRoot, ['rev-parse', 'HEAD']), head);
+        expect(
+          await _git(fixture.additionalRoot, ['symbolic-ref', 'HEAD']),
+          branch,
+        );
+        expect(
+          await _git(fixture.primaryRoot, ['ls-files', '--stage']),
+          primaryIndex,
+        );
+        expect(
+          await _git(fixture.additionalWorktree, [
+            'ls-files',
+            '--stage',
+            '--',
+            'outside.txt',
+          ]),
+          outsideIndex,
+        );
+      });
+      final approval = fixture.capabilities.resolve(_approval);
+      expect(
+        fixture.backends.backends.single
+            .associationFor(approval)!
+            .isSameRegistration(
+              fixture.capabilities.resolve(environmentProviderCapability),
+            ),
+        isTrue,
+      );
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(fixture.reads, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'actual Diff stale approval retains the reviewed snapshot and leaves the index untouched',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write('a modified.txt', 'Reviewed content\n'),
+      );
+      await mount(tester);
+      await _visible(tester, '+Reviewed content');
+      final before = await tester.runAsync(
+        () => _git(fixture.additionalRoot, ['ls-files', '--stage']),
+      );
+      await tester.runAsync(
+        () => fixture.write('a modified.txt', 'Newer agent content\n'),
+      );
+      await _pressReview(tester, 'Approve');
+      await _visible(tester, 'Changes are stale');
+      expect(find.textContaining('+Reviewed content'), findsOneWidget);
+      expect(find.textContaining('+Newer agent content'), findsNothing);
+      expect(
+        await tester.runAsync(
+          () => _git(fixture.additionalRoot, ['ls-files', '--stage']),
+        ),
+        before,
+      );
+      _refresh(tester);
+      await _visible(tester, '+Newer agent content');
+      expect(find.textContaining('Changes are stale'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'retiring only approval keeps actual Diff snapshots and Source navigation available',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write(
+          'a modified.txt',
+          'Read-only after approval retirement\n',
+        ),
+      );
+      await mount(tester);
+      await _visible(tester, '+Read-only after approval retirement');
+      await _waitFor(
+        tester,
+        () => find.widgetWithText(TextButton, 'Approve').evaluate().isNotEmpty,
+      );
+      await tester.runAsync(
+        () => fixture.backends.backends.single.retireProvider(
+          fixture.capabilities.resolve(_approval),
+        ),
+      );
+      _refresh(tester);
+      await tester.pump();
+      await _visible(tester, '+Read-only after approval retirement');
+      final actions = find.widgetWithText(TextButton, 'Approve');
+      for (final element in actions.evaluate()) {
+        expect((element.widget as TextButton).onPressed, isNull);
+      }
+      expect(fixture.capabilities.providersFor(_changes), hasLength(1));
+      expect(_sourceAction(), findsOneWidget);
+      expect(
+        await tester.runAsync(
+          () =>
+              _git(fixture.additionalRoot, ['diff', '--cached', '--name-only']),
+        ),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'actual Diff opens a tracked punctuated nonprimary path in Source and repeats without another read or pane',
     (tester) async {
       const path = _punctuatedPath;
@@ -965,6 +1294,76 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  for (final departure in ['navigation', 'provider retirement']) {
+    testWidgets(
+      '$departure fences an admitted actual Git approval without retargeting',
+      (tester) async {
+        await tester.runAsync(
+          () => fixture.write('a modified.txt', 'Pending reviewed change\n'),
+        );
+        await mount(tester);
+        await _visible(tester, '+Pending reviewed change');
+        final before = await tester.runAsync(
+          () => _git(fixture.additionalRoot, ['ls-files', '--stage']),
+        );
+        final primaryBefore = await tester.runAsync(
+          () => _git(fixture.primaryRoot, ['ls-files', '--stage']),
+        );
+        await tester.runAsync(
+          () => File('${fixture.gate.path}/armed').writeAsString('armed'),
+        );
+        await _pressReview(tester, 'Approve');
+        await _waitFor(
+          tester,
+          () => File('${fixture.gate.path}/arrived').existsSync(),
+        );
+        if (departure == 'navigation') {
+          await fixture.navigate(
+            tester,
+            fixture.additionalSession,
+            fixture.primarySession,
+          );
+        } else {
+          await tester.runAsync(
+            () => fixture.backends.backends.single.retireProvider(
+              fixture.capabilities.resolve(_approval),
+            ),
+          );
+        }
+        await tester.runAsync(fixture.releaseGate);
+        if (departure == 'navigation') {
+          await _visible(tester, 'No unstaged changes');
+        } else {
+          await _visible(tester, 'Unable to');
+        }
+        // Closing the backend drains admitted contextual dispatchers. The gate
+        // held before publication, so lost authority must leave both indexes intact.
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(fixture.backends.close);
+        expect(
+          await tester.runAsync(
+            () => _git(fixture.additionalRoot, ['ls-files', '--stage']),
+          ),
+          before,
+        );
+        expect(
+          await tester.runAsync(
+            () => _git(fixture.primaryRoot, ['ls-files', '--stage']),
+          ),
+          primaryBefore,
+        );
+        expect(
+          await tester.runAsync(
+            () => fixture.file('a modified.txt').readAsString(),
+          ),
+          'Pending reviewed change\n',
+        );
+        expect(tester.takeException(), isNull);
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   for (final (scope, clean) in _scopes) {
     for (final departure in ['navigation', 'provider retirement']) {
@@ -1401,7 +1800,9 @@ Future<void> _manifest(
 Future<String> _git(Directory directory, List<String> arguments) async {
   final result = await Process.run(
     'git',
-    arguments,
+    // Porcelain diff can otherwise refresh cached stat bytes even with optional
+    // locks disabled. Assertions must observe, not invalidate, review revisions.
+    ['-c', 'diff.autoRefreshIndex=false', ...arguments],
     workingDirectory: directory.path,
     environment: {
       for (final entry in Platform.environment.entries)
@@ -1434,6 +1835,20 @@ Future<void> _selectScope(WidgetTester tester, String scope) async {
 }
 
 Finder _sourceAction() => find.widgetWithText(TextButton, 'Open in Source');
+
+Future<void> _pressReview(WidgetTester tester, String label) async {
+  final action = find.widgetWithText(TextButton, label).first;
+  await _waitFor(
+    tester,
+    () =>
+        action.evaluate().isNotEmpty &&
+        tester.widget<TextButton>(action).onPressed != null,
+  );
+  await tester.ensureVisible(action);
+  await tester.pump();
+  await tester.runAsync(() => tester.tap(action));
+  await tester.pump();
+}
 
 CodeForge _editor(WidgetTester tester) =>
     tester.widget<CodeForge>(find.byType(CodeForge));
@@ -1485,7 +1900,9 @@ Future<void> _waitFor(WidgetTester tester, bool Function() complete) async {
   expect(
     complete(),
     isTrue,
-    reason: 'Timed out waiting for actual AOT/EVC checkpoint.',
+    reason:
+        'Timed out waiting for actual AOT/EVC checkpoint.\n'
+        '${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).join('\n')}',
   );
 }
 

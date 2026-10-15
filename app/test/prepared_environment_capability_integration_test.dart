@@ -126,9 +126,12 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     bool contextual = true,
+    bool review = false,
     bool ordinary = true,
     bool concurrent = false,
     bool present = true,
+    String initialize = 'initialize',
+    bool roleProbes = false,
   }) async {
     tester.view.physicalSize = const Size(1600, 2000);
     tester.view.devicePixelRatio = 1;
@@ -154,12 +157,27 @@ void main() {
               'extensionId': 'test.consumer.pane',
               'order': 100,
               'library': preparedEnvironmentCapabilityFrontendLibrary,
-              'initialize': 'initialize',
+              'initialize': initialize,
               'entrypoint': 'buildPane',
+              if (roleProbes) ...{
+                'actions': [
+                  {
+                    'id': 'review-input',
+                    'label': 'Review Input',
+                    'entrypoint': 'buildReviewInput',
+                  },
+                ],
+                'operations': {'review': 'reviewOperation'},
+                'displaySourceFileOperation': 'review',
+              },
               if (contextual)
                 'environmentReadCapabilities': [
                   {'id': _capability.id.value, 'majorVersion': 1},
                   {'id': _capability.id.value, 'majorVersion': 2},
+                ],
+              if (review)
+                'environmentReviewCapabilities': [
+                  {'id': _capability.id.value, 'majorVersion': 1},
                 ],
               if (ordinary)
                 'capabilities': [
@@ -340,6 +358,86 @@ void main() {
     );
   }
 
+  for (final review in [false, true]) {
+    testWidgets(
+      'mounted review mode has independent declaration, review=$review',
+      (tester) async {
+        await mount(tester, contextual: !review, review: review);
+        _press(tester, review ? 'Default' : 'Review');
+        await _text(tester, 'selection:unavailable');
+        expect((await tester.runAsync(fixture.snapshot))!['requests'], isEmpty);
+        await select(tester, button: review ? 'Review' : 'Default');
+        await tester.runAsync(
+          () => fixture.control('hold', {'key': 'after:A'}),
+        );
+        _press(tester, 'Read A');
+        await tester.runAsync(() => fixture.wait(tester, 'after:A'));
+        final admitted = fixture
+            .calls((await tester.runAsync(fixture.snapshot))!)
+            .single;
+        expect(admitted['hostInvocationContext'], isA<String>());
+        final proof = await tester.runAsync(
+          () => fixture.pumpControl(tester, 'attack', {
+            'token': admitted['hostInvocationContext'],
+            'service': authorizedEnvironmentReviewServiceId,
+            'method': authorizedEnvironmentReviewServiceAuthorityId,
+            'arguments': <String, Object?>{},
+          }),
+        );
+        expect((proof! as Map)['ok'], review);
+        await tester.runAsync(
+          () => fixture.control('release', {'key': 'after:A'}),
+        );
+        await _text(tester, _value('a', 'A'));
+        _press(tester, 'Context free A');
+        await _text(tester, 'read:unavailable');
+        final snapshot = (await tester.runAsync(fixture.snapshot))!;
+        expect(snapshot['reads'], [_read('a', 'A')]);
+        expect(fixture.calls(snapshot).last['hostInvocationContext'], isNull);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
+  testWidgets('review declaration grants nothing to initialization', (
+    tester,
+  ) async {
+    await mount(
+      tester,
+      review: true,
+      initialize: 'initializeReview',
+      present: false,
+    );
+    await tester.pumpWidget(fixture.widget());
+    await tester.pumpAndSettle();
+    expect(find.text('idle'), findsNothing);
+    expect(find.text('Independent content'), findsOneWidget);
+    expect((await tester.runAsync(fixture.snapshot))!['requests'], isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'review declaration grants nothing to finite operations or input actions',
+    (tester) async {
+      await mount(tester, review: true, roleProbes: true);
+      await tester.runAsync(
+        () => expectLater(
+          DisplaySourceFileResolver(fixture.extensions).display('ignored.txt'),
+          throwsA(anything),
+        ),
+      );
+      _press(tester, 'Review Input');
+      await tester.pumpAndSettle();
+      expect(find.text('Unexpected review input access'), findsNothing);
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect((await tester.runAsync(fixture.snapshot))!['requests'], isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets(
     'ineligible providers, wrong service/version and forged payload never widen the captured route',
     (tester) async {
@@ -458,17 +556,20 @@ void main() {
     },
   );
 
-  for (final departure in [
-    'release',
-    'navigation',
-    'frontend retirement',
-    'raw registration',
+  for (final (departure, review) in [
+    for (final departure in [
+      'release',
+      'navigation',
+      'frontend retirement',
+      'raw registration',
+    ])
+      for (final review in [false, true]) (departure, review),
   ]) {
     testWidgets(
-      '$departure revokes an admitted reverse read before gated backend cleanup',
+      '$departure revokes an admitted reverse read before gated backend cleanup, review=$review',
       (tester) async {
-        await mount(tester);
-        await select(tester);
+        await mount(tester, review: review);
+        await select(tester, button: review ? 'Review' : 'Default');
         await tester.runAsync(
           () => fixture.control('hold', {'key': 'read:held'}),
         );
@@ -480,7 +581,7 @@ void main() {
                     .single['hostInvocationContext']
                 as String;
         final staleRead = _callback(tester, 'Read A');
-        final staleResolve = _callback(tester, 'Default');
+        final staleResolve = _callback(tester, review ? 'Review' : 'Default');
         if (departure == 'release') {
           _press(tester, 'Release');
           await tester.pump();
@@ -502,6 +603,15 @@ void main() {
           expect(find.text('Independent content'), findsOneWidget);
         }
         await tester.runAsync(() => fixture.denied(token));
+        final proof = await tester.runAsync(
+          () => fixture.control('attack', {
+            'token': token,
+            'service': authorizedEnvironmentReviewServiceId,
+            'method': authorizedEnvironmentReviewServiceAuthorityId,
+            'arguments': <String, Object?>{},
+          }),
+        );
+        expect((proof! as Map)['ok'], isFalse);
         staleRead();
         if (departure != 'release') staleResolve();
         await tester.runAsync(() async {
@@ -777,11 +887,23 @@ final class _Installation {
       .request(method, payload)
       .timeout(_bound);
   Future<void> wait(WidgetTester tester, String key) async {
+    await pumpControl(tester, 'wait', {'key': key});
+  }
+
+  Future<Object?> pumpControl(
+    WidgetTester tester,
+    String method,
+    Map<String, Object?> payload,
+  ) async {
     var completed = false;
+    Object? result;
     Object? failure;
     StackTrace? trace;
-    final pending = control('wait', {'key': key}).then<void>(
-      (_) => completed = true,
+    final pending = control(method, payload).then<void>(
+      (value) {
+        result = value;
+        completed = true;
+      },
       onError: (Object error, StackTrace stack) {
         failure = error;
         trace = stack;
@@ -789,13 +911,14 @@ final class _Installation {
       },
     );
     // Reverse dispatch is hosted in the widget's fake-async zone. Pump it while
-    // waiting for the explicit AOT checkpoint, rather than inferring progress.
+    // waiting for the explicit AOT response, rather than inferring progress.
     while (!completed) {
       await Future<void>(() {});
       await tester.pump();
     }
     await pending;
     if (failure != null) Error.throwWithStackTrace(failure!, trace!);
+    return result;
   }
 
   Future<Map<Object?, Object?>> snapshot() async =>

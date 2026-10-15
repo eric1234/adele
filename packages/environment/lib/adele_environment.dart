@@ -535,6 +535,15 @@ abstract interface class AuthorizedEnvironmentReadService {
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath);
 }
 
+/// Proof of explicit review-operation admission for the captured Environment.
+/// Providers require this service before their own review effects. Ordinary
+/// read access does not supply it; it exposes no host mutation/process methods.
+@AdeleService('authorizedEnvironmentReview')
+abstract interface class AuthorizedEnvironmentReviewService {
+  @AdeleMethod('authority')
+  Future<AuthorizedEnvironmentIdentity> authority();
+}
+
 /// Mutation access over authority already bound by the host invocation context.
 /// No method selects authority from transported product identities.
 @AdeleService('authorizedEnvironmentMutation')

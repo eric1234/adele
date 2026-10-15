@@ -71,3 +71,17 @@ Map<String, String> gitProcessEnvironment({
     'GIT_NO_LAZY_FETCH': '1',
   });
 }
+
+/// Only raw object writes and private-index updates use this policy. No inherited
+/// GIT_* variable survives; the private index is supplied by the transaction.
+Map<String, String> gitReviewMutationEnvironment({
+  required Map<String, String> parentEnvironment,
+  required String privateIndex,
+}) => {
+  ...gitProcessEnvironment(
+    parentEnvironment: parentEnvironment,
+    readOnlyInspection: true,
+  ),
+  'GIT_INDEX_FILE': privateIndex,
+  'GIT_ALLOW_PROTOCOL': '',
+};

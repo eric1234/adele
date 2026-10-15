@@ -285,6 +285,7 @@ final class PreparedMainContentPresentation
     Iterable<String> backendServices = const [],
     Iterable<CapabilityKey> capabilities = const [],
     Iterable<CapabilityKey> environmentReadCapabilities = const [],
+    Iterable<CapabilityKey> environmentReviewCapabilities = const [],
     this.strategyAffinity = PreparedStrategyAffinity.independent,
     Iterable<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
@@ -299,6 +300,9 @@ final class PreparedMainContentPresentation
        capabilities = List.unmodifiable(capabilities),
        environmentReadCapabilities = List.unmodifiable(
          environmentReadCapabilities,
+       ),
+       environmentReviewCapabilities = List.unmodifiable(
+         environmentReviewCapabilities,
        ),
        actions = List.unmodifiable(actions),
        operations = Map.unmodifiable(operations) {
@@ -321,6 +325,12 @@ final class PreparedMainContentPresentation
         this.environmentReadCapabilities.length) {
       throw const FormatException(
         'environmentReadCapabilities must not contain duplicates.',
+      );
+    }
+    if (this.environmentReviewCapabilities.toSet().length !=
+        this.environmentReviewCapabilities.length) {
+      throw const FormatException(
+        'environmentReviewCapabilities must not contain duplicates.',
       );
     }
     final actionIds = <String>{};
@@ -363,6 +373,10 @@ final class PreparedMainContentPresentation
   /// Pane-only contextual unary requests, separate from [capabilities].
   /// Initializers, input actions, and finite operations receive no such access.
   final List<CapabilityKey> environmentReadCapabilities;
+
+  /// Explicit pane-only review operations; neither implied by nor granting reads
+  /// through [environmentReadCapabilities] or context-free [capabilities].
+  final List<CapabilityKey> environmentReviewCapabilities;
   final PreparedStrategyAffinity strategyAffinity;
   final List<PreparedMainContentAction> actions;
 
@@ -394,6 +408,10 @@ final class PreparedMainContentPresentation
     ],
     'environmentReadCapabilities': [
       for (final key in environmentReadCapabilities)
+        {'id': key.id.value, 'majorVersion': key.majorVersion},
+    ],
+    'environmentReviewCapabilities': [
+      for (final key in environmentReviewCapabilities)
         {'id': key.id.value, 'majorVersion': key.majorVersion},
     ],
     'strategyAffinity': strategyAffinity.name,
@@ -1347,6 +1365,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'backendServices',
         'capabilities',
         'environmentReadCapabilities',
+        'environmentReviewCapabilities',
         'strategyAffinity',
         'actions',
         'operations',
@@ -1438,6 +1457,9 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         capabilities: capabilityKeys('capabilities'),
         environmentReadCapabilities: capabilityKeys(
           'environmentReadCapabilities',
+        ),
+        environmentReviewCapabilities: capabilityKeys(
+          'environmentReviewCapabilities',
         ),
         strategyAffinity: affinity,
         actions: actionDescriptors,

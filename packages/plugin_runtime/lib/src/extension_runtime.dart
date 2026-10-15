@@ -328,12 +328,14 @@ final class PluginBackendActivation {
     CapabilityKey capability, {
     required ProviderBinding associatedWith,
     ProviderId? providerId,
+    bool requireUnique = false,
   }) {
     validate();
     return _capabilities.resolveAssociatedProvider(
       capability,
       associatedWith: associatedWith,
       providerId: providerId,
+      requireUnique: requireUnique,
     );
   }
 
