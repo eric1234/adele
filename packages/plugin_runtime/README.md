@@ -557,6 +557,15 @@ Context-free source invocation is not disabled merely because its association
 becomes unusable. These are host-side eligibility APIs, not invocation grants; see
 the [architectural boundary](../../docs/architecture/contracts-and-capabilities.md#provider-associations-and-environment-eligibility).
 
+`AdeleCapabilityExposure.environmentBound` and `PluginCapabilityExposure.environmentBound`
+are false by default and cannot accompany an `association`. True is an explicit
+independent host-bound Environment declaration, not host authority or an Environment
+provider selector. `isEnvironmentBound(binding)` on both activation types checks
+exact live ownership and the retained declaration, never semantic ID equality.
+Application contextual selection may pair such a registration with another
+backend's Environment materialization. Runtime adds no second provider registry or
+domain adapter; the application owns selection policy and read-only authorization.
+
 `retireProvider(binding)` on the capability/composite activation closes one exact
 live owned registration through its existing registration group. It rejects foreign
 and stale bindings, fences retirement observers synchronously, and preserves the

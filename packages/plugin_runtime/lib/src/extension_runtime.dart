@@ -324,6 +324,11 @@ final class PluginBackendActivation {
     return _capabilities.associationFor(binding);
   }
 
+  bool isEnvironmentBound(ProviderBinding binding) {
+    validate();
+    return _capabilities.isEnvironmentBound(binding);
+  }
+
   ProviderBinding resolveAssociatedProvider(
     CapabilityKey capability, {
     required ProviderBinding associatedWith,

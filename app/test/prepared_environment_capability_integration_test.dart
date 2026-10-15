@@ -25,6 +25,8 @@ import '../tool/prepared_environment_capability_frontend_compiler.dart';
 
 const _bound = Duration(seconds: 10);
 const _plugin = 'test.environment.capability.backend';
+const _environmentPlugin = 'test.environment.only';
+const _callablePlugin = 'test.capability.only';
 const _service = 'test.capability.probe';
 const _fileContents = {
   'a': {
@@ -54,6 +56,8 @@ void main() {
   late Directory files;
   late File hostArtifact;
   late File providerArtifact;
+  late File environmentArtifact;
+  late File callableArtifact;
   late File frontendArtifact;
   late String aotRuntime;
   var sequence = 0;
@@ -80,17 +84,20 @@ void main() {
         'test/fixtures/prepared_capability_contract.dart.txt',
       ).readAsString(),
     );
-    final backend = File(
-      '${temporary.path}/prepared_environment_capability_backend.dart',
-    );
-    await backend.writeAsString(
+    for (final name in ['backend', 'environment', 'callable', 'support']) {
       await File(
-        'test/fixtures/prepared_environment_capability_backend.dart.txt',
-      ).readAsString(),
-    );
+        '${temporary.path}/prepared_environment_capability_$name.dart',
+      ).writeAsString(
+        await File(
+          'test/fixtures/prepared_environment_capability_$name.dart.txt',
+        ).readAsString(),
+      );
+    }
     await ContractGenerator(sdkPath: sdk).apply(contract, check: false);
     hostArtifact = File('${temporary.path}/host.aot');
     providerArtifact = File('${temporary.path}/provider.aot');
+    environmentArtifact = File('${temporary.path}/environment.aot');
+    callableArtifact = File('${temporary.path}/callable.aot');
     frontendArtifact = File('${temporary.path}/frontend.evc');
     await compilePreparedEnvironmentCapabilityFrontend(
       repositoryRoot: Directory.current.parent,
@@ -104,7 +111,16 @@ void main() {
             '${Directory.current.parent.path}/packages/plugin_backend_host/bin/adele_backend_host.dart',
         artifact: hostArtifact,
       ),
-      (entrypoint: backend.absolute.path, artifact: providerArtifact),
+      for (final (name, artifact) in [
+        ('backend', providerArtifact),
+        ('environment', environmentArtifact),
+        ('callable', callableArtifact),
+      ])
+        (
+          entrypoint:
+              '${temporary.absolute.path}/prepared_environment_capability_$name.dart',
+          artifact: artifact,
+        ),
     ]) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -117,569 +133,997 @@ void main() {
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
-  late _Installation fixture;
-  setUp(() {
-    fixture = _Installation(files: files);
-    addTearDown(fixture.close);
-  });
-
-  Future<void> mount(
-    WidgetTester tester, {
-    bool contextual = true,
-    bool ordinary = true,
-    bool concurrent = false,
-    bool present = true,
-  }) async {
-    tester.view.physicalSize = const Size(1600, 2000);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.runAsync(() async {
-      final root = await Directory(
-        '${temporary.path}/case-${sequence++}',
-      ).create();
-      final provider = await Directory('${root.path}/provider').create();
-      await providerArtifact.copy('${provider.path}/backend.aot');
-      await _manifest(provider, _plugin, {
-        'backend': {'artifact': 'backend.aot'},
+  for (final independent in [false, true]) {
+    group(independent ? 'independent A/B/C' : 'sibling backend', () {
+      late _Installation fixture;
+      setUp(() {
+        fixture = _Installation(files: files, independent: independent);
+        addTearDown(fixture.close);
       });
-      final consumer = await Directory('${root.path}/consumer').create();
-      await frontendArtifact.copy('${consumer.path}/frontend.evc');
-      await _manifest(consumer, 'test.environment.capability.consumer', {
-        'frontend': {
-          'artifact': 'frontend.evc',
-          'presentations': [
-            {
-              'role': 'mainContent',
-              'extensionId': 'test.consumer.pane',
-              'order': 100,
-              'library': preparedEnvironmentCapabilityFrontendLibrary,
-              'initialize': 'initialize',
-              'entrypoint': 'buildPane',
-              if (contextual)
-                'environmentReadCapabilities': [
-                  {'id': _capability.id.value, 'majorVersion': 1},
-                  {'id': _capability.id.value, 'majorVersion': 2},
+
+      Future<void> mount(
+        WidgetTester tester, {
+        bool contextual = true,
+        bool ordinary = true,
+        bool concurrent = false,
+        bool present = true,
+        int independentProviders = 1,
+      }) async {
+        tester.view.physicalSize = const Size(1600, 2000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await tester.runAsync(() async {
+          final root = await Directory(
+            '${temporary.path}/case-${sequence++}',
+          ).create();
+          for (final (id, artifact)
+              in independent
+                  ? [
+                      (_environmentPlugin, environmentArtifact),
+                      (_callablePlugin, callableArtifact),
+                    ]
+                  : [(_plugin, providerArtifact)]) {
+            final provider = await Directory('${root.path}/$id').create();
+            await artifact.copy('${provider.path}/backend.aot');
+            await _manifest(provider, id, {
+              'backend': {'artifact': 'backend.aot'},
+            });
+          }
+          final consumer = await Directory('${root.path}/consumer').create();
+          await frontendArtifact.copy('${consumer.path}/frontend.evc');
+          await _manifest(consumer, 'test.environment.capability.consumer', {
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': [
+                {
+                  'role': 'mainContent',
+                  'extensionId': 'test.consumer.pane',
+                  'order': 100,
+                  'library': preparedEnvironmentCapabilityFrontendLibrary,
+                  'initialize': 'initialize',
+                  'entrypoint': 'buildPane',
+                  if (contextual)
+                    'environmentReadCapabilities': [
+                      {'id': _capability.id.value, 'majorVersion': 1},
+                      {'id': _capability.id.value, 'majorVersion': 2},
+                    ],
+                  if (ordinary)
+                    'capabilities': [
+                      {'id': _capability.id.value, 'majorVersion': 1},
+                    ],
+                },
+              ],
+            },
+          });
+          await fixture.backends.start(
+            installationRoot: root.path,
+            dartaotruntimeExecutable: aotRuntime,
+            hostArtifactPath: hostArtifact.path,
+            startupArguments: {
+              if (independent) ...{
+                _environmentPlugin: [
+                  jsonEncode({'exposures': _environmentExposures()}),
                 ],
-              if (ordinary)
-                'capabilities': [
-                  {'id': _capability.id.value, 'majorVersion': 1},
+                _callablePlugin: [
+                  jsonEncode({
+                    'exposures': _callableExposures(
+                      independent: true,
+                      count: independentProviders,
+                    ),
+                  }),
+                ],
+              } else
+                _plugin: [
+                  jsonEncode({
+                    'exposures': [
+                      ..._callableExposures(),
+                      ..._environmentExposures(),
+                    ],
+                  }),
                 ],
             },
-          ],
-        },
-      });
-      await fixture.backends.start(
-        installationRoot: root.path,
-        dartaotruntimeExecutable: aotRuntime,
-        hostArtifactPath: hostArtifact.path,
-        startupArguments: {
-          _plugin: [
-            jsonEncode({'exposures': _exposures()}),
-          ],
-        },
-      );
-      expect(fixture.backends.state, ApplicationPluginState.ready);
-      expect(fixture.backends.failure, isNull);
-      expect(fixture.backends.catalog!.issues, isEmpty);
-      final backend = fixture.backends.backends.single;
-      expect(
-        backend.state,
-        InstalledBackendState.active,
-        reason: '${backend.failure}',
-      );
-      expect(backend.connection!.capabilityExposures, hasLength(5));
-      await fixture.frontends.start(fixture.backends.catalog!);
-      final frontend = fixture.frontends.generations.single;
-      expect(
-        frontend.state,
-        InstalledFrontendState.active,
-        reason: '${frontend.failure}',
-      );
-    });
-    if (!present) return;
-    await tester.pumpWidget(fixture.widget(concurrent: concurrent));
-    await tester.pumpAndSettle();
-    expect(find.text('idle'), findsNWidgets(concurrent ? 2 : 1));
-    expect(find.text('Independent content'), findsNWidgets(concurrent ? 2 : 1));
-  }
-
-  Future<void> select(
-    WidgetTester tester, {
-    String pane = 'a',
-    String button = 'Default',
-  }) async {
-    _press(tester, button, pane: pane);
-    await _text(tester, 'selected', pane: pane);
-  }
-
-  test(
-    'independent frontend/backend fixtures depend only on public contracts',
-    () async {
-      final imports = RegExp(r"import '([^']+)';");
-      Future<Set<String>> imported(String name) async => imports
-          .allMatches(
-            await File(
-              'test/fixtures/prepared_environment_capability_$name.dart.txt',
-            ).readAsString(),
-          )
-          .map((match) => match[1]!)
-          .toSet();
-      expect(await imported('frontend'), {
-        'package:adele_ui/capability_bridge.dart',
-        'package:adele_ui/environment_capability_bridge.dart',
-        'package:adele_ui/main_content_bridge.dart',
-        'package:capability_probe_contract/contract.dart',
-        'package:flutter/material.dart',
-      });
-      expect(await imported('backend'), {
-        'dart:async',
-        'dart:convert',
-        'dart:io',
-        'dart:isolate',
-        'package:adele_contract/adele_contract.dart',
-        'package:adele_environment/adele_environment.dart',
-        'package:adele_plugin_backend_support/adele_plugin_backend_support.dart',
-        'prepared_capability_contract.dart',
-      });
-    },
-  );
-
-  testWidgets(
-    'frontend-only EVC selects the nonprimary association and displays a generated real reverse read',
-    (tester) async {
-      await mount(tester);
-      final catalog = fixture.backends.catalog!;
-      expect(catalog.installations, hasLength(2));
-      final consumer = catalog.installations.singleWhere(
-        (entry) => entry.frontend != null,
-      );
-      expect(consumer.backendArtifactUri, isNull);
-      expect(fixture.backends.backendForInstallation(consumer), isNull);
-      expect(
-        catalog.installations
-            .singleWhere((entry) => entry.backendArtifactUri != null)
-            .frontend,
-        isNull,
-      );
-      expect(
-        fixture.capabilities.providersFor(_capability).map((p) => p.id.value),
-        ['test.callable.context-free', 'test.callable.b', 'test.callable.a'],
-      );
-      expect((await tester.runAsync(fixture.snapshot))!['requests'], isEmpty);
-      await tester.runAsync(
-        () => fixture.control('hold', {'key': 'restore:additional'}),
-      );
-      _press(tester, 'Default');
-      await tester.runAsync(() => fixture.wait(tester, 'restore:additional'));
-      expect(find.text('selected'), findsNothing);
-      expect((await tester.runAsync(fixture.snapshot))!['reads'], isEmpty);
-      await tester.runAsync(
-        () => fixture.control('release', {'key': 'restore:additional'}),
-      );
-      await _text(tester, 'selected');
-      await tester.runAsync(() => fixture.control('hold', {'key': 'read:A'}));
-      _press(tester, 'Read A');
-      await tester.runAsync(() => fixture.wait(tester, 'read:A'));
-      expect(find.text(_value('a', 'A')), findsNothing);
-      final pending = (await tester.runAsync(fixture.snapshot))!;
-      expect(pending['reads'], [_read('a', 'A')]);
-      final request = fixture.calls(pending).single;
-      expect(request['configurationContext'], 'callable-shared');
-      expect(request['serviceId'], _service);
-      expect(request['hostInvocationContext'], isA<String>());
-      await tester.runAsync(
-        () => fixture.control('release', {'key': 'read:A'}),
-      );
-      await _text(tester, _value('a', 'A'));
-      await tester.runAsync(
-        () => fixture.denied(request['hostInvocationContext'] as String),
-      );
-      expect(
-        await tester.runAsync(() => fixture.control('retained', {'key': 'A'})),
-        {'ok': false},
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  for (final ordinary in [false, true]) {
-    testWidgets(
-      '${ordinary ? 'C1-only declarations' : 'default-deny pane'} cannot acquire contextual authority',
-      (tester) async {
-        await mount(tester, contextual: false, ordinary: ordinary);
-        _press(tester, 'Default');
-        await _text(tester, 'selection:unavailable');
-        _press(tester, 'Forged handle');
-        await _text(tester, 'read:unavailable');
-        expect((await tester.runAsync(fixture.snapshot))!['requests'], isEmpty);
-        _press(tester, 'Context free');
-        await _text(
-          tester,
-          ordinary
-              ? 'context-free|context-free|0|ordinary'
-              : 'context-free:unavailable',
-        );
-        if (ordinary) {
-          _press(tester, 'Context free A');
-          await _text(tester, 'read:unavailable');
-        }
-        final snapshot = (await tester.runAsync(fixture.snapshot))!;
-        expect(snapshot['reads'], isEmpty);
-        expect(fixture.calls(snapshot), hasLength(ordinary ? 2 : 0));
+          );
+          expect(fixture.backends.state, ApplicationPluginState.ready);
+          expect(fixture.backends.failure, isNull);
+          expect(fixture.backends.catalog!.issues, isEmpty);
+          expect(fixture.backends.backends, hasLength(independent ? 2 : 1));
+          for (final backend in fixture.backends.backends) {
+            expect(
+              backend.state,
+              InstalledBackendState.active,
+              reason: '${backend.failure}',
+            );
+          }
+          expect(
+            fixture.connection.capabilityExposures,
+            hasLength(independent ? independentProviders + 1 : 5),
+          );
+          await fixture.frontends.start(fixture.backends.catalog!);
+          final frontend = fixture.frontends.generations.single;
+          expect(
+            frontend.state,
+            InstalledFrontendState.active,
+            reason: '${frontend.failure}',
+          );
+        });
+        if (!present) return;
+        await tester.pumpWidget(fixture.widget(concurrent: concurrent));
+        await tester.pumpAndSettle();
+        expect(find.text('idle'), findsNWidgets(concurrent ? 2 : 1));
         expect(
-          fixture
-              .calls(snapshot)
-              .every((r) => r['hostInvocationContext'] == null),
-          isTrue,
-        );
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
-  }
-
-  testWidgets(
-    'ineligible providers, wrong service/version and forged payload never widen the captured route',
-    (tester) async {
-      await mount(tester);
-      _press(tester, 'Check denials');
-      await _text(tester, 'denials:passed');
-      var snapshot = (await tester.runAsync(fixture.snapshot))!;
-      expect(fixture.calls(snapshot), isEmpty);
-      expect(snapshot['reads'], isEmpty);
-      await select(tester);
-      _press(tester, 'Forge payload');
-      await _text(tester, 'forgery:rejected');
-      snapshot = (await tester.runAsync(fixture.snapshot))!;
-      expect(snapshot['reads'], isEmpty);
-      final forged = fixture.calls(snapshot).single;
-      expect(forged['configurationContext'], 'callable-shared');
-      expect(forged['serviceId'], _service);
-      expect(forged['hostInvocationContext'], isNot('forged'));
-      expect((forged['payload'] as Map)['environmentId'], 'primary');
-      await tester.runAsync(
-        () => fixture.denied(forged['hostInvocationContext'] as String),
-      );
-      _press(tester, 'Read A');
-      await _text(tester, _value('a', 'A'));
-      expect((await tester.runAsync(fixture.snapshot))!['reads'], [
-        _read('a', 'A'),
-      ]);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'two presentations share backend configuration but never Session or Environment authority',
-    (tester) async {
-      await mount(tester, concurrent: true);
-      await select(tester);
-      await select(tester, pane: 'b');
-      for (final key in ['read:A', 'read:B']) {
-        await tester.runAsync(() => fixture.control('hold', {'key': key}));
-      }
-      _press(tester, 'Read A');
-      _press(tester, 'Read B', pane: 'b');
-      await tester.runAsync(() async {
-        await fixture.wait(tester, 'read:A');
-        await fixture.wait(tester, 'read:B');
-      });
-      final snapshot = (await tester.runAsync(fixture.snapshot))!;
-      expect(
-        snapshot['reads'],
-        unorderedEquals([_read('a', 'A'), _read('b', 'B')]),
-      );
-      final calls = fixture.calls(snapshot);
-      expect(calls, hasLength(2));
-      expect(calls.map((r) => r['configurationContext']).toSet(), {
-        'callable-shared',
-      });
-      expect(
-        calls.map((r) => r['hostInvocationContext']).toSet(),
-        hasLength(2),
-      );
-      await tester.runAsync(
-        () => fixture.control('release', {'key': 'read:B'}),
-      );
-      await _text(tester, _value('b', 'B'), pane: 'b');
-      expect(find.text(_value('a', 'A')), findsNothing);
-      await tester.runAsync(
-        () => fixture.control('release', {'key': 'read:A'}),
-      );
-      await _text(tester, _value('a', 'A'));
-      for (final call in calls) {
-        await tester.runAsync(
-          () => fixture.denied(call['hostInvocationContext'] as String),
+          find.text('Independent content'),
+          findsNWidgets(concurrent ? 2 : 1),
         );
       }
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
 
-  testWidgets(
-    'live read authority succeeds on replay fixture files and expires on settlement',
-    (tester) async {
-      await mount(tester);
-      await select(tester);
-      await tester.runAsync(() => fixture.control('hold', {'key': 'after:A'}));
-      _press(tester, 'Read A');
-      await tester.runAsync(() => fixture.wait(tester, 'after:A'));
-      final token =
-          fixture
-                  .calls((await tester.runAsync(fixture.snapshot))!)
-                  .single['hostInvocationContext']
-              as String;
-      // Replay denial must prove expired authority, not a missing fixture file.
-      await tester.runAsync(() async {
-        final replay = fixture.control('attack', {'token': token});
-        await fixture.wait(tester, 'read:attack');
-        expect(await replay, {'ok': true});
-        final retained = fixture.control('retained', {'key': 'A'});
-        await fixture.wait(tester, 'read:retained');
-        expect(await retained, {'ok': true});
-        await fixture.control('release', {'key': 'after:A'});
-      });
-      await _text(tester, _value('a', 'A'));
-      await tester.runAsync(() async {
-        await fixture.denied(token);
-        expect(await fixture.control('retained', {'key': 'A'}), {'ok': false});
-      });
-      expect((await tester.runAsync(fixture.snapshot))!['reads'], [
-        _read('a', 'A'),
-        _read('a', 'attack'),
-        _read('a', 'retained'),
-      ]);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  for (final departure in [
-    'release',
-    'navigation',
-    'frontend retirement',
-    'raw registration',
-  ]) {
-    testWidgets(
-      '$departure revokes an admitted reverse read before gated backend cleanup',
-      (tester) async {
-        await mount(tester);
-        await select(tester);
-        await tester.runAsync(
-          () => fixture.control('hold', {'key': 'read:held'}),
+      Future<void> select(
+        WidgetTester tester, {
+        String pane = 'a',
+        String button = 'Default',
+      }) async {
+        _press(
+          tester,
+          independent && button == 'Select B' ? 'Select A' : button,
+          pane: pane,
         );
-        _press(tester, 'Held');
-        await tester.runAsync(() => fixture.wait(tester, 'read:held'));
-        final token =
-            fixture
-                    .calls((await tester.runAsync(fixture.snapshot))!)
-                    .single['hostInvocationContext']
-                as String;
-        final staleRead = _callback(tester, 'Read A');
-        final staleResolve = _callback(tester, 'Default');
-        if (departure == 'release') {
-          _press(tester, 'Release');
-          await tester.pump();
-          expect(find.text('released'), findsOneWidget);
-          // Repeated release and the retained generated client remain inert.
-          _press(tester, 'Release');
-          await tester.pump();
-          expect(find.text('already released'), findsOneWidget);
-        } else if (departure == 'navigation') {
+        await _text(tester, 'selected', pane: pane);
+      }
+
+      test(
+        'independent frontend/backend fixtures depend only on public contracts',
+        () async {
+          final imports = RegExp(r"import '([^']+)'(?:\s+show\s+[^;]+)?;");
+          Future<Set<String>> imported(String name) async => imports
+              .allMatches(
+                await File(
+                  'test/fixtures/prepared_environment_capability_$name.dart.txt',
+                ).readAsString(),
+              )
+              .map((match) => match[1]!)
+              .toSet();
+          expect(await imported('frontend'), {
+            'package:adele_ui/capability_bridge.dart',
+            'package:adele_ui/environment_capability_bridge.dart',
+            'package:adele_ui/main_content_bridge.dart',
+            'package:capability_probe_contract/contract.dart',
+            'package:flutter/material.dart',
+          });
+          expect(await imported('backend'), {
+            'package:adele_environment/adele_environment.dart',
+            'prepared_environment_capability_callable.dart',
+            'prepared_environment_capability_environment.dart',
+            'prepared_environment_capability_support.dart',
+          });
+          expect(await imported('environment'), {
+            'dart:convert',
+            'dart:io',
+            'package:adele_environment/adele_environment.dart',
+            'prepared_environment_capability_support.dart',
+          });
+          expect(await imported('callable'), {
+            'package:adele_contract/adele_contract.dart',
+            'package:adele_environment/adele_environment.dart',
+            'package:adele_plugin_backend_support/adele_plugin_backend_support.dart',
+            'prepared_capability_contract.dart',
+            'prepared_environment_capability_support.dart',
+          });
+          expect(await imported('support'), {
+            'dart:async',
+            'dart:convert',
+            'dart:isolate',
+            'package:adele_contract/adele_contract.dart',
+            'package:adele_environment/adele_environment.dart',
+            'package:adele_plugin_backend_support/adele_plugin_backend_support.dart',
+          });
+        },
+      );
+
+      testWidgets(
+        'frontend-only EVC selects the nonprimary association and displays a generated real reverse read',
+        (tester) async {
+          await mount(tester);
+          final catalog = fixture.backends.catalog!;
+          expect(catalog.installations, hasLength(independent ? 3 : 2));
+          final consumer = catalog.installations.singleWhere(
+            (entry) => entry.frontend != null,
+          );
+          expect(
+            consumer.metadata.id.value,
+            'test.environment.capability.consumer',
+          );
+          expect(
+            fixture.frontends.generations.single.installation,
+            same(consumer),
+          );
+          expect(consumer.backendArtifactUri, isNull);
+          expect(fixture.backends.backendForInstallation(consumer), isNull);
+          for (final entry in catalog.installations.where(
+            (entry) => entry.backendArtifactUri != null,
+          )) {
+            expect(entry.frontend, isNull);
+          }
+          if (independent) {
+            final environment = fixture.environmentOwner;
+            final callable = fixture.callableOwner;
+            expect(
+              environment.installation.metadata.id.value,
+              _environmentPlugin,
+            );
+            expect(callable.installation.metadata.id.value, _callablePlugin);
+            expect(identical(environment, callable), isFalse);
+            expect(
+              identical(environment.connection, callable.connection),
+              isFalse,
+            );
+            expect(environment.connection!.pluginId, _environmentPlugin);
+            expect(callable.connection!.pluginId, _callablePlugin);
+            expect(
+              environment.installation.backendArtifactUri,
+              isNot(callable.installation.backendArtifactUri),
+            );
+            expect(environment.connection!.capabilityExposures, hasLength(2));
+            expect(
+              callable.connection!.capabilityExposures.where(
+                (e) => e.capabilityId == environmentProviderCapability.id.value,
+              ),
+              isEmpty,
+            );
+            expect(
+              callable.connection!.capabilityExposures
+                  .singleWhere((e) => e.providerId == 'test.callable.a')
+                  .environmentBound,
+              isTrue,
+            );
+            final environmentBinding = fixture.capabilities.resolve(
+              environmentProviderCapability,
+              providerId: ProviderId('test.environment.a'),
+            );
+            final callableBinding = fixture.capabilities.resolve(
+              _capability,
+              providerId: ProviderId('test.callable.a'),
+            );
+            environment.validateProviderOwnership(environmentBinding);
+            callable.validateProviderOwnership(callableBinding);
+            expect(callable.associationFor(callableBinding), isNull);
+            expect(
+              () => environment.validateProviderOwnership(callableBinding),
+              throwsStateError,
+            );
+            expect(
+              () => callable.validateProviderOwnership(environmentBinding),
+              throwsStateError,
+            );
+          }
+          expect(
+            fixture.capabilities
+                .providersFor(_capability)
+                .map((p) => p.id.value),
+            [
+              'test.callable.context-free',
+              if (!independent) 'test.callable.b',
+              'test.callable.a',
+            ],
+          );
+          expect(
+            (await tester.runAsync(fixture.snapshot))!['requests'],
+            isEmpty,
+          );
+          await tester.runAsync(
+            () => fixture.control('hold', {'key': 'restore:additional'}),
+          );
+          _press(tester, 'Default');
+          await tester.runAsync(
+            () => fixture.wait(tester, 'restore:additional'),
+          );
+          expect(find.text('selected'), findsNothing);
+          expect((await tester.runAsync(fixture.snapshot))!['reads'], isEmpty);
+          await tester.runAsync(
+            () => fixture.control('release', {'key': 'restore:additional'}),
+          );
+          await _text(tester, 'selected');
+          await tester.runAsync(
+            () => fixture.control('hold', {'key': 'read:A'}),
+          );
+          _press(tester, 'Read A');
+          await tester.runAsync(() => fixture.wait(tester, 'read:A'));
+          expect(find.text(_value('a', 'A')), findsNothing);
+          final pending = (await tester.runAsync(fixture.snapshot))!;
+          expect(pending['reads'], [_read('a', 'A')]);
+          final request = fixture.calls(pending).single;
+          expect(request['configurationContext'], 'callable-shared');
+          expect(request['serviceId'], _service);
+          expect(request['hostInvocationContext'], isA<String>());
+          expect(request['payload'], {'scope': 'A'});
+          if (independent) {
+            final a =
+                (await tester.runAsync(
+                      () => fixture.controlOn(
+                        fixture.environmentConnection,
+                        'snapshot',
+                      ),
+                    ))!
+                    as Map;
+            final b =
+                (await tester.runAsync(
+                      () => fixture.controlOn(fixture.connection, 'snapshot'),
+                    ))!
+                    as Map;
+            expect(fixture.calls(Map<Object?, Object?>.from(a)), isEmpty);
+            expect(b['reads'], isEmpty);
+            expect(a['reads'], [_read('a', 'A')]);
+            expect(fixture.calls(Map<Object?, Object?>.from(b)), hasLength(1));
+            expect(
+              (a['requests'] as List).cast<Map<Object?, Object?>>().every(
+                (r) => r['hostInvocationContext'] == null,
+              ),
+              isTrue,
+            );
+          }
+          await tester.runAsync(
+            () => fixture.control('release', {'key': 'read:A'}),
+          );
+          await _text(tester, _value('a', 'A'));
+          await tester.runAsync(
+            () => fixture.denied(request['hostInvocationContext'] as String),
+          );
+          expect(
+            await tester.runAsync(
+              () => fixture.control('retained', {'key': 'A'}),
+            ),
+            {'ok': false},
+          );
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      for (final ordinary in [false, true]) {
+        testWidgets(
+          '${ordinary ? 'C1-only declarations' : 'default-deny pane'} cannot acquire contextual authority',
+          (tester) async {
+            await mount(tester, contextual: false, ordinary: ordinary);
+            _press(tester, 'Default');
+            await _text(tester, 'selection:unavailable');
+            _press(tester, 'Forged handle');
+            await _text(tester, 'read:unavailable');
+            expect(
+              (await tester.runAsync(fixture.snapshot))!['requests'],
+              isEmpty,
+            );
+            _press(tester, 'Context free');
+            await _text(
+              tester,
+              ordinary
+                  ? 'context-free|context-free|0|ordinary'
+                  : 'context-free:unavailable',
+            );
+            if (ordinary) {
+              _press(tester, 'Context free A');
+              await _text(tester, 'read:unavailable');
+            }
+            final snapshot = (await tester.runAsync(fixture.snapshot))!;
+            expect(snapshot['reads'], isEmpty);
+            expect(fixture.calls(snapshot), hasLength(ordinary ? 2 : 0));
+            expect(
+              fixture
+                  .calls(snapshot)
+                  .every((r) => r['hostInvocationContext'] == null),
+              isTrue,
+            );
+            expect(tester.takeException(), isNull);
+            await tester.pumpWidget(const SizedBox.shrink());
+          },
+        );
+      }
+
+      testWidgets(
+        'ineligible providers, wrong service/version and forged payload never widen the captured route',
+        (tester) async {
+          await mount(tester);
+          _press(tester, 'Check denials');
+          await _text(tester, 'denials:passed');
+          var snapshot = (await tester.runAsync(fixture.snapshot))!;
+          expect(fixture.calls(snapshot), isEmpty);
+          expect(snapshot['reads'], isEmpty);
+          await select(tester);
+          _press(tester, 'Forge payload');
+          await _text(tester, 'forgery:rejected');
+          snapshot = (await tester.runAsync(fixture.snapshot))!;
+          expect(snapshot['reads'], isEmpty);
+          final forged = fixture.calls(snapshot).single;
+          expect(forged['configurationContext'], 'callable-shared');
+          expect(forged['serviceId'], _service);
+          expect(forged['hostInvocationContext'], isNot('forged'));
+          expect((forged['payload'] as Map)['environmentId'], 'primary');
+          await tester.runAsync(
+            () => fixture.denied(forged['hostInvocationContext'] as String),
+          );
+          _press(tester, 'Read A');
+          await _text(tester, _value('a', 'A'));
+          expect((await tester.runAsync(fixture.snapshot))!['reads'], [
+            _read('a', 'A'),
+          ]);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      testWidgets(
+        'two presentations share backend configuration but never Session or Environment authority',
+        (tester) async {
+          await mount(tester, concurrent: true);
+          await select(tester);
+          await select(tester, pane: 'b');
+          for (final key in ['read:A', 'read:B']) {
+            await tester.runAsync(() => fixture.control('hold', {'key': key}));
+          }
+          _press(tester, 'Read A');
+          _press(tester, 'Read B', pane: 'b');
+          await tester.runAsync(() async {
+            await fixture.wait(tester, 'read:A');
+            await fixture.wait(tester, 'read:B');
+          });
+          final snapshot = (await tester.runAsync(fixture.snapshot))!;
+          expect(
+            snapshot['reads'],
+            unorderedEquals([_read('a', 'A'), _read('b', 'B')]),
+          );
+          final calls = fixture.calls(snapshot);
+          expect(calls, hasLength(2));
+          expect(calls.map((r) => r['configurationContext']).toSet(), {
+            'callable-shared',
+          });
+          expect(
+            calls.map((r) => r['hostInvocationContext']).toSet(),
+            hasLength(2),
+          );
+          await tester.runAsync(
+            () => fixture.control('release', {'key': 'read:B'}),
+          );
+          await _text(tester, _value('b', 'B'), pane: 'b');
+          expect(find.text(_value('a', 'A')), findsNothing);
+          await tester.runAsync(
+            () => fixture.control('release', {'key': 'read:A'}),
+          );
+          await _text(tester, _value('a', 'A'));
+          for (final call in calls) {
+            await tester.runAsync(
+              () => fixture.denied(call['hostInvocationContext'] as String),
+            );
+          }
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      testWidgets(
+        'live read authority succeeds on replay fixture files and expires on settlement',
+        (tester) async {
+          await mount(tester);
+          await select(tester);
+          await tester.runAsync(
+            () => fixture.control('hold', {'key': 'after:A'}),
+          );
+          _press(tester, 'Read A');
+          await tester.runAsync(() => fixture.wait(tester, 'after:A'));
+          final token =
+              fixture
+                      .calls((await tester.runAsync(fixture.snapshot))!)
+                      .single['hostInvocationContext']
+                  as String;
+          // Replay denial must prove expired authority, not a missing fixture file.
+          await tester.runAsync(() async {
+            if (independent) {
+              // A cannot replay a grant issued to the distinct B activation.
+              expect(
+                await fixture.controlOn(
+                  fixture.environmentConnection,
+                  'attack',
+                  {'token': token},
+                ),
+                {'ok': false},
+              );
+            }
+            for (final service in [
+              authorizedEnvironmentMutationServiceId,
+              authorizedEnvironmentProcessServiceId,
+              'projectStorage',
+              'unlisted',
+            ]) {
+              await fixture.denied(token, service: service);
+            }
+            for (final field in [
+              'sessionId',
+              'environmentId',
+              'providerId',
+              'hostInvocationContext',
+            ]) {
+              await fixture.denied(
+                token,
+                arguments: {'relativePath': 'attack', field: 'primary'},
+              );
+            }
+            for (final foreignPath in [
+              '../b/A',
+              '..\\b\\A',
+              '${files.absolute.path}/b/A',
+            ]) {
+              await fixture.denied(
+                token,
+                arguments: {'relativePath': foreignPath},
+              );
+            }
+            await fixture.denied('invented-context');
+            final replay = fixture.control('attack', {'token': token});
+            await fixture.wait(tester, 'read:attack');
+            expect(await replay, {'ok': true});
+            final retained = fixture.control('retained', {'key': 'A'});
+            await fixture.wait(tester, 'read:retained');
+            expect(await retained, {'ok': true});
+            await fixture.control('release', {'key': 'after:A'});
+          });
+          await _text(tester, _value('a', 'A'));
+          await tester.runAsync(() async {
+            await fixture.denied(token);
+            expect(await fixture.control('retained', {'key': 'A'}), {
+              'ok': false,
+            });
+          });
+          expect((await tester.runAsync(fixture.snapshot))!['reads'], [
+            _read('a', 'A'),
+            _read('a', 'attack'),
+            _read('a', 'retained'),
+          ]);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      for (final departure in [
+        'release',
+        'navigation',
+        'frontend retirement',
+        'raw registration',
+      ]) {
+        testWidgets(
+          '$departure revokes an admitted reverse read before gated backend cleanup',
+          (tester) async {
+            await mount(tester);
+            await select(tester);
+            await tester.runAsync(
+              () => fixture.control('hold', {'key': 'read:held'}),
+            );
+            _press(tester, 'Held');
+            await tester.runAsync(() => fixture.wait(tester, 'read:held'));
+            final token =
+                fixture
+                        .calls((await tester.runAsync(fixture.snapshot))!)
+                        .single['hostInvocationContext']
+                    as String;
+            final staleRead = _callback(tester, 'Read A');
+            final staleResolve = _callback(tester, 'Default');
+            if (departure == 'release') {
+              _press(tester, 'Release');
+              await tester.pump();
+              expect(find.text('released'), findsOneWidget);
+              // Repeated release and the retained generated client remain inert.
+              _press(tester, 'Release');
+              await tester.pump();
+              expect(find.text('already released'), findsOneWidget);
+            } else if (departure == 'navigation') {
+              fixture.frontends.unbind(fixture.sessionA);
+              await tester.pumpWidget(
+                fixture.widget(session: fixture.sessionB),
+              );
+              await tester.pumpAndSettle();
+            } else if (departure == 'raw registration') {
+              fixture.frontends.generations.single.registrations.single.close();
+              // No frame/reconciliation may be needed to revoke already-issued grants.
+            } else {
+              await tester.runAsync(fixture.frontends.generations.single.close);
+              await tester.pumpAndSettle();
+              expect(find.text('Independent content'), findsOneWidget);
+            }
+            await tester.runAsync(() => fixture.denied(token));
+            staleRead();
+            if (departure != 'release') staleResolve();
+            await tester.runAsync(() async {
+              await fixture.control('release', {'key': 'read:held'});
+              await fixture.wait(tester, 'settled:held');
+            });
+            await tester.pumpAndSettle();
+            expect(find.text(_value('a', 'held')), findsNothing);
+            final snapshot = (await tester.runAsync(fixture.snapshot))!;
+            expect(snapshot['reads'], [_read('a', 'held')]);
+            expect(fixture.calls(snapshot), hasLength(1));
+            expect(
+              fixture.capabilities.providersFor(_capability),
+              hasLength(independent ? 2 : 3),
+            );
+            if (departure == 'release' || departure == 'navigation') {
+              await select(
+                tester,
+                button: departure == 'navigation' ? 'Select B' : 'Select A',
+              );
+              _press(tester, departure == 'navigation' ? 'Read B' : 'Read A');
+              await _text(
+                tester,
+                _value(
+                  departure == 'navigation' ? 'b' : 'a',
+                  departure == 'navigation' ? 'B' : 'A',
+                ),
+              );
+            }
+            expect(tester.takeException(), isNull);
+            await tester.pumpWidget(const SizedBox.shrink());
+          },
+        );
+      }
+
+      testWidgets(
+        'navigation while resolution is gated cannot publish the old Session handle',
+        (tester) async {
+          await mount(tester);
+          await tester.runAsync(
+            () => fixture.control('hold', {'key': 'restore:additional'}),
+          );
+          _press(tester, 'Default');
+          await tester.runAsync(
+            () => fixture.wait(tester, 'restore:additional'),
+          );
           fixture.frontends.unbind(fixture.sessionA);
           await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
           await tester.pumpAndSettle();
-        } else if (departure == 'raw registration') {
-          fixture.frontends.generations.single.registrations.single.close();
-          // No frame/reconciliation may be needed to revoke already-issued grants.
-        } else {
-          await tester.runAsync(fixture.frontends.generations.single.close);
+          await tester.runAsync(
+            () => fixture.control('release', {'key': 'restore:additional'}),
+          );
+          await select(tester, button: 'Select B');
+          _press(tester, 'Read B');
+          await _text(tester, _value('b', 'B'));
+          expect((await tester.runAsync(fixture.snapshot))!['reads'], [
+            _read('b', 'B'),
+          ]);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      testWidgets(
+        'revoking one concurrent presentation does not revoke its sibling operation',
+        (tester) async {
+          await mount(tester, concurrent: true);
+          await select(tester);
+          await select(tester, pane: 'b');
+          for (final key in ['read:A', 'read:B']) {
+            await tester.runAsync(() => fixture.control('hold', {'key': key}));
+          }
+          _press(tester, 'Read A');
+          _press(tester, 'Read B', pane: 'b');
+          await tester.runAsync(() async {
+            await fixture.wait(tester, 'read:A');
+            await fixture.wait(tester, 'read:B');
+          });
+          final calls = fixture.calls(
+            (await tester.runAsync(fixture.snapshot))!,
+          );
+          _press(tester, 'Release');
+          final tokenA =
+              calls.singleWhere(
+                    (r) => (r['payload'] as Map)['scope'] == 'A',
+                  )['hostInvocationContext']
+                  as String;
+          await tester.runAsync(() => fixture.denied(tokenA));
+          await tester.runAsync(() async {
+            await fixture.control('release', {'key': 'read:B'});
+            await fixture.control('release', {'key': 'read:A'});
+            await fixture.wait(tester, 'settled:A');
+          });
+          await _text(tester, _value('b', 'B'), pane: 'b');
+          await _text(tester, 'read:unavailable');
+          expect(find.text(_value('a', 'A')), findsNothing);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      testWidgets(
+        'backend failures are safe and fresh unary calls receive fresh authority',
+        (tester) async {
+          await mount(tester);
+          await select(tester);
+          for (final kind in ['backend', 'host']) {
+            _press(tester, 'Fail $kind');
+            await _text(tester, 'read:unavailable');
+            _press(tester, 'Read A');
+            await _text(tester, _value('a', 'A'));
+          }
+          final calls = fixture.calls(
+            (await tester.runAsync(fixture.snapshot))!,
+          );
+          expect(calls, hasLength(4));
+          expect(
+            calls.map((r) => r['hostInvocationContext']).toSet(),
+            hasLength(4),
+          );
+          for (final call in calls) {
+            await tester.runAsync(
+              () => fixture.denied(call['hostInvocationContext'] as String),
+            );
+          }
+          expect(find.textContaining('SECRET'), findsNothing);
+          expect(find.text('Frontend unavailable.'), findsNothing);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      testWidgets(
+        'backend retirement and same-ID replacement do not revive retained EVC clients',
+        (tester) async {
+          await mount(tester);
+          await select(tester);
+          final old = fixture;
+          final binding = old.capabilities.resolve(
+            _capability,
+            providerId: ProviderId('test.callable.a'),
+          );
+          final environmentBinding = old.capabilities.resolve(
+            environmentProviderCapability,
+            providerId: ProviderId('test.environment.a'),
+          );
+          await tester.runAsync(
+            () => old.control('hold', {'key': 'read:held'}),
+          );
+          _press(tester, 'Held');
+          await tester.runAsync(() => old.wait(tester, 'read:held'));
+          final token =
+              old
+                      .calls((await tester.runAsync(old.snapshot))!)
+                      .single['hostInvocationContext']
+                  as String;
+          final staleRead = _callback(tester, 'Read A');
+          await tester.runAsync(old.backends.close);
+          await _text(tester, 'read:unavailable');
+          fixture = _Installation(
+            capabilities: old.capabilities,
+            files: files,
+            independent: independent,
+          );
+          addTearDown(fixture.close);
+          // Keep the old evaluator mounted while identical provider IDs reappear.
+          await mount(tester, present: false);
+          expect(
+            fixture.capabilities
+                .resolve(_capability, providerId: ProviderId('test.callable.a'))
+                .isSameRegistration(binding),
+            isFalse,
+          );
+          expect(
+            fixture.capabilities
+                .resolve(
+                  environmentProviderCapability,
+                  providerId: ProviderId('test.environment.a'),
+                )
+                .isSameRegistration(environmentBinding),
+            isFalse,
+          );
+          expect(identical(old.connection, fixture.connection), isFalse);
+          expect(
+            identical(old.environmentConnection, fixture.environmentConnection),
+            isFalse,
+          );
+          staleRead();
           await tester.pumpAndSettle();
-          expect(find.text('Independent content'), findsOneWidget);
-        }
-        await tester.runAsync(() => fixture.denied(token));
-        staleRead();
-        if (departure != 'release') staleResolve();
-        await tester.runAsync(() async {
-          await fixture.control('release', {'key': 'read:held'});
-          await fixture.wait(tester, 'settled:held');
-        });
-        await tester.pumpAndSettle();
-        expect(find.text(_value('a', 'held')), findsNothing);
-        final snapshot = (await tester.runAsync(fixture.snapshot))!;
-        expect(snapshot['reads'], [_read('a', 'held')]);
-        expect(fixture.calls(snapshot), hasLength(1));
-        expect(fixture.capabilities.providersFor(_capability), hasLength(3));
-        if (departure == 'release' || departure == 'navigation') {
-          await select(
-            tester,
-            button: departure == 'navigation' ? 'Select B' : 'Select A',
+          expect(
+            fixture.calls((await tester.runAsync(fixture.snapshot))!),
+            isEmpty,
           );
-          _press(tester, departure == 'navigation' ? 'Read B' : 'Read A');
-          await _text(
-            tester,
-            _value(
-              departure == 'navigation' ? 'b' : 'a',
-              departure == 'navigation' ? 'B' : 'A',
-            ),
+          await tester.runAsync(() => fixture.denied(token));
+          await tester.pumpWidget(fixture.widget());
+          await tester.pumpAndSettle();
+          await select(tester);
+          _press(tester, 'Read A');
+          await _text(tester, _value('a', 'A'));
+          expect((await tester.runAsync(fixture.snapshot))!['reads'], [
+            _read('a', 'A'),
+          ]);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+
+      if (independent) {
+        for (final count in [0, 2]) {
+          testWidgets(
+            '${count == 0 ? 'missing' : 'ambiguous'} independent provider makes no callable request',
+            (tester) async {
+              await mount(tester, independentProviders: count);
+              _press(tester, 'Default');
+              await _text(tester, 'selection:unavailable');
+              var snapshot = (await tester.runAsync(fixture.snapshot))!;
+              expect(fixture.calls(snapshot), isEmpty);
+              expect(snapshot['reads'], isEmpty);
+              // Rank cannot break ambiguity, but an exact eligible selection can.
+              if (count == 2) {
+                _press(tester, 'Select A');
+                await _text(tester, 'selected');
+                _press(tester, 'Read A');
+                await _text(tester, _value('a', 'A'));
+              }
+              snapshot = (await tester.runAsync(fixture.snapshot))!;
+              expect(fixture.calls(snapshot), hasLength(count == 0 ? 0 : 1));
+              expect(
+                snapshot['reads'],
+                count == 0 ? isEmpty : [_read('a', 'A')],
+              );
+              expect(tester.takeException(), isNull);
+              await tester.pumpWidget(const SizedBox.shrink());
+            },
           );
         }
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
+
+        for (final kind in ['environment', 'callable']) {
+          testWidgets(
+            '$kind registration retirement fences outstanding EVC read without retiring either backend',
+            (tester) async {
+              await mount(tester, concurrent: true);
+              await select(tester);
+              await select(tester, pane: 'b');
+              final environmentBinding = fixture.capabilities.resolve(
+                environmentProviderCapability,
+                providerId: ProviderId('test.environment.a'),
+              );
+              final callableBinding = fixture.capabilities.resolve(
+                _capability,
+                providerId: ProviderId('test.callable.a'),
+              );
+              final target = kind == 'environment'
+                  ? environmentBinding
+                  : callableBinding;
+              final other = kind == 'environment'
+                  ? callableBinding
+                  : environmentBinding;
+              final owner = kind == 'environment'
+                  ? fixture.environmentOwner
+                  : fixture.callableOwner;
+              var otherRetirements = 0;
+              addTearDown(other.onRetire(() => otherRetirements++));
+              await tester.runAsync(
+                () => fixture.control('hold', {'key': 'read:held'}),
+              );
+              _press(tester, 'Held');
+              await tester.runAsync(() => fixture.wait(tester, 'read:held'));
+              final token =
+                  fixture
+                          .calls((await tester.runAsync(fixture.snapshot))!)
+                          .single['hostInvocationContext']
+                      as String;
+
+              await tester.runAsync(() => owner.retireProvider(target));
+              await _text(tester, 'read:unavailable');
+              expect(
+                () => target.requestChannel,
+                throwsA(isA<ProviderUnavailable>()),
+              );
+              expect(otherRetirements, 0);
+              fixture.environmentOwner.validate();
+              fixture.callableOwner.validate();
+              expect(fixture.connection.isClosed, isFalse);
+              expect(fixture.environmentConnection.isClosed, isFalse);
+              await tester.runAsync(() => fixture.denied(token));
+              _press(tester, 'Read A');
+              await _text(tester, 'read:unavailable');
+              expect(
+                fixture.calls((await tester.runAsync(fixture.snapshot))!),
+                hasLength(1),
+              );
+              if (kind == 'environment') {
+                // The same independent B can still serve the other canonical Session.
+                _press(tester, 'Read B', pane: 'b');
+                await _text(tester, _value('b', 'B'), pane: 'b');
+              } else {
+                _press(tester, 'Read B', pane: 'b');
+                await _text(tester, 'read:unavailable', pane: 'b');
+              }
+              _press(tester, 'Context free');
+              await _text(tester, 'context-free|context-free|0|ordinary');
+              await tester.runAsync(() async {
+                await fixture.control('release', {'key': 'read:held'});
+                await fixture.wait(tester, 'settled:held');
+                await fixture.denied(token);
+              });
+              expect(find.text(_value('a', 'held')), findsNothing);
+              expect(otherRetirements, 0);
+              expect((await tester.runAsync(fixture.snapshot))!['reads'], [
+                _read('a', 'held'),
+                if (kind == 'environment') _read('b', 'B'),
+              ]);
+              expect(tester.takeException(), isNull);
+              await tester.pumpWidget(const SizedBox.shrink());
+            },
+          );
+
+          testWidgets(
+            '$kind backend termination revokes outstanding EVC read but preserves the other activation',
+            (tester) async {
+              await mount(tester);
+              await select(tester);
+              await tester.runAsync(
+                () => fixture.control('hold', {'key': 'read:held'}),
+              );
+              _press(tester, 'Held');
+              await tester.runAsync(() => fixture.wait(tester, 'read:held'));
+              final token =
+                  fixture
+                          .calls((await tester.runAsync(fixture.snapshot))!)
+                          .single['hostInvocationContext']
+                      as String;
+              final terminating = kind == 'environment'
+                  ? fixture.environmentConnection
+                  : fixture.connection;
+              final surviving = kind == 'environment'
+                  ? fixture.connection
+                  : fixture.environmentConnection;
+              await tester.runAsync(() async {
+                await expectLater(
+                  fixture.controlOn(terminating, 'terminate'),
+                  throwsA(isA<PluginRemoteFailure>()),
+                );
+                await terminating.terminated.timeout(_bound);
+              });
+              await _text(tester, 'read:unavailable');
+              expect(terminating.isClosed, isTrue);
+              expect(surviving.isClosed, isFalse);
+              expect(fixture.backends.host!.isClosed, isFalse);
+              _press(tester, 'Read A');
+              _press(tester, 'Default');
+              await _text(tester, 'selection:unavailable');
+              await tester.runAsync(() async {
+                expect(
+                  await fixture.controlOn(surviving, 'attack', {
+                    'token': token,
+                  }),
+                  {'ok': false},
+                );
+              });
+              if (kind == 'environment') {
+                fixture.callableOwner.validate();
+                _press(tester, 'Context free');
+                await _text(tester, 'context-free|context-free|0|ordinary');
+              } else {
+                fixture.environmentOwner.validate();
+                final binding = fixture.capabilities.resolve(
+                  environmentProviderCapability,
+                  providerId: ProviderId('test.environment.a'),
+                );
+                final file = await tester.runAsync(
+                  () => EnvironmentProviderServiceClient(
+                    binding.requestChannel,
+                  ).readFile('additional', 'A'),
+                );
+                expect(file!.text, _fileContents['a']!['A']);
+                await tester.runAsync(
+                  () => fixture.control('release', {'key': 'read:held'}),
+                );
+              }
+              expect(find.text(_value('a', 'held')), findsNothing);
+              expect(tester.takeException(), isNull);
+              await tester.pumpWidget(const SizedBox.shrink());
+            },
+          );
+        }
+      }
+    });
   }
-
-  testWidgets(
-    'navigation while resolution is gated cannot publish the old Session handle',
-    (tester) async {
-      await mount(tester);
-      await tester.runAsync(
-        () => fixture.control('hold', {'key': 'restore:additional'}),
-      );
-      _press(tester, 'Default');
-      await tester.runAsync(() => fixture.wait(tester, 'restore:additional'));
-      fixture.frontends.unbind(fixture.sessionA);
-      await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => fixture.control('release', {'key': 'restore:additional'}),
-      );
-      await select(tester, button: 'Select B');
-      _press(tester, 'Read B');
-      await _text(tester, _value('b', 'B'));
-      expect((await tester.runAsync(fixture.snapshot))!['reads'], [
-        _read('b', 'B'),
-      ]);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'revoking one concurrent presentation does not revoke its sibling operation',
-    (tester) async {
-      await mount(tester, concurrent: true);
-      await select(tester);
-      await select(tester, pane: 'b');
-      for (final key in ['read:A', 'read:B']) {
-        await tester.runAsync(() => fixture.control('hold', {'key': key}));
-      }
-      _press(tester, 'Read A');
-      _press(tester, 'Read B', pane: 'b');
-      await tester.runAsync(() async {
-        await fixture.wait(tester, 'read:A');
-        await fixture.wait(tester, 'read:B');
-      });
-      final calls = fixture.calls((await tester.runAsync(fixture.snapshot))!);
-      _press(tester, 'Release');
-      final tokenA =
-          calls.singleWhere(
-                (r) => (r['payload'] as Map)['scope'] == 'A',
-              )['hostInvocationContext']
-              as String;
-      await tester.runAsync(() => fixture.denied(tokenA));
-      await tester.runAsync(() async {
-        await fixture.control('release', {'key': 'read:B'});
-        await fixture.control('release', {'key': 'read:A'});
-        await fixture.wait(tester, 'settled:A');
-      });
-      await _text(tester, _value('b', 'B'), pane: 'b');
-      await _text(tester, 'read:unavailable');
-      expect(find.text(_value('a', 'A')), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'backend failures are safe and fresh unary calls receive fresh authority',
-    (tester) async {
-      await mount(tester);
-      await select(tester);
-      for (final kind in ['backend', 'host']) {
-        _press(tester, 'Fail $kind');
-        await _text(tester, 'read:unavailable');
-        _press(tester, 'Read A');
-        await _text(tester, _value('a', 'A'));
-      }
-      final calls = fixture.calls((await tester.runAsync(fixture.snapshot))!);
-      expect(calls, hasLength(4));
-      expect(
-        calls.map((r) => r['hostInvocationContext']).toSet(),
-        hasLength(4),
-      );
-      for (final call in calls) {
-        await tester.runAsync(
-          () => fixture.denied(call['hostInvocationContext'] as String),
-        );
-      }
-      expect(find.textContaining('SECRET'), findsNothing);
-      expect(find.text('Frontend unavailable.'), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'backend retirement and same-ID replacement do not revive retained EVC clients',
-    (tester) async {
-      await mount(tester);
-      await select(tester);
-      final old = fixture;
-      final binding = old.capabilities.resolve(
-        _capability,
-        providerId: ProviderId('test.callable.a'),
-      );
-      await tester.runAsync(() => old.control('hold', {'key': 'read:held'}));
-      _press(tester, 'Held');
-      await tester.runAsync(() => old.wait(tester, 'read:held'));
-      final token =
-          old
-                  .calls((await tester.runAsync(old.snapshot))!)
-                  .single['hostInvocationContext']
-              as String;
-      final staleRead = _callback(tester, 'Read A');
-      await tester.runAsync(old.backends.close);
-      await _text(tester, 'read:unavailable');
-      fixture = _Installation(capabilities: old.capabilities, files: files);
-      addTearDown(fixture.close);
-      // Keep the old evaluator mounted while identical provider IDs reappear.
-      await mount(tester, present: false);
-      expect(
-        fixture.capabilities
-            .resolve(_capability, providerId: ProviderId('test.callable.a'))
-            .isSameRegistration(binding),
-        isFalse,
-      );
-      staleRead();
-      await tester.pumpAndSettle();
-      expect(
-        fixture.calls((await tester.runAsync(fixture.snapshot))!),
-        isEmpty,
-      );
-      await tester.runAsync(() => fixture.denied(token));
-      await tester.pumpWidget(fixture.widget());
-      await tester.pumpAndSettle();
-      await select(tester);
-      _press(tester, 'Read A');
-      await _text(tester, _value('a', 'A'));
-      expect((await tester.runAsync(fixture.snapshot))!['reads'], [
-        _read('a', 'A'),
-      ]);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
 }
 
 final class _Installation {
-  _Installation({CapabilityRegistry? capabilities, required Directory files})
-    : capabilities = capabilities ?? CapabilityRegistry() {
+  _Installation({
+    CapabilityRegistry? capabilities,
+    required Directory files,
+    required this.independent,
+  }) : capabilities = capabilities ?? CapabilityRegistry() {
     final task = Task(
       id: TaskId('task'),
       projectId: ProjectId('project'),
@@ -760,20 +1204,48 @@ final class _Installation {
   }
 
   final CapabilityRegistry capabilities;
+  final bool independent;
   final extensions = ExtensionRegistry();
   late final Session sessionA;
   late final Session sessionB;
   late final EnvironmentRuntime environmentRuntime;
   late final ApplicationPluginBootstrap backends;
   late final ApplicationFrontendBootstrap frontends;
-  PluginBackendConnection get connection =>
-      backends.backends.single.connection!;
+  InstalledBackendActivation get callableOwner => backends.backends.singleWhere(
+    (backend) =>
+        backend.installation.metadata.id.value ==
+        (independent ? _callablePlugin : _plugin),
+  );
+  InstalledBackendActivation get environmentOwner =>
+      backends.backends.singleWhere(
+        (backend) =>
+            backend.installation.metadata.id.value ==
+            (independent ? _environmentPlugin : _plugin),
+      );
+  PluginBackendConnection get connection => callableOwner.connection!;
+  PluginBackendConnection get environmentConnection =>
+      environmentOwner.connection!;
 
   Future<Object?> control(
     String method, [
     Map<String, Object?> payload = const {},
-  ]) => connection
-      .channelFor(connection.defaultConfigurationContext, 'probe')
+  ]) {
+    final key = payload['key'] as String?;
+    return controlOn(
+      key != null && (key.startsWith('read:') || key.startsWith('restore:'))
+          ? environmentConnection
+          : connection,
+      method,
+      payload,
+    );
+  }
+
+  Future<Object?> controlOn(
+    PluginBackendConnection target,
+    String method, [
+    Map<String, Object?> payload = const {},
+  ]) => target
+      .channelFor(target.defaultConfigurationContext, 'probe')
       .request(method, payload)
       .timeout(_bound);
   Future<void> wait(WidgetTester tester, String key) async {
@@ -798,15 +1270,38 @@ final class _Installation {
     if (failure != null) Error.throwWithStackTrace(failure!, trace!);
   }
 
-  Future<Map<Object?, Object?>> snapshot() async =>
-      (await control('snapshot'))! as Map<Object?, Object?>;
+  Future<Map<Object?, Object?>> snapshot() async {
+    final callable = (await control('snapshot'))! as Map<Object?, Object?>;
+    if (!independent) return callable;
+    final environment =
+        (await controlOn(environmentConnection, 'snapshot'))! as Map;
+    return {
+      'requests': [
+        ...environment['requests'] as List,
+        ...callable['requests'] as List,
+      ],
+      'reads': environment['reads'],
+    };
+  }
+
   List<Map<Object?, Object?>> calls(Map<Object?, Object?> snapshot) =>
       (snapshot['requests'] as List)
           .cast<Map<Object?, Object?>>()
           .where((r) => r['serviceId'] == _service)
           .toList();
-  Future<void> denied(String token) async {
-    expect(await control('attack', {'token': token}), {'ok': false});
+  Future<void> denied(
+    String token, {
+    String? service,
+    Map<String, Object?>? arguments,
+  }) async {
+    expect(
+      await control('attack', {
+        'token': token,
+        'service': ?service,
+        'arguments': ?arguments,
+      }),
+      {'ok': false},
+    );
   }
 
   Widget widget({bool concurrent = false, Session? session}) => MaterialApp(
@@ -839,8 +1334,14 @@ final class _Installation {
   }
 }
 
-List<Map<String, Object?>> _exposures() => [
-  for (final id in ['a', 'b', 'context-free'])
+List<Map<String, Object?>> _callableExposures({
+  bool independent = false,
+  int count = 2,
+}) => [
+  for (final id in [
+    ...['a', 'b'].take(count),
+    'context-free',
+  ])
     AdeleCapabilityExposure(
       providerId: 'test.callable.$id',
       capabilityId: _capability.id.value,
@@ -853,7 +1354,8 @@ List<Map<String, Object?>> _exposures() => [
           : id == 'b'
           ? 100
           : 1,
-      association: id == 'context-free'
+      environmentBound: independent && id != 'context-free',
+      association: independent || id == 'context-free'
           ? null
           : AdeleProviderAssociation(
               capabilityId: environmentProviderCapability.id.value,
@@ -862,6 +1364,9 @@ List<Map<String, Object?>> _exposures() => [
               providerId: 'test.environment.$id',
             ),
     ).toMap(),
+];
+
+List<Map<String, Object?>> _environmentExposures() => [
   for (final id in ['a', 'b'])
     AdeleCapabilityExposure(
       providerId: 'test.environment.$id',

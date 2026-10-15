@@ -212,6 +212,7 @@ void main() {
       });
       raw.clear();
       expect(one.single.rank, 0);
+      expect(one.single.environmentBound, isFalse);
       expect(one.single.toMap(), {...exposure, 'rank': 0});
       expect(() => one.clear(), throwsUnsupportedError);
       final multiple = AdeleCapabilityExposure.fromReady({
@@ -267,6 +268,77 @@ void main() {
     'capabilityMajorVersion': 2,
     'providerId': 'dev.adele.fixture.environment-a',
   };
+  test('Environment binding is an explicit boolean round-trip opt-in', () {
+    final defaultExposure = AdeleCapabilityExposure(
+      providerId: exposure['providerId']! as String,
+      capabilityId: exposure['capabilityId']! as String,
+      capabilityMajorVersion: 1,
+      serviceId: exposure['serviceId']! as String,
+      displayName: exposure['displayName']! as String,
+      configurationContext: exposure['configurationContext']! as String,
+    );
+    expect(defaultExposure.environmentBound, isFalse);
+    expect(defaultExposure.toMap().containsKey('environmentBound'), isFalse);
+    for (final enabled in [false, true]) {
+      final value = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          {...exposure, 'environmentBound': enabled},
+        ],
+      }).single;
+      expect(value.environmentBound, enabled);
+      expect(value.association, isNull);
+      expect(value.toMap(), {
+        ...exposure,
+        'rank': 0,
+        if (enabled) 'environmentBound': true,
+      });
+      expect(
+        AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [value.toMap()],
+        }).single.environmentBound,
+        enabled,
+      );
+    }
+  });
+
+  test(
+    'Environment binding and sibling association are mutually exclusive',
+    () {
+      expect(
+        () => AdeleCapabilityExposure(
+          providerId: exposure['providerId']! as String,
+          capabilityId: exposure['capabilityId']! as String,
+          capabilityMajorVersion: 1,
+          serviceId: exposure['serviceId']! as String,
+          displayName: exposure['displayName']! as String,
+          configurationContext: exposure['configurationContext']! as String,
+          association: AdeleProviderAssociation(
+            capabilityId: association['capabilityId']! as String,
+            capabilityMajorVersion: 2,
+            providerId: association['providerId']! as String,
+          ),
+          environmentBound: true,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [
+            {...exposure, 'association': association, 'environmentBound': true},
+          ],
+        }),
+        throwsFormatException,
+      );
+      final sibling = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          {...exposure, 'association': association, 'environmentBound': false},
+        ],
+      }).single;
+      expect(sibling.environmentBound, isFalse);
+      expect(sibling.association!.toMap(), association);
+    },
+  );
+
   test('provider association is an immutable optional round-trip value', () {
     final raw = {...association};
     final value = AdeleCapabilityExposure.fromReady({
@@ -279,6 +351,7 @@ void main() {
     expect(value.first.association!.capabilityId, association['capabilityId']);
     expect(value.first.association!.capabilityMajorVersion, 2);
     expect(value.first.association!.providerId, association['providerId']);
+    expect(value.first.environmentBound, isFalse);
     expect(value.first.toMap(), {
       ...exposure,
       'rank': 0,
@@ -380,6 +453,7 @@ void main() {
     'displayName': ['', ' \t'],
     'configurationContext': ['', 'x' * 257, 'bad\ncontext', 'bad\u007fcontext'],
     'rank': [null, '0', 0.5],
+    'environmentBound': [null, 0, 1, 'true', 'false', [], {}],
   }.entries) {
     test('ready advertisement validates ${entry.key}', () {
       for (final value in entry.value) {

@@ -1,0 +1,94 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:adele_environment/adele_environment.dart';
+
+import 'prepared_environment_capability_support.dart';
+
+// A implements only Environment. It has no probe Capability contract or client.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
+    runProbeBackend(
+      arguments,
+      bootstrapMessage,
+      (state) => {
+        'shared': {
+          environmentProviderServiceId: EnvironmentProviderServiceDispatcher(
+            EnvironmentService(state),
+            concurrent: true,
+          ),
+        },
+      },
+    );
+
+final class EnvironmentService implements EnvironmentProviderService {
+  EnvironmentService(this.state);
+  final ProbeState state;
+  final _environments = <String, String>{};
+  final _roots = <String, String>{};
+
+  @override
+  Future<EnvironmentProviderResult> establish(
+    EnvironmentTransportContext environment,
+  ) => restore(environment);
+
+  @override
+  Future<EnvironmentProviderResult> restore(
+    EnvironmentTransportContext environment,
+  ) async {
+    _environments[environment.environmentId] = environment.providerId;
+    _roots[environment.environmentId] =
+        environment.providerState['root'] as String;
+    await state.checkpoint('restore:${environment.environmentId}');
+    return EnvironmentProviderResult(providerState: environment.providerState);
+  }
+
+  @override
+  Future<EnvironmentTextFile> readFile(
+    String environmentId,
+    String relativePath,
+  ) async {
+    // This fixture exposes direct child files only. Confinement belongs to A,
+    // never to the callable or to host inference from an Environment identity.
+    if (relativePath.isEmpty ||
+        relativePath == '.' ||
+        relativePath == '..' ||
+        relativePath.contains('/') ||
+        relativePath.contains('\\')) {
+      throw EnvironmentFailure(
+        code: 'invalid_path',
+        message: 'Only direct child files are supported.',
+        details: const {},
+      );
+    }
+    final provider = _environments[environmentId]!;
+    state.reads.add({
+      'environmentId': environmentId,
+      'providerId': provider,
+      'path': relativePath,
+    });
+    await state.checkpoint('read:$relativePath');
+    if (relativePath == 'host-failure') {
+      throw EnvironmentFailure(
+        code: 'read_failure',
+        message: 'SECRET read failure',
+        details: const {},
+      );
+    }
+    final bytes = await File('${_roots[environmentId]}/$relativePath')
+        .openRead(0, 1025)
+        .fold<List<int>>([], (buffer, chunk) => buffer..addAll(chunk));
+    if (bytes.length > 1024)
+      throw StateError('Fixture file exceeds its bound.');
+    final text = utf8.decode(bytes);
+    return EnvironmentTextFile(
+      relativePath: relativePath,
+      text: text,
+      sizeBytes: bytes.length,
+      revision: '$environmentId-revision',
+    );
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('Read only.');
+}

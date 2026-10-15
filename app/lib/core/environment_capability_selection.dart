@@ -18,30 +18,45 @@ final class CapturedEnvironmentCapabilities {
     required ApplicationPluginBootstrap backends,
     required Session session,
   }) {
-    InstalledBackendActivation? owner;
-    return CapturedEnvironmentCapabilities.withResolvers(
+    return CapturedEnvironmentCapabilities._(
       environmentRuntime: environmentRuntime,
       session: session,
-      resolveAssociatedProvider:
-          (capability, {required associatedWith, providerId}) {
-            final backend = owner ??= backends.backendForProvider(
-              associatedWith,
-            );
-            if (backend == null) {
-              if (providerId == null) throw CapabilityUnavailable(capability);
-              throw ProviderUnavailable(
-                capability: capability,
-                providerId: providerId,
-                availableProviderIds: const [],
+      resolveProvider: backends.resolveEnvironmentCapabilityProvider,
+      captureEligibility: (binding, environmentBinding) {
+        final owner = backends.backendForProvider(binding);
+        final environmentOwner = backends.backendForProvider(
+          environmentBinding,
+        );
+        if (owner == null || environmentOwner == null) {
+          throw StateError(
+            'The selected providers require live backend owners.',
+          );
+        }
+        final independent = owner.isEnvironmentBound(binding);
+        // Capture owners once. Validation never searches for another activation.
+        return () {
+          owner.validateProviderOwnership(binding);
+          environmentOwner.validateProviderOwnership(environmentBinding);
+          if (independent) {
+            if (!owner.isEnvironmentBound(binding)) {
+              throw StateError(
+                'The Environment-bound declaration has retired.',
               );
             }
-            return backend.resolveAssociatedProvider(
-              capability,
-              associatedWith: associatedWith,
-              providerId: providerId,
+          } else {
+            if (!identical(owner, environmentOwner)) {
+              throw StateError(
+                'Associated providers require the same backend.',
+              );
+            }
+            _validateAssociation(
+              binding,
+              environmentBinding,
+              owner.associationFor,
             );
-          },
-      associationFor: (binding) => owner!.associationFor(binding),
+          }
+        };
+      },
     );
   }
 
@@ -51,16 +66,35 @@ final class CapturedEnvironmentCapabilities {
     required Session session,
     required AssociatedEnvironmentProviderResolver resolveAssociatedProvider,
     required ProviderBinding? Function(ProviderBinding) associationFor,
+  }) : this._(
+         environmentRuntime: environmentRuntime,
+         session: session,
+         resolveProvider: resolveAssociatedProvider,
+         captureEligibility: (binding, environmentBinding) =>
+             () => _validateAssociation(
+               binding,
+               environmentBinding,
+               associationFor,
+             ),
+       );
+
+  CapturedEnvironmentCapabilities._({
+    required EnvironmentRuntime environmentRuntime,
+    required Session session,
+    required AssociatedEnvironmentProviderResolver resolveProvider,
+    required void Function() Function(ProviderBinding, ProviderBinding)
+    captureEligibility,
   }) : _captured = CapturedSessionEnvironment(
          session: session,
          environmentRuntime: environmentRuntime,
        ),
-       _resolveAssociatedProvider = resolveAssociatedProvider,
-       _associationFor = associationFor;
+       _resolveProvider = resolveProvider,
+       _captureEligibility = captureEligibility;
 
   final CapturedSessionEnvironment _captured;
-  final AssociatedEnvironmentProviderResolver _resolveAssociatedProvider;
-  final ProviderBinding? Function(ProviderBinding) _associationFor;
+  final AssociatedEnvironmentProviderResolver _resolveProvider;
+  final void Function() Function(ProviderBinding, ProviderBinding)
+  _captureEligibility;
   final _selections =
       <(CapabilityKey, ProviderId?), Future<EnvironmentCapabilitySelection>>{};
 
@@ -84,7 +118,7 @@ final class CapturedEnvironmentCapabilities {
     ProviderId? providerId,
   ) async {
     final materialization = await _captured.materialize();
-    final binding = _resolveAssociatedProvider(
+    final binding = _resolveProvider(
       capability,
       associatedWith: materialization.binding,
       providerId: providerId,
@@ -99,7 +133,7 @@ final class CapturedEnvironmentCapabilities {
       _captured,
       materialization,
       binding,
-      _associationFor,
+      _captureEligibility(binding, materialization.binding),
     );
     selection.validate();
     return selection;
@@ -112,13 +146,13 @@ final class EnvironmentCapabilitySelection {
     this._captured,
     this.materialization,
     this.binding,
-    this._associationFor,
+    this._validateEligibility,
   );
 
   final CapturedSessionEnvironment _captured;
   final EnvironmentMaterialization materialization;
   final ProviderBinding binding;
-  final ProviderBinding? Function(ProviderBinding) _associationFor;
+  final void Function() _validateEligibility;
 
   Session get session => _captured.session;
   Environment get environment => _captured.environment;
@@ -127,15 +161,23 @@ final class EnvironmentCapabilitySelection {
     _captured.validate();
     materialization.validateBinding();
     binding.endpointAs<CapabilityEndpoint>();
-    final associated = _associationFor(binding);
-    if (associated == null ||
-        !associated.isSameRegistration(materialization.binding)) {
-      throw ProviderUnavailable(
-        capability: binding.provider.capability,
-        providerId: binding.provider.id,
-        availableProviderIds: const [],
-      );
-    }
-    associated.endpointAs<CapabilityEndpoint>();
+    _validateEligibility();
   }
+}
+
+void _validateAssociation(
+  ProviderBinding binding,
+  ProviderBinding environmentBinding,
+  ProviderBinding? Function(ProviderBinding) associationFor,
+) {
+  final associated = associationFor(binding);
+  if (associated == null ||
+      !associated.isSameRegistration(environmentBinding)) {
+    throw ProviderUnavailable(
+      capability: binding.provider.capability,
+      providerId: binding.provider.id,
+      availableProviderIds: const [],
+    );
+  }
+  associated.endpointAs<CapabilityEndpoint>();
 }
