@@ -502,6 +502,41 @@ library/environment without a separate CI target. This is prepared-artifact
 coverage, not human desktop or non-Linux process acceptance. No live model,
 credentials, staging UI, or review submission is used.
 
+### Focused buffered process checks
+
+After bootstrap with the pinned SDK, the existing targets discover the binary
+Environment contract and stock provider tests without a new CI job or target:
+
+```sh
+dart tools/adele.dart test --target adele_environment
+dart tools/adele.dart test --target git_environment_backend --ci
+dart tools/adele.dart generate --check
+dart test test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
+```
+
+The Environment suite owns strict Base64 validation, request/result limits,
+generated sending/receiving boundaries, optional-facet absence, and unchanged
+authorized-service surfaces. The Git backend's `buffered_process_test.dart` uses
+the pinned Dart child fixture for binary pipes and lifecycle failures;
+`git_worktree_environment_provider_test.dart` retains streamed foreground
+regressions. `backend_host_integration_test.dart` crosses the actual compiled host
+and Git backend through the generated Environment client/adapter, including maximum
+payloads, exact Environment selection, and real Git plumbing. Strict framing
+regressions remain in `packages/plugin_runtime/test/backend_host_protocol_test.dart`.
+
+From `app/`, serialize the actual prepared/native-materialization and independent
+read-authority regressions with other Flutter invocations:
+
+```sh
+flutter test --no-pub --concurrency 1 test/core/normal_task_git_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_environment_capability_integration_test.dart
+```
+
+The normal Git integration uses canonical Environments from `EnvironmentRuntime`,
+not a native process test helper. These tests do not grant buffered execution to
+independent Capability backends or interpreted frontends. Linux x64 with util-linux
+`setsid` is the real-process target; no equivalent process-group guarantee is
+claimed for other platforms. The existing desktop target discovers the app cases.
+
 ### Focused backend Capability checks
 
 These commands identify validation owners, not passing outcomes. After bootstrap

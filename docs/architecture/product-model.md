@@ -303,6 +303,25 @@ new materialization. The provider may already have bound live state during resto
 without a release or idempotent-restore contract, retry in that same generation is
 not guaranteed. Recovery can require a fresh provider generation.
 
+### Buffered process execution
+
+Bounded, one-shot binary execution is an optional facet of the selected
+Environment provider, exposed through its public generated service and native
+materialization. The host supplies the exact Environment identity; the request
+contains only a program, literal arguments, Environment-relative cwd, deadline,
+and bounded binary stdin. A complete result preserves stdout and stderr separately
+and includes the actual exit code. Missing support, timeout, or incomplete I/O
+fails explicitly, with no host-local or alternative-Environment fallback.
+
+Provider support is not invocation authority. Environment-bound Capability
+eligibility supplies no authority; explicit `environmentReadCapabilities` admission
+still grants only the existing authorized read service, never buffered process
+access. Independent Capability consumption requires a separately declared effectful
+grant; a frontend invoking a meaningful Capability must not thereby receive
+arbitrary execution authority. The [Environment contract](../../packages/environment/README.md)
+owns binary representation and bounds; concrete supervision and platform
+guarantees belong to the provider.
+
 ### Interactive terminal resources
 
 An interactive user terminal is a non-durable resource of an Environment, not a

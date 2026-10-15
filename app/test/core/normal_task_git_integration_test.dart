@@ -456,6 +456,213 @@ void main() {
   }
 
   test(
+    'prepared Git buffered facet uses canonical materializations without process grants',
+    () async {
+      final repository = Directory('${container.path}/buffered-repo');
+      final source = Directory('${repository.path}/packages/source');
+      await Directory('${source.path}/data').create(recursive: true);
+      await File('${source.path}/data/seed.txt').writeAsString('Baseline\n');
+      await _git(repository, [
+        'init',
+        '--initial-branch=main',
+        '--object-format=sha1',
+      ]);
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Buffered fixture baseline']);
+      final project = runtime.lifecycle.createProject(source.uri);
+      await installBackends();
+      await start();
+      expectBothActive();
+      final materializations = <EnvironmentMaterialization>[];
+      final roots = <Directory>[];
+      for (final title in [
+        'First binary Environment',
+        'Second binary Environment',
+      ]) {
+        final created = await runtime.lifecycle.createTask(
+          projectId: project.id,
+          title: title,
+        );
+        final materialization = await runtime.lifecycle.environmentRuntime
+            .materialize(created.environment.id);
+        expect(materialization.environment, same(created.environment));
+        expect(
+          runtime.store.environment(created.environment.id),
+          same(materialization.environment),
+        );
+        expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
+        expect(
+          materialization.provider,
+          isA<EnvironmentBufferedProcessProvider>(),
+        );
+        expect(materialization.validateBinding, returnsNormally);
+        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
+        materializations.add(materialization);
+        roots.add(
+          Directory(developmentGitWorktreePath(project, created.environment)),
+        );
+      }
+      expect(
+        materializations[0].environment.id,
+        isNot(materializations[1].environment.id),
+      );
+      expect(roots[0].path, isNot(roots[1].path));
+      final sourceHead = await _git(repository, ['rev-parse', 'HEAD']);
+      final sourceDiff = await _git(repository, ['diff', '--binary', 'HEAD']);
+      final sourceStatus = await _git(repository, [
+        'status',
+        '--porcelain=v1',
+        '-z',
+      ]);
+      final child =
+          '${Directory.current.parent.path}/plugins/git_environment/'
+          'packages/backend/test/fixtures/buffered_process_child.dart';
+      const binary = [0, 255, 128, 192, 175, 13, 10, 27, 91, 50, 74, 1, 9, 127];
+
+      await Future.wait([
+        for (var i = 0; i < materializations.length; i++)
+          (() async {
+            final materialization = materializations[i];
+            final provider =
+                materialization.provider as EnvironmentBufferedProcessProvider;
+            final id = materialization.environment.id;
+            final data = Directory('${roots[i].path}/packages/source/data');
+            final paths = [
+              'line\nbreak.txt',
+              'space name.txt',
+              '${id.value}.txt',
+            ]..sort();
+            for (final path in paths) {
+              await File('${data.path}/$path').writeAsBytes(binary);
+            }
+            await _git(data, ['add', '--', ...paths]);
+            final index = File(
+              (await _git(data, [
+                'rev-parse',
+                '--path-format=absolute',
+                '--git-path',
+                'index',
+              ])).trim(),
+            );
+            final indexBefore = await index.readAsBytes();
+            final refsBefore = await _git(data, ['show-ref']);
+            Future<EnvironmentBufferedProcessResult> run(
+              String program,
+              List<String> arguments, {
+              List<int> input = const [],
+            }) {
+              materialization.validateBinding();
+              return provider.runBufferedProcess(
+                id,
+                EnvironmentBufferedProcessRequest(
+                  program: program,
+                  arguments: arguments,
+                  relativeWorkingDirectory: 'data',
+                  timeoutSeconds: 10,
+                  stdinBase64: encodeEnvironmentProcessBytes(
+                    input,
+                    maximumBytes: environmentBufferedProcessStdinLimit,
+                  ),
+                ),
+              );
+            }
+
+            final echoed = await run(_dartExecutable(), [
+              child,
+              'echo',
+              '17',
+            ], input: binary);
+            expect(echoed.exitCode, 17);
+            expect(
+              decodeEnvironmentProcessBytes(
+                echoed.stdoutBase64,
+                maximumBytes: environmentBufferedProcessStdoutLimit,
+              ),
+              binary,
+            );
+            expect(
+              decodeEnvironmentProcessBytes(
+                echoed.stderrBase64,
+                maximumBytes: environmentBufferedProcessStderrLimit,
+              ),
+              [0, 255, 128, 13, 10, 27, 91, 50, 74],
+            );
+            final identity = await run('git', [
+              'rev-parse',
+              '--show-toplevel',
+              '--show-prefix',
+            ]);
+            expect(identity.exitCode, 0);
+            expect(
+              base64Decode(identity.stdoutBase64),
+              utf8.encode('${roots[i].path}\npackages/source/data/\n'),
+            );
+            expect(identity.stderrBase64, isEmpty);
+            final names = await run('git', ['ls-files', '--cached', '-z']);
+            expect(names.exitCode, 0);
+            expect(names.stderrBase64, isEmpty);
+            final expectedPaths = [...paths, 'seed.txt']..sort();
+            expect(
+              base64Decode(names.stdoutBase64),
+              utf8.encode('${expectedPaths.join('\x00')}\x00'),
+            );
+            final hash = await run('git', [
+              'hash-object',
+              '--stdin',
+            ], input: binary);
+            expect(hash.exitCode, 0);
+            // SHA-1 of the raw Git blob header plus the fourteen fixture bytes.
+            expect(
+              base64Decode(hash.stdoutBase64),
+              ascii.encode('4fe223bb065d3f5a71b410ad26afa5c536483f07\n'),
+            );
+            expect(hash.stderrBase64, isEmpty);
+            final diagnostic = await run('git', [
+              'rev-parse',
+              '--verify',
+              'refs/heads/adele-missing-ref',
+            ]);
+            expect(diagnostic.exitCode, 128);
+            expect(diagnostic.stdoutBase64, isEmpty);
+            expect(base64Decode(diagnostic.stderrBase64), isNotEmpty);
+            expect(await index.readAsBytes(), indexBefore);
+            expect(await _git(data, ['show-ref']), refsBefore);
+            for (final path in paths) {
+              expect(await File('${data.path}/$path').readAsBytes(), binary);
+            }
+          })(),
+      ]);
+      expect(await _git(repository, ['rev-parse', 'HEAD']), sourceHead);
+      expect(await _git(repository, ['diff', '--binary', 'HEAD']), sourceDiff);
+      expect(
+        await _git(repository, ['status', '--porcelain=v1', '-z']),
+        sourceStatus,
+      );
+      await runtime.close();
+      for (final materialization in materializations) {
+        expect(materialization.validateBinding, throwsA(_staleProvider));
+        final provider =
+            materialization.provider as EnvironmentBufferedProcessProvider;
+        await expectLater(
+          provider.runBufferedProcess(
+            materialization.environment.id,
+            EnvironmentBufferedProcessRequest(
+              program: _dartExecutable(),
+              arguments: [child, 'empty'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+              stdinBase64: '',
+            ),
+          ),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+      }
+    },
+    timeout: const Timeout(Duration(seconds: 45)),
+    skip: !Platform.isLinux ? 'Buffered Git processes require Linux.' : false,
+  );
+
+  test(
     'discovered Git rejects non-Git Project without Task publication',
     () async {
       final Directory source = await Directory(

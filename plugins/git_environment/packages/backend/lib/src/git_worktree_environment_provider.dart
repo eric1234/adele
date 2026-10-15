@@ -14,7 +14,10 @@ import 'worktree_environment.dart';
 const int gitEnvironmentProviderStateSchemaVersion = 1;
 
 final class GitWorktreeEnvironmentProvider
-    implements EnvironmentProvider, EnvironmentTerminalProvider {
+    implements
+        EnvironmentProvider,
+        EnvironmentTerminalProvider,
+        EnvironmentBufferedProcessProvider {
   /// [terminalEnvironment] replaces the terminal's inherited environment source
   /// for controlled tests. It is snapshotted and allowlisted, not passed verbatim;
   /// null uses the host environment. Git and foreground processes are unaffected.
@@ -37,6 +40,8 @@ final class GitWorktreeEnvironmentProvider
   final LiveObjectRegistry<EnvironmentId, WorktreeEnvironment> liveObjects;
   final GitForegroundProcessSupervisor _processes =
       GitForegroundProcessSupervisor();
+  final GitBufferedProcessSupervisor _bufferedProcesses =
+      GitBufferedProcessSupervisor();
   final GitTerminalSupervisor _terminals;
   bool _closing = false;
   Future<void>? _closeFuture;
@@ -306,6 +311,16 @@ final class GitWorktreeEnvironmentProvider
   );
 
   @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    EnvironmentId environmentId,
+    EnvironmentBufferedProcessRequest request,
+  ) async => _bufferedProcesses.run(
+    environmentId: environmentId,
+    environment: _resolve(environmentId),
+    request: request,
+  );
+
+  @override
   Stream<EnvironmentTerminalEvent> openTerminal(
     EnvironmentId environmentId,
     EnvironmentTerminalRequest request,
@@ -340,7 +355,11 @@ final class GitWorktreeEnvironmentProvider
 
   Future<void> _close() async {
     try {
-      await Future.wait<void>([_terminals.close(), _processes.close()]);
+      await Future.wait<void>([
+        _terminals.close(),
+        _processes.close(),
+        _bufferedProcesses.close(),
+      ]);
     } finally {
       liveObjects.clear();
     }

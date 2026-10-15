@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_environment_backend/git_environment_backend.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -40,6 +42,270 @@ void main() {
       ),
     ]);
   });
+
+  test(
+    'AOT buffered processes preserve bytes, selected Environments and bounded failures',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: await host.startPlugin(
+          pluginId: gitEnvironmentPluginId,
+          artifactUri: pluginArtifact.uri,
+        ),
+        registry: registry,
+      );
+      addTearDown(activation.close);
+      final binding = registry.resolve(
+        environmentProviderCapability,
+        providerId: ProviderId(gitWorktreeEnvironmentProviderId),
+      );
+      final provider = GeneratedEnvironmentProvider(
+        providerId: binding.provider.id,
+        service: EnvironmentProviderServiceClient(binding.requestChannel),
+      );
+      final project = Project(
+        id: ProjectId('buffered-project'),
+        sourceLocation: fixture.projectSourceA.uri,
+      );
+      final task = Task(
+        id: TaskId('buffered-task'),
+        projectId: project.id,
+        title: 'Buffered processes',
+      );
+      final child =
+          '$repository/plugins/git_environment/packages/backend/'
+          'test/fixtures/buffered_process_child.dart';
+      EnvironmentBufferedProcessRequest probe(
+        List<String> arguments, {
+        List<int> stdin = const [],
+        int timeoutSeconds = 10,
+      }) => EnvironmentBufferedProcessRequest(
+        program: Platform.resolvedExecutable,
+        arguments: [child, ...arguments],
+        relativeWorkingDirectory: '',
+        timeoutSeconds: timeoutSeconds,
+        stdinBase64: encodeEnvironmentProcessBytes(
+          stdin,
+          maximumBytes: environmentBufferedProcessStdinLimit,
+        ),
+      );
+      const binary = [0, 255, 128, 192, 175, 13, 10, 27, 91, 50, 74, 1, 9, 127];
+      final stdin = List<int>.generate(
+        environmentBufferedProcessStdinLimit,
+        (i) => binary[i % binary.length],
+      );
+      final primary = EnvironmentId('buffered-primary');
+      final additional = EnvironmentId('buffered-additional');
+      for (final id in [primary, additional]) {
+        final environment = Environment(
+          id: id,
+          taskId: task.id,
+          role: id == primary
+              ? EnvironmentRole.primary
+              : EnvironmentRole.additional,
+          providerId: provider.providerId,
+          providerState: null,
+        );
+        final established = await provider.establish(
+          LocalEnvironment(project: project, task: task, value: environment),
+        );
+        final worktree = Directory(
+          '${fixture.projectSourceA.path}/'
+          '${established.providerState['worktreeRelativePath']}',
+        );
+        final root = Directory(
+          '${worktree.path}/${established.providerState['sourceRelativePath']}',
+        );
+        final names = ['line\nbreak.txt', 'space name.txt', '${id.value}.txt']
+          ..sort();
+        for (final name in names) {
+          await File('${root.path}/$name').writeAsBytes(binary);
+        }
+        await _git(root, ['add', '--', ...names]);
+        final index = File(
+          await _git(root, [
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-path',
+            'index',
+          ]),
+        );
+        final indexBefore = await index.readAsBytes();
+        final refsBefore = await _git(root, ['show-ref']);
+
+        final echoed = await provider.runBufferedProcess(
+          id,
+          probe(['echo', '23'], stdin: stdin),
+        );
+        expect(echoed.exitCode, 23);
+        expect(
+          decodeEnvironmentProcessBytes(
+            echoed.stdoutBase64,
+            maximumBytes: environmentBufferedProcessStdoutLimit,
+          ),
+          stdin,
+        );
+        expect(
+          decodeEnvironmentProcessBytes(
+            echoed.stderrBase64,
+            maximumBytes: environmentBufferedProcessStderrLimit,
+          ),
+          [0, 255, 128, 13, 10, 27, 91, 50, 74],
+        );
+        Future<EnvironmentBufferedProcessResult> git(
+          List<String> arguments, {
+          List<int> input = const [],
+        }) => provider.runBufferedProcess(
+          id,
+          EnvironmentBufferedProcessRequest(
+            program: 'git',
+            arguments: arguments,
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 10,
+            stdinBase64: encodeEnvironmentProcessBytes(
+              input,
+              maximumBytes: environmentBufferedProcessStdinLimit,
+            ),
+          ),
+        );
+        final identity = await git([
+          'rev-parse',
+          '--show-toplevel',
+          '--show-prefix',
+        ]);
+        expect(identity.exitCode, 0);
+        expect(
+          base64Decode(identity.stdoutBase64),
+          utf8.encode('${worktree.path}\nproject-source/\n'),
+        );
+        expect(identity.stderrBase64, isEmpty);
+        final paths = await git(['ls-files', '--cached', '-z', '--', '*.txt']);
+        expect(paths.exitCode, 0);
+        expect(paths.stderrBase64, isEmpty);
+        expect(
+          base64Decode(paths.stdoutBase64),
+          utf8.encode('${names.join('\x00')}\x00'),
+        );
+        final hash = await git(['hash-object', '--stdin'], input: binary);
+        final expectedHash = sha1.convert([
+          ...ascii.encode('blob ${binary.length}\x00'),
+          ...binary,
+        ]).toString();
+        expect(hash.exitCode, 0);
+        expect(
+          base64Decode(hash.stdoutBase64),
+          ascii.encode('$expectedHash\n'),
+        );
+        expect(hash.stderrBase64, isEmpty);
+        final diagnostic = await git([
+          'rev-parse',
+          '--verify',
+          'refs/heads/adele-missing-ref',
+        ]);
+        expect(diagnostic.exitCode, 128);
+        expect(diagnostic.stdoutBase64, isEmpty);
+        expect(base64Decode(diagnostic.stderrBase64), isNotEmpty);
+        expect(await index.readAsBytes(), indexBefore);
+        expect(await _git(root, ['show-ref']), refsBefore);
+      }
+
+      // Both maximum binary outputs must fit in one complete generated reply.
+      final maximum = await provider.runBufferedProcess(
+        additional,
+        probe([
+          'outputs',
+          '$environmentBufferedProcessStdoutLimit',
+          '$environmentBufferedProcessStderrLimit',
+          '${stdin.length}',
+        ], stdin: stdin),
+      );
+      expect(maximum.exitCode, 0);
+      expect(
+        decodeEnvironmentProcessBytes(
+          maximum.stdoutBase64,
+          maximumBytes: environmentBufferedProcessStdoutLimit,
+        ),
+        List<int>.generate(
+          environmentBufferedProcessStdoutLimit,
+          (i) => i % 256,
+        ),
+      );
+      expect(
+        decodeEnvironmentProcessBytes(
+          maximum.stderrBase64,
+          maximumBytes: environmentBufferedProcessStderrLimit,
+        ),
+        List<int>.generate(
+          environmentBufferedProcessStderrLimit,
+          (i) => i % 256,
+        ),
+      );
+      await expectLater(
+        provider.runBufferedProcess(
+          EnvironmentId('not-materialized'),
+          probe(['empty']),
+        ),
+        throwsA(_failureWithCode('environment_not_live')),
+      );
+      await expectLater(
+        provider.runBufferedProcess(
+          additional,
+          EnvironmentBufferedProcessRequest(
+            program: '${fixture.container.path}/missing-executable',
+            arguments: const [],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 10,
+            stdinBase64: '',
+          ),
+        ),
+        throwsA(_failureWithCode('process_executable_not_found')),
+      );
+      await expectLater(
+        provider.runBufferedProcess(
+          additional,
+          probe(['wait'], timeoutSeconds: 1),
+        ),
+        throwsA(_failureWithCode('process_timed_out')),
+      );
+      await expectLater(
+        provider.runBufferedProcess(
+          additional,
+          probe(['refuse'], stdin: stdin),
+        ),
+        throwsA(_failureWithCode('process_stdin_failed')),
+      );
+      for (final sizes in [
+        [environmentBufferedProcessStdoutLimit + 1, 0],
+        [0, environmentBufferedProcessStderrLimit + 1],
+      ]) {
+        await expectLater(
+          provider.runBufferedProcess(
+            additional,
+            probe(['outputs', '${sizes[0]}', '${sizes[1]}']),
+          ),
+          throwsA(_failureWithCode('process_output_overflow')),
+        );
+      }
+      final recovered = await provider.runBufferedProcess(
+        primary,
+        probe(['empty']),
+      );
+      expect(recovered.exitCode, 0);
+      expect(recovered.stdoutBase64, isEmpty);
+      expect(recovered.stderrBase64, isEmpty);
+    },
+    timeout: const Timeout(Duration(seconds: 45)),
+    skip: !Platform.isLinux ? 'Buffered Git processes require Linux.' : false,
+  );
 
   test(
     'stock AOT advertises associated changes and routes only authorized live identities',
@@ -1181,7 +1447,7 @@ _createRepository() async {
 
 Future<void> _initializeRepository(Directory source, String marker) async {
   await source.create();
-  await _git(source, <String>['init']);
+  await _git(source, <String>['init', '--object-format=sha1']);
   await _git(source, <String>['config', 'user.name', 'ADELE Test']);
   await _git(source, <String>['config', 'user.email', 'adele@example.invalid']);
   await File('${source.path}/README.md').writeAsString(marker);

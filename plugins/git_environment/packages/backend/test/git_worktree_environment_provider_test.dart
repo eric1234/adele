@@ -194,6 +194,79 @@ void main() {
   });
 
   test(
+    'buffered execution selects exact established and restored worktrees',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final provider = GitWorktreeEnvironmentProvider();
+      addTearDown(provider.close);
+      final environments = [
+        _environment(
+          fixture.source.uri,
+          taskId: 'first-buffered-task',
+          environmentId: 'first-buffered',
+          title: 'First buffered',
+        ),
+        _environment(
+          fixture.source.uri,
+          taskId: 'second-buffered-task',
+          environmentId: 'second-buffered',
+          title: 'Second buffered',
+        ),
+      ];
+      final states = <Map<String, Object?>>[];
+      final roots = <String>[];
+      final request = EnvironmentBufferedProcessRequest(
+        program: 'git',
+        arguments: ['rev-parse', '--show-toplevel'],
+        relativeWorkingDirectory: '',
+        timeoutSeconds: 10,
+        stdinBase64: '',
+      );
+      for (final environment in environments) {
+        states.add((await provider.establish(environment)).providerState);
+        final root = provider.liveObjects.resolve(environment.id).root.path;
+        roots.add(root);
+        final result = await provider.runBufferedProcess(
+          environment.id,
+          request,
+        );
+        expect(result.exitCode, 0);
+        expect(result.stderrBase64, '');
+        expect(
+          decodeEnvironmentProcessBytes(
+            result.stdoutBase64,
+            maximumBytes: environmentBufferedProcessStdoutLimit,
+          ),
+          utf8.encode('$root\n'),
+        );
+      }
+      expect(roots[0], isNot(roots[1]));
+      await provider.close();
+      final restored = GitWorktreeEnvironmentProvider();
+      addTearDown(restored.close);
+      await restored.restore(_retainedEnvironment(environments[1], states[1]));
+      final result = await restored.runBufferedProcess(
+        environments[1].id,
+        request,
+      );
+      expect(
+        decodeEnvironmentProcessBytes(
+          result.stdoutBase64,
+          maximumBytes: environmentBufferedProcessStdoutLimit,
+        ),
+        utf8.encode('${roots[1]}\n'),
+      );
+      await expectLater(
+        restored.runBufferedProcess(environments[0].id, request),
+        throwsA(_failureWithCode('environment_not_live')),
+      );
+      expect(await Directory(roots[0]).exists(), isTrue);
+      expect(await Directory(roots[1]).exists(), isTrue);
+    },
+  );
+
+  test(
     'retains independent baselines after commits and fresh restoration',
     () async {
       final fixture = await _createRepository();

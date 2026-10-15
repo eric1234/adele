@@ -170,8 +170,10 @@ void main() {
       }
       for (final String method in <String>[
         environmentProviderServiceReadFileId,
+        environmentProviderServiceRunBufferedProcessId,
         'authorizedEnvironmentRead.replaceExistingTextFile',
         'authorizedEnvironmentRead.runForegroundProcess',
+        'authorizedEnvironmentRead.runBufferedProcess',
       ]) {
         final Map<String, Object?> response = await dispatcher.dispatch(
           _request(method, <String, Object?>{'relativePath': 'AGENTS.md'}),
