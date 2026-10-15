@@ -15,6 +15,16 @@ import 'worktree_environment.dart';
 
 part 'git_review_approval.dart';
 
+/// Native launch seam for deterministic startup-lifetime tests, never request data.
+typedef GitProcessStarter =
+    Future<Process> Function(
+      String executable,
+      List<String> arguments, {
+      required String workingDirectory,
+      required Map<String, String> environment,
+      required bool includeParentEnvironment,
+    });
+
 /// Provider-local bounds, not caller-selected request settings.
 final class GitChangeSetLimits {
   const GitChangeSetLimits({
@@ -52,7 +62,9 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
     required this.authorizedRead,
     this.limits = const GitChangeSetLimits(),
     Map<String, String>? parentEnvironment,
-  }) : _parentEnvironment = Map.unmodifiable(
+    GitProcessStarter? startGit,
+  }) : _startGit = startGit ?? Process.start,
+       _parentEnvironment = Map.unmodifiable(
          parentEnvironment ?? Platform.environment,
        ) {
     const defaults = GitChangeSetLimits();
@@ -86,6 +98,7 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
   final AuthorizedEnvironmentReadService authorizedRead;
   final GitChangeSetLimits limits;
   final Map<String, String> _parentEnvironment;
+  final GitProcessStarter _startGit;
 
   @override
   Future<ChangeSetSnapshot> snapshotUnstaged() =>
@@ -103,7 +116,7 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
     bool includeStaged, {
     bool includeCommitted = false,
   }) async {
-    final operation = _SnapshotOperation(limits, _parentEnvironment);
+    final operation = _SnapshotOperation(limits, _parentEnvironment, _startGit);
     try {
       return await (() async {
         final identity = await authorizedRead.authority();
@@ -168,10 +181,11 @@ final class GitChangeSetSourceService implements ChangeSetSourceService {
 }
 
 final class _SnapshotOperation {
-  _SnapshotOperation(this.limits, this.parentEnvironment);
+  _SnapshotOperation(this.limits, this.parentEnvironment, this._startGit);
 
   final GitChangeSetLimits limits;
   final Map<String, String> parentEnvironment;
+  final GitProcessStarter _startGit;
   final Set<Process> _processes = {};
   final Set<StreamSubscription<List<int>>> _pipes = {};
   final Set<void Function()> _abortProcesses = {};
@@ -1432,8 +1446,22 @@ final class _SnapshotOperation {
     Timer? timer;
     var launchExpired = false;
     try {
+      checkOpen();
+      final operationRemaining = limits.operationTimeout - _elapsed.elapsed;
+      final processRemaining = limits.processTimeout - watch.elapsed;
+      final operationLimited = operationRemaining <= processRemaining;
+      final startupBudget = operationLimited
+          ? operationRemaining
+          : processRemaining;
+      if (startupBudget <= Duration.zero) {
+        checkOpen();
+        throw _failure(
+          'git_timeout',
+          'Git could not start before its deadline.',
+        );
+      }
       final started =
-          await Process.start(
+          await _startGit(
                 'git',
                 [
                   '--no-pager',
@@ -1478,9 +1506,11 @@ final class _SnapshotOperation {
                 return started;
               })
               .timeout(
-                limits.processTimeout,
+                startupBudget,
                 onTimeout: () {
                   launchExpired = true;
+                  if (operationLimited) expire();
+                  checkOpen();
                   throw _failure(
                     'git_timeout',
                     'Git could not start before its deadline.',

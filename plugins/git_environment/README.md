@@ -371,10 +371,10 @@ Every hunk, file or whole-layer request uses one mechanism:
    using Git's cooperative lockfile protocol. Lock contention fails without retry.
 2. Reobserve HEAD, the complete index and scoped working content while holding that
    lock, validate the expected revision and resolve every selected target.
-3. Copy the complete original index to a private temporary index. Reuse exact-byte
-   verified existing blobs without freshening them, prepare missing raw blobs
-   with `hash-object --no-filters -w --stdin`, verify their content, and update that private index with one
-   NUL-framed `update-index --index-info` request against an empty scratch worktree.
+3. Copy the complete original index to a private temporary index. Verify and protect
+   every selected nondeletion blob as described below, then update that private
+   index with one NUL-framed `update-index --index-info` request against an empty
+   scratch worktree.
    Paths and data are not shell text. Check the prospective index preserves every
    unselected entry; Git's implicit directory/file replacement is not permission
    to alter an unselected path.
@@ -394,6 +394,31 @@ fsmonitor, untracked-cache and unknown extensions are explicitly unavailable rat
 than discarded. A successful operation acknowledges only the single publication,
 not intermediate object or temporary-index writes. There is no sequential
 multi-file partial-success path.
+
+Selected blobs are verified by type, exact expected OID and reconstructed bytes.
+Missing blobs use `hash-object --no-filters -w --stdin`. An existing loose blob
+without a retained root is freshened through that same Git operation, with its
+actual loose-file freshness verified afterward; success alone does not imply Git
+created a loose copy when the object is packed. Already rooted objects are reused
+without gratuitous freshness writes. Root proofs use the retained original index
+or captured HEAD tree/history, never unrelated mutable refs. Historical proof is
+bounded by the existing Git output/deadline policy and excludes unverified grafted
+history. Packed-only blobs without such a proof are explicitly ineligible; ordinary
+packed repositories, including normal unapproval from HEAD, remain supported.
+
+Per-operation loose-file or bounded pack-inventory witnesses are checked after
+Git verifies contents and again at publication. Ordinary GC may move a freshly
+protected loose blob into a pack. One bounded storage reobservation is allowed for
+that relocation, using the same selected bytes, revision, provider, deadline and
+continuously held index lock. It repeats settlement and both authority checks;
+then all final local validation and rename remain synchronous. Missing objects or
+further storage churn reject without publishing an index. No refs, object registry,
+background collector or object-format interpreter is introduced.
+
+Object protection relies on Git's normal freshness/reachability guarantees during
+ordinary cooperative GC, not deliberately aggressive pruning such as `--prune=now`,
+backdated object storage or malicious filesystem replacement. Prepared object writes
+or selected-object freshness updates are not rolled back on a rejected transaction.
 
 On POSIX, publication preserves the authoritative index's existing ordinary
 permission bits (`0777`), including shared-group access under a restrictive umask.
@@ -435,6 +460,13 @@ lock and temporary-file cleanup without waiting for a late authority response or
 starting another authority call. A timed-out underlying Future may still complete,
 but it cannot retain the lock or resume publication. Cleanup may add bounded
 overhead; individual authority calls never reset the operation timeout.
+
+Git subprocess startup likewise receives the smaller of the remaining operation
+budget and the remaining per-process budget. Exhaustion prevents a new launch,
+and liveness is checked again immediately when a process handle arrives. A pending
+startup Future cannot keep the review index lock for another full process timeout;
+late handles are killed. This does not claim to preempt or roll back operating-system
+work that may already have started before its handle becomes available.
 
 These guarantees cover cooperating Git index writers, not hostile same-user
 processes that ignore locks or replace filesystem paths between checks. Working

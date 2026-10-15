@@ -11,7 +11,9 @@ final class GitReviewApprovalService implements ReviewApprovalService {
     required this.authorizedReview,
     this.limits = const GitChangeSetLimits(),
     Map<String, String>? parentEnvironment,
-  }) : _parentEnvironment = Map.unmodifiable(
+    GitProcessStarter? startGit,
+  }) : _startGit = startGit ?? Process.start,
+       _parentEnvironment = Map.unmodifiable(
          parentEnvironment ?? Platform.environment,
        ) {
     // Keep the same provider-owned upper bounds as inspection.
@@ -28,6 +30,7 @@ final class GitReviewApprovalService implements ReviewApprovalService {
   final AuthorizedEnvironmentReviewService authorizedReview;
   final GitChangeSetLimits limits;
   final Map<String, String> _parentEnvironment;
+  final GitProcessStarter _startGit;
 
   @override
   Future<ReviewApprovalResult> approve(ReviewSelection selection) =>
@@ -42,7 +45,7 @@ final class GitReviewApprovalService implements ReviewApprovalService {
     required bool reverse,
   }) async {
     if (!_validSelection(selection)) return _reviewResult('ineligible');
-    final operation = _SnapshotOperation(limits, _parentEnvironment);
+    final operation = _SnapshotOperation(limits, _parentEnvironment, _startGit);
     final deadline = Timer(limits.operationTimeout, operation.expire);
     File? lock;
     RandomAccessFile? lockHandle;
@@ -179,6 +182,10 @@ final class GitReviewApprovalService implements ReviewApprovalService {
           }
         }
         await operation._validateObjectStore(null);
+        final protectedObjects = _ReviewBlobProtection(
+          operation,
+          environment.root,
+        );
         final records = BytesBuilder();
         for (final update in [
           ...updates.entries.where((entry) => entry.value.mode == '000000'),
@@ -188,62 +195,14 @@ final class GitReviewApprovalService implements ReviewApprovalService {
           final mode = update.value.mode;
           var oid = ''.padLeft(operation._reviewHead!.commit.length, '0');
           if (mode != '000000') {
-            final expectedObject = _blobIdentity(
+            oid = _blobIdentity(bytes, operation._reviewHead!.commit.length);
+            if (!await protectedObjects.prepare(
+              oid,
               bytes,
-              operation._reviewHead!.commit.length,
-            );
-            await operation._validateObjectStore(expectedObject);
-            final description = _decode(
-              (await operation.git(
-                environment.root,
-                ['cat-file', '--batch-check=%(objecttype) %(objectsize)'],
-                input: Uint8List.fromList(utf8.encode('$expectedObject\n')),
-                requireCleanStderr: true,
-              )).bytes,
-            );
-            if (description == '$expectedObject missing\n') {
-              final leaf =
-                  '${operation._commonDirectory!.path}/objects/${expectedObject.substring(0, 2)}/${expectedObject.substring(2)}';
-              if (FileSystemEntity.typeSync(leaf, followLinks: false) !=
-                  FileSystemEntityType.notFound) {
-                throw _reviewFailure(
-                  'object_identity_invalid',
-                  'An existing loose object could not be verified.',
-                );
-              }
-              oid = _decode(
-                (await operation.git(
-                  environment.root,
-                  ['hash-object', '--no-filters', '-w', '--stdin'],
-                  privateIndex: privateIndex.path,
-                  input: bytes,
-                )).bytes,
-              ).trim();
-              if (oid != expectedObject) throw _malformed();
-            } else {
-              // Reuse only a verified object. In particular, do not ask Git to
-              // freshen an existing loose or packed object's filesystem mtime.
-              if (description != 'blob ${bytes.length}\n') {
-                throw _reviewFailure(
-                  'object_identity_invalid',
-                  'An existing Git object does not match its blob identity.',
-                );
-              }
-              oid = expectedObject;
-            }
-            if (!_bytesEqual(
-              bytes,
-              (await operation.git(
-                environment.root,
-                ['cat-file', 'blob', expectedObject],
-                requireCleanStderr: true,
-                maximum: math.min(bytes.length + 1, limits.outputBytes),
-              )).bytes,
+              update.key.substring(prefix.length),
+              privateIndex.path,
             )) {
-              throw _reviewFailure(
-                'object_identity_invalid',
-                'Git did not retain the exact prepared blob.',
-              );
+              return _reviewResult('ineligible');
             }
           }
           records.add(utf8.encode('$mode $oid\t${update.key}\u0000'));
@@ -325,56 +284,68 @@ final class GitReviewApprovalService implements ReviewApprovalService {
           lockHandle!.writeFromSync(prospective);
           lockHandle!.flushSync();
         }
-        await operation._settlementValidation!();
-        final currentProof = await operation.awaitAuthority(
-          authorizedReview.authority,
-        );
-        if (currentProof.environmentId != identity.environmentId ||
-            currentProof.sessionId != identity.sessionId) {
-          throw _reviewFailure(
-            'authority_changed',
-            'The review authority changed.',
+        for (var observation = 0; observation < 2; observation++) {
+          await operation._settlementValidation!();
+          final currentProof = await operation.awaitAuthority(
+            authorizedReview.authority,
           );
-        }
-        final current = await operation.awaitAuthority(
-          authorizedRead.authority,
-        );
-        if (current.environmentId != identity.environmentId ||
-            current.sessionId != identity.sessionId) {
-          throw _reviewFailure(
-            'authority_changed',
-            'The Environment authority changed.',
+          if (currentProof.environmentId != identity.environmentId ||
+              currentProof.sessionId != identity.sessionId) {
+            throw _reviewFailure(
+              'authority_changed',
+              'The review authority changed.',
+            );
+          }
+          final current = await operation.awaitAuthority(
+            authorizedRead.authority,
           );
+          if (current.environmentId != identity.environmentId ||
+              current.sessionId != identity.sessionId) {
+            throw _reviewFailure(
+              'authority_changed',
+              'The Environment authority changed.',
+            );
+          }
+          if (!identical(resolve(), environment)) {
+            throw _reviewFailure(
+              'environment_not_live',
+              'The Environment binding changed.',
+            );
+          }
+          // No asynchronous suspension between final local admission and rename.
+          // Cooperating Git writers cannot modify index until this rename removes
+          // our lock. Direct, lock-ignoring filesystem attackers are not supported.
+          operation._validatePublicationSync(environment, indexMode: indexMode);
+          if (!protectedObjects.isCurrent()) {
+            // Ordinary GC can relocate a freshly protected loose blob into a
+            // pack. Reobserve once, then obtain fresh authority again; never reuse
+            // admission across an asynchronous storage check or choose new bytes.
+            if (observation != 0 || !await protectedObjects.reobserve()) {
+              return _reviewResult('stale');
+            }
+            continue;
+          }
+          if (FileSystemEntity.typeSync(lock!.path, followLinks: false) !=
+                  FileSystemEntityType.file ||
+              (indexMode != null &&
+                  FileStat.statSync(lock!.path).mode & 0xfff != indexMode) ||
+              !_bytesEqual(
+                prospective,
+                _readBoundedSync(lock!, _maximumReviewMetadataBytes),
+              )) {
+            throw _reviewFailure(
+              'index_lock_changed',
+              'The index lock changed unexpectedly.',
+            );
+          }
+          lockHandle?.closeSync();
+          lockHandle = null;
+          operation.checkOpen();
+          lock!.renameSync('${gitDirectory.path}/index');
+          ownsLock = false;
+          return _reviewResult('applied');
         }
-        if (!identical(resolve(), environment)) {
-          throw _reviewFailure(
-            'environment_not_live',
-            'The Environment binding changed.',
-          );
-        }
-        // No asynchronous suspension between final local admission and rename.
-        // Cooperating Git writers cannot modify index until this rename removes
-        // our lock. Direct, lock-ignoring filesystem attackers are not supported.
-        operation._validatePublicationSync(environment, indexMode: indexMode);
-        if (FileSystemEntity.typeSync(lock!.path, followLinks: false) !=
-                FileSystemEntityType.file ||
-            (indexMode != null &&
-                FileStat.statSync(lock!.path).mode & 0xfff != indexMode) ||
-            !_bytesEqual(
-              prospective,
-              _readBoundedSync(lock!, _maximumReviewMetadataBytes),
-            )) {
-          throw _reviewFailure(
-            'index_lock_changed',
-            'The index lock changed unexpectedly.',
-          );
-        }
-        lockHandle?.closeSync();
-        lockHandle = null;
-        operation.checkOpen();
-        lock!.renameSync('${gitDirectory.path}/index');
-        ownsLock = false;
-        return _reviewResult('applied');
+        throw StateError('Review publication observation exhausted.');
       })();
     } on TimeoutException {
       throw _reviewFailure(
@@ -453,6 +424,298 @@ final class _ReviewFile {
   final Uint8List current;
   final String oldMode;
   final String newMode;
+}
+
+/// Per-transaction storage observations, not an object registry. Git remains the
+/// object reader/writer; ordinary GC may move a freshly protected loose object.
+final class _ReviewBlobProtection {
+  _ReviewBlobProtection(this.operation, this.root);
+  final _SnapshotOperation operation;
+  final Directory root;
+  final Map<String, ({Uint8List bytes, DateTime? fresh})> _selected = {};
+  final Map<String, FileStat> _loose = {};
+  ({FileStat directory, Map<String, FileStat> files})? _packs;
+  Set<String>? _indexRoots;
+  Set<String>? _history;
+  bool _historyUnavailable = false;
+
+  String _loosePath(String oid) =>
+      '${operation._commonDirectory!.path}/objects/${oid.substring(0, 2)}/${oid.substring(2)}';
+
+  Future<String> _description(String oid) async => _decode(
+    (await operation.git(
+      root,
+      ['cat-file', '--batch-check=%(objecttype) %(objectsize)'],
+      input: Uint8List.fromList(utf8.encode('$oid\n')),
+      requireCleanStderr: true,
+    )).bytes,
+  );
+
+  Future<void> _verify(String oid, Uint8List bytes) async {
+    if (await _description(oid) != 'blob ${bytes.length}\n' ||
+        !_bytesEqual(
+          bytes,
+          (await operation.git(
+            root,
+            ['cat-file', 'blob', oid],
+            maximum: math.min(bytes.length + 1, operation.limits.outputBytes),
+            requireCleanStderr: true,
+          )).bytes,
+        )) {
+      throw _reviewFailure(
+        'object_identity_invalid',
+        'Git did not retain the exact selected blob.',
+      );
+    }
+  }
+
+  Future<bool> _rooted(String oid, String path, {required bool history}) async {
+    if (_indexRoots == null) {
+      _indexRoots = {};
+      for (final entry in operation._completeIndexEntries.values) {
+        operation.checkOpen();
+        _indexRoots!.add(
+          entry
+              .skip(40)
+              .take(oid.length ~/ 2)
+              .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+              .join(),
+        );
+      }
+    }
+    if (_indexRoots!.contains(oid)) return true;
+    // A direct tip-tree lookup avoids walking unrelated history for ordinary
+    // whole-file unapproval and never renders the staged layer during Approve.
+    final tree = _decode(
+      (await operation.git(root, [
+        'ls-tree',
+        '-z',
+        operation._reviewHead!.commit,
+        '--',
+        path,
+      ])).bytes,
+    );
+    if (tree.isNotEmpty) {
+      final tab = tree.indexOf('\t');
+      if (tab < 0 || tree.indexOf('\u0000') != tree.length - 1) {
+        throw _malformed();
+      }
+      if (tree.substring(0, tab).split(' ').last == oid) return true;
+    }
+    if (!history || _historyUnavailable) return false;
+    if (_history == null) {
+      // Grafted or changing shallow history cannot establish a stable GC root.
+      final common = operation._commonDirectory!.path;
+      try {
+        operation._captureReviewMetadata('$common/info/grafts');
+        operation._captureReviewMetadata('$common/shallow');
+        if (operation._reviewMetadataFiles['$common/info/grafts']!.bytes !=
+            null) {
+          _historyUnavailable = true;
+          return false;
+        }
+        final raw = _decode(
+          (await operation.git(root, [
+            'rev-list',
+            '--objects',
+            '--no-object-names',
+            operation._reviewHead!.commit,
+          ])).bytes,
+        );
+        final identities = raw.split('\n').where((line) => line.isNotEmpty);
+        final valid = RegExp('^[0-9a-f]{${oid.length}}\$');
+        _history = {};
+        for (final identity in identities) {
+          operation.checkOpen();
+          if (!valid.hasMatch(identity)) throw _malformed();
+          _history!.add(identity);
+        }
+      } on ChangeSetFailure catch (error) {
+        if (error.code != 'git_output_limit' &&
+            error.code != 'review_metadata_unavailable') {
+          rethrow;
+        }
+        _historyUnavailable = true;
+        return false;
+      }
+    }
+    return _history!.contains(oid);
+  }
+
+  Future<bool> prepare(
+    String oid,
+    Uint8List bytes,
+    String path,
+    String privateIndex,
+  ) async {
+    if (_selected.containsKey(oid)) return true;
+    await operation._validateObjectStore(oid);
+    final missing = await _description(oid) == '$oid missing\n';
+    final leaf = File(_loosePath(oid));
+    final loose =
+        FileSystemEntity.typeSync(leaf.path, followLinks: false) ==
+        FileSystemEntityType.file;
+    if (missing &&
+        FileSystemEntity.typeSync(leaf.path, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+      throw _reviewFailure(
+        'object_identity_invalid',
+        'An existing loose object could not be verified.',
+      );
+    }
+    if (!missing) await _verify(oid, bytes);
+    var rooted = !missing && await _rooted(oid, path, history: !loose);
+    DateTime? fresh;
+    if (missing || (loose && !rooted)) {
+      final beforeWrite = DateTime.fromMillisecondsSinceEpoch(
+        DateTime.now().millisecondsSinceEpoch ~/ 1000 * 1000,
+      );
+      await operation._validateObjectStore(oid);
+      final written = _decode(
+        (await operation.git(
+          root,
+          ['hash-object', '--no-filters', '-w', '--stdin'],
+          privateIndex: privateIndex,
+          input: bytes,
+        )).bytes,
+      ).trim();
+      if (written != oid) throw _malformed();
+      await operation._validateObjectStore(oid);
+      final state = leaf.statSync();
+      // Git may choose an existing pack instead of making/freshening a loose
+      // object. Only an observed fresh loose file grants freshness provenance.
+      if (state.type == FileSystemEntityType.file &&
+          !state.modified.isBefore(beforeWrite)) {
+        fresh = beforeWrite;
+      } else {
+        rooted = await _rooted(oid, path, history: true);
+      }
+    }
+    if (!rooted && fresh == null) return false;
+    _selected[oid] = (bytes: bytes, fresh: fresh);
+    return await _observe(oid);
+  }
+
+  Future<({FileStat directory, Map<String, FileStat> files})>
+  _packInventory() async {
+    final directory = Directory(
+      '${operation._commonDirectory!.path}/objects/pack',
+    );
+    if (FileSystemEntity.typeSync(directory.path, followLinks: false) !=
+            FileSystemEntityType.directory ||
+        directory.resolveSymbolicLinksSync() != directory.path) {
+      throw _failure('snapshot_changed', 'Git object storage changed.');
+    }
+    final state = directory.statSync();
+    final result = <String, FileStat>{};
+    await for (final entry in directory.list(followLinks: false)) {
+      operation.checkOpen();
+      if (result.length >= operation.limits.inventoryEntries ||
+          FileSystemEntity.typeSync(entry.path, followLinks: false) !=
+              FileSystemEntityType.file) {
+        throw _failure(
+          'snapshot_changed',
+          'Git object storage cannot be verified.',
+        );
+      }
+      final stat = entry.statSync();
+      if (stat.mode & 0xf000 != 0x8000) {
+        throw _failure('snapshot_changed', 'Git object storage changed.');
+      }
+      result[entry.path] = stat;
+    }
+    if (!_sameState(state, directory.statSync())) {
+      throw _failure('snapshot_changed', 'Git object storage changed.');
+    }
+    return (directory: state, files: result);
+  }
+
+  bool _packsCurrent(
+    ({FileStat directory, Map<String, FileStat> files}) before,
+  ) {
+    final directory = Directory(
+      '${operation._commonDirectory!.path}/objects/pack',
+    );
+    if (FileSystemEntity.typeSync(directory.path, followLinks: false) !=
+            FileSystemEntityType.directory ||
+        directory.resolveSymbolicLinksSync() != directory.path ||
+        !_sameState(before.directory, directory.statSync())) {
+      return false;
+    }
+    // Never enumerate at publication: only inspect retained bounded paths and
+    // directory identity/state. New membership causes reobservation or rejection.
+    for (final entry in before.files.entries) {
+      operation.checkOpen();
+      if (FileSystemEntity.typeSync(entry.key, followLinks: false) !=
+              FileSystemEntityType.file ||
+          !_sameState(entry.value, FileStat.statSync(entry.key))) {
+        return false;
+      }
+    }
+    return _sameState(before.directory, directory.statSync());
+  }
+
+  Future<bool> _observe(String oid) async {
+    await operation._validateObjectStore(oid);
+    final value = _selected[oid]!;
+    final path = _loosePath(oid);
+    final state = FileStat.statSync(path);
+    final loose =
+        FileSystemEntity.typeSync(path, followLinks: false) ==
+        FileSystemEntityType.file;
+    final packs = loose ? null : await _packInventory();
+    if (loose && value.fresh != null && state.modified.isBefore(value.fresh!)) {
+      return false;
+    }
+    await _verify(oid, value.bytes);
+    await operation._validateObjectStore(oid);
+    if (loose) {
+      if (!_sameState(state, FileStat.statSync(path))) return false;
+      _loose[oid] = state;
+    } else {
+      if (FileSystemEntity.typeSync(path, followLinks: false) !=
+              FileSystemEntityType.notFound ||
+          !_packsCurrent(packs!) ||
+          (_packs != null && !_packsCurrent(_packs!))) {
+        return false;
+      }
+      _packs = packs;
+    }
+    return true;
+  }
+
+  Future<bool> reobserve() async {
+    _loose.clear();
+    _packs = null;
+    for (final oid in _selected.keys) {
+      if (!await _observe(oid)) return false;
+    }
+    return true;
+  }
+
+  bool isCurrent() {
+    try {
+      operation.checkOpen();
+      final objects = Directory('${operation._commonDirectory!.path}/objects');
+      if (FileSystemEntity.typeSync(objects.path, followLinks: false) !=
+              FileSystemEntityType.directory ||
+          objects.resolveSymbolicLinksSync() != objects.path) {
+        return false;
+      }
+      for (final entry in _loose.entries) {
+        final file = File(_loosePath(entry.key));
+        if (FileSystemEntity.typeSync(file.path, followLinks: false) !=
+                FileSystemEntityType.file ||
+            file.parent.resolveSymbolicLinksSync() != file.parent.path ||
+            !_sameState(entry.value, file.statSync())) {
+          return false;
+        }
+      }
+      return _packs == null || _packsCurrent(_packs!);
+    } on FileSystemException {
+      return false;
+    }
+  }
 }
 
 Uint8List _reconstructHunk(_ReviewFile file, DiffHunk hunk, bool reverse) {

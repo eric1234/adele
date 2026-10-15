@@ -19,6 +19,172 @@ void main() {
   setUp(() async => fixture = await _Repository.create());
   tearDown(() async => fixture.close());
 
+  for (final operationLimited in [true, false]) {
+    test(
+      'Git startup completion obeys ${operationLimited ? 'operation' : 'process'} budget while locked',
+      () async {
+        await fixture.write('file', 'startup deadline change\n');
+        final snapshot = await fixture.source.snapshotUnstaged();
+        final before = await fixture.index.readAsBytes();
+        final fifo = File('${fixture.container.path}/late-start-gate');
+        expect((await Process.run('mkfifo', [fifo.path])).exitCode, 0);
+        final marker = File('${fixture.container.path}/late-start-mutated');
+        const budget = Duration(seconds: 5);
+        const grace = Duration(milliseconds: 800);
+        final perProcess = operationLimited
+            ? const Duration(seconds: 4)
+            : const Duration(milliseconds: 500);
+        final entered = Completer<Duration>();
+        final deliver = Completer<void>();
+        final launched = Completer<Process>();
+        final clock = Stopwatch()..start();
+        var consumedPreparation = false;
+        Timer? preparationTimer;
+        Process? lateProcess;
+        var lateTerminated = false;
+        final pending = fixture
+            .reviewWith(
+              limits: GitChangeSetLimits(
+                operationTimeout: budget,
+                processTimeout: perProcess,
+              ),
+              startGit:
+                  (
+                    executable,
+                    arguments, {
+                    required workingDirectory,
+                    required environment,
+                    required includeParentEnvironment,
+                  }) async {
+                    if (operationLimited &&
+                        !consumedPreparation &&
+                        arguments.contains('hash-object') &&
+                        arguments.contains('-w')) {
+                      expect(await fixture.lock.exists(), isTrue);
+                      consumedPreparation = true;
+                      final prepared = Completer<void>();
+                      preparationTimer = Timer(
+                        const Duration(seconds: 2),
+                        prepared.complete,
+                      );
+                      await prepared.future;
+                    }
+                    if (arguments.contains('update-index')) {
+                      expect(await fixture.lock.exists(), isTrue);
+                      expect(includeParentEnvironment, isFalse);
+                      expect(environment['GIT_INDEX_FILE'], isNotNull);
+                      entered.complete(clock.elapsed);
+                      // The production start Future itself remains unresolved. This is
+                      // not a slow Git process that has already returned a Process handle.
+                      await deliver.future;
+                      lateProcess = await Process.start(
+                        '/bin/sh',
+                        [
+                          '-c',
+                          r'read release < "$1"; : > "$2"',
+                          'late-start',
+                          fifo.path,
+                          marker.path,
+                        ],
+                        workingDirectory: fixture.container.path,
+                        environment: const {'PATH': '/usr/bin:/bin'},
+                        includeParentEnvironment: false,
+                      );
+                      launched.complete(lateProcess!);
+                      return lateProcess!;
+                    }
+                    return Process.start(
+                      executable,
+                      arguments,
+                      workingDirectory: workingDirectory,
+                      environment: environment,
+                      includeParentEnvironment: includeParentEnvironment,
+                    );
+                  },
+            )
+            .approve(_select(snapshot, 'file', path: 'file'));
+        final settled = pending.then<Object>(
+          (value) => value,
+          onError: (Object error) => error,
+        );
+        Object? atDeadline;
+        bool? heldPastDeadline;
+        try {
+          final startedAt = await Future.any<Duration>([
+            entered.future,
+            settled.then<Duration>(
+              (value) => throw StateError(
+                'Operation ended before startup gate: $value',
+              ),
+            ),
+          ]);
+          if (operationLimited) {
+            expect(consumedPreparation, isTrue);
+            expect(budget - startedAt, lessThan(perProcess));
+          } else {
+            expect(budget - startedAt, greaterThan(perProcess));
+          }
+          final expectedEnd = operationLimited
+              ? budget
+              : startedAt + perProcess;
+          atDeadline = await settled.timeout(
+            expectedEnd + grace - clock.elapsed,
+            onTimeout: () => _Unsettled(),
+          );
+          heldPastDeadline = await fixture.lock.exists();
+          final settledAt = clock.elapsed;
+          expect(await fixture.index.readAsBytes(), before);
+          expect(await fixture.read('file'), 'startup deadline change\n');
+          if (atDeadline is ReviewApprovalFailure) {
+            expect(deliver.isCompleted, isFalse);
+            expect(heldPastDeadline, isFalse);
+            await fixture.write('unrelated', 'later writer\n');
+            await fixture.git(['add', 'unrelated']);
+            final laterIndex = await fixture.index.readAsBytes();
+            deliver.complete();
+            final process = await launched.future;
+            expect(
+              await process.exitCode.timeout(const Duration(seconds: 2)),
+              isNot(0),
+            );
+            lateTerminated = true;
+            await Future.wait([
+              process.stdout.drain<void>(),
+              process.stderr.drain<void>(),
+            ]);
+            expect(await marker.exists(), isFalse);
+            expect(await fixture.index.readAsBytes(), laterIndex);
+            expect(await fixture.lock.exists(), isFalse);
+          }
+          print(
+            'Git startup ${operationLimited ? 'operation' : 'process'} budget: '
+            'start pending at ${startedAt.inMilliseconds}ms, '
+            'observed settled/cleanup by ${settledAt.inMilliseconds}ms.',
+          );
+        } finally {
+          preparationTimer?.cancel();
+          if (!deliver.isCompleted) deliver.complete();
+          await settled;
+          if (entered.isCompleted) {
+            final process = await launched.future;
+            if (!lateTerminated) process.kill(ProcessSignal.sigkill);
+            await process.exitCode;
+          }
+        }
+        expect(
+          atDeadline,
+          isA<ReviewApprovalFailure>().having(
+            (error) => error.code,
+            'code',
+            operationLimited ? 'operation_timeout' : 'git_timeout',
+          ),
+        );
+        expect(heldPastDeadline, isFalse);
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
   test(
     'POSIX index permissions survive restrictive and ordinary umasks',
     () async {
@@ -3306,6 +3472,390 @@ exec /usr/bin/git "\$@"
     },
   );
 
+  test('Git native selected-object freshness behavior', () async {
+    await fixture.git(['gc']);
+    const selected = 'freshness primitive\n';
+    await fixture.write('file', selected);
+    final oid = (await fixture.git([
+      'hash-object',
+      '--no-filters',
+      '-w',
+      '--',
+      'file',
+    ])).trim();
+    final loose = File(
+      '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+    );
+    await loose.setLastModified(DateTime.utc(2000));
+    await fixture.git(['hash-object', '--no-filters', '-w', '--', 'file']);
+    expect((await loose.stat()).modified.toUtc(), isNot(DateTime.utc(2000)));
+    await fixture.git(['gc']);
+    expect(await fixture.git(['cat-file', 'blob', oid]), selected);
+  });
+
+  test(
+    'packed-only unreachable selected blobs are explicitly ineligible',
+    () async {
+      await fixture.git(['gc']);
+      const selected = 'packed-only unreachable selection\n';
+      await fixture.write('file', selected);
+      final oid = (await fixture.git([
+        'hash-object',
+        '--no-filters',
+        '-w',
+        '--',
+        'file',
+      ])).trim();
+      final packRoot = '${fixture.repository.path}/.git/objects/pack';
+      await fixture.gitInput(['pack-objects', '$packRoot/pack'], '$oid\n');
+      await fixture.git(['prune-packed']);
+      final loose = File(
+        '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+      );
+      expect(await loose.exists(), isFalse);
+      final snapshot = await fixture.source.snapshotUnstaged();
+      final before = await fixture.index.readAsBytes();
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        )).status,
+        'ineligible',
+      );
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.git(['cat-file', 'blob', oid]), selected);
+      expect(await fixture.read('file'), selected);
+      expect(await fixture.lock.exists(), isFalse);
+    },
+  );
+
+  test(
+    'packed selected blobs rooted in captured HEAD history remain supported',
+    () async {
+      const historical = 'reachable earlier contents\n';
+      await fixture.write('file', historical);
+      await fixture.git(['add', 'file']);
+      await fixture.git(['commit', '-m', 'Earlier contents']);
+      final oid = (await fixture.git(['rev-parse', 'HEAD:file'])).trim();
+      await fixture.write('file', 'current committed contents\n');
+      await fixture.git(['add', 'file']);
+      await fixture.git(['commit', '-m', 'Current contents']);
+      await fixture.git(['gc']);
+      final loose = File(
+        '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+      );
+      expect(await loose.exists(), isFalse);
+      await fixture.write('file', historical);
+      final snapshot = await fixture.source.snapshotUnstaged();
+      final head = await fixture.git(['rev-parse', 'HEAD']);
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        )).status,
+        'applied',
+      );
+      expect(await fixture.indexText('file'), historical);
+      expect(await loose.exists(), isFalse);
+      expect(await fixture.git(['rev-parse', 'HEAD']), head);
+      expect(await fixture.read('file'), historical);
+    },
+  );
+
+  test(
+    'ordinary GC preserves multiple prepared blobs in one whole-layer operation',
+    () async {
+      await fixture.git(['gc']);
+      await fixture.write('file', 'old selected All content\n');
+      final oid = (await fixture.git([
+        'hash-object',
+        '--no-filters',
+        '-w',
+        '--',
+        'file',
+      ])).trim();
+      final loose = File(
+        '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+      );
+      await loose.setLastModified(DateTime.utc(2000));
+      await fixture.write('new-file', 'new selected All content\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      fixture.authority.onRead = (call) async {
+        if (call == 4) await fixture.git(['gc']);
+      };
+      expect(
+        (await fixture.review.approve(_select(snapshot, 'layer'))).status,
+        'applied',
+      );
+      expect(await fixture.indexText('file'), 'old selected All content\n');
+      expect(await fixture.indexText('new-file'), 'new selected All content\n');
+      expect(
+        await fixture.git(['cat-file', 'blob', oid]),
+        'old selected All content\n',
+      );
+      expect(await fixture.read('file'), 'old selected All content\n');
+      expect(await fixture.read('new-file'), 'new selected All content\n');
+      expect(await fixture.lock.exists(), isFalse);
+    },
+  );
+
+  test('selected blob lost after preparation never publishes an index', () async {
+    const selected = 'lost prepared selection\n';
+    await fixture.write('file', selected);
+    final oid = (await fixture.git([
+      'hash-object',
+      '--no-filters',
+      '--',
+      'file',
+    ])).trim();
+    final loose = File(
+      '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+    );
+    final snapshot = await fixture.source.snapshotUnstaged();
+    final index = await fixture.index.readAsBytes();
+    fixture.authority.onRead = (call) async {
+      if (call == 4) {
+        expect(await loose.exists(), isTrue);
+        await loose.delete();
+      }
+    };
+    await expectLater(
+      fixture.review.approve(_select(snapshot, 'file', path: 'file')),
+      throwsA(
+        isA<ReviewApprovalFailure>().having(
+          (error) => error.code,
+          'code',
+          'object_identity_invalid',
+        ),
+      ),
+    );
+    expect(await fixture.index.readAsBytes(), index);
+    expect(await fixture.read('file'), selected);
+    expect(await fixture.lock.exists(), isFalse);
+  });
+
+  test(
+    'reachable loose selected blobs need no gratuitous freshness write',
+    () async {
+      final oid = (await fixture.git(['rev-parse', 'HEAD:file'])).trim();
+      final loose = File(
+        '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+      );
+      await loose.setLastModified(DateTime.utc(2000));
+      await fixture.write('file', 'staged current contents\n');
+      await fixture.git(['add', 'file']);
+      final staged = (await fixture.source.snapshotUncommitted()).staged;
+      expect(
+        (await fixture.review.unapprove(
+          _select(staged, 'file', path: 'file'),
+        )).status,
+        'applied',
+      );
+      expect((await loose.stat()).modified.toUtc(), DateTime.utc(2000));
+      expect(await fixture.indexText('file'), fixture.original);
+      expect(await fixture.read('file'), 'staged current contents\n');
+    },
+  );
+
+  test(
+    'repeated selected-object storage churn rejects without index publication',
+    () async {
+      await fixture.git(['gc']);
+      await fixture.write('file', 'bounded relocation content\n');
+      final snapshot = await fixture.source.snapshotUnstaged();
+      final before = await fixture.index.readAsBytes();
+      fixture.authority.onRead = (call) async {
+        if (call == 4) await fixture.git(['gc']);
+        if (call == 5) {
+          final pack = await Directory(
+            '${fixture.repository.path}/.git/objects/pack',
+          ).list().firstWhere((entry) => entry.path.endsWith('.pack'));
+          await File(
+            '${pack.path.substring(0, pack.path.length - 5)}.keep',
+          ).writeAsString('concurrent storage change\n');
+        }
+      };
+      expect(
+        (await fixture.review.approve(
+          _select(snapshot, 'file', path: 'file'),
+        )).status,
+        'stale',
+      );
+      expect(fixture.authority.reads, 5);
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.read('file'), 'bounded relocation content\n');
+      expect(await fixture.lock.exists(), isFalse);
+    },
+  );
+
+  test('GC relocation requires fresh authority before publication', () async {
+    await fixture.git(['gc']);
+    await fixture.write('file', 'relocated but revoked\n');
+    final snapshot = await fixture.source.snapshotUnstaged();
+    final before = await fixture.index.readAsBytes();
+    fixture.authority.onRead = (call) async {
+      if (call == 4) await fixture.git(['gc']);
+    };
+    fixture.authority.onReview = (call) {
+      if (call == 3) fixture.authority.revoked = true;
+    };
+    await expectLater(
+      fixture.review.approve(_select(snapshot, 'file', path: 'file')),
+      throwsStateError,
+    );
+    expect(fixture.authority.reviewReads, 3);
+    expect(fixture.authority.reads, 4);
+    expect(await fixture.index.readAsBytes(), before);
+    expect(await fixture.read('file'), 'relocated but revoked\n');
+    expect(await fixture.lock.exists(), isFalse);
+  });
+
+  test(
+    'late pack inventory growth is rejected without synchronous enumeration',
+    () async {
+      await fixture.git(['gc']);
+      await fixture.write('file', 'staged while packs grow\n');
+      await fixture.git(['add', 'file']);
+      final staged = (await fixture.source.snapshotUncommitted()).staged;
+      final before = await fixture.index.readAsBytes();
+      final packPath = '${fixture.repository.path}/.git/objects/pack';
+      fixture.authority.onRead = (call) async {
+        if (call == 4) {
+          for (var i = 0; i < 33; i++) {
+            await File(
+              '$packPath/concurrent-$i.keep',
+            ).writeAsString('bounded witness\n');
+          }
+        }
+      };
+      final parent = Zone.current;
+      final outcome =
+          await IOOverrides.runZoned(
+            () => fixture
+                .reviewWith(
+                  limits: const GitChangeSetLimits(inventoryEntries: 32),
+                )
+                .unapprove(_select(staged, 'file', path: 'file')),
+            fseGetType: (path, followLinks) => parent.run(
+              () => FileSystemEntity.type(path, followLinks: followLinks),
+            ),
+            createDirectory: (path) {
+              final directory = parent.run(() => Directory(path));
+              return path == packPath
+                  ? _NoSyncPackEnumeration(directory)
+                  : directory;
+            },
+          ).then<Object>(
+            (result) => result.status,
+            onError: (Object error) => error,
+          );
+      expect(fixture.authority.reads, 4);
+      expect(outcome, 'stale');
+      expect(await fixture.index.readAsBytes(), before);
+      expect(await fixture.read('file'), 'staged while packs grow\n');
+      expect(await fixture.lock.exists(), isFalse);
+    },
+  );
+
+  test('packed history proof respects existing output bounds', () async {
+    const historical = 'bounded old packed contents\n';
+    await fixture.write('file', historical);
+    await fixture.git(['add', 'file']);
+    await fixture.git(['commit', '-m', 'Old contents']);
+    for (var i = 0; i < 8; i++) {
+      await fixture.write('file', 'later version $i\n');
+      await fixture.git(['add', 'file']);
+      await fixture.git(['commit', '-m', 'Later contents $i']);
+    }
+    await fixture.git(['gc']);
+    await fixture.write('file', historical);
+    const limits = GitChangeSetLimits(outputBytes: 512);
+    final source = GitChangeSetSourceService(
+      provider: fixture.provider,
+      authorizedRead: fixture.authority,
+      parentEnvironment: fixture.environment,
+      limits: limits,
+    );
+    final snapshot = await source.snapshotUnstaged();
+    expect(snapshot.reviewRevision, isNotNull);
+    final before = await fixture.index.readAsBytes();
+    expect(
+      (await fixture
+              .reviewWith(limits: limits)
+              .approve(_select(snapshot, 'file', path: 'file')))
+          .status,
+      'ineligible',
+    );
+    expect(await fixture.index.readAsBytes(), before);
+    expect(await fixture.read('file'), historical);
+    expect(await fixture.lock.exists(), isFalse);
+  });
+
+  for (final gate in ['review', 'read']) {
+    test(
+      'ordinary GC cannot remove an old selected unreachable loose blob at $gate authority',
+      () async {
+        await fixture.git(['gc']);
+        const selected = 'old unreachable selected content\n';
+        await fixture.write('file', selected);
+        final oid = (await fixture.git([
+          'hash-object',
+          '--no-filters',
+          '-w',
+          '--',
+          'file',
+        ])).trim();
+        final loose = File(
+          '${fixture.repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+        );
+        await loose.setLastModified(DateTime.utc(2000));
+        await fixture.write('unrelated', 'unrelated staged content\n');
+        await fixture.git(['add', 'unrelated']);
+        final head = await fixture.git(['rev-parse', 'HEAD']);
+        final neighbor = await fixture.git([
+          'ls-files',
+          '--stage',
+          '--debug',
+          '--',
+          'unrelated',
+        ]);
+        final snapshot = await fixture.source.snapshotUnstaged();
+        Future<void> collect(int call) async {
+          if (call == (gate == 'review' ? 2 : 4)) {
+            expect(await fixture.lock.exists(), isTrue);
+            await fixture.git(['gc']);
+          }
+        }
+
+        if (gate == 'review') {
+          fixture.authority.onReview = collect;
+        } else {
+          fixture.authority.onRead = collect;
+        }
+        expect(
+          (await fixture.review.approve(
+            _select(snapshot, 'file', path: 'file'),
+          )).status,
+          'applied',
+        );
+        expect(await fixture.git(['cat-file', 'blob', oid]), selected);
+        expect(await fixture.indexText('file'), selected);
+        expect(await fixture.git(['rev-parse', 'HEAD']), head);
+        expect(
+          await fixture.git([
+            'ls-files',
+            '--stage',
+            '--debug',
+            '--',
+            'unrelated',
+          ]),
+          neighbor,
+        );
+        expect(await fixture.read('file'), selected);
+        expect(await fixture.read('unrelated'), 'unrelated staged content\n');
+        expect(await fixture.lock.exists(), isFalse);
+      },
+    );
+  }
+
   test('unstaged-only approval never skips a conflict in Whole All', () async {
     await fixture.write('file', 'working\n');
     final oid = (await fixture.git(['rev-parse', 'HEAD:unrelated'])).trim();
@@ -3345,6 +3895,33 @@ ReviewSelection _select(
 );
 
 final class _Unsettled {}
+
+final class _NoSyncPackEnumeration implements Directory {
+  _NoSyncPackEnumeration(this.directory);
+  final Directory directory;
+  @override
+  String get path => directory.path;
+  @override
+  bool existsSync() => directory.existsSync();
+  @override
+  Future<String> resolveSymbolicLinks() => directory.resolveSymbolicLinks();
+  @override
+  String resolveSymbolicLinksSync() => directory.resolveSymbolicLinksSync();
+  @override
+  FileStat statSync() => directory.statSync();
+  @override
+  Stream<FileSystemEntity> list({
+    bool recursive = false,
+    bool followLinks = true,
+  }) => directory.list(recursive: recursive, followLinks: followLinks);
+  @override
+  List<FileSystemEntity> listSync({
+    bool recursive = false,
+    bool followLinks = true,
+  }) => throw StateError('Pack inventory must be bounded before enumeration.');
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 final class _IndexLockProbe implements File {
   _IndexLockProbe(this.file, this.created);
@@ -3468,11 +4045,13 @@ final class _Repository {
   GitReviewApprovalService reviewWith({
     Map<String, String>? parentEnvironment,
     GitChangeSetLimits limits = const GitChangeSetLimits(),
+    GitProcessStarter? startGit,
   }) => GitReviewApprovalService(
     provider: provider,
     authorizedRead: authority,
     authorizedReview: _Proof(authority),
     limits: limits,
+    startGit: startGit,
     parentEnvironment: {...environment, ...?parentEnvironment},
   );
   void bind({String? scope}) {
