@@ -38,7 +38,7 @@ final class SourceCodingLiveArtifacts {
   String get dartAotRuntime => value.dartAotRuntime;
   File get hostArtifact => value.hostArtifact;
   File get openAiArtifact => value.openAiArtifact;
-  File get gitEnvironmentArtifact => value.gitEnvironmentArtifact;
+  File get gitArtifact => value.gitArtifact;
 
   static Future<SourceCodingLiveArtifacts> compile(String scope) async {
     final Directory repository = Directory.current.parent;

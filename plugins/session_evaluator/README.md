@@ -359,8 +359,8 @@ handoff directories manually when no longer needed.
 
 The companion README records captured Project, Task, Session, and Environment
 identities plus validated local source hints when available. The development helper
-recognizes only the stock Git Environment provider's v1 retained state, validates
-its retained identity fields, relative paths, and selected-source scope against the
+recognizes only v1 retained state from the stock Git plugin's Environment provider,
+validates its retained identity fields, relative paths, and selected-source scope against the
 Project source's nearest enclosing checkout marker. It resolves
 the Project source canonically, then requires direct derived worktree/scope paths
 and a direct checkout marker, rejecting symlinks in those derived paths. This is

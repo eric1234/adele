@@ -6,7 +6,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
-import 'package:git_environment_backend/git_environment_backend.dart';
+import 'package:git_backend/git_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final String? helperPath =

@@ -26,7 +26,7 @@ import '../../tool/self_hosting/development_self_hosting.dart';
 const _searchId = 'dev.adele.plugin.search-tools';
 const _filesystemId = 'dev.adele.plugin.filesystem-tools';
 const _commandId = 'dev.adele.plugin.command-tools';
-const _gitId = 'dev.adele.plugin.git-environment';
+const _gitId = 'dev.adele.plugin.git';
 const _bound = Duration(seconds: 10);
 int _nextCommandInvocation = 0;
 
@@ -75,8 +75,7 @@ void main() {
         artifact: commandArtifact,
       ),
       (
-        entrypoint:
-            'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
         artifact: gitArtifact,
       ),
     ]) {

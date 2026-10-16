@@ -6,8 +6,8 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:git_environment_backend/git_environment_backend.dart';
-import 'package:git_environment_backend/src/foreground_process.dart';
+import 'package:git_backend/git_backend.dart';
+import 'package:git_backend/src/foreground_process.dart';
 import 'package:test/test.dart';
 
 void main() {

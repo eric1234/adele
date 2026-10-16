@@ -1,5 +1,5 @@
-name: git_environment
-description: Workspace root for the stock Git worktree Environment plugin.
+name: git
+description: Workspace root for the stock Git plugin.
 publish_to: none
 version: 0.1.0
 

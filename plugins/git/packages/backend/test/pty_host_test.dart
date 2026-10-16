@@ -46,7 +46,7 @@ void main() {
       '-Wall',
       '-Wextra',
       '-Werror',
-      '$repository/plugins/git_environment/packages/backend/test/fixtures/pty_child.c',
+      '$repository/plugins/git/packages/backend/test/fixtures/pty_child.c',
       '-o',
       child.path,
     ]);
@@ -59,8 +59,8 @@ void main() {
       '-DPTY_IO_FAULTS',
       '-Wl,--wrap=read',
       '-Wl,--wrap=write',
-      '$repository/plugins/git_environment/packages/backend/native/git_pty_helper.c',
-      '$repository/plugins/git_environment/packages/backend/test/fixtures/pty_child.c',
+      '$repository/plugins/git/packages/backend/native/git_pty_helper.c',
+      '$repository/plugins/git/packages/backend/test/fixtures/pty_child.c',
       '-o',
       faultHelper.path,
       '-lutil',
@@ -76,7 +76,7 @@ void main() {
       _run(dart, [
         'compile',
         'aot-snapshot',
-        '$repository/plugins/git_environment/packages/backend/test/fixtures/pty_backend.dart',
+        '$repository/plugins/git/packages/backend/test/fixtures/pty_backend.dart',
         '-o',
         backendAot.path,
       ]),

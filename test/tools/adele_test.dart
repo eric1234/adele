@@ -494,7 +494,7 @@ void main() {
             for (final TestTarget target in testTargets)
               target.name: switch (target.name) {
                 'contract_codegen' => 4,
-                'git_environment_backend' || 'adele_desktop' => 1,
+                'git_backend' || 'adele_desktop' => 1,
                 _ => null,
               },
           },
@@ -595,7 +595,7 @@ void main() {
           steps.singleWhere(
             (step) => step['name'] == 'Install Linux PTY test prerequisites',
           )['if'],
-          r"${{ matrix.name == 'git_environment_backend' || matrix.name == 'adele_desktop' }}",
+          r"${{ matrix.name == 'git_backend' || matrix.name == 'adele_desktop' }}",
         );
         final run = steps.singleWhere(
           (step) => step['name'] == 'Run test target',
@@ -1635,7 +1635,7 @@ void main() {
         ).listSync().whereType<File>()) {
           final source = library.readAsStringSync();
           expect(source, isNot(contains('package:adele_desktop/')));
-          expect(source, isNot(contains('package:git_environment')));
+          expect(source, isNot(contains('package:git_backend/')));
           expect(source, isNot(contains("import 'dart:io'")));
         }
       },
@@ -2034,7 +2034,7 @@ void main() {
         'plugin_runtime|dart|packages/plugin_runtime|test --timeout 10s',
         'plugin_backend_host|dart|packages/plugin_backend_host|test',
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
-        'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
+        'git_backend|dart|plugins/git/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'filesystem_tools_backend|dart|plugins/filesystem_tools/packages/backend|test',
         'filesystem_tools_frontend|flutter|plugins/filesystem_tools/packages/frontend|test',
@@ -2080,10 +2080,13 @@ void main() {
       '--timeout',
       '10s',
     ]);
-    expect(
-      lookupTestTarget('git_environment_backend').argumentsFor(ci: true),
-      <String>['test', '--timeout', '4m', '--concurrency', '1'],
-    );
+    expect(lookupTestTarget('git_backend').argumentsFor(ci: true), <String>[
+      'test',
+      '--timeout',
+      '4m',
+      '--concurrency',
+      '1',
+    ]);
   });
 
   test('OpenAI presentation preserves package and raw-evidence boundaries', () {

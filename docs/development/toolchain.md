@@ -205,7 +205,7 @@ and [local implementation map](../../app/README.md#native-terminal-surface).
 ## Git PTY preparation
 
 The Linux x64 Git backend uses the original repository-owned
-`plugins/git_environment/packages/backend/native/git_pty_helper.c`, helper protocol
+`plugins/git/packages/backend/native/git_pty_helper.c`, helper protocol
 version **1**, with the pure-Dart `GitPtySession` adapter. Its exact source revision
 is the checkout revision, not a pub-cache patch or downloaded binary. No PTY package
 or native framework is added to the Dart dependency graph. This repository currently
@@ -236,15 +236,15 @@ Preparation requires Linux x64, `cc` with C11 support, libc development headers 
 x64 with the exact integrated Dart/Flutter pin above. The focused
 job-control test additionally needs Bash. `tools/git_pty_artifact.dart` reproducibly
 invokes `cc -std=c11 -O2 -Wall -Wextra -Werror ... -lutil`.
-`tools/backend_artifacts.dart` prepares `git-environment/pty-helper` before publishing
-the installation and supplies its absolute path as `--pty-helper=...` through the
+`tools/backend_artifacts.dart` prepares `git/pty-helper` under the installation root
+before publishing the installation and supplies its absolute path as `--pty-helper=...` through the
 existing generic startup-argv file. Activation never compiles or downloads it.
 Direct test/development callers prepare the helper explicitly; omitting it leaves
-terminals unavailable without disabling other Git Environment operations.
+terminals unavailable without disabling other Git plugin operations.
 
 Stock Terminal requests the provider's `defaultShell` launch kind, not an
 app-selected executable. The provider-owned
-[`SHELL` path/name resolution, absent-only `/bin/sh`, interactive `-i`, and Environment-root startup rules](../../plugins/git_environment/README.md#interactive-terminals)
+[`SHELL` path/name resolution, absent-only `/bin/sh`, interactive `-i`, and Environment-root startup rules](../../plugins/git/README.md#interactive-terminals)
 remain separate from artifact preparation. Normal startup does not suppress a
 user's shell startup files. Integration fixtures instead control the child host's
 environment and use a temporary `HOME`; see the
@@ -258,7 +258,7 @@ sibling responsiveness. This is real Linux shared-AOT-host evidence, not a stand
 JIT package example. Prepared frontend/native integration is a separate
 [focused check](testing.md#focused-terminal-checks). Other platforms, portable
 release packaging, universal descendant containment, and a native-plugin framework
-are not established by this helper. The [Git README](../../plugins/git_environment/README.md)
+are not established by this helper. The [Git README](../../plugins/git/README.md)
 owns operational buffering and cleanup guarantees.
 
 ## Generated contract artifacts

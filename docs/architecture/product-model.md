@@ -147,7 +147,7 @@ allocating replacement identities, resolving stored strategies, or invoking
 Environment providers.
 Their availability is not required to load these records; the explicitly selected
 Project provider is still required to open the backing.
-Materialization remains explicit: the stock [Git Environment](../../plugins/git_environment/README.md)
+Materialization remains explicit: the stock [Git Worktree Environment provider](../../plugins/git/README.md#git-worktree-environment)
 can restore the existing checkout from its retained Project-relative state after
 restarting or moving the complete Project, including `.git`, the database, and
 `.adele/worktrees`. Opening itself does not repair or materialize that checkout.
@@ -591,7 +591,7 @@ those distinctions, including domains where external systems remain authoritativ
 | Session-routed execution host | [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart), `createSessionOrchestrationRun`, `KernelOrchestrationHost` |
 | Internal Run execution mechanics | [`packages/agent_kernel/`](../../packages/agent_kernel/), `AgentRun` |
 | Example strategy-owned Session state | [`plugins/chat_strategy/`](../../plugins/chat_strategy/), `ChatSessionStore` in its backend |
-| Example Environment provider | [`plugins/git_environment/`](../../plugins/git_environment/) |
+| Stock Git plugin and its Environment provider | [`plugins/git/`](../../plugins/git/) |
 
 [ADR 0031](../adr/0031-project-task-session-environment-domain-direction.md)
 records the product-domain decision rationale and history.

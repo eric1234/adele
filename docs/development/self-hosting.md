@@ -78,7 +78,7 @@ for generation semantics rather than invoking the internal CLI to avoid preparat
 
 These checks are not a hermetic build or security boundary. In particular, ignored
 local files may still influence preparation. Process constraints and the limits
-of source isolation belong to the [Git Environment](../../plugins/git_environment/README.md).
+of source isolation belong to the [Git plugin](../../plugins/git/README.md).
 
 ## Provider presets
 
@@ -155,8 +155,8 @@ launching clean ADELE checkout
 [`DevelopmentSelfHostingArtifacts.compile`](../../app/tool/self_hosting/development_self_hosting.dart)
 builds fresh host and backend snapshots from the launching checkout, not a cached
 normal desktop installation. The Project clone checks out the captured HEAD
-detached and removes its `origin`. Git Environment establishes a distinct Task
-branch/worktree beneath that Project clone's `.adele/worktrees/`. Only committed
+detached and removes its `origin`. Git's Environment provider establishes a distinct
+Task branch/worktree beneath that Project clone's `.adele/worktrees/`. Only committed
 source is cloned: ignored dependencies, generated parts, and caches are not copied.
 Task-local validation may therefore need its own bootstrap/preparation.
 

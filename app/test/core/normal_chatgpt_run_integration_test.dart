@@ -70,7 +70,7 @@ import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
-const _gitPluginId = 'dev.adele.plugin.git-environment';
+const _gitPluginId = 'dev.adele.plugin.git';
 const _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const _searchPluginId = 'dev.adele.plugin.search-tools';
 const _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
@@ -6003,8 +6003,7 @@ final class _PreparedProduct {
     ).path;
     final result = _PreparedProduct(directory, root, dart, runtime);
     const entrypoints = {
-      _gitPluginId:
-          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+      _gitPluginId: 'plugins/git/packages/backend/bin/git_backend.dart',
       _agentsMdPluginId:
           'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
       _searchPluginId:

@@ -4,7 +4,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:adele_contract/adele_contract.dart';
-import 'package:git_environment_backend/src/pty/pty_session.dart';
+import 'package:git_backend/src/pty/pty_session.dart';
 
 // An independently compiled backend fixture, not linked into the shared host.
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {

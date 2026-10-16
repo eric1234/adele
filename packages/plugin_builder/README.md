@@ -114,9 +114,10 @@ desktop-plugins/build-*/
     |   |-- adele_plugin.installation.json
     |   |-- backend.aot
     |   `-- frontend.evc
-    |-- git-environment/
+    |-- git/
     |   |-- adele_plugin.installation.json
-    |   `-- backend.aot
+    |   |-- backend.aot
+    |   `-- pty-helper
     |-- agents-md/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot

@@ -21,7 +21,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
-const _gitPluginId = 'dev.adele.plugin.git-environment';
+const _gitPluginId = 'dev.adele.plugin.git';
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _instructions = 'Retain the conversation exactly. Answer without tools.';
@@ -53,8 +53,7 @@ void main() {
       'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
       _projectPluginId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
-      _gitPluginId:
-          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+      _gitPluginId: 'plugins/git/packages/backend/bin/git_backend.dart',
       _chatPluginId:
           'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
     }.entries) {

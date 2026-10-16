@@ -164,8 +164,8 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
-    name: 'git_environment_backend',
-    path: 'plugins/git_environment/packages/backend',
+    name: 'git_backend',
+    path: 'plugins/git/packages/backend',
     executable: 'dart',
     arguments: <String>['test', '--timeout', '4m'],
     ciTestConcurrency: 1,
@@ -437,7 +437,7 @@ analysisTargets = <({String name, String path, bool flutter})>[
     path: 'plugins/openai/packages/frontend',
     flutter: true,
   ),
-  (name: 'git_environment', path: 'plugins/git_environment', flutter: false),
+  (name: 'git', path: 'plugins/git', flutter: false),
   (
     name: 'filesystem_tools_plugin',
     path: 'plugins/filesystem_tools',
@@ -541,11 +541,7 @@ analysisTargets = <({String name, String path, bool flutter})>[
     path: 'plugins/source_editor/packages/frontend',
     flutter: true,
   ),
-  (
-    name: 'git_environment_backend',
-    path: 'plugins/git_environment/packages/backend',
-    flutter: false,
-  ),
+  (name: 'git_backend', path: 'plugins/git/packages/backend', flutter: false),
   (
     name: 'openai_model_provider_backend',
     path: 'plugins/openai/packages/backend',

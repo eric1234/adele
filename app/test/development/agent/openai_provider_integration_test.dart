@@ -24,7 +24,7 @@ import '../../../tool/self_hosting/development_agent_support.dart';
 import '../../support/agent_capability_adapters.dart';
 import 'chat_test_topology.dart';
 
-const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
+const String _gitPluginId = 'dev.adele.plugin.git';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
 void main() {
@@ -33,7 +33,7 @@ void main() {
   late File hostArtifact;
   late File openAiArtifact;
   late File inspectorArtifact;
-  late File gitEnvironmentArtifact;
+  late File gitArtifact;
   late File searchToolsArtifact;
   late File filesystemToolsArtifact;
 
@@ -48,7 +48,7 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
     inspectorArtifact = File('${artifacts.path}/inspector.aot');
-    gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
+    gitArtifact = File('${artifacts.path}/git.aot');
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
     filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
     await Future.wait(<Future<void>>[
@@ -60,9 +60,9 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/git_environment/packages/backend/bin/'
-        'git_environment_backend.dart',
-        gitEnvironmentArtifact.path,
+        '$repository/plugins/git/packages/backend/bin/'
+        'git_backend.dart',
+        gitArtifact.path,
         repository,
       ),
       _compile(
@@ -603,7 +603,7 @@ void main() {
           await _startEnvironmentProvider(
             host: host,
             registry: registry,
-            artifact: gitEnvironmentArtifact,
+            artifact: gitArtifact,
             providerId: environmentProviderId,
           );
       addTearDown(environmentActivation.close);
@@ -780,7 +780,7 @@ Future<PluginCapabilityActivation> _startEnvironmentProvider({
   required ProviderId providerId,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _gitEnvironmentPluginId,
+    pluginId: _gitPluginId,
     artifactUri: artifact.uri,
   );
   return PluginCapabilityActivation.register(

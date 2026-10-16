@@ -45,8 +45,9 @@ conflict entries stay separate; a path may occur in multiple layers even when it
 working content matches the baseline. No Git identities or baseline selector enter
 the public contract.
 
-The [stock Git provider](../git_environment/README.md#change-snapshots)
-implements this deliberately public contract over its exact live Environment.
+The [stock Git plugin](../git/README.md#changesetsource)
+implements this deliberately public contract over the exact live Environment of
+its associated provider in the same backend, not arbitrary Environment providers.
 It owns Git/index semantics, filesystem safety, process execution and bounds.
 The Diff frontend imports neither Git nor application/native-host implementation.
 Other providers can implement the same contract without becoming dependencies
