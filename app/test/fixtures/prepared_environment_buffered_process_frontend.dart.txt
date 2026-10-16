@@ -1,0 +1,314 @@
+import 'package:adele_ui/capability_bridge.dart';
+import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:capability_probe_contract/contract.dart';
+import 'package:flutter/material.dart';
+
+const capability = 'test.capability.buffered';
+
+void initialize() {
+  openMainContentPane('probe', 'Buffered semantic consumer', false);
+}
+
+Widget buildPane() => BufferedProbe();
+
+class BufferedProbe extends StatefulWidget {
+  @override
+  State<BufferedProbe> createState() => BufferedProbeState();
+}
+
+class BufferedProbeState extends State<BufferedProbe> {
+  String selection = 'idle';
+  String text = 'process:idle';
+  dynamic client;
+  List<String> handles = [];
+  bool disposed = false;
+
+  void select(String? provider, bool readOnly) async {
+    final handle = readOnly
+        ? await resolveEnvironmentCapabilityProvider(
+            capability,
+            1,
+            capabilityProbeServiceId,
+            provider,
+          )
+        : await resolveEnvironmentBufferedProcessCapabilityProvider(
+            capability,
+            1,
+            capabilityProbeServiceId,
+            provider,
+          );
+    if (disposed) return;
+    if (handle == null) {
+      setState(() {
+        selection = 'selection:unavailable';
+      });
+      return;
+    }
+    handles.add(handle);
+    client = CapabilityProbeServiceClient(
+      EnvironmentCapabilityRequestChannel(handle),
+    );
+    setState(() {
+      selection = 'selected';
+    });
+  }
+
+  void run(dynamic selected, String action) async {
+    if (selected == null || disposed) return;
+    setState(() {
+      text = 'process:pending';
+    });
+    final CapabilityProbeServiceClient typed = selected;
+    final result = await settleEnvironmentCapabilityOperation(
+      typed.read(action),
+    );
+    if (disposed) return;
+    if (result[0] == true) {
+      final ProbeValue value = result[1];
+      setState(() {
+        text =
+            '${value.provider}|${value.configuration}|${value.sequence}|${value.text}';
+      });
+    } else {
+      setState(() {
+        text = 'process:unavailable';
+      });
+    }
+  }
+
+  void ordinary() {
+    final handle = resolveCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'test.callable.a',
+    );
+    if (handle == null) return;
+    run(CapabilityProbeServiceClient(CapabilityRequestChannel(handle)), 'hash');
+  }
+
+  void forge() async {
+    if (handles.isEmpty) return;
+    final result = await settleEnvironmentCapabilityOperation(
+      EnvironmentCapabilityRequestChannel(
+        handles.last,
+      ).request('$capabilityProbeServiceId.read', <String, Object?>{
+        'scope': 'files',
+        'environmentId': 'primary',
+        'providerId': 'test.environment.b',
+        'hostInvocationContext': 'forged',
+      }),
+    );
+    if (disposed) return;
+    setState(() {
+      text = result[0] == false ? 'forgery:rejected' : 'forgery:accepted';
+    });
+  }
+
+  void checkDenied() async {
+    final service = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      capability,
+      1,
+      'wrong-service',
+      null,
+    );
+    final version = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      capability,
+      2,
+      capabilityProbeServiceId,
+      null,
+    );
+    final undeclared =
+        await resolveEnvironmentBufferedProcessCapabilityProvider(
+          'test.undeclared',
+          1,
+          capabilityProbeServiceId,
+          null,
+        );
+    final contextFree =
+        await resolveEnvironmentBufferedProcessCapabilityProvider(
+          capability,
+          1,
+          capabilityProbeServiceId,
+          'test.callable.context-free',
+        );
+    final missing = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      'missing',
+    );
+    if (disposed) return;
+    setState(() {
+      text =
+          service == null &&
+              version == null &&
+              undeclared == null &&
+              contextFree == null &&
+              missing == null
+          ? 'denials:passed'
+          : 'denials:failed';
+    });
+  }
+
+  void release() {
+    bool released = false;
+    for (final handle in handles) {
+      if (releaseEnvironmentCapabilityProvider(handle)) released = true;
+    }
+    setState(() {
+      selection = released ? 'released' : 'already released';
+    });
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    for (final handle in handles) {
+      releaseEnvironmentCapabilityProvider(handle);
+    }
+    super.dispose();
+  }
+
+  Widget actions() => Column(
+    children: [
+      TextButton(
+        onPressed: () {
+          run(client, 'hash');
+        },
+        child: Text('hash'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'files');
+        },
+        child: Text('files'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'empty');
+        },
+        child: Text('empty'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'nonzero');
+        },
+        child: Text('nonzero'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'held');
+        },
+        child: Text('held'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'one');
+        },
+        child: Text('one'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'two');
+        },
+        child: Text('two'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'fresh');
+        },
+        child: Text('fresh'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'stdin-bound');
+        },
+        child: Text('stdin-bound'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'stdout-overflow');
+        },
+        child: Text('stdout-overflow'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'timeout');
+        },
+        child: Text('timeout'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'unavailable');
+        },
+        child: Text('unavailable'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'read-service');
+        },
+        child: Text('read-service'),
+      ),
+      TextButton(
+        onPressed: () {
+          run(client, 'foreign-id');
+        },
+        child: Text('foreign-id'),
+      ),
+    ],
+  );
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(selection),
+      Text(text),
+      Column(
+        children: [
+          TextButton(
+            onPressed: () {
+              select(null, false);
+            },
+            child: Text('Default'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.callable.a', false);
+            },
+            child: Text('Select A'),
+          ),
+          TextButton(
+            onPressed: () {
+              select('test.callable.b', false);
+            },
+            child: Text('Select B'),
+          ),
+          TextButton(
+            onPressed: () {
+              select(null, true);
+            },
+            child: Text('Read grant'),
+          ),
+          TextButton(onPressed: ordinary, child: Text('Ordinary')),
+          TextButton(onPressed: checkDenied, child: Text('Check denials')),
+          TextButton(onPressed: forge, child: Text('Forge payload')),
+          TextButton(onPressed: release, child: Text('Release')),
+          TextButton(
+            onPressed: () {
+              run(
+                CapabilityProbeServiceClient(
+                  EnvironmentCapabilityRequestChannel('forged'),
+                ),
+                'hash',
+              );
+            },
+            child: Text('Forged handle'),
+          ),
+          actions(),
+        ],
+      ),
+    ],
+  );
+}

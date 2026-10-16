@@ -367,6 +367,7 @@ Additional Main Content fields are explicit opt-ins:
 | --- | --- |
 | `capabilities` | Empty by default; immutable, duplicate-free `CapabilityKey` allowlist for context-free calls, encoded as `[{"id": "org.example.read", "majorVersion": 1}]`. Each entry accepts only those fields and uses the public Capability identity and positive-integer major-version validation. Different majors of the same ID are distinct keys. |
 | `environmentReadCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist, with the same encoding and strict validation as `capabilities`. Requests pane-only contextual unary calls with an operation-scoped Environment read grant; it does not enable context-free access or any other Environment service. |
+| `environmentBufferedProcessCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist with the same strict validation. Requests pane-only semantic Capability calls with buffered-process authority, also requiring the selected provider's explicit opt-in. It grants no direct EVC process API or read authority. |
 | `actions` | Empty by default; unique local `id`, `label`, and widget `entrypoint` for each host-chrome input action. |
 | `operations` | Empty by default; finite operation keys mapped to top-level entrypoints in the same `library`. |
 | `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
@@ -564,7 +565,18 @@ provider selector. `isEnvironmentBound(binding)` on both activation types checks
 exact live ownership and the retained declaration, never semantic ID equality.
 Application contextual selection may pair such a registration with another
 backend's Environment materialization. Runtime adds no second provider registry or
-domain adapter; the application owns selection policy and read-only authorization.
+domain adapter; the application owns selection policy and operation authorization.
+
+Both exposure types carry immutable `environmentHostServices`, defaulting to an
+empty list. The closed `AdeleEnvironmentHostService` identities are `read` and
+`bufferedProcess`; unknown wire values and duplicates fail validation, and
+`bufferedProcess` requires `environmentBound`. `allowsEnvironmentHostService`
+checks only explicit declarations against the exact live owned registration.
+Retirement removes its declaration; same-ID replacement cannot inherit it.
+Advertising grants no service or token, and infrastructure access is unchanged.
+Existing G1 read admission does not require the new list; buffered-process
+admission does. The application checks the already-selected provider rather than
+filtering selection by permission or falling back to another provider.
 
 `retireProvider(binding)` on the capability/composite activation closes one exact
 live owned registration through its existing registration group. It rejects foreign

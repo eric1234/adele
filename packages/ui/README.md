@@ -266,20 +266,25 @@ native implementations supply their behavior; calling a stub natively throws
   see [Capability consumption](../../docs/architecture/contracts-and-capabilities.md#prepared-frontend-capability-consumption)
   for the exact cross-system lifetime and authority rules.
 - `environment_capability_bridge.dart` is a separate contextual unary path for
-  Main Content panes declaring `environmentReadCapabilities`; it does not widen
+  Main Content panes declaring `environmentReadCapabilities` or separately
+  `environmentBufferedProcessCapabilities`; it does not widen
   `capability_bridge.dart` or the `capabilities` allowlist. Initializers, input
   actions, finite operations, and other presentation roles receive no access.
   `resolveEnvironmentCapabilityProvider(id, major, serviceId, providerId)` returns
   `Future<String?>`: an opaque presentation-local handle, or null for denied,
   unavailable, incompatible, or exhausted access. Resolution captures the canonical
-  Session Environment and selects only an exact associated provider; explicit
+  Session Environment and selects an exact eligible sibling-associated or
+  independent Environment-bound provider; explicit
   selection never falls back. There is no discovery API or caller-selected
   Environment. `EnvironmentCapabilityRequestChannel(handle)` implements only
   `AdeleRequestChannel`, forwarding generated unary calls through
   `requestEnvironmentCapability(handle, method, payload)`, with no streaming API.
-  Each request admits a fresh operation-scoped Environment read grant; no host
-  token, configuration route, mutation, process, storage, execution, or approval
-  service is exposed. `releaseEnvironmentCapabilityProvider(handle)` releases
+  The read resolver admits only fresh operation-scoped read grants. The distinct
+  `resolveEnvironmentBufferedProcessCapabilityProvider` requires the process
+  declaration and selected provider's explicit permission, granting only the
+  buffered-process service to its backend. Neither resolver exposes a host token,
+  configuration route, or generic process operation to EVC. No other host service
+  is implied. `releaseEnvironmentCapabilityProvider(handle)` releases
   bounded handle bookkeeping and revokes its grants without cancelling independent
   backend work. Stale handles never follow replacements. Unlike context-free
   admitted unary calls, contextual success requires the captured selection and

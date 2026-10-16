@@ -21,12 +21,13 @@ final class AdeleRequestChannelEndpoint implements CapabilityEndpoint {
 }
 
 final class PluginCapabilityExposure {
-  const PluginCapabilityExposure({
+  PluginCapabilityExposure({
     required this.provider,
     required this.configurationContext,
     this.association,
     this.environmentBound = false,
-  });
+    List<AdeleEnvironmentHostService> environmentHostServices = const [],
+  }) : environmentHostServices = List.unmodifiable(environmentHostServices);
 
   final ProviderDescriptor provider;
   final ConfigurationContextId configurationContext;
@@ -35,6 +36,9 @@ final class PluginCapabilityExposure {
   /// Independent Environment binding, mutually exclusive with [association].
   /// Registration validates this declaration; it grants no authority.
   final bool environmentBound;
+
+  /// Explicit service opt-ins; registration never grants invocation authority.
+  final List<AdeleEnvironmentHostService> environmentHostServices;
 }
 
 extension ProviderBindingRequestChannel on ProviderBinding {
@@ -57,15 +61,20 @@ final class PluginCapabilityActivation {
     required CapabilityRegistry registry,
     required Map<ProviderBinding, ProviderBinding> associations,
     required Set<ProviderBinding> environmentBound,
+    required Map<ProviderBinding, List<AdeleEnvironmentHostService>>
+    environmentHostServices,
   }) : _registry = registry,
        _associations = Map.unmodifiable(associations),
-       _environmentBound = Set.unmodifiable(environmentBound);
+       _environmentBound = Set.unmodifiable(environmentBound),
+       _environmentHostServices = environmentHostServices;
 
   final PluginBackendConnection connection;
   final CapabilityRegistrationGroup registrations;
   final CapabilityRegistry _registry;
   final Map<ProviderBinding, ProviderBinding> _associations;
   final Set<ProviderBinding> _environmentBound;
+  final Map<ProviderBinding, List<AdeleEnvironmentHostService>>
+  _environmentHostServices;
   Future<void>? _retiring;
 
   bool owns(ProviderBinding binding) {
@@ -108,6 +117,21 @@ final class PluginCapabilityActivation {
     return _environmentBound.any(
       (declared) => declared.isSameRegistration(binding),
     );
+  }
+
+  /// Checks an explicit declaration on this exact live owned registration.
+  /// This does not grant authority or change legacy read admission behavior.
+  bool allowsEnvironmentHostService(
+    ProviderBinding binding,
+    AdeleEnvironmentHostService service,
+  ) {
+    if (!owns(binding)) return false;
+    for (final entry in _environmentHostServices.entries) {
+      if (entry.key.isSameRegistration(binding)) {
+        return entry.value.contains(service);
+      }
+    }
+    return false;
   }
 
   /// Uses registry ordering only among exact siblings of [associatedWith].
@@ -173,6 +197,7 @@ final class PluginCapabilityActivation {
         ),
         association: exposure.association,
         environmentBound: exposure.environmentBound,
+        environmentHostServices: exposure.environmentHostServices,
       ),
     ),
   );
@@ -202,6 +227,8 @@ final class PluginCapabilityActivation {
         >[];
     final associations = <ProviderBinding, ProviderBinding>{};
     final environmentBound = <ProviderBinding>{};
+    final environmentHostServices =
+        <ProviderBinding, List<AdeleEnvironmentHostService>>{};
     try {
       for (final PluginCapabilityExposure exposure in exposures) {
         final ProviderDescriptor provider = exposure.provider;
@@ -209,6 +236,21 @@ final class PluginCapabilityActivation {
           throw InvalidProviderRegistration(
             'Environment-bound provider ${provider.id} cannot declare a sibling '
             'association.',
+          );
+        }
+        if (exposure.environmentHostServices.toSet().length !=
+            exposure.environmentHostServices.length) {
+          throw InvalidProviderRegistration(
+            'Provider ${provider.id} declares duplicate Environment host services.',
+          );
+        }
+        if (!exposure.environmentBound &&
+            exposure.environmentHostServices.contains(
+              AdeleEnvironmentHostService.bufferedProcess,
+            )) {
+          throw InvalidProviderRegistration(
+            'Provider ${provider.id} must be Environment-bound to declare '
+            'buffered process access.',
           );
         }
         if (provider.pluginId != connection.pluginId) {
@@ -244,6 +286,10 @@ final class PluginCapabilityActivation {
           binding: binding,
         ));
         if (exposure.environmentBound) environmentBound.add(binding);
+        if (exposure.environmentHostServices.isNotEmpty) {
+          environmentHostServices[binding] = exposure.environmentHostServices;
+          binding.onRetire(() => environmentHostServices.remove(binding));
+        }
       }
       // Keep exposure iteration lazy, then allow forward sibling references.
       for (final source in acquired) {
@@ -296,6 +342,7 @@ final class PluginCapabilityActivation {
       registry: registry,
       associations: associations,
       environmentBound: environmentBound,
+      environmentHostServices: environmentHostServices,
     );
     unawaited(
       connection.terminated
@@ -311,6 +358,7 @@ final class PluginCapabilityActivation {
     final completion = Completer<void>();
     // Fence selection and join reentrant calls before synchronous observers run.
     _retiring = completion.future;
+    _environmentHostServices.clear();
     completion.complete(registrations.close());
     return completion.future;
   }

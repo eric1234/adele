@@ -204,13 +204,15 @@ Main Content descriptors can also request exact Capability ID/major pairs for
 mounted panes, independently of owning-backend services or provider availability.
 The default-empty `capabilities` allowlist enables context-free access; the separate
 default-empty `environmentReadCapabilities` allowlist permits contextual unary
-Environment reads. Neither declaration implies the other. Entries use `id` and
-`majorVersion`, reject duplicates and unknown fields, and carry no Session,
-Environment, backend, configuration, or host-service selectors.
+Environment reads. `environmentBufferedProcessCapabilities` separately requests
+buffered-process-capable semantic invocation, requiring the selected provider's
+explicit service opt-in too. None of these declarations implies another. Entries
+use `id` and `majorVersion`, reject duplicates and unknown fields, and carry no
+Session, Environment, backend, configuration, or host-service selectors.
 These data-only allowlists do not advertise providers or capture a live route;
 fresh resolution happens through the appropriate scoped consumer bridge.
-An independent Environment-bound provider needs no additional frontend declaration:
-`environmentReadCapabilities` still controls the exact consumed Capability/major,
+An independent Environment-bound provider needs no implementation-specific declaration:
+the appropriate allowlist controls the exact consumed Capability/major,
 while the host independently captures the canonical Session's Environment and both
 backend generations. Provider opt-in belongs to ready exposure, not this descriptor.
 Other presentation roles and behavioral operations acquire no such access. See
@@ -293,7 +295,8 @@ Backend exposures cross a later boundary than installed metadata:
 A prepared backend does not predeclare all contributions it will expose. A ready
 connection is also not itself a registry registration. The protocol and exposure
 include independent `environmentBound` opt-in as well as same-activation sibling
-`association`; neither declaration supplies operation authority. Their selection
+`association`, and the closed `environmentHostServices` permission declaration.
+None supplies operation authority on its own. Their selection
 semantics belong to
 [contracts and capabilities](contracts-and-capabilities.md#backend-ready-advertisements),
 not the installation schema.

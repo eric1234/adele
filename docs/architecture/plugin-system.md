@@ -144,9 +144,14 @@ An explicit native host admission can separately authorize one contextual unary
 call over that selection, without importing the plugin-owned service contract;
 see [contextual invocation](contracts-and-capabilities.md#contextual-unary-capability-invocation).
 Mounted prepared Main Content consumers can use the same admission through a
-separate explicit Environment-read declaration and presentation-bound bridge;
-ordinary context-free Capability access remains unchanged. See
-[prepared contextual reads](contracts-and-capabilities.md#prepared-contextual-environment-reads).
+separate explicit Environment-read or buffered-process declaration and
+presentation-bound bridge. Buffered-process admission additionally requires the
+selected Environment-bound provider's explicit `environmentHostServices` opt-in;
+read access remains read-only. No declaration itself grants authority, and neither
+grant implicitly includes the other. Ordinary context-free Capability access
+remains unchanged. See
+[prepared contextual reads](contracts-and-capabilities.md#prepared-contextual-environment-reads)
+and [buffered processes](contracts-and-capabilities.md#prepared-contextual-buffered-processes).
 
 Events remain read-only fact notifications, not provider-selected calls or mutable
 lifecycle hooks. Observers cannot change whether the announced fact occurred;

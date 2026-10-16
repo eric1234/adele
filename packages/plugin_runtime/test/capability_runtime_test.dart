@@ -112,6 +112,16 @@ void main() {
           isTrue,
         );
         expect(activation.isEnvironmentBound(ordinary), isFalse);
+        for (final service in AdeleEnvironmentHostService.values) {
+          expect(
+            activation.allowsEnvironmentHostService(bound, service),
+            isFalse,
+          );
+          expect(
+            activation.allowsEnvironmentHostService(ordinary, service),
+            isFalse,
+          );
+        }
         expect(activation.associationFor(bound), isNull);
         expect(registry.providersFor(environment), isEmpty);
         final endpoint = bound.endpointAs<AdeleRequestChannelEndpoint>();
@@ -179,6 +189,211 @@ void main() {
         expect(() => next.isEnvironmentBound(bound), throwsA(stale));
         await activation.retire();
         expect(next.isEnvironmentBound(nextBinding), isTrue);
+        expect(connection.isClosed, isFalse);
+      },
+    );
+
+    test(
+      'Environment services require exact live opt-in, advertised=$advertised',
+      () async {
+        final fake = _FakeHost.create(
+          readyFields: {
+            'capabilityExposures': [
+              {
+                ...firstExposure,
+                'environmentBound': true,
+                'environmentHostServices': ['bufferedProcess'],
+              },
+              {
+                ...firstExposure,
+                'providerId': secondExposure['providerId'],
+                'environmentHostServices': ['read'],
+                'rank': 10,
+              },
+            ],
+          },
+        );
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        addTearDown(host.close);
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.provider',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final registry = CapabilityRegistry();
+        final activation = advertised
+            ? await PluginCapabilityActivation.registerAdvertised(
+                connection: connection,
+                registry: registry,
+              )
+            : await PluginCapabilityActivation.register(
+                connection: connection,
+                registry: registry,
+                exposures: connection.capabilityExposures.map((exposure) {
+                  final services = exposure.environmentHostServices.toList();
+                  final direct = PluginCapabilityExposure(
+                    provider: _provider(
+                      capability,
+                      exposure.providerId,
+                      rank: exposure.rank,
+                    ),
+                    configurationContext: connection.configurationContext(
+                      exposure.configurationContext,
+                    ),
+                    environmentBound: exposure.environmentBound,
+                    environmentHostServices: services,
+                  );
+                  services.clear();
+                  expect(
+                    () => direct.environmentHostServices.clear(),
+                    throwsUnsupportedError,
+                  );
+                  return direct;
+                }),
+              );
+        addTearDown(activation.close);
+        final process = registry.resolve(
+          capability,
+          providerId: ProviderId(firstExposure['providerId']! as String),
+        );
+        final read = registry.resolve(capability);
+        expect(read.provider.id.value, secondExposure['providerId']);
+        expect(
+          activation.allowsEnvironmentHostService(
+            registry.resolve(capability, providerId: process.provider.id),
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isTrue,
+        );
+        expect(
+          activation.allowsEnvironmentHostService(
+            process,
+            AdeleEnvironmentHostService.read,
+          ),
+          isFalse,
+        );
+        expect(
+          activation.allowsEnvironmentHostService(
+            read,
+            AdeleEnvironmentHostService.read,
+          ),
+          isTrue,
+        );
+        expect(
+          activation.allowsEnvironmentHostService(
+            read,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isFalse,
+        );
+        final endpoint = process.endpointAs<AdeleRequestChannelEndpoint>();
+        final foreign = CapabilityRegistry();
+        final foreignRegistration = foreign.register(
+          provider: process.provider,
+          endpoint: endpoint,
+        );
+        addTearDown(foreignRegistration.close);
+        expect(
+          activation.allowsEnvironmentHostService(
+            foreign.resolve(capability),
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isFalse,
+        );
+        final stale = isA<ProviderUnavailable>().having(
+          (error) => error.stale,
+          'stale',
+          isTrue,
+        );
+        process.onRetire(() {
+          expect(
+            () => activation.allowsEnvironmentHostService(
+              process,
+              AdeleEnvironmentHostService.bufferedProcess,
+            ),
+            throwsA(stale),
+          );
+          expect(
+            activation.allowsEnvironmentHostService(
+              read,
+              AdeleEnvironmentHostService.read,
+            ),
+            isTrue,
+          );
+        });
+        await activation.retireProvider(process);
+        final replacement = registry.register(
+          provider: process.provider,
+          endpoint: endpoint,
+        );
+        activation.registrations.add(replacement);
+        final fresh = registry.resolve(
+          capability,
+          providerId: process.provider.id,
+        );
+        expect(activation.owns(fresh), isTrue);
+        for (final service in AdeleEnvironmentHostService.values) {
+          expect(
+            activation.allowsEnvironmentHostService(fresh, service),
+            isFalse,
+          );
+        }
+        await replacement.close();
+        final next = await PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: [
+            PluginCapabilityExposure(
+              provider: process.provider,
+              configurationContext: connection.defaultConfigurationContext,
+              environmentBound: true,
+              environmentHostServices: [
+                AdeleEnvironmentHostService.bufferedProcess,
+              ],
+            ),
+          ],
+        );
+        addTearDown(next.close);
+        final nextBinding = registry.resolve(
+          capability,
+          providerId: process.provider.id,
+        );
+        expect(
+          next.allowsEnvironmentHostService(
+            nextBinding,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isTrue,
+        );
+        expect(
+          activation.allowsEnvironmentHostService(
+            nextBinding,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isFalse,
+        );
+        expect(
+          () => next.allowsEnvironmentHostService(
+            process,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          throwsA(stale),
+        );
+        await activation.retire();
+        expect(
+          () => activation.allowsEnvironmentHostService(
+            read,
+            AdeleEnvironmentHostService.read,
+          ),
+          throwsA(stale),
+        );
+        expect(
+          next.allowsEnvironmentHostService(
+            nextBinding,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isTrue,
+        );
         expect(connection.isClosed, isFalse);
       },
     );
@@ -269,6 +484,13 @@ void main() {
         expect(activation.associationFor(a), isNull);
         expect(activation.isEnvironmentBound(a), isFalse);
         expect(activation.isEnvironmentBound(selected), isFalse);
+        expect(
+          activation.allowsEnvironmentHostService(
+            selected,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isFalse,
+        );
         expect(activation.associationFor(registry.resolve(capability)), isNull);
         expect(
           registry.resolve(capability).provider.id.value,
@@ -359,6 +581,87 @@ void main() {
       },
     );
   }
+
+  test('invalid direct Environment service declarations roll back', () async {
+    final fake = _FakeHost.create();
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    addTearDown(host.close);
+    final connection = await host.startPlugin(
+      pluginId: 'dev.adele.provider',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final registry = CapabilityRegistry();
+    final retained = await PluginCapabilityActivation.register(
+      connection: connection,
+      registry: registry,
+      exposures: [
+        PluginCapabilityExposure(
+          provider: _provider(environment, 'dev.adele.environment.retained'),
+          configurationContext: connection.defaultConfigurationContext,
+          environmentHostServices: [AdeleEnvironmentHostService.read],
+        ),
+      ],
+    );
+    addTearDown(retained.close);
+    final sibling = registry.resolve(environment);
+    for (final (bound, services) in [
+      (false, [AdeleEnvironmentHostService.bufferedProcess]),
+      (false, AdeleEnvironmentHostService.values),
+      (
+        true,
+        [AdeleEnvironmentHostService.read, AdeleEnvironmentHostService.read],
+      ),
+      (
+        true,
+        [
+          AdeleEnvironmentHostService.bufferedProcess,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ],
+      ),
+    ]) {
+      ProviderBinding? partial;
+      Iterable<PluginCapabilityExposure> exposures() sync* {
+        yield PluginCapabilityExposure(
+          provider: _provider(capability, 'dev.adele.provider.partial'),
+          configurationContext: connection.defaultConfigurationContext,
+          environmentBound: true,
+          environmentHostServices: [
+            AdeleEnvironmentHostService.bufferedProcess,
+          ],
+        );
+        partial = registry.resolve(capability);
+        yield PluginCapabilityExposure(
+          provider: _provider(capability, 'dev.adele.provider.invalid'),
+          configurationContext: connection.defaultConfigurationContext,
+          environmentBound: bound,
+          environmentHostServices: services,
+        );
+      }
+
+      await expectLater(
+        PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: exposures(),
+        ),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(registry.providersFor(capability), isEmpty);
+      expect(
+        () => partial!.requestChannel,
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(
+        retained.allowsEnvironmentHostService(
+          sibling,
+          AdeleEnvironmentHostService.read,
+        ),
+        isTrue,
+      );
+      expect(connection.validateInfrastructureContext, returnsNormally);
+    }
+  });
 
   test(
     'direct dual-mode exposure rolls back only its registration attempt',

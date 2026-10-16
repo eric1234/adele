@@ -17,11 +17,28 @@ void main() {
       'opaque-presentation-handle',
     );
     expect(() => channel.request('read', {}), throwsUnsupportedError);
+    expect(() => channel.request('run', {}), throwsUnsupportedError);
   });
 
   test('native imports grant no contextual Environment Capability access', () {
     final Future<String?> Function(String, int, String, String?) resolve =
         resolveEnvironmentCapabilityProvider;
+    final Future<String?> Function(String, int, String, String?)
+    resolveProcess = resolveEnvironmentBufferedProcessCapabilityProvider;
+    expect(resolveProcess, isNot(same(resolve)));
+    expect(
+      () => resolveProcess('dev.example.probe', 1, 'probe', null),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => resolveProcess(
+        'dev.example.probe',
+        1,
+        'probe',
+        'dev.example.provider',
+      ),
+      throwsUnsupportedError,
+    );
     expect(
       () => resolve('dev.example.probe', 1, 'probe', null),
       throwsUnsupportedError,

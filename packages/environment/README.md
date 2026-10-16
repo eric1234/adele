@@ -154,12 +154,23 @@ URL-safe variants, whitespace, percent escapes, and omitted padding are rejected
 These value bounds do not replace provider-side streaming byte accounting and
 bounded process cleanup.
 
-This is provider transport only, not an independent Capability invocation grant.
+The optional provider facet alone grants no invocation authority. The separate
+generated `AuthorizedEnvironmentBufferedProcessService` exposes only
+`runBufferedProcess(EnvironmentBufferedProcessRequest) ->
+Future<EnvironmentBufferedProcessResult>`, reusing these DTOs, limits, strict
+Base64 validation, and declared `EnvironmentFailure`. It has no authority query,
+Environment/provider selector, host-local cwd, file access, or streaming operation.
+The host supplies it only for an explicitly authorized operation, forwarding to
+the exact captured Environment materialization, possibly on another backend.
+
 `AuthorizedEnvironmentReadService`, `AuthorizedEnvironmentMutationService`,
-`AuthorizedEnvironmentProcessService`, and their facets remain unchanged. Existing
-read-only Capability invocation supplies no buffered-process authority. Any future
-independent invocation grant belongs to a separate authorization change (G2b), not
-this optional provider facet.
+`AuthorizedEnvironmentProcessService`, and their facets remain unchanged. Read
+authority never implies buffered-process access, and a buffered-process grant does
+not imply reads, mutation methods, foreground streams, or terminals. The
+[Capability authorization boundary](../../docs/architecture/contracts-and-capabilities.md#prepared-contextual-buffered-processes)
+owns the separate provider and mounted-frontend declarations. Revocation fences
+new requests and late successful publication, but cannot undo an already-started
+command. No automatic retry or host-local execution fallback is supplied.
 
 ## Interactive terminals
 

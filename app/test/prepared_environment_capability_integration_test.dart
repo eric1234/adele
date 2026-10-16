@@ -135,9 +135,12 @@ void main() {
 
   for (final independent in [false, true]) {
     group(independent ? 'independent A/B/C' : 'sibling backend', () {
-      late _Installation fixture;
+      late PreparedEnvironmentCapabilityInstallation fixture;
       setUp(() {
-        fixture = _Installation(files: files, independent: independent);
+        fixture = PreparedEnvironmentCapabilityInstallation(
+          files: files,
+          independent: independent,
+        );
         addTearDown(fixture.close);
       });
 
@@ -885,7 +888,7 @@ void main() {
           final staleRead = _callback(tester, 'Read A');
           await tester.runAsync(old.backends.close);
           await _text(tester, 'read:unavailable');
-          fixture = _Installation(
+          fixture = PreparedEnvironmentCapabilityInstallation(
             capabilities: old.capabilities,
             files: files,
             independent: independent,
@@ -1118,11 +1121,15 @@ void main() {
   }
 }
 
-final class _Installation {
-  _Installation({
+// Shared by the read and buffered-process three-installation integration suites.
+final class PreparedEnvironmentCapabilityInstallation {
+  PreparedEnvironmentCapabilityInstallation({
     CapabilityRegistry? capabilities,
     required Directory files,
     required this.independent,
+    this.environmentPlugin = _environmentPlugin,
+    Uri? sourceLocation,
+    List<Environment>? environments,
   }) : capabilities = capabilities ?? CapabilityRegistry() {
     final task = Task(
       id: TaskId('task'),
@@ -1144,25 +1151,27 @@ final class _Installation {
     store.publishRestoredProject(
       project: Project(
         id: task.projectId,
-        sourceLocation: Uri.parse('test:/project'),
+        sourceLocation: sourceLocation ?? Uri.parse('test:/project'),
       ),
       tasks: [task],
-      environments: [
-        Environment(
-          id: EnvironmentId('additional'),
-          taskId: task.id,
-          role: EnvironmentRole.additional,
-          providerId: ProviderId('test.environment.a'),
-          providerState: {'root': '${files.absolute.path}/a'},
-        ),
-        Environment(
-          id: EnvironmentId('primary'),
-          taskId: task.id,
-          role: EnvironmentRole.primary,
-          providerId: ProviderId('test.environment.b'),
-          providerState: {'root': '${files.absolute.path}/b'},
-        ),
-      ],
+      environments:
+          environments ??
+          [
+            Environment(
+              id: EnvironmentId('additional'),
+              taskId: task.id,
+              role: EnvironmentRole.additional,
+              providerId: ProviderId('test.environment.a'),
+              providerState: {'root': '${files.absolute.path}/a'},
+            ),
+            Environment(
+              id: EnvironmentId('primary'),
+              taskId: task.id,
+              role: EnvironmentRole.primary,
+              providerId: ProviderId('test.environment.b'),
+              providerState: {'root': '${files.absolute.path}/b'},
+            ),
+          ],
       sessions: [sessionA, sessionB],
       authorities: [
         (sessionA.id, EnvironmentId('additional')),
@@ -1205,6 +1214,7 @@ final class _Installation {
 
   final CapabilityRegistry capabilities;
   final bool independent;
+  final String environmentPlugin;
   final extensions = ExtensionRegistry();
   late final Session sessionA;
   late final Session sessionB;
@@ -1220,7 +1230,7 @@ final class _Installation {
       backends.backends.singleWhere(
         (backend) =>
             backend.installation.metadata.id.value ==
-            (independent ? _environmentPlugin : _plugin),
+            (independent ? environmentPlugin : _plugin),
       );
   PluginBackendConnection get connection => callableOwner.connection!;
   PluginBackendConnection get environmentConnection =>
@@ -1232,7 +1242,10 @@ final class _Installation {
   ]) {
     final key = payload['key'] as String?;
     return controlOn(
-      key != null && (key.startsWith('read:') || key.startsWith('restore:'))
+      key != null &&
+              (key.startsWith('read:') ||
+                  key.startsWith('process:') ||
+                  key.startsWith('restore:'))
           ? environmentConnection
           : connection,
       method,
@@ -1281,6 +1294,8 @@ final class _Installation {
         ...callable['requests'] as List,
       ],
       'reads': environment['reads'],
+      if (environment.containsKey('processes'))
+        'processes': environment['processes'],
     };
   }
 

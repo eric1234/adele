@@ -23,6 +23,14 @@ naming an Environment provider and is mutually exclusive with `association`.
 `toMap()` omits false, preserving existing default advertisements. This declaration
 does not grant reads or other services, and is not a claim of universal Environment
 compatibility. Runtime retains it against the exact provider registration.
+The default-empty `environmentHostServices` list uses only
+`AdeleEnvironmentHostService.read` and `.bufferedProcess`, encoded as `read` and
+`bufferedProcess` strings. Unknown values, malformed lists, and duplicates are
+rejected. Buffered process eligibility requires `environmentBound: true`.
+The immutable declaration requests eligibility, never authority; runtime checks
+it on the exact live registration. Existing Environment-read admission remains
+unchanged without this new declaration. Process admission requires its explicit
+entry and a separate host authorization decision.
 `AdeleExtensionExposure` defines optional ready `extensionExposures`, with
 exactly `extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and
 `metadata`. Unknown keys are rejected; metadata is recursively copied into

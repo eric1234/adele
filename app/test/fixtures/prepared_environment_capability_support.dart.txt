@@ -21,7 +21,7 @@ Future<void> runProbeBackend(
     'capabilityExposures': options['exposures'],
   });
   final hostRequests = AdeleHostRequestMultiplexer(send: responses.send);
-  final state = ProbeState(hostRequests);
+  final state = ProbeState(hostRequests, options);
   final router = AdeleConfigurationContextRouter(contexts: contexts(state));
   final commands = ReceivePort();
   (bootstrap['bootstrapPort'] as SendPort).send({
@@ -71,11 +71,17 @@ Future<void> runProbeBackend(
 }
 
 final class ProbeState {
-  ProbeState(this.hostRequests);
+  ProbeState(this.hostRequests, this.options);
   final AdeleHostRequestMultiplexer hostRequests;
+  final Map<Object?, Object?> options;
   final requests = <Map<String, Object?>>[];
   final reads = <Map<String, Object?>>[];
+  final processes = <Map<String, Object?>>[];
+  final failures = <String>[];
   final clients = <String, AuthorizedEnvironmentReadServiceClient>{};
+  final bufferedClients =
+      <String, AuthorizedEnvironmentBufferedProcessServiceClient>{};
+  Future<bool>? _queuedBuffered;
   final _arrived = <String, Completer<void>>{};
   final _gates = <String, Completer<void>>{};
 
@@ -111,7 +117,61 @@ final class ProbeState {
           final gate = _gates[key]!;
           if (!gate.isCompleted) gate.complete();
         case 'snapshot':
-          result = {'requests': requests, 'reads': reads};
+          result = {
+            'requests': requests,
+            'reads': reads,
+            'processes': processes,
+            'failures': failures,
+          };
+        case 'queueBuffered':
+          // The reverse frame is sent before this command's acknowledgement.
+          // This proves queue admission without a sleep or provider-side entry.
+          _queuedBuffered = hostRequests
+              .bind(
+                hostInvocationContext: payload['token'] as String,
+                serviceId: authorizedEnvironmentBufferedProcessServiceId,
+              )
+              .request(
+                authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId,
+                {
+                  'request': {
+                    'program': 'git',
+                    'arguments': [
+                      '-c',
+                      'adele.probeAction=queued',
+                      'hash-object',
+                      '--stdin',
+                    ],
+                    'relativeWorkingDirectory': '',
+                    'timeoutSeconds': 5,
+                    'stdinBase64': '',
+                  },
+                },
+              )
+              .then((_) => true, onError: (Object _) => false);
+          result = {'queued': true};
+        case 'queuedResult':
+          result = {'ok': await _queuedBuffered!};
+        case 'retainedBuffered':
+          try {
+            await bufferedClients[key]!.runBufferedProcess(
+              EnvironmentBufferedProcessRequest(
+                program: 'git',
+                arguments: const [
+                  '-c',
+                  'adele.probeAction=retained',
+                  'hash-object',
+                  '--stdin',
+                ],
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+                stdinBase64: '',
+              ),
+            );
+            result = {'ok': true};
+          } on Object {
+            result = {'ok': false};
+          }
         case 'retained':
           try {
             await clients[key]!.readFile('retained');
@@ -120,18 +180,41 @@ final class ProbeState {
             result = {'ok': false};
           }
         case 'attack':
+        case 'attackBuffered':
           try {
+            final buffered = command['method'] == 'attackBuffered';
             await hostRequests
                 .bind(
                   hostInvocationContext: payload['token'] as String,
                   serviceId:
                       payload['service'] as String? ??
-                      authorizedEnvironmentReadServiceId,
+                      (buffered
+                          ? authorizedEnvironmentBufferedProcessServiceId
+                          : authorizedEnvironmentReadServiceId),
                 )
                 .request(
-                  authorizedEnvironmentReadServiceReadFileId,
+                  payload['method'] as String? ??
+                      (buffered
+                          ? authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId
+                          : authorizedEnvironmentReadServiceReadFileId),
                   Map<String, Object?>.from(
-                    payload['arguments'] as Map? ?? {'relativePath': 'attack'},
+                    payload['arguments'] as Map? ??
+                        (buffered
+                            ? {
+                                'request': {
+                                  'program': 'git',
+                                  'arguments': [
+                                    '-c',
+                                    'adele.probeAction=attack',
+                                    'hash-object',
+                                    '--stdin',
+                                  ],
+                                  'relativeWorkingDirectory': '',
+                                  'timeoutSeconds': 5,
+                                  'stdinBase64': '',
+                                },
+                              }
+                            : {'relativePath': 'attack'}),
                   ),
                 );
             result = {'ok': true};

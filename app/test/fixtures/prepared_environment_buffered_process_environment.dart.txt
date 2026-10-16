@@ -1,0 +1,97 @@
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_environment/adele_environment.dart';
+
+import 'prepared_environment_capability_environment.dart';
+import 'prepared_environment_capability_support.dart';
+
+// Controlled A supplements the real stock A integration, reusing G1 transport,
+// canonical restore and checkpoints to hold reverse calls without clock races.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
+    runProbeBackend(
+      arguments,
+      bootstrapMessage,
+      (state) => {
+        'shared': {
+          environmentProviderServiceId: EnvironmentProviderServiceDispatcher(
+            state.options['noBufferedFacet'] == true
+                ? EnvironmentProviderServiceAdapter(_WithoutBufferedFacet())
+                : _BufferedEnvironment(state),
+            concurrent: true,
+          ),
+        },
+        'buffered': {
+          environmentProviderServiceId: EnvironmentProviderServiceDispatcher(
+            _BufferedEnvironment(state),
+            concurrent: true,
+          ),
+        },
+      },
+    );
+
+// The actual optional-facet guard runs inside A's generated service adapter.
+final class _WithoutBufferedFacet implements EnvironmentProvider {
+  @override
+  ProviderId get providerId => ProviderId('test.environment.a');
+
+  @override
+  Future<EnvironmentProviderResult> restore(
+    LocalEnvironment environment,
+  ) async =>
+      EnvironmentProviderResult(providerState: environment.providerState!);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('No fallback Environment operations are allowed.');
+}
+
+final class _BufferedEnvironment extends EnvironmentService {
+  _BufferedEnvironment(super.state);
+  final _providers = <String, String>{};
+
+  @override
+  Future<EnvironmentProviderResult> restore(
+    EnvironmentTransportContext environment,
+  ) {
+    _providers[environment.environmentId] = environment.providerId;
+    return super.restore(environment);
+  }
+
+  @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    String environmentId,
+    EnvironmentBufferedProcessRequest request,
+  ) async {
+    final action = request.arguments[1].split('=').last;
+    state.processes.add({
+      'environmentId': environmentId,
+      'providerId': _providers[environmentId],
+      'program': request.program,
+      'arguments': request.arguments,
+      'stdinBase64': request.stdinBase64,
+    });
+    await state.checkpoint('process:$action');
+    final failure = switch (action) {
+      'timeout' => 'process_timed_out',
+      'stdout-overflow' => 'process_output_overflow',
+      'unavailable' => environmentBufferedProcessUnavailableCode,
+      _ => null,
+    };
+    if (failure != null) {
+      throw EnvironmentFailure(
+        code: failure,
+        message: 'SECRET controlled process failure',
+        details: const {'outputComplete': false},
+      );
+    }
+    return EnvironmentBufferedProcessResult(
+      exitCode: action == 'nonzero' ? 17 : 0,
+      stdoutBase64: action == 'empty'
+          ? ''
+          : encodeEnvironmentProcessBytes(
+              environmentId == 'additional' ? [0, 255, 195, 40] : [0, 128, 66],
+              maximumBytes: environmentBufferedProcessStdoutLimit,
+            ),
+      stderrBase64: action == 'nonzero' ? '/wA=' : '',
+    );
+  }
+}

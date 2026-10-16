@@ -68,11 +68,15 @@ void main() {
   });
 
   test(
-    'composite Environment opt-in validates exact owner and retirement',
+    'composite Environment opt-in validates exact owner and grants no services',
     () async {
       final ready = {
         'capabilityExposures': [
-          {..._capabilityExposure, 'environmentBound': true},
+          {
+            ..._capabilityExposure,
+            'environmentBound': true,
+            'environmentHostServices': ['bufferedProcess'],
+          },
           {..._capabilityExposure, 'providerId': 'dev.adele.test.ordinary'},
         ],
         'extensionExposures': [_exposure('sibling', 'default')],
@@ -89,6 +93,27 @@ void main() {
       );
       final extension = extensions.discover(_point).single;
       expect(activation.isEnvironmentBound(bound), isTrue);
+      expect(
+        activation.allowsEnvironmentHostService(
+          bound,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        isTrue,
+      );
+      expect(
+        activation.allowsEnvironmentHostService(
+          bound,
+          AdeleEnvironmentHostService.read,
+        ),
+        isFalse,
+      );
+      expect(
+        activation.allowsEnvironmentHostService(
+          ordinary,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        isFalse,
+      );
       expect(activation.isEnvironmentBound(ordinary), isFalse);
       expect(activation.associationFor(bound), isNull);
       final foreign = CapabilityRegistry();
@@ -101,21 +126,40 @@ void main() {
         activation.isEnvironmentBound(foreign.resolve(_capability)),
         isFalse,
       );
+      expect(
+        activation.allowsEnvironmentHostService(
+          foreign.resolve(_capability),
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        isFalse,
+      );
 
       final token = await connection.request('infrastructureContext', {});
-      final denied =
-          await bound.requestChannel.request('reverse', {
-                'contextKind': 'infrastructure',
-                'context': token,
-                'service': 'environmentRead',
-              })
-              as Map;
-      expect(denied['ok'], isFalse);
-      expect((denied['error'] as Map)['code'], 'service_unavailable');
+      for (final service in [
+        'authorizedEnvironmentRead',
+        'authorizedEnvironmentBufferedProcess',
+      ]) {
+        final denied =
+            await bound.requestChannel.request('reverse', {
+                  'contextKind': 'infrastructure',
+                  'context': token,
+                  'service': service,
+                })
+                as Map;
+        expect(denied['ok'], isFalse);
+        expect((denied['error'] as Map)['code'], 'service_unavailable');
+      }
 
       await activation.retireProvider(bound);
       expect(
         () => activation.isEnvironmentBound(bound),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(
+        () => activation.allowsEnvironmentHostService(
+          bound,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
         throwsA(isA<ProviderUnavailable>()),
       );
       expect(activation.ownsProvider(ordinary), isTrue);
@@ -123,6 +167,13 @@ void main() {
       activation.onRetire(() {
         expect(
           () => activation.isEnvironmentBound(ordinary),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(
+          () => activation.allowsEnvironmentHostService(
+            ordinary,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
           throwsA(isA<PluginConnectionClosed>()),
         );
       });
@@ -134,6 +185,27 @@ void main() {
         providerId: bound.provider.id,
       );
       expect(next.isEnvironmentBound(fresh), isTrue);
+      expect(
+        next.allowsEnvironmentHostService(
+          fresh,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        isTrue,
+      );
+      expect(
+        () => activation.allowsEnvironmentHostService(
+          fresh,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(
+        () => next.allowsEnvironmentHostService(
+          bound,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        throwsA(isA<ProviderUnavailable>()),
+      );
       expect(
         () => activation.isEnvironmentBound(fresh),
         throwsA(isA<PluginConnectionClosed>()),

@@ -329,6 +329,14 @@ final class PluginBackendActivation {
     return _capabilities.isEnvironmentBound(binding);
   }
 
+  bool allowsEnvironmentHostService(
+    ProviderBinding binding,
+    AdeleEnvironmentHostService service,
+  ) {
+    validate();
+    return _capabilities.allowsEnvironmentHostService(binding, service);
+  }
+
   ProviderBinding resolveAssociatedProvider(
     CapabilityKey capability, {
     required ProviderBinding associatedWith,

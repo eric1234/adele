@@ -213,6 +213,7 @@ void main() {
       raw.clear();
       expect(one.single.rank, 0);
       expect(one.single.environmentBound, isFalse);
+      expect(one.single.environmentHostServices, isEmpty);
       expect(one.single.toMap(), {...exposure, 'rank': 0});
       expect(() => one.clear(), throwsUnsupportedError);
       final multiple = AdeleCapabilityExposure.fromReady({
@@ -278,6 +279,11 @@ void main() {
       configurationContext: exposure['configurationContext']! as String,
     );
     expect(defaultExposure.environmentBound, isFalse);
+    expect(defaultExposure.environmentHostServices, isEmpty);
+    expect(
+      defaultExposure.toMap().containsKey('environmentHostServices'),
+      isFalse,
+    );
     expect(defaultExposure.toMap().containsKey('environmentBound'), isFalse);
     for (final enabled in [false, true]) {
       final value = AdeleCapabilityExposure.fromReady({
@@ -300,6 +306,171 @@ void main() {
       );
     }
   });
+
+  test('Environment host service declarations round-trip exact enum names', () {
+    for (final services in <List<AdeleEnvironmentHostService>>[
+      [],
+      [AdeleEnvironmentHostService.read],
+      [AdeleEnvironmentHostService.bufferedProcess],
+      AdeleEnvironmentHostService.values,
+      AdeleEnvironmentHostService.values.reversed.toList(),
+    ]) {
+      final names = [for (final service in services) service.name];
+      final value = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          {
+            ...exposure,
+            'environmentBound': true,
+            'environmentHostServices': names,
+          },
+        ],
+      }).single;
+      names.clear();
+      expect(value.environmentHostServices, services);
+      expect(
+        () => value.environmentHostServices.clear(),
+        throwsUnsupportedError,
+      );
+      final wire = value.toMap();
+      expect(wire.containsKey('environmentHostServices'), services.isNotEmpty);
+      expect(
+        AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [wire],
+        }).single.environmentHostServices,
+        services,
+      );
+      if (services.isNotEmpty) {
+        expect(wire['environmentHostServices'], [
+          for (final service in services) service.name,
+        ]);
+        (wire['environmentHostServices']! as List).clear();
+        expect(value.environmentHostServices, services);
+      }
+    }
+  });
+
+  test(
+    'Environment host service constructor snapshots and validates lists',
+    () {
+      AdeleCapabilityExposure create(
+        List<AdeleEnvironmentHostService> services, {
+        bool environmentBound = true,
+      }) => AdeleCapabilityExposure(
+        providerId: exposure['providerId']! as String,
+        capabilityId: exposure['capabilityId']! as String,
+        capabilityMajorVersion: 1,
+        serviceId: exposure['serviceId']! as String,
+        displayName: exposure['displayName']! as String,
+        configurationContext: exposure['configurationContext']! as String,
+        environmentBound: environmentBound,
+        environmentHostServices: services,
+      );
+      final services = AdeleEnvironmentHostService.values.toList();
+      final value = create(services);
+      services.clear();
+      expect(value.environmentHostServices, AdeleEnvironmentHostService.values);
+      expect(
+        () => value.environmentHostServices.clear(),
+        throwsUnsupportedError,
+      );
+      for (final service in AdeleEnvironmentHostService.values) {
+        expect(() => create([service, service]), throwsFormatException);
+      }
+      expect(
+        () => create([
+          AdeleEnvironmentHostService.bufferedProcess,
+        ], environmentBound: false),
+        throwsFormatException,
+      );
+      expect(
+        create([
+          AdeleEnvironmentHostService.read,
+        ], environmentBound: false).environmentHostServices,
+        [AdeleEnvironmentHostService.read],
+      );
+    },
+  );
+
+  test(
+    'Environment host services reject malformed lists and unknown names',
+    () {
+      for (final raw in <Object?>[
+        null,
+        true,
+        1,
+        'read',
+        {},
+        {'read'},
+        [null],
+        [true],
+        [1],
+        [<Object?>[]],
+        [<String, Object?>{}],
+        [AdeleEnvironmentHostService.read],
+        [''],
+        ['unknown'],
+        ['Read'],
+        ['buffered-process'],
+        [' read'],
+        ['read', null],
+        ['read', 'read'],
+        ['bufferedProcess', 'bufferedProcess'],
+        ['read', 'bufferedProcess', 'read'],
+      ]) {
+        expect(
+          () => AdeleCapabilityExposure.fromReady({
+            'capabilityExposures': [
+              {
+                ...exposure,
+                'environmentBound': true,
+                'environmentHostServices': raw,
+              },
+            ],
+          }),
+          throwsFormatException,
+          reason: '$raw',
+        );
+      }
+    },
+  );
+
+  test(
+    'buffered process declaration requires independent Environment binding',
+    () {
+      for (final fields in <Map<String, Object?>>[
+        {},
+        {'environmentBound': false},
+        {'association': association},
+        {'environmentBound': true, 'association': association},
+      ]) {
+        expect(
+          () => AdeleCapabilityExposure.fromReady({
+            'capabilityExposures': [
+              {
+                ...exposure,
+                ...fields,
+                'environmentHostServices': ['bufferedProcess'],
+              },
+            ],
+          }),
+          throwsFormatException,
+        );
+      }
+      final sibling = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          {
+            ...exposure,
+            'association': association,
+            'environmentHostServices': ['read'],
+          },
+        ],
+      }).single;
+      expect(sibling.environmentHostServices, [
+        AdeleEnvironmentHostService.read,
+      ]);
+      expect(sibling.environmentBound, isFalse);
+    },
+  );
 
   test(
     'Environment binding and sibling association are mutually exclusive',

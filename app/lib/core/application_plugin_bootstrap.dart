@@ -90,6 +90,14 @@ final class InstalledBackendActivation {
     return _activation!.isEnvironmentBound(binding);
   }
 
+  bool allowsEnvironmentHostService(
+    ProviderBinding binding,
+    AdeleEnvironmentHostService service,
+  ) {
+    validate();
+    return _activation!.allowsEnvironmentHostService(binding, service);
+  }
+
   ProviderBinding resolveAssociatedProvider(
     CapabilityKey capability, {
     required ProviderBinding associatedWith,

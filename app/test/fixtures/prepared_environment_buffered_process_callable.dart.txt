@@ -1,0 +1,134 @@
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+
+import 'prepared_capability_contract.dart';
+import 'prepared_environment_capability_support.dart';
+
+// B owns fixed semantic actions, not an executable/argument forwarding API.
+// It has no filesystem, process, stock Git or internal host dependency.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
+    runProbeBackend(
+      arguments,
+      bootstrapMessage,
+      (state) => {
+        'callable-shared': {
+          capabilityProbeServiceId: AdeleContextualServiceDispatcher(
+            hostRequests: state.hostRequests,
+            createDispatcher: (operation) => CapabilityProbeServiceDispatcher(
+              _Probe(state, operation),
+              concurrent: true,
+            ),
+          ),
+        },
+        'context-free': {
+          capabilityProbeServiceId: CapabilityProbeServiceDispatcher(
+            _Probe(state, null),
+          ),
+        },
+      },
+    );
+
+final class _Probe implements CapabilityProbeService {
+  const _Probe(this.state, this.operation);
+  final ProbeState state;
+  final AdeleBackendOperationContext? operation;
+
+  @override
+  Future<ProbeValue> read(String scope) async {
+    if (operation == null) {
+      throw StateError('Buffered process actions require an operation.');
+    }
+    final channel = operation!.bind(
+      authorizedEnvironmentBufferedProcessServiceId,
+    );
+    final process = AuthorizedEnvironmentBufferedProcessServiceClient(channel);
+    state.bufferedClients[scope] = process;
+    try {
+      await state.checkpoint('before:$scope');
+      if (scope == 'read-service') {
+        await AuthorizedEnvironmentReadServiceClient(
+          operation!.bind(authorizedEnvironmentReadServiceId),
+        ).readFile('A');
+        throw StateError('Process grant unexpectedly included read.');
+      }
+      if (scope == 'foreign-id') {
+        await channel.request(
+          authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId,
+          {
+            'environmentId': 'primary',
+            'request': {
+              'program': 'git',
+              'arguments': ['ls-files', '-z'],
+              'relativeWorkingDirectory': '',
+              'timeoutSeconds': 5,
+              'stdinBase64': '',
+            },
+          },
+        );
+        throw StateError('Foreign Environment payload unexpectedly admitted.');
+      }
+      final List<String> arguments;
+      switch (scope) {
+        case 'files':
+          arguments = ['ls-files', '-z'];
+        case 'stdout-overflow':
+          arguments = ['show', ':overflow.bin'];
+        case 'timeout':
+          arguments = ['-c', 'alias.buffered-probe=!sleep 5', 'buffered-probe'];
+        case 'empty':
+          arguments = ['diff', '--quiet'];
+        case 'nonzero':
+          arguments = [
+            'rev-parse',
+            '--verify',
+            'refs/heads/absent-buffered-probe',
+          ];
+        case 'hash':
+        case 'held':
+        case 'one':
+        case 'two':
+        case 'fresh':
+        case 'stdin-bound':
+        case 'unavailable':
+          arguments = ['hash-object', '--stdin'];
+        default:
+          throw ArgumentError('Unknown semantic action.');
+      }
+      final input = scope == 'stdin-bound'
+          ? List<int>.filled(environmentBufferedProcessStdinLimit, 255)
+          : const [0, 255, 195, 40, 128, 97, 0];
+      final result = await process.runBufferedProcess(
+        EnvironmentBufferedProcessRequest(
+          program: 'git',
+          arguments: ['-c', 'adele.probeAction=$scope', ...arguments],
+          relativeWorkingDirectory: '',
+          timeoutSeconds: scope == 'timeout' ? 1 : 5,
+          stdinBase64:
+              scope == 'files' || scope == 'empty' || scope == 'nonzero'
+              ? ''
+              : encodeEnvironmentProcessBytes(
+                  input,
+                  maximumBytes: environmentBufferedProcessStdinLimit,
+                ),
+        ),
+      );
+      await state.checkpoint('after:$scope');
+      return ProbeValue(
+        provider: 'buffered',
+        configuration: result.stdoutBase64,
+        sequence: result.exitCode,
+        text: result.stderrBase64,
+      );
+    } on EnvironmentFailure catch (error) {
+      state.failures.add(error.code);
+      rethrow;
+    } finally {
+      await state.checkpoint('settled:$scope');
+    }
+  }
+
+  @override
+  Stream<ProbeValue> watch(String scope) =>
+      throw UnsupportedError('Unary semantic actions only.');
+}

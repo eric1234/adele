@@ -18,6 +18,40 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
   required String serviceId,
   required Future<T> Function(AdeleRequestChannel channel) invoke,
   void Function() Function(void Function())? onRetire,
+}) => _invokeEnvironmentCapability(
+  selection: selection,
+  backends: backends,
+  serviceId: serviceId,
+  invoke: invoke,
+  onRetire: onRetire,
+  hostService: AdeleEnvironmentHostService.read,
+);
+
+/// Explicit host authorization for a provider-opted-in buffered-process call.
+/// Supplies only the buffered-process service, never read or streaming authority.
+/// Revocation fences access and publication, not effects already started.
+Future<T> invokeEnvironmentCapabilityWithBufferedProcess<T>({
+  required EnvironmentCapabilitySelection selection,
+  required ApplicationPluginBootstrap backends,
+  required String serviceId,
+  required Future<T> Function(AdeleRequestChannel channel) invoke,
+  void Function() Function(void Function())? onRetire,
+}) => _invokeEnvironmentCapability(
+  selection: selection,
+  backends: backends,
+  serviceId: serviceId,
+  invoke: invoke,
+  onRetire: onRetire,
+  hostService: AdeleEnvironmentHostService.bufferedProcess,
+);
+
+Future<T> _invokeEnvironmentCapability<T>({
+  required EnvironmentCapabilitySelection selection,
+  required ApplicationPluginBootstrap backends,
+  required String serviceId,
+  required Future<T> Function(AdeleRequestChannel channel) invoke,
+  required AdeleEnvironmentHostService hostService,
+  void Function() Function(void Function())? onRetire,
 }) async {
   selection.validate();
   final owner = backends.backendForProvider(selection.binding);
@@ -53,6 +87,16 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
         !identical(environmentOwner.connection, environmentConnection)) {
       throw StateError('The selected backend connections are no longer valid.');
     }
+    if (hostService == AdeleEnvironmentHostService.bufferedProcess &&
+        (!owner.isEnvironmentBound(selection.binding) ||
+            !owner.allowsEnvironmentHostService(
+              selection.binding,
+              hostService,
+            ))) {
+      throw StateError(
+        'The selected provider has no buffered-process permission.',
+      );
+    }
     if (!owner.isEnvironmentBound(selection.binding)) {
       final associated = owner.associationFor(selection.binding);
       if (!identical(owner, environmentOwner) ||
@@ -65,16 +109,27 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     }
   }
 
-  void validateRead() {
+  void validateGrant() {
     validateSelection();
     if (invocation == null || invocation.isClosed) {
-      throw StateError('The contextual read grant has ended.');
+      throw StateError('The contextual Environment grant has ended.');
     }
   }
 
-  final dispatcher = AuthorizedEnvironmentReadServiceDispatcher(
-    _CapturedEnvironmentRead(selection, validateRead),
-  );
+  final AdeleBackendDispatcher dispatcher;
+  final String hostServiceId;
+  switch (hostService) {
+    case AdeleEnvironmentHostService.read:
+      hostServiceId = authorizedEnvironmentReadServiceId;
+      dispatcher = AuthorizedEnvironmentReadServiceDispatcher(
+        _CapturedEnvironmentRead(selection, validateGrant),
+      );
+    case AdeleEnvironmentHostService.bufferedProcess:
+      hostServiceId = authorizedEnvironmentBufferedProcessServiceId;
+      dispatcher = AuthorizedEnvironmentBufferedProcessServiceDispatcher(
+        _CapturedEnvironmentBufferedProcess(selection, validateGrant),
+      );
+  }
   try {
     validateSelection();
     detach.add(selection.binding.onRetire(revoke));
@@ -86,9 +141,9 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     if (onRetire != null) detach.add(onRetire(revoke));
     validateSelection();
     final opened = invocation = connection.openHostInvocation({
-      authorizedEnvironmentReadServiceId: dispatcher,
+      hostServiceId: dispatcher,
     });
-    validateRead();
+    validateGrant();
     final scoped = connection.bindHostInvocation(
       channel: channel,
       invocation: opened,
@@ -102,8 +157,38 @@ Future<T> invokeEnvironmentCapabilityWithRead<T>({
     for (final remove in detach.reversed) {
       remove();
     }
-    // Revocation cannot wait for an already-admitted provider read to finish.
+    // Revocation cannot wait for, cancel, or undo an admitted provider operation.
     unawaited(dispatcher.close().catchError((Object _) {}));
+  }
+}
+
+final class _CapturedEnvironmentBufferedProcess
+    implements AuthorizedEnvironmentBufferedProcessService {
+  _CapturedEnvironmentBufferedProcess(this.selection, this.validate);
+
+  final EnvironmentCapabilitySelection selection;
+  final void Function() validate;
+
+  @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    EnvironmentBufferedProcessRequest request,
+  ) async {
+    validate();
+    final provider = selection.materialization.provider;
+    if (provider is! EnvironmentBufferedProcessProvider) {
+      throw const EnvironmentFailure(
+        code: environmentBufferedProcessUnavailableCode,
+        message:
+            'This Environment provider does not support buffered processes.',
+        details: <String, Object?>{},
+      );
+    }
+    try {
+      return await (provider as EnvironmentBufferedProcessProvider)
+          .runBufferedProcess(selection.environment.id, request);
+    } finally {
+      validate();
+    }
   }
 }
 
