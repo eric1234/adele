@@ -203,8 +203,10 @@ void main() {
         'authorizedEnvironmentMutation.readFile',
         'authorizedEnvironmentMutation.readDirectory',
         'authorizedEnvironmentMutation.runForegroundProcess',
+        'authorizedEnvironmentMutation.runBufferedProcess',
         authorizedEnvironmentReadServiceReadFileId,
         environmentProviderServiceCreateTextFileId,
+        environmentProviderServiceRunBufferedProcessId,
       ]) {
         final response = await dispatcher.dispatch(_request(method, {}));
         expect((response['error']! as Map)['code'], 'unknown_method');

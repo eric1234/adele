@@ -202,6 +202,33 @@ void main() {
       expect(service.requests, isEmpty);
     },
   );
+
+  test(
+    'foreground authority does not grant unary buffered processes',
+    () async {
+      for (final method in [
+        'authorizedEnvironmentProcess.runBufferedProcess',
+        environmentProviderServiceRunBufferedProcessId,
+      ]) {
+        final response = await dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 1,
+          'method': method,
+          'payload': {
+            'request': {
+              'program': 'tool',
+              'arguments': <String>[],
+              'relativeWorkingDirectory': '',
+              'timeoutSeconds': 1,
+              'stdinBase64': '',
+            },
+          },
+        });
+        expect((response['error']! as Map)['code'], 'unknown_method');
+      }
+      expect(service.requests, isEmpty);
+    },
+  );
 }
 
 final class _Process implements AuthorizedEnvironmentProcessService {

@@ -87,8 +87,8 @@ requiring Git 2.48+; native relative worktrees may replace it in a later migrati
 
 Provider Git processes retain the ordinary host environment while repository-local
 Git routing variables are removed. Each backend generation reconstructs live
-objects in its own registry; shutdown terminates active foreground executions and
-terminal resources and
+objects in its own registry; shutdown terminates active foreground and buffered
+executions and terminal resources and
 clears those objects without removing Git worktrees. Failed establishment publishes
 nothing and performs best-effort branch/worktree cleanup only with sufficient
 ownership evidence and revalidated confined storage paths.
@@ -384,6 +384,58 @@ resolved-directory confinement for process cwd, and post-resolution validation
 provide application-level confinement equivalent to the historical
 DevelopmentSource proof. They are not an operating-system sandbox and cannot
 eliminate every pathname replacement race against another local process.
+
+## Buffered binary processes
+
+The same selected provider implements the optional
+`EnvironmentBufferedProcessProvider.runBufferedProcess` facet through the generated
+Environment service. This is generic one-shot execution, not a Git command parser
+or an alternate snapshot implementation. It uses only the selected live
+Environment's process cwd resolver; it does not inspect Git index/object storage,
+stage files, or infer another Environment. Unknown/non-live identities fail.
+Absolute or traversing cwd inputs and symlink escapes are rejected, while a
+resolved in-root directory alias follows the existing process policy.
+
+Unlike `runForegroundProcess`, buffered execution never decodes output as text or
+publishes intermediate observations. The request carries exact stdin followed by
+EOF; success requires complete input delivery, the actual exit code, and complete
+settlement of both concurrently read pipes. Nonzero exit is ordinary result data.
+NUL, invalid UTF-8, CRLF, and other control bytes remain unchanged, and stdout and
+stderr stay separate without a claimed total ordering between them.
+
+The [public contract](../../packages/environment/README.md) uses strict canonical
+Base64 strings over JSON, bounded to 1 MiB decoded stdin, 2 MiB stdout, and 256 KiB
+stderr. Both transport decoding and native collection enforce the corresponding
+bounds before additional payload allocation/retention. Oversized output terminates
+execution with a declared failure instead of returning a truncated result. There
+is no disk spool. The encoded output fits in approximately 3 MiB, comfortably
+below the backend-host 8 MiB frame ceiling; runtime pipe buffers and child-process
+memory are separate from these provider-owned payload bounds.
+
+Buffered execution preserves the executable resolution, allowlisted child
+environment, literal argv, and util-linux `setsid` process-group policy described
+above. Its required 1..600-second deadline covers setup, spawn, input, execution,
+and output settlement, not just the process leader. Failure and provider shutdown
+fence publication and clean up owned processes, including late startup completion.
+Termination retains the 250 ms TERM-to-KILL grace. Failure/shutdown joins cleanup
+for at most one second; unresolved native startup or cleanup remains owned by its
+continuation and fails explicitly rather than becoming success. Failure details
+mark `cleanupIncomplete` when cleanup cannot yet be confirmed. Abrupt backend/host
+termination can preempt that continuation and is not an OS-child cleanup guarantee.
+The generated service retains its existing serialized unary admission: other
+requests, including terminal controls, can queue behind a buffered invocation.
+The execution deadline starts when the provider admits execution, not while a
+request waits in that transport queue. Provider shutdown bypasses the queue; this
+facet promises no parallel admission.
+Only Linux x64 is supported; other platforms fail explicitly. Ordinary process
+groups cannot contain deliberately daemonized descendants, and cwd confinement is
+not an OS sandbox or protection against every same-user pathname replacement race.
+
+This facet adds no operation to `AuthorizedEnvironmentReadService` or the existing
+authorized streamed process service. Independent Capability backends and
+interpreted frontends receive no new execution authority. A separately declared,
+effectful Environment-bound invocation grant belongs to the subsequent integration
+slice. The Git ChangeSetSource backend is unchanged.
 
 ## Interactive terminals
 

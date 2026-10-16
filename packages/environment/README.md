@@ -3,8 +3,8 @@
 `adele_environment` defines one coherent Environment provider capability for
 establishment, restoration, bounded text-file reads, create-new text files,
 conditional replacement and deletion of existing text files, direct-child
-directory listings, bounded foreground process execution, and optional interactive
-terminal resources. It uses ADELE's
+directory listings, bounded foreground process execution, optional buffered binary
+process execution, and optional interactive terminal resources. It uses ADELE's
 generated contract transport and existing capability registry.
 
 The wire carries a narrow closed snapshot of the relevant Environment, Task,
@@ -117,6 +117,49 @@ facts in declared `EnvironmentFailure.details`; consumers must preserve those
 facts while treating output as incomplete. The stock
 [Git provider](../../plugins/git_environment/README.md#filesystem-and-processes)
 documents its concrete bounds, drain deadline, and failure evidence.
+
+## Buffered binary processes
+
+`EnvironmentBufferedProcessProvider` is an optional facet of the same selected
+Environment provider, exposed by unary `EnvironmentProviderService.runBufferedProcess`
+and `GeneratedEnvironmentProvider`. Its absence produces declared
+`EnvironmentFailure` with `buffered_process_unavailable`, never a host-local process
+fallback or a separately selected provider.
+
+`EnvironmentBufferedProcessRequest` carries `program`, immutable verbatim
+`arguments`, Environment-relative `relativeWorkingDirectory` (empty for root),
+`timeoutSeconds` (1..600), and `stdinBase64`. There is no implicit shell,
+environment override, or host working-directory override. Program must be nonempty;
+program/arguments/cwd must contain well-formed Unicode without NUL. Buffered
+requests accept at most 256 arguments and 65536 combined UTF-16 code units of
+program/arguments/cwd text. These metadata bounds do not change foreground or
+terminal requests.
+
+`EnvironmentBufferedProcessResult` carries a real `exitCode`, `stdoutBase64`, and
+`stderrBase64`. Nonzero exit is ordinary data. Unlike foreground text observations,
+buffered stdin/stdout/stderr preserve every byte, including NUL and invalid UTF-8,
+without text conversion, line normalization, or stream merging. Providers close
+stdin and fully drain both output pipes before returning. Timeout, overflow,
+incomplete drain, or I/O failure must fail the whole operation, not publish a
+successful truncated result.
+
+The decoded byte limits are `environmentBufferedProcessStdinLimit` (1 MiB),
+`environmentBufferedProcessStdoutLimit` (2 MiB), and
+`environmentBufferedProcessStderrLimit` (256 KiB). `encodeEnvironmentProcessBytes`
+and `decodeEnvironmentProcessBytes` require an explicit `maximumBytes` and accept
+only byte values and canonical standard padded base64 respectively. Empty input
+is valid. DTO constructors and the decoder check encoded length, decoded size,
+alphabet, padding, and zero padding bits before any decoded-byte allocation;
+URL-safe variants, whitespace, percent escapes, and omitted padding are rejected.
+These value bounds do not replace provider-side streaming byte accounting and
+bounded process cleanup.
+
+This is provider transport only, not an independent Capability invocation grant.
+`AuthorizedEnvironmentReadService`, `AuthorizedEnvironmentMutationService`,
+`AuthorizedEnvironmentProcessService`, and their facets remain unchanged. Existing
+read-only Capability invocation supplies no buffered-process authority. Any future
+independent invocation grant belongs to a separate authorization change (G2b), not
+this optional provider facet.
 
 ## Interactive terminals
 

@@ -3,11 +3,14 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
 
 import 'worktree_environment.dart';
+
+part 'buffered_process.dart';
 
 // The pinned Dart Process pipe stream aggregates up to 4 MiB plus one native
 // read. This bounds full decoded Strings owned by our queue across both pipes,

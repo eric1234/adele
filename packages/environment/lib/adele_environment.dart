@@ -1,6 +1,8 @@
 /// Common ADELE Environment provider capability and contract.
 library;
 
+import 'dart:convert' as convert;
+
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_product/adele_product.dart' as product;
@@ -14,6 +16,14 @@ const String environmentFileAlreadyExistsCode = 'file_already_exists';
 const String environmentRevisionConflictCode = 'revision_conflict';
 
 const String environmentTerminalUnavailableCode = 'terminal_unavailable';
+
+const String environmentBufferedProcessUnavailableCode =
+    'buffered_process_unavailable';
+
+/// Whole-operation byte bounds, before base64 encoding.
+const int environmentBufferedProcessStdinLimit = 1024 * 1024;
+const int environmentBufferedProcessStdoutLimit = 2 * 1024 * 1024;
+const int environmentBufferedProcessStderrLimit = 256 * 1024;
 
 /// Per-message bounds, independent of provider buffering and emulator scrollback.
 const int environmentTerminalTextLimit = 8192;
@@ -280,6 +290,171 @@ final class EnvironmentForegroundProcessRequest {
   final int timeoutSeconds;
 }
 
+/// Finite binary process input, with no implicit shell interpretation.
+@AdeleValue('environment.bufferedProcessRequest')
+final class EnvironmentBufferedProcessRequest {
+  EnvironmentBufferedProcessRequest({
+    required this.program,
+    required List<String> arguments,
+    required this.relativeWorkingDirectory,
+    required this.timeoutSeconds,
+    required this.stdinBase64,
+  }) : arguments = List<String>.unmodifiable(arguments) {
+    if (program.isEmpty) {
+      throw const FormatException('Process program must not be empty.');
+    }
+    if (this.arguments.length > 256) {
+      throw const FormatException(
+        'Buffered process accepts at most 256 arguments.',
+      );
+    }
+    int metadataLength = program.length + relativeWorkingDirectory.length;
+    for (final argument in this.arguments) {
+      metadataLength += argument.length;
+    }
+    if (metadataLength > 64 * 1024) {
+      throw const FormatException(
+        'Buffered process metadata must not exceed 65536 UTF-16 code units.',
+      );
+    }
+    _requireProcessText('Process program', program);
+    for (final argument in this.arguments) {
+      _requireProcessText('Process argument', argument);
+    }
+    _requireProcessText(
+      'Process relative working directory',
+      relativeWorkingDirectory,
+    );
+    if (timeoutSeconds < 1 || timeoutSeconds > 600) {
+      throw const FormatException(
+        'Process timeout must be between 1 and 600 seconds.',
+      );
+    }
+    _validateEnvironmentProcessBase64(
+      stdinBase64,
+      maximumBytes: environmentBufferedProcessStdinLimit,
+    );
+  }
+
+  /// Executable name or path passed directly to the provider process API.
+  final String program;
+
+  /// Immutable verbatim arguments, at most 256. Combined program/argv/cwd text
+  /// contains at most 65536 UTF-16 code units, without NUL or malformed Unicode.
+  final List<String> arguments;
+
+  /// Environment-relative directory, or empty for the Environment root.
+  final String relativeWorkingDirectory;
+
+  final int timeoutSeconds;
+
+  /// Canonical standard padded base64; empty means no input before stdin closes.
+  final String stdinBase64;
+}
+
+/// Complete byte-preserving output after process exit and successful pipe drain.
+/// Nonzero exit codes are data; timeout, overflow, and I/O failures are failures,
+/// never successful partial results.
+@AdeleValue('environment.bufferedProcessResult')
+final class EnvironmentBufferedProcessResult {
+  EnvironmentBufferedProcessResult({
+    required this.exitCode,
+    required this.stdoutBase64,
+    required this.stderrBase64,
+  }) {
+    _validateEnvironmentProcessBase64(
+      stdoutBase64,
+      maximumBytes: environmentBufferedProcessStdoutLimit,
+    );
+    _validateEnvironmentProcessBase64(
+      stderrBase64,
+      maximumBytes: environmentBufferedProcessStderrLimit,
+    );
+  }
+
+  final int exitCode;
+  final String stdoutBase64;
+  final String stderrBase64;
+}
+
+/// Encodes bytes without text conversion or byte-value normalization.
+String encodeEnvironmentProcessBytes(
+  List<int> bytes, {
+  required int maximumBytes,
+}) {
+  if (maximumBytes < 0) {
+    throw ArgumentError.value(
+      maximumBytes,
+      'maximumBytes',
+      'Must not be negative.',
+    );
+  }
+  if (bytes.length > maximumBytes) {
+    throw const FormatException('Process bytes exceed the byte limit.');
+  }
+  for (final byte in bytes) {
+    if (byte < 0 || byte > 255) {
+      throw const FormatException('Process bytes must be between 0 and 255.');
+    }
+  }
+  return convert.base64.encode(bytes);
+}
+
+/// Validates canonical base64 and its byte bound before allocating decoded bytes.
+List<int> decodeEnvironmentProcessBytes(
+  String encoded, {
+  required int maximumBytes,
+}) {
+  _validateEnvironmentProcessBase64(encoded, maximumBytes: maximumBytes);
+  return convert.base64.decode(encoded);
+}
+
+void _validateEnvironmentProcessBase64(
+  String encoded, {
+  required int maximumBytes,
+}) {
+  if (maximumBytes < 0) {
+    throw ArgumentError.value(
+      maximumBytes,
+      'maximumBytes',
+      'Must not be negative.',
+    );
+  }
+  final length = encoded.length;
+  final maximumQuartets = maximumBytes ~/ 3 + (maximumBytes % 3 == 0 ? 0 : 1);
+  if (length % 4 != 0 || length ~/ 4 > maximumQuartets) {
+    throw const FormatException(
+      'Process base64 length is invalid or exceeds the byte limit.',
+    );
+  }
+  if (length == 0) return;
+  final padding = encoded.codeUnitAt(length - 1) == 61
+      ? (encoded.codeUnitAt(length - 2) == 61 ? 2 : 1)
+      : 0;
+  if ((length ~/ 4) * 3 - padding > maximumBytes) {
+    throw const FormatException('Process base64 exceeds the byte limit.');
+  }
+  int lastValue = 0;
+  for (int index = 0; index < length - padding; index++) {
+    final code = encoded.codeUnitAt(index);
+    lastValue = switch (code) {
+      >= 65 && <= 90 => code - 65,
+      >= 97 && <= 122 => code - 97 + 26,
+      >= 48 && <= 57 => code - 48 + 52,
+      43 => 62,
+      47 => 63,
+      _ => throw const FormatException(
+        'Process base64 requires the standard alphabet and trailing padding.',
+      ),
+    };
+  }
+  // Unused bits in the last sextet must be zero; permissive decoders accept aliases.
+  if ((padding == 2 && (lastValue & 15) != 0) ||
+      (padding == 1 && (lastValue & 3) != 0)) {
+    throw const FormatException('Process base64 has nonzero padding bits.');
+  }
+}
+
 @AdeleValue('environment.processOutput')
 final class EnvironmentProcessOutput {
   EnvironmentProcessOutput({required this.stream, required this.text}) {
@@ -488,6 +663,12 @@ abstract interface class EnvironmentProviderService {
     EnvironmentForegroundProcessRequest request,
   );
 
+  @AdeleMethod('runBufferedProcess')
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    String environmentId,
+    EnvironmentBufferedProcessRequest request,
+  );
+
   @AdeleMethod('openTerminal')
   Stream<EnvironmentTerminalEvent> openTerminal(
     String environmentId,
@@ -673,7 +854,10 @@ abstract interface class EnvironmentProvider {
 
 /// Host-side adapter from a generated binding to ordinary Environment values.
 final class GeneratedEnvironmentProvider
-    implements EnvironmentProvider, EnvironmentTerminalProvider {
+    implements
+        EnvironmentProvider,
+        EnvironmentBufferedProcessProvider,
+        EnvironmentTerminalProvider {
   const GeneratedEnvironmentProvider({
     required this.providerId,
     required EnvironmentProviderService service,
@@ -750,6 +934,12 @@ final class GeneratedEnvironmentProvider
     product.EnvironmentId environmentId,
     EnvironmentForegroundProcessRequest request,
   ) => _service.runForegroundProcess(environmentId.value, request);
+
+  @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    product.EnvironmentId environmentId,
+    EnvironmentBufferedProcessRequest request,
+  ) => _service.runBufferedProcess(environmentId.value, request);
 
   @override
   Stream<EnvironmentTerminalEvent> openTerminal(
@@ -860,6 +1050,26 @@ final class EnvironmentProviderServiceAdapter
     EnvironmentForegroundProcessRequest request,
   ) => _provider.runForegroundProcess(_environmentId(environmentId), request);
 
+  @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    String environmentId,
+    EnvironmentBufferedProcessRequest request,
+  ) async {
+    final provider = _provider;
+    if (provider is! EnvironmentBufferedProcessProvider) {
+      throw const EnvironmentFailure(
+        code: environmentBufferedProcessUnavailableCode,
+        message:
+            'This Environment provider does not support buffered processes.',
+        details: <String, Object?>{},
+      );
+    }
+    return (provider as EnvironmentBufferedProcessProvider).runBufferedProcess(
+      _environmentId(environmentId),
+      request,
+    );
+  }
+
   EnvironmentTerminalProvider get _terminals {
     final provider = _provider;
     if (provider is EnvironmentTerminalProvider) {
@@ -919,6 +1129,18 @@ final class EnvironmentProviderServiceAdapter
     }
     return environment;
   }
+}
+
+/// Optional finite binary process facet of the same selected Environment provider.
+/// This provider surface grants no independent Capability invocation authority.
+/// Providers must bound stdin, stdout, and stderr, close stdin, and drain both
+/// output pipes before returning. Timeout, overflow, and incomplete I/O fail the
+/// operation rather than returning a truncated result. No host-local fallback.
+abstract interface class EnvironmentBufferedProcessProvider {
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    product.EnvironmentId environmentId,
+    EnvironmentBufferedProcessRequest request,
+  );
 }
 
 /// Optional facet of the selected Environment provider, not another capability.
