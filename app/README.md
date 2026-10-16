@@ -331,12 +331,15 @@ isolates exact binding, bounded scope, admission/settlement, and stream lifetime
 [`EnvironmentCapabilityAccessBridge`](lib/frontend/environment_capability_access_bridge.dart)
 is the separate contextual policy over the same `BackendInvocationBridge` transport.
 `PreparedMainContentHost` supplies the actual mounted pane's Session and the
-descriptor's `environmentReadCapabilities`, independently of ordinary `capabilities`.
+descriptor's separate `environmentReadCapabilities` and
+`environmentBufferedProcessCapabilities`, independently of ordinary `capabilities`.
 Explicit resolution freshly captures canonical Environment eligibility; handles
 retain the selected registrations without re-resolution. Each request calls the
-native helper below for its own read grant. The request-only public channel cannot
-open a contextual stream. Handle release and bridge invalidation synchronously
-notify all outstanding operations; the host also revokes contextual access before
+native helper below for its own read-only or buffered-process-only grant, according
+to the resolver used. Process resolution checks the already-selected provider's
+explicit permission; it never substitutes another provider. The request-only
+public channel cannot open a contextual stream. Handle release and bridge
+invalidation synchronously notify all outstanding operations; the host also revokes contextual access before
 asynchronous frontend retirement cleanup. An exact `ExtensionBinding.onRetire`
 subscription covers direct registration closure too, without requiring a frame or
 registry-change delivery.
@@ -352,6 +355,12 @@ The independent backend imports no Environment implementation and receives no ro
 path or shared provider registry. Native bridge lifetime/bounds coverage shares
 the contextual AOT suite below. None of these proof
 contracts is imported by production application code.
+
+[`prepared_environment_buffered_process_integration_test.dart`](test/prepared_environment_buffered_process_integration_test.dart)
+reuses that installation harness for an independent process-capable backend and
+compiled frontend, including a real stock Environment backend. It checks binary
+evidence through generated transport, separate declarations and grants, exact
+routing, and effectful-operation retirement without claiming rollback.
 
 ### Environment-eligible Capability selection
 
@@ -388,6 +397,13 @@ observes exact callable, Environment-provider, and both backend retirements befo
 opening the operation grant on the callable's connection. Reverse reads use the
 Environment's retained provider, which can belong to another backend. Grant
 revocation does not await provider cleanup.
+`invokeEnvironmentCapabilityWithBufferedProcess` shares this lifecycle and checks
+`allowsEnvironmentHostService` on the exact Environment-bound registration. Its
+only dispatcher is `AuthorizedEnvironmentBufferedProcessServiceDispatcher`, which
+forwards the existing binary DTO to the same selected materialization's optional
+buffered-process facet, validating before dispatch and after settlement. The host
+runs no process and grants no file, streaming, or terminal service. Revocation
+fences publication but cannot undo already-started effects; neither helper retries.
 The [contextual AOT integration](test/core/environment_capability_invocation_integration_test.dart)
 exercises normal bootstrap and actual reverse host requests using a synthetic
 implementation of a plugin-owned contract. Its optional `onRetire` observer lets

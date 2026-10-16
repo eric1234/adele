@@ -159,6 +159,16 @@ This strict boolean defaults to false and cannot be combined with `association`.
 It neither implies a same-plugin relationship nor proves support for every
 Environment or operation; provider-specific applicability remains plugin-owned.
 
+The separate `environmentHostServices` declaration contains only the closed
+`read` and `bufferedProcess` identities. It is default-empty, immutable, strictly
+validated, and retained against the exact live registration. Unknown values and
+duplicates fail activation; buffered-process opt-in requires `environmentBound`.
+Retirement invalidates the declaration, and same-ID replacement inherits nothing.
+Existing read-only declarations retain their read admission behavior. Process
+eligibility instead requires the explicit entry, without binding the Capability
+to a particular Environment implementation. Advertising either service grants no
+authority or invocation token.
+
 Capability selection and Environment authorization are separate. An explicit
 Provider ID must name an eligible registration and never falls back. Without an
 explicit ID, existing eligible siblings retain rank/Provider ID ordering and take
@@ -454,6 +464,51 @@ second transport or provider registry. Contextual streaming, contextual backend
 consumers, and portable arbitrary plugin-owned Extension Point contributions remain
 outside this boundary.
 
+### Prepared contextual buffered processes
+
+`environmentBufferedProcessCapabilities` is a separate default-empty Main Content
+allowlist of exact Capability ID/major pairs. The public contextual bridge exposes
+`resolveEnvironmentBufferedProcessCapabilityProvider` alongside the read resolver.
+Both use the same opaque handle table, request-only generated client channel,
+settlement mechanism, and presentation lifecycle. The process resolver captures
+the canonical Session and performs unchanged Environment-eligible selection first,
+then requires the selected provider's explicit `bufferedProcess` permission. An
+ineligible selected sibling fails rather than being replaced by an independent
+provider; explicit Provider IDs never fall back. Missing providers and mismatched
+generated service identities fail without substitute execution.
+
+The declaration permits invoking the selected semantic Capability, not calling a
+generic process API from interpreted code. Context-free `capabilities`,
+`environmentReadCapabilities`, initializers, input actions, finite operations, and
+other presentation roles acquire no process authority. The handle retains its
+grant kind: every request gets a fresh operation context supplying exactly
+`AuthorizedEnvironmentBufferedProcessService`, with no read, mutation, foreground
+stream, terminal, storage, or other host service. A read handle continues to supply
+only `AuthorizedEnvironmentReadService`. Supporting both in one invocation would
+require deliberate additional authorization, not automatic service union.
+
+The native `invokeEnvironmentCapabilityWithBufferedProcess` helper shares the read
+helper's exact capture and retirement path. It validates the frontend lifetime,
+provider permission, both registrations and backend generations, canonical
+Environment materialization, and service identity. The outer request goes to the
+Capability backend; its operation-scoped reverse request returns through the host
+to the captured Environment provider, even on another backend. The host does not
+rediscover the Environment, derive a local path, or execute a process itself.
+Neither plugin needs the other's implementation, and request payloads cannot
+select an Environment. Foreign, missing, expired, or wrong-kind host tokens cannot
+acquire this service.
+
+The service reuses the Environment's bounded binary request/result and declared
+failures, preserving stdin/stdout/stderr bytes without interpreting them as text.
+Authority is checked immediately before forwarding and after settlement. Outer
+completion/failure, handle release, pane departure, provider retirement, or either
+backend's termination revokes the grant and fences late successful publication.
+Concurrent invocations have independent contexts, and a completed context cannot
+be reused. Revocation is not process cancellation or rollback: an already-started
+command may have changed the Environment even when publication is denied. The
+host performs no automatic effectful retries or duplicate redispatch. Missing
+buffered-process support is a declared failure, never a local execution fallback.
+
 ### Plugin-owned change snapshots
 
 The stock [Diff Viewer](../../plugins/diff_viewer/README.md) owns the public
@@ -684,6 +739,9 @@ an explicit trusted host authorization point, not itself a plugin permission
 declaration or an interpreted bridge. Native host callers can use it directly;
 the prepared contextual bridge calls it only after its distinct declaration and
 mounted-presentation admission checks.
+The separate `invokeEnvironmentCapabilityWithBufferedProcess` uses that same
+capture/lifecycle mechanism with the additional provider permission check and only
+the buffered-process service described [above](#prepared-contextual-buffered-processes).
 
 Invocation is sent to the selected Capability provider's captured backend, not the
 Environment backend. Its operation-scoped read requests return to the host over that
@@ -720,13 +778,13 @@ Host authority is revoked synchronously when either exact provider registration 
 either backend activation retires, on an optional enclosing domain retirement
 observation, and on unary success or failure before publication to the consumer.
 The enclosing admission also revokes on callback failure or completion.
-Checks at actual host-service entry and read settlement fence queued or late
+Checks at actual host-service entry and operation settlement fence queued or late
 work. Successful contextual publication requires the same selection to remain
 valid at settlement; no failed check triggers reselection or a same-ID replacement.
 Revocation precedes asynchronous dispatcher cleanup and does not cancel ordinary
 unary work or claim that already-admitted effects were rolled back. This stricter
 contextual settlement does not change context-free Capability or Command rules.
-Termination on either connection invalidates dependent reads and publication;
+Termination on either connection invalidates dependent operations and publication;
 same-ID replacement on either side cannot repair the captured selection. Each
 concurrent request has a distinct grant, bound to the originating Session and
 presentation rather than an ambient current Session or Environment.

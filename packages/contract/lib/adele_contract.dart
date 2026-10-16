@@ -144,6 +144,10 @@ final class AdeleProviderAssociation {
   };
 }
 
+/// Environment services a callable provider can explicitly accept from the host.
+/// Declaring a service does not authorize access to it.
+enum AdeleEnvironmentHostService { read, bufferedProcess }
+
 /// One callable provider advertised by a ready backend generation.
 /// Plugin identity is deliberately absent: the host owns that identity.
 final class AdeleCapabilityExposure {
@@ -157,7 +161,8 @@ final class AdeleCapabilityExposure {
     this.rank = 0,
     this.association,
     this.environmentBound = false,
-  }) {
+    List<AdeleEnvironmentHostService> environmentHostServices = const [],
+  }) : environmentHostServices = List.unmodifiable(environmentHostServices) {
     try {
       validateAdelePublicId(providerId, label: 'provider ID');
       validateAdelePublicId(capabilityId, label: 'capability ID');
@@ -180,6 +185,18 @@ final class AdeleCapabilityExposure {
         'An Environment-bound provider cannot declare a sibling association.',
       );
     }
+    if (this.environmentHostServices.toSet().length !=
+        this.environmentHostServices.length) {
+      throw const FormatException('Duplicate Environment host service.');
+    }
+    if (!environmentBound &&
+        this.environmentHostServices.contains(
+          AdeleEnvironmentHostService.bufferedProcess,
+        )) {
+      throw const FormatException(
+        'Buffered process access requires an Environment-bound provider.',
+      );
+    }
   }
 
   final String providerId;
@@ -194,6 +211,9 @@ final class AdeleCapabilityExposure {
   /// Opts into host-selected Environment binding independently of a sibling.
   /// Mutually exclusive with [association]; this declaration grants no authority.
   final bool environmentBound;
+
+  /// Explicit service opt-ins, not invocation authority or selection eligibility.
+  final List<AdeleEnvironmentHostService> environmentHostServices;
 
   static List<AdeleCapabilityExposure> fromReady(Map<Object?, Object?> ready) {
     if (!ready.containsKey('capabilityExposures')) return const [];
@@ -229,6 +249,9 @@ final class AdeleCapabilityExposure {
           environmentBound: value.containsKey('environmentBound')
               ? value['environmentBound'] as bool
               : false,
+          environmentHostServices: value.containsKey('environmentHostServices')
+              ? _parseEnvironmentHostServices(value['environmentHostServices'])
+              : const [],
         );
       }),
     );
@@ -244,7 +267,27 @@ final class AdeleCapabilityExposure {
     'rank': rank,
     if (association != null) 'association': association!.toMap(),
     if (environmentBound) 'environmentBound': true,
+    if (environmentHostServices.isNotEmpty)
+      'environmentHostServices': [
+        for (final service in environmentHostServices) service.name,
+      ],
   };
+
+  static List<AdeleEnvironmentHostService> _parseEnvironmentHostServices(
+    Object? value,
+  ) {
+    if (value is! List) {
+      throw const FormatException('Environment host services must be a list.');
+    }
+    return [
+      for (final service in value)
+        switch (service) {
+          'read' => AdeleEnvironmentHostService.read,
+          'bufferedProcess' => AdeleEnvironmentHostService.bufferedProcess,
+          _ => throw const FormatException('Unknown Environment host service.'),
+        },
+    ];
+  }
 }
 
 void adeleValidateServiceId(String value) {

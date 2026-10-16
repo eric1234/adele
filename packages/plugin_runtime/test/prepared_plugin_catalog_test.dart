@@ -516,11 +516,16 @@ void main() {
       expect(session.backendServices, isEmpty);
       expect(session.capabilities, isEmpty);
       expect(session.environmentReadCapabilities, isEmpty);
+      expect(session.environmentBufferedProcessCapabilities, isEmpty);
       expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
       expect(() => session.backendServices.clear(), throwsUnsupportedError);
       expect(() => session.capabilities.clear(), throwsUnsupportedError);
       expect(
         () => session.environmentReadCapabilities.clear(),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => session.environmentBufferedProcessCapabilities.clear(),
         throwsUnsupportedError,
       );
       expect(session.actions, isEmpty);
@@ -723,8 +728,13 @@ void main() {
     'exit': 'closeSources',
   };
   const mainContentCapability = {'id': 'org.example.read', 'majorVersion': 1};
+  const capabilityFields = [
+    'capabilities',
+    'environmentReadCapabilities',
+    'environmentBufferedProcessCapabilities',
+  ];
 
-  for (final field in ['capabilities', 'environmentReadCapabilities']) {
+  for (final field in capabilityFields) {
     for (final capabilities in [
       <Map<String, Object?>>[],
       [
@@ -755,13 +765,19 @@ void main() {
           final descriptor =
               installation.frontend!.presentations.single
                   as PreparedMainContentPresentation;
-          final keys = field == 'capabilities'
-              ? descriptor.capabilities
-              : descriptor.environmentReadCapabilities;
-          final otherKeys = field == 'capabilities'
-              ? descriptor.environmentReadCapabilities
-              : descriptor.capabilities;
-          expect(otherKeys, isEmpty);
+          final declarations = {
+            'capabilities': descriptor.capabilities,
+            'environmentReadCapabilities':
+                descriptor.environmentReadCapabilities,
+            'environmentBufferedProcessCapabilities':
+                descriptor.environmentBufferedProcessCapabilities,
+          };
+          final keys = declarations[field]!;
+          for (final other in capabilityFields.where(
+            (other) => other != field,
+          )) {
+            expect(declarations[other], isEmpty);
+          }
           expect(keys, [
             for (final capability in capabilities)
               CapabilityKey(
@@ -834,6 +850,7 @@ void main() {
   PreparedMainContentPresentation mainContent({
     Iterable<CapabilityKey> capabilities = const [],
     Iterable<CapabilityKey> environmentReadCapabilities = const [],
+    Iterable<CapabilityKey> environmentBufferedProcessCapabilities = const [],
     List<PreparedMainContentAction> actions = const [],
     Map<String, String> operations = const {},
     String? closeOperation,
@@ -851,6 +868,8 @@ void main() {
     entrypoint: 'buildPane',
     capabilities: capabilities,
     environmentReadCapabilities: environmentReadCapabilities,
+    environmentBufferedProcessCapabilities:
+        environmentBufferedProcessCapabilities,
     actions: actions,
     operations: operations,
     closeOperation: closeOperation,
@@ -890,6 +909,7 @@ void main() {
         expect(parsed.backendServices, isEmpty);
         expect(parsed.capabilities, isEmpty);
         expect(parsed.environmentReadCapabilities, isEmpty);
+        expect(parsed.environmentBufferedProcessCapabilities, isEmpty);
         expect(parsed.environmentTextFiles, isFalse);
         expect(parsed.sessionExecution, isFalse);
         expect(parsed.nativeCodeEditor, isFalse);
@@ -918,6 +938,7 @@ void main() {
     );
     expect(descriptor.sessionExecution, isFalse);
     expect(descriptor.environmentReadCapabilities, isEmpty);
+    expect(descriptor.environmentBufferedProcessCapabilities, isEmpty);
     expect(descriptor.backendServices, isEmpty);
     expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
     expect(
@@ -945,6 +966,7 @@ void main() {
     ];
     final descriptor = mainContent(environmentReadCapabilities: keys);
     expect(descriptor.environmentReadCapabilities, keys);
+    expect(descriptor.environmentBufferedProcessCapabilities, isEmpty);
     final both = mainContent(
       capabilities: keys,
       environmentReadCapabilities: keys,
@@ -978,6 +1000,67 @@ void main() {
     );
   });
 
+  test('Main Content snapshots separate buffered-process Capability keys', () {
+    final empty = mainContent();
+    expect(empty.environmentBufferedProcessCapabilities, isEmpty);
+    expect(
+      () => empty.environmentBufferedProcessCapabilities.clear(),
+      throwsUnsupportedError,
+    );
+    final keys = [
+      CapabilityKey(id: CapabilityId('org.example.process'), majorVersion: 2),
+      CapabilityKey(id: CapabilityId('org.example.process'), majorVersion: 1),
+    ];
+    final descriptor = mainContent(
+      environmentBufferedProcessCapabilities: keys,
+    );
+    final all = mainContent(
+      capabilities: keys,
+      environmentReadCapabilities: keys,
+      environmentBufferedProcessCapabilities: keys,
+    );
+    expect(descriptor.environmentBufferedProcessCapabilities, keys);
+    expect(all.environmentBufferedProcessCapabilities, all.capabilities);
+    expect(
+      all.environmentBufferedProcessCapabilities,
+      all.environmentReadCapabilities,
+    );
+    expect(
+      all.environmentBufferedProcessCapabilities,
+      isNot(same(all.capabilities)),
+    );
+    expect(
+      all.environmentBufferedProcessCapabilities,
+      isNot(same(all.environmentReadCapabilities)),
+    );
+    keys.clear();
+    expect(descriptor.environmentBufferedProcessCapabilities, hasLength(2));
+    expect(
+      () => descriptor.environmentBufferedProcessCapabilities.clear(),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => descriptor.environmentBufferedProcessCapabilities[0] =
+          descriptor.environmentBufferedProcessCapabilities[1],
+      throwsUnsupportedError,
+    );
+    expect(descriptor.capabilities, isEmpty);
+    expect(descriptor.environmentReadCapabilities, isEmpty);
+    expect(descriptor.backendServices, isEmpty);
+    expect(descriptor.sessionExecution, isFalse);
+    expect(descriptor.environmentTextFiles, isFalse);
+    expect(descriptor.strategyAffinity, PreparedStrategyAffinity.independent);
+    expect(
+      () => mainContent(
+        environmentBufferedProcessCapabilities: [
+          all.environmentBufferedProcessCapabilities.first,
+          all.environmentBufferedProcessCapabilities.first,
+        ],
+      ),
+      throwsFormatException,
+    );
+  });
+
   for (final populated in [false, true]) {
     test(
       'Main Content serializes and roundtrips populated=$populated',
@@ -1001,6 +1084,7 @@ void main() {
                 backendServices: ['org.example.session'],
                 capabilities: [contextFree, contextual.first],
                 environmentReadCapabilities: contextual,
+                environmentBufferedProcessCapabilities: [contextual.first],
                 strategyAffinity: PreparedStrategyAffinity.owningBackend,
                 actions: [
                   PreparedMainContentAction(
@@ -1037,6 +1121,11 @@ void main() {
                   {'id': 'org.example.read', 'majorVersion': 1},
                 ]
               : <Object?>[],
+          'environmentBufferedProcessCapabilities': populated
+              ? [
+                  {'id': 'org.example.read', 'majorVersion': 2},
+                ]
+              : <Object?>[],
           'strategyAffinity': populated ? 'owningBackend' : 'independent',
           'actions': populated ? [mainContentAction] : <Object?>[],
           'operations': populated ? mainContentOperations : <String, String>{},
@@ -1068,14 +1157,23 @@ void main() {
           parsed.environmentReadCapabilities,
           descriptor.environmentReadCapabilities,
         );
+        expect(
+          parsed.environmentBufferedProcessCapabilities,
+          descriptor.environmentBufferedProcessCapabilities,
+        );
         if (populated) {
           (json['capabilities']! as List).clear();
           (json['environmentReadCapabilities']! as List).clear();
+          (json['environmentBufferedProcessCapabilities']! as List).clear();
           (json['backendServices']! as List).clear();
           (json['actions']! as List).clear();
           (json['operations']! as Map).clear();
           expect(descriptor.capabilities, hasLength(2));
           expect(descriptor.environmentReadCapabilities, hasLength(2));
+          expect(
+            descriptor.environmentBufferedProcessCapabilities,
+            hasLength(1),
+          );
           expect(descriptor.backendServices, hasLength(1));
           expect(descriptor.actions, hasLength(1));
           expect(descriptor.operations, mainContentOperations);
@@ -1220,10 +1318,10 @@ void main() {
       ..._mainContent,
       'environmentTextFiles': true,
     },
-    for (final field in ['capabilities', 'environmentReadCapabilities'])
+    for (final field in capabilityFields)
       for (final value in <Object?>[null, false, '', 1, {}])
         'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},
-    for (final field in ['capabilities', 'environmentReadCapabilities'])
+    for (final field in capabilityFields)
       for (final value in <Object?>[
         null,
         false,
@@ -1257,7 +1355,7 @@ void main() {
           ..._mainContent,
           field: [value],
         },
-    for (final field in ['capabilities', 'environmentReadCapabilities'])
+    for (final field in capabilityFields)
       'duplicate $field keys': {
         ..._mainContent,
         field: [
@@ -1288,6 +1386,10 @@ void main() {
       {
         ...mainContentAction,
         'environmentReadCapabilities': [mainContentCapability],
+      },
+      {
+        ...mainContentAction,
+        'environmentBufferedProcessCapabilities': [mainContentCapability],
       },
     ])
       'invalid action ${jsonEncode(value)}': {
@@ -1781,6 +1883,7 @@ void main() {
     for (final field in [
       'capabilities',
       'environmentReadCapabilities',
+      'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
     ]) {
@@ -1822,6 +1925,7 @@ void main() {
   ]) {
     for (final field in [
       'environmentReadCapabilities',
+      'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
     ]) {

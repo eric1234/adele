@@ -750,6 +750,16 @@ abstract interface class AuthorizedEnvironmentProcessService {
   );
 }
 
+/// Finite byte-preserving process access over one host-bound Environment.
+/// Separate from read and foreground process authority; no selector or host cwd.
+@AdeleService('authorizedEnvironmentBufferedProcess')
+abstract interface class AuthorizedEnvironmentBufferedProcessService {
+  @AdeleMethod('runBufferedProcess')
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    EnvironmentBufferedProcessRequest request,
+  );
+}
+
 @AdeleFailure('environment.failure')
 final class EnvironmentFailure implements Exception {
   const EnvironmentFailure({

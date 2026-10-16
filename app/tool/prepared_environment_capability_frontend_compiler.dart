@@ -15,6 +15,7 @@ Future<void> compilePreparedEnvironmentCapabilityFrontend({
   required File contract,
   required String sdkPath,
   required File artifact,
+  String frontendFixture = 'prepared_environment_capability_frontend.dart.txt',
 }) async {
   final root = repositoryRoot.path;
   final generated = await ContractGenerator(
@@ -34,7 +35,7 @@ Future<void> compilePreparedEnvironmentCapabilityFrontend({
           .compile({
             'environment_capability_consumer': {
               'main.dart': await File(
-                '$root/app/test/fixtures/prepared_environment_capability_frontend.dart.txt',
+                '$root/app/test/fixtures/$frontendFixture',
               ).readAsString(),
             },
             'capability_probe_contract': {'contract.dart': generated},

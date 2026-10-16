@@ -20,7 +20,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
       },
     );
 
-final class EnvironmentService implements EnvironmentProviderService {
+class EnvironmentService implements EnvironmentProviderService {
   EnvironmentService(this.state);
   final ProbeState state;
   final _environments = <String, String>{};

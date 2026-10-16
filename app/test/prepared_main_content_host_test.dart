@@ -6,6 +6,8 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/contribution_bridge.dart';
+import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
@@ -16,6 +18,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/main_content_bridge.dart' as public_bridge;
+import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -40,13 +43,23 @@ void main() {
         (Compiler()
               ..addPlugin(flutterEvalPlugin)
               ..addPlugin(const MainContentDeclarations())
+              ..addPlugin(const ContributionDeclarations())
+              ..addPlugin(const EnvironmentCapabilityAccessDeclarations())
               ..entrypoints.add(_library))
             .compile({
               'prepared_panes': {'main.dart': _source},
+              'adele_contract': {
+                'adele_contract.dart': evalContractSupportSource,
+              },
               'adele_ui': {
-                'main_content_bridge.dart': await File(
-                  '../packages/ui/lib/main_content_bridge.dart',
-                ).readAsString(),
+                for (final library in [
+                  'main_content_bridge',
+                  'contribution_bridge',
+                  'environment_capability_bridge',
+                ])
+                  '$library.dart': await File(
+                    '../packages/ui/lib/$library.dart',
+                  ).readAsString(),
               },
             });
     artifact = await File(
@@ -86,6 +99,7 @@ void main() {
     String entrypoint = 'buildPane',
     bool actionCommand = false,
     String actionEntrypoint = 'buildInput',
+    bool capabilityProbe = false,
   }) async {
     final root = await Directory(
       '${temporary.path}/case-${sequence++}',
@@ -113,6 +127,20 @@ void main() {
                 'library': _library,
                 'initialize': initialize,
                 'entrypoint': entrypoint,
+                if (capabilityProbe) ...{
+                  for (final field in [
+                    'capabilities',
+                    'environmentReadCapabilities',
+                    'environmentBufferedProcessCapabilities',
+                  ])
+                    field: [
+                      {'id': 'test.contextual', 'majorVersion': 1},
+                    ],
+                  'operations': {
+                    'read': 'readCapabilityOperation',
+                    'process': 'processCapabilityOperation',
+                  },
+                },
                 if (actionCommand)
                   'actions': [
                     {
@@ -318,6 +346,100 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final kind in ['Read', 'Process']) {
+    testWidgets('initializer cannot acquire $kind access declared for panes', (
+      tester,
+    ) async {
+      final records = <_Binding>[];
+      await tester.runAsync(
+        () => activate(
+          initialize: 'initialize${kind}Capability',
+          capabilityProbe: true,
+          host: PreparedMainContentHost(
+            createBinding:
+                ({
+                  required installation,
+                  required descriptor,
+                  required session,
+                  required paneId,
+                }) {
+                  final record = _Binding(session, paneId);
+                  records.add(record);
+                  return record.binding;
+                },
+          ),
+        ),
+      );
+      await tester.pumpWidget(host());
+      await tester.pumpAndSettle();
+      expect(records, isEmpty);
+      expect(find.text('body a'), findsNothing);
+      expect(find.text('Independent content'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'actions and finite operations cannot inherit pane $kind access',
+      (tester) async {
+        final records = <_Binding>[];
+        final prepared = PreparedMainContentHost(
+          createBinding:
+              ({
+                required installation,
+                required descriptor,
+                required session,
+                required paneId,
+              }) {
+                final record = _Binding(session, paneId);
+                records.add(record);
+                return record.binding;
+              },
+        );
+        await tester.runAsync(
+          () => activate(
+            host: prepared,
+            capabilityProbe: true,
+            actionCommand: true,
+            actionEntrypoint: 'build${kind}CapabilityInput',
+          ),
+        );
+        await tester.pumpWidget(
+          host(actionCoordinator: prepared.actionCoordinator),
+        );
+        await tester.pumpAndSettle();
+        final eval = records.single.runtimes.single;
+        final operation = kind.toLowerCase();
+        // A pane has the actual ABI, but declarations alone grant no host owner.
+        expect(
+          copyStructuredBridgeData(
+            await eval.executeLib(_library, '${operation}Capability'),
+          ),
+          isNull,
+        );
+        final result =
+            copyStructuredBridgeData(
+                  await eval.executeLib(_library, 'invokeCapabilityOperation', [
+                    $String(operation),
+                  ]),
+                )
+                as Map;
+        expect(result, {
+          'ok': false,
+          'message': 'Contribution operation is unavailable.',
+        });
+        await tester.pumpAndSettle();
+        await CommandResolver(extensions).resolve(_commandId).invoke();
+        await tester.pumpAndSettle();
+        expect(find.text('Unexpected capability input'), findsNothing);
+        expect(find.text('Frontend unavailable.'), findsOneWidget);
+        expect(find.text('body a'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'Main Content Command availability follows its exact mounted input host',
@@ -1086,8 +1208,36 @@ final class _RecordingBridge implements PreparedFrontendBridge {
 const _source = r'''
 import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/contribution_bridge.dart';
+import 'package:adele_ui/environment_capability_bridge.dart';
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
+Future<String?> readCapability() =>
+  resolveEnvironmentCapabilityProvider('test.contextual', 1, 'test.contextual', null);
+Future<String?> processCapability() =>
+  resolveEnvironmentBufferedProcessCapabilityProvider('test.contextual', 1, 'test.contextual', null);
+void initializeReadCapability() {
+  readCapability();
+  initializePanes();
+}
+void initializeProcessCapability() {
+  processCapability();
+  initializePanes();
+}
+Widget buildReadCapabilityInput() {
+  readCapability();
+  return Text('Unexpected capability input');
+}
+Widget buildProcessCapabilityInput() {
+  processCapability();
+  return Text('Unexpected capability input');
+}
+Future<Map<String, dynamic>> readCapabilityOperation() async =>
+  <String, dynamic>{'handle': await readCapability()};
+Future<Map<String, dynamic>> processCapabilityOperation() async =>
+  <String, dynamic>{'handle': await processCapability()};
+Future<Map<String, dynamic>> invokeCapabilityOperation(String operation) =>
+  invokeContributionOperation(operation, <String, dynamic>{});
 void initializeFailure() { throw StateError('private attachment failure'); }
 Widget buildInput() => Text('Prepared input ' + readMainContentContext()['sessionId']);
 Widget buildReplacementInput() => Text('Replacement input ' + readMainContentContext()['sessionId']);
