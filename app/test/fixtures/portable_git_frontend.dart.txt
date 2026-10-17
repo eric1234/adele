@@ -1,0 +1,145 @@
+import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
+import 'package:flutter/material.dart';
+
+void initialize() {
+  openMainContentPane('portable', 'Independent portable Git', false);
+}
+
+Widget buildPane() => PortableGit();
+
+class PortableGit extends StatefulWidget {
+  @override
+  State<PortableGit> createState() => PortableGitState();
+}
+
+class PortableGitState extends State<PortableGit> {
+  String selection = 'idle';
+  String text = 'snapshot:idle';
+  dynamic client;
+  List<String> handles = [];
+  bool disposed = false;
+
+  void select(String? provider, String service) async {
+    final handle = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      'adele.diff.change-set-source',
+      1,
+      service,
+      provider,
+    );
+    if (disposed) return;
+    if (handle == null) {
+      setState(() {
+        selection = 'selection:unavailable';
+      });
+      return;
+    }
+    handles.add(handle);
+    client = ChangeSetSourceServiceClient(
+      EnvironmentCapabilityRequestChannel(handle),
+    );
+    setState(() {
+      selection = 'selected';
+    });
+  }
+
+  void snapshot(dynamic selected, String scope) async {
+    if (selected == null || disposed) return;
+    setState(() {
+      text = 'snapshot:pending';
+    });
+    final ChangeSetSourceServiceClient typed = selected;
+    dynamic result;
+    if (scope == 'unstaged') {
+      result = await settleEnvironmentCapabilityOperation(
+        typed.snapshotUnstaged(),
+      );
+    } else if (scope == 'uncommitted') {
+      result = await settleEnvironmentCapabilityOperation(
+        typed.snapshotUncommitted(),
+      );
+    } else {
+      result = await settleEnvironmentCapabilityOperation(
+        typed.snapshotTaskChanges(),
+      );
+    }
+    if (disposed) return;
+    if (result[0] != true) {
+      setState(() {
+        text = 'snapshot:unavailable';
+      });
+      return;
+    }
+    // Decoding and every nested field access happen inside compiled EVC.
+    final ChangeSetSnapshot value = result[1];
+    String rendered = 'snapshot';
+    for (final ChangedFile file in value.files) {
+      rendered +=
+          '\n${file.relativePath}|${file.changeKind}|${file.contentStatus}';
+      for (final DiffHunk hunk in file.hunks) {
+        rendered +=
+            '\n@@${hunk.oldStart},${hunk.oldCount}:${hunk.newStart},${hunk.newCount}';
+        for (final DiffLine line in hunk.lines) {
+          rendered += '\n${line.kind}:${line.text}:${line.noNewline}';
+        }
+      }
+    }
+    setState(() {
+      text = rendered;
+    });
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    for (final handle in handles) {
+      releaseEnvironmentCapabilityProvider(handle);
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(selection),
+      Text(text),
+      TextButton(
+        onPressed: () {
+          select(null, changeSetSourceServiceId);
+        },
+        child: Text('Select'),
+      ),
+      TextButton(
+        onPressed: () {
+          select('missing', changeSetSourceServiceId);
+        },
+        child: Text('Missing provider'),
+      ),
+      TextButton(
+        onPressed: () {
+          select(null, 'wrong-service');
+        },
+        child: Text('Wrong service'),
+      ),
+      TextButton(
+        onPressed: () {
+          snapshot(client, 'unstaged');
+        },
+        child: Text('Unstaged'),
+      ),
+      TextButton(
+        onPressed: () {
+          snapshot(client, 'uncommitted');
+        },
+        child: Text('Uncommitted'),
+      ),
+      TextButton(
+        onPressed: () {
+          snapshot(client, 'task');
+        },
+        child: Text('Task'),
+      ),
+    ],
+  );
+}
