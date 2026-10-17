@@ -19,7 +19,7 @@ final class GitPortableUnstagedLimits {
     this.stderrBytes = 64 * 1024,
     this.totalBytes = 8 * 1024 * 1024,
     this.lines = 8192,
-    this.processes = 18432,
+    this.processes = 4096,
     this.processTimeout = const Duration(seconds: 10),
     this.operationTimeout = const Duration(seconds: 30),
   });
@@ -111,6 +111,7 @@ final class _PortableSnapshot {
   final GitPortableUnstagedLimits limits;
   final Stopwatch watch = Stopwatch()..start();
   final Map<String, _PathState> observed = {};
+  final Map<String, String> workingOids = {};
   final Map<String, String> attributes = {};
   bool closed = false;
   int commandCount = 0;
@@ -177,8 +178,11 @@ final class _PortableSnapshot {
     final files = <ChangedFile>[];
     final paths = entries.keys.toList()..sort();
     for (final path in paths) {
-      checkOpen();
       _validatePath(path);
+    }
+    await observeWorking(paths, entries, deleted, killed);
+    for (final path in paths) {
+      checkOpen();
       final file = await inspect(path, entries[path]!, deleted, killed);
       if (file == null) continue;
       if (files.length == limits.files) {
@@ -204,9 +208,7 @@ final class _PortableSnapshot {
       }
       files.add(file);
     }
-    for (final entry in observed.entries) {
-      if (await stat(entry.key) != entry.value) throw _changed();
-    }
+    await verifyMetadata(observed.keys.toList());
     for (final entry in attributes.entries) {
       if (await readAttributes(entry.key) != entry.value) throw _changed();
     }
@@ -217,6 +219,120 @@ final class _PortableSnapshot {
     }
     checkOpen();
     return ChangeSetSnapshot(files: files);
+  }
+
+  Future<void> observeWorking(
+    List<String> paths,
+    Map<String, GitIndexEntry> entries,
+    Set<String> deleted,
+    Set<String> killed,
+  ) async {
+    final candidates = paths.where((path) {
+      final entry = entries[path]!;
+      return const {'modified', 'added'}.contains(entry.kind) &&
+          const {'000000', '100644', '100755'}.contains(entry.oldMode) &&
+          !deleted.contains(path) &&
+          !killed.any(
+            (parent) => path == parent || path.startsWith('$parent/'),
+          );
+    }).toList();
+    final parents = <int, Set<String>>{};
+    var parentCount = 0;
+    var parentText = 0;
+    for (final path in candidates) {
+      final components = path.split('/');
+      var parent = '';
+      for (var depth = 0; depth < components.length - 1; depth++) {
+        parent = parent.isEmpty
+            ? components[depth]
+            : '$parent/${components[depth]}';
+        if ((parents[depth] ??= {}).add(parent)) {
+          parentCount++;
+          parentText += parent.length;
+          if (parentCount > limits.inventoryEntries ||
+              parentText > limits.totalBytes) {
+            throw _failure(
+              'snapshot_too_large',
+              'The snapshot exceeds its parent-path observation budget.',
+            );
+          }
+        }
+      }
+    }
+    bool parentIsDirectory(String path) {
+      final separator = path.lastIndexOf('/');
+      return separator < 0 ||
+          observed[path.substring(0, separator)]?.type == 0x4000;
+    }
+
+    // Inspect each depth before admitting descendants. A static parent symlink
+    // must not cause even the initial leaf metadata scan to follow its target.
+    final depths = parents.keys.toList()..sort();
+    for (final depth in depths) {
+      final safe = parents[depth]!.where(parentIsDirectory).toList()..sort();
+      observed.addAll(await statMany(safe));
+    }
+    observed.addAll(
+      await statMany(
+        candidates
+            .where(
+              (path) => parentIsDirectory(path) && !observed.containsKey(path),
+            )
+            .toList(),
+      ),
+    );
+
+    final hashPaths = <String>[];
+    for (final path in candidates) {
+      final entry = entries[path]!;
+      final state = observed[path];
+      if (entry.kind != 'modified' ||
+          state == null ||
+          state.type != 0x8000 ||
+          (fileMode && state.executable != (entry.oldMode == '100755'))) {
+        continue;
+      }
+      if (state.size <= limits.fileBytes) {
+        // Hashing saves transport, not the budget for compared source content.
+        chargeBytes(state.size);
+      } else {
+        if (state.size > limits.verificationFileBytes ||
+            state.size > limits.verificationTotalBytes - verificationBytes) {
+          continue;
+        }
+        verificationBytes += state.size;
+      }
+      hashPaths.add(path);
+    }
+    const arguments = ['hash-object', '--no-filters', '--'];
+    for (final batch in pathBatches(
+      hashPaths,
+      '/usr/bin/git',
+      gitArguments(arguments),
+    )) {
+      final raw = _decode(
+        (await git([...arguments, for (final path in batch) './$path'])).bytes,
+      );
+      if (!raw.endsWith('\n')) throw _malformed();
+      final hashes = raw.substring(0, raw.length - 1).split('\n');
+      if (hashes.length != batch.length) throw _malformed();
+      for (var index = 0; index < batch.length; index++) {
+        final path = batch[index];
+        final oid = hashes[index];
+        if (!_oid(oid) || oid.length != entries[path]!.oid.length) {
+          throw _malformed();
+        }
+        workingOids[path] = oid;
+      }
+    }
+    await verifyMetadata(hashPaths);
+  }
+
+  Future<void> verifyMetadata(List<String> paths) async {
+    final current = await statMany(paths);
+    for (final path in paths) {
+      if (current[path] != observed[path]) throw _changed();
+    }
   }
 
   Future<ChangedFile?> inspect(
@@ -277,17 +393,15 @@ final class _PortableSnapshot {
       for (final component
           in path.split('/').take(path.split('/').length - 1)) {
         parent = parent == '.' ? component : '$parent/$component';
-        final parentState = observed[parent] ?? await stat(parent);
-        observed[parent] = parentState;
-        if (parentState.type != 0x4000) {
+        if (observed[parent]?.type != 0x4000) {
           return placeholder(
             'unsupported',
             'A parent path is a symbolic link or is not a directory.',
           );
         }
       }
-      state = await stat(path);
-      observed[path] = state;
+      state = observed[path];
+      if (state == null) throw _changed();
       if (state.type != 0x8000) {
         return placeholder(
           'unsupported',
@@ -303,6 +417,8 @@ final class _PortableSnapshot {
           kind: 'typeChanged',
         );
       }
+      final workingOid = workingOids[path];
+      if (entry.kind == 'modified' && workingOid == entry.oid) return null;
       if (state.size > limits.fileBytes) {
         if (entry.kind == 'added') {
           return placeholder(
@@ -311,20 +427,12 @@ final class _PortableSnapshot {
             kind: 'added',
           );
         }
-        if (state.size > limits.verificationFileBytes ||
-            state.size > limits.verificationTotalBytes - verificationBytes) {
+        if (workingOid == null) {
           return placeholder(
             'oversized',
             'The working file exceeds the verification budget; change state is unknown.',
           );
         }
-        verificationBytes += state.size;
-        final oid = _scalar(
-          (await git(['hash-object', '--no-filters', '--', './$path'])).bytes,
-        );
-        if (!_oid(oid) || oid.length != entry.oid.length) throw _malformed();
-        if (await stat(path) != state) throw _changed();
-        if (oid == entry.oid) return null;
         return placeholder(
           'oversized',
           'The oversized working file differs from the index.',
@@ -341,8 +449,8 @@ final class _PortableSnapshot {
         throw _changed();
       }
       if (entry.kind == 'modified' &&
-          _blobHash(current, entry.oid.length) == entry.oid) {
-        return null;
+          _blobHash(current, entry.oid.length) != workingOid) {
+        throw _changed();
       }
     }
     final old = await blob(entry.oid);
@@ -475,22 +583,67 @@ final class _PortableSnapshot {
     return data;
   }
 
-  Future<_PathState> stat(String path) async {
-    final raw = _decode(
-      (await command('/usr/bin/stat', [
-        '--printf=%f %s %d %i %y %z\n',
-        '--',
-        './$path',
-      ])).bytes,
-    );
-    final match = RegExp(
-      r'^([0-9a-f]+) (\d+) (\d+) (\d+) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4}) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4})\n$',
-    ).firstMatch(raw);
-    if (match == null) throw _malformed();
-    final mode = int.tryParse(match[1]!, radix: 16);
-    final size = int.tryParse(match[2]!);
-    if (mode == null || size == null) throw _malformed();
-    return _PathState(mode: mode, size: size, description: raw);
+  Future<_PathState> stat(String path) async => (await statMany([path]))[path]!;
+
+  Future<Map<String, _PathState>> statMany(List<String> paths) async {
+    const arguments = [r'--printf=%n\0%f %s %d %i %y %z\0', '--'];
+    final states = <String, _PathState>{};
+    for (final batch in pathBatches(paths, '/usr/bin/stat', arguments)) {
+      final records = _records(
+        _decode(
+          (await command('/usr/bin/stat', [
+            ...arguments,
+            for (final path in batch) './$path',
+          ])).bytes,
+        ),
+      );
+      if (records.length != batch.length * 2) throw _malformed();
+      for (var index = 0; index < batch.length; index++) {
+        final path = batch[index];
+        if (records[index * 2] != './$path') throw _malformed();
+        final raw = records[index * 2 + 1];
+        final match = RegExp(
+          r'^([0-9a-f]+) (\d+) (\d+) (\d+) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4}) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4})$',
+        ).firstMatch(raw);
+        if (match == null || match.end != raw.length) throw _malformed();
+        final mode = int.tryParse(match[1]!, radix: 16);
+        final size = int.tryParse(match[2]!);
+        if (mode == null || size == null) throw _malformed();
+        states[path] = _PathState(mode: mode, size: size, description: raw);
+      }
+    }
+    return states;
+  }
+
+  Iterable<List<String>> pathBatches(
+    List<String> paths,
+    String program,
+    List<String> arguments,
+  ) sync* {
+    final fixed = requestArguments(program, arguments);
+    final fixedLength =
+        '/bin/sh'.length + fixed.fold<int>(0, (sum, arg) => sum + arg.length);
+    var batch = <String>[];
+    var length = fixedLength;
+    for (final path in paths) {
+      final added = './'.length + path.length;
+      if (fixed.length + 1 > 256 || fixedLength + added > 64 * 1024) {
+        throw _failure(
+          'snapshot_too_large',
+          'A snapshot path exceeds the process metadata limit.',
+        );
+      }
+      if (batch.length == 128 ||
+          fixed.length + batch.length + 1 > 256 ||
+          length + added > 64 * 1024) {
+        yield batch;
+        batch = [];
+        length = fixedLength;
+      }
+      batch.add(path);
+      length += added;
+    }
+    if (batch.isNotEmpty) yield batch;
   }
 
   Future<_Repository> discover() async {
@@ -507,17 +660,25 @@ final class _PortableSnapshot {
     final prefix = _scalar(
       (await git(['rev-parse', '--show-prefix'], discover: true)).bytes,
     );
+    final worktreePrefix = worktree == '/' ? '/' : '$worktree/';
     if (inside != 'true' ||
-        !root.startsWith('/') ||
-        !worktree.startsWith('/') ||
-        !directory.startsWith('/') ||
-        root.contains('\u0000') ||
-        directory.contains('\u0000') ||
-        (root != worktree && !root.startsWith('$worktree/')) ||
+        [root, worktree, directory].any(
+          (path) =>
+              !path.startsWith('/') ||
+              path.contains('\u0000') ||
+              (path != '/' &&
+                  path
+                      .substring(1)
+                      .split('/')
+                      .any(
+                        (part) => part.isEmpty || part == '.' || part == '..',
+                      )),
+        ) ||
+        (root != worktree && !root.startsWith(worktreePrefix)) ||
         prefix !=
             (root == worktree
                 ? ''
-                : '${root.substring(worktree.length + 1)}/')) {
+                : '${root.substring(worktreePrefix.length)}/')) {
       throw _failure(
         'repository_unavailable',
         'Git discovery does not match the selected Environment root.',
@@ -594,40 +755,75 @@ final class _PortableSnapshot {
     bool allowDifference = false,
   }) => command(
     '/usr/bin/git',
-    [
-      '--no-pager',
-      '--no-optional-locks',
-      '--no-replace-objects',
-      '--literal-pathspecs',
-      if (detached) '--git-dir=/dev/null',
-      if (!detached && !discover && repository != null) ...[
-        '--git-dir=${repository!.directory}',
-        '--work-tree=${repository!.worktree}',
-      ],
-      '-c',
-      'core.fsmonitor=false',
-      '-c',
-      'core.untrackedCache=false',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'diff.external=',
-      if (detached) ...[
-        '-c',
-        'core.attributesFile=/dev/null',
-        '-c',
-        'core.autocrlf=false',
-        '-c',
-        'core.filemode=false',
-        '-c',
-        'diff.suppressBlankEmpty=false',
-      ],
-      ...arguments,
-    ],
+    gitArguments(arguments, detached: detached, discover: discover),
     input: input,
     detached: detached,
     allowDifference: allowDifference,
   );
+
+  List<String> gitArguments(
+    List<String> arguments, {
+    bool detached = false,
+    bool discover = false,
+  }) => [
+    '--no-pager',
+    '--no-optional-locks',
+    '--no-replace-objects',
+    '--literal-pathspecs',
+    if (detached) '--git-dir=/dev/null',
+    if (!detached && !discover && repository != null) ...[
+      '--git-dir=${repository!.directory}',
+      '--work-tree=${repository!.worktree}',
+    ],
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    'core.untrackedCache=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+    '-c',
+    'diff.external=',
+    if (detached) ...[
+      '-c',
+      'core.attributesFile=/dev/null',
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'core.filemode=false',
+      '-c',
+      'diff.suppressBlankEmpty=false',
+    ],
+    ...arguments,
+  ];
+
+  List<String> requestArguments(
+    String program,
+    List<String> arguments, {
+    bool detached = false,
+  }) => [
+    '-c',
+    // Fixed code; filenames and configuration never become shell source.
+    r'exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" LC_ALL=C LANG=C GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= "$@"',
+    'adele-git-inspection',
+    if (detached) ...[
+      '/usr/bin/env',
+      'GIT_CONFIG_NOSYSTEM=1',
+      'GIT_CONFIG_SYSTEM=/dev/null',
+      'GIT_CONFIG_GLOBAL=/dev/null',
+      'GIT_ATTR_NOSYSTEM=1',
+    ],
+    program, ...arguments,
+  ];
+
+  void chargeBytes(int count) {
+    byteCount += count;
+    if (byteCount > limits.totalBytes) {
+      throw _failure(
+        'snapshot_too_large',
+        'The snapshot exceeds its aggregate byte budget.',
+      );
+    }
+  }
 
   Future<_Output> command(
     String program,
@@ -649,21 +845,7 @@ final class _PortableSnapshot {
         : limits.processTimeout;
     final request = EnvironmentBufferedProcessRequest(
       program: '/bin/sh',
-      arguments: [
-        '-c',
-        // Fixed code, never interpolated filenames or Git configuration. Only
-        // argv crosses the shell; the child gets a deliberately small environment.
-        r'exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" LC_ALL=C LANG=C GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= "$@"',
-        'adele-git-inspection',
-        if (detached) ...[
-          '/usr/bin/env',
-          'GIT_CONFIG_NOSYSTEM=1',
-          'GIT_CONFIG_SYSTEM=/dev/null',
-          'GIT_CONFIG_GLOBAL=/dev/null',
-          'GIT_ATTR_NOSYSTEM=1',
-        ],
-        program, ...arguments,
-      ],
+      arguments: requestArguments(program, arguments, detached: detached),
       relativeWorkingDirectory: '',
       timeoutSeconds: (timeout.inMicroseconds / Duration.microsecondsPerSecond)
           .ceil()
@@ -690,13 +872,7 @@ final class _PortableSnapshot {
         'A snapshot process exceeded its output limit.',
       );
     }
-    byteCount += input.length + output.length + errors.length;
-    if (byteCount > limits.totalBytes) {
-      throw _failure(
-        'snapshot_too_large',
-        'The snapshot exceeds its aggregate byte budget.',
-      );
-    }
+    chargeBytes(input.length + output.length + errors.length);
     // Git can exit successfully while reporting unreadable paths on stderr.
     // Never treat such an inventory (or a partially successful utility) as complete.
     if (errors.isNotEmpty ||

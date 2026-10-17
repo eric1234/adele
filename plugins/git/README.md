@@ -302,8 +302,9 @@ Source commands additionally disable fsmonitor, hooks and the untracked cache.
 This is command hygiene, not a sandbox against a substituted system executable or
 arbitrary effects of the selected Environment's process implementation.
 
-Discovery compares `pwd -P` with Git's worktree, Git directory and source prefix,
-then pins the discovered Git directory/worktree on source commands. Inventories
+Discovery compares canonical absolute `pwd -P` and Git worktree/Git-directory
+paths with the exact source prefix, including a worktree rooted at `/`, then pins
+the discovered Git directory/worktree on source commands. Inventories
 remain scoped to `.` at the selected Environment root, including a nested Project
 directory, and return sorted Environment-relative paths. Cached stage/debug and
 untracked inventories reuse the existing pure `git_snapshot_parsing.dart` helpers;
@@ -312,16 +313,31 @@ framing preserves unusual filenames. Any diagnostic on stderr fails the operatio
 for example, `ls-files --deleted` can report an unreadable path as deleted while
 returning exit zero with an error diagnostic.
 
-GNU `stat` checks observed parent and leaf types, sizes, modes, identity and
-nanosecond modification/change times. Inventoried static symlinks and special files
-are unsupported, not ordinary text changes. This preflight is important because Git
-no-index can follow a symlink to a FIFO and report its consumed content as a regular
-file, even in raw output. `head -c` bounds raw working bytes; Git `cat-file -s` and
-`cat-file blob` obtain bounded index bytes, whose size and object identity are
-checked. Equal raw tracked content is omitted before text classification. Within
-the separate observed-size verification budget, oversized regular files use
-`hash-object --no-filters` for equality; unverifiable files remain explicitly
-oversized with unknown change state.
+GNU `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
+modification/change times in bounded batches. Parents are admitted one depth at a
+time before their descendants. Each result contains the literal argv filename and
+metadata in separate NUL-terminated fields; complete record count and path ordering
+must match the request. Inventoried static symlinks and special files are
+unsupported, not ordinary text changes. This preflight is important because Git
+no-index can follow a symlink to a FIFO and report its content as a regular file.
+
+For verified regular tracked files, `git hash-object --no-filters -- ./path ...`
+computes raw SHA-1 or SHA-256 blob identities in bounded batches. Every eligible
+file's content is hashed, even when index timestamps and sizes appear unchanged.
+Exact hash count, framing and index hash width are checked. Metadata is rechecked
+in batches immediately after hashing and again before publication. Equal raw
+content is omitted before text classification; unchanged files need no individual
+`head` or `stat` requests. Oversized hashing remains subject to the separate
+observed-size verification budget, and unverifiable files remain explicit
+oversized entries with unknown change state. A failed batch rejects the whole
+snapshot, even if Git or stat produced a valid prefix of output.
+
+Each batch contains at most 128 literal path arguments, reduced further to fit
+the generic 256-argument and 65,536-UTF-16-unit metadata bounds. Accounting includes
+the entire shell wrapper, executable, Git options, discovered roots and path
+prefixes. There is no filename interpolation into shell source. Changed text
+continues through bounded `head -c` captures/rereads, per-read metadata checks, and
+`cat-file -s` / `cat-file blob` index reads with size and object-identity validation.
 
 For renderable changes, the index bytes are the single bounded stdin of
 `git --git-dir=/dev/null diff --no-index ... -- - ./relative-path`, or `/dev/null`
@@ -337,32 +353,45 @@ links remain unsupported even when their target text might be unchanged. Git doe
 not inventory untracked FIFOs or other untrackable special files; these are outside
 the Git change set rather than discovered by a separate filesystem traversal.
 
-Defaults are 4,096 inventory entries, 256 returned files, 1 MiB per rendered side,
-2 MiB command stdout, 64 KiB diagnostic output, 8 MiB aggregate transported input
-and output, 8,192 hunk lines, a conservative 6 MiB DTO budget, and 18,432 process
-requests. Counting all command traffic makes the aggregate limit stricter than the
-stock implementation. Oversized verification admits at most 16 MiB per observed
-file and 64 MiB total observed sizes. Commands have a ten-second deadline within
+Defaults are 4,096 inventory entries, at most that many distinct parent observations,
+256 returned files, 1 MiB per rendered side, 2 MiB command stdout, 64 KiB diagnostic
+output, an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
+budget, and 4,096 process requests. The aggregate budget counts all transported
+input/output plus observed small-file bytes hashed outside transport, so batching
+does not bypass the content-work limit. Retained parent-path text is independently
+capped at `totalBytes` UTF-16 code units before metadata execution. Oversized
+verification admits at most 16 MiB per observed file and 64 MiB total observed
+sizes. Commands have a ten-second deadline within
 the whole snapshot's thirty seconds; execution remains sequential. Generic
 Environment transport limits are unchanged. Any incomplete observation, malformed
 output, process/transport failure or exhausted whole-operation budget fails the
 snapshot rather than returning a truncated or deceptively clean result.
 
-The process ceiling leaves headroom above the 16,404 requests needed for a flat
-clean inventory of 4,096 regular files (four requests per file plus twenty fixed
-requests). It is not a promise that such a repository fits the independent byte or
-thirty-second deadline limits; nested paths and changed files can need more work.
-Clean-root scaling across real backend transports must be measured before normal
-production activation. Batching or other performance changes are deferred rather
-than increasing the operation deadline.
+A flat clean inventory with ordinary-length paths uses
+`20 + 4 * ceil(fileCount / 128)` requests: initial metadata, hashing, post-hash
+metadata and final metadata batches, plus fixed discovery/inventory/settings work.
+At the 4,096-entry maximum this is 148 requests. The 4,096-request ceiling also
+allows up to ten additional requests per rendered tracked file (2,560 for the
+256-file bound), with headroom for parents and smaller metadata-limited batches.
+It does not promise success for every possible path layout, file size or machine;
+the independent byte and thirty-second deadline bounds still apply.
 
-Non-gating Linux diagnostics using the independent local process test fixture
-completed 100 small tracked files in 9.22 seconds with 420 requests; 500 files
-reached `operation_timeout` after 30.03 seconds and 1,163 requests, without a
-snapshot. These are single-host observations, not timing guarantees or CI
-assertions, and exclude cross-backend transport overhead. This scaling concern
-must be addressed in later production-cutover/performance work, not by treating
-the inventory or process-count allowance as a throughput guarantee.
+Non-gating Linux diagnostics, excluding fixture setup, observed:
+
+| Local Process Fixture | Requests | Elapsed |
+| --- | --- | --- |
+| 100 clean tracked files | 24 | 1.013 seconds |
+| 500 clean tracked files | 36 | 1.080 seconds |
+| 900 clean tracked files | 52 | 1.606 seconds |
+| 500 tracked files with three text edits | 66 | 1.937 seconds |
+
+The real independent Environment AOT / Git AOT / compiled EVC fixture completed
+500 and 900 clean files in 1.202 and 1.651 seconds with 37 and 53 requests (including
+a parent directory). A modify/delete/add combination used 60 and 76 requests in
+1.833 and 2.173 seconds. These are single-host observations, not timing guarantees
+or CI assertions. Modest deterministic tests instead enforce batched call scaling
+and fail-closed behavior. Production activation and the additional scopes remain
+deferred; batching does not alter the Environment's isolation guarantees.
 
 Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
 file attributes, repository discovery and observed metadata are rechecked before
@@ -377,8 +406,10 @@ the provider's process deadline and lifetime policy still apply.
 
 `git_portable_unstaged_snapshot_test.dart` exercises real Git through an independent
 process-service adapter, including hostile configuration, unusual paths, explicit
-unsupported cases, limits and changed observations. The maintained `git_backend`
-target discovers it and the extracted parser tests. Application
+unsupported cases, limits and changed observations. `git_portable_discovery_test.dart`
+uses controlled process responses for root/prefix validation without creating a
+repository at the host filesystem root. The maintained `git_backend` target
+discovers both and the extracted parser tests. Application
 `prepared_portable_git_integration_test.dart` independently prepares an Environment
 AOT backend that runs real processes, a separate AOT adapter over this production
 service, and a compiled EVC consumer of the generated Diff contract. It checks

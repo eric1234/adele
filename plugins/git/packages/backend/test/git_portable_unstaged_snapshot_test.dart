@@ -54,16 +54,346 @@ void main() {
     limits: limits,
   ).snapshotUnstaged();
 
-  test('default process budget leaves headroom for the flat clean inventory', () {
-    const limits = GitPortableUnstagedLimits();
-    // Four requests per clean regular file, plus discovery and its revalidation.
-    final flatCleanRequests = 4 * limits.inventoryEntries + 20;
-    expect(limits.inventoryEntries, 4096);
-    expect(limits.processes, 18432);
-    expect(limits.processes, greaterThan(flatCleanRequests));
-    expect(limits.operationTimeout, const Duration(seconds: 30));
-    expect(limits.processTimeout, const Duration(seconds: 10));
+  test(
+    'default process budget covers batched inventory and changed-file work',
+    () {
+      const limits = GitPortableUnstagedLimits();
+      // Initial/hash/post-hash/final batches, plus fixed setup and final checks.
+      final flatCleanRequests =
+          4 * ((limits.inventoryEntries + 127) ~/ 128) + 20;
+      expect(limits.inventoryEntries, 4096);
+      expect(limits.processes, 4096);
+      expect(
+        limits.processes,
+        greaterThan(flatCleanRequests + 10 * limits.files),
+      );
+      expect(limits.operationTimeout, const Duration(seconds: 30));
+      expect(limits.processTimeout, const Duration(seconds: 10));
+    },
+  );
+
+  test('clean scans scale by batches rather than per-file processes', () async {
+    for (var index = 1; index < 160; index++) {
+      await write('file-${index.toString().padLeft(3, '0')}', 'small\n');
+    }
+    await commit();
+    final before = await _fingerprint(repository);
+    expect((await snapshot()).files, isEmpty);
+    expect(processes.requests, hasLength(20 + 4 * 2));
+    final hashes = processes.requests
+        .where((request) => request.arguments.contains('hash-object'))
+        .toList();
+    expect(hashes, hasLength(2));
+    expect(
+      hashes.every((request) => request.arguments.contains('--no-filters')),
+      isTrue,
+    );
+    expect(
+      processes.requests.where(
+        (request) => request.arguments.contains('/usr/bin/head'),
+      ),
+      isEmpty,
+    );
+    expect(await _fingerprint(repository), before);
   });
+
+  test(
+    'long literal paths split batches within complete transport metadata bounds',
+    () async {
+      final parent = List.generate(
+        6,
+        (index) => '$index${'p' * 180}',
+      ).join('/');
+      for (var index = 0; index < 75; index++) {
+        await write('$parent/file-$index', 'small\n');
+      }
+      await commit();
+      expect((await snapshot()).files, isEmpty);
+      expect(
+        processes.requests
+            .where((request) => request.arguments.contains('hash-object'))
+            .length,
+        greaterThan(1),
+      );
+      for (final request in processes.requests) {
+        expect(request.arguments.length, lessThanOrEqualTo(256));
+        expect(
+          request.program.length +
+              request.relativeWorkingDirectory.length +
+              request.arguments.fold<int>(0, (sum, arg) => sum + arg.length),
+          lessThanOrEqualTo(65536),
+        );
+      }
+      expect(processes.requests.length, lessThan(50));
+    },
+  );
+
+  test(
+    'failure in a later real hash batch never publishes its successful prefix',
+    () async {
+      for (var index = 1; index < 160; index++) {
+        await write('file-${index.toString().padLeft(3, '0')}', 'small\n');
+      }
+      await commit();
+      var hashes = 0;
+      final through = _InterceptingProcesses(processes, (request, run) async {
+        if (request.arguments.contains('hash-object') && ++hashes == 2) {
+          await File('${repository.path}/file-159').delete();
+        }
+        return run(request);
+      });
+      await expectLater(
+        snapshot(through: through),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'git_failed',
+          ),
+        ),
+      );
+      expect(hashes, 2);
+    },
+  );
+
+  test(
+    'raw hash input is charged even though only small OIDs cross transport',
+    () async {
+      await write('large-clean', 'x' * (64 * 1024));
+      await commit();
+      await expectLater(
+        snapshot(
+          limits: const GitPortableUnstagedLimits(totalBytes: 64 * 1024),
+        ),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'snapshot_too_large',
+          ),
+        ),
+      );
+      expect(
+        processes.requests.where(
+          (request) => request.arguments.contains('hash-object'),
+        ),
+        isEmpty,
+      );
+      expect(
+        processes.requests.where(
+          (request) => request.arguments.contains('/usr/bin/head'),
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test('parent metadata has a bounded observation inventory', () async {
+    await write('one/two/three/file', 'small\n');
+    await commit();
+    await expectLater(
+      snapshot(limits: const GitPortableUnstagedLimits(inventoryEntries: 2)),
+      throwsA(
+        isA<ChangeSetFailure>().having(
+          (error) => error.code,
+          'code',
+          'snapshot_too_large',
+        ),
+      ),
+    );
+  });
+
+  test(
+    'deep parent names are bounded before metadata requests or retention grows',
+    () async {
+      final path = '${List.filled(200, 'segment' * 20).join('/')}/file';
+      final through = _InterceptingProcesses(processes, (request, run) async {
+        final result = await run(request);
+        if (!request.arguments.contains('--cached')) return result;
+        final raw = utf8.decode(base64Decode(result.stdoutBase64));
+        return _result(stdout: raw.replaceFirst('baseline\x00', '$path\x00'));
+      });
+      await expectLater(
+        snapshot(
+          through: through,
+          limits: const GitPortableUnstagedLimits(totalBytes: 128 * 1024),
+        ),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'snapshot_too_large',
+          ),
+        ),
+      );
+      expect(
+        processes.requests.where(
+          (request) => request.arguments.contains('/usr/bin/stat'),
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'oversized hash batches retain unknown entries beyond their aggregate budget',
+    () async {
+      for (final path in ['large-a', 'large-b', 'large-c']) {
+        await write(path, 'x' * 128);
+      }
+      await commit();
+      final result = await snapshot(
+        limits: const GitPortableUnstagedLimits(
+          fileBytes: 64,
+          verificationFileBytes: 256,
+          verificationTotalBytes: 256,
+        ),
+      );
+      expect(result.files.single.relativePath, 'large-c');
+      expect(result.files.single.changeKind, 'unsupported');
+      expect(result.files.single.contentStatus, 'oversized');
+      final operands = processes.requests
+          .where((request) => request.arguments.contains('hash-object'))
+          .expand((request) => request.arguments);
+      expect(operands, containsAll(['./large-a', './large-b']));
+      expect(operands, isNot(contains('./large-c')));
+    },
+  );
+
+  test('raw batch hashing supports SHA-256 index identities', () async {
+    final shaRepository = await Directory('${container.path}/sha256').create();
+    await _git(shaRepository, ['init', '--object-format=sha256']);
+    final file = File('${shaRepository.path}/tracked');
+    await file.writeAsString('before\n');
+    await _git(shaRepository, ['add', '--', 'tracked']);
+    processes = _FixtureProcesses(shaRepository, container);
+    expect((await snapshot()).files, isEmpty);
+    await file.writeAsString('after\n');
+    final changed = (await snapshot()).files.single;
+    expect(changed.relativePath, 'tracked');
+    expect(_lines(changed), ['deletion:before', 'addition:after']);
+  });
+
+  test(
+    'raw hashes do not trust stale index timestamps or matching file sizes',
+    () async {
+      final file = File('${repository.path}/baseline');
+      final previous = await file.lastModified();
+      await file.writeAsString('changed!\n');
+      await file.setLastModified(previous);
+      final changed = (await snapshot()).files.single;
+      expect(_lines(changed), ['deletion:baseline', 'addition:changed!']);
+      expect(
+        processes.requests.any(
+          (request) => request.arguments.contains('hash-object'),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  for (final command in ['stat', 'hash-object']) {
+    for (final corruption in [
+      'missing',
+      'extra',
+      'malformed',
+      if (command == 'stat') 'reordered',
+      if (command == 'stat') 'metadata terminator',
+      'partial failure',
+      'warning',
+    ]) {
+      test(
+        '$command batch $corruption fails instead of publishing clean',
+        () async {
+          await write('second', 'second\n');
+          await commit();
+          var intercepted = false;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (intercepted ||
+                !request.arguments.contains(
+                  command == 'stat' ? '/usr/bin/stat' : command,
+                )) {
+              return result;
+            }
+            intercepted = true;
+            final raw = utf8.decode(base64Decode(result.stdoutBase64));
+            final delimiter = command == 'stat' ? '\x00' : '\n';
+            final records = raw.substring(0, raw.length - 1).split(delimiter);
+            final width = command == 'stat' ? 2 : 1;
+            switch (corruption) {
+              case 'missing':
+              case 'partial failure':
+                records.removeRange(records.length - width, records.length);
+              case 'extra':
+                records.addAll(records.take(width).toList());
+              case 'malformed':
+                records[0] = command == 'stat' ? './wrong-path' : 'not-an-oid';
+              case 'reordered':
+                final first = records.take(2).toList();
+                records.replaceRange(0, 2, records.sublist(2, 4));
+                records.replaceRange(2, 4, first);
+              case 'metadata terminator':
+                records[1] = '${records[1]}\n';
+              case 'warning':
+                break;
+            }
+            return _result(
+              stdout: '${records.join(delimiter)}$delimiter',
+              exitCode: corruption == 'partial failure' ? 1 : 0,
+              stderr: const ['partial failure', 'warning'].contains(corruption)
+                  ? 'incomplete observation\n'
+                  : '',
+            );
+          });
+          await expectLater(
+            snapshot(through: through),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                const ['partial failure', 'warning'].contains(corruption)
+                    ? 'git_failed'
+                    : 'invalid_git_output',
+              ),
+            ),
+          );
+          expect(intercepted, isTrue);
+        },
+      );
+    }
+  }
+
+  for (final phase in ['post-hash', 'final metadata']) {
+    test('clean file mutation at $phase fails the complete snapshot', () async {
+      var statCount = 0;
+      var changed = false;
+      final through = _InterceptingProcesses(processes, (request, run) async {
+        if (request.arguments.contains('/usr/bin/stat')) {
+          statCount++;
+          if (statCount == (phase == 'post-hash' ? 2 : 3)) {
+            changed = true;
+            await write('baseline', 'changed!\n');
+          }
+        }
+        return run(request);
+      });
+      await expectLater(
+        snapshot(through: through),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'snapshot_changed',
+          ),
+        ),
+      );
+      expect(changed, isTrue);
+    });
+  }
 
   test(
     'clean and staged-only snapshots are empty and never mutate Git',

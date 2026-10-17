@@ -144,7 +144,9 @@ void main() {
     bool concurrent = false,
     bool present = true,
     CapabilityRegistry? registry,
+    String? additionalRoot,
   }) async {
+    final selectedRoots = {...roots, 'additional': ?additionalRoot};
     tester.view.physicalSize = const Size(1600, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -164,7 +166,7 @@ void main() {
             providerId: ProviderId(
               'test.environment.${id == 'additional' ? 'a' : 'b'}',
             ),
-            providerState: {'root': roots[id]},
+            providerState: {'root': selectedRoots[id]},
           ),
       ],
     );
@@ -214,7 +216,7 @@ void main() {
         startupArguments: {
           _environmentPlugin: [
             jsonEncode({
-              'roots': roots,
+              'roots': selectedRoots,
               'noBufferedFacet': noBufferedFacet,
               'unavailable': unavailable,
               'exposures': [
@@ -385,6 +387,68 @@ void main() {
           () => _denied(fixture, call['hostInvocationContext'] as String),
         );
       }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'clean nonprimary prepared snapshots batch 160 files across backends',
+    (tester) async {
+      final repository = (await tester.runAsync(() async {
+        final root = await Directory('${temporary.path}/scaling').create();
+        await _git(root, ['init', '--initial-branch=main']);
+        await Directory('${root.path}/tracked').create();
+        for (var i = 0; i < 160; i++) {
+          await File(
+            '${root.path}/tracked/file $i.txt',
+          ).writeAsString('clean selected $i\n');
+        }
+        await _git(root, ['add', '--all']);
+        await _git(root, [
+          '-c',
+          'user.name=Fixture',
+          '-c',
+          'user.email=fixture@example.invalid',
+          'commit',
+          '-m',
+          'baseline',
+        ]);
+        return root.resolveSymbolicLinks();
+      }))!;
+      await mount(tester, additionalRoot: repository);
+      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+      await _select(tester);
+      _press(tester, 'Unstaged');
+      await _text(tester, 'snapshot');
+
+      final evidence = (await tester.runAsync(fixture.snapshot))!;
+      expect(evidence['reads'], isEmpty);
+      final processes = (evidence['processes'] as List)
+          .cast<Map<Object?, Object?>>();
+      final requests = (evidence['requests'] as List)
+          .cast<Map<Object?, Object?>>()
+          .where(
+            (request) =>
+                request['method'] ==
+                environmentProviderServiceRunBufferedProcessId,
+          );
+      expect(requests, hasLength(processes.length));
+      expect(processes, isNotEmpty);
+      expect(processes.length, lessThan(50));
+      for (final process in processes) {
+        expect(process['environmentId'], 'additional');
+        expect(process['providerId'], 'test.environment.a');
+        expect(process['cwd'], repository);
+        expect(process['exitCode'], 0);
+      }
+      final calls = (await tester.runAsync(() => _calls(fixture)))!;
+      expect(calls, hasLength(1));
+      expect(calls.single['method'], '$_service.snapshotUnstaged');
+      expect(calls.single['payload'], isEmpty);
+      await tester.runAsync(
+        () => _denied(fixture, calls.single['hostInvocationContext'] as String),
+      );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
