@@ -6,9 +6,9 @@ import 'dart:typed_data';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
-import 'package:git_environment_backend/git_environment_backend.dart';
-import 'package:git_environment_backend/src/git_change_set_source.dart';
-import 'package:git_environment_backend/src/git_process_environment.dart';
+import 'package:git_backend/git_backend.dart';
+import 'package:git_backend/src/git_change_set_source.dart';
+import 'package:git_backend/src/git_process_environment.dart';
 import 'package:test/test.dart';
 
 void main() {

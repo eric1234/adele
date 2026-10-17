@@ -149,7 +149,7 @@ final class DevelopmentSelfHostingArtifacts {
     required this.directory,
     required this.hostArtifact,
     required this.openAiArtifact,
-    required this.gitEnvironmentArtifact,
+    required this.gitArtifact,
     required this.agentsMdArtifact,
     required this.searchToolsArtifact,
     required this.filesystemToolsArtifact,
@@ -162,7 +162,7 @@ final class DevelopmentSelfHostingArtifacts {
   final Directory directory;
   final File hostArtifact;
   final File openAiArtifact;
-  final File gitEnvironmentArtifact;
+  final File gitArtifact;
   final File agentsMdArtifact;
   final File searchToolsArtifact;
   final File filesystemToolsArtifact;
@@ -185,9 +185,7 @@ final class DevelopmentSelfHostingArtifacts {
       directory: outputDirectory,
       hostArtifact: File('${outputDirectory.path}/host.aot'),
       openAiArtifact: File('${outputDirectory.path}/openai.aot'),
-      gitEnvironmentArtifact: File(
-        '${outputDirectory.path}/git-environment.aot',
-      ),
+      gitArtifact: File('${outputDirectory.path}/git.aot'),
       agentsMdArtifact: File('${outputDirectory.path}/agents-md.aot'),
       searchToolsArtifact: File('${outputDirectory.path}/search-tools.aot'),
       filesystemToolsArtifact: File(
@@ -225,9 +223,9 @@ final class DevelopmentSelfHostingArtifacts {
         dart: dart,
         repository: repository,
         entrypoint:
-            'plugins/git_environment/packages/backend/bin/'
-            'git_environment_backend.dart',
-        output: artifacts.gitEnvironmentArtifact,
+            'plugins/git/packages/backend/bin/'
+            'git_backend.dart',
+        output: artifacts.gitArtifact,
         log: log,
       ),
       _compileAot(
@@ -420,8 +418,8 @@ final class DevelopmentSelfHostingTopology {
       );
       final PluginBackendConnection environmentConnection = await host
           .startPlugin(
-            pluginId: 'dev.adele.plugin.git-environment',
-            artifactUri: artifacts.gitEnvironmentArtifact.uri,
+            pluginId: 'dev.adele.plugin.git',
+            artifactUri: artifacts.gitArtifact.uri,
           );
       environmentActivation =
           await PluginCapabilityActivation.registerAdvertised(

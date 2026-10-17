@@ -334,18 +334,21 @@ The provider approximately:
 
 Task/environment/worktree/branch names may match by convention but are not one identity.
 
-### Review/change provider
+### ChangeSetSource
 
 Git implements the Diff-owned public `ChangeSetSource` Capability in its existing
-Environment backend. The initial read-only implementation supplies Unstaged
-snapshots for its exactly associated canonical Environment. The contract remains
-in the Diff ecosystem rather than core; see the
+backend, alongside its Git Worktree Environment provider. The current read-only
+implementation remains associated with that same backend's canonical Environment,
+not portable across arbitrary Environment providers. Task comparison retains its
+baseline in Environment provider state. The contract remains in the Diff ecosystem
+rather than core; see the
 [accepted ownership boundary](../architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots)
-and [Git implementation scope](../../plugins/git_environment/README.md).
+and [Git implementation scope](../../plugins/git/README.md).
 
 ### Approval/unapproval provider
 
-Git maps review approval to staging/index state:
+The intended Git integration maps review approval to staging/index state;
+these operations are not implemented by the current read-only ChangeSetSource:
 
 ```text
 approve hunk/file -> stage corresponding change

@@ -19,7 +19,7 @@ const String _codegenEntrypoint =
 const String _hostEntrypoint =
     'packages/plugin_backend_host/bin/adele_backend_host.dart';
 const String _gitEntrypoint =
-    'plugins/git_environment/packages/backend/bin/git_environment_backend.dart';
+    'plugins/git/packages/backend/bin/git_backend.dart';
 const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
 const String _agentsMdEntrypoint =
@@ -90,7 +90,7 @@ void main() {
       'tools/test_runner.dart',
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
-      'plugins/git_environment/packages/backend/native/git_pty_helper.c',
+      'plugins/git/packages/backend/native/git_pty_helper.c',
       'plugins/openai/records.schema.json',
       'plugins/source_editor/settings.schema.json',
     ]) {
@@ -372,7 +372,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     final helper = File.fromUri(
       Directory(
         argument.substring(prefix.length),
-      ).uri.resolve('git-environment/pty-helper'),
+      ).uri.resolve('git/pty-helper'),
     );
     return ['--pty-helper=${helper.path}'];
   }
@@ -1096,7 +1096,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           defines['ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE']!,
         );
         final File git = File.fromUri(
-          installations.uri.resolve('git-environment/backend.aot'),
+          installations.uri.resolve('git/backend.aot'),
         );
         final File openai = File.fromUri(
           installations.uri.resolve('openai/backend.aot'),
@@ -1131,7 +1131,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(commandTools.uri.isAbsolute, isTrue);
         expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
-        expect(git.path, endsWith('/git-environment/backend.aot'));
+        expect(git.path, endsWith('/git/backend.aot'));
         expect(openai.path, endsWith('/openai/backend.aot'));
         expect(agentsMd.path, endsWith('/agents-md/backend.aot'));
         expect(searchTools.path, endsWith('/search-tools/backend.aot'));
@@ -1148,7 +1148,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(startupArguments.parent.path, host.parent.path);
         expect(jsonDecode(startupArguments.readAsStringSync()), {
           'dev.adele.openai': ['--chatgpt-only'],
-          'dev.adele.plugin.git-environment': gitStartupArguments(),
+          'dev.adele.plugin.git': gitStartupArguments(),
         });
         expect(
           installations.listSync().map(
@@ -1156,7 +1156,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           ),
           unorderedEquals([
-            'git-environment',
+            'git',
             'openai',
             'agents-md',
             'search-tools',
@@ -1174,9 +1174,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final installedIds = <String>{};
         for (final plugin in [
           (
-            directory: 'git-environment',
-            id: 'dev.adele.plugin.git-environment',
-            name: 'Git Worktree Environment',
+            directory: 'git',
+            id: 'dev.adele.plugin.git',
+            name: 'Git',
             backend: true,
           ),
           (
@@ -1298,7 +1298,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (hasFrontend ? 1 : 0) +
                   (plugin.directory == 'source-editor' ? 1 : 0) +
                   (plugin.directory == 'openai' ? 1 : 0) +
-                  (plugin.directory == 'git-environment' ? 1 : 0),
+                  (plugin.directory == 'git' ? 1 : 0),
             ),
           );
           if (hasFrontend) {
@@ -1806,14 +1806,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 0, reason: result.stderr.toString());
         final serialized = readStartupArguments();
         final arguments = jsonDecode(serialized) as Map<String, Object?>;
-        expect(arguments.keys, [
-          'dev.adele.openai',
-          'dev.adele.plugin.git-environment',
-        ]);
-        expect(
-          arguments['dev.adele.plugin.git-environment'],
-          gitStartupArguments(),
-        );
+        expect(arguments.keys, ['dev.adele.openai', 'dev.adele.plugin.git']);
+        expect(arguments['dev.adele.plugin.git'], gitStartupArguments());
         final openai = (arguments['dev.adele.openai']! as List<Object?>)
             .cast<String>();
         expect(openai, hasLength(2));
@@ -1882,7 +1876,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(result.exitCode, 0, reason: result.stderr.toString());
       final serialized = readStartupArguments();
       expect(jsonDecode(serialized), {
-        'dev.adele.plugin.git-environment': gitStartupArguments(),
+        'dev.adele.plugin.git': gitStartupArguments(),
         'dev.adele.openai': [
           '--chatgpt-only',
           jsonEncode({
@@ -1909,7 +1903,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final serialized = readStartupArguments();
       expect(jsonDecode(serialized), {
         'dev.adele.openai': ['--chatgpt-only'],
-        'dev.adele.plugin.git-environment': gitStartupArguments(),
+        'dev.adele.plugin.git': gitStartupArguments(),
       });
     },
   );

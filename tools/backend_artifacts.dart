@@ -66,9 +66,7 @@ Future<List<String>> prepareDesktopPluginDefines({
   final Directory installations = Directory.fromUri(
     output.uri.resolve('installations/'),
   );
-  final File git = File.fromUri(
-    installations.uri.resolve('git-environment/backend.aot'),
-  );
+  final File git = File.fromUri(installations.uri.resolve('git/backend.aot'));
   final File openai = File.fromUri(
     installations.uri.resolve('openai/backend.aot'),
   );
@@ -102,10 +100,9 @@ Future<List<String>> prepareDesktopPluginDefines({
           stage: 'backend-host-compilation',
         ),
         (
-          entrypoint:
-              'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+          entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
           artifact: git,
-          stage: 'git-environment-compilation',
+          stage: 'git-compilation',
         ),
         (
           entrypoint:
@@ -176,7 +173,7 @@ Future<List<String>> prepareDesktopPluginDefines({
       repositoryRoot: repositoryRoot,
       output: ptyHelper,
     );
-    startupArguments['dev.adele.plugin.git-environment'] = [
+    startupArguments['dev.adele.plugin.git'] = [
       '--pty-helper=${ptyHelper.absolute.path}',
     ];
   }
@@ -195,11 +192,7 @@ Future<List<String>> prepareDesktopPluginDefines({
       id: 'dev.adele.plugin.task-browser',
       displayName: 'Task Browser',
     ),
-    (
-      backend: git,
-      id: 'dev.adele.plugin.git-environment',
-      displayName: 'Git Worktree Environment',
-    ),
+    (backend: git, id: 'dev.adele.plugin.git', displayName: 'Git'),
     (backend: openai, id: 'dev.adele.openai', displayName: 'OpenAI'),
     (
       backend: agentsMd,

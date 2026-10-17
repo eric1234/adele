@@ -34,7 +34,7 @@ import '../../tool/command_output_frontend_compiler.dart';
 import '../fixtures/command_output_process.dart'
     show captureBlocks, captureBulk, captureEvidenceBlocks, captureMarker;
 
-const _gitId = 'dev.adele.plugin.git-environment';
+const _gitId = 'dev.adele.plugin.git';
 const _projectId = 'dev.adele.plugin.local-directory-project';
 const _commandId = 'dev.adele.plugin.command-tools';
 const _evaluatorId = 'dev.adele.plugin.session-evaluator';
@@ -56,8 +56,7 @@ void main() {
       'child': 'app/test/fixtures/command_output_process.dart',
       _projectId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
-      _gitId:
-          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+      _gitId: 'plugins/git/packages/backend/bin/git_backend.dart',
       _commandId:
           'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
       _evaluatorId:

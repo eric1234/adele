@@ -19,7 +19,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Construction of the shared `AdeleRuntime` and its registries/store/coordinators | Generic Extension Point semantics: [plugin system](../docs/architecture/plugin-system.md), [plugin API](../packages/plugin_api/README.md). |
 | Normal prepared backend bootstrap and window-owned frontend activation | Source preparation/build semantics: [plugin layout](../docs/architecture/plugin-layout.md), [plugin builder](../packages/plugin_builder/README.md); backend hosting: [plugin runtime](../packages/plugin_runtime/README.md). |
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
-| Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git Environment](../plugins/git_environment/README.md). |
+| Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git](../plugins/git/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
 | Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Declared backend Capability consumption and exact-generation handles | Public [backend consumer API](../packages/plugin_backend_support/README.md#capability-consumption); provider selection: [capabilities](../packages/capabilities/README.md); semantic generated contracts remain plugin-owned. |
@@ -647,7 +647,7 @@ errors. Input admission is bounded to 65,536 pending UTF-16 code units and 128
 chunks, with at most 8192 code units per dispatched message; pending resize is
 coalesced. Closure or retirement discards queued effects before cleanup; it does
 not roll back an already admitted effect. The provider's
-[pending-output bounds](../plugins/git_environment/README.md#interactive-terminals)
+[pending-output bounds](../plugins/git/README.md#interactive-terminals)
 remain separate from emulator scrollback.
 
 `EnvironmentTerminalOwner.observe` reports lifecycle, cleanup, and normalized title
@@ -771,7 +771,7 @@ stock frontend's [policy map](../plugins/terminal/README.md#terminal-policy)
 describes conservative confirmation, actual-exit-only automatic removal, and
 failure retention. Shell selection/startup remains with the
 [Environment contract](../packages/environment/README.md#interactive-terminals)
-and [Git provider](../plugins/git_environment/README.md#interactive-terminals).
+and [Git provider](../plugins/git/README.md#interactive-terminals).
 
 Prepared read-only console descriptors use `PreparedConsoleHost` and
 [`ConsoleBridge`](lib/frontend/console_bridge.dart), not Terminal creation. An
@@ -1095,7 +1095,7 @@ record is not a promise of live provider readiness.
 Successful publication survives later provider retirement even when its retained
 materialization becomes unavailable. See [lifecycle source](lib/core/product_lifecycle.dart),
 [lifecycle tests](test/core/product_lifecycle_test.dart), [Task UI tests](test/task_creation_test.dart),
-and the [Environment](../packages/environment/README.md) / [Git provider](../plugins/git_environment/README.md) owners.
+and the [Environment](../packages/environment/README.md) / [Git provider](../plugins/git/README.md) owners.
 
 Reopening loads Tasks, Environment semantic records, and opaque provider-state
 snapshots without materializing them. Explicit materialization resolves the recorded

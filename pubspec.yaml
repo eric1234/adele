@@ -57,7 +57,7 @@ workspace:
   - plugins/source_editor/packages/frontend
   - plugins/diff_viewer/packages/contract
   - plugins/diff_viewer/packages/frontend
-  - plugins/git_environment
+  - plugins/git
 
 dependency_overrides:
   code_forge:

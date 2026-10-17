@@ -21,7 +21,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tool/self_hosting/development_self_hosting.dart';
 
-const String _gitPluginId = 'dev.adele.plugin.git-environment';
+const String _gitPluginId = 'dev.adele.plugin.git';
 final ProviderId _gitProviderId = ProviderId(
   'dev.adele.environment.git-worktree',
 );
@@ -48,7 +48,7 @@ void main() {
       ),
     ).path;
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
-    gitArtifact = File.fromUri(artifacts.uri.resolve('git-environment.aot'));
+    gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
     openaiArtifact = File.fromUri(artifacts.uri.resolve('openai.aot'));
     // Compile real artifacts once; startup only consumes their installed copies.
     for (final target in [
@@ -58,8 +58,7 @@ void main() {
         stage: 'normal-bootstrap-host',
       ),
       (
-        entrypoint:
-            'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
         artifact: gitArtifact,
         stage: 'normal-bootstrap-git',
       ),
@@ -515,7 +514,7 @@ void main() {
         '-z',
       ]);
       final child =
-          '${Directory.current.parent.path}/plugins/git_environment/'
+          '${Directory.current.parent.path}/plugins/git/'
           'packages/backend/test/fixtures/buffered_process_child.dart';
       const binary = [0, 255, 128, 192, 175, 13, 10, 27, 91, 50, 74, 1, 9, 127];
 

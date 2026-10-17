@@ -115,7 +115,7 @@ independent truncation flags; EOF alone or a failed final drain must not masquer
 as successful, complete output. Provider failures may carry known process outcome
 facts in declared `EnvironmentFailure.details`; consumers must preserve those
 facts while treating output as incomplete. The stock
-[Git provider](../../plugins/git_environment/README.md#filesystem-and-processes)
+[Git provider](../../plugins/git/README.md#filesystem-and-processes)
 documents its concrete bounds, drain deadline, and failure evidence.
 
 ## Buffered binary processes

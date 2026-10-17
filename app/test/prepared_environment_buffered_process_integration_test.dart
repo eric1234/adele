@@ -26,7 +26,7 @@ import 'prepared_environment_capability_integration_test.dart'
     show PreparedEnvironmentCapabilityInstallation;
 
 const _bound = Duration(seconds: 15);
-const _stockPlugin = 'dev.adele.plugin.git-environment';
+const _stockPlugin = 'dev.adele.plugin.git';
 const _stockProvider = 'dev.adele.environment.git-worktree';
 const _environmentPlugin = 'test.environment.only';
 const _callablePlugin = 'test.capability.only';
@@ -150,10 +150,7 @@ void main() {
         'packages/plugin_backend_host/bin/adele_backend_host.dart',
         hostArtifact,
       ),
-      (
-        'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
-        stockArtifact,
-      ),
+      ('plugins/git/packages/backend/bin/git_backend.dart', stockArtifact),
       (
         '${temporary.absolute.path}/prepared_environment_buffered_process_environment.dart',
         environmentArtifact,
@@ -352,7 +349,7 @@ void main() {
       for (final source in [backend, frontend]) {
         expect(source, isNot(contains("import 'dart:io'")));
         expect(source, isNot(contains('Process.start')));
-        expect(source, isNot(contains('package:git_environment')));
+        expect(source, isNot(contains('package:git_backend')));
         expect(source, isNot(contains('package:adele_desktop')));
         expect(source, isNot(contains('package:plugin_runtime')));
       }

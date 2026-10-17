@@ -39,7 +39,7 @@ import '../support/project_provider.dart';
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
 const _commandPlugin = 'dev.adele.plugin.command-tools';
 const _evaluatorPlugin = 'dev.adele.plugin.session-evaluator';
-const _gitPlugin = 'dev.adele.plugin.git-environment';
+const _gitPlugin = 'dev.adele.plugin.git';
 const _instructions = 'Preserve exact evidence; use the deterministic fixture.';
 const _opaque = 'opaque-native-payload-must-not-be-exported';
 final _environmentProvider = ProviderId('dev.adele.test.evidence-environment');
@@ -76,8 +76,7 @@ void main() {
           'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
       _commandPlugin:
           'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
-      _gitPlugin:
-          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+      _gitPlugin: 'plugins/git/packages/backend/bin/git_backend.dart',
     }.entries) {
       await compileAotSnapshot(
         dartExecutable: dart,

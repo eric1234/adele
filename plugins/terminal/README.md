@@ -37,7 +37,7 @@ Session's canonical Environment association, never a Task-primary fallback. The
 host captures that scope; the frontend cannot choose an Environment, executable,
 working directory, or process handle. Shell selection and normal interactive
 startup belong to the [Environment contract](../../packages/environment/README.md#interactive-terminals)
-and [Git provider](../git_environment/README.md#interactive-terminals), not Terminal.
+and [Git provider](../git/README.md#interactive-terminals), not Terminal.
 
 The action supplies a fallback label, conservative live-close message, title-follow
 policy, and actual-exit removal policy. Native hosting copies validated values out

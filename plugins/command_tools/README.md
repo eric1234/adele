@@ -76,7 +76,7 @@ invalidation happens only after acknowledgement of readable state.
 
 | Bound | Limit |
 | --- | --- |
-| Provider/transport event | 16,384 UTF-16 code units; the provider separately bounds already-admitted pipe reads, see the [Git provider](../git_environment/README.md). |
+| Provider/transport event | 16,384 UTF-16 code units; the provider separately bounds already-admitted pipe reads, see the [Git provider](../git/README.md). |
 | Stored chunk | 4,096 UTF-16 code units; provenance is `stdout` or `stderr`. |
 | Append batch | At most four chunks / 16,384 UTF-16 code units, one awaited transaction per writer, with one header update plus at most four inserts. |
 | Flush delay | No intentional batching delay: even one received partial-line event is committed before requesting another. Actual latency includes storage/transport admission and commit. |

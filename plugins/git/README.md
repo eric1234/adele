@@ -1,12 +1,29 @@
-# Git Worktree Environment
+# Git
 
-The stock Git Environment backend establishes a Task-specific linked worktree
-and normally creates a flat Task-derived branch. It accepts only local `file:`
+The stock Git plugin (`dev.adele.plugin.git`, display name `Git`) owns Git-specific
+behavior through public extension contracts. Its `git_backend` package supplies
+both the Git Worktree Environment provider and the Diff-owned `ChangeSetSource`
+Capability implementation; Git is not intrinsic to core Task or Environment
+semantics. The plugin has no frontend. Review presentation belongs to
+[Diff Viewer](../diff_viewer/README.md), and the cross-system ownership boundary is
+defined in [contracts and capabilities](../../docs/architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots).
+
+The backend library and entrypoint are `packages/backend/lib/git_backend.dart`
+and `packages/backend/bin/git_backend.dart`. Maintained preparation publishes
+`installations/git/backend.aot`; the separately prepared Linux x64 terminal helper
+is `git/pty-helper` relative to the installation root. See
+[PTY preparation](../../docs/development/toolchain.md#git-pty-preparation).
+
+## Git Worktree Environment
+
+The `GitWorktreeEnvironmentProvider` (`dev.adele.environment.git-worktree`)
+establishes a Task-specific linked worktree and normally creates a flat Task-derived
+branch. It accepts only local `file:`
 Project source URIs that resolve to usable Git worktrees. If that source selects
 a repository subdirectory, the live Environment remains rooted at the matching
 subdirectory in the linked worktree.
 
-## Placement and retained state
+### Placement and retained state
 
 Provider-owned Task worktrees live at
 `<Project.sourceLocation>/.adele/worktrees/<allocated-name>`, alongside the stock
@@ -43,7 +60,7 @@ they target another in-source directory. Only establishment creates storage pare
 Neither establishment nor restoration edits `.gitignore` or `.git/info/exclude`;
 ignore ergonomics for local operational state remain separate policy work.
 
-## Restoration and moves
+### Restoration and moves
 
 Restoration uses the **current** canonical Project source and relative v1 state.
 The selected source must still have the exact retained source-relative scope.
@@ -100,15 +117,16 @@ materialization restores the live checkout. See the
 [product model](../../docs/architecture/product-model.md#environment) for the
 core-owned lifecycle boundary.
 
-## Change snapshots
+## ChangeSetSource
 
 The same stock AOT backend advertises the Diff-owned
 `adele.diff.change-set-source` v1 Capability through
 `diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`,
 `snapshotUncommitted`, and `snapshotTaskChanges` methods.
 Its separate `dev.adele.git.change-set-source` provider is explicitly associated
-with this generation's actual Git Environment provider. The contextual dispatcher
-uses `AuthorizedEnvironmentReadService.authority()` to select only an existing
+with this generation's actual Git Worktree Environment provider in the same backend.
+The contextual dispatcher uses `AuthorizedEnvironmentReadService.authority()`
+to select only an existing
 live `WorktreeEnvironment`; it never accepts caller-selected Environment IDs,
 repository paths, or a fallback to the Task's primary Environment. Ordinary
 context-free calls are rejected. The host read grant is revalidated before success.
@@ -253,7 +271,7 @@ Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
 `backend_host_integration_test.dart` additionally compiles the actual shared host
 and stock Git AOT, checks both ready advertisements and their exact association,
 and exercises generated contextual requests for independent live Environments.
-The existing `git_environment_backend` maintained target discovers both files.
+The `git_backend` maintained target discovers both files.
 
 ## Filesystem and processes
 
@@ -534,5 +552,20 @@ The maintained Git backend target discovers `terminal_resources_test.dart` and
 and AOT backend/host, loading through normal `PluginBackendHost.startPlugin`.
 The [application integration](../../app/test/environment_terminal_integration_test.dart)
 additionally crosses the actual Git backend and generated Environment transport
-from the prepared native terminal fixture. Other operating systems and the stock
-Terminal frontend/controls remain deferred.
+from the prepared native terminal fixture. Other operating systems remain
+unvalidated. Stock [Terminal](../terminal/README.md) owns the frontend and controls.
+
+## Current limitations
+
+The broader plugin identity does not make its current `ChangeSetSource`
+implementation portable across arbitrary Environment providers. It still resolves
+only this backend generation's associated live `WorktreeEnvironment`; it does not
+use the generic buffered-process grant to inspect another provider. Task / Branch
+review still obtains its baseline and branch from the Environment provider's
+retained state, not a core Task baseline or caller-selected comparison.
+
+Change snapshots are read-only. Staging, unstaging, review approval/unapproval,
+commit operations, and review-triggered mutation are not implemented. This does
+not change the host's existing execution-policy and tool-approval boundaries.
+The detailed platform, confinement, process, and snapshot limits above still apply;
+the plugin name supplies no additional portability or sandboxing guarantee.

@@ -14,7 +14,7 @@ import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
-const _gitPluginId = 'dev.adele.plugin.git-environment';
+const _gitPluginId = 'dev.adele.plugin.git';
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
 final _gitProviderId = ProviderId('dev.adele.environment.git-worktree');
 final _projectProviderId = ProviderId('dev.adele.project.local-directory');
@@ -47,8 +47,7 @@ void main() {
       stage: 'durable-git-host',
     );
     for (final entry in const {
-      _gitPluginId:
-          'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+      _gitPluginId: 'plugins/git/packages/backend/bin/git_backend.dart',
       _projectPluginId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
     }.entries) {

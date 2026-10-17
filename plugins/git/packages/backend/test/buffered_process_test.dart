@@ -8,8 +8,8 @@ import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:git_environment_backend/git_environment_backend.dart';
-import 'package:git_environment_backend/src/foreground_process.dart';
+import 'package:git_backend/git_backend.dart';
+import 'package:git_backend/src/foreground_process.dart';
 import 'package:test/test.dart';
 
 import 'fixtures/buffered_process_child.dart' show binaryStderr;

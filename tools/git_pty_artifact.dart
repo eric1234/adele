@@ -21,7 +21,7 @@ Future<void> prepareGitPtyHelper({
     '-Wall',
     '-Wextra',
     '-Werror',
-    '${repositoryRoot.path}/plugins/git_environment/packages/backend/native/'
+    '${repositoryRoot.path}/plugins/git/packages/backend/native/'
         'git_pty_helper.c',
     '-o',
     output.absolute.path,

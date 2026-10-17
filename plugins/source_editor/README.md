@@ -54,8 +54,9 @@ Environment under the [frontend grant](../../docs/architecture/contracts-and-cap
 Save still sends the document's last acknowledged provider revision; the host
 neither replaces that revision nor automatically retries a write.
 The provider normalizes paths and enforces file type, encoding, confinement,
-symlink, revision, and size policy. The stock Git Environment provider's current
-complete-text limit is one MiB; that is not a universal public API file-size bound.
+symlink, revision, and size policy. The stock Git plugin's Environment provider
+currently limits complete-text files to one MiB; that is not a universal public
+API file-size bound.
 
 Native revision counts notifications, including selection and layout, not content
 edits. `Possibly modified` and the title's `*` are deliberately conservative.

@@ -21,7 +21,7 @@ import '../../../tool/self_hosting/development_agent_support.dart';
 import '../../../tool/self_hosting/development_self_hosting.dart';
 import 'source_read_evidence_test_support.dart';
 
-const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
+const String _gitPluginId = 'dev.adele.plugin.git';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _sourceRelativePath =
@@ -34,7 +34,7 @@ void main() {
   late String repository;
   late String dartaotruntime;
   late File hostArtifact;
-  late File gitEnvironmentArtifact;
+  late File gitArtifact;
   late File agentsMdArtifact;
   late File searchToolsArtifact;
   late File filesystemToolsArtifact;
@@ -50,7 +50,7 @@ void main() {
     dartaotruntime =
         '${File(dart).parent.path}/${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}';
     hostArtifact = File('${artifacts.path}/host.aot');
-    gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
+    gitArtifact = File('${artifacts.path}/git.aot');
     agentsMdArtifact = File('${artifacts.path}/agents-md.aot');
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
     filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
@@ -71,9 +71,9 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/git_environment/packages/backend/bin/'
-        'git_environment_backend.dart',
-        gitEnvironmentArtifact.path,
+        '$repository/plugins/git/packages/backend/bin/'
+        'git_backend.dart',
+        gitArtifact.path,
         repository,
       ),
       _compile(
@@ -125,7 +125,7 @@ void main() {
               openAiArtifact: File(
                 '${hostArtifact.parent.path}/unused-openai.aot',
               ),
-              gitEnvironmentArtifact: gitEnvironmentArtifact,
+              gitArtifact: gitArtifact,
               agentsMdArtifact: agentsMdArtifact,
               searchToolsArtifact: searchToolsArtifact,
               filesystemToolsArtifact: filesystemToolsArtifact,
@@ -389,7 +389,7 @@ void main() {
           await _startGeneration(
             host: host,
             registry: registry,
-            artifact: gitEnvironmentArtifact,
+            artifact: gitArtifact,
             providerId: providerId,
           );
       final InMemoryProductStore store = InMemoryProductStore();
@@ -553,7 +553,7 @@ void main() {
           await _startGeneration(
             host: host,
             registry: registry,
-            artifact: gitEnvironmentArtifact,
+            artifact: gitArtifact,
             providerId: providerId,
           );
       addTearDown(environmentGenerationB.close);
@@ -723,7 +723,7 @@ void main() {
           await _startGeneration(
             host: host,
             registry: registry,
-            artifact: gitEnvironmentArtifact,
+            artifact: gitArtifact,
             providerId: providerId,
           );
       addTearDown(environmentActivation.close);
@@ -1116,7 +1116,7 @@ void main() {
           await _startGeneration(
             host: host,
             registry: registry,
-            artifact: gitEnvironmentArtifact,
+            artifact: gitArtifact,
             providerId: providerId,
           );
       addTearDown(environmentActivation.close);
@@ -1901,7 +1901,7 @@ Future<PluginCapabilityActivation> _startGeneration({
   required ProviderId providerId,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _gitEnvironmentPluginId,
+    pluginId: _gitPluginId,
     artifactUri: artifact.uri,
   );
   return PluginCapabilityActivation.register(

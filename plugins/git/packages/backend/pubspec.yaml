@@ -1,5 +1,5 @@
-name: git_environment_backend
-description: Git worktree-backed ADELE Environment provider.
+name: git_backend
+description: Stock Git backend with Worktree Environments and change snapshots.
 publish_to: none
 version: 0.1.0
 

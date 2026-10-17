@@ -7,7 +7,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
-import 'package:git_environment_backend/git_environment_backend.dart';
+import 'package:git_backend/git_backend.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -20,12 +20,12 @@ void main() {
   setUpAll(() async {
     repository = Directory.current.parent.parent.parent.parent.path;
     final Directory artifacts = Directory(
-      '$repository/.dart_tool/adele/integration/git-environment',
+      '$repository/.dart_tool/adele/integration/git',
     )..createSync(recursive: true);
     final String dart = Platform.resolvedExecutable;
     dartaotruntime = '${File(dart).parent.path}/dartaotruntime';
     hostArtifact = File('${artifacts.path}/host.aot');
-    pluginArtifact = File('${artifacts.path}/git-environment.aot');
+    pluginArtifact = File('${artifacts.path}/git.aot');
     await Future.wait<void>(<Future<void>>[
       _compile(
         dart,
@@ -35,8 +35,8 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/git_environment/packages/backend/bin/'
-        'git_environment_backend.dart',
+        '$repository/plugins/git/packages/backend/bin/'
+        'git_backend.dart',
         pluginArtifact.path,
         repository,
       ),
@@ -58,7 +58,7 @@ void main() {
       final registry = CapabilityRegistry();
       final activation = await PluginCapabilityActivation.registerAdvertised(
         connection: await host.startPlugin(
-          pluginId: gitEnvironmentPluginId,
+          pluginId: gitPluginId,
           artifactUri: pluginArtifact.uri,
         ),
         registry: registry,
@@ -82,7 +82,7 @@ void main() {
         title: 'Buffered processes',
       );
       final child =
-          '$repository/plugins/git_environment/packages/backend/'
+          '$repository/plugins/git/packages/backend/'
           'test/fixtures/buffered_process_child.dart';
       EnvironmentBufferedProcessRequest probe(
         List<String> arguments, {
@@ -320,7 +320,7 @@ void main() {
         if (!host.isClosed) await host.close(graceful: false);
       });
       final connection = await host.startPlugin(
-        pluginId: gitEnvironmentPluginId,
+        pluginId: gitPluginId,
         artifactUri: pluginArtifact.uri,
       );
       final registry = CapabilityRegistry();
@@ -621,7 +621,7 @@ void main() {
       final providerId = ProviderId(gitWorktreeEnvironmentProviderId);
       final activation = await _register(
         await host.startPlugin(
-          pluginId: gitEnvironmentPluginId,
+          pluginId: gitPluginId,
           artifactUri: pluginArtifact.uri,
         ),
         registry,
@@ -782,7 +782,7 @@ void main() {
       );
 
       final PluginBackendConnection generationA = await host.startPlugin(
-        pluginId: gitEnvironmentPluginId,
+        pluginId: gitPluginId,
         artifactUri: pluginArtifact.uri,
       );
       final PluginCapabilityActivation activationA = await _register(
@@ -1016,7 +1016,7 @@ void main() {
 
       await activationA.close();
       final PluginBackendConnection generationB = await host.startPlugin(
-        pluginId: gitEnvironmentPluginId,
+        pluginId: gitPluginId,
         artifactUri: pluginArtifact.uri,
       );
       final PluginCapabilityActivation activationB = await _register(
@@ -1145,7 +1145,7 @@ void main() {
         );
         final PluginCapabilityActivation activationA = await _register(
           await host.startPlugin(
-            pluginId: gitEnvironmentPluginId,
+            pluginId: gitPluginId,
             artifactUri: pluginArtifact.uri,
           ),
           registry,
@@ -1199,7 +1199,7 @@ void main() {
         expect(inventory.split('\u0000'), contains('worktree $oldRoot'));
         final PluginCapabilityActivation activationB = await _register(
           await host.startPlugin(
-            pluginId: gitEnvironmentPluginId,
+            pluginId: gitPluginId,
             artifactUri: pluginArtifact.uri,
           ),
           registry,

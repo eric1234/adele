@@ -26,7 +26,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../../tools/git_pty_artifact.dart';
 
-const _gitPluginId = 'dev.adele.plugin.git-environment';
+const _gitPluginId = 'dev.adele.plugin.git';
 const _library = 'package:terminal_probe/main.dart';
 const _deadline = Duration(seconds: 10);
 // Advance only the native gesture window, never wait for a blinking cursor.
@@ -78,8 +78,7 @@ void main() {
         artifact: hostArtifact,
       ),
       (
-        entrypoint:
-            'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
         artifact: gitArtifact,
       ),
     ]) {

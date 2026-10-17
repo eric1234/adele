@@ -332,7 +332,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
 | Prepared contextual buffered-process Capabilities | [`test/prepared_environment_buffered_process_integration_test.dart`](../../app/test/prepared_environment_buffered_process_integration_test.dart) reuses the three-installation harness for stock Environment AOT, independent semantic Capability AOT, and frontend-only compiled EVC. Covers binary evidence from the canonical nonprimary Environment, separate provider/frontend permissions, process-only grants, denial, and exact lifecycle/late-publication fencing. Run with the Environment-read suites above, `adele_environment` generated host-service and binary DTO tests, `plugin_runtime` exposure/catalog/invocation tests, and `plugin_backend_host` token allowlist tests. Provider process supervision remains in the owning backend's buffered-process suite rather than duplicated here. |
-| Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns default Unstaged and selected Uncommitted/Task scopes, committed-only work, independent Environment baselines, real staged-only/partial/cancelling layers, source confinement, selected-scope refresh/retry including real commits, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement for all snapshot operations. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_environment_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
+| Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns default Unstaged and selected Uncommitted/Task scopes, committed-only work, independent Environment baselines, real staged-only/partial/cancelling layers, source confinement, selected-scope refresh/retry including real commits, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement for all snapshot operations. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
@@ -443,7 +443,7 @@ dart tools/adele.dart test --target diff_viewer_frontend
 dart tools/adele.dart test --target source_editor_frontend
 dart tools/adele.dart test --target adele_ui
 dart tools/adele.dart test --target plugin_runtime
-dart tools/adele.dart test --target git_environment_backend --ci
+dart tools/adele.dart test --target git_backend --ci
 dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
 dart tools/adele.dart generate --check
 ```
@@ -510,7 +510,7 @@ Environment contract and stock provider tests without a new CI job or target:
 
 ```sh
 dart tools/adele.dart test --target adele_environment
-dart tools/adele.dart test --target git_environment_backend --ci
+dart tools/adele.dart test --target git_backend --ci
 dart tools/adele.dart generate --check
 dart test test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
 ```
@@ -741,8 +741,8 @@ without automatic retry.
 The normal application cases use prepared stock components and real Git AOT/file
 replacement; their active-Run case uses local fake model responses, not paid/live
 credentials. Provider encoding, confinement, one-MiB bound, and revision checks
-belong to `git_environment_backend` and its
-[`git_worktree_environment_provider_test.dart`](../../plugins/git_environment/packages/backend/test/git_worktree_environment_provider_test.dart).
+belong to `git_backend` and its
+[`git_worktree_environment_provider_test.dart`](../../plugins/git/packages/backend/test/git_worktree_environment_provider_test.dart).
 App files are discovered by the existing `adele_desktop` target; no new CI
 concurrency policy is needed. These checks do not establish human keyboard/IME,
 profile packaging, or macOS/Windows acceptance. Follow the
@@ -859,7 +859,7 @@ dart tools/adele.dart generate --check
 
 For focused provider iteration, run `dart test
 test/git_worktree_environment_provider_test.dart test/backend_host_integration_test.dart`
-from `plugins/git_environment/packages/backend/`. Select the foreground process
+from `plugins/git/packages/backend/`. Select the foreground process
 cases when unrelated provider coverage is unnecessary; this work does not require
 the PTY target. From `app/`:
 
@@ -977,7 +977,7 @@ From the repository root, the owning public/backend and preparation checks are:
 
 ```sh
 dart tools/adele.dart test --target adele_environment
-dart tools/adele.dart test --target git_environment_backend
+dart tools/adele.dart test --target git_backend
 dart test test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
 dart tools/adele.dart generate --check
 ```
@@ -1028,7 +1028,7 @@ The real-shell fixture launches the unchanged shared host through a controlled
 environment wrapper with temporary `HOME`, `SHELL=/bin/sh`, and fixed `PATH`;
 personal startup files do not determine test behavior. Provider-only default-shell
 cases and their narrower environment seam belong to the
-[Git provider](../../plugins/git_environment/README.md#interactive-terminals).
+[Git provider](../../plugins/git/README.md#interactive-terminals).
 Production shell resolution/startup is not replaced by that fixture configuration.
 
 Keep Flutter compiler/test invocations sharing app build output serialized. Use

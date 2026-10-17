@@ -108,7 +108,7 @@ void main() {
           'Compiling packages/plugin_backend_host/bin/adele_backend_host.dart.',
           'Compiling plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart.',
           'Compiling plugins/openai/packages/backend/bin/openai_model_provider_backend.dart.',
-          'Compiling plugins/git_environment/packages/backend/bin/git_environment_backend.dart.',
+          'Compiling plugins/git/packages/backend/bin/git_backend.dart.',
           'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
           'Compiling plugins/search_tools/packages/backend/bin/search_tools_backend.dart.',
           'Compiling plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart.',

@@ -31,7 +31,7 @@ import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/diff_viewer_frontend_compiler.dart';
 import '../tool/source_editor_frontend_compiler.dart';
 
-const _gitPlugin = 'dev.adele.plugin.git-environment';
+const _gitPlugin = 'dev.adele.plugin.git';
 const _diffPlugin = 'dev.adele.diff-viewer';
 const _sourcePlugin = 'dev.adele.source-editor';
 const _punctuatedPath = "b tracked + [file]; 'quoted'\tname.txt";
@@ -68,8 +68,7 @@ void main() {
         artifact: host,
       ),
       (
-        entrypoint:
-            'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
+        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
         artifact: File('${git.path}/backend.aot'),
       ),
     ]) {
@@ -81,9 +80,13 @@ void main() {
         stage: 'prepared-diff-git',
       );
     }
-    await _manifest(git, _gitPlugin, {
-      'backend': {'artifact': 'backend.aot'},
-    });
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: git,
+      pluginId: _gitPlugin,
+      displayName: 'Git',
+      backend: true,
+    );
     final diff = await Directory('${installations.path}/diff').create();
     await compileDiffViewerFrontend(
       repositoryRoot: repository,
@@ -205,6 +208,16 @@ void main() {
       );
       expect(diff.backendArtifactUri, isNull);
       expect(fixture.backends.backendForInstallation(diff), isNull);
+      final git = fixture.backends.catalog!.installations.singleWhere(
+        (entry) => entry.metadata.id.value == _gitPlugin,
+      );
+      expect(git.metadata.displayName, 'Git');
+      expect(git.backendArtifactUri!.path, endsWith('/git/backend.aot'));
+      expect(git.frontend, isNull);
+      expect(
+        fixture.backends.backendForInstallation(git),
+        same(fixture.backends.backends.single),
+      );
       final descriptor = stockFrontendDescriptors[_diffPlugin]!.single;
       expect(descriptor['order'], 200);
       expect(descriptor['capabilities'], isNull);
@@ -213,6 +226,14 @@ void main() {
       final changeBinding = fixture.capabilities.resolve(_changes);
       final environmentBinding = fixture.capabilities.resolve(
         environmentProviderCapability,
+      );
+      expect(
+        changeBinding.provider.id.value,
+        'dev.adele.git.change-set-source',
+      );
+      expect(
+        environmentBinding.provider.id.value,
+        'dev.adele.environment.git-worktree',
       );
       expect(
         fixture.backends.backends.single
