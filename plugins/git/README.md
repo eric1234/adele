@@ -192,9 +192,10 @@ drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
 used: both can execute clean filters while checking stat-racy files, even without
 requesting patches. Cached-only enumeration avoids that execution path, including
 when another process adds a new filter after the snapshot has begun.
-Custom conversion/diff attributes and effective `core.autocrlf`/`core.eol`
-conversion are unsupported placeholders, and `-diff` attributes are binary
-placeholders. Binary data, invalid
+Custom conversion/diff attributes, including legacy `crlf` and `crlf=input`, and
+effective `core.autocrlf`/`core.eol` conversion are unsupported placeholders;
+unspecified or disabled `-crlf` alone does not require conversion. `-diff`
+attributes are binary placeholders. Binary data, invalid
 UTF-8, symbolic links, submodules, unmerged entries, type/mode changes, and oversized
 files likewise have explicit status/detail and no fabricated text hunks. Equal
 raw content, including binary/invalid UTF-8 with stale index stat metadata, is
@@ -205,6 +206,9 @@ suppresses working-file executable-bit-only differences; actual HEAD/index mode
 differences and baseline-to-HEAD mode differences remain visible in their layers.
 Repository settings override lower configuration scopes. Git executable state
 uses only the owner-execute bit.
+Both snapshot implementations preserve Git's distinction between implicit boolean
+true and explicitly empty false, alongside the ordinary true/yes/on/1 and
+false/no/off/0 spellings for `core.filemode` and `core.autocrlf`.
 
 The snapshot subprocess path is separate from Environment foreground execution.
 `git_process_environment.dart` shares the existing placement isolation boundary,
@@ -335,7 +339,7 @@ the Git change set rather than discovered by a separate filesystem traversal.
 
 Defaults are 4,096 inventory entries, 256 returned files, 1 MiB per rendered side,
 2 MiB command stdout, 64 KiB diagnostic output, 8 MiB aggregate transported input
-and output, 8,192 hunk lines, a conservative 6 MiB DTO budget, and 16,384 process
+and output, 8,192 hunk lines, a conservative 6 MiB DTO budget, and 18,432 process
 requests. Counting all command traffic makes the aggregate limit stricter than the
 stock implementation. Oversized verification admits at most 16 MiB per observed
 file and 64 MiB total observed sizes. Commands have a ten-second deadline within
@@ -343,6 +347,22 @@ the whole snapshot's thirty seconds; execution remains sequential. Generic
 Environment transport limits are unchanged. Any incomplete observation, malformed
 output, process/transport failure or exhausted whole-operation budget fails the
 snapshot rather than returning a truncated or deceptively clean result.
+
+The process ceiling leaves headroom above the 16,404 requests needed for a flat
+clean inventory of 4,096 regular files (four requests per file plus twenty fixed
+requests). It is not a promise that such a repository fits the independent byte or
+thirty-second deadline limits; nested paths and changed files can need more work.
+Clean-root scaling across real backend transports must be measured before normal
+production activation. Batching or other performance changes are deferred rather
+than increasing the operation deadline.
+
+Non-gating Linux diagnostics using the independent local process test fixture
+completed 100 small tracked files in 9.22 seconds with 420 requests; 500 files
+reached `operation_timeout` after 30.03 seconds and 1,163 requests, without a
+snapshot. These are single-host observations, not timing guarantees or CI
+assertions, and exclude cross-backend transport overhead. This scaling concern
+must be addressed in later production-cutover/performance work, not by treating
+the inventory or process-count allowance as a throughput guarantee.
 
 Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
 file attributes, repository discovery and observed metadata are rechecked before

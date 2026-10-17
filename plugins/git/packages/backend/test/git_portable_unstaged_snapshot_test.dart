@@ -54,6 +54,17 @@ void main() {
     limits: limits,
   ).snapshotUnstaged();
 
+  test('default process budget leaves headroom for the flat clean inventory', () {
+    const limits = GitPortableUnstagedLimits();
+    // Four requests per clean regular file, plus discovery and its revalidation.
+    final flatCleanRequests = 4 * limits.inventoryEntries + 20;
+    expect(limits.inventoryEntries, 4096);
+    expect(limits.processes, 18432);
+    expect(limits.processes, greaterThan(flatCleanRequests));
+    expect(limits.operationTimeout, const Duration(seconds: 30));
+    expect(limits.processTimeout, const Duration(seconds: 10));
+  });
+
   test(
     'clean and staged-only snapshots are empty and never mutate Git',
     () async {
@@ -118,6 +129,183 @@ void main() {
     expect(file.changeKind, 'modified');
     expect(_lines(file), ['deletion:baseline', 'addition:after']);
   });
+
+  const booleanCases = [
+    (null, true),
+    ('true', true),
+    ('yes', true),
+    ('on', true),
+    ('1', true),
+    ('false', false),
+    ('no', false),
+    ('off', false),
+    ('0', false),
+    ('', false),
+  ];
+
+  test(
+    'Git filemode booleans distinguish implicit true and empty false',
+    () async {
+      await _command('/usr/bin/chmod', ['755', '${repository.path}/baseline']);
+      for (final (value, enabled) in booleanCases) {
+        await File('${repository.path}/.git/config').writeAsString(
+          '\n[core]\nfilemode${value == null ? '' : ' = $value'}\n',
+          mode: FileMode.append,
+        );
+        expect(
+          await _git(repository, [
+            'config',
+            '--bool',
+            '--get',
+            'core.filemode',
+          ]),
+          '$enabled\n',
+        );
+        final files = (await snapshot()).files;
+        if (enabled) {
+          expect(
+            files.single.changeKind,
+            'typeChanged',
+            reason: 'filemode=$value',
+          );
+          expect(files.single.contentStatus, 'unsupported');
+        } else {
+          expect(files, isEmpty, reason: 'filemode=$value');
+        }
+      }
+      await write('baseline', 'indexed\n');
+      await _git(repository, ['add', '--', 'baseline']);
+      expect((await snapshot()).files, isEmpty);
+      await write('baseline', 'working\n');
+      final file = (await snapshot()).files.single;
+      expect(file.changeKind, 'modified');
+      expect(file.contentStatus, 'text');
+      expect(_lines(file), ['deletion:indexed', 'addition:working']);
+    },
+  );
+
+  test(
+    'Git autocrlf booleans distinguish implicit true and empty false',
+    () async {
+      await write('baseline', 'baseline\r\n');
+      for (final (value, enabled) in booleanCases) {
+        await File('${repository.path}/.git/config').writeAsString(
+          '\n[core]\nautocrlf${value == null ? '' : ' = $value'}\n',
+          mode: FileMode.append,
+        );
+        expect(
+          await _git(repository, [
+            'config',
+            '--bool',
+            '--get',
+            'core.autocrlf',
+          ]),
+          '$enabled\n',
+        );
+        final file = (await snapshot()).files.single;
+        expect(file.changeKind, 'modified');
+        expect(
+          file.contentStatus,
+          enabled ? 'unsupported' : 'text',
+          reason: 'autocrlf=$value',
+        );
+        if (enabled) {
+          expect(file.hunks, isEmpty);
+        } else {
+          expect(_lines(file), ['deletion:baseline', 'addition:baseline\r']);
+        }
+      }
+    },
+  );
+
+  for (final (rule, attribute, conversion) in [
+    ('crlf', 'set', true),
+    ('crlf=input', 'input', true),
+    ('-crlf', 'unset', false),
+    ('', 'unspecified', false),
+  ]) {
+    test(
+      'legacy crlf attribute ${rule.isEmpty ? 'unspecified' : rule} preserves raw-content classification',
+      () async {
+        await write('converted.txt', 'same\n');
+        await commit();
+        await File(
+          '${repository.path}/.git/info/attributes',
+        ).writeAsString(rule.isEmpty ? '' : '*.txt $rule\n');
+        await write('converted.txt', 'same\r\n');
+        expect(await _git(repository, ['show', ':converted.txt']), 'same\n');
+        expect(
+          await _git(repository, [
+            'check-attr',
+            '-z',
+            'crlf',
+            '--',
+            'converted.txt',
+          ]),
+          'converted.txt\x00crlf\x00$attribute\x00',
+        );
+        if (conversion) {
+          expect(
+            (await _gitResult(repository, [
+              'diff',
+              '--quiet',
+              '--',
+              'converted.txt',
+            ])).exitCode,
+            0,
+          );
+        }
+        final file = (await snapshot()).files.single;
+        expect(file.relativePath, 'converted.txt');
+        expect(file.contentStatus, conversion ? 'unsupported' : 'text');
+        if (conversion) {
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        } else {
+          expect(_lines(file), ['deletion:same', 'addition:same\r']);
+        }
+      },
+    );
+  }
+
+  for (final corruption in ['framing', 'count', 'order', 'path']) {
+    test(
+      'malformed $corruption in attribute observation fails closed',
+      () async {
+        await write('baseline', 'working\n');
+        await File(
+          '${repository.path}/.git/info/attributes',
+        ).writeAsString('baseline -diff\n');
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!request.arguments.contains('check-attr')) return result;
+          final raw = utf8.decode(base64Decode(result.stdoutBase64));
+          final fields = raw.split('\x00');
+          switch (corruption) {
+            case 'framing':
+              fields.removeLast();
+            case 'count':
+              fields.removeRange(18, 21);
+            case 'order':
+              fields[19] = 'crlf';
+            case 'path':
+              fields[18] = 'different-path';
+          }
+          return _result(stdout: fields.join('\x00'));
+        });
+        await expectLater(
+          snapshot(through: through),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'invalid_git_output',
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   test('multiple hunks retain exact coordinates and line contents', () async {
     final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';

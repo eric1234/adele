@@ -19,7 +19,7 @@ final class GitPortableUnstagedLimits {
     this.stderrBytes = 64 * 1024,
     this.totalBytes = 8 * 1024 * 1024,
     this.lines = 8192,
-    this.processes = 16384,
+    this.processes = 18432,
     this.processTimeout = const Duration(seconds: 10),
     this.operationTimeout = const Duration(seconds: 30),
   });
@@ -152,7 +152,7 @@ final class _PortableSnapshot {
           ? 'true'
           : record.substring(separator + 1).toLowerCase();
     }
-    const falseValues = {'false', 'no', 'off', '0'};
+    const falseValues = {'', 'false', 'no', 'off', '0'};
     fileMode = !falseValues.contains(effective['core.filemode']);
     contentConversion =
         effective.containsKey('core.eol') ||
@@ -360,6 +360,7 @@ final class _PortableSnapshot {
       'diff',
       'text',
       'eol',
+      'crlf',
       'working-tree-encoding',
       'filter',
       'ident',
@@ -576,6 +577,7 @@ final class _PortableSnapshot {
       'diff',
       'text',
       'eol',
+      'crlf',
       'working-tree-encoding',
       'filter',
       'ident',

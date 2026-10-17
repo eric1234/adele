@@ -251,11 +251,11 @@ final class _SnapshotOperation {
       final newline = entry.indexOf('\n');
       final key = newline < 0 ? entry : entry.substring(0, newline);
       final value = newline < 0
-          ? ''
+          ? 'true'
           : entry.substring(newline + 1).toLowerCase();
       effectiveSettings[key] = value;
     }
-    const falseValues = {'false', 'no', 'off', '0'};
+    const falseValues = {'', 'false', 'no', 'off', '0'};
     _fileMode = !falseValues.contains(effectiveSettings['core.filemode']);
     _contentConversion =
         effectiveSettings.containsKey('core.eol') ||
@@ -815,23 +815,34 @@ final class _SnapshotOperation {
       detail: detail,
       hunks: const [],
     );
+    const attributeNames = [
+      'diff',
+      'text',
+      'eol',
+      'working-tree-encoding',
+      'filter',
+      'ident',
+      'crlf',
+    ];
     final attributes = _nulRecords(
       _decode(
         (await git(root, [
           'check-attr',
           '-z',
-          'diff',
-          'text',
-          'eol',
-          'working-tree-encoding',
-          'filter',
-          'ident',
+          ...attributeNames,
           '--',
           path,
         ])).bytes,
       ),
     );
-    if (attributes.length != 18) throw _malformed();
+    if (attributes.length != attributeNames.length * 3) throw _malformed();
+    // Validate the entire response before any classification can return early.
+    for (var i = 0; i < attributeNames.length; i++) {
+      if (attributes[i * 3] != path ||
+          attributes[i * 3 + 1] != attributeNames[i]) {
+        throw _malformed();
+      }
+    }
     if (_contentConversion) {
       return placeholder(
         'unsupported',
@@ -839,7 +850,6 @@ final class _SnapshotOperation {
       );
     }
     for (var i = 0; i < attributes.length; i += 3) {
-      if (attributes[i] != path) throw _malformed();
       final name = attributes[i + 1];
       final value = attributes[i + 2];
       if (name == 'diff' && value == 'unset') {
