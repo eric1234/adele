@@ -1,0 +1,72 @@
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
+import 'package:git_backend/git_backend.dart';
+
+import 'prepared_environment_capability_support.dart';
+
+// B consumes production Git semantics only through the operation's generated
+// process client. It knows no Environment root, provider implementation, or OS API.
+Future<void> main(
+  List<String> arguments,
+  Object? bootstrapMessage,
+) => runProbeBackend(
+  arguments,
+  bootstrapMessage,
+  (state) => {
+    'callable-shared': {
+      changeSetSourceServiceId: AdeleContextualServiceDispatcher(
+        hostRequests: state.hostRequests,
+        createDispatcher: (operation) {
+          final processes = AuthorizedEnvironmentBufferedProcessServiceClient(
+            operation.bind(authorizedEnvironmentBufferedProcessServiceId),
+          );
+          state.bufferedClients['unstaged'] = processes;
+          return ChangeSetSourceServiceDispatcher(
+            _Source(
+              state,
+              GitPortableUnstagedSnapshotService(processes: processes),
+            ),
+            concurrent: true,
+          );
+        },
+      ),
+    },
+  },
+);
+
+final class _Source implements ChangeSetSourceService {
+  const _Source(this.state, this.snapshots);
+  final ProbeState state;
+  final GitPortableUnstagedSnapshotService snapshots;
+
+  @override
+  Future<ChangeSetSnapshot> snapshotUnstaged() async {
+    try {
+      return await snapshots.snapshotUnstaged();
+    } on ChangeSetFailure catch (error) {
+      state.failures.add(error.code);
+      rethrow;
+    } finally {
+      await state.checkpoint('settled:unstaged');
+    }
+  }
+
+  @override
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() async {
+    state.failures.add('unsupported_scope');
+    throw const ChangeSetFailure(
+      code: 'unsupported_scope',
+      message: 'This independent provider supports Unstaged only.',
+    );
+  }
+
+  @override
+  Future<TaskChangeSetSnapshot> snapshotTaskChanges() async {
+    state.failures.add('unsupported_scope');
+    throw const ChangeSetFailure(
+      code: 'unsupported_scope',
+      message: 'This independent provider supports Unstaged only.',
+    );
+  }
+}

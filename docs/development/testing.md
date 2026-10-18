@@ -332,6 +332,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
 | Prepared contextual buffered-process Capabilities | [`test/prepared_environment_buffered_process_integration_test.dart`](../../app/test/prepared_environment_buffered_process_integration_test.dart) reuses the three-installation harness for stock Environment AOT, independent semantic Capability AOT, and frontend-only compiled EVC. Covers binary evidence from the canonical nonprimary Environment, separate provider/frontend permissions, process-only grants, denial, and exact lifecycle/late-publication fencing. Run with the Environment-read suites above, `adele_environment` generated host-service and binary DTO tests, `plugin_runtime` exposure/catalog/invocation tests, and `plugin_backend_host` token allowlist tests. Provider process supervision remains in the owning backend's buffered-process suite rather than duplicated here. |
+| Portable Git Unstaged inspection | [`test/prepared_portable_git_integration_test.dart`](../../app/test/prepared_portable_git_integration_test.dart) independently compiles a real-process Environment AOT backend, an explicitly Environment-bound AOT adapter over Git's production portable service, and a generated Diff-client EVC consumer. Checks real nonprimary repository content and typed hunks, separate declarations, unavailability, retirement/replacement and presentation departure. This does not activate a second stock provider or change stock Diff. Git semantics, nested source scope, command failures and limits belong to `git_backend`'s `git_portable_unstaged_snapshot_test.dart`; existing buffered-process tests retain generic transport ownership. |
 | Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns default Unstaged and selected Uncommitted/Task scopes, committed-only work, independent Environment baselines, real staged-only/partial/cancelling layers, source confinement, selected-scope refresh/retry including real commits, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement for all snapshot operations. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
@@ -504,6 +505,22 @@ coverage, not human desktop or non-Linux process acceptance. No live model,
 credentials, staging UI, or review submission is used.
 
 ### Focused buffered process checks
+
+The portable Git integration needs the pinned SDK and current generated contracts,
+but no native editor library. From `app/`, serialize these compiler-heavy files:
+
+```sh
+flutter test --no-pub --concurrency 1 test/prepared_portable_git_integration_test.dart test/prepared_environment_buffered_process_integration_test.dart
+```
+
+The ordinary desktop target and its recursive CI shard discovery include the new
+integration automatically. The existing `git_backend` target recursively discovers
+both the portable snapshot and shared parser suites; no additional target or CI job
+is needed. The portable implementation currently requires the Environment-side
+Linux command prerequisites documented in the [Git README](../../plugins/git/README.md#portable-unstaged-inspection).
+This proves Environment implementation independence, not OS sandboxing or tested
+non-Linux portability. Retain the stock Diff/Git integration above for all three
+unchanged production scopes.
 
 After bootstrap with the pinned SDK, the existing targets discover the binary
 Environment contract and stock provider tests without a new CI job or target:

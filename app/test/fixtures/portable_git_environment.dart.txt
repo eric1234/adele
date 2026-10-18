@@ -1,0 +1,189 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_product/adele_product.dart';
+
+import 'prepared_environment_capability_support.dart';
+
+// Independent A owns its repositories and all OS access. It has no Git backend
+// dependency, semantic Diff contract, or access to B's implementation.
+Future<void> main(List<String> arguments, Object? bootstrapMessage) =>
+    runProbeBackend(
+      arguments,
+      bootstrapMessage,
+      (state) => {
+        for (final id in ['a', 'b'])
+          id: {
+            environmentProviderServiceId: EnvironmentProviderServiceDispatcher(
+              EnvironmentProviderServiceAdapter(
+                id == 'a' && state.options['noBufferedFacet'] == true
+                    ? _Environment(state, id)
+                    : _BufferedEnvironment(state, id),
+              ),
+              concurrent: true,
+            ),
+          },
+      },
+    );
+
+class _Environment implements EnvironmentProvider {
+  _Environment(this.state, this.id);
+  final ProbeState state;
+  final String id;
+  final roots = <String, String>{};
+
+  @override
+  ProviderId get providerId => ProviderId('test.environment.$id');
+
+  @override
+  Future<EnvironmentProviderResult> restore(
+    LocalEnvironment environment,
+  ) async {
+    final expected = id == 'a' ? 'additional' : 'primary';
+    final root = (state.options['roots'] as Map)[expected] as String;
+    if (environment.id.value != expected ||
+        environment.providerState!['root'] != root ||
+        await Directory(root).resolveSymbolicLinks() != root) {
+      throw StateError('Environment does not belong to this fixture provider.');
+    }
+    roots[expected] = root;
+    return EnvironmentProviderResult(providerState: environment.providerState!);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'Only restore and buffered processes are provided.',
+  );
+}
+
+final class _BufferedEnvironment extends _Environment
+    implements EnvironmentBufferedProcessProvider {
+  _BufferedEnvironment(super.state, super.id);
+
+  @override
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    EnvironmentId environmentId,
+    EnvironmentBufferedProcessRequest request,
+  ) async {
+    final root = roots[environmentId.value];
+    if (root == null || request.relativeWorkingDirectory != '') {
+      throw StateError('Only the exact restored Environment root is allowed.');
+    }
+    if (!const {
+      '/bin/sh',
+      '/usr/bin/git',
+      '/usr/bin/stat',
+      '/usr/bin/head',
+      '/bin/pwd',
+    }.contains(request.program)) {
+      throw StateError('Unexpected executable in the portable Linux profile.');
+    }
+    if (id == 'a' && state.options['unavailable'] == true) {
+      throw const EnvironmentFailure(
+        code: environmentBufferedProcessUnavailableCode,
+        message: 'Independent provider explicitly unavailable.',
+        details: {},
+      );
+    }
+    final evidence = <String, Object?>{
+      'environmentId': environmentId.value,
+      'providerId': providerId.value,
+      'cwd': root,
+      'program': request.program,
+      'arguments': request.arguments,
+      'stdinBase64': request.stdinBase64,
+    };
+    state.processes.add(evidence);
+    final process = await Process.start(
+      request.program,
+      request.arguments,
+      workingDirectory: root,
+      includeParentEnvironment: false,
+      environment: const {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'},
+    );
+    final stdout = BytesBuilder(copy: false);
+    final stderr = BytesBuilder(copy: false);
+    final subscriptions = <StreamSubscription<List<int>>>[];
+    Future<void> capture(
+      Stream<List<int>> stream,
+      BytesBuilder bytes,
+      int limit,
+    ) {
+      final done = Completer<void>();
+      subscriptions.add(
+        stream.listen(
+          (chunk) {
+            if (done.isCompleted) return;
+            if (bytes.length + chunk.length > limit) {
+              done.completeError(
+                const EnvironmentFailure(
+                  code: 'process_output_overflow',
+                  message: 'Independent fixture output bound exceeded.',
+                  details: {},
+                ),
+              );
+            } else {
+              bytes.add(chunk);
+            }
+          },
+          onDone: () {
+            if (!done.isCompleted) done.complete();
+          },
+          onError: (Object error, StackTrace trace) {
+            if (!done.isCompleted) done.completeError(error, trace);
+          },
+        ),
+      );
+      return done.future;
+    }
+
+    Future<void> input() async {
+      process.stdin.add(
+        decodeEnvironmentProcessBytes(
+          request.stdinBase64,
+          maximumBytes: environmentBufferedProcessStdinLimit,
+        ),
+      );
+      await process.stdin.close();
+    }
+
+    try {
+      final results = await Future.wait<Object?>([
+        process.exitCode,
+        capture(process.stdout, stdout, environmentBufferedProcessStdoutLimit),
+        capture(process.stderr, stderr, environmentBufferedProcessStderrLimit),
+        input(),
+      ], eagerError: true).timeout(Duration(seconds: request.timeoutSeconds));
+      final exitCode = results.first! as int;
+      evidence['exitCode'] = exitCode;
+      // Hold an actual completed child result, not synthetic process output.
+      await state.checkpoint('process:completed');
+      return EnvironmentBufferedProcessResult(
+        exitCode: exitCode,
+        stdoutBase64: encodeEnvironmentProcessBytes(
+          stdout.takeBytes(),
+          maximumBytes: environmentBufferedProcessStdoutLimit,
+        ),
+        stderrBase64: encodeEnvironmentProcessBytes(
+          stderr.takeBytes(),
+          maximumBytes: environmentBufferedProcessStderrLimit,
+        ),
+      );
+    } on TimeoutException {
+      throw const EnvironmentFailure(
+        code: 'process_timed_out',
+        message: 'Independent fixture process deadline exceeded.',
+        details: {},
+      );
+    } finally {
+      process.kill(ProcessSignal.sigkill);
+      await Future.wait(
+        subscriptions.map((subscription) => subscription.cancel()),
+      );
+      await process.exitCode.timeout(const Duration(seconds: 1));
+    }
+  }
+}

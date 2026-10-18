@@ -9,8 +9,12 @@ import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 
 import 'git_process_environment.dart';
+import 'git_snapshot_parsing.dart' show GitIndexEntry, parseGitPatch;
+import 'git_snapshot_parsing.dart' as parsing;
 import 'git_worktree_environment_provider.dart';
 import 'worktree_environment.dart';
+
+export 'git_snapshot_parsing.dart' show GitIndexEntry, parseGitPatch;
 
 /// Provider-local bounds, not caller-selected request settings.
 final class GitChangeSetLimits {
@@ -247,11 +251,11 @@ final class _SnapshotOperation {
       final newline = entry.indexOf('\n');
       final key = newline < 0 ? entry : entry.substring(0, newline);
       final value = newline < 0
-          ? ''
+          ? 'true'
           : entry.substring(newline + 1).toLowerCase();
       effectiveSettings[key] = value;
     }
-    const falseValues = {'false', 'no', 'off', '0'};
+    const falseValues = {'', 'false', 'no', 'off', '0'};
     _fileMode = !falseValues.contains(effectiveSettings['core.filemode']);
     _contentConversion =
         effectiveSettings.containsKey('core.eol') ||
@@ -811,23 +815,34 @@ final class _SnapshotOperation {
       detail: detail,
       hunks: const [],
     );
+    const attributeNames = [
+      'diff',
+      'text',
+      'eol',
+      'working-tree-encoding',
+      'filter',
+      'ident',
+      'crlf',
+    ];
     final attributes = _nulRecords(
       _decode(
         (await git(root, [
           'check-attr',
           '-z',
-          'diff',
-          'text',
-          'eol',
-          'working-tree-encoding',
-          'filter',
-          'ident',
+          ...attributeNames,
           '--',
           path,
         ])).bytes,
       ),
     );
-    if (attributes.length != 18) throw _malformed();
+    if (attributes.length != attributeNames.length * 3) throw _malformed();
+    // Validate the entire response before any classification can return early.
+    for (var i = 0; i < attributeNames.length; i++) {
+      if (attributes[i * 3] != path ||
+          attributes[i * 3 + 1] != attributeNames[i]) {
+        throw _malformed();
+      }
+    }
     if (_contentConversion) {
       return placeholder(
         'unsupported',
@@ -835,7 +850,6 @@ final class _SnapshotOperation {
       );
     }
     for (var i = 0; i < attributes.length; i += 3) {
-      if (attributes[i] != path) throw _malformed();
       final name = attributes[i + 1];
       final value = attributes[i + 2];
       if (name == 'diff' && value == 'unset') {
@@ -1284,65 +1298,16 @@ final class _SnapshotOperation {
   }
 }
 
-typedef GitIndexEntry = ({
-  String oldMode,
-  String newMode,
-  String oid,
-  String kind,
-});
-
 /// Parses public ls-files --cached --stage --debug -z output. Paths end at NUL;
 /// fixed metadata follows each path. Unknown metadata formats fail closed.
 Map<String, GitIndexEntry> parseGitIndex(
   String raw, {
   int maximumEntries = 4096,
-}) {
-  final changes = <String, GitIndexEntry>{};
-  final header = RegExp(r'^([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-3])$');
-  final metadata = RegExp(
-    r'  ctime: \d+:\d+\n  mtime: \d+:\d+\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: \d+\tflags: ([0-9a-f]+)\n',
-  );
-  var offset = 0;
-  var entries = 0;
-  while (offset < raw.length) {
-    if (++entries > maximumEntries) {
-      throw _failure(
-        'inventory_too_large',
-        'The index inventory exceeds the supported entry count.',
-      );
-    }
-    final nul = raw.indexOf('\u0000', offset);
-    final tab = raw.indexOf('\t', offset);
-    if (nul < 0 || tab < offset || tab > nul) throw _malformed();
-    final match = header.firstMatch(raw.substring(offset, tab));
-    if (match == null) throw _malformed();
-    final path = raw.substring(tab + 1, nul);
-    _validatePath(path);
-    final stat = metadata.matchAsPrefix(raw, nul + 1);
-    if (stat == null) throw _malformed();
-    offset = stat.end;
-    final flags = int.tryParse(stat[1]!, radix: 16);
-    if (flags == null) throw _malformed();
-    final oldMode = match[1]!;
-    final intentToAdd = (flags & 0x20000000) != 0;
-    final kind = match[3] != '0'
-        ? 'conflicted'
-        : (flags & 0x40008000) != 0 || oldMode == '160000'
-        ? 'unsupported'
-        : intentToAdd
-        ? 'added'
-        : 'modified';
-    if (changes[path]?.kind == 'conflicted') continue;
-    if (changes.containsKey(path) && kind != 'conflicted') throw _malformed();
-    changes[path] = (
-      oldMode: intentToAdd ? '000000' : oldMode,
-      newMode: oldMode,
-      oid: intentToAdd ? '' : match[2]!,
-      kind: kind,
-    );
-  }
-  return changes;
-}
+}) => parsing.parseGitIndex(
+  raw,
+  maximumEntries: maximumEntries,
+  windowsPaths: Platform.isWindows,
+);
 
 /// Adds ls-files --others -z records without collecting an unbounded record list.
 /// Only this untracked output permits a nested repository's trailing slash.
@@ -1350,153 +1315,12 @@ void addGitUntrackedEntries(
   String raw,
   Map<String, GitIndexEntry> changes, {
   int maximumEntries = 4096,
-}) {
-  var offset = 0;
-  while (offset < raw.length) {
-    final nul = raw.indexOf('\u0000', offset);
-    if (nul < 0) throw _malformed();
-    final record = raw.substring(offset, nul);
-    offset = nul + 1;
-    final directory = record.endsWith('/');
-    final path = directory ? record.substring(0, record.length - 1) : record;
-    _validatePath(path);
-    if (changes.containsKey(path)) {
-      throw _failure(
-        'snapshot_changed',
-        'A path changed index membership during enumeration.',
-      );
-    }
-    if (changes.length >= maximumEntries) {
-      throw _failure(
-        'inventory_too_large',
-        'The tracked and untracked inventory exceeds the supported entry count.',
-      );
-    }
-    changes[path] = (
-      oldMode: '000000',
-      newMode: directory ? '040000' : '100644',
-      oid: '',
-      kind: directory ? 'untrackedRepository' : 'added',
-    );
-  }
-}
-
-/// Strict unified-hunk parser. Header path strings never establish path identity.
-List<DiffHunk> parseGitPatch(String patch, {int maximumLines = 8192}) {
-  if (patch.isEmpty) return [];
-  if (!patch.endsWith('\n')) throw _malformed();
-  final records = patch.substring(0, patch.length - 1).split('\n');
-  final hunks = <DiffHunk>[];
-  final header = RegExp(
-    r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$',
-  );
-  var index = 0;
-  var sawDiff = false;
-  var sawOld = false;
-  var sawNew = false;
-  var sawMode = false;
-  var sawIndex = false;
-  while (index < records.length && !records[index].startsWith('@@')) {
-    final line = records[index++];
-    if (line.startsWith('diff --git ')) {
-      if (sawDiff) throw _malformed();
-      sawDiff = true;
-    } else if (line.startsWith('index ')) {
-      if (sawIndex ||
-          !RegExp(
-            r'^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]{6})?$',
-          ).hasMatch(line)) {
-        throw _malformed();
-      }
-      sawIndex = true;
-    } else if (line.startsWith('--- ')) {
-      if (sawOld) throw _malformed();
-      sawOld = true;
-    } else if (line.startsWith('+++ ')) {
-      if (sawNew) throw _malformed();
-      sawNew = true;
-    } else if (RegExp(r'^(?:new|deleted) file mode [0-7]{6}$').hasMatch(line)) {
-      if (sawMode) throw _malformed();
-      sawMode = true;
-    } else {
-      throw _malformed();
-    }
-  }
-  if (!sawDiff ||
-      !sawIndex ||
-      (index < records.length ? !(sawOld && sawNew) : !sawMode)) {
-    throw _malformed();
-  }
-  var previousOldEnd = 0;
-  var previousNewEnd = 0;
-  var lineCount = 0;
-  while (index < records.length) {
-    final match = header.firstMatch(records[index++]);
-    if (match == null) throw _malformed();
-    final oldStart = int.tryParse(match[1]!);
-    final newStart = int.tryParse(match[3]!);
-    final oldCount = int.tryParse(match[2] ?? '1');
-    final newCount = int.tryParse(match[4] ?? '1');
-    if (oldStart == null ||
-        newStart == null ||
-        oldCount == null ||
-        newCount == null ||
-        oldStart < previousOldEnd ||
-        newStart < previousNewEnd ||
-        (oldCount > 0 && oldStart == 0) ||
-        (newCount > 0 && newStart == 0)) {
-      throw _malformed();
-    }
-    var oldSeen = 0;
-    var newSeen = 0;
-    final lines = <DiffLine>[];
-    while (index < records.length && !records[index].startsWith('@@')) {
-      final line = records[index++];
-      if (line == r'\ No newline at end of file') {
-        if (lines.isEmpty || lines.last.noNewline) throw _malformed();
-        final previous = lines.removeLast();
-        lines.add(
-          DiffLine(kind: previous.kind, text: previous.text, noNewline: true),
-        );
-        continue;
-      }
-      if (line.isEmpty) throw _malformed();
-      if (++lineCount > maximumLines) {
-        throw _failure(
-          'snapshot_too_large',
-          'The change snapshot exceeds its line limit.',
-        );
-      }
-      final kind = switch (line[0]) {
-        ' ' => 'context',
-        '+' => 'addition',
-        '-' => 'deletion',
-        _ => throw _malformed(),
-      };
-      if (kind != 'addition') oldSeen++;
-      if (kind != 'deletion') newSeen++;
-      if (oldSeen > oldCount || newSeen > newCount) throw _malformed();
-      lines.add(
-        DiffLine(kind: kind, text: line.substring(1), noNewline: false),
-      );
-    }
-    if (oldSeen != oldCount || newSeen != newCount || lines.isEmpty) {
-      throw _malformed();
-    }
-    hunks.add(
-      DiffHunk(
-        oldStart: oldStart,
-        oldCount: oldCount,
-        newStart: newStart,
-        newCount: newCount,
-        lines: lines,
-      ),
-    );
-    previousOldEnd = oldStart + oldCount;
-    previousNewEnd = newStart + newCount;
-  }
-  return hunks;
-}
+}) => parsing.addGitUntrackedEntries(
+  raw,
+  changes,
+  maximumEntries: maximumEntries,
+  windowsPaths: Platform.isWindows,
+);
 
 List<String> _nulRecords(String value) {
   if (value.isEmpty) return [];
@@ -1504,17 +1328,8 @@ List<String> _nulRecords(String value) {
   return value.substring(0, value.length - 1).split('\u0000');
 }
 
-void _validatePath(String path) {
-  if (path.isEmpty ||
-      path.startsWith('/') ||
-      path.contains('\u0000') ||
-      path
-          .split('/')
-          .any((part) => part.isEmpty || part == '.' || part == '..') ||
-      (Platform.isWindows && (path.contains('\\') || path.contains(':')))) {
-    throw _malformed();
-  }
-}
+void _validatePath(String path) =>
+    parsing.validateGitSnapshotPath(path, windowsPaths: Platform.isWindows);
 
 bool _sameState(FileStat a, FileStat b) =>
     a.type == b.type &&

@@ -1675,6 +1675,157 @@ exec /usr/bin/git "\$@"
   );
 
   test(
+    'core filemode boolean forms preserve staged modes and suppress only false working modes',
+    () async {
+      final stagedMode = File('${repository.path}/staged-mode');
+      await stagedMode.writeAsString('same\n');
+      await _git(repository, ['add', '.']);
+      await _git(repository, ['commit', '-m', 'Mode fixture']);
+      await _git(repository, ['update-index', '--chmod=+x', 'staged-mode']);
+      for (final path in ['baseline', 'staged-mode']) {
+        expect(
+          (await Process.run('chmod', [
+            '755',
+            '${repository.path}/$path',
+          ])).exitCode,
+          0,
+        );
+      }
+      final config = File('${repository.path}/.git/config');
+      final original = await config.readAsString();
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+      for (final (value, enabled) in [
+        ('', false),
+        ('false', false),
+        ('no', false),
+        ('off', false),
+        ('0', false),
+        ('true', true),
+        ('yes', true),
+        ('on', true),
+        ('1', true),
+        (null, true),
+      ]) {
+        final text =
+            '$original\n[core]\n\tfilemode${value == null ? '' : ' = $value'}\n';
+        await config.writeAsString(text);
+        expect(
+          await _git(repository, [
+            'config',
+            '--null',
+            '--get-regexp',
+            r'^core\.filemode$',
+          ]),
+          endsWith('core.filemode${value == null ? '' : '\n$value'}\u0000'),
+        );
+        expect(
+          await _git(repository, [
+            'config',
+            '--bool',
+            '--get',
+            'core.filemode',
+          ]),
+          '$enabled\n',
+        );
+        final result = await uncommitted();
+        final staged = result.staged.files.single;
+        expect(staged.relativePath, 'staged-mode', reason: 'value: $value');
+        expect(staged.changeKind, 'typeChanged');
+        expect(staged.contentStatus, 'unsupported');
+        expect(staged.hunks, isEmpty);
+        if (enabled) {
+          final working = result.unstaged.files.single;
+          expect(working.relativePath, 'baseline', reason: 'value: $value');
+          expect(working.changeKind, 'typeChanged');
+          expect(working.contentStatus, 'unsupported');
+          expect(working.hunks, isEmpty);
+        } else {
+          expect(result.unstaged.files, isEmpty, reason: 'value: $value');
+        }
+        expect(result.conflicts, isEmpty);
+        expect(await config.readAsString(), text);
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+      }
+    },
+    skip: Platform.isWindows,
+  );
+
+  test(
+    'core autocrlf boolean forms preserve text layers only when false',
+    () async {
+      final file = File('${repository.path}/baseline');
+      await file.writeAsString('index\n');
+      await _git(repository, ['add', 'baseline']);
+      await file.writeAsString('working\r\n');
+      final config = File('${repository.path}/.git/config');
+      final original = await config.readAsString();
+      final index = await File('${repository.path}/.git/index').readAsBytes();
+      for (final (value, enabled) in [
+        ('', false),
+        ('false', false),
+        ('no', false),
+        ('off', false),
+        ('0', false),
+        ('true', true),
+        ('yes', true),
+        ('on', true),
+        ('1', true),
+        (null, true),
+      ]) {
+        final text =
+            '$original\n[core]\n\tautocrlf${value == null ? '' : ' = $value'}\n';
+        await config.writeAsString(text);
+        expect(
+          await _git(repository, [
+            'config',
+            '--null',
+            '--get-regexp',
+            r'^core\.autocrlf$',
+          ]),
+          'core.autocrlf${value == null ? '' : '\n$value'}\u0000',
+        );
+        expect(
+          await _git(repository, [
+            'config',
+            '--bool',
+            '--get',
+            'core.autocrlf',
+          ]),
+          '$enabled\n',
+        );
+        final result = await uncommitted();
+        for (final (layer, lines) in [
+          (result.staged, ['deletion:baseline', 'addition:index']),
+          (result.unstaged, ['deletion:index', 'addition:working\r']),
+        ]) {
+          final changed = layer.files.single;
+          expect(changed.relativePath, 'baseline', reason: 'value: $value');
+          expect(changed.changeKind, 'modified');
+          expect(changed.contentStatus, enabled ? 'unsupported' : 'text');
+          if (enabled) {
+            expect(changed.hunks, isEmpty);
+          } else {
+            expect(
+              changed.hunks.single.lines.map((l) => '${l.kind}:${l.text}'),
+              lines,
+            );
+          }
+        }
+        expect(result.conflicts, isEmpty);
+        expect(await config.readAsString(), text);
+        expect(await file.readAsString(), 'working\r\n');
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+      }
+    },
+  );
+
+  test(
     'NUL enumeration preserves spaces punctuation tabs newlines and literal magic',
     () async {
       final paths = [
@@ -2482,6 +2633,56 @@ exec /usr/bin/git "\$@"
     expect(await sentinel.exists(), isFalse);
   });
 
+  test('legacy crlf attributes classify raw LF to CRLF differences', () async {
+    await _git(repository, ['config', 'core.autocrlf', 'false']);
+    final attributes = File('${repository.path}/.git/info/attributes');
+    const rules = 'bare crlf\ninput crlf=input\nunset -crlf\n';
+    await attributes.writeAsString(rules);
+    const paths = ['bare', 'input', 'noattr', 'unset'];
+    for (final path in paths) {
+      await File('${repository.path}/$path').writeAsString('same\n');
+    }
+    await _git(repository, ['add', '.']);
+    await _git(repository, ['commit', '-m', 'Legacy CRLF attributes']);
+    for (final path in paths) {
+      expect(await _git(repository, ['show', ':$path']), 'same\n');
+      await File('${repository.path}/$path').writeAsString('same\r\n');
+    }
+    final index = await File('${repository.path}/.git/index').readAsBytes();
+    final result = await snapshot();
+    expect(result.files.map((file) => file.relativePath), paths);
+    for (final file in result.files) {
+      expect(file.changeKind, 'modified');
+      if (file.relativePath == 'bare' || file.relativePath == 'input') {
+        expect(file.contentStatus, 'unsupported');
+        expect(file.detail, contains('conversion'));
+        expect(file.hunks, isEmpty);
+        expect(
+          await _git(repository, [
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--',
+            file.relativePath,
+          ]),
+          isEmpty,
+        );
+      } else {
+        expect(file.contentStatus, 'text');
+        expect(
+          file.hunks.single.lines.map((line) => '${line.kind}:${line.text}'),
+          ['deletion:same', 'addition:same\r'],
+        );
+      }
+      expect(
+        await File('${repository.path}/${file.relativePath}').readAsString(),
+        'same\r\n',
+      );
+    }
+    expect(await File('${repository.path}/.git/index').readAsBytes(), index);
+    expect(await attributes.readAsString(), rules);
+  });
+
   test('core autocrlf never fabricates a raw-byte text edit', () async {
     await _git(repository, ['config', 'core.autocrlf', 'true']);
     final file = File('${repository.path}/crlf');
@@ -2653,6 +2854,82 @@ exec /usr/bin/git "\$@"
       expect(files['encoded']!.contentStatus, 'unsupported');
       expect(await sentinel.exists(), isFalse);
     },
+  );
+
+  test(
+    'attribute output validates framing count order and paths before classification',
+    () async {
+      await File('${repository.path}/baseline').writeAsString('working\n');
+      final output = File('${container.path}/attribute-output');
+      final shim = await _shim(container, '''
+case " \$* " in
+  *" check-attr "*) exec /usr/bin/cat ${_quote(output.path)} ;;
+esac
+exec /usr/bin/git "\$@"
+''');
+      for (final classification in ['text', 'binary', 'attribute', 'config']) {
+        await _git(repository, [
+          'config',
+          'core.autocrlf',
+          classification == 'config' ? 'true' : 'false',
+        ]);
+        final records = [
+          for (final name in [
+            'diff',
+            'text',
+            'eol',
+            'working-tree-encoding',
+            'filter',
+            'ident',
+            'crlf',
+          ]) ...[
+            'baseline',
+            name,
+            name == 'diff' && classification == 'binary'
+                ? 'unset'
+                : name == 'diff' && classification == 'attribute'
+                ? 'custom'
+                : 'unspecified',
+          ],
+        ];
+        final valid = '${records.join('\u0000')}\u0000';
+        await output.writeAsString(valid);
+        expect(
+          (await snapshot(
+            parentEnvironment: {'PATH': shim.path},
+          )).files.single.contentStatus,
+          classification == 'text' || classification == 'binary'
+              ? classification
+              : 'unsupported',
+        );
+        for (final (problem, malformed) in [
+          ('unterminated', valid.substring(0, valid.length - 1)),
+          ('missing value', '${records.take(20).join('\u0000')}\u0000'),
+          ('missing record', '${records.take(18).join('\u0000')}\u0000'),
+          ('extra record', '${valid}baseline\u0000crlf\u0000unset\u0000'),
+          (
+            'out of order',
+            valid.replaceFirst(
+              'ident\u0000unspecified\u0000baseline\u0000crlf',
+              'crlf\u0000unspecified\u0000baseline\u0000ident',
+            ),
+          ),
+          ('duplicate name', valid.replaceFirst('crlf\u0000', 'ident\u0000')),
+          (
+            'wrong path',
+            valid.replaceFirst('baseline\u0000crlf', '../escape\u0000crlf'),
+          ),
+        ]) {
+          await output.writeAsString(malformed);
+          await expectLater(
+            snapshot(parentEnvironment: {'PATH': shim.path}),
+            throwsA(_code('invalid_git_output')),
+            reason: '$classification: $problem',
+          );
+        }
+      }
+    },
+    skip: !Platform.isLinux,
   );
 
   test(

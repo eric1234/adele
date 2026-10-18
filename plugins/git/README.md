@@ -192,9 +192,10 @@ drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
 used: both can execute clean filters while checking stat-racy files, even without
 requesting patches. Cached-only enumeration avoids that execution path, including
 when another process adds a new filter after the snapshot has begun.
-Custom conversion/diff attributes and effective `core.autocrlf`/`core.eol`
-conversion are unsupported placeholders, and `-diff` attributes are binary
-placeholders. Binary data, invalid
+Custom conversion/diff attributes, including legacy `crlf` and `crlf=input`, and
+effective `core.autocrlf`/`core.eol` conversion are unsupported placeholders;
+unspecified or disabled `-crlf` alone does not require conversion. `-diff`
+attributes are binary placeholders. Binary data, invalid
 UTF-8, symbolic links, submodules, unmerged entries, type/mode changes, and oversized
 files likewise have explicit status/detail and no fabricated text hunks. Equal
 raw content, including binary/invalid UTF-8 with stale index stat metadata, is
@@ -205,6 +206,9 @@ suppresses working-file executable-bit-only differences; actual HEAD/index mode
 differences and baseline-to-HEAD mode differences remain visible in their layers.
 Repository settings override lower configuration scopes. Git executable state
 uses only the owner-execute bit.
+Both snapshot implementations preserve Git's distinction between implicit boolean
+true and explicitly empty false, alongside the ordinary true/yes/on/1 and
+false/no/off/0 spellings for `core.filemode` and `core.autocrlf`.
 
 The snapshot subprocess path is separate from Environment foreground execution.
 `git_process_environment.dart` shares the existing placement isolation boundary,
@@ -272,6 +276,146 @@ Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
 and stock Git AOT, checks both ready advertisements and their exact association,
 and exercises generated contextual requests for independent live Environments.
 The `git_backend` maintained target discovers both files.
+
+### Portable Unstaged inspection
+
+`GitPortableUnstagedSnapshotService` is a separate production implementation of
+index-to-working-tree inspection, including nonignored untracked additions. It
+accepts only `AuthorizedEnvironmentBufferedProcessService` and optional reduced
+operation limits. It does not accept Session/Environment IDs or repository paths,
+import the Worktree provider, resolve live provider objects, or perform host-local
+filesystem/process I/O. The existing stock `git_backend.dart` advertisement,
+provider ID, association, read grant, and all three scope methods remain unchanged.
+The portable service is not advertised as another stock provider; production
+activation and portable Uncommitted/Task scopes remain deferred.
+
+Every observation runs through the operation's captured process service, including
+metadata and raw-file reads. The currently supported command environment is Linux
+with `/bin/sh`, `/bin/pwd`, and `/usr/bin/{env,git,stat,head}`. These are explicit
+Environment-side executable prerequisites, not paths in the ADELE host checkout.
+Missing commands fail the snapshot, without a local or alternative-Environment
+fallback. A fixed shell wrapper forwards literal argv to `env -i`, retaining HOME
+and XDG configuration discovery while setting a fixed system PATH and locale.
+It removes inherited Git routing/configuration/trace variables, disables optional
+locks, replacement objects, prompts and lazy fetching, and denies Git transports.
+Source commands additionally disable fsmonitor, hooks and the untracked cache.
+This is command hygiene, not a sandbox against a substituted system executable or
+arbitrary effects of the selected Environment's process implementation.
+
+Discovery compares canonical absolute `pwd -P` and Git worktree/Git-directory
+paths with the exact source prefix, including a worktree rooted at `/`, then pins
+the discovered Git directory/worktree on source commands. Inventories
+remain scoped to `.` at the selected Environment root, including a nested Project
+directory, and return sorted Environment-relative paths. Cached stage/debug and
+untracked inventories reuse the existing pure `git_snapshot_parsing.dart` helpers;
+deleted and obstructing-path inventories are supplementary observations. NUL
+framing preserves unusual filenames. Any diagnostic on stderr fails the operation:
+for example, `ls-files --deleted` can report an unreadable path as deleted while
+returning exit zero with an error diagnostic.
+
+GNU `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
+modification/change times in bounded batches. Parents are admitted one depth at a
+time before their descendants. Each result contains the literal argv filename and
+metadata in separate NUL-terminated fields; complete record count and path ordering
+must match the request. Inventoried static symlinks and special files are
+unsupported, not ordinary text changes. This preflight is important because Git
+no-index can follow a symlink to a FIFO and report its content as a regular file.
+
+For verified regular tracked files, `git hash-object --no-filters -- ./path ...`
+computes raw SHA-1 or SHA-256 blob identities in bounded batches. Every eligible
+file's content is hashed, even when index timestamps and sizes appear unchanged.
+Exact hash count, framing and index hash width are checked. Metadata is rechecked
+in batches immediately after hashing and again before publication. Equal raw
+content is omitted before text classification; unchanged files need no individual
+`head` or `stat` requests. Oversized hashing remains subject to the separate
+observed-size verification budget, and unverifiable files remain explicit
+oversized entries with unknown change state. A failed batch rejects the whole
+snapshot, even if Git or stat produced a valid prefix of output.
+
+Each batch contains at most 128 literal path arguments, reduced further to fit
+the generic 256-argument and 65,536-UTF-16-unit metadata bounds. Accounting includes
+the entire shell wrapper, executable, Git options, discovered roots and path
+prefixes. There is no filename interpolation into shell source. Changed text
+continues through bounded `head -c` captures/rereads, per-read metadata checks, and
+`cat-file -s` / `cat-file blob` index reads with size and object-identity validation.
+
+For renderable changes, the index bytes are the single bounded stdin of
+`git --git-dir=/dev/null diff --no-index ... -- - ./relative-path`, or `/dev/null`
+for deletion. Detached comparison disables global/system configuration and
+attributes, external diff and textconv, and fixes the diff algorithm/context.
+Using no-index inside a discovered repository is deliberately avoided: disabling
+external diff and textconv alone does not stop clean filters or EOL conversion.
+The shared patch parser has an explicit stdin-patch mode because these patches can
+omit an index header; its legacy strict default is unchanged. Binary/invalid UTF-8,
+conversion/custom diff attributes, conflicts, index flags, mode changes, submodules
+and nested repositories retain explicit nontext representations. Indexed symbolic
+links remain unsupported even when their target text might be unchanged. Git does
+not inventory untracked FIFOs or other untrackable special files; these are outside
+the Git change set rather than discovered by a separate filesystem traversal.
+
+Defaults are 4,096 inventory entries, at most that many distinct parent observations,
+256 returned files, 1 MiB per rendered side, 2 MiB command stdout, 64 KiB diagnostic
+output, an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
+budget, and 4,096 process requests. The aggregate budget counts all transported
+input/output plus observed small-file bytes hashed outside transport, so batching
+does not bypass the content-work limit. Retained parent-path text is independently
+capped at `totalBytes` UTF-16 code units before metadata execution. Oversized
+verification admits at most 16 MiB per observed file and 64 MiB total observed
+sizes. Commands have a ten-second deadline within
+the whole snapshot's thirty seconds; execution remains sequential. Generic
+Environment transport limits are unchanged. Any incomplete observation, malformed
+output, process/transport failure or exhausted whole-operation budget fails the
+snapshot rather than returning a truncated or deceptively clean result.
+
+A flat clean inventory with ordinary-length paths uses
+`20 + 4 * ceil(fileCount / 128)` requests: initial metadata, hashing, post-hash
+metadata and final metadata batches, plus fixed discovery/inventory/settings work.
+At the 4,096-entry maximum this is 148 requests. The 4,096-request ceiling also
+allows up to ten additional requests per rendered tracked file (2,560 for the
+256-file bound), with headroom for parents and smaller metadata-limited batches.
+It does not promise success for every possible path layout, file size or machine;
+the independent byte and thirty-second deadline bounds still apply.
+
+Non-gating Linux diagnostics, excluding fixture setup, observed:
+
+| Local Process Fixture | Requests | Elapsed |
+| --- | --- | --- |
+| 100 clean tracked files | 24 | 1.013 seconds |
+| 500 clean tracked files | 36 | 1.080 seconds |
+| 900 clean tracked files | 52 | 1.606 seconds |
+| 500 tracked files with three text edits | 66 | 1.937 seconds |
+
+The real independent Environment AOT / Git AOT / compiled EVC fixture completed
+500 and 900 clean files in 1.202 and 1.651 seconds with 37 and 53 requests (including
+a parent directory). A modify/delete/add combination used 60 and 76 requests in
+1.833 and 2.173 seconds. These are single-host observations, not timing guarantees
+or CI assertions. Modest deterministic tests instead enforce batched call scaling
+and fail-closed behavior. Production activation and the additional scopes remain
+deferred; batching does not alter the Environment's isolation guarantees.
+
+Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
+file attributes, repository discovery and observed metadata are rechecked before
+publication. Text working bytes are also reread around patch generation. These
+are best-effort consistency checks, not an atomic filesystem/index transaction.
+External processes can replace paths after checks, grow files during a Git hash,
+or change and restore content between observations. Processes retain the selected
+Environment's OS-user access, including possible access outside the worktree; this
+implementation promises no stronger confinement. A timeout fences later commands
+and publication but does not cancel an already admitted unary process request;
+the provider's process deadline and lifetime policy still apply.
+
+`git_portable_unstaged_snapshot_test.dart` exercises real Git through an independent
+process-service adapter, including hostile configuration, unusual paths, explicit
+unsupported cases, limits and changed observations. `git_portable_discovery_test.dart`
+uses controlled process responses for root/prefix validation without creating a
+repository at the host filesystem root. The maintained `git_backend` target
+discovers both and the extracted parser tests. Application
+`prepared_portable_git_integration_test.dart` independently prepares an Environment
+AOT backend that runs real processes, a separate AOT adapter over this production
+service, and a compiled EVC consumer of the generated Diff contract. It checks
+nonprimary Session binding, typed paths/classifications/hunks, explicit process
+declarations and exact retirement/departure fencing. Neither backend imports the
+other's implementation. The stock Diff frontend is not changed by this proof.
 
 ## Filesystem and processes
 
@@ -450,10 +594,11 @@ groups cannot contain deliberately daemonized descendants, and cwd confinement i
 not an OS sandbox or protection against every same-user pathname replacement race.
 
 This facet adds no operation to `AuthorizedEnvironmentReadService` or the existing
-authorized streamed process service. Independent Capability backends and
-interpreted frontends receive no new execution authority. A separately declared,
-effectful Environment-bound invocation grant belongs to the subsequent integration
-slice. The Git ChangeSetSource backend is unchanged.
+authorized streamed process service. Independent Capability backends require the
+separate explicit Environment-bound buffered-process grant described by the public
+Environment contract. Interpreted consumers invoke semantic Capabilities, not a
+generic process API. The stock Git ChangeSetSource advertisement remains unchanged;
+the portable Unstaged service above consumes that separate grant only when supplied.
 
 ## Interactive terminals
 
@@ -557,11 +702,12 @@ unvalidated. Stock [Terminal](../terminal/README.md) owns the frontend and contr
 
 ## Current limitations
 
-The broader plugin identity does not make its current `ChangeSetSource`
+The broader plugin identity does not make its stock `ChangeSetSource`
 implementation portable across arbitrary Environment providers. It still resolves
 only this backend generation's associated live `WorktreeEnvironment`; it does not
-use the generic buffered-process grant to inspect another provider. Task / Branch
-review still obtains its baseline and branch from the Environment provider's
+use the generic buffered-process grant to inspect another provider. The separately
+tested portable Unstaged service is not yet selected by production Diff.
+Task / Branch review still obtains its baseline and branch from the Environment provider's
 retained state, not a core Task baseline or caller-selected comparison.
 
 Change snapshots are read-only. Staging, unstaging, review approval/unapproval,
