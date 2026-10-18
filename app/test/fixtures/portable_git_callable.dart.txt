@@ -54,11 +54,14 @@ final class _Source implements ChangeSetSourceService {
 
   @override
   Future<UncommittedChangeSetSnapshot> snapshotUncommitted() async {
-    state.failures.add('unsupported_scope');
-    throw const ChangeSetFailure(
-      code: 'unsupported_scope',
-      message: 'This independent provider supports Unstaged only.',
-    );
+    try {
+      return await snapshots.snapshotUncommitted();
+    } on ChangeSetFailure catch (error) {
+      state.failures.add(error.code);
+      rethrow;
+    } finally {
+      await state.checkpoint('settled:uncommitted');
+    }
   }
 
   @override
@@ -66,7 +69,7 @@ final class _Source implements ChangeSetSourceService {
     state.failures.add('unsupported_scope');
     throw const ChangeSetFailure(
       code: 'unsupported_scope',
-      message: 'This independent provider supports Unstaged only.',
+      message: 'This independent provider has no Task baseline authority.',
     );
   }
 }

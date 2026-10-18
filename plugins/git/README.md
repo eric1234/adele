@@ -277,17 +277,31 @@ and stock Git AOT, checks both ready advertisements and their exact association,
 and exercises generated contextual requests for independent live Environments.
 The `git_backend` maintained target discovers both files.
 
-### Portable Unstaged inspection
+<a id="portable-unstaged-inspection"></a>
 
-`GitPortableUnstagedSnapshotService` is a separate production implementation of
-index-to-working-tree inspection, including nonignored untracked additions. It
+### Portable Unstaged and Uncommitted inspection
+
+`GitPortableUnstagedSnapshotService` supplies `snapshotUnstaged()` and
+`snapshotUncommitted()` as a separate production implementation. Both reuse one
+operation's index-to-working-tree inspection, including nonignored untracked
+additions; Uncommitted also returns captured HEAD-to-index changes and a separate
+conflict collection, not a net HEAD-to-working-tree diff. It
 accepts only `AuthorizedEnvironmentBufferedProcessService` and optional reduced
 operation limits. It does not accept Session/Environment IDs or repository paths,
 import the Worktree provider, resolve live provider objects, or perform host-local
 filesystem/process I/O. The existing stock `git_backend.dart` advertisement,
 provider ID, association, read grant, and all three scope methods remain unchanged.
-The portable service is not advertised as another stock provider; production
-activation and portable Uncommitted/Task scopes remain deferred.
+The portable service is not advertised as another stock provider. Production stock
+Diff still uses the Worktree-specific implementation. Portable Task/Branch baseline
+semantics and production activation remain deferred; no staging, approvals, or
+feedback mutation is implemented.
+
+The independent Capability must declare `environmentBound` and the separate
+`bufferedProcess` host-service permission. Its consumer needs the contextual process
+Capability grant, not direct process access or a combined read/process grant. The
+host selects and captures the canonical Session Environment and both exact live
+provider generations, authorizes each invocation, and fences retirement. The
+portable Git service never supplies or substitutes those identities.
 
 Every observation runs through the operation's captured process service, including
 metadata and raw-file reads. The currently supported command environment is Linux
@@ -312,6 +326,24 @@ deleted and obstructing-path inventories are supplementary observations. NUL
 framing preserves unusual filenames. Any diagnostic on stderr fails the operation:
 for example, `ls-files --deleted` can report an unreadable path as deleted while
 returning exit zero with an error diagnostic.
+
+Uncommitted additionally captures `rev-parse --verify HEAD^{commit}` and
+`symbolic-ref --quiet HEAD`, then uses `ls-tree -r -z <captured-commit> -- .` for
+the source-scoped HEAD inventory. Detached HEAD is valid; missing/unborn HEAD
+fails explicitly, while Unstaged still requires no HEAD. The shared pure tree
+parser validates NUL framing, exact modes, object types and SHA-1/SHA-256 identities.
+Index parsing validates all stages and rejects duplicate or contradictory stage
+records before collapsing unmerged stages into one conflict. Raw stage/debug
+inventory is retained so changes to any conflict side are detected on revalidation.
+
+Staged comparison uses only captured HEAD and stage-0 index modes/blob identities.
+Intent-to-add and untracked paths have no staged object. Additions, deletions,
+modifications and type/mode changes are independent of working content: A/B/A and
+A/B/C across HEAD/index/working retain both layers; a staged deletion with working
+recreation is a staged deletion plus an unstaged addition. Renames remain separate
+deletion/addition entries. Unmerged paths occur only in `conflicts` for Uncommitted,
+with the stock conflicted status/detail and no ordinary approval material. Unstaged
+alone retains its existing inline conflict representation.
 
 GNU `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
 modification/change times in bounded batches. Parents are admitted one depth at a
@@ -353,8 +385,38 @@ links remain unsupported even when their target text might be unchanged. Git doe
 not inventory untracked FIFOs or other untrackable special files; these are outside
 the Git change set rather than discovered by a separate filesystem traversal.
 
-Defaults are 4,096 inventory entries, at most that many distinct parent observations,
-256 returned files, 1 MiB per rendered side, 2 MiB command stdout, 64 KiB diagnostic
+Staged regular-file bytes are obtained with bounded `cat-file -s` / `cat-file blob`
+reads of the exact captured objects, never working-file reads. Renderable staged
+patches use the same pinned source-command wrapper with:
+
+```text
+-c diff.suppressBlankEmpty=false diff --cached <captured-commit>
+--patch --exit-code --no-ext-diff --no-textconv --text --no-renames
+--no-color --no-prefix --no-relative --full-index --ignore-submodules=all
+--ita-invisible-in-index --diff-filter=A|D|M --diff-algorithm=myers
+--no-indent-heuristic --unified=3 --inter-hunk-context=0
+--output-indicator-new=+ --output-indicator-old=- --output-indicator-context=" "
+-- ./<literal-path>
+```
+
+The kind-specific filter isolates the exact file even in file/directory replacements,
+where a literal pathspec also selects descendants. Full-index object identities
+must match the captured inventory; parsed hunks must reconstruct the exact captured
+index content. Patch-header path strings are never trusted for attribution. Empty
+file additions/deletions remain text entries with no hunks. A missing difference,
+wrong identity, incomplete patch, nonzero failure, or diagnostic rejects the entire
+snapshot. Cached diff reads object content rather than cleaning the working file;
+external diff and textconv are disabled explicitly, and the wrapper disables
+fsmonitor/hooks. Hostile-helper tests include executable positive controls, FIFO
+and missing workfiles, and unchanged Git metadata fingerprints. No temporary source
+files or arbitrary filesystem writes are needed. Conversion/custom attributes,
+legacy `crlf`, binary/invalid UTF-8, unsupported modes and oversized sides keep the
+same conservative classification policy in both layers.
+
+Defaults are 4,096 inventory entries per HEAD/index inventory and across the union
+with untracked paths, at most that many distinct parent observations,
+256 returned entries across staged, unstaged and conflicts, 1 MiB per rendered side,
+2 MiB command stdout, 64 KiB diagnostic
 output, an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
 budget, and 4,096 process requests. The aggregate budget counts all transported
 input/output plus observed small-file bytes hashed outside transport, so batching
@@ -366,17 +428,24 @@ the whole snapshot's thirty seconds; execution remains sequential. Generic
 Environment transport limits are unchanged. Any incomplete observation, malformed
 output, process/transport failure or exhausted whole-operation budget fails the
 snapshot rather than returning a truncated or deceptively clean result.
+All budgets belong to one captured operation, not a fresh allowance per layer.
+A path returned in both staged and unstaged counts twice toward the entry limit;
+object reads, raw comparisons, patch lines, commands and presentation size all share
+their respective counters.
 
-A flat clean inventory with ordinary-length paths uses
+A flat clean Unstaged inventory with ordinary-length paths uses
 `20 + 4 * ceil(fileCount / 128)` requests: initial metadata, hashing, post-hash
 metadata and final metadata batches, plus fixed discovery/inventory/settings work.
-At the 4,096-entry maximum this is 148 requests. The 4,096-request ceiling also
+Uncommitted adds only six fixed requests for initial/final commit, reference and
+tree observations: `26 + 4 * ceil(fileCount / 128)`, with no staged process for a
+clean file. At the 4,096-entry maximum these are 148 and 154 requests respectively.
+The 4,096-request ceiling also
 allows up to ten additional requests per rendered tracked file (2,560 for the
 256-file bound), with headroom for parents and smaller metadata-limited batches.
 It does not promise success for every possible path layout, file size or machine;
 the independent byte and thirty-second deadline bounds still apply.
 
-Non-gating Linux diagnostics, excluding fixture setup, observed:
+Non-gating Linux Unstaged diagnostics, excluding fixture setup, observed:
 
 | Local Process Fixture | Requests | Elapsed |
 | --- | --- | --- |
@@ -390,13 +459,17 @@ The real independent Environment AOT / Git AOT / compiled EVC fixture completed
 a parent directory). A modify/delete/add combination used 60 and 76 requests in
 1.833 and 2.173 seconds. These are single-host observations, not timing guarantees
 or CI assertions. Modest deterministic tests instead enforce batched call scaling
-and fail-closed behavior. Production activation and the additional scopes remain
-deferred; batching does not alter the Environment's isolation guarantees.
+and fail-closed behavior. Uncommitted regression diagnostics exercise the same
+100/500/900-file batch scaling, mixed staged/unstaged changes and independent
+prepared execution. Production activation and portable Task scope remain deferred;
+batching does not alter the Environment's isolation guarantees.
 
 Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
 file attributes, repository discovery and observed metadata are rechecked before
-publication. Text working bytes are also reread around patch generation. These
-are best-effort consistency checks, not an atomic filesystem/index transaction.
+publication. Text working bytes are also reread around patch generation. Uncommitted
+additionally revalidates HEAD commit/reference and the captured HEAD-tree inventory,
+sharing the original index and working observations. These are best-effort
+consistency checks, not an atomic filesystem/index transaction.
 External processes can replace paths after checks, grow files during a Git hash,
 or change and restore content between observations. Processes retain the selected
 Environment's OS-user access, including possible access outside the worktree; this
@@ -409,11 +482,13 @@ process-service adapter, including hostile configuration, unusual paths, explici
 unsupported cases, limits and changed observations. `git_portable_discovery_test.dart`
 uses controlled process responses for root/prefix validation without creating a
 repository at the host filesystem root. The maintained `git_backend` target
-discovers both and the extracted parser tests. Application
+discovers those, `git_portable_cached_diff_test.dart`'s staged-object feasibility
+checks, and the extracted parser tests. Application
 `prepared_portable_git_integration_test.dart` independently prepares an Environment
 AOT backend that runs real processes, a separate AOT adapter over this production
 service, and a compiled EVC consumer of the generated Diff contract. It checks
-nonprimary Session binding, typed paths/classifications/hunks, explicit process
+nonprimary Session binding, typed staged/unstaged paths and hunks, conflict entries,
+one semantic invocation per request, clean-repository batch scaling, explicit process
 declarations and exact retirement/departure fencing. Neither backend imports the
 other's implementation. The stock Diff frontend is not changed by this proof.
 

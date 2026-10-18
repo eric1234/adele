@@ -54,6 +54,14 @@ void main() {
     limits: limits,
   ).snapshotUnstaged();
 
+  Future<UncommittedChangeSetSnapshot> uncommitted({
+    AuthorizedEnvironmentBufferedProcessService? through,
+    GitPortableUnstagedLimits limits = const GitPortableUnstagedLimits(),
+  }) => GitPortableUnstagedSnapshotService(
+    processes: through ?? processes,
+    limits: limits,
+  ).snapshotUncommitted();
+
   test(
     'default process budget covers batched inventory and changed-file work',
     () {
@@ -1314,6 +1322,1140 @@ void main() {
       },
     );
   }
+
+  group('Uncommitted', () {
+    test('retains A/B/A cancellation, A/B/C and independent layers', () async {
+      final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';
+      final indexed = original
+          .replaceFirst('line 1\n', 'staged first\n')
+          .replaceFirst('line 27\n', 'staged last\n');
+      final working = indexed
+          .replaceFirst('staged first\n', 'working first\n')
+          .replaceFirst('staged last\n', 'working last\n');
+      for (final path in ['cancel', 'partial', 'staged', 'unstaged']) {
+        await write(path, original);
+      }
+      await commit();
+      for (final path in ['cancel', 'partial', 'staged']) {
+        await write(path, indexed);
+      }
+      await _git(repository, ['add', '--all']);
+      await write('cancel', original);
+      await write('partial', working);
+      await write('unstaged', working);
+      final before = await _fingerprint(repository);
+
+      final result = await uncommitted();
+      expect(result.staged.files.map((file) => file.relativePath), [
+        'cancel',
+        'partial',
+        'staged',
+      ]);
+      expect(result.unstaged.files.map((file) => file.relativePath), [
+        'cancel',
+        'partial',
+        'unstaged',
+      ]);
+      expect(result.conflicts, isEmpty);
+      for (final layer in [result.staged, result.unstaged]) {
+        for (final file in layer.files) {
+          expect(file.changeKind, 'modified');
+          expect(file.contentStatus, 'text');
+          expect(file.hunks, hasLength(2));
+          expect(
+            file.hunks.map(
+              (hunk) =>
+                  (hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount),
+            ),
+            [(1, 5, 1, 5), (25, 6, 25, 6)],
+          );
+        }
+      }
+      expect(
+        _lines(
+          result.staged.files.first,
+        ).where((line) => !line.startsWith('context:')),
+        [
+          'deletion:line 1',
+          'addition:staged first',
+          'deletion:line 27',
+          'addition:staged last',
+        ],
+      );
+      expect(
+        _lines(
+          result.unstaged.files.first,
+        ).where((line) => !line.startsWith('context:')),
+        [
+          'deletion:staged first',
+          'addition:line 1',
+          'deletion:staged last',
+          'addition:line 27',
+        ],
+      );
+      expect(
+        _lines(
+          result.unstaged.files[1],
+        ).where((line) => !line.startsWith('context:')),
+        [
+          'deletion:staged first',
+          'addition:working first',
+          'deletion:staged last',
+          'addition:working last',
+        ],
+      );
+      expect(await _fingerprint(repository), before);
+      expect(
+        processes.requests.where(
+          (request) => request.arguments.contains('--show-toplevel'),
+        ),
+        hasLength(2),
+      );
+    });
+
+    test('staged-only changes do not leak into Unstaged', () async {
+      await write('baseline', 'indexed\n');
+      await write('new', 'new indexed\n');
+      await _git(repository, ['add', '--all']);
+      final before = await _fingerprint(repository);
+      expect((await snapshot()).files, isEmpty);
+      final result = await uncommitted();
+      expect(result.staged.files.map((file) => file.relativePath), [
+        'baseline',
+        'new',
+      ]);
+      expect(_lines(result.staged.files.first), [
+        'deletion:baseline',
+        'addition:indexed',
+      ]);
+      expect(_lines(result.staged.files.last), ['addition:new indexed']);
+      expect(result.unstaged.files, isEmpty);
+      expect(result.conflicts, isEmpty);
+      expect(await _fingerprint(repository), before);
+    });
+
+    test(
+      'retains recreated deletions, empty sides and rename deletion/addition',
+      () async {
+        await write('deleted', 'deleted HEAD\n');
+        await write('recreated', 'original HEAD\n');
+        await write('empty-deleted', '');
+        await write('rename-old', 'rename content\n');
+        await write('.gitignore', 'ignored\n');
+        await commit();
+        await _git(repository, [
+          'rm',
+          '--',
+          'deleted',
+          'recreated',
+          'empty-deleted',
+        ]);
+        await _git(repository, ['mv', '--', 'rename-old', 'rename-new']);
+        await write('added', 'index addition\n');
+        await write('empty-added', '');
+        await _git(repository, ['add', '--all']);
+        await write('added', 'working addition\n');
+        await write('recreated', 'recreated working\n');
+        await write('untracked', 'new\n');
+        await write('empty-untracked', '');
+        await write('ignored', 'ignored\n');
+        final before = await _fingerprint(repository);
+
+        final result = await uncommitted();
+        expect(
+          result.staged.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          [
+            'added:added',
+            'deleted:deleted',
+            'empty-added:added',
+            'empty-deleted:deleted',
+            'recreated:deleted',
+            'rename-new:added',
+            'rename-old:deleted',
+          ],
+        );
+        final staged = {
+          for (final file in result.staged.files) file.relativePath: file,
+        };
+        expect(_lines(staged['added']!), ['addition:index addition']);
+        expect(_lines(staged['deleted']!), ['deletion:deleted HEAD']);
+        expect(_lines(staged['recreated']!), ['deletion:original HEAD']);
+        expect(_lines(staged['rename-new']!), ['addition:rename content']);
+        expect(_lines(staged['rename-old']!), ['deletion:rename content']);
+        for (final path in ['empty-added', 'empty-deleted']) {
+          expect(staged[path]!.contentStatus, 'text');
+          expect(staged[path]!.hunks, isEmpty);
+        }
+        expect(
+          result.unstaged.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          [
+            'added:modified',
+            'empty-untracked:added',
+            'recreated:added',
+            'untracked:added',
+          ],
+        );
+        expect(_lines(result.unstaged.files[0]), [
+          'deletion:index addition',
+          'addition:working addition',
+        ]);
+        expect(result.unstaged.files[1].hunks, isEmpty);
+        expect(_lines(result.unstaged.files[2]), [
+          'addition:recreated working',
+        ]);
+        expect(result.conflicts, isEmpty);
+        expect(await _fingerprint(repository), before);
+      },
+    );
+
+    test(
+      'file/directory replacements retain exact parent and child changes',
+      () async {
+        await write('file-to-dir', 'old parent\n');
+        await write('dir-to-file/child', 'old child\n');
+        await commit();
+        await _git(repository, [
+          'rm',
+          '--',
+          'file-to-dir',
+          'dir-to-file/child',
+        ]);
+        await write('file-to-dir/child', 'new child\n');
+        await write('dir-to-file', 'new parent\n');
+        await _git(repository, ['add', '--all']);
+        final before = await _fingerprint(repository);
+
+        final result = await uncommitted();
+        expect(
+          result.staged.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          [
+            'dir-to-file:added',
+            'dir-to-file/child:deleted',
+            'file-to-dir:deleted',
+            'file-to-dir/child:added',
+          ],
+        );
+        expect(result.staged.files.map(_lines), [
+          ['addition:new parent'],
+          ['deletion:old child'],
+          ['deletion:old parent'],
+          ['addition:new child'],
+        ]);
+        expect(result.unstaged.files, isEmpty);
+        expect(result.conflicts, isEmpty);
+        for (final file in result.staged.files) {
+          final request = processes.requests.singleWhere(
+            (request) =>
+                request.arguments.contains('--patch') &&
+                request.arguments.last == './${file.relativePath}',
+          );
+          expect(
+            request.arguments,
+            contains('--diff-filter=${file.changeKind == 'added' ? 'A' : 'D'}'),
+          );
+        }
+        expect(await _fingerprint(repository), before);
+      },
+    );
+
+    test(
+      'intent-to-add remains absent from staged including empty content',
+      () async {
+        await write('intent-empty', '');
+        await write('intent-text', 'intent\n');
+        await _git(repository, [
+          'add',
+          '--intent-to-add',
+          '--',
+          'intent-empty',
+          'intent-text',
+        ]);
+        final result = await uncommitted();
+        expect(result.staged.files, isEmpty);
+        expect(result.unstaged.files.map((file) => file.relativePath), [
+          'intent-empty',
+          'intent-text',
+        ]);
+        expect(
+          result.unstaged.files.every((file) => file.changeKind == 'added'),
+          isTrue,
+        );
+        expect(result.unstaged.files.first.contentStatus, 'text');
+        expect(result.unstaged.files.first.hunks, isEmpty);
+        expect(_lines(result.unstaged.files.last), ['addition:intent']);
+        expect(result.conflicts, isEmpty);
+      },
+    );
+
+    Future<void> conflict() async {
+      await _git(repository, ['checkout', '-b', 'other']);
+      await write('baseline', 'other\n');
+      await commit();
+      await _git(repository, ['checkout', 'main']);
+      await write('baseline', 'main\n');
+      await commit();
+      expect(
+        (await _gitResult(repository, [
+          'merge',
+          '--no-edit',
+          'other',
+        ])).exitCode,
+        1,
+      );
+    }
+
+    test(
+      'real unmerged stages appear only in the separate conflicts collection',
+      () async {
+        await conflict();
+        await write('staged', 'index\n');
+        await _git(repository, ['add', '--', 'staged']);
+        await write('unstaged', 'working\n');
+        final before = await _fingerprint(repository);
+        final result = await uncommitted();
+        expect(result.staged.files.map((file) => file.relativePath), [
+          'staged',
+        ]);
+        expect(result.unstaged.files.map((file) => file.relativePath), [
+          'unstaged',
+        ]);
+        final file = result.conflicts.single;
+        expect(file.relativePath, 'baseline');
+        expect(file.changeKind, 'conflicted');
+        expect(file.contentStatus, 'conflicted');
+        expect(file.hunks, isEmpty);
+        expect(file.detail, isNotEmpty);
+        await expectLater(
+          uncommitted(limits: const GitPortableUnstagedLimits(files: 2)),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'snapshot_too_large',
+            ),
+          ),
+        );
+        expect(await _fingerprint(repository), before);
+      },
+    );
+
+    test('binary and invalid UTF-8 stay explicit in both layers', () async {
+      for (final path in ['binary', 'invalid']) {
+        await write(path, 'HEAD\n');
+      }
+      await commit();
+      await File('${repository.path}/binary').writeAsBytes([1, 0, 2]);
+      await File('${repository.path}/invalid').writeAsBytes([255, 254]);
+      await _git(repository, ['add', '--all']);
+      await File('${repository.path}/binary').writeAsBytes([2, 0, 3]);
+      await File('${repository.path}/invalid').writeAsBytes([254, 255]);
+      final result = await uncommitted();
+      for (final layer in [result.staged, result.unstaged]) {
+        expect(layer.files.map((file) => file.relativePath), [
+          'binary',
+          'invalid',
+        ]);
+        expect(layer.files.map((file) => file.contentStatus), [
+          'binary',
+          'unsupported',
+        ]);
+        for (final file in layer.files) {
+          expect(file.changeKind, 'modified');
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        }
+      }
+      expect(
+        processes.requests.where(
+          (request) =>
+              request.arguments.contains('--patch') ||
+              request.arguments.contains('--no-index'),
+        ),
+        isEmpty,
+      );
+    });
+
+    test(
+      'mode symlink gitlink and index flags are unsupported without text hunks',
+      () async {
+        for (final path in ['mode', 'skip', 'assume']) {
+          await write(path, 'HEAD\n');
+        }
+        await Link('${repository.path}/link').create('missing-before');
+        await commit();
+        await Link('${repository.path}/link').update('missing-after');
+        await _git(repository, ['add', '--', 'link']);
+        await _git(repository, ['update-index', '--chmod=+x', 'mode']);
+        await _git(repository, ['update-index', '--skip-worktree', 'skip']);
+        await _git(repository, [
+          'update-index',
+          '--assume-unchanged',
+          'assume',
+        ]);
+        final head = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+        await _git(repository, [
+          'update-index',
+          '--add',
+          '--cacheinfo',
+          '160000,$head,module',
+        ]);
+        // HEAD/index modes remain meaningful even if working chmod is ignored.
+        await _git(repository, ['config', 'core.filemode', 'false']);
+        final before = await _fingerprint(repository);
+        final result = await uncommitted();
+        expect(
+          result.staged.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          ['link:modified', 'mode:typeChanged', 'module:added'],
+        );
+        expect(result.unstaged.files.map((file) => file.relativePath), [
+          'assume',
+          'link',
+          'module',
+          'skip',
+        ]);
+        for (final file in [...result.staged.files, ...result.unstaged.files]) {
+          expect(file.contentStatus, 'unsupported');
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        }
+        expect(await _fingerprint(repository), before);
+      },
+    );
+
+    for (final (rule, status) in [
+      ('crlf', 'unsupported'),
+      ('crlf=input', 'unsupported'),
+      ('-crlf', 'text'),
+      ('', 'text'),
+      ('filter=hostile', 'unsupported'),
+      ('diff=hostile', 'unsupported'),
+      ('-diff', 'binary'),
+    ]) {
+      test('staged content preserves the $rule attribute policy', () async {
+        await write('baseline', 'index\n');
+        await _git(repository, ['add', '--', 'baseline']);
+        await File(
+          '${repository.path}/.git/info/attributes',
+        ).writeAsString(rule.isEmpty ? '' : 'baseline $rule\n');
+        final file = (await uncommitted()).staged.files.single;
+        expect(file.changeKind, 'modified');
+        expect(file.contentStatus, status);
+        if (status == 'text') {
+          expect(_lines(file), ['deletion:baseline', 'addition:index']);
+        } else {
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        }
+      });
+    }
+
+    test(
+      'staged conversion respects empty false and implicit true booleans',
+      () async {
+        await write('baseline', 'index\n');
+        await _git(repository, ['add', '--', 'baseline']);
+        for (final (setting, status) in [
+          ('autocrlf\n', 'unsupported'),
+          ('autocrlf =\n', 'text'),
+        ]) {
+          await File(
+            '${repository.path}/.git/config',
+          ).writeAsString('\n[core]\n$setting', mode: FileMode.append);
+          final file = (await uncommitted()).staged.files.single;
+          expect(file.contentStatus, status);
+        }
+      },
+    );
+
+    test(
+      'oversized staged sides retain additions modifications and deletions',
+      () async {
+        for (final path in ['old-large', 'deleted-large']) {
+          await write(path, 'x' * 128);
+        }
+        await write('new-large', 'small\n');
+        await commit();
+        await write('old-large', 'small\n');
+        await write('new-large', 'y' * 128);
+        await write('added-large', 'z' * 128);
+        await _git(repository, ['rm', '--', 'deleted-large']);
+        await _git(repository, ['add', '--all']);
+        final result = await uncommitted(
+          limits: const GitPortableUnstagedLimits(fileBytes: 64),
+        );
+        expect(
+          result.staged.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          [
+            'added-large:added',
+            'deleted-large:deleted',
+            'new-large:modified',
+            'old-large:modified',
+          ],
+        );
+        for (final file in result.staged.files) {
+          expect(file.contentStatus, 'oversized');
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        }
+        expect(result.unstaged.files, isEmpty);
+      },
+    );
+
+    test(
+      'nested scope preserves literal unusual names and orders both layers',
+      () async {
+        const paths = [
+          ' space ',
+          '-option',
+          ':(glob)*[x]',
+          'line\nname',
+          'tab\tname',
+          r'back\slash',
+          'quote\'";\$(touch INJECTED)',
+        ];
+        for (final path in [
+          ...paths.map((path) => 'selected/$path'),
+          'outside',
+        ]) {
+          await write(path, 'HEAD\r\nlast HEAD');
+        }
+        await commit();
+        for (final path in [
+          ...paths.map((path) => 'selected/$path'),
+          'outside',
+        ]) {
+          await write(path, 'index\r\nlast index');
+        }
+        await _git(repository, ['add', '--all']);
+        for (final path in [
+          ...paths.map((path) => 'selected/$path'),
+          'outside',
+        ]) {
+          await write(path, 'working\r\nlast working');
+        }
+        processes = _FixtureProcesses(
+          Directory('${repository.path}/selected'),
+          container,
+        );
+        final before = await _fingerprint(repository);
+        final result = await uncommitted();
+        for (final (layer, left, right) in [
+          (result.staged, 'HEAD', 'index'),
+          (result.unstaged, 'index', 'working'),
+        ]) {
+          expect(
+            layer.files.map((file) => file.relativePath),
+            [...paths]..sort(),
+          );
+          for (final file in layer.files) {
+            expect(
+              file.hunks.single.lines.map(
+                (line) => (line.kind, line.text, line.noNewline),
+              ),
+              [
+                ('deletion', '$left\r', false),
+                ('deletion', 'last $left', true),
+                ('addition', '$right\r', false),
+                ('addition', 'last $right', true),
+              ],
+            );
+          }
+        }
+        expect(
+          await File('${repository.path}/selected/INJECTED').exists(),
+          isFalse,
+        );
+        expect(await _fingerprint(repository), before);
+      },
+    );
+
+    test(
+      'detached HEAD works while unborn HEAD fails only Uncommitted',
+      () async {
+        await _git(repository, ['checkout', '--detach']);
+        await write('baseline', 'index\n');
+        await _git(repository, ['add', '--', 'baseline']);
+        await write('baseline', 'working\n');
+        final detached = await uncommitted();
+        expect(_lines(detached.staged.files.single), [
+          'deletion:baseline',
+          'addition:index',
+        ]);
+        expect(_lines(detached.unstaged.files.single), [
+          'deletion:index',
+          'addition:working',
+        ]);
+        final unborn = await Directory('${container.path}/unborn').create();
+        await _git(unborn, ['init']);
+        await File('${unborn.path}/new').writeAsString('new\n');
+        processes = _FixtureProcesses(unborn, container);
+        expect(_lines((await snapshot()).files.single), ['addition:new']);
+        await expectLater(
+          uncommitted(),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'head_unavailable',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'SHA-256 HEAD index blobs and full-index patch identities work',
+      () async {
+        final shaRepository = await Directory(
+          '${container.path}/sha256',
+        ).create();
+        await _git(shaRepository, ['init', '--object-format=sha256']);
+        await _git(shaRepository, ['config', 'user.name', 'ADELE Test']);
+        await _git(shaRepository, [
+          'config',
+          'user.email',
+          'adele@example.invalid',
+        ]);
+        final file = File('${shaRepository.path}/tracked');
+        await file.writeAsString('HEAD\n');
+        await _git(shaRepository, ['add', '--all']);
+        await _git(shaRepository, ['commit', '-m', 'SHA256']);
+        await file.writeAsString('index\n');
+        await _git(shaRepository, ['add', '--all']);
+        await file.writeAsString('working\n');
+        processes = _FixtureProcesses(shaRepository, container);
+        final before = await _fingerprint(shaRepository);
+        final result = await uncommitted();
+        expect(_lines(result.staged.files.single), [
+          'deletion:HEAD',
+          'addition:index',
+        ]);
+        expect(_lines(result.unstaged.files.single), [
+          'deletion:index',
+          'addition:working',
+        ]);
+        final cached = processes.requests.singleWhere(
+          (request) =>
+              request.arguments.contains('diff') &&
+              request.arguments.contains('--cached'),
+        );
+        expect(cached.arguments, contains(matches(RegExp(r'^[0-9a-f]{64}$'))));
+        expect(await _fingerprint(shaRepository), before);
+      },
+    );
+
+    for (final mutation in [
+      'HEAD commit',
+      'HEAD reference',
+      'index',
+      'attributes',
+      'configuration',
+      'working file',
+    ]) {
+      test(
+        '$mutation changing after cached patch rejects the whole result',
+        () async {
+          await write('baseline', 'index\n');
+          await _git(repository, ['add', '--', 'baseline']);
+          await write('baseline', 'working\n');
+          final next = (await _git(repository, [
+            'commit-tree',
+            'HEAD^{tree}',
+            '-p',
+            'HEAD',
+            '-m',
+            'Next',
+          ])).trim();
+          await _git(repository, ['branch', 'same-commit']);
+          var changed = false;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (!changed &&
+                request.arguments.contains('diff') &&
+                request.arguments.contains('--cached')) {
+              changed = true;
+              switch (mutation) {
+                case 'HEAD commit':
+                  await _git(repository, ['update-ref', 'HEAD', next]);
+                case 'HEAD reference':
+                  await _git(repository, [
+                    'symbolic-ref',
+                    'HEAD',
+                    'refs/heads/same-commit',
+                  ]);
+                case 'index':
+                  await _git(repository, ['add', '--', 'baseline']);
+                case 'attributes':
+                  await File(
+                    '${repository.path}/.git/info/attributes',
+                  ).writeAsString('baseline -diff\n');
+                case 'configuration':
+                  await _git(repository, ['config', 'core.filemode', 'false']);
+                case 'working file':
+                  await write('baseline', 'changed after staged capture\n');
+              }
+            }
+            return result;
+          });
+          UncommittedChangeSetSnapshot? published;
+          await expectLater(
+            uncommitted(through: through).then((result) => published = result),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                'snapshot_changed',
+              ),
+            ),
+          );
+          expect(changed, isTrue);
+          expect(published, isNull);
+        },
+      );
+    }
+
+    test(
+      'repository replacement during inspection cannot redirect later source commands',
+      () async {
+        await write('selected/file', 'HEAD\n');
+        await commit();
+        await write('selected/file', 'index\n');
+        await _git(repository, ['add', '--all']);
+        await write('selected/file', 'working\n');
+        final selected = Directory('${repository.path}/selected');
+        processes = _FixtureProcesses(selected, container);
+        var replaced = false;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!replaced &&
+              request.arguments.contains('diff') &&
+              request.arguments.contains('--cached')) {
+            replaced = true;
+            await _git(selected, ['init']);
+          }
+          return result;
+        });
+        await expectLater(
+          uncommitted(through: through),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'snapshot_changed',
+            ),
+          ),
+        );
+        expect(replaced, isTrue);
+        for (final request in processes.requests.where(
+          (request) => request.arguments.contains('ls-files'),
+        )) {
+          expect(
+            request.arguments,
+            contains('--git-dir=${repository.path}/.git'),
+          );
+          expect(request.arguments, contains('--work-tree=${repository.path}'));
+        }
+      },
+    );
+
+    for (final stage in [2, 3]) {
+      test(
+        'final conflict stage $stage identity is checked with stage one unchanged',
+        () async {
+          await conflict();
+          var inventories = 0;
+          var changed = false;
+          final replacement = (await _git(repository, [
+            'rev-parse',
+            ':1:baseline',
+          ])).trim();
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (request.arguments.contains('ls-files') &&
+                request.arguments.contains('--cached') &&
+                ++inventories == 2) {
+              final raw = utf8.decode(base64Decode(result.stdoutBase64));
+              final match = RegExp(
+                '100644 ([0-9a-f]{40}) $stage\\tbaseline\\x00',
+              ).firstMatch(raw)!;
+              expect(match[1], isNot(replacement));
+              final mutated = raw.replaceRange(
+                match.start,
+                match.end,
+                '100644 $replacement $stage\tbaseline\x00',
+              );
+              expect(mutated, isNot(raw));
+              final firstStage = RegExp(
+                r'100644 [0-9a-f]{40} 1\tbaseline\x00',
+              ).firstMatch(raw)![0]!;
+              expect(mutated, contains(firstStage));
+              changed = true;
+              return _result(stdout: mutated);
+            }
+            return result;
+          });
+          await expectLater(
+            uncommitted(through: through),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                'snapshot_changed',
+              ),
+            ),
+          );
+          expect(changed, isTrue);
+          expect(inventories, 2);
+        },
+      );
+    }
+
+    for (final corruption in [
+      'malformed initial tree',
+      'final tree valid prefix',
+      'final tree OID',
+      'tree warning',
+      'tree nonzero',
+    ]) {
+      test('$corruption fails instead of publishing layered data', () async {
+        await write('second', 'HEAD\n');
+        await commit();
+        await write('baseline', 'index\n');
+        await _git(repository, ['add', '--all']);
+        var trees = 0;
+        var changed = false;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!request.arguments.contains('ls-tree')) return result;
+          trees++;
+          final finalTree = corruption.startsWith('final');
+          if (trees != (finalTree ? 2 : 1)) return result;
+          changed = true;
+          final raw = utf8.decode(base64Decode(result.stdoutBase64));
+          return switch (corruption) {
+            'malformed initial tree' => _result(stdout: 'not a tree\x00'),
+            'final tree valid prefix' => _result(
+              stdout: raw.substring(0, raw.indexOf('\x00') + 1),
+            ),
+            'final tree OID' => _result(
+              stdout: raw.replaceFirst(RegExp(r'[0-9a-f]{40}'), '0' * 40),
+            ),
+            'tree warning' => _result(
+              stdout: raw,
+              stderr: 'warning: incomplete tree\n',
+            ),
+            _ => _result(stdout: raw, exitCode: 128),
+          };
+        });
+        await expectLater(
+          uncommitted(through: through),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              switch (corruption) {
+                'malformed initial tree' => 'invalid_git_output',
+                'final tree valid prefix' ||
+                'final tree OID' => 'snapshot_changed',
+                _ => 'git_failed',
+              },
+            ),
+          ),
+        );
+        expect(changed, isTrue);
+      });
+    }
+
+    for (final corruption in [
+      'malformed',
+      'valid hunk prefix',
+      'wrong old OID',
+      'wrong new OID',
+      'stderr',
+      'nonzero',
+      'empty difference',
+      'zero with patch',
+    ]) {
+      test('cached patch $corruption cannot publish a staged prefix', () async {
+        final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';
+        await write('baseline', original);
+        await commit();
+        await write(
+          'baseline',
+          original
+              .replaceFirst('line 1\n', 'first\n')
+              .replaceFirst('line 27\n', 'last\n'),
+        );
+        await _git(repository, ['add', '--all']);
+        var changed = false;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!request.arguments.contains('diff') ||
+              !request.arguments.contains('--cached')) {
+            return result;
+          }
+          changed = true;
+          var raw = utf8.decode(base64Decode(result.stdoutBase64));
+          expect(result.exitCode, 1);
+          switch (corruption) {
+            case 'malformed':
+              raw = '$raw+unexpected line\n';
+            case 'valid hunk prefix':
+              final hunks = RegExp(
+                r'^@@ ',
+                multiLine: true,
+              ).allMatches(raw).toList();
+              expect(hunks, hasLength(2));
+              raw = raw.substring(0, hunks.last.start);
+            case 'wrong old OID':
+            case 'wrong new OID':
+              final identity = RegExp(
+                r'^index ([0-9a-f]{40})\.\.([0-9a-f]{40})',
+                multiLine: true,
+              ).firstMatch(raw)!;
+              raw = raw.replaceRange(
+                identity.start,
+                identity.end,
+                'index ${corruption == 'wrong old OID' ? '0' * 40 : identity[1]}..${corruption == 'wrong new OID' ? '0' * 40 : identity[2]}',
+              );
+            case 'empty difference':
+              raw = '';
+            case 'stderr':
+            case 'nonzero':
+            case 'zero with patch':
+              break;
+          }
+          return _result(
+            stdout: raw,
+            exitCode: corruption == 'nonzero'
+                ? 128
+                : corruption == 'zero with patch'
+                ? 0
+                : 1,
+            stderr: corruption == 'stderr' ? 'warning: incomplete patch\n' : '',
+          );
+        });
+        UncommittedChangeSetSnapshot? published;
+        await expectLater(
+          uncommitted(through: through).then((result) => published = result),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              switch (corruption) {
+                'malformed' || 'valid hunk prefix' => 'invalid_git_output',
+                'stderr' || 'nonzero' => 'git_failed',
+                _ => 'snapshot_changed',
+              },
+            ),
+          ),
+        );
+        expect(changed, isTrue);
+        expect(published, isNull);
+      });
+    }
+
+    test(
+      'cached hunks cannot split a new-side line using no-newline markers',
+      () async {
+        await write('addition', 'hello\n');
+        await _git(repository, ['add', '--', 'addition']);
+        var changed = false;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!request.arguments.contains('--patch')) return result;
+          changed = true;
+          final raw = utf8.decode(base64Decode(result.stdoutBase64));
+          return _result(
+            exitCode: 1,
+            stdout:
+                '${raw.substring(0, raw.indexOf('@@'))}'
+                '@@ -0,0 +1,2 @@\n+he\n\\ No newline at end of file\n+llo\n',
+          );
+        });
+        await expectLater(
+          uncommitted(through: through),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'invalid_git_output',
+            ),
+          ),
+        );
+        expect(changed, isTrue);
+      },
+    );
+
+    for (final bound in ['entries', 'lines', 'bytes', 'processes']) {
+      test(
+        '$bound budget is shared across layers rather than restarted',
+        () async {
+          await write('baseline', 'index\n');
+          await _git(repository, ['add', '--', 'baseline']);
+          await write('baseline', 'working\n');
+          var transportedBytes = 0;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            transportedBytes +=
+                base64Decode(request.stdinBase64).length +
+                base64Decode(result.stdoutBase64).length +
+                base64Decode(result.stderrBase64).length;
+            return result;
+          });
+          final complete = await uncommitted(through: through);
+          expect(complete.staged.files, hasLength(1));
+          expect(complete.unstaged.files, hasLength(1));
+          final limits = switch (bound) {
+            'entries' => const GitPortableUnstagedLimits(files: 1),
+            'lines' => const GitPortableUnstagedLimits(lines: 3),
+            // Raw hash input is charged in addition to transported bytes.
+            'bytes' => GitPortableUnstagedLimits(
+              totalBytes:
+                  transportedBytes + utf8.encode('working\n').length - 1,
+            ),
+            _ => GitPortableUnstagedLimits(
+              processes: processes.requests.length - 1,
+            ),
+          };
+          expect((await snapshot(limits: limits)).files, hasLength(1));
+          await write('baseline', 'index\n');
+          final stagedOnly = await uncommitted(limits: limits);
+          expect(stagedOnly.staged.files, hasLength(1));
+          expect(stagedOnly.unstaged.files, isEmpty);
+          await write('baseline', 'working\n');
+          UncommittedChangeSetSnapshot? published;
+          await expectLater(
+            uncommitted(limits: limits).then((result) => published = result),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                'snapshot_too_large',
+              ),
+            ),
+          );
+          expect(published, isNull);
+        },
+      );
+    }
+
+    test('HEAD/index/untracked union cannot exceed inventory bounds', () async {
+      await _git(repository, ['rm', '--', 'baseline']);
+      await write('added', 'index\n');
+      await _git(repository, ['add', '--', 'added']);
+      await write('untracked', 'working\n');
+      await expectLater(
+        uncommitted(
+          limits: const GitPortableUnstagedLimits(inventoryEntries: 2),
+        ),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            'inventory_too_large',
+          ),
+        ),
+      );
+    });
+
+    test('flat clean 160 files use 26 + 4 * ceil(n / 128) requests', () async {
+      const count = 160;
+      for (var index = 1; index < count; index++) {
+        await write('file-${index.toString().padLeft(3, '0')}', 'small\n');
+      }
+      await commit();
+      final before = await _fingerprint(repository);
+      final result = await uncommitted();
+      expect(result.staged.files, isEmpty);
+      expect(result.unstaged.files, isEmpty);
+      expect(result.conflicts, isEmpty);
+      // Six extra requests: initial/final commit, symbolic reference and tree.
+      expect(processes.requests, hasLength(26 + 4 * ((count + 127) ~/ 128)));
+      expect(
+        processes.requests.where(
+          (request) => request.arguments.contains('hash-object'),
+        ),
+        hasLength(2),
+      );
+      for (final argument in ['HEAD^{commit}', 'symbolic-ref', 'ls-tree']) {
+        expect(
+          processes.requests.where(
+            (request) => request.arguments.contains(argument),
+          ),
+          hasLength(2),
+        );
+      }
+      expect(
+        processes.requests.where(
+          (request) =>
+              request.arguments.contains('/usr/bin/head') ||
+              request.arguments.contains('diff'),
+        ),
+        isEmpty,
+      );
+      expect(await _fingerprint(repository), before);
+    });
+
+    for (final count in [100, 500, 900]) {
+      test(
+        'diagnostic clean $count and three staged plus unstaged edits',
+        () async {
+          for (var index = 1; index < count; index++) {
+            await write('file-${index.toString().padLeft(3, '0')}', 'HEAD\n');
+          }
+          await commit();
+          for (final dirty in [false, true]) {
+            if (dirty) {
+              for (var index = 1; index <= 3; index++) {
+                await write(
+                  'file-${index.toString().padLeft(3, '0')}',
+                  'index\n',
+                );
+              }
+              await _git(repository, ['add', '--all']);
+              for (var index = 1; index <= 3; index++) {
+                await write(
+                  'file-${index.toString().padLeft(3, '0')}',
+                  'working\n',
+                );
+              }
+            }
+            processes.requests.clear();
+            final watch = Stopwatch()..start();
+            final result = await uncommitted();
+            watch.stop();
+            // Timing is diagnostic only and excludes all fixture setup.
+            print(
+              'portable Uncommitted ${dirty ? 'three layered edits' : 'clean'} n=$count requests=${processes.requests.length} elapsed=${watch.elapsedMilliseconds}ms',
+            );
+            expect(result.staged.files, hasLength(dirty ? 3 : 0));
+            expect(result.unstaged.files, hasLength(dirty ? 3 : 0));
+            expect(result.conflicts, isEmpty);
+          }
+        },
+      );
+    }
+  });
 }
 
 List<String> _lines(ChangedFile file) => [
