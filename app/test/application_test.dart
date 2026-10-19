@@ -1209,5 +1209,5 @@ Future<void> _settingsUntil(WidgetTester tester, bool Function() ready) async {
 final class _EnvironmentChannel implements AdeleRequestChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async =>
-      {'providerState': <String, Object?>{}};
+      {'providerState': <String, Object?>{}, 'initialState': null};
 }

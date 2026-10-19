@@ -97,6 +97,10 @@ implementations into the normal application runtime.
   are therefore not appropriate homes. `adele_contract` supplies its declarations
   and generated transport; SQL/schema semantics stay with each plugin. The separate
   package is justified by this present cross-layer use, not hypothetical reuse.
+- **`adele_environment`** may depend on `adele_project_storage` to reuse relational
+  statement/scalar semantics for optional prepared establishment data. Its local
+  generated wire values expose no SQLite objects or host implementation, and
+  neither storage nor product depends back on Environment.
 - **`adele_ui`** owns public semantic presentation contracts that genuinely need
   Flutter. Do not add Flutter to product, orchestration, or tool packages for
   presentation convenience. App-native bridge implementations and hosting belong

@@ -236,18 +236,19 @@ final class _EnvironmentService implements EnvironmentProviderService {
   final _State state;
 
   @override
-  Future<EnvironmentProviderResult> establish(
+  Future<EnvironmentProviderTransportResult> establish(
     EnvironmentTransportContext environment,
   ) => restore(environment);
 
   @override
-  Future<EnvironmentProviderResult> restore(
+  Future<EnvironmentProviderTransportResult> restore(
     EnvironmentTransportContext environment,
   ) async {
     state.environments[environment.environmentId] = environment.providerId;
     await state.checkpoint('restore:${environment.environmentId}');
-    return EnvironmentProviderResult(
+    return EnvironmentProviderTransportResult(
       providerState: {'provider': environment.providerId},
+      initialState: null,
     );
   }
 

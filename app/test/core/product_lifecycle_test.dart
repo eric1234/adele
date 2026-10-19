@@ -137,7 +137,7 @@ void main() {
   });
 
   test(
-    'successful establishment survives immediate generation retirement',
+    'retired establishment rejects publication without same-ID fallback',
     () async {
       final InMemoryProductStore store = InMemoryProductStore();
       final CapabilityRegistry registry = CapabilityRegistry();
@@ -165,22 +165,15 @@ void main() {
       );
       await provider.started.future;
       await registration.close();
-      provider.complete(const <String, Object?>{'durable': true});
-
-      final TaskCreationResult created = await creating;
-
-      expect(store.task(created.task.id), same(created.task));
-      expect(
-        store.environment(created.environment.id),
-        same(created.environment),
+      final replacement = _RecordingProvider(providerId, text: 'replacement');
+      final replacementRegistration = registry.register(
+        provider: _descriptor(providerId),
+        endpoint: _ProviderEndpoint(replacement),
       );
-      expect(created.environment.providerState, const <String, Object?>{
-        'durable': true,
-      });
-      expect(
-        () => coordinator.environmentRuntime
-            .currentMaterialization(created.environment.id)!
-            .validateBinding(),
+      addTearDown(replacementRegistration.close);
+      addTearDown(coordinator.close);
+      final rejected = expectLater(
+        creating,
         throwsA(
           isA<ProviderUnavailable>().having(
             (ProviderUnavailable error) => error.stale,
@@ -188,6 +181,27 @@ void main() {
             isTrue,
           ),
         ),
+      );
+      provider.complete(const <String, Object?>{'durable': true});
+      await rejected;
+
+      final provisional = provider.environment!;
+      expect(store.project(project.id), same(project));
+      expect(store.tasksFor(project.id), isEmpty);
+      expect(store.task(provisional.task.id), isNull);
+      expect(store.environment(provisional.id), isNull);
+      expect(store.primaryEnvironmentFor(provisional.task.id), isNull);
+      expect(
+        coordinator.environmentRuntime.currentMaterialization(provisional.id),
+        isNull,
+      );
+      expect(replacement.establishCalls, 0);
+      expect(replacement.restoreCalls, 0);
+      expect(
+        coordinator.environmentRuntime
+            .resolveProvider(providerId: providerId)
+            .provider,
+        same(replacement),
       );
     },
   );
@@ -806,6 +820,7 @@ final class _EstablishmentChannel implements AdeleRequestChannel {
     this.payload = payload;
     return <String, Object?>{
       'providerState': <String, Object?>{'transport': 'established'},
+      'initialState': null,
     };
   }
 }

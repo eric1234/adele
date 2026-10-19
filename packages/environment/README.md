@@ -13,6 +13,46 @@ values and a component-local `LocalEnvironment`, so provider code can navigate
 `environment.task.project` without host callbacks or transparent remote
 objects. `GeneratedEnvironmentProvider` performs the inverse host adaptation.
 
+## Initial plugin state
+
+Native providers return `EnvironmentProviderResult` with an immutable
+`providerState` and optional `initialState`. Generated services use the closed
+`EnvironmentProviderTransportResult`; the adapters convert between these values.
+The wire requires an explicit nullable `initialState`, not a legacy omitted field.
+
+`EnvironmentInitialState(schema: ..., inserts: ...)` is establishment-only data.
+The nullable schema is one current v1 baseline script, using Project storage's
+restricted `CREATE TABLE` syntax, further limited to definitions with an unquoted
+ASCII table name and a parenthesized column list. `CREATE TABLE AS SELECT` cannot
+populate rows during schema preparation. Each `EnvironmentInitialInsert` carries
+`sql`, named `parameters`, and required `expectedRows`, and converts to the existing
+`RelationalStatement`. Environment depends on the public Project storage contract
+for those semantics, not on SQLite or application database code.
+
+Plans contain 1..32 inserts, each expecting 1..1000 affected rows and at most 64
+parameters. Values are strings, integers, or null. Names include `:`, `@`, or `$`
+followed by an ASCII identifier. SQL is nonempty and at most 16384 UTF-16 code units;
+an optional schema is nonempty and at most 65536. The complete JSON-encoded plan is
+at most 262144 UTF-8 bytes. Collections are immutable snapshots.
+
+The host permits only plain `INSERT INTO table (columns) VALUES (parameters)` with
+unquoted ASCII identifiers and named parameters, optionally multiple value tuples
+and a trailing semicolon. Literals/expressions, comments, qualified/quoted table
+names, `SELECT`, conflict clauses, `RETURNING`, other mutations, DDL, and transaction
+control are rejected. Core product/execution, schema-version, and SQLite internal
+destinations are reserved. This is a narrow insertion grammar, not a malicious-SQL
+sandbox or new table/row ownership isolation system.
+
+The result chooses neither owner nor Project backing and grants no authority.
+The host captures the actual provider backend's ownership and exact registration,
+prepares any schema separately, then commits required inserts with Task/Environment
+identities before publishing. Restore rejects plans rather than replaying them.
+The canonical [establishment boundary](../../docs/architecture/product-model.md#prepared-establishment-state)
+owns admission, durable/temporary behavior, and external-effect limitations.
+Stock Git does not yet produce a plan; this API does not activate another baseline.
+
+## Files and authority
+
 Each text-file read carries a provider-produced opaque revision. Creation
 requires an absent target and returns the resulting revision. Replacement
 requires the observed revision and returns the post-write revision. Deletion

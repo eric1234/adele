@@ -537,6 +537,490 @@ void main() {
     },
   );
 
+  group('Task initial plugin inserts', () {
+    late ProjectDatabase database;
+    late Task task;
+    late Environment environment;
+
+    setUp(() {
+      database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Atomic Task',
+      );
+      environment = _environment(task);
+      database.ensurePluginSchema('dev.adele.test.initial', [
+        '''
+          CREATE TABLE fixture_initial_entries (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES adele_product_tasks(id),
+            environment_id TEXT NOT NULL REFERENCES adele_product_environments(id),
+            payload TEXT,
+            ordinal INTEGER
+          );
+          CREATE TABLE fixture_initial_links (
+            id TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL REFERENCES fixture_initial_entries(id)
+              DEFERRABLE INITIALLY DEFERRED
+          );
+        ''',
+      ]);
+    });
+
+    RelationalStatement initialInsert(
+      String id, {
+      int? expectedRows = 1,
+      String? taskId,
+      String? environmentId,
+      String? payload = 'bound; -- data',
+    }) => RelationalStatement(
+      sql:
+          'INSERT INTO fixture_initial_entries '
+          '(id, task_id, environment_id, payload, ordinal) '
+          'VALUES (:id, :task, :environment, :payload, :ordinal)',
+      parameters: {
+        ':id': id,
+        ':task': taskId ?? task.id.value,
+        ':environment': environmentId ?? environment.id.value,
+        ':payload': payload,
+        ':ordinal': 7,
+      },
+      expectedRows: expectedRows,
+    );
+
+    void expectRolledBack() {
+      expect(database.autocommit, isTrue);
+      final graph = database.loadProductGraph();
+      expect(graph.tasks, isEmpty);
+      expect(graph.environments, isEmpty);
+      for (final table in [
+        'fixture_initial_entries',
+        'fixture_initial_links',
+      ]) {
+        expect(database.queryPluginRows('SELECT * FROM $table', {}), isEmpty);
+      }
+      // Schema preparation is deliberately outside the failed record transaction.
+      expect(
+        database
+            .queryPluginRows(
+              'SELECT version FROM adele_schema_versions WHERE owner_id = :owner',
+              {':owner': 'dev.adele.test.initial'},
+            )
+            .single
+            .values,
+        {'version': 1},
+      );
+    }
+
+    test('core rows precede initial inserts and all rows survive reopen', () {
+      database.insertTaskWithPrimaryEnvironment(
+        task,
+        environment,
+        initialInserts: [
+          initialInsert('first'),
+          initialInsert('second', payload: null),
+          RelationalStatement(
+            sql:
+                ' \n iNsErT InTo fixture_initial_links (id, entry_id) '
+                r'VaLuEs (@first, :entry), ($second, :other); '
+                '\n',
+            parameters: {
+              '@first': 'link-a',
+              ':entry': 'first',
+              r'$second': 'link-b',
+              ':other': 'second',
+            },
+            expectedRows: 2,
+          ),
+        ],
+      );
+      expect(database.autocommit, isTrue);
+      final inspection = _connect(database.path);
+      expect(
+        inspection.select('SELECT * FROM adele_product_tasks'),
+        hasLength(1),
+      );
+      expect(
+        inspection.select('SELECT * FROM adele_product_environments'),
+        hasLength(1),
+      );
+      expect(
+        inspection.select('SELECT * FROM fixture_initial_entries ORDER BY id'),
+        [
+          {
+            'id': 'first',
+            'task_id': task.id.value,
+            'environment_id': environment.id.value,
+            'payload': 'bound; -- data',
+            'ordinal': 7,
+          },
+          {
+            'id': 'second',
+            'task_id': task.id.value,
+            'environment_id': environment.id.value,
+            'payload': null,
+            'ordinal': 7,
+          },
+        ],
+      );
+      database.close();
+      database = _open(backing);
+      expect(database.loadProductGraph().tasks.single.id, task.id);
+      expect(
+        database.loadProductGraph().environments.single.id,
+        environment.id,
+      );
+      expect(
+        database
+            .queryPluginRows(
+              'SELECT * FROM fixture_initial_links ORDER BY id',
+              {},
+            )
+            .map((row) => row.values),
+        [
+          {'id': 'link-a', 'entry_id': 'first'},
+          {'id': 'link-b', 'entry_id': 'second'},
+        ],
+      );
+    });
+
+    test('failure after the first insert rolls back core and plugin rows', () {
+      expect(
+        () => database.insertTaskWithPrimaryEnvironment(
+          task,
+          environment,
+          initialInserts: [
+            initialInsert('first'),
+            RelationalStatement(
+              sql: 'INSERT INTO missing_table (id) VALUES (:id)',
+              parameters: {':id': 'second'},
+              expectedRows: 1,
+            ),
+          ],
+        ),
+        throwsA(isA<SqliteException>()),
+      );
+      expectRolledBack();
+      database.insertTaskWithPrimaryEnvironment(
+        task,
+        environment,
+        initialInserts: [initialInsert('first')],
+      );
+      expect(database.loadProductGraph().tasks.single.id, task.id);
+      expect(database.autocommit, isTrue);
+    });
+
+    for (final missing in ['Task', 'Environment']) {
+      test('initial insert enforces $missing foreign key and rolls back', () {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [
+              initialInsert('first'),
+              initialInsert(
+                'second',
+                taskId: missing == 'Task' ? 'missing' : null,
+                environmentId: missing == 'Environment' ? 'missing' : null,
+              ),
+            ],
+          ),
+          throwsA(
+            isA<SqliteException>().having(
+              (error) => error.message,
+              'message',
+              contains('FOREIGN KEY'),
+            ),
+          ),
+        );
+        expectRolledBack();
+      });
+    }
+
+    test(
+      'duplicate plugin identity fails rather than replacing initial data',
+      () {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [
+              initialInsert('same', payload: 'first'),
+              initialInsert('same', payload: 'replacement'),
+            ],
+          ),
+          throwsA(
+            isA<SqliteException>().having(
+              (error) => error.message,
+              'message',
+              contains('UNIQUE'),
+            ),
+          ),
+        );
+        expectRolledBack();
+      },
+    );
+
+    test(
+      'row-count mismatch rolls back the earlier insert and both core rows',
+      () {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [
+              initialInsert('first'),
+              initialInsert('second', expectedRows: 2),
+            ],
+          ),
+          throwsStateError,
+        );
+        expectRolledBack();
+      },
+    );
+
+    test('deferred FK failure at COMMIT rolls back every inserted row', () {
+      expect(
+        () => database.insertTaskWithPrimaryEnvironment(
+          task,
+          environment,
+          initialInserts: [
+            initialInsert('first'),
+            RelationalStatement(
+              sql:
+                  'INSERT INTO fixture_initial_links (id, entry_id) '
+                  'VALUES (:id, :entry)',
+              parameters: {':id': 'link', ':entry': 'missing'},
+              expectedRows: 1,
+            ),
+          ],
+        ),
+        throwsA(
+          isA<SqliteException>().having(
+            (error) => error.causingStatement,
+            'causingStatement',
+            'COMMIT',
+          ),
+        ),
+      );
+      expectRolledBack();
+      database.insertTaskWithPrimaryEnvironment(
+        task,
+        environment,
+        initialInserts: [initialInsert('first')],
+      );
+      expect(database.autocommit, isTrue);
+    });
+
+    test('initial inserts require positive bounded expected row counts', () {
+      for (final count in <int?>[null, 0, 1001]) {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [initialInsert('first', expectedRows: count)],
+          ),
+          throwsArgumentError,
+          reason: '$count',
+        );
+        expectRolledBack();
+      }
+    });
+
+    test('initial insert list is bounded at 32 statements', () {
+      final inserts = [for (var i = 0; i < 33; i++) initialInsert('entry-$i')];
+      expect(
+        () => database.insertTaskWithPrimaryEnvironment(
+          task,
+          environment,
+          initialInserts: inserts,
+        ),
+        throwsArgumentError,
+      );
+      expectRolledBack();
+      database.insertTaskWithPrimaryEnvironment(
+        task,
+        environment,
+        initialInserts: inserts.take(32).toList(),
+      );
+      expect(
+        database.queryPluginRows('SELECT * FROM fixture_initial_entries', {}),
+        hasLength(32),
+      );
+    });
+
+    test('initial inserts reuse named-parameter binding validation', () {
+      for (final parameters in <Map<String, Object?>>[
+        {},
+        {':wrong': 'value'},
+        {':id': 'value', ':extra': 'unused'},
+      ]) {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [
+              initialInsert('first'),
+              RelationalStatement(
+                sql:
+                    'INSERT INTO fixture_initial_links (id, entry_id) '
+                    'VALUES (:id, :id)',
+                parameters: parameters,
+                expectedRows: 1,
+              ),
+            ],
+          ),
+          throwsArgumentError,
+        );
+        expectRolledBack();
+      }
+    });
+
+    for (final sql in [
+      'BEGIN',
+      'COMMIT',
+      'END',
+      'ROLLBACK',
+      'SAVEPOINT plugin',
+      'RELEASE plugin',
+      'PRAGMA foreign_keys = OFF',
+      "ATTACH DATABASE ':memory:' AS plugin",
+      'DETACH DATABASE main',
+      'VACUUM',
+      'CREATE TABLE unrelated (id TEXT)',
+      'DROP TABLE fixture_initial_entries',
+      'ALTER TABLE fixture_initial_entries ADD COLUMN other TEXT',
+      'UPDATE fixture_initial_entries SET payload = :id',
+      'DELETE FROM fixture_initial_entries',
+      'SELECT :id',
+      'INSERT INTO fixture_initial_entries (id) SELECT :id',
+      'INSERT INTO fixture_initial_entries (id) VALUES ((SELECT :id))',
+      'INSERT OR REPLACE INTO fixture_initial_entries (id) VALUES (:id)',
+      'INSERT OR IGNORE INTO fixture_initial_entries (id) VALUES (:id)',
+      'REPLACE INTO fixture_initial_entries (id) VALUES (:id)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id) ON CONFLICT DO NOTHING',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id) '
+          'ON CONFLICT(id) DO UPDATE SET payload = :id',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id) RETURNING id',
+      'INSERT INTO fixture_initial_entries DEFAULT VALUES',
+      'INSERT INTO fixture_initial_entries VALUES (:id)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (1)',
+      "INSERT INTO fixture_initial_entries (id) VALUES ('literal')",
+      'INSERT INTO fixture_initial_entries (id) VALUES (NULL)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id || :id)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (lower(:id))',
+      'INSERT INTO fixture_initial_entries (id) VALUES (?)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (?1)',
+      'INSERT INTO "fixture_initial_entries" (id) VALUES (:id)',
+      'INSERT INTO [fixture_initial_entries] (id) VALUES (:id)',
+      'INSERT INTO `fixture_initial_entries` (id) VALUES (:id)',
+      'INSERT INTO fixture_initial_entries ("id") VALUES (:id)',
+      'INSERT INTO main.fixture_initial_entries (id) VALUES (:id)',
+      '-- comment\nINSERT INTO fixture_initial_entries (id) VALUES (:id)',
+      'INSERT /* comment */ INTO fixture_initial_entries (id) VALUES (:id)',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id); COMMIT',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id); '
+          'PRAGMA foreign_keys = OFF',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id);;',
+      'INSERT INTO fixture_initial_entries (id) VALUES (:id)\x00',
+      for (final table in [
+        'adele_product_tasks',
+        'ADELE_PRODUCT_unknown',
+        'adele_execution_run_activity',
+        'ADELE_EXECUTION_unknown',
+        'AdElE_sChEmA_vErSiOnS',
+        'sqlite_schema',
+        'SQLITE_unknown',
+      ])
+        'INSERT INTO $table (id) VALUES (:id)',
+    ]) {
+      test('rejects unsupported initial SQL: $sql', () {
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            task,
+            environment,
+            initialInserts: [
+              initialInsert('first'),
+              RelationalStatement(
+                sql: sql,
+                parameters: {':id': 'second'},
+                expectedRows: 1,
+              ),
+            ],
+          ),
+          throwsArgumentError,
+        );
+        expectRolledBack();
+        expect(
+          database
+              .queryPluginRows(
+                'SELECT foreign_keys FROM pragma_foreign_keys',
+                {},
+              )
+              .single
+              .values,
+          {'foreign_keys': 1},
+        );
+        expect(
+          database.queryPluginRows(
+            "SELECT name FROM sqlite_master WHERE name = 'unrelated'",
+            {},
+          ),
+          isEmpty,
+        );
+      });
+    }
+  });
+
+  test('ordinary plugin transactions retain INSERT UPDATE DELETE support', () {
+    final database = _open(backing);
+    database.ensurePluginSchema('dev.adele.test.generic', [
+      'CREATE TABLE generic_entries (id TEXT PRIMARY KEY, value TEXT)',
+    ]);
+    database.executePluginTransaction([
+      RelationalStatement(
+        sql: "INSERT INTO generic_entries VALUES ('entry', 'original')",
+        parameters: {},
+        expectedRows: null,
+      ),
+      RelationalStatement(
+        sql:
+            "INSERT OR IGNORE INTO generic_entries VALUES ('entry', 'ignored')",
+        parameters: {},
+        expectedRows: 0,
+      ),
+      RelationalStatement(
+        sql: 'UPDATE generic_entries SET value = :value WHERE id = :id',
+        parameters: {':value': 'updated', ':id': 'entry'},
+        expectedRows: 1,
+      ),
+    ]);
+    expect(
+      database
+          .queryPluginRows('SELECT * FROM generic_entries', {})
+          .single
+          .values,
+      {'id': 'entry', 'value': 'updated'},
+    );
+    database.executePluginTransaction([
+      RelationalStatement(
+        sql: 'DELETE FROM generic_entries WHERE id = :id',
+        parameters: {':id': 'entry'},
+        expectedRows: 1,
+      ),
+    ]);
+    expect(
+      database.queryPluginRows('SELECT * FROM generic_entries', {}),
+      isEmpty,
+    );
+    expect(database.autocommit, isTrue);
+  });
+
   group('terminal Run records', () {
     late ProjectDatabase database;
     late Session session;

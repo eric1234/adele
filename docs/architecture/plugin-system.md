@@ -810,6 +810,16 @@ introduced. Owner identity comes from the exact backend connection, not a caller
 argument. [Storage access and limits](contracts-and-capabilities.md#session-scoped-relational-storage)
 define the service boundary, including its deliberate lack of SQL row isolation.
 
+An Environment provider's owning plugin may also prepare bounded initial relational
+state in its establishment result. This creation-only path derives ownership from
+the exact captured provider backend, not a caller-selected label. Core coordinates
+the transaction without interpreting plugin semantics; it is not a plugin event
+bus or universal initialization framework. The
+[establishment/publication boundary](product-model.md#prepared-establishment-state)
+defines atomic records, schema preparation, temporary backing, and failure limits.
+Stock Git has not activated this path and retains its existing single production
+baseline authority until the coordinated Git-specific adoption.
+
 Plugins own initialization SQL, relational constraints, validation, and migrations.
 The host coordinates transactions and owner versions; the declared version is the
 migration list length. Core `dev.adele.product`, execution `dev.adele.execution`,

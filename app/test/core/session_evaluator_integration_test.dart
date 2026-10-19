@@ -2154,7 +2154,7 @@ final class _EnvironmentChannel implements AdeleStreamChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     expect(method, environmentProviderServiceEstablishId);
-    return {'providerState': <String, Object?>{}};
+    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 
   @override

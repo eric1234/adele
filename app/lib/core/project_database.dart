@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_environment/adele_environment.dart'
+    show environmentInitialExpectedRowsLimit, environmentInitialInsertLimit;
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
@@ -294,8 +296,13 @@ final class ProjectDatabase {
     });
   }
 
-  /// Task and finalized primary Environment form one durable publication unit.
-  void insertTaskWithPrimaryEnvironment(Task task, Environment environment) {
+  /// Task, finalized primary Environment, and required initial plugin rows form
+  /// one durable publication unit. Schema preparation remains a separate call.
+  void insertTaskWithPrimaryEnvironment(
+    Task task,
+    Environment environment, {
+    List<RelationalStatement> initialInserts = const [],
+  }) {
     _requireOpen();
     if (environment.taskId != task.id ||
         environment.role != EnvironmentRole.primary ||
@@ -304,10 +311,17 @@ final class ProjectDatabase {
         'A durable Task requires its finalized primary Environment.',
       );
     }
+    if (initialInserts.length > environmentInitialInsertLimit) {
+      throw ArgumentError('Task initialization exceeds its insert limit.');
+    }
     _backingPath(_root, _relativePath);
     _transaction(_database, () {
       _insertTask(task);
       _insertEnvironment(environment);
+      for (final operation in initialInserts) {
+        _validateInitialInsert(operation);
+        _executePluginStatement(operation);
+      }
     });
   }
 
@@ -419,7 +433,11 @@ final class ProjectDatabase {
   }
 
   /// The calling host service supplies the connection-owned PluginId as owner.
-  void ensurePluginSchema(String ownerId, List<String> migrations) {
+  void ensurePluginSchema(
+    String ownerId,
+    List<String> migrations, {
+    bool definitionsOnly = false,
+  }) {
     _requireOpen();
     if (ownerId == 'dev.adele.product' || ownerId == 'dev.adele.execution') {
       throw ArgumentError.value(
@@ -455,6 +473,20 @@ final class ProjectDatabase {
         throw ArgumentError(
           'Plugin migrations require CREATE TABLE statements without '
           'semicolons inside quoted literals.',
+        );
+      }
+      // Establishment prepares schema separately from its semantic record
+      // transaction. CREATE TABLE AS SELECT would commit data too early.
+      if (definitionsOnly &&
+          statements.any(
+            (statement) => !RegExp(
+              r'^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+              r'[A-Za-z_][A-Za-z0-9_]*\s*\(',
+              caseSensitive: false,
+            ).hasMatch(statement),
+          )) {
+        throw ArgumentError(
+          'Initial schema requires table definitions, not CREATE TABLE AS.',
         );
       }
       scripts.add(statements);
@@ -526,32 +558,35 @@ final class ProjectDatabase {
     _backingPath(_root, _relativePath);
     _transaction(_database, () {
       for (final operation in statements) {
-        if (!const {
-          'INSERT',
-          'UPDATE',
-          'DELETE',
-        }.contains(_statementClass(operation.sql))) {
-          throw ArgumentError(
-            'Storage transactions require INSERT, UPDATE, or DELETE statements.',
-          );
-        }
-        final statement = _database.prepare(operation.sql, checkNoTail: true);
-        try {
-          statement.executeWith(
-            StatementParameters.named(operation.parameters),
-          );
-          if (operation.expectedRows case final expected?) {
-            if (_database.updatedRows != expected) {
-              throw StateError(
-                'Relational mutation affected an unexpected row count.',
-              );
-            }
-          }
-        } finally {
-          statement.close();
-        }
+        _executePluginStatement(operation);
       }
     });
+  }
+
+  // Executes inside the caller's existing host-owned transaction.
+  void _executePluginStatement(RelationalStatement operation) {
+    if (!const {
+      'INSERT',
+      'UPDATE',
+      'DELETE',
+    }.contains(_statementClass(operation.sql))) {
+      throw ArgumentError(
+        'Storage transactions require INSERT, UPDATE, or DELETE statements.',
+      );
+    }
+    final statement = _database.prepare(operation.sql, checkNoTail: true);
+    try {
+      statement.executeWith(StatementParameters.named(operation.parameters));
+      if (operation.expectedRows case final expected?) {
+        if (_database.updatedRows != expected) {
+          throw StateError(
+            'Relational mutation affected an unexpected row count.',
+          );
+        }
+      }
+    } finally {
+      statement.close();
+    }
   }
 
   void _requireOpen() {
@@ -563,6 +598,49 @@ final class ProjectDatabase {
     _database.close();
     _closed = true;
     _temporaryDirectory?.deleteSync(recursive: true);
+  }
+}
+
+void _validateInitialInsert(RelationalStatement operation) {
+  final expected = operation.expectedRows;
+  if (expected == null ||
+      expected < 1 ||
+      expected > environmentInitialExpectedRowsLimit) {
+    throw ArgumentError(
+      'Initial inserts require a positive bounded row count.',
+    );
+  }
+  // Deliberately a small accepted shape, not a SQL parser or schema sandbox.
+  // Only unquoted ASCII identifiers and named scalar binds are supported: no
+  // literals, expressions, comments, qualified tables, or conflict/return clauses.
+  // Multiple VALUES tuples are allowed; SQLite validates their column counts.
+  const identifier = r'[A-Za-z_][A-Za-z0-9_]*';
+  const parameter = '[:@\$]$identifier';
+  const tuple =
+      r'\(\s*'
+      '$parameter(?:\\s*,\\s*$parameter)*'
+      r'\s*\)';
+  final match = RegExp(
+    r'^\s*INSERT\s+INTO\s+'
+    '($identifier)'
+    r'\s*\(\s*'
+    '$identifier(?:\\s*,\\s*$identifier)*'
+    r'\s*\)\s*VALUES\s*'
+    '$tuple(?:\\s*,\\s*$tuple)*'
+    r'\s*;?\s*$',
+    caseSensitive: false,
+  ).firstMatch(operation.sql);
+  if (_statementClass(operation.sql) != 'INSERT' || match == null) {
+    throw ArgumentError(
+      'Initial state requires INSERT INTO table (columns) VALUES (named binds).',
+    );
+  }
+  final table = match.group(1)!.toLowerCase();
+  if (table.startsWith('adele_product_') ||
+      table.startsWith('adele_execution_') ||
+      table == 'adele_schema_versions' ||
+      table.startsWith('sqlite_')) {
+    throw ArgumentError('Initial inserts cannot target core or SQLite tables.');
   }
 }
 

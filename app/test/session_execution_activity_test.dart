@@ -660,7 +660,7 @@ final class _Execution implements OrchestrationExecution {
 final class _Channel implements AdeleStreamChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async =>
-      {'providerState': <String, Object?>{}};
+      {'providerState': <String, Object?>{}, 'initialState': null};
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) async* {
     for (final output in [
