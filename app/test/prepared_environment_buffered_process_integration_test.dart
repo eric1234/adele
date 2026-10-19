@@ -632,6 +632,11 @@ void main() {
         for (final (service, method, arguments) in [
           (
             authorizedEnvironmentReadServiceId,
+            authorizedEnvironmentReadServiceAuthorityId,
+            <String, Object?>{},
+          ),
+          (
+            authorizedEnvironmentReadServiceId,
             authorizedEnvironmentReadServiceReadFileId,
             <String, Object?>{'relativePath': 'A'},
           ),
@@ -687,6 +692,27 @@ void main() {
         final retained = fixture.control('retainedBuffered', {'key': 'hash'});
         await fixture.wait(tester, 'process:retained');
         expect(await retained, {'ok': true});
+        expect(
+          await fixture.control('retainedBufferedIdentity', {'key': 'hash'}),
+          {
+            'ok': true,
+            'sessionId': fixture.sessionA.id.value,
+            'environmentId': 'additional',
+          },
+        );
+        expect(
+          await fixture.controlOn(
+            fixture.environmentConnection,
+            'attackBuffered',
+            {
+              'token': token,
+              'method':
+                  authorizedEnvironmentBufferedProcessServiceCapturedIdentityId,
+              'arguments': <String, Object?>{},
+            },
+          ),
+          {'ok': false},
+        );
         await fixture.control('release', {'key': 'after:hash'});
       });
       await _text(tester, _result([0, 255, 195, 40]));
@@ -695,6 +721,10 @@ void main() {
         expect(await fixture.control('retainedBuffered', {'key': 'hash'}), {
           'ok': false,
         });
+        expect(
+          await fixture.control('retainedBufferedIdentity', {'key': 'hash'}),
+          {'ok': false},
+        );
       });
       final processes =
           (await tester.runAsync(fixture.snapshot))!['processes'] as List;
@@ -999,12 +1029,25 @@ void main() {
         _press(tester, 'Default');
         await _text(tester, 'selection:unavailable');
         await tester.runAsync(() async {
-          expect(
-            await fixture.controlOn(surviving, 'attackBuffered', {
-              'token': token,
-            }),
-            {'ok': false},
-          );
+          for (final (method, arguments) in [
+            (
+              authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId,
+              _requestPayload(),
+            ),
+            (
+              authorizedEnvironmentBufferedProcessServiceCapturedIdentityId,
+              <String, Object?>{},
+            ),
+          ]) {
+            expect(
+              await fixture.controlOn(surviving, 'attackBuffered', {
+                'token': token,
+                'method': method,
+                'arguments': arguments,
+              }),
+              {'ok': false},
+            );
+          }
           if (side == 'callable') {
             fixture.environmentOwner.validate();
             await fixture.controlOn(surviving, 'release', {
@@ -1075,48 +1118,53 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
-  testWidgets(
-    'queued reverse process is revoked before it can enter A after held cleanup',
-    (tester) async {
-      await mount(tester);
-      await _select(tester);
-      await tester.runAsync(
-        () => fixture.control('hold', {'key': 'process:held'}),
-      );
-      _press(tester, 'held');
-      await tester.runAsync(() => fixture.wait(tester, 'process:held'));
-      final token = (await tester.runAsync(() => _token(fixture, 'held')))!;
-      expect(
+  for (final identityOnly in [false, true]) {
+    testWidgets(
+      'queued reverse ${identityOnly ? 'identity' : 'process'} is revoked before service entry after held cleanup',
+      (tester) async {
+        await mount(tester);
+        await _select(tester);
         await tester.runAsync(
-          () => fixture.control('queueBuffered', {'token': token}),
-        ),
-        {'queued': true},
-      );
-      expect(
-        (await tester.runAsync(fixture.snapshot))!['processes'],
-        hasLength(1),
-      );
-      _press(tester, 'Release');
-      await _text(tester, 'process:unavailable');
-      // Both reverse callers settle while the first provider process stays held.
-      expect(await tester.runAsync(() => fixture.control('queuedResult')), {
-        'ok': false,
-      });
-      await tester.runAsync(() async {
-        await _denied(fixture, token);
-        await fixture.control('release', {'key': 'process:held'});
-        await fixture.wait(tester, 'settled:held');
-      });
-      await tester.pumpAndSettle();
-      expect(
-        (await tester.runAsync(fixture.snapshot))!['processes'],
-        hasLength(1),
-      );
-      expect(find.text(_result([0, 255, 195, 40])), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+          () => fixture.control('hold', {'key': 'process:held'}),
+        );
+        _press(tester, 'held');
+        await tester.runAsync(() => fixture.wait(tester, 'process:held'));
+        final token = (await tester.runAsync(() => _token(fixture, 'held')))!;
+        expect(
+          await tester.runAsync(
+            () => fixture.control('queueBuffered', {
+              'token': token,
+              'identity': identityOnly,
+            }),
+          ),
+          {'queued': true},
+        );
+        expect(
+          (await tester.runAsync(fixture.snapshot))!['processes'],
+          hasLength(1),
+        );
+        _press(tester, 'Release');
+        await _text(tester, 'process:unavailable');
+        // Both reverse callers settle while the first provider process stays held.
+        expect(await tester.runAsync(() => fixture.control('queuedResult')), {
+          'ok': false,
+        });
+        await tester.runAsync(() async {
+          await _denied(fixture, token);
+          await fixture.control('release', {'key': 'process:held'});
+          await fixture.wait(tester, 'settled:held');
+        });
+        await tester.pumpAndSettle();
+        expect(
+          (await tester.runAsync(fixture.snapshot))!['processes'],
+          hasLength(1),
+        );
+        expect(find.text(_result([0, 255, 195, 40])), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets(
     'read and process handles share capacity but retain fixed authority and reject foreign handles',
@@ -1204,6 +1252,118 @@ void main() {
       });
     },
   );
+
+  testWidgets(
+    'process-only captured identity reports exact Sessions without reads or buffered provider support',
+    (tester) async {
+      await mount(tester, present: false, noBufferedFacet: true);
+      await tester.runAsync(() async {
+        final tokens = <String>{};
+        for (final (session, environmentId) in [
+          (fixture.sessionA, 'additional'),
+          (fixture.sessionB, 'primary'),
+        ]) {
+          final selection = await CapturedEnvironmentCapabilities(
+            environmentRuntime: fixture.environmentRuntime,
+            backends: fixture.backends,
+            session: session,
+          ).resolve(_capability);
+          expect(
+            fixture.callableOwner.allowsEnvironmentHostService(
+              selection.binding,
+              AdeleEnvironmentHostService.read,
+            ),
+            isFalse,
+          );
+          final result = await invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: selection,
+            backends: fixture.backends,
+            serviceId: _service,
+            invoke: (channel) =>
+                channel.request('$_service.read', {'scope': 'identity'}),
+          );
+          expect(result, {
+            'provider': 'identity',
+            'configuration': session.id.value,
+            'sequence': 0,
+            'text': environmentId,
+          });
+          final token = await _token(fixture, 'identity');
+          tokens.add(token);
+          await _denied(fixture, token);
+          expect(
+            await fixture.control('retainedBufferedIdentity', {
+              'key': 'identity',
+            }),
+            {'ok': false},
+          );
+        }
+        expect(tokens, hasLength(2));
+        final snapshot = await fixture.snapshot();
+        expect(snapshot['reads'], isEmpty);
+        expect(snapshot['processes'], isEmpty);
+        expect(fixture.calls(snapshot), hasLength(2));
+      });
+    },
+  );
+
+  for (final checkpoint in ['before', 'after']) {
+    testWidgets(
+      'retired identity fails $checkpoint query without reselecting or publishing cached IDs',
+      (tester) async {
+        await mount(tester, present: false);
+        await tester.runAsync(() async {
+          final selection = await CapturedEnvironmentCapabilities(
+            environmentRuntime: fixture.environmentRuntime,
+            backends: fixture.backends,
+            session: fixture.sessionA,
+          ).resolve(_capability);
+          await fixture.control('hold', {'key': '$checkpoint:identity'});
+          late void Function() retire;
+          final pending = invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: selection,
+            backends: fixture.backends,
+            serviceId: _service,
+            onRetire: (revoke) {
+              retire = revoke;
+              return () {};
+            },
+            invoke: (channel) =>
+                channel.request('$_service.read', {'scope': 'identity'}),
+          );
+          final failed = expectLater(pending, throwsStateError);
+          await fixture.wait(tester, '$checkpoint:identity');
+          final token = await _token(fixture, 'identity');
+          expect(
+            await fixture.control('retainedBufferedIdentity', {
+              'key': 'identity',
+            }),
+            {
+              'ok': true,
+              'sessionId': fixture.sessionA.id.value,
+              'environmentId': 'additional',
+            },
+          );
+          retire();
+          // Both registrations remain live; only this invocation has retired.
+          selection.validate();
+          await _denied(fixture, token);
+          expect(
+            await fixture.control('retainedBufferedIdentity', {
+              'key': 'identity',
+            }),
+            {'ok': false},
+          );
+          await fixture.control('release', {'key': '$checkpoint:identity'});
+          await failed.timeout(_bound);
+          final snapshot = await fixture.snapshot();
+          expect(snapshot['reads'], isEmpty);
+          expect(snapshot['processes'], isEmpty);
+          expect(fixture.calls(snapshot), hasLength(1));
+        });
+      },
+    );
+  }
 
   testWidgets(
     'native buffered invocation revokes at unary receipt before a delayed consumer and consumes the channel',
@@ -1493,6 +1653,16 @@ Future<void> _denied(
     }),
     {'ok': false},
   );
+  if (service == null && method == null && arguments == null) {
+    expect(
+      await h.control('attackBuffered', {
+        'token': token,
+        'method': authorizedEnvironmentBufferedProcessServiceCapturedIdentityId,
+        'arguments': <String, Object?>{},
+      }),
+      {'ok': false},
+    );
+  }
 }
 
 Map<String, Object?> _requestPayload() => {

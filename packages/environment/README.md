@@ -155,13 +155,25 @@ These value bounds do not replace provider-side streaming byte accounting and
 bounded process cleanup.
 
 The optional provider facet alone grants no invocation authority. The separate
-generated `AuthorizedEnvironmentBufferedProcessService` exposes only
+generated `AuthorizedEnvironmentBufferedProcessService` exposes
 `runBufferedProcess(EnvironmentBufferedProcessRequest) ->
 Future<EnvironmentBufferedProcessResult>`, reusing these DTOs, limits, strict
-Base64 validation, and declared `EnvironmentFailure`. It has no authority query,
-Environment/provider selector, host-local cwd, file access, or streaming operation.
-The host supplies it only for an explicitly authorized operation, forwarding to
-the exact captured Environment materialization, possibly on another backend.
+Base64 validation, and declared `EnvironmentFailure`. Its no-argument
+`capturedIdentity() -> Future<AuthorizedEnvironmentIdentity>` returns only the
+exact captured `sessionId` and `environmentId`. The query validates the original
+selection, provider registrations, backend generations, and invocation liveness;
+retirement or revocation fails rather than returning stale identity or resolving
+a replacement. It neither calls the provider nor grants read access. Neither
+method accepts an Environment/provider selector or host-local cwd, or exposes file
+access or streaming operations.
+The host supplies it only for an explicitly authorized operation. Process
+execution forwards to the exact captured Environment materialization, possibly
+on another backend.
+
+This narrowly extends G2b's original single-method service with identity data under
+the same explicit buffered-process permission, not a separate identity-selection
+interface. IDs confer no access to another Environment, filesystem root, Git
+metadata, provider-private state, or storage service.
 
 `AuthorizedEnvironmentReadService`, `AuthorizedEnvironmentMutationService`,
 `AuthorizedEnvironmentProcessService`, and their facets remain unchanged. Read

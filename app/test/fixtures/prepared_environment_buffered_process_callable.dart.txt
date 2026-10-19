@@ -46,6 +46,16 @@ final class _Probe implements CapabilityProbeService {
     state.bufferedClients[scope] = process;
     try {
       await state.checkpoint('before:$scope');
+      if (scope == 'identity') {
+        final identity = await process.capturedIdentity();
+        await state.checkpoint('after:$scope');
+        return ProbeValue(
+          provider: 'identity',
+          configuration: identity.sessionId,
+          sequence: 0,
+          text: identity.environmentId,
+        );
+      }
       if (scope == 'read-service') {
         await AuthorizedEnvironmentReadServiceClient(
           operation!.bind(authorizedEnvironmentReadServiceId),

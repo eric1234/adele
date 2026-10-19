@@ -19,6 +19,109 @@ void main() {
   tearDown(() => dispatcher.close());
 
   test(
+    'captured identity roundtrips the existing DTO with an empty payload',
+    () async {
+      final identity = await client.capturedIdentity();
+      expect(
+        channel.method,
+        'authorizedEnvironmentBufferedProcess.capturedIdentity',
+      );
+      expect(channel.payload, <String, Object?>{});
+      expect(identity.sessionId, 'captured-session');
+      expect(identity.environmentId, 'captured-environment');
+      expect(identity, isNot(same(service.identity)));
+      expect(service.identityCalls, 1);
+      expect(service.calls, 0);
+    },
+  );
+
+  test(
+    'captured identity rejects every supplied selector before service entry',
+    () async {
+      for (final field in [
+        'sessionId',
+        'environmentId',
+        'providerId',
+        'configurationContext',
+        'hostInvocationContext',
+        'request',
+      ]) {
+        final response = await dispatcher.dispatch(
+          _envelope(
+            authorizedEnvironmentBufferedProcessServiceCapturedIdentityId,
+            {field: 'foreign'},
+          ),
+        );
+        expect((response['error']! as Map)['code'], 'invalid_request');
+      }
+      expect(service.identityCalls, 0);
+      expect(service.calls, 0);
+    },
+  );
+
+  test(
+    'captured identity client rejects malformed or invalid identities',
+    () async {
+      for (final response in <Object?>[
+        null,
+        [],
+        {'sessionId': '', 'environmentId': 'environment'},
+        {'sessionId': 'session', 'environmentId': ' environment'},
+        {'sessionId': 'session'},
+        {'environmentId': 'environment'},
+        {'sessionId': 'session', 'environmentId': 1},
+        {'sessionId': 'session', 'environmentId': 'environment', 'extra': true},
+      ]) {
+        await expectLater(
+          AuthorizedEnvironmentBufferedProcessServiceClient(
+            _ResponseChannel(response),
+          ).capturedIdentity(),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'captured identity preserves declared and opaque failure boundaries',
+    () async {
+      service.failure = const EnvironmentFailure(
+        code: 'permission_denied',
+        message: 'Identity unavailable.',
+        details: {'retired': true},
+      );
+      await expectLater(
+        client.capturedIdentity(),
+        throwsA(
+          isA<EnvironmentFailure>()
+              .having((error) => error.code, 'code', 'permission_denied')
+              .having((error) => error.details, 'details', {'retired': true})
+              .having(
+                (error) => identical(error, service.failure),
+                'copied',
+                isFalse,
+              ),
+        ),
+      );
+      service.failure = StateError('private retired identity');
+      await expectLater(
+        client.capturedIdentity(),
+        throwsA(
+          isA<AdeleRemoteFailure>()
+              .having((error) => error.code, 'code', 'internal_error')
+              .having((error) => error.declaredFailureType, 'type', isNull)
+              .having(
+                (error) => error.message,
+                'message',
+                isNot(contains('private')),
+              ),
+        ),
+      );
+      expect(service.calls, 0);
+    },
+  );
+
+  test(
     'generated service preserves bytes and nonzero exit without selectors',
     () async {
       final bytes = List<int>.generate(256, (index) => index);
@@ -174,9 +277,21 @@ Map<Object?, Object?> _envelope(String method, Map<String, Object?> payload) =>
 
 final class _ProcessService
     implements AuthorizedEnvironmentBufferedProcessService {
+  final identity = AuthorizedEnvironmentIdentity(
+    sessionId: 'captured-session',
+    environmentId: 'captured-environment',
+  );
   EnvironmentBufferedProcessRequest? request;
   Object? failure;
   int calls = 0;
+  int identityCalls = 0;
+
+  @override
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async {
+    identityCalls++;
+    if (failure case final error?) throw error;
+    return identity;
+  }
 
   @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
@@ -209,6 +324,15 @@ final class _Channel implements AdeleRequestChannel {
     }
     return response['payload'];
   }
+}
+
+final class _ResponseChannel implements AdeleRequestChannel {
+  const _ResponseChannel(this.response);
+  final Object? response;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      response;
 }
 
 final class _RemoteFailure implements AdeleRemoteFailure {
