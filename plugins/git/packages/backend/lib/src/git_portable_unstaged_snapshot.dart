@@ -251,6 +251,12 @@ final class _PortableSnapshot {
           ? 'true'
           : record.substring(separator + 1).toLowerCase();
     }
+    if (effective.containsKey('core.worktree')) {
+      throw _failure(
+        'unsupported_repository_configuration',
+        'An explicit core.worktree can redirect the selected checkout.',
+      );
+    }
     const falseValues = {'', 'false', 'no', 'off', '0'};
     fileMode = !falseValues.contains(effective['core.filemode']);
     contentConversion =

@@ -165,15 +165,17 @@ void main() {
       '-m',
       'Command fixture',
     ]);
-    final git = await start(gitArtifact, _gitId);
+    late final PluginBackendActivation git;
     addTearDown(ChatStrategyPlugin().activate(extensions).close);
     final lifecycle = ProductLifecycleCoordinator.generated(
       store: InMemoryProductStore(),
       registry: capabilities,
       extensions: extensions,
       ids: MonotonicProductIdSource(seed: 'remote-command'),
+      captureEstablishmentOwner: (binding) => _establishmentOwner(git, binding),
     );
     addTearDown(lifecycle.close);
+    git = await start(gitArtifact, _gitId, lifecycle: lifecycle);
     final command = await start(
       commandArtifact,
       _commandId,
@@ -471,7 +473,7 @@ void main() {
             lifecycle: fixture.lifecycle,
           );
         } else if (retirement == 'provider') {
-          await start(gitArtifact, _gitId);
+          await start(gitArtifact, _gitId, lifecycle: fixture.lifecycle);
         }
         final fresh = (await ModelToolComposer(
           extensions,
@@ -1187,7 +1189,7 @@ void main() {
         'Search fixture',
       ]);
 
-      final gitA = await start(gitArtifact, _gitId);
+      late final PluginBackendActivation gitA;
       final searchA = await start(searchArtifact, _searchId);
       final chat = ChatStrategyPlugin();
       addTearDown(chat.activate(extensions).close);
@@ -1197,7 +1199,11 @@ void main() {
         registry: capabilities,
         extensions: extensions,
         ids: MonotonicProductIdSource(seed: 'remote-search'),
+        captureEstablishmentOwner: (binding) =>
+            _establishmentOwner(gitA, binding),
       );
+      addTearDown(lifecycle.close);
+      gitA = await start(gitArtifact, _gitId, lifecycle: lifecycle);
       final project = lifecycle.createProject(source.uri);
       final created = await lifecycle.createTask(
         projectId: project.id,
@@ -1276,7 +1282,7 @@ void main() {
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(searchB.connection.isClosed, isFalse);
-      final gitB = await start(gitArtifact, _gitId);
+      final gitB = await start(gitArtifact, _gitId, lifecycle: lifecycle);
       final toolsC = await sessionTools();
       final materializationB = lifecycle.environmentRuntime
           .currentMaterialization(created.environment.id)!;
@@ -1304,6 +1310,21 @@ void main() {
       );
       expect(gitB.connection.isClosed, isFalse);
       expect(host.isClosed, isFalse);
+    },
+  );
+}
+
+EnvironmentEstablishmentOwner? _establishmentOwner(
+  PluginBackendActivation activation,
+  ProviderBinding binding,
+) {
+  if (!activation.ownsProvider(binding)) return null;
+  return EnvironmentEstablishmentOwner(
+    pluginId: PluginId(activation.connection.pluginId),
+    validate: () {
+      if (!activation.ownsProvider(binding)) {
+        throw StateError('Environment owner retired.');
+      }
     },
   );
 }

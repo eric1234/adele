@@ -64,7 +64,7 @@ class DiffPaneState extends State<DiffPane> {
       status = 'loading';
       rows = [];
     });
-    final selected = await resolveEnvironmentCapabilityProvider(
+    final selected = await resolveEnvironmentBufferedProcessCapabilityProvider(
       'adele.diff.change-set-source',
       1,
       changeSetSourceServiceId,

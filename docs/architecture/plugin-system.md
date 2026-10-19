@@ -595,7 +595,10 @@ resolver or execution owner.
 Cross-plugin Capability access is independent of owning-backend affinity. The
 context-free `capabilities` descriptor grants no Environment authority. The separate
 `environmentReadCapabilities` declaration permits only contextual unary reads from
-an exactly associated or explicitly Environment-bound backend provider. Native
+an exactly associated or explicitly Environment-bound backend provider.
+`environmentBufferedProcessCapabilities` instead authorizes only buffered-process
+invocations on an explicitly Environment-bound provider that declares that permission.
+Neither declaration exposes arbitrary process execution to the frontend. Native
 hosting captures the mounted pane's canonical Session; each request receives its
 own grant and cannot follow later navigation. Handle release and presentation
 retirement synchronously revoke those
@@ -604,7 +607,7 @@ actions, and finite operations receive neither Capability bridge. Selection,
 settlement, and limitations belong to
 [prepared Capability consumption](contracts-and-capabilities.md#prepared-frontend-capability-consumption).
 
-Stock [Diff Viewer](../../plugins/diff_viewer/README.md) uses this existing path as
+Stock [Diff Viewer](../../plugins/diff_viewer/README.md) uses the buffered-process path as
 a frontend-only singleton contribution at order 200, between stock Chat and Source.
 It keeps its pane available without a compatible source, and loads read-only
 Unstaged snapshots on opening and manual Refresh through its own public contract.
@@ -817,8 +820,8 @@ the transaction without interpreting plugin semantics; it is not a plugin event
 bus or universal initialization framework. The
 [establishment/publication boundary](product-model.md#prepared-establishment-state)
 defines atomic records, schema preparation, temporary backing, and failure limits.
-Stock Git has not activated this path and retains its existing single production
-baseline authority until the coordinated Git-specific adoption.
+Stock Git uses this path for its single SQL-owned historical comparison baseline;
+its Worktree provider state retains only operational establishment/restoration data.
 
 Plugins own initialization SQL, relational constraints, validation, and migrations.
 The host coordinates transactions and owner versions; the declared version is the

@@ -4,6 +4,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
@@ -30,6 +31,8 @@ import 'package:git_backend/git_backend.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../tools/stock_frontend_descriptors.dart';
+import '../tool/diff_viewer_frontend_compiler.dart';
 import 'prepared_environment_capability_integration_test.dart'
     show PreparedEnvironmentCapabilityInstallation;
 
@@ -55,6 +58,8 @@ void main() {
   late File environmentArtifact;
   late File callableArtifact;
   late File frontendArtifact;
+  late File stockGitArtifact;
+  late File stockDiffArtifact;
   late String aotRuntime;
   var sequence = 0;
 
@@ -216,7 +221,10 @@ void main() {
     environmentArtifact = File('${temporary.path}/environment.aot');
     callableArtifact = File('${temporary.path}/callable.aot');
     frontendArtifact = File('${temporary.path}/frontend.evc');
+    stockGitArtifact = File('${temporary.path}/stock-git.aot');
+    stockDiffArtifact = File('${temporary.path}/stock-diff.evc');
     await _compileFrontend(sdk, frontendArtifact);
+    await _compileStockFrontend(sdk, stockDiffArtifact.path);
     for (final target in [
       (
         'packages/plugin_backend_host/bin/adele_backend_host.dart',
@@ -230,6 +238,7 @@ void main() {
         '${temporary.absolute.path}/portable_git_callable.dart',
         callableArtifact,
       ),
+      ('plugins/git/packages/backend/bin/git_backend.dart', stockGitArtifact),
     ]) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -258,7 +267,9 @@ void main() {
     bool withTaskAnchor = true,
     String? baselineCommit,
     String expectedBranchRef = _selectedBranchRef,
+    bool stock = false,
   }) async {
+    if (stock) expect(lifecycle, isNotNull);
     final selectedRoots = {...roots, 'additional': ?additionalRoot};
     final callablePlugin = lifecycle == null ? _callablePlugin : gitPluginId;
     tester.view.physicalSize = const Size(1600, 2400);
@@ -293,7 +304,7 @@ void main() {
       ).create();
       for (final (id, artifact) in [
         (_environmentPlugin, environmentArtifact),
-        (callablePlugin, callableArtifact),
+        (callablePlugin, stock ? stockGitArtifact : callableArtifact),
       ]) {
         final installation = await Directory('${root.path}/$id').create();
         await artifact.copy('${installation.path}/backend.aot');
@@ -302,29 +313,37 @@ void main() {
         });
       }
       final consumer = await Directory('${root.path}/consumer').create();
-      await frontendArtifact.copy('${consumer.path}/frontend.evc');
-      await _manifest(consumer, 'test.portable.git.consumer', {
-        'frontend': {
-          'artifact': 'frontend.evc',
-          'presentations': [
-            {
-              'role': 'mainContent',
-              'extensionId': 'test.portable.git.pane',
-              'order': 100,
-              'library': _library,
-              'initialize': 'initialize',
-              'entrypoint': 'buildPane',
-              'capabilities': [
-                {'id': _capability.id.value, 'majorVersion': 1},
-              ],
-              if (processGrant)
-                'environmentBufferedProcessCapabilities': [
-                  {'id': _capability.id.value, 'majorVersion': 1},
-                ],
-            },
-          ],
+      await (stock ? stockDiffArtifact : frontendArtifact).copy(
+        '${consumer.path}/frontend.evc',
+      );
+      await _manifest(
+        consumer,
+        stock ? 'dev.adele.diff-viewer' : 'test.portable.git.consumer',
+        {
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations': stock
+                ? stockFrontendDescriptors['dev.adele.diff-viewer']!
+                : [
+                    {
+                      'role': 'mainContent',
+                      'extensionId': 'test.portable.git.pane',
+                      'order': 100,
+                      'library': _library,
+                      'initialize': 'initialize',
+                      'entrypoint': 'buildPane',
+                      'capabilities': [
+                        {'id': _capability.id.value, 'majorVersion': 1},
+                      ],
+                      if (processGrant)
+                        'environmentBufferedProcessCapabilities': [
+                          {'id': _capability.id.value, 'majorVersion': 1},
+                        ],
+                    },
+                  ],
+          },
         },
-      });
+      );
       await fixture.backends.start(
         installationRoot: root.path,
         dartaotruntimeExecutable: aotRuntime,
@@ -349,34 +368,35 @@ void main() {
               ],
             }),
           ],
-          callablePlugin: [
-            jsonEncode({
-              'persisted': lifecycle != null,
-              if (lifecycle == null && withTaskAnchor)
-                'taskAnchor': {
-                  'baselineCommit': baselineCommit ?? selectedBaseline,
-                  'expectedBranchRef': expectedBranchRef,
-                },
-              'exposures': [
-                if (providerPresent)
-                  AdeleCapabilityExposure(
-                    providerId: lifecycle == null
-                        ? 'test.callable.a'
-                        : gitChangeSetSourceProviderId,
-                    capabilityId: _capability.id.value,
-                    capabilityMajorVersion: 1,
-                    serviceId: _service,
-                    displayName: 'Independent portable Git',
-                    configurationContext: 'callable-shared',
-                    environmentBound: true,
-                    environmentHostServices: [
-                      if (providerPermission)
-                        AdeleEnvironmentHostService.bufferedProcess,
-                    ],
-                  ).toMap(),
-              ],
-            }),
-          ],
+          if (!stock)
+            callablePlugin: [
+              jsonEncode({
+                'persisted': lifecycle != null,
+                if (lifecycle == null && withTaskAnchor)
+                  'taskAnchor': {
+                    'baselineCommit': baselineCommit ?? selectedBaseline,
+                    'expectedBranchRef': expectedBranchRef,
+                  },
+                'exposures': [
+                  if (providerPresent)
+                    AdeleCapabilityExposure(
+                      providerId: lifecycle == null
+                          ? 'test.callable.a'
+                          : gitChangeSetSourceProviderId,
+                      capabilityId: _capability.id.value,
+                      capabilityMajorVersion: 1,
+                      serviceId: _service,
+                      displayName: 'Independent portable Git',
+                      configurationContext: 'callable-shared',
+                      environmentBound: true,
+                      environmentHostServices: [
+                        if (providerPermission)
+                          AdeleEnvironmentHostService.bufferedProcess,
+                      ],
+                    ).toMap(),
+                ],
+              }),
+            ],
         },
       );
       expect(fixture.backends.state, ApplicationPluginState.ready);
@@ -404,7 +424,7 @@ void main() {
     if (present) {
       await tester.pumpWidget(fixture.widget(concurrent: concurrent));
       await tester.pumpAndSettle();
-      expect(find.text('idle'), findsNWidgets(concurrent ? 2 : 1));
+      if (!stock) expect(find.text('idle'), findsNWidgets(concurrent ? 2 : 1));
     }
   }
 
@@ -528,6 +548,9 @@ void main() {
       final c = await File(
         'test/fixtures/portable_git_frontend.dart.txt',
       ).readAsString();
+      final stock = await File(
+        '../plugins/diff_viewer/packages/frontend/lib/main.dart',
+      ).readAsString();
       expect(a, contains('Process.start('));
       expect(a, isNot(contains('git_backend')));
       expect(a, isNot(contains('diff_viewer_contract')));
@@ -575,6 +598,23 @@ void main() {
       expect(c, isNot(contains('EnvironmentBufferedProcessRequest')));
       expect(c, isNot(contains('runBufferedProcess')));
       expect(c, isNot(contains('package:git_backend')));
+      expect(
+        stock,
+        contains('resolveEnvironmentBufferedProcessCapabilityProvider('),
+      );
+      expect(stock, contains('ChangeSetSourceServiceClient('));
+      for (final forbidden in [
+        "import 'dart:io'",
+        'package:adele_environment',
+        'package:adele_project_storage',
+        'package:git_backend',
+        'EnvironmentBufferedProcessRequest',
+        'runBufferedProcess',
+        'capturedIdentity',
+        'baselineCommit',
+      ]) {
+        expect(stock, isNot(contains(forbidden)));
+      }
     },
   );
 
@@ -1342,6 +1382,353 @@ void main() {
     );
   }
 
+  for (final count in [100, 500, 900]) {
+    testWidgets(
+      'actual stock Git and Diff use independent Environment AOT for $count clean files and layered changes',
+      (tester) async {
+        final repository = (await tester.runAsync(() async {
+          final root = await Directory(
+            '${temporary.path}/stock-$count',
+          ).create();
+          await _git(root, ['init', '--initial-branch=main']);
+          await Directory('${root.path}/tracked').create();
+          for (var i = 0; i < count; i++) {
+            await File(
+              '${root.path}/tracked/file $i.txt',
+            ).writeAsString('baseline $i\n');
+          }
+          await _git(root, ['add', '--all']);
+          await _git(root, [
+            '-c',
+            'user.name=Fixture',
+            '-c',
+            'user.email=fixture@example.invalid',
+            'commit',
+            '-m',
+            'stock route baseline',
+          ]);
+          return root.resolveSymbolicLinks();
+        }))!;
+        final baseline = (await tester.runAsync(
+          () => _git(Directory(repository), ['rev-parse', 'HEAD']),
+        ))!;
+        final durable = await openDurable(
+          tester,
+          additionalRoot: repository,
+          initialAnchors: {
+            'additional': GitTaskComparisonAnchor(
+              baselineCommit: baseline,
+              expectedBranchRef: 'refs/heads/main',
+            ),
+            'primary': GitTaskComparisonAnchor(
+              baselineCommit: primaryBaseline,
+              expectedBranchRef: 'refs/heads/main',
+            ),
+          },
+        );
+        await mount(
+          tester,
+          registry: durable.registry,
+          lifecycle: durable.lifecycle,
+          additionalRoot: repository,
+          stock: true,
+          present: false,
+        );
+        final retained = _anchorRows(durable.lifecycle);
+        expect(fixture.connection.pluginId, gitPluginId);
+        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+        expect(
+          fixture.capabilities.providersFor(environmentProviderCapability),
+          hasLength(3),
+        );
+        final binding = fixture.capabilities.resolve(_capability);
+        expect(binding.provider.id.value, gitChangeSetSourceProviderId);
+        expect(fixture.callableOwner.associationFor(binding), isNull);
+        expect(fixture.callableOwner.isEnvironmentBound(binding), isTrue);
+        expect(
+          fixture.callableOwner.allowsEnvironmentHostService(
+            binding,
+            AdeleEnvironmentHostService.bufferedProcess,
+          ),
+          isTrue,
+        );
+        expect(
+          fixture.callableOwner.allowsEnvironmentHostService(
+            binding,
+            AdeleEnvironmentHostService.read,
+          ),
+          isFalse,
+        );
+        var previousCount = 0;
+        final batches = (count + 127) ~/ 128;
+        for (final (scope, clean, expected) in [
+          ('Unstaged changes', 'No unstaged changes', 21 + 4 * batches),
+          ('Uncommitted changes', 'No uncommitted changes', 27 + 4 * batches),
+          ('Task / Branch', 'No task changes', 36 + 4 * batches),
+        ]) {
+          final elapsed = Stopwatch()..start();
+          if (previousCount == 0) {
+            await tester.pumpWidget(fixture.widget());
+          } else {
+            _press(tester, scope);
+          }
+          await _stockVisible(tester, clean);
+          elapsed.stop();
+          final evidence = (await tester.runAsync(
+            () => _stockEvidence(fixture),
+          ))!;
+          final processes = (evidence['processes'] as List)
+              .cast<Map<Object?, Object?>>();
+          final requests = processes.length - previousCount;
+          expect(requests, expected);
+          for (final process in processes) {
+            expect(process['environmentId'], 'additional');
+            expect(process['providerId'], 'test.environment.a');
+            expect(process['cwd'], repository);
+            expect(process['exitCode'], 0);
+          }
+          debugPrint(
+            'Actual stock $scope $count clean files: $requests process requests, '
+            '${elapsed.elapsedMilliseconds} ms (diagnostic only).',
+          );
+          previousCount = processes.length;
+        }
+        final selected = (await tester.runAsync(
+          () => CapturedEnvironmentCapabilities(
+            environmentRuntime: fixture.environmentRuntime,
+            backends: fixture.backends,
+            session: fixture.sessionA,
+          ).resolve(_capability),
+        ))!;
+        expect(selected.environment.id, EnvironmentId('additional'));
+        expect(selected.environment.role, EnvironmentRole.additional);
+        expect(
+          selected.materialization.binding.provider.id.value,
+          'test.environment.a',
+        );
+        expect(
+          fixture.environmentRuntime.currentMaterialization(
+            EnvironmentId('primary'),
+          ),
+          isNull,
+        );
+        expect(
+          fixture.environmentRuntime.store
+              .environment(EnvironmentId('additional'))!
+              .providerState,
+          {'root': repository},
+        );
+
+        for (final committed in [false, true]) {
+          await tester.runAsync(() async {
+            final file = File('$repository/tracked/file 0.txt');
+            if (committed) {
+              await file.writeAsString('committed layer\n');
+              await _git(Directory(repository), ['add', '--all']);
+              await _git(Directory(repository), [
+                '-c',
+                'user.name=Fixture',
+                '-c',
+                'user.email=fixture@example.invalid',
+                'commit',
+                '-m',
+                'after retained anchor',
+              ]);
+            }
+            await file.writeAsString('staged layer\n');
+            await _git(Directory(repository), ['add', '--all']);
+            await file.writeAsString('working layer\n');
+          });
+          int? firstCount;
+          for (var refresh = 0; refresh < 2; refresh++) {
+            final elapsed = Stopwatch()..start();
+            _press(
+              tester,
+              refresh == 1
+                  ? 'Refresh'
+                  : committed
+                  ? 'Task / Branch'
+                  : 'Uncommitted changes',
+            );
+            await _stockVisible(tester, '+working layer');
+            elapsed.stop();
+            expect(
+              find.text('tracked/file 0.txt  [modified]'),
+              findsNWidgets(committed ? 3 : 2),
+            );
+            expect(find.textContaining('+staged layer'), findsOneWidget);
+            expect(find.textContaining('-staged layer'), findsOneWidget);
+            expect(find.textContaining('-baseline 0'), findsOneWidget);
+            if (committed) {
+              expect(find.textContaining('+committed layer'), findsOneWidget);
+              expect(find.textContaining('-committed layer'), findsOneWidget);
+            }
+            final evidence = (await tester.runAsync(
+              () => _stockEvidence(fixture),
+            ))!;
+            final total = (evidence['processes'] as List).length;
+            final requests = total - previousCount;
+            if (firstCount != null) expect(requests, firstCount);
+            firstCount = requests;
+            // Fixed rendered-file work, not a subprocess for every clean file.
+            expect(requests, (committed ? 66 : 42) + 4 * batches);
+            debugPrint(
+              'Actual stock ${committed ? 'committed+staged+unstaged' : 'staged+unstaged'} '
+              '$count files refresh $refresh: $requests process requests, '
+              '${elapsed.elapsedMilliseconds} ms (diagnostic only).',
+            );
+            previousCount = total;
+            expect(_anchorRows(durable.lifecycle), retained);
+          }
+        }
+        if (count == 100) {
+          final oldSession = fixture.sessionA;
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.runAsync(() async {
+            await fixture.close();
+            await durable.lifecycle.close();
+          });
+          final reopened = await openDurable(tester, backing: durable.backing);
+          expect(_anchorRows(reopened.lifecycle), retained);
+          await mount(
+            tester,
+            registry: reopened.registry,
+            lifecycle: reopened.lifecycle,
+            additionalRoot: repository,
+            stock: true,
+          );
+          expect(fixture.sessionA, isNot(same(oldSession)));
+          await _stockVisible(tester, '+working layer');
+          _press(tester, 'Task / Branch');
+          await _stockVisible(tester, '+committed layer');
+          expect(find.textContaining('-baseline 0'), findsOneWidget);
+          fixture.frontends.unbind(fixture.sessionA);
+          await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
+          await _stockVisible(tester, '+new primary');
+          _press(tester, 'Task / Branch');
+          await _stockVisible(tester, 'No committed changes');
+          expect(find.textContaining('tracked/file 0.txt'), findsNothing);
+          expect(_anchorRows(reopened.lifecycle), retained);
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
+  testWidgets(
+    'actual stock layers retain conflicts and unsupported files without Source authority',
+    (tester) async {
+      final link = Link('${roots['additional']}/unsupported-link.txt');
+      await tester.runAsync(() => link.create('file with spaces.txt'));
+      addTearDown(() async {
+        if (await link.exists()) await link.delete();
+      });
+      final durable = await openDurable(
+        tester,
+        initialAnchors: {
+          'additional': GitTaskComparisonAnchor(
+            baselineCommit: selectedBaseline,
+            expectedBranchRef: _selectedBranchRef,
+          ),
+        },
+      );
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        stock: true,
+      );
+      await _stockVisible(tester, '+new selected');
+      final retained = _anchorRows(durable.lifecycle);
+      for (final scope in [
+        'Unstaged changes',
+        'Uncommitted changes',
+        'Task / Branch',
+      ]) {
+        if (scope != 'Unstaged changes') {
+          _press(tester, scope);
+          await _stockVisible(tester, '+new staged');
+          expect(find.text('Conflicts'), findsOneWidget);
+        }
+        expect(find.text('conflicted.txt  [conflicted]'), findsOneWidget);
+        expect(find.text('conflicted'), findsOneWidget);
+        expect(
+          find.text('unsupported-link.txt  [unsupported]'),
+          findsOneWidget,
+        );
+        expect(find.text('unsupported'), findsOneWidget);
+        expect(
+          find.textContaining('Symbolic links and special working files'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('<<<<<<<'), findsNothing);
+        expect(find.text('Open in Source'), findsNothing);
+        expect(find.text('Source is unavailable.'), findsWidgets);
+        if (scope == 'Task / Branch') {
+          // An unmerged path keeps its independent committed change, not an
+          // invented staged/unstaged text patch from the conflict workfile.
+          expect(find.text('conflicted.txt  [modified]'), findsOneWidget);
+          expect(find.textContaining('-base conflict'), findsOneWidget);
+          expect(
+            find.textContaining('+$_selectedBranch conflict'),
+            findsOneWidget,
+          );
+        }
+        expect(_anchorRows(durable.lifecycle), retained);
+      }
+      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
+      for (final process
+          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
+        expect(process['environmentId'], 'additional');
+        expect(process['providerId'], 'test.environment.a');
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'actual stock Task without a selected anchor does not borrow primary or disable other scopes',
+    (tester) async {
+      final durable = await openDurable(
+        tester,
+        initialAnchors: {
+          'primary': GitTaskComparisonAnchor(
+            baselineCommit: primaryBaseline,
+            expectedBranchRef: 'refs/heads/main',
+          ),
+        },
+      );
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        stock: true,
+      );
+      await _stockVisible(tester, '+new selected');
+      final retained = _anchorRows(durable.lifecycle);
+      final before =
+          ((await tester.runAsync(() => _stockEvidence(fixture)))!['processes']
+                  as List)
+              .length;
+      _press(tester, 'Task / Branch');
+      await _stockVisible(tester, 'Unable to load');
+      expect(find.textContaining('No task changes'), findsNothing);
+      expect(
+        ((await tester.runAsync(() => _stockEvidence(fixture)))!['processes']
+            as List),
+        hasLength(before),
+      );
+      _press(tester, 'Uncommitted changes');
+      await _stockVisible(tester, '+new staged');
+      expect(find.textContaining('+new selected'), findsOneWidget);
+      expect(_anchorRows(durable.lifecycle), retained);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final denial in [
     'frontend declaration',
     'provider permission',
@@ -1995,6 +2382,16 @@ Future<void> _compileFrontend(String sdk, File artifact) async {
   await artifact.writeAsBytes(program.write());
 }
 
+Future<void> _compileStockFrontend(String sdk, String output) => Isolate.run(
+  // The pinned compiler retains TypeRefs by library ID across Compiler instances.
+  // Keep the independently prepared probe and stock EVC type universes separate.
+  () => compileDiffViewerFrontend(
+    repositoryRoot: Directory.current.parent,
+    sdkPath: sdk,
+    artifact: File(output),
+  ),
+);
+
 Future<void> _manifest(
   Directory root,
   String id,
@@ -2037,6 +2434,27 @@ Future<List<Map<Object?, Object?>>> _calls(
       .where((call) => call['serviceId'] == _service)
       .toList();
 }
+
+Future<Map<Object?, Object?>> _stockEvidence(
+  PreparedEnvironmentCapabilityInstallation fixture,
+) async {
+  // Stock Git exposes no probe. Observe only the independent process owner.
+  final evidence =
+      (await fixture.controlOn(fixture.environmentConnection, 'snapshot'))!
+          as Map<Object?, Object?>;
+  expect(evidence['reads'], isEmpty);
+  final requests = (evidence['requests'] as List)
+      .cast<Map<Object?, Object?>>()
+      .where(
+        (request) =>
+            request['method'] == environmentProviderServiceRunBufferedProcessId,
+      );
+  expect(requests, hasLength((evidence['processes'] as List).length));
+  return evidence;
+}
+
+Future<void> _stockVisible(WidgetTester tester, String text) =>
+    _waitFor(tester, _pane('a', find.textContaining(text)));
 
 Future<String> _token(
   PreparedEnvironmentCapabilityInstallation fixture,

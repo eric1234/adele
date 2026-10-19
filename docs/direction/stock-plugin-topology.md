@@ -336,12 +336,11 @@ Task/environment/worktree/branch names may match by convention but are not one i
 
 ### ChangeSetSource
 
-Git implements the Diff-owned public `ChangeSetSource` Capability in its existing
-backend, alongside its Git Worktree Environment provider. The current read-only
-implementation remains associated with that same backend's canonical Environment,
-not portable across arbitrary Environment providers. Task comparison retains its
-baseline in Environment provider state. The contract remains in the Diff ecosystem
-rather than core; see the
+Git implements the Diff-owned public `ChangeSetSource` Capability in its backend,
+independently of its Git Worktree Environment provider. Comparison and retained
+baseline semantics belong to Git, while the contract remains in the Diff ecosystem
+rather than core. For current Environment binding, authorization and baseline
+ownership, see the
 [accepted ownership boundary](../architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots)
 and [Git implementation scope](../../plugins/git/README.md).
 

@@ -49,7 +49,8 @@ prepares any schema separately, then commits required inserts with Task/Environm
 identities before publishing. Restore rejects plans rather than replaying them.
 The canonical [establishment boundary](../../docs/architecture/product-model.md#prepared-establishment-state)
 owns admission, durable/temporary behavior, and external-effect limitations.
-Stock Git does not yet produce a plan; this API does not activate another baseline.
+Stock Git uses this result to enroll its Git-owned comparison anchor atomically;
+the contract and core product values contain no Git-specific metadata.
 
 ## Files and authority
 

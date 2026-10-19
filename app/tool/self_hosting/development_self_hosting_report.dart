@@ -247,6 +247,17 @@ collectDevelopmentSelfHostingGitEvidence({
     requireGitResult('Project status', statusArguments, projectStatus);
   }
   String? taskUnavailable;
+  if (taskWorktree != null && taskBaseline == null) {
+    taskUnavailable = 'Task SQL baseline was not captured.\n';
+    failures.add(
+      DevelopmentSelfHostingGitEvidenceFailure(
+        label: 'Task baseline',
+        arguments: const [],
+        exitCode: -1,
+        message: taskUnavailable,
+      ),
+    );
+  }
   if (taskWorktree != null) {
     const List<String> rootArguments = <String>['rev-parse', '--show-toplevel'];
     _GitResult root = await runGit(taskWorktree, rootArguments);
@@ -297,7 +308,7 @@ collectDevelopmentSelfHostingGitEvidence({
     );
   }
 
-  final String baseline = taskBaseline ?? 'HEAD';
+  final String baseline = taskBaseline!;
   final List<List<String>> taskArguments = <List<String>>[
     headArguments,
     statusArguments,

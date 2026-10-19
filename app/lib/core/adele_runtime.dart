@@ -10,21 +10,27 @@ import 'run_id_source.dart';
 /// Pure-Dart application-lifetime host graph without implicit plugin activations.
 /// Providers and product operations are established separately by callers.
 base class AdeleRuntime {
-  AdeleRuntime({ProductIdSource? ids, RunIdSource? runIds})
-    : runIds = runIds ?? MonotonicRunIdSource() {
+  AdeleRuntime({
+    ProductIdSource? ids,
+    RunIdSource? runIds,
+    EnvironmentEstablishmentOwner? Function(ProviderBinding)?
+    captureEstablishmentOwner,
+  }) : runIds = runIds ?? MonotonicRunIdSource() {
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
       registry: registry,
       extensions: extensions,
       ids: ids,
-      captureEstablishmentOwner: (binding) {
-        final backend = plugins.backendForProvider(binding);
-        if (backend == null) return null;
-        return EnvironmentEstablishmentOwner(
-          pluginId: PluginId(backend.connection!.pluginId),
-          validate: () => backend.validateProviderOwnership(binding),
-        );
-      },
+      captureEstablishmentOwner:
+          captureEstablishmentOwner ??
+          (binding) {
+            final backend = plugins.backendForProvider(binding);
+            if (backend == null) return null;
+            return EnvironmentEstablishmentOwner(
+              pluginId: PluginId(backend.connection!.pluginId),
+              validate: () => backend.validateProviderOwnership(binding),
+            );
+          },
     );
     plugins = ApplicationPluginBootstrap(
       registry,

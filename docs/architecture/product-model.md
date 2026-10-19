@@ -328,11 +328,12 @@ not discard this backing. It remains non-reopenable, and lifecycle close retains
 the existing temporary cleanup semantics. Storage failure never falls back to
 memory or changes the Project into a durable one.
 
-The stock Git Worktree provider does not yet return an initial SQL plan. Its v1
-provider state and stock ChangeSetSource still use the existing baseline field;
-no second baseline is automatically written to Git-owned SQL. Adopting this path,
-removing that field, and switching stock comparison to Git-owned anchors must be
-one coordinated Git change, without migration, legacy import, or dual authority.
+The stock Git Worktree provider uses this path to retain its original establishment
+commit and expected branch in Git-owned Project SQL, atomically with the new core
+records. Its operational provider state contains no historical comparison baseline.
+Git comparison reads only that retained anchor; ordinary Worktree restoration does
+not require or recreate it. The [Git plugin](../../plugins/git/README.md) owns the
+schema and validation, with no migration, legacy import, or dual authority.
 
 Establishment can create provider-owned external resources before the database
 commit. If that later commit fails, core prevents semantic publication but cannot

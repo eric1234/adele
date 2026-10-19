@@ -385,13 +385,7 @@ void main() {
       });
       final CapabilityRegistry registry = CapabilityRegistry();
       final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
-      final PluginCapabilityActivation environmentGenerationA =
-          await _startGeneration(
-            host: host,
-            registry: registry,
-            artifact: gitArtifact,
-            providerId: providerId,
-          );
+      late final PluginCapabilityActivation environmentGenerationA;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ChatStrategyPlugin chat = ChatStrategyPlugin();
@@ -405,7 +399,18 @@ void main() {
             registry: registry,
             extensions: extensions,
             ids: const _IntegrationIds('session-environment-read'),
+            captureEstablishmentOwner: (binding) =>
+                _establishmentOwner(environmentGenerationA, binding),
           );
+      addTearDown(lifecycle.close);
+      environmentGenerationA = await _startGeneration(
+        host: host,
+        registry: registry,
+        lifecycle: lifecycle,
+        artifact: gitArtifact,
+        providerId: providerId,
+      );
+      addTearDown(environmentGenerationA.close);
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
         projectId: project.id,
@@ -553,6 +558,7 @@ void main() {
           await _startGeneration(
             host: host,
             registry: registry,
+            lifecycle: lifecycle,
             artifact: gitArtifact,
             providerId: providerId,
           );
@@ -719,14 +725,7 @@ void main() {
       });
       final CapabilityRegistry registry = CapabilityRegistry();
       final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
-      final PluginCapabilityActivation environmentActivation =
-          await _startGeneration(
-            host: host,
-            registry: registry,
-            artifact: gitArtifact,
-            providerId: providerId,
-          );
-      addTearDown(environmentActivation.close);
+      late final PluginCapabilityActivation environmentActivation;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ChatStrategyPlugin chat = ChatStrategyPlugin();
@@ -740,7 +739,17 @@ void main() {
             registry: registry,
             extensions: extensions,
             ids: const _IntegrationIds('session-environment-patch'),
+            captureEstablishmentOwner: (binding) =>
+                _establishmentOwner(environmentActivation, binding),
           );
+      environmentActivation = await _startGeneration(
+        host: host,
+        registry: registry,
+        lifecycle: lifecycle,
+        artifact: gitArtifact,
+        providerId: providerId,
+      );
+      addTearDown(environmentActivation.close);
       addTearDown(() async {
         try {
           if (!host.isClosed) await host.close(graceful: false);
@@ -1112,14 +1121,7 @@ void main() {
       });
       final CapabilityRegistry registry = CapabilityRegistry();
       final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
-      final PluginCapabilityActivation environmentActivation =
-          await _startGeneration(
-            host: host,
-            registry: registry,
-            artifact: gitArtifact,
-            providerId: providerId,
-          );
-      addTearDown(environmentActivation.close);
+      late final PluginCapabilityActivation environmentActivation;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ChatStrategyPlugin chat = ChatStrategyPlugin();
@@ -1133,7 +1135,18 @@ void main() {
             registry: registry,
             extensions: extensions,
             ids: const _IntegrationIds('session-environment-create-delete'),
+            captureEstablishmentOwner: (binding) =>
+                _establishmentOwner(environmentActivation, binding),
           );
+      addTearDown(lifecycle.close);
+      environmentActivation = await _startGeneration(
+        host: host,
+        registry: registry,
+        lifecycle: lifecycle,
+        artifact: gitArtifact,
+        providerId: providerId,
+      );
+      addTearDown(environmentActivation.close);
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
         projectId: project.id,
@@ -1897,12 +1910,15 @@ Future<ToolOutcome> _executeSearch(
 Future<PluginCapabilityActivation> _startGeneration({
   required PluginBackendHost host,
   required CapabilityRegistry registry,
+  required ProductLifecycleCoordinator lifecycle,
   required File artifact,
   required ProviderId providerId,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
     pluginId: _gitPluginId,
     artifactUri: artifact.uri,
+    createInfrastructureServices: (connection) =>
+        projectStorageServices(lifecycle, connection),
   );
   return PluginCapabilityActivation.register(
     connection: connection,
@@ -1919,6 +1935,21 @@ Future<PluginCapabilityActivation> _startGeneration({
         configurationContext: connection.defaultConfigurationContext,
       ),
     ],
+  );
+}
+
+EnvironmentEstablishmentOwner? _establishmentOwner(
+  PluginCapabilityActivation activation,
+  ProviderBinding binding,
+) {
+  if (!activation.owns(binding)) return null;
+  return EnvironmentEstablishmentOwner(
+    pluginId: PluginId(activation.connection.pluginId),
+    validate: () {
+      if (!activation.owns(binding)) {
+        throw StateError('Environment owner retired.');
+      }
+    },
   );
 }
 

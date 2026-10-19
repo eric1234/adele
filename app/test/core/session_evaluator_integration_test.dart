@@ -1119,6 +1119,8 @@ void main() {
       late Session selected;
       late Map<String, Object?> expected;
       late Map<String, Object?> beforeGit;
+      late String primaryBaseline;
+      late String selectedBaseline;
 
       Future<Map<String, Object?>> gitSnapshot() async => {
         'branches': await _git(repository, [
@@ -1159,6 +1161,10 @@ void main() {
         await _git(repository, ['init', '--initial-branch=main']);
         await _git(repository, ['add', '.']);
         await _git(repository, ['commit', '-m', 'Handoff fixture baseline']);
+        primaryBaseline = (await _git(repository, [
+          'rev-parse',
+          'HEAD',
+        ])).trim();
 
         final establishing = AdeleRuntime(
           ids: MonotonicProductIdSource(seed: 'git-handoff'),
@@ -1190,6 +1196,11 @@ void main() {
           '-m',
           'Independent additional baseline',
         ]);
+        selectedBaseline = (await _git(repository, [
+          'rev-parse',
+          'HEAD',
+        ])).trim();
+        expect(selectedBaseline, isNot(primaryBaseline));
         final binding = establishing.registry.resolve(
           environmentProviderCapability,
         );
@@ -1215,23 +1226,68 @@ void main() {
           providerState: established.providerState,
         );
         // There is no public additional-Environment creation lifecycle yet.
-        // Retain the real provider result, then load the normal durable graph.
-        _inspect(
-          gitSource,
-          (database) => database.execute(
-            'INSERT INTO adele_product_environments '
-            '(id, task_id, role, provider_id, provider_state_json) '
-            'VALUES (?, ?, ?, ?, ?)',
-            [
-              additional.id.value,
-              additional.taskId.value,
-              additional.role.name,
-              additional.providerId.value,
-              jsonEncode(additional.providerState),
-            ],
-          ),
-          write: true,
-        );
+        // Retain its core row and returned initial inserts atomically, then load
+        // the normal durable graph. Do not reenroll from HEAD or provider state.
+        final initial = established.initialState!;
+        final owner = establishing.lifecycle.captureEstablishmentOwner!(
+          binding,
+        )!;
+        establishing.lifecycle
+            .existingDatabaseForProject(opened)!
+            .ensurePluginSchema(owner.pluginId.value, [
+              initial.schema!,
+            ], definitionsOnly: true);
+        owner.validate();
+        _inspect(gitSource, (database) {
+          database.execute('BEGIN');
+          try {
+            database.execute(
+              'INSERT INTO adele_product_environments '
+              '(id, task_id, role, provider_id, provider_state_json) '
+              'VALUES (?, ?, ?, ?, ?)',
+              [
+                additional.id.value,
+                additional.taskId.value,
+                additional.role.name,
+                additional.providerId.value,
+                jsonEncode(additional.providerState),
+              ],
+            );
+            for (final insert in initial.inserts) {
+              final value = insert.toRelationalStatement();
+              final statement = database.prepare(value.sql);
+              try {
+                statement.executeWith(
+                  StatementParameters.named(value.parameters),
+                );
+                expect(database.updatedRows, value.expectedRows);
+              } finally {
+                statement.close();
+              }
+            }
+            database.execute('COMMIT');
+          } catch (_) {
+            database.execute('ROLLBACK');
+            rethrow;
+          }
+          final anchors = database.select(
+            'SELECT environment_id, baseline_commit FROM adele_git_task_anchors',
+          );
+          expect(
+            {
+              for (final row in anchors)
+                row['environment_id']: row['baseline_commit'],
+            },
+            {
+              created.environment.id.value: primaryBaseline,
+              additional.id.value: selectedBaseline,
+            },
+          );
+        }, write: true);
+        for (final environment in [created.environment, additional]) {
+          expect(environment.providerState!['schemaVersion'], 2);
+          expect(environment.providerState, isNot(contains('baselineCommit')));
+        }
         selectedRoot = Directory.fromUri(
           gitSource.uri.resolve(
             additional.providerState!['worktreeRelativePath']! as String,
@@ -1304,7 +1360,7 @@ void main() {
         additional.id.value,
         selectedRoot.path,
         '${selectedRoot.path}/nested source',
-        additional.providerState!['baselineCommit']! as String,
+        selectedBaseline,
         additional.providerState!['branch']! as String,
       ]) {
         expect(instructions, contains(value));
@@ -1315,14 +1371,7 @@ void main() {
       );
       expect(instructions, contains(':(top,literal)nested source'));
       expect(instructions, isNot(contains(primaryRoot.path)));
-      expect(
-        instructions,
-        isNot(
-          contains(
-            created.environment.providerState!['baselineCommit']! as String,
-          ),
-        ),
-      );
+      expect(instructions, isNot(contains(primaryBaseline)));
       expect(
         instructions.toLowerCase(),
         isNot(contains('metadata unavailable')),
@@ -1340,7 +1389,7 @@ void main() {
         expect(await gitSnapshot(), beforeGit);
         expect(
           (await _git(selectedRoot, ['rev-parse', 'HEAD'])).trim(),
-          isNot(additional.providerState!['baselineCommit']),
+          isNot(selectedBaseline),
         );
       });
       expectReady(handoff);

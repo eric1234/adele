@@ -1401,7 +1401,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'sessionExecution': false,
           'backendServices': <String>[],
           'capabilities': <Object?>[],
-          'environmentBufferedProcessCapabilities': <Object?>[],
+          'environmentReadCapabilities': <Object?>[],
           'strategyAffinity': 'independent',
           'actions': <Object?>[],
           'operations': <String, Object?>{},

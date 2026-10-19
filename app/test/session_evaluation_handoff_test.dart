@@ -3,9 +3,14 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_database.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqlite3/sqlite3.dart' hide Session;
 
+import '../tool/development_git_baseline.dart';
 import '../tool/session_evaluation_handoff.dart';
 
 void main() {
@@ -102,6 +107,124 @@ void main() {
     );
   });
 
+  test('missing backing stays absent; diagnostics never allocate storage', () {
+    final fixture = _Fixture(source, backing: false);
+    expect(
+      fixture.lifecycle.existingDatabaseForProject(fixture.project),
+      isNull,
+    );
+    expectUnavailable(
+      fixture.capture(),
+      'retained Git SQL baseline is unavailable or invalid.',
+    );
+    expect(
+      fixture.lifecycle.existingDatabaseForProject(fixture.project),
+      isNull,
+    );
+  });
+
+  test(
+    'temporary backing diagnostics are read-only and require exact SQL evidence',
+    () {
+      for (final sql in <String?>[
+        null,
+        "UPDATE adele_git_task_anchors SET expected_branch_ref='refs/heads/other' WHERE environment_id='additional'",
+        "UPDATE adele_product_session_environment_authority SET environment_id='primary'",
+        "UPDATE adele_product_environments SET task_id='other-task' WHERE id='additional'",
+        "UPDATE adele_product_tasks SET project_id='other-project'",
+        "DELETE FROM adele_git_task_anchors WHERE environment_id='additional'",
+        "UPDATE adele_schema_versions SET version=2 WHERE owner_id='dev.adele.plugin.git'",
+        "DELETE FROM adele_schema_versions WHERE owner_id='dev.adele.plugin.git'",
+        'DROP TABLE adele_git_task_anchors',
+      ]) {
+        final fixture = _Fixture(source, additional: true);
+        final database = sqlite3.open(fixture.database.path);
+        addTearDown(database.close);
+        List<Object?> snapshot() => [
+          for (final table in database.select(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+          ))
+            database
+                .select('SELECT * FROM ${table['name']}')
+                .map((row) => Map.of(row))
+                .toList(),
+        ];
+        if (sql != null) database.execute(sql);
+        final before = snapshot();
+        if (sql == null) {
+          expect(fixture.capture().baselineCommit, 'b' * 64);
+        } else {
+          expectUnavailable(
+            fixture.capture(),
+            'retained Git SQL baseline is unavailable or invalid.',
+          );
+        }
+        expect(snapshot(), before);
+      }
+    },
+  );
+
+  test('invalid SQL baselines never fall back to provider state or HEAD', () {
+    final fixture = _Fixture(source);
+    for (final value in <Object?>[
+      null,
+      '',
+      'HEAD',
+      'abcdef',
+      'a' * 39,
+      'a' * 41,
+      'a' * 63,
+      'a' * 65,
+      'g' * 40,
+      'A' * 40,
+      '${'a' * 40}\n',
+      '${'a' * 40}\x7f',
+    ]) {
+      fixture.setBaseline(value);
+      expectUnavailable(
+        fixture.capture(),
+        'retained Git SQL baseline is unavailable or invalid.',
+      );
+    }
+    fixture.replaceState({
+      ...fixture.environment.providerState!,
+      'baselineCommit': 'a' * 40,
+    });
+    expectUnavailable(
+      fixture.capture(),
+      'invalid or unsupported stock Git v2 state.',
+    );
+  });
+
+  test('SQL helper rejects a fabricated Environment and unrelated Session', () {
+    final fixture = _Fixture(source, additional: true);
+    final fabricated = Environment(
+      id: fixture.environment.id,
+      taskId: fixture.task.id,
+      role: fixture.environment.role,
+      providerId: fixture.environment.providerId,
+      providerState: fixture.environment.providerState,
+    );
+    expect(
+      () => developmentGitBaselineCommit(
+        fixture.lifecycle,
+        fabricated,
+        branch: 'adele-additional',
+        session: fixture.session,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => developmentGitBaselineCommit(
+        fixture.lifecycle,
+        fixture.store.primaryEnvironmentFor(fixture.task.id)!,
+        branch: 'adele-primary',
+        session: fixture.session,
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('rejects a valid existing scope unrelated to the Project source', () {
     final fixture = _Fixture(source, scope: 'nested/project');
     Directory('${fixture.worktree.path}/unrelated').createSync();
@@ -163,13 +286,13 @@ void main() {
       unrelated.session,
     ]) {
       expect(
-        () => SessionEvaluationHandoff.capture(fixture.store, session),
+        () => SessionEvaluationHandoff.capture(fixture.lifecycle, session),
         throwsArgumentError,
       );
     }
     expect(
       () => SessionEvaluationHandoff.capture(
-        InMemoryProductStore(),
+        unrelated.lifecycle,
         fixture.session,
       ),
       throwsArgumentError,
@@ -182,8 +305,14 @@ void main() {
     fixture.replaceState({
       ...fixture.environment.providerState!,
       'branch': 'adele-later',
-      'baselineCommit': 'c' * 40,
     });
+    fixture.database.executePluginTransaction([
+      RelationalStatement(
+        sql: 'UPDATE adele_git_task_anchors SET expected_branch_ref=:branch',
+        parameters: {':branch': 'refs/heads/adele-later'},
+        expectedRows: 1,
+      ),
+    ]);
     fixture.worktree.deleteSync(recursive: true);
     expect(handoff.environment, same(fixture.environment));
     expect(handoff.baselineCommit, 'a' * 40);
@@ -196,32 +325,32 @@ void main() {
     );
   });
 
-  test('requires every v1 key and rejects extra or renamed keys', () {
+  test('requires every v2 key and rejects extra or renamed keys', () {
     final fixture = _Fixture(source);
     final state = fixture.environment.providerState!;
     for (final key in state.keys) {
       fixture.replaceState({...state}..remove(key));
       expectUnavailable(
         fixture.capture(),
-        'invalid or unsupported stock Git v1 state.',
+        'invalid or unsupported stock Git v2 state.',
       );
     }
     fixture.replaceState({...state, 'extra': 'value'});
     expectUnavailable(
       fixture.capture(),
-      'invalid or unsupported stock Git v1 state.',
+      'invalid or unsupported stock Git v2 state.',
     );
     fixture.replaceState(
-      {...state, 'schema_version': 1}..remove('schemaVersion'),
+      {...state, 'schema_version': 2}..remove('schemaVersion'),
     );
     expectUnavailable(
       fixture.capture(),
-      'invalid or unsupported stock Git v1 state.',
+      'invalid or unsupported stock Git v2 state.',
     );
   });
 
   final invalidState = <String, List<Object?>>{
-    'schemaVersion': [null, '1', 1.0, 0, 2, true, [], <String, Object?>{}],
+    'schemaVersion': [null, '2', 2.0, 0, 1, true, [], <String, Object?>{}],
     'environmentId': [
       null,
       1,
@@ -282,25 +411,6 @@ void main() {
       'file:.adele/worktrees/name',
       r'.adele\worktrees\name',
     ],
-    'baselineCommit': [
-      null,
-      1,
-      false,
-      [],
-      <String, Object?>{},
-      '',
-      'HEAD',
-      'abcdef',
-      'a' * 39,
-      'a' * 41,
-      'a' * 63,
-      'a' * 65,
-      'g' * 40,
-      'A' * 40,
-      '${'a' * 40}\n',
-      '${'a' * 40}\x7f',
-      ' ${'a' * 40}',
-    ],
     'branch': [
       null,
       1,
@@ -332,8 +442,8 @@ void main() {
         expectUnavailable(
           fixture.capture(),
           entry.key == 'schemaVersion' || entry.key == 'environmentId'
-              ? 'invalid or unsupported stock Git v1 state.'
-              : 'malformed stock Git paths, baseline, or branch.',
+              ? 'invalid or unsupported stock Git v2 state.'
+              : 'malformed stock Git paths or branch.',
         );
       }
     });
@@ -348,7 +458,7 @@ void main() {
     });
     expectUnavailable(
       fixture.capture(),
-      'malformed stock Git paths, baseline, or branch.',
+      'malformed stock Git paths or branch.',
     );
   });
 
@@ -552,10 +662,7 @@ void main() {
           fixture.worktree.path,
           baseline,
         ]);
-        fixture.replaceState({
-          ...fixture.environment.providerState!,
-          'baselineCommit': baseline,
-        });
+        fixture.setBaseline(baseline);
         for (final entry in scopes.entries) {
           final committed = '${entry.value}${entry.key}-committed.txt';
           File(
@@ -586,6 +693,11 @@ void main() {
         final handoff = fixture.capture();
         expect(handoff.worktreeRoot, fixture.worktree.path);
         expect(handoff.sourceRelativePath, scope);
+        expect(handoff.baselineCommit, baseline);
+        expect(
+          (await git(fixture.worktree, ['rev-parse', 'HEAD'])).trim(),
+          isNot(baseline),
+        );
         final commands = handoff
             .readme(createdAt)
             .split('```sh\n')[1]
@@ -680,6 +792,7 @@ final class _Fixture {
     String providerId = 'dev.adele.environment.git-worktree',
     Uri? sourceLocation,
     String title = 'Evaluate the selected Task',
+    bool backing = true,
   }) {
     Directory('${repository.path}/.git').createSync();
     source = scope.isEmpty
@@ -701,13 +814,10 @@ final class _Fixture {
                 : providerId,
           ),
           providerState: {
-            'schemaVersion': 1,
+            'schemaVersion': 2,
             'environmentId': name,
             'sourceRelativePath': scope,
             'worktreeRelativePath': '.adele/worktrees/$name',
-            'baselineCommit': role == EnvironmentRole.primary
-                ? 'a' * 40
-                : 'b' * 64,
             'branch': 'adele-$name',
           },
         );
@@ -728,6 +838,41 @@ final class _Fixture {
       authorities: [(session.id, environment.id)],
       runRecords: [],
     );
+    lifecycle = ProductLifecycleCoordinator.generated(
+      store: store,
+      registry: CapabilityRegistry(),
+      extensions: ExtensionRegistry(),
+    );
+    addTearDown(lifecycle.close);
+    if (backing) {
+      database = lifecycle.databaseForSession(
+        session.id,
+        accessMode: ProjectStorageAccessMode.durableOrTemporary,
+      )!;
+      database.ensurePluginSchema('dev.adele.plugin.git', [
+        '''CREATE TABLE adele_git_task_anchors (
+          environment_id TEXT PRIMARY KEY,
+          baseline_commit TEXT,
+          expected_branch_ref TEXT
+        )''',
+      ]);
+      for (final value in [primary, if (additional) environment]) {
+        database.executePluginTransaction([
+          RelationalStatement(
+            sql:
+                'INSERT INTO adele_git_task_anchors VALUES (:id,:baseline,:branch)',
+            parameters: {
+              ':id': value.id.value,
+              ':baseline': value.role == EnvironmentRole.primary
+                  ? 'a' * 40
+                  : 'b' * 64,
+              ':branch': 'refs/heads/${value.providerState!['branch']}',
+            },
+            expectedRows: 1,
+          ),
+        ]);
+      }
+    }
     worktree = Directory(
       '${source.path}/.adele/worktrees/${environment.id.value}',
     )..createSync(recursive: true);
@@ -740,6 +885,8 @@ final class _Fixture {
   }
 
   final store = InMemoryProductStore();
+  late final ProductLifecycleCoordinator lifecycle;
+  late final ProjectDatabase database;
   late final Project project;
   late final Task task;
   late final Session session;
@@ -749,7 +896,16 @@ final class _Fixture {
   late final Directory selected;
 
   SessionEvaluationHandoff capture() =>
-      SessionEvaluationHandoff.capture(store, session);
+      SessionEvaluationHandoff.capture(lifecycle, session);
+
+  void setBaseline(Object? baseline) => database.executePluginTransaction([
+    RelationalStatement(
+      sql:
+          'UPDATE adele_git_task_anchors SET baseline_commit=:baseline WHERE environment_id=:id',
+      parameters: {':baseline': baseline, ':id': environment.id.value},
+      expectedRows: 1,
+    ),
+  ]);
 
   void replaceState(Map<String, Object?> state) => store.replaceEnvironment(
     Environment(

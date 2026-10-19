@@ -136,7 +136,10 @@ final class SessionEvidenceExporter {
     try {
       if (!await _confirm()) return;
       channel.validate();
-      final handoff = SessionEvaluationHandoff.capture(runtime.store, session);
+      final handoff = SessionEvaluationHandoff.capture(
+        runtime.lifecycle,
+        session,
+      );
       final document = await readSessionEvidence(client, session.id.value);
       channel.validate();
       final bytes = utf8.encode(jsonEncode(document));

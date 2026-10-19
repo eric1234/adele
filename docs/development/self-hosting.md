@@ -166,6 +166,10 @@ and execution adapters. Chat, context, tools, and model calls use maintained rem
 backend paths, not special in-process coding semantics. This composition does not
 use normal installation-catalog bootstrap, frontend/EVC composition, or the native
 picker; its Project source URI is already known.
+Manual Git activation receives ordinary Project storage infrastructure and captures
+the exact live activation's ownership for atomic Task establishment. Its original
+comparison baseline is retained in the Git-owned SQL table even for this temporary
+Project backing, not in provider state or inferred from a later HEAD.
 
 The runner uses an allow policy for validated tools, unlike the interactive
 desktop's approval-gated mutation/process policy. Domain validation, revision
@@ -218,10 +222,17 @@ generation/usage errors can occur before a run directory exists, and filesystem
 failures or forced termination can prevent report completion.
 
 The topology derives the current absolute Task worktree path from the current
-Project source and Git provider-state v1 `worktreeRelativePath`. The report's
+Project source and Git provider-state v2 `worktreeRelativePath`. The report's
 absolute `taskWorktreePath` is execution evidence, not provider-state restoration
 authority. Git evidence verifies the Task checkout root rather than accepting an
 enclosing Project repository if the nested worktree's Git marker is missing.
+The topology snapshots the original SQL baseline during initialization, before
+report callbacks or Runs. That evidence remains available after teardown deletes
+temporary backing and after later commits move HEAD. Missing baseline evidence
+fails diagnostics rather than substituting HEAD, provider state, or another
+Environment's anchor. The shared developer-only SQL reader uses only existing
+durable or temporary backing and does not create storage, prepare schemas, or
+write anchors; source-path safety checks remain separate.
 
 Inspect the evidence rather than treating runner success as proof that all
 requested validation passed. Individual tool/command failures and whitespace-check

@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -599,19 +600,7 @@ void main() {
       final ProviderId environmentProviderId = ProviderId(
         _gitEnvironmentProviderId,
       );
-      final PluginCapabilityActivation environmentActivation =
-          await _startEnvironmentProvider(
-            host: host,
-            registry: registry,
-            artifact: gitArtifact,
-            providerId: environmentProviderId,
-          );
-      addTearDown(environmentActivation.close);
-      expect(host.processId, sharedBackendHostProcess);
-      final ProviderBinding environmentBinding = registry.resolve(
-        environmentProviderCapability,
-        providerId: environmentProviderId,
-      );
+      late final PluginCapabilityActivation environmentActivation;
       final ProviderBinding modelBinding = registry.resolve(
         modelProviderCapability,
       );
@@ -628,7 +617,33 @@ void main() {
             registry: registry,
             extensions: extensions,
             ids: const _IntegrationIds('openai'),
+            captureEstablishmentOwner: (binding) {
+              final captured = environmentActivation;
+              if (!captured.owns(binding)) return null;
+              return EnvironmentEstablishmentOwner(
+                pluginId: PluginId(captured.connection.pluginId),
+                validate: () {
+                  if (!captured.owns(binding)) {
+                    throw StateError('Environment owner retired.');
+                  }
+                },
+              );
+            },
           );
+      addTearDown(lifecycle.close);
+      environmentActivation = await _startEnvironmentProvider(
+        host: host,
+        registry: registry,
+        lifecycle: lifecycle,
+        artifact: gitArtifact,
+        providerId: environmentProviderId,
+      );
+      addTearDown(environmentActivation.close);
+      expect(host.processId, sharedBackendHostProcess);
+      final ProviderBinding environmentBinding = registry.resolve(
+        environmentProviderCapability,
+        providerId: environmentProviderId,
+      );
       final Project project = lifecycle.createProject(sourceRepository.uri);
       final TaskCreationResult created = await lifecycle.createTask(
         projectId: project.id,
@@ -776,12 +791,15 @@ String _relativePathFromSearchOutput(String modelContent) {
 Future<PluginCapabilityActivation> _startEnvironmentProvider({
   required PluginBackendHost host,
   required CapabilityRegistry registry,
+  required ProductLifecycleCoordinator lifecycle,
   required File artifact,
   required ProviderId providerId,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
     pluginId: _gitPluginId,
     artifactUri: artifact.uri,
+    createInfrastructureServices: (connection) =>
+        projectStorageServices(lifecycle, connection),
   );
   return PluginCapabilityActivation.register(
     connection: connection,

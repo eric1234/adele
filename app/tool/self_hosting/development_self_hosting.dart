@@ -11,12 +11,14 @@ import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../development_git_baseline.dart';
 import 'development_agent_support.dart';
 
 const String developmentSelfHostingApiKeyProviderId =
@@ -32,9 +34,9 @@ typedef DevelopmentSelfHostingLog = void Function(String message);
 String developmentGitWorktreePath(Project project, Environment environment) {
   final state = environment.providerState;
   if (state?['schemaVersion'] is! int ||
-      state?['schemaVersion'] != 1 ||
+      state?['schemaVersion'] != 2 ||
       state?['environmentId'] != environment.id.value) {
-    throw StateError('Development Git diagnostics require matching v1 state.');
+    throw StateError('Development Git diagnostics require matching v2 state.');
   }
   final String source = Directory.fromUri(
     project.sourceLocation,
@@ -329,6 +331,7 @@ final class DevelopmentSelfHostingTopology {
     required this.projectSource,
     required this.chatSession,
     required this.resolvedStrategy,
+    required this.baselineCommit,
     required PluginBackendActivation chatStrategyActivation,
     required PluginCapabilityActivation environmentActivation,
     required PluginBackendActivation agentsMdActivation,
@@ -358,6 +361,7 @@ final class DevelopmentSelfHostingTopology {
   final SessionEnvironmentAuthority authority;
   final ToolCatalog catalog;
   final Directory projectSource;
+  final String baselineCommit;
   final PluginBackendActivation _chatStrategyActivation;
   final PluginCapabilityActivation _environmentActivation;
   final PluginBackendActivation _agentsMdActivation;
@@ -391,7 +395,21 @@ final class DevelopmentSelfHostingTopology {
     PluginBackendActivation? filesystemToolsActivation;
     PluginBackendActivation? commandToolsActivation;
     try {
-      runtime = AdeleRuntime(ids: _DevelopmentSelfHostingIds(identity));
+      runtime = AdeleRuntime(
+        ids: _DevelopmentSelfHostingIds(identity),
+        captureEstablishmentOwner: (binding) {
+          final captured = environmentActivation;
+          if (captured == null || !captured.owns(binding)) return null;
+          return EnvironmentEstablishmentOwner(
+            pluginId: PluginId(captured.connection.pluginId),
+            validate: () {
+              if (!captured.owns(binding)) {
+                throw StateError('The captured Environment owner retired.');
+              }
+            },
+          );
+        },
+      );
       final CapabilityRegistry registry = runtime.registry;
       final InMemoryProductStore store = runtime.store;
       final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
@@ -420,6 +438,8 @@ final class DevelopmentSelfHostingTopology {
           .startPlugin(
             pluginId: 'dev.adele.plugin.git',
             artifactUri: artifacts.gitArtifact.uri,
+            createInfrastructureServices: (connection) =>
+                projectStorageServices(lifecycle, connection),
           );
       environmentActivation =
           await PluginCapabilityActivation.registerAdvertised(
@@ -496,9 +516,10 @@ final class DevelopmentSelfHostingTopology {
               created.environment,
             ),
             taskBranch: _providerStateString(created.environment, 'branch'),
-            baselineCommit: _providerStateString(
+            baselineCommit: developmentGitBaselineCommit(
+              lifecycle,
               created.environment,
-              'baselineCommit',
+              branch: _providerStateString(created.environment, 'branch'),
             ),
           );
       onTaskEstablished?.call(retainedState);
@@ -556,6 +577,7 @@ final class DevelopmentSelfHostingTopology {
             projectSource: projectSource,
             chatSession: chatSession,
             resolvedStrategy: resolvedStrategy,
+            baselineCommit: retainedState.baselineCommit,
             chatStrategyActivation: chatStrategyActivation,
             environmentActivation: environmentActivation,
             agentsMdActivation: agentsMdActivation,
@@ -602,8 +624,6 @@ final class DevelopmentSelfHostingTopology {
   );
 
   String get taskBranch => _requiredProviderStateString('branch');
-
-  String get baselineCommit => _requiredProviderStateString('baselineCommit');
 
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
     _chatStrategyActivation.retire,

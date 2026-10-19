@@ -3,6 +3,7 @@ import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 
 import 'git_portable_unstaged_snapshot.dart';
+import 'git_task_anchor_schema.dart';
 
 /// Git-owned historical anchors. SQL, not a backend-local cache, retains state.
 /// The infrastructure connection must belong to dev.adele.plugin.git.
@@ -11,14 +12,6 @@ final class GitTaskAnchorStore {
 
   final ProjectStorageService storage;
   static const _access = ProjectStorageAccessMode.durableOrTemporary;
-  static const _schema = '''
-    CREATE TABLE adele_git_task_anchors (
-      environment_id TEXT NOT NULL PRIMARY KEY,
-      baseline_commit TEXT NOT NULL,
-      expected_branch_ref TEXT NOT NULL,
-      FOREIGN KEY (environment_id) REFERENCES adele_product_environments(id)
-    )
-  ''';
 
   /// [identity] is observed from the invocation's process grant, not its payload.
   Future<GitTaskComparisonAnchor> read(
@@ -28,7 +21,7 @@ final class GitTaskAnchorStore {
     try {
       checkActive?.call();
       await storage.ensureSchemaForSession(identity.sessionId, [
-        _schema,
+        gitTaskAnchorSchema,
       ], _access);
       checkActive?.call();
       final rows = await storage.queryForSession(
@@ -95,7 +88,7 @@ final class GitTaskAnchorStore {
     _validateAnchor(anchor);
     try {
       await storage.ensureSchemaForEnvironment(environmentId, [
-        _schema,
+        gitTaskAnchorSchema,
       ], _access);
       await storage.transactionForEnvironment(environmentId, [
         RelationalStatement(

@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_backend/git_backend.dart';
 
@@ -28,9 +29,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Object? responsePort = bootstrapMessage['responsePort'];
   final Object? defaultConfigurationContext =
       bootstrapMessage['defaultConfigurationContext'];
+  final Object? hostInfrastructureContext =
+      bootstrapMessage['hostInfrastructureContext'];
   if (bootstrapPort is! SendPort ||
       responsePort is! SendPort ||
-      defaultConfigurationContext is! String) {
+      defaultConfigurationContext is! String ||
+      hostInfrastructureContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
 
@@ -41,6 +45,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         EnvironmentProviderServiceAdapter(provider),
       );
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
+  final anchors = GitTaskAnchorStore(
+    ProjectStorageServiceClient(
+      hostRequests.bindInfrastructure(
+        hostInfrastructureContext: hostInfrastructureContext,
+        serviceId: projectStorageServiceId,
+      ),
+    ),
+  );
   final router = AdeleConfigurationContextRouter(
     contexts: {
       defaultConfigurationContext: {
@@ -48,10 +60,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         changeSetSourceServiceId: AdeleContextualServiceDispatcher(
           hostRequests: hostRequests,
           createDispatcher: (context) => ChangeSetSourceServiceDispatcher(
-            GitChangeSetSourceService(
-              provider: provider,
-              authorizedRead: AuthorizedEnvironmentReadServiceClient(
-                context.bind(authorizedEnvironmentReadServiceId),
+            GitPersistedChangeSetSourceService(
+              anchors: anchors,
+              processes: AuthorizedEnvironmentBufferedProcessServiceClient(
+                context.bind(authorizedEnvironmentBufferedProcessServiceId),
               ),
             ),
           ),
@@ -80,11 +92,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         serviceId: changeSetSourceServiceId,
         displayName: 'Git Changes',
         configurationContext: defaultConfigurationContext,
-        association: AdeleProviderAssociation(
-          capabilityId: environmentProviderCapability.id.value,
-          capabilityMajorVersion: environmentProviderCapability.majorVersion,
-          providerId: gitWorktreeEnvironmentProviderId,
-        ),
+        environmentBound: true,
+        environmentHostServices: const [
+          AdeleEnvironmentHostService.bufferedProcess,
+        ],
       ).toMap(),
     ],
   });

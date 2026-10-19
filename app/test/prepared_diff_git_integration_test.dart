@@ -8,8 +8,10 @@ import 'dart:typed_data';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_settings.dart';
@@ -18,6 +20,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:flutter/material.dart';
@@ -30,6 +33,7 @@ import '../../tools/backend_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import '../tool/diff_viewer_frontend_compiler.dart';
 import '../tool/source_editor_frontend_compiler.dart';
+import 'support/project_provider.dart';
 
 const _gitPlugin = 'dev.adele.plugin.git';
 const _diffPlugin = 'dev.adele.diff-viewer';
@@ -223,6 +227,10 @@ void main() {
       expect(descriptor['capabilities'], isNull);
       expect(descriptor['backendServices'], isNull);
       expect(descriptor['canRequestSourceDisplay'], isTrue);
+      expect(descriptor['environmentReadCapabilities'], isNull);
+      expect(descriptor['environmentBufferedProcessCapabilities'], [
+        {'id': _changes.id.value, 'majorVersion': _changes.majorVersion},
+      ]);
       final changeBinding = fixture.capabilities.resolve(_changes);
       final environmentBinding = fixture.capabilities.resolve(
         environmentProviderCapability,
@@ -235,11 +243,22 @@ void main() {
         environmentBinding.provider.id.value,
         'dev.adele.environment.git-worktree',
       );
+      final owner = fixture.backends.backends.single;
+      expect(owner.associationFor(changeBinding), isNull);
+      expect(owner.isEnvironmentBound(changeBinding), isTrue);
       expect(
-        fixture.backends.backends.single
-            .associationFor(changeBinding)!
-            .isSameRegistration(environmentBinding),
+        owner.allowsEnvironmentHostService(
+          changeBinding,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
         isTrue,
+      );
+      expect(
+        owner.allowsEnvironmentHostService(
+          changeBinding,
+          AdeleEnvironmentHostService.read,
+        ),
+        isFalse,
       );
       expect(await tester.runAsync(fixture.fingerprint), before);
 
@@ -581,9 +600,8 @@ void main() {
     (tester) async {
       const path = 'g baseline.txt';
       const working = 'Selected Environment working layer\n';
-      final selectedBaseline =
-          fixture.additional.providerState!['baselineCommit'];
-      final primaryBaseline = fixture.primary.providerState!['baselineCommit'];
+      final selectedBaseline = fixture.baseline(fixture.additional);
+      final primaryBaseline = fixture.baseline(fixture.primary);
       expect(selectedBaseline, isNot(primaryBaseline));
       expect(fixture.additional.role, EnvironmentRole.additional);
       expect(fixture.additionalRoot.path, isNot(fixture.primaryRoot.path));
@@ -788,6 +806,41 @@ void main() {
   );
 
   testWidgets(
+    'actual Diff refuses ambiguous Source providers without reading or choosing one',
+    (tester) async {
+      const text = 'Actual Source remains explicitly selected\n';
+      await tester.runAsync(() => fixture.write('a modified.txt', text));
+      await mount(tester);
+      await _visible(tester, text.trim());
+      final staleOpen = tester.widget<TextButton>(_sourceAction()).onPressed!;
+      final competing = fixture.extensions.register(
+        point: displaySourceFileContributions,
+        id: ExtensionId('test.competing-source'),
+        value: DisplaySourceFileContribution(
+          display: (_) async =>
+              fail('An ambiguous provider must not be invoked.'),
+        ),
+      );
+      addTearDown(competing.close);
+      staleOpen();
+      await _visible(tester, 'Multiple Source providers are available.');
+      expect(_sourceAction(), findsNothing);
+      expect(find.byType(CodeForge), findsNothing);
+      expect(fixture.reads, isEmpty);
+      await competing.close();
+      _refresh(tester);
+      await _visible(tester, text.trim());
+      tester.view.physicalSize = const Size(720, 1200);
+      await tester.pump();
+      await _openFromDiff(tester);
+      expect(_editor(tester).controller!.text, text);
+      expect(fixture.reads, [(fixture.additional.id.value, 'a modified.txt')]);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'actual Diff focuses an existing dirty Source document without replacing text or undo',
     (tester) async {
       const path = 'a modified.txt';
@@ -935,18 +988,49 @@ void main() {
           await _selectScope(tester, scope);
         }
         await _visible(tester, clean);
-        // A Git executable failure cannot turn an unsuccessful observation into clean.
-        await tester.runAsync(
-          () => File('${fixture.gate.path}/fail').writeAsString('fail'),
-        );
-        _refresh(tester);
-        await _visible(tester, 'Unable to load');
-        expect(find.textContaining(clean), findsNothing);
-        await tester.runAsync(() => File('${fixture.gate.path}/fail').delete());
-        await tester.runAsync(
-          () => tester.tap(find.widgetWithText(TextButton, 'Retry')),
-        );
-        await _visible(tester, clean);
+        final marker = File('${fixture.additionalWorktree.path}/.git');
+        final markerText = (await tester.runAsync(marker.readAsString))!;
+        for (final damage in [
+          'corrupt marker',
+          'missing marker',
+          'foreign marker',
+          'nested repository',
+        ]) {
+          await tester.runAsync(() async {
+            switch (damage) {
+              case 'corrupt marker':
+                await marker.writeAsString('invalid gitfile\n');
+              case 'missing marker':
+                // The linked checkout is under the original source repository.
+                // Its ancestor must not become replacement inspection authority.
+                await marker.delete();
+              case 'foreign marker':
+                await marker.writeAsString(
+                  await File(
+                    '${fixture.worktree(fixture.primary).path}/.git',
+                  ).readAsString(),
+                );
+              case 'nested repository':
+                await _git(fixture.additionalRoot, ['init']);
+            }
+          });
+          _refresh(tester);
+          await _visible(tester, 'Unable to load');
+          expect(find.textContaining(clean), findsNothing, reason: damage);
+          await tester.runAsync(() async {
+            if (damage == 'nested repository') {
+              await Directory(
+                '${fixture.additionalRoot.path}/.git',
+              ).delete(recursive: true);
+            } else {
+              await marker.writeAsString(markerText);
+            }
+          });
+          await tester.runAsync(
+            () => tester.tap(find.widgetWithText(TextButton, 'Retry')),
+          );
+          await _visible(tester, clean);
+        }
         await tester.runAsync(
           () => fixture.backends.backends.single.retireProvider(
             fixture.capabilities.resolve(_changes),
@@ -1017,16 +1101,19 @@ void main() {
                 'Pending Task snapshot commit',
               ]);
             }
-            await File('${fixture.gate.path}/armed').writeAsString('armed');
+            fixture.holdNextProcess = true;
           });
           final staleRefresh = _refreshCallback(tester);
           _refresh(tester);
           // This checkpoint is reached inside Git's actual snapshot operation, after
           // canonical materialization, contextual admission, and authority lookup.
-          await _waitFor(
-            tester,
-            () => File('${fixture.gate.path}/arrived').existsSync(),
-          );
+          await _waitFor(tester, () => fixture.processArrived.isCompleted);
+          final admitted = fixture.processes
+              .where(
+                (request) =>
+                    request['environmentId'] == fixture.additional.id.value,
+              )
+              .length;
           if (departure == 'navigation') {
             await fixture.navigate(
               tester,
@@ -1063,6 +1150,15 @@ void main() {
             find.textContaining('Old Session pending content'),
             findsNothing,
           );
+          expect(
+            fixture.processes.where(
+              (request) =>
+                  request['environmentId'] == fixture.additional.id.value,
+            ),
+            hasLength(admitted),
+            reason:
+                'Departure cannot admit another command for the old snapshot.',
+          );
           expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox.shrink());
         },
@@ -1075,7 +1171,6 @@ void main() {
 final class _Fixture {
   _Fixture(
     this.root,
-    this.gate,
     this.launcher,
     this.host,
     this.project,
@@ -1083,40 +1178,25 @@ final class _Fixture {
     this.primary,
     this.additional,
   ) {
-    final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
-    additionalSession = Session(
-      id: SessionId('additional-session'),
-      taskId: task.id,
-      strategyId: strategy,
-    );
-    primarySession = Session(
-      id: SessionId('primary-session'),
-      taskId: task.id,
-      strategyId: strategy,
-    );
-    store.publishRestoredProject(
-      project: project,
-      tasks: [task],
-      environments: [primary, additional],
-      sessions: [additionalSession, primarySession],
-      authorities: [
-        (additionalSession.id, additional.id),
-        (primarySession.id, primary.id),
-      ],
-      runRecords: const [],
-    );
-    environmentRuntime = EnvironmentRuntime(
+    lifecycle = ProductLifecycleCoordinator(
       store: store,
       registry: capabilities,
+      extensions: extensions,
+      ids: MonotonicProductIdSource(),
       providerForBinding: (binding) => GeneratedEnvironmentProvider(
         providerId: binding.provider.id,
         service: EnvironmentProviderServiceClient(
           _EnvironmentChannel(binding.requestChannel, this),
         ),
       ),
-      retainEnvironment: store.replaceEnvironment,
     );
-    backends = ApplicationPluginBootstrap(capabilities, extensions);
+    environmentRuntime = lifecycle.environmentRuntime;
+    backends = ApplicationPluginBootstrap(
+      capabilities,
+      extensions,
+      createInfrastructureServices: (connection) =>
+          projectStorageServices(lifecycle, connection),
+    );
     mainContent = PreparedMainContentHost(
       environmentRuntime: environmentRuntime,
     );
@@ -1164,12 +1244,26 @@ final class _Fixture {
     await _git(repository, ['commit', '-m', 'Diff integration baseline']);
     final capabilities = CapabilityRegistry();
     final extensions = ExtensionRegistry();
-    final backends = ApplicationPluginBootstrap(capabilities, extensions);
+    late ApplicationPluginBootstrap backends;
     final lifecycle = ProductLifecycleCoordinator.generated(
       store: InMemoryProductStore(),
       registry: capabilities,
       extensions: extensions,
+      captureEstablishmentOwner: (binding) {
+        final owner = backends.backendForProvider(binding)!;
+        return EnvironmentEstablishmentOwner(
+          pluginId: PluginId(owner.connection!.pluginId),
+          validate: () => owner.validateProviderOwnership(binding),
+        );
+      },
     );
+    backends = ApplicationPluginBootstrap(
+      capabilities,
+      extensions,
+      createInfrastructureServices: (connection) =>
+          projectStorageServices(lifecycle, connection),
+    );
+    final projectProvider = _projectProvider(capabilities);
     late Project project;
     late TaskCreationResult created;
     late Environment additional;
@@ -1185,19 +1279,24 @@ final class _Fixture {
         InstalledBackendState.active,
         reason: '${backends.backends.single.failure}',
       );
-      project = lifecycle.createProject(source.uri);
+      project = await lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: lifecycle.resolveProjectProvider(projectProvider.providerId),
+      );
       created = await lifecycle.createTask(
         projectId: project.id,
         title: 'Real Diff Task',
       );
       // Establish the nonprimary Environment from a genuinely newer source
-      // commit. Retained provider state, not a synthetic baseline, is restored.
+      // commit. Both the lifecycle state and actual returned SQL plan are retained.
       await File(
         '${source.path}/g baseline.txt',
       ).writeAsString('Additional establishment baseline\n');
       await _git(source, ['add', 'g baseline.txt']);
       await _git(source, ['commit', '-m', 'Additional Environment baseline']);
       final binding = capabilities.resolve(environmentProviderCapability);
+      final owner = backends.backendForProvider(binding)!;
+      owner.validateProviderOwnership(binding);
       final provider = GeneratedEnvironmentProvider(
         providerId: binding.provider.id,
         service: EnvironmentProviderServiceClient(binding.requestChannel),
@@ -1219,56 +1318,104 @@ final class _Fixture {
         providerId: value.providerId,
         providerState: established.providerState,
       );
+      final database = lifecycle.databaseForEnvironment(
+        created.environment.id,
+      )!;
+      final initial = established.initialState!;
+      owner.validateProviderOwnership(binding);
+      if (initial.schema case final schema?) {
+        database.ensurePluginSchema(owner.connection!.pluginId, [
+          schema,
+        ], definitionsOnly: true);
+      }
+      // Additional creation has no public lifecycle API. Trusted fixture setup
+      // retains its core row and the provider's required inserts in one commit.
+      database.executePluginTransaction([
+        RelationalStatement(
+          sql:
+              'INSERT INTO adele_product_environments '
+              '(id, task_id, role, provider_id, provider_state_json) '
+              'VALUES (:id, :task, :role, :provider, :state)',
+          parameters: {
+            ':id': additional.id.value,
+            ':task': additional.taskId.value,
+            ':role': additional.role.name,
+            ':provider': additional.providerId.value,
+            ':state': jsonEncode(additional.providerState),
+          },
+          expectedRows: 1,
+        ),
+        for (final insert in initial.inserts) insert.toRelationalStatement(),
+      ]);
+      expect(database.loadProductGraph().sessions, isEmpty);
+      expect(
+        database.queryPluginRows(
+          'SELECT environment_id FROM adele_git_task_anchors',
+          const {},
+        ),
+        hasLength(2),
+      );
+      for (final (id, environment) in [
+        ('additional-session', additional),
+        ('primary-session', created.environment),
+      ]) {
+        expect(environment.providerState!['schemaVersion'], 2);
+        expect(environment.providerState, isNot(contains('baselineCommit')));
+        database.insertSessionWithAuthority(
+          Session(
+            id: SessionId(id),
+            taskId: created.task.id,
+            strategyId: OrchestrationStrategyId('test.uninstalled-strategy'),
+          ),
+          environment.id,
+        );
+      }
     } finally {
       await backends.close();
       await lifecycle.close();
+      await projectProvider.close();
     }
-    final gate = await Directory('${root.path}/gate').create();
-    var launcher = aotRuntime;
-    if (Platform.isLinux) {
-      final git = (await Process.run('which', [
-        'git',
-      ])).stdout.toString().trim();
-      final fifo = '${gate.path}/release';
-      final result = await Process.run('mkfifo', [fifo]);
-      expect(result.exitCode, 0);
-      // Test-only transparent launcher: production still executes Git directly.
-      // A FIFO acknowledgement, not elapsed time, gates an admitted operation.
-      await File('${gate.path}/git').writeAsString('''#!/bin/sh
-if [ -f ${_quote('${gate.path}/fail')} ]; then exit 73; fi
-if [ -f ${_quote('${gate.path}/armed')} ] && mv ${_quote('${gate.path}/armed')} ${_quote('${gate.path}/arrived')}; then
-  IFS= read -r release < ${_quote(fifo)}
-fi
-exec ${_quote(git)} "\$@"
-''');
-      launcher = '${gate.path}/runtime';
-      await File(launcher).writeAsString('''#!/bin/sh
-export PATH=${_quote(gate.path)}:"\$PATH"
-exec ${_quote(aotRuntime)} "\$@"
-''');
-      expect(
-        (await Process.run('chmod', [
-          '+x',
-          '${gate.path}/git',
-          launcher,
-        ])).exitCode,
-        0,
-      );
-    }
-    return _Fixture(
+    final fixture = _Fixture(
       root,
-      gate,
-      launcher,
+      aotRuntime,
       host,
       project,
       created.task,
       created.environment,
       additional,
     );
+    final reopenedProvider = _projectProvider(fixture.capabilities);
+    try {
+      final reopened = await fixture.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: fixture.lifecycle.resolveProjectProvider(
+          reopenedProvider.providerId,
+        ),
+      );
+      expect(reopened.id, project.id);
+      fixture.additionalSession = fixture.store.session(
+        SessionId('additional-session'),
+      )!;
+      fixture.primarySession = fixture.store.session(
+        SessionId('primary-session'),
+      )!;
+      expect(
+        fixture.baseline(additional),
+        isNot(fixture.baseline(created.environment)),
+      );
+      for (final environment in [created.environment, additional]) {
+        expect(
+          fixture.environmentRuntime.currentMaterialization(environment.id),
+          isNull,
+        );
+      }
+    } finally {
+      await reopenedProvider.close();
+    }
+    return fixture;
   }
 
   final Directory root;
-  final Directory gate;
   final String launcher;
   final File host;
   final Project project;
@@ -1278,6 +1425,7 @@ exec ${_quote(aotRuntime)} "\$@"
   final capabilities = CapabilityRegistry();
   final extensions = ExtensionRegistry();
   final store = InMemoryProductStore();
+  late final ProductLifecycleCoordinator lifecycle;
   late final Session additionalSession;
   late final Session primarySession;
   late final EnvironmentRuntime environmentRuntime;
@@ -1288,7 +1436,21 @@ exec ${_quote(aotRuntime)} "\$@"
   bool holdNextRead = false;
   final readArrived = Completer<void>();
   final readRelease = Completer<void>();
-  bool _released = false;
+  bool holdNextProcess = false;
+  final processArrived = Completer<void>();
+  final processRelease = Completer<void>();
+  final processes = <Map<String, Object?>>[];
+
+  String baseline(Environment environment) =>
+      lifecycle
+              .databaseForEnvironment(environment.id)!
+              .queryPluginRows(
+                'SELECT baseline_commit FROM adele_git_task_anchors WHERE environment_id=:id',
+                {':id': environment.id.value},
+              )
+              .single
+              .values['baseline_commit']!
+          as String;
 
   Directory worktree(Environment environment) => Directory.fromUri(
     project.sourceLocation.resolve(
@@ -1361,11 +1523,7 @@ exec ${_quote(aotRuntime)} "\$@"
   }
 
   Future<void> releaseGate() async {
-    if (_released || !File('${gate.path}/arrived').existsSync()) return;
-    _released = true;
-    await File(
-      '${gate.path}/release',
-    ).writeAsString('release\n').timeout(_bound);
+    if (!processRelease.isCompleted) processRelease.complete();
   }
 
   Future<void> close() async {
@@ -1373,6 +1531,7 @@ exec ${_quote(aotRuntime)} "\$@"
     await releaseGate();
     await frontends.close();
     await backends.close();
+    await lifecycle.close();
     await root.delete(recursive: true);
   }
 }
@@ -1385,6 +1544,18 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (method == environmentProviderServiceRunBufferedProcessId) {
+      fixture.processes.add(Map.of(payload));
+      final held = fixture.holdNextProcess;
+      fixture.holdNextProcess = false;
+      final result = await delegate.request(method, payload);
+      if (held) {
+        // Real stock Git executed the command. Gate only its unchanged response.
+        fixture.processArrived.complete();
+        await fixture.processRelease.future;
+      }
+      return result;
+    }
     if (method != environmentProviderServiceReadFileId) {
       return delegate.request(method, payload);
     }
@@ -1510,7 +1681,15 @@ Future<void> _waitFor(WidgetTester tester, bool Function() complete) async {
   );
 }
 
-String _quote(String text) => "'${text.replaceAll("'", "'\\''")}'";
+TestProjectProvider _projectProvider(CapabilityRegistry registry) =>
+    TestProjectProvider(
+      registry,
+      prepare: (source) async => ProjectBacking(
+        sourceLocation: source,
+        databaseRelativePath: '.adele/data.db',
+      ),
+    );
+
 String _dartExecutable() {
   var directory = File(Platform.resolvedExecutable).parent;
   while (directory.parent.path != directory.path) {
