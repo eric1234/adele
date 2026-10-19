@@ -7,18 +7,25 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/environment_capability_selection.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_database.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:git_backend/git_backend.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -93,8 +100,8 @@ void main() {
         'baseline',
       ]);
       if (id == 'additional') {
-        // Retain the fixture's exact baseline before subsequent commits. Startup
-        // provisions this value into B; no invocation derives it from current HEAD.
+        // Retain the exact baseline before subsequent commits. Trusted setup
+        // provisions it; no invocation derives it from current HEAD.
         selectedBaseline = await _git(repository, ['rev-parse', 'HEAD']);
         for (final side in ['conflict-side', _selectedBranch]) {
           await _git(repository, [
@@ -245,12 +252,14 @@ void main() {
     bool concurrent = false,
     bool present = true,
     CapabilityRegistry? registry,
+    ProductLifecycleCoordinator? lifecycle,
     String? additionalRoot,
     bool withTaskAnchor = true,
     String? baselineCommit,
     String expectedBranchRef = _selectedBranchRef,
   }) async {
     final selectedRoots = {...roots, 'additional': ?additionalRoot};
+    final callablePlugin = lifecycle == null ? _callablePlugin : gitPluginId;
     tester.view.physicalSize = const Size(1600, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -259,6 +268,8 @@ void main() {
       files: temporary,
       independent: true,
       capabilities: registry,
+      lifecycle: lifecycle,
+      callablePlugin: callablePlugin,
       environments: [
         for (final id in ['additional', 'primary'])
           Environment(
@@ -281,7 +292,7 @@ void main() {
       ).create();
       for (final (id, artifact) in [
         (_environmentPlugin, environmentArtifact),
-        (_callablePlugin, callableArtifact),
+        (callablePlugin, callableArtifact),
       ]) {
         final installation = await Directory('${root.path}/$id').create();
         await artifact.copy('${installation.path}/backend.aot');
@@ -337,9 +348,10 @@ void main() {
               ],
             }),
           ],
-          _callablePlugin: [
+          callablePlugin: [
             jsonEncode({
-              if (withTaskAnchor)
+              'persisted': lifecycle != null,
+              if (lifecycle == null && withTaskAnchor)
                 'taskAnchor': {
                   'baselineCommit': baselineCommit ?? selectedBaseline,
                   'expectedBranchRef': expectedBranchRef,
@@ -347,7 +359,9 @@ void main() {
               'exposures': [
                 if (providerPresent)
                   AdeleCapabilityExposure(
-                    providerId: 'test.callable.a',
+                    providerId: lifecycle == null
+                        ? 'test.callable.a'
+                        : gitChangeSetSourceProviderId,
                     capabilityId: _capability.id.value,
                     capabilityMajorVersion: 1,
                     serviceId: _service,
@@ -393,6 +407,63 @@ void main() {
     }
   }
 
+  Future<
+    ({
+      Directory backing,
+      ProductLifecycleCoordinator lifecycle,
+      CapabilityRegistry registry,
+    })
+  >
+  openDurable(
+    WidgetTester tester, {
+    Directory? backing,
+    String? additionalRoot,
+  }) async => (await tester.runAsync(() async {
+    final source =
+        backing ??
+        await Directory(
+          '${temporary.absolute.path}/project-${sequence++}',
+        ).create();
+    if (backing == null) {
+      _seedProject(source, {...roots, 'additional': ?additionalRoot});
+    }
+    final registry = CapabilityRegistry();
+    final providerId = ProviderId('test.portable.project');
+    final registration = registry.register(
+      provider: ProviderDescriptor(
+        id: providerId,
+        capability: projectProviderCapability,
+        pluginId: 'test.portable.project',
+        displayName: 'Durable fixture Project',
+        serviceId: projectProviderServiceId,
+      ),
+      endpoint: AdeleRequestChannelEndpoint(
+        channel: _ProjectChannel(),
+        serviceId: projectProviderServiceId,
+        isAvailable: () => true,
+      ),
+    );
+    addTearDown(registration.close);
+    final lifecycle = ProductLifecycleCoordinator.generated(
+      store: InMemoryProductStore(),
+      registry: registry,
+      extensions: ExtensionRegistry(),
+    );
+    addTearDown(lifecycle.close);
+    final project = await lifecycle.openProject(
+      sourceLocation: source.uri,
+      provider: lifecycle.resolveProjectProvider(providerId),
+    );
+    expect(project.id, ProjectId('project'));
+    for (final id in ['additional', 'primary']) {
+      expect(
+        lifecycle.environmentRuntime.currentMaterialization(EnvironmentId(id)),
+        isNull,
+      );
+    }
+    return (backing: source, lifecycle: lifecycle, registry: registry);
+  }))!;
+
   test(
     'independent A and semantic B/C preserve implementation boundaries',
     () async {
@@ -412,6 +483,10 @@ void main() {
       expect(b, contains('processes: processes,'));
       expect(b, contains('taskAnchor: taskAnchor,'));
       expect(b, contains("state.options['taskAnchor']"));
+      expect(b, contains('GitPersistedChangeSetSourceService('));
+      expect(b, contains('ProjectStorageServiceClient('));
+      expect(b, contains('state.hostRequests.bindInfrastructure('));
+      expect(b, isNot(contains('.enroll(')));
       expect(
         b.indexOf('GitTaskComparisonAnchor('),
         lessThan(b.indexOf('createDispatcher:')),
@@ -443,9 +518,492 @@ void main() {
       expect(c, isNot(contains('expectedBranchRef')));
       expect(c, isNot(contains('taskAnchor')));
       expect(c, isNot(contains('package:adele_environment')));
+      expect(c, isNot(contains('package:adele_project_storage')));
+      expect(c, isNot(contains('capturedIdentity')));
       expect(c, isNot(contains('EnvironmentBufferedProcessRequest')));
       expect(c, isNot(contains('runBufferedProcess')));
       expect(c, isNot(contains('package:git_backend')));
+    },
+  );
+
+  testWidgets(
+    'persisted Task anchors select exact nonprimary and primary Environments and shared Sessions',
+    (tester) async {
+      final durable = await openDurable(tester);
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        present: false,
+      );
+      expect(fixture.connection.pluginId, gitPluginId);
+      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+      final anchors = _anchorStore(durable.lifecycle, fixture);
+      await tester.runAsync(() async {
+        for (final (session, environment, baseline, branch) in [
+          (
+            'nonprimary-session',
+            'additional',
+            selectedBaseline,
+            _selectedBranchRef,
+          ),
+          ('primary-session', 'primary', primaryBaseline, 'refs/heads/main'),
+        ]) {
+          await anchors.enroll(
+            identity: AuthorizedEnvironmentIdentity(
+              sessionId: session,
+              environmentId: environment,
+            ),
+            anchor: GitTaskComparisonAnchor(
+              baselineCommit: baseline,
+              expectedBranchRef: branch,
+            ),
+          );
+        }
+      });
+      final database = durable.lifecycle.databaseForSession(
+        fixture.sessionA.id,
+      )!;
+      expect(
+        database
+            .queryPluginRows(
+              'SELECT owner_id, version FROM adele_schema_versions WHERE owner_id=:owner',
+              {':owner': gitPluginId},
+            )
+            .map((row) => row.values),
+        [
+          {'owner_id': gitPluginId, 'version': 1},
+        ],
+      );
+      final retained = _anchorRows(durable.lifecycle);
+      expect(retained, [
+        {
+          'environment_id': 'additional',
+          'baseline_commit': selectedBaseline,
+          'expected_branch_ref': _selectedBranchRef,
+        },
+        {
+          'environment_id': 'primary',
+          'baseline_commit': primaryBaseline,
+          'expected_branch_ref': 'refs/heads/main',
+        },
+      ]);
+      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      await tester.pumpWidget(fixture.widget(concurrent: true));
+      await tester.pumpAndSettle();
+      for (final pane in ['a', 'b']) {
+        await _select(tester, pane: pane);
+        _press(tester, 'Task', pane: pane);
+        final snapshot = await _snapshot(tester, pane: pane);
+        if (pane == 'a') {
+          _expectAdditional(snapshot, scope: 'Task');
+        } else {
+          expect(
+            snapshot,
+            startsWith('snapshot\ncommitted\nstaged\nunstaged\n'),
+          );
+          expect(snapshot, contains('primary-only.txt|modified|text'));
+          expect(snapshot, contains('deletion:old primary:false'));
+          expect(snapshot, contains('addition:new primary:false'));
+          expect(snapshot, isNot(contains('committed-only.txt')));
+        }
+      }
+      final selected = (await tester.runAsync(
+        () => CapturedEnvironmentCapabilities(
+          environmentRuntime: fixture.environmentRuntime,
+          backends: fixture.backends,
+          session: fixture.sessionA,
+        ).resolve(_capability),
+      ))!;
+      expect(selected.environment.id, EnvironmentId('additional'));
+      expect(selected.environment.role, EnvironmentRole.additional);
+      expect(selected.binding.provider.id.value, gitChangeSetSourceProviderId);
+      expect(fixture.callableOwner.associationFor(selected.binding), isNull);
+      fixture.callableOwner.validateProviderOwnership(selected.binding);
+      fixture.environmentOwner.validateProviderOwnership(
+        selected.materialization.binding,
+      );
+
+      final sibling = durable.lifecycle.store.session(
+        SessionId('shared-session'),
+      )!;
+      expect(sibling, isNot(same(fixture.sessionA)));
+      expect(
+        durable.lifecycle.store
+            .requireSessionAuthority(sibling.id)
+            .environmentId,
+        EnvironmentId('additional'),
+      );
+      fixture.frontends.unbind(fixture.sessionA);
+      fixture.frontends.unbind(fixture.sessionB);
+      await tester.pumpWidget(fixture.widget(session: sibling));
+      await tester.pumpAndSettle();
+      await _select(tester);
+      _press(tester, 'Task');
+      _expectAdditional(await _snapshot(tester), scope: 'Task');
+      expect(_anchorRows(durable.lifecycle), retained);
+      final calls = (await tester.runAsync(() => _calls(fixture)))!;
+      expect(calls, hasLength(3));
+      expect(
+        calls.map((call) => call['hostInvocationContext']).toSet(),
+        hasLength(3),
+      );
+      for (final call in calls) {
+        expect(call['method'], _method('Task'));
+        expect(call['payload'], isEmpty);
+        await tester.runAsync(
+          () => _denied(fixture, call['hostInvocationContext'] as String),
+        );
+      }
+      final evidence = (await tester.runAsync(fixture.snapshot))!;
+      expect(evidence['reads'], isEmpty);
+      final processes = (evidence['processes'] as List)
+          .cast<Map<Object?, Object?>>();
+      expect(processes.map((process) => process['environmentId']).toSet(), {
+        'additional',
+        'primary',
+      });
+      for (final process in processes) {
+        expect(process['cwd'], roots[process['environmentId']]);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'persisted missing anchor never borrows primary and leaves Unstaged and Uncommitted usable',
+    (tester) async {
+      final durable = await openDurable(tester);
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        present: false,
+      );
+      await tester.runAsync(
+        () => _anchorStore(durable.lifecycle, fixture).enroll(
+          identity: AuthorizedEnvironmentIdentity(
+            sessionId: 'primary-session',
+            environmentId: 'primary',
+          ),
+          anchor: GitTaskComparisonAnchor(
+            baselineCommit: primaryBaseline,
+            expectedBranchRef: 'refs/heads/main',
+          ),
+        ),
+      );
+      final retained = _anchorRows(durable.lifecycle);
+      await tester.pumpWidget(fixture.widget());
+      await tester.pumpAndSettle();
+      for (final label in ['Wrong service', 'Missing provider']) {
+        _press(tester, label);
+        await _text(tester, 'selection:unavailable');
+      }
+      expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
+      await _select(tester);
+      _press(tester, 'Task');
+      await _text(tester, 'snapshot:unavailable');
+      final probe =
+          (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
+      expect(probe['failures'], ['baseline_unavailable']);
+      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      for (final scope in ['Unstaged', 'Uncommitted']) {
+        _press(tester, scope);
+        _expectAdditional(await _snapshot(tester), scope: scope);
+      }
+      expect(_anchorRows(durable.lifecycle), retained);
+      final processes =
+          ((await tester.runAsync(fixture.snapshot))!['processes'] as List)
+              .cast<Map<Object?, Object?>>();
+      expect(processes, isNotEmpty);
+      expect(
+        processes.every((process) => process['environmentId'] == 'additional'),
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'persisted Task replacement and durable reopen retain old baseline after HEAD changes without reenrollment',
+    (tester) async {
+      final repository = (await tester.runAsync(() async {
+        final name = 'persisted-reopen-${sequence++}';
+        await _git(temporary, ['clone', '--no-hardlinks', committedRoot, name]);
+        return Directory('${temporary.path}/$name').resolveSymbolicLinks();
+      }))!;
+      final durable = await openDurable(tester, additionalRoot: repository);
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        additionalRoot: repository,
+        present: false,
+      );
+      final identity = AuthorizedEnvironmentIdentity(
+        sessionId: 'nonprimary-session',
+        environmentId: 'additional',
+      );
+      final anchors = _anchorStore(durable.lifecycle, fixture);
+      await tester.runAsync(
+        () => anchors.enroll(
+          identity: identity,
+          anchor: GitTaskComparisonAnchor(
+            baselineCommit: selectedBaseline,
+            expectedBranchRef: _selectedBranchRef,
+          ),
+        ),
+      );
+      final retained = _anchorRows(durable.lifecycle);
+      await tester.pumpWidget(fixture.widget());
+      await tester.pumpAndSettle();
+      await _select(tester);
+      final old = fixture;
+      final oldBinding = old.capabilities.resolve(
+        _capability,
+        providerId: ProviderId(gitChangeSetSourceProviderId),
+      );
+      final stale = _callback(tester, 'Task');
+      await tester.runAsync(
+        () => old.control('hold', {'key': 'process:completed'}),
+      );
+      _press(tester, 'Task');
+      await tester.runAsync(() => old.wait(tester, 'process:completed'));
+      final token = (await tester.runAsync(() => _token(old)))!;
+      await tester.runAsync(() async {
+        await _denied(
+          old,
+          token,
+          service: projectStorageServiceId,
+          method: projectStorageServiceQueryForSessionId,
+          arguments: {
+            'sessionId': identity.sessionId,
+            'sql': 'SELECT 1',
+            'parameters': <String, Object?>{},
+            'accessMode': 'durable',
+          },
+        );
+        expect(
+          await old.controlOn(old.environmentConnection, 'attackBuffered', {
+            'token': token,
+          }),
+          {'ok': false},
+        );
+        await old.backends.close();
+        await expectLater(anchors.read(identity), throwsA(isA<Exception>()));
+      });
+      await _text(tester, 'snapshot:unavailable');
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        additionalRoot: repository,
+        present: false,
+      );
+      expect(fixture.connection, isNot(same(old.connection)));
+      expect(
+        fixture.capabilities
+            .resolve(
+              _capability,
+              providerId: ProviderId(gitChangeSetSourceProviderId),
+            )
+            .isSameRegistration(oldBinding),
+        isFalse,
+      );
+      stale();
+      await _text(tester, 'snapshot:unavailable');
+      await tester.runAsync(() => _denied(fixture, token));
+      expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
+      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      await tester.pumpWidget(fixture.widget());
+      await tester.pumpAndSettle();
+      await _select(tester);
+      _press(tester, 'Task');
+      _expectCommitted(await _snapshot(tester));
+      expect(_anchorRows(durable.lifecycle), retained);
+      final oldSession = fixture.sessionA;
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        await fixture.close();
+        await old.close();
+        await durable.lifecycle.close();
+        final root = Directory(repository);
+        await File(
+          '$repository/after-enrollment.txt',
+        ).writeAsString('committed after enrollment\n');
+        await _git(root, ['add', '--all']);
+        await _git(root, [
+          '-c',
+          'user.name=Fixture',
+          '-c',
+          'user.email=fixture@example.invalid',
+          'commit',
+          '-m',
+          'after enrollment',
+        ]);
+        expect(
+          await _git(root, ['rev-parse', 'HEAD']),
+          isNot(selectedBaseline),
+        );
+      });
+      final reopened = await openDurable(tester, backing: durable.backing);
+      expect(_anchorRows(reopened.lifecycle), retained);
+      await mount(
+        tester,
+        registry: reopened.registry,
+        lifecycle: reopened.lifecycle,
+        additionalRoot: repository,
+      );
+      expect(fixture.sessionA, isNot(same(oldSession)));
+      expect(fixture.sessionA.id, oldSession.id);
+      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      await _select(tester);
+      _press(tester, 'Uncommitted');
+      await _text(tester, 'snapshot\nstaged\nunstaged\nconflicts');
+      _press(tester, 'Task');
+      final snapshot = await _snapshot(tester);
+      _expectCommitted(snapshot);
+      expect(snapshot, contains('after-enrollment.txt|added|text'));
+      expect(snapshot, contains('addition:committed after enrollment:false'));
+      expect(snapshot, endsWith('\nstaged\nunstaged\nconflicts'));
+      expect(_anchorRows(reopened.lifecycle), retained);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'persisted temporary volatile Project retains its anchor across AOT replacement without reenrollment',
+    (tester) async {
+      // Reuse the harness's canonical volatile graph, without opening a Project
+      // provider or starting this seed installation's backend/frontend owners.
+      final seed = PreparedEnvironmentCapabilityInstallation(
+        files: temporary,
+        independent: true,
+        sourceLocation: Uri.parse('test:/volatile-portable-git'),
+        environments: [
+          for (final id in ['additional', 'primary'])
+            Environment(
+              id: EnvironmentId(id),
+              taskId: TaskId('task'),
+              role: id == 'additional'
+                  ? EnvironmentRole.additional
+                  : EnvironmentRole.primary,
+              providerId: ProviderId(
+                'test.environment.${id == 'additional' ? 'a' : 'b'}',
+              ),
+              providerState: {'root': roots[id]},
+            ),
+        ],
+      );
+      addTearDown(seed.close);
+      final lifecycle = ProductLifecycleCoordinator.generated(
+        store: seed.environmentRuntime.store,
+        registry: seed.capabilities,
+        extensions: seed.extensions,
+      );
+      addTearDown(lifecycle.close);
+      expect(lifecycle.databaseForSession(seed.sessionA.id), isNull);
+      await mount(
+        tester,
+        registry: seed.capabilities,
+        lifecycle: lifecycle,
+        present: false,
+      );
+      final identity = AuthorizedEnvironmentIdentity(
+        sessionId: fixture.sessionA.id.value,
+        environmentId: 'additional',
+      );
+      final anchors = _anchorStore(lifecycle, fixture);
+      await tester.runAsync(
+        () => anchors.enroll(
+          identity: identity,
+          anchor: GitTaskComparisonAnchor(
+            baselineCommit: selectedBaseline,
+            expectedBranchRef: _selectedBranchRef,
+          ),
+        ),
+      );
+      final database = lifecycle.databaseForSession(
+        fixture.sessionA.id,
+        accessMode: ProjectStorageAccessMode.durableOrTemporary,
+      )!;
+      final backing = File(database.path);
+      expect(backing.existsSync(), isTrue);
+      expect(database.path, isNot(startsWith(temporary.absolute.path)));
+      expect(lifecycle.databaseForSession(fixture.sessionA.id), isNull);
+      await tester.pumpWidget(fixture.widget());
+      await tester.pumpAndSettle();
+      await _select(tester);
+      _press(tester, 'Task');
+      _expectAdditional(await _snapshot(tester), scope: 'Task');
+
+      final old = fixture;
+      final oldBinding = old.capabilities.resolve(
+        _capability,
+        providerId: ProviderId(gitChangeSetSourceProviderId),
+      );
+      final token = (await tester.runAsync(() => _token(old)))!;
+      final stale = _callback(tester, 'Task');
+      await tester.runAsync(() async {
+        await old.backends.close();
+        await expectLater(anchors.read(identity), throwsA(isA<Exception>()));
+      });
+      await mount(
+        tester,
+        registry: seed.capabilities,
+        lifecycle: lifecycle,
+        present: false,
+      );
+      expect(fixture.connection, isNot(same(old.connection)));
+      expect(
+        fixture.capabilities
+            .resolve(
+              _capability,
+              providerId: ProviderId(gitChangeSetSourceProviderId),
+            )
+            .isSameRegistration(oldBinding),
+        isFalse,
+      );
+      stale();
+      await _text(tester, 'snapshot:unavailable');
+      await tester.runAsync(() => _denied(fixture, token));
+      expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
+      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      expect(
+        lifecycle.databaseForSession(
+          fixture.sessionA.id,
+          accessMode: ProjectStorageAccessMode.durableOrTemporary,
+        ),
+        same(database),
+      );
+      expect(backing.existsSync(), isTrue);
+      final retained = (await tester.runAsync(
+        () => _anchorStore(lifecycle, fixture).read(identity),
+      ))!;
+      expect(retained.baselineCommit, selectedBaseline);
+      expect(retained.expectedBranchRef, _selectedBranchRef);
+      expect(lifecycle.databaseForSession(fixture.sessionA.id), isNull);
+      await tester.pumpWidget(fixture.widget());
+      await tester.pumpAndSettle();
+      await _select(tester);
+      _press(tester, 'Task');
+      _expectAdditional(await _snapshot(tester), scope: 'Task');
+      final calls = (await tester.runAsync(() => _calls(fixture)))!;
+      expect(calls, hasLength(1));
+      expect(calls.single['method'], _method('Task'));
+      expect(calls.single['payload'], isEmpty);
+      expect(calls.single['hostInvocationContext'], isNot(token));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        await fixture.close();
+        await old.close();
+        await lifecycle.close();
+      });
+      expect(backing.parent.existsSync(), isFalse);
     },
   );
 
@@ -620,6 +1178,8 @@ void main() {
         await _select(tester);
         var previousProcessCount = 0;
         var semanticCallCount = 0;
+        var comparisonTaskMilliseconds = 0;
+        var comparisonTaskProcesses = 0;
         for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
           final elapsed = Stopwatch()..start();
           _press(tester, scope);
@@ -642,6 +1202,10 @@ void main() {
               );
           expect(requests, hasLength(processes.length));
           final processCount = processes.length - previousProcessCount;
+          if (scope == 'Task') {
+            comparisonTaskMilliseconds = elapsed.elapsedMilliseconds;
+            comparisonTaskProcesses = processCount;
+          }
           final batches = (count + 127) ~/ 128;
           if (scope == 'Unstaged') {
             expect(processCount, 21 + 4 * batches);
@@ -676,6 +1240,62 @@ void main() {
                 _denied(fixture, calls.last['hostInvocationContext'] as String),
           );
           previousProcessCount = processes.length;
+        }
+        if (count >= 500) {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.runAsync(fixture.close);
+          final durable = await openDurable(tester, additionalRoot: repository);
+          await mount(
+            tester,
+            registry: durable.registry,
+            lifecycle: durable.lifecycle,
+            additionalRoot: repository,
+            present: false,
+          );
+          final anchors = _anchorStore(durable.lifecycle, fixture);
+          final identity = AuthorizedEnvironmentIdentity(
+            sessionId: fixture.sessionA.id.value,
+            environmentId: 'additional',
+          );
+          final lookup = Stopwatch();
+          await tester.runAsync(() async {
+            await anchors.enroll(
+              identity: identity,
+              anchor: GitTaskComparisonAnchor(
+                baselineCommit: baseline,
+                expectedBranchRef: 'refs/heads/main',
+              ),
+            );
+            lookup.start();
+            expect((await anchors.read(identity)).baselineCommit, baseline);
+            lookup.stop();
+          });
+          await tester.pumpWidget(fixture.widget());
+          await tester.pumpAndSettle();
+          await _select(tester);
+          final elapsed = Stopwatch()..start();
+          _press(tester, 'Task');
+          await _text(
+            tester,
+            'snapshot\ncommitted\nstaged\nunstaged\nconflicts',
+          );
+          elapsed.stop();
+          final evidence = (await tester.runAsync(fixture.snapshot))!;
+          final processes = evidence['processes'] as List;
+          expect(processes, hasLength(comparisonTaskProcesses));
+          expect(evidence['reads'], isEmpty);
+          debugPrint(
+            'Prepared persisted Task $count clean files: '
+            '${processes.length} process requests (comparison unchanged), '
+            '${lookup.elapsedMicroseconds} us native ProjectStorageHost anchor lookup, '
+            '${elapsed.elapsedMilliseconds} ms full AOT/EVC snapshot, '
+            '${elapsed.elapsedMilliseconds - comparisonTaskMilliseconds} ms '
+            'versus comparison-only (diagnostic only; includes transport and scheduling).',
+          );
+          final calls = (await tester.runAsync(() => _calls(fixture)))!;
+          expect(calls, hasLength(1));
+          expect(calls.single['method'], _method('Task'));
+          expect(calls.single['payload'], isEmpty);
         }
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
@@ -1190,6 +1810,101 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
       },
     );
+  }
+}
+
+void _seedProject(Directory source, Map<String, String> roots) {
+  final database = ProjectDatabase.open(
+    ProjectBacking(sourceLocation: source.uri, databaseRelativePath: 'data.db'),
+  );
+  try {
+    final project = database.openProject(
+      sourceLocation: source.uri,
+      nextProjectId: () => ProjectId('project'),
+    );
+    final task = Task(
+      id: TaskId('task'),
+      projectId: project.id,
+      title: 'Portable Git',
+    );
+    database.insertTaskWithPrimaryEnvironment(
+      task,
+      Environment(
+        id: EnvironmentId('primary'),
+        taskId: task.id,
+        role: EnvironmentRole.primary,
+        providerId: ProviderId('test.environment.b'),
+        providerState: {'root': roots['primary']},
+      ),
+    );
+    // No public additional-Environment creation API exists. Seed only the core
+    // graph here; Git anchors are enrolled later through the production store.
+    database.executePluginTransaction([
+      RelationalStatement(
+        sql: '''INSERT INTO adele_product_environments
+          (id, task_id, role, provider_id, provider_state_json)
+          VALUES ('additional', :task, 'additional', :provider, :state)''',
+        parameters: {
+          ':task': task.id.value,
+          ':provider': 'test.environment.a',
+          ':state': jsonEncode({'root': roots['additional']}),
+        },
+        expectedRows: 1,
+      ),
+    ]);
+    for (final (id, environment) in [
+      ('nonprimary-session', 'additional'),
+      ('primary-session', 'primary'),
+      ('shared-session', 'additional'),
+    ]) {
+      database.insertSessionWithAuthority(
+        Session(
+          id: SessionId(id),
+          taskId: task.id,
+          strategyId: OrchestrationStrategyId('test.uninstalled-strategy'),
+        ),
+        EnvironmentId(environment),
+      );
+    }
+  } finally {
+    database.close();
+  }
+}
+
+GitTaskAnchorStore _anchorStore(
+  ProductLifecycleCoordinator lifecycle,
+  PreparedEnvironmentCapabilityInstallation fixture,
+) {
+  final connection = fixture.connection;
+  expect(connection.pluginId, gitPluginId);
+  return GitTaskAnchorStore(
+    ProjectStorageHost(
+      lifecycle: lifecycle,
+      owner: PluginId(connection.pluginId),
+      validateAccess: connection.validateInfrastructureContext,
+    ),
+  );
+}
+
+List<Map<String, Object?>> _anchorRows(ProductLifecycleCoordinator lifecycle) =>
+    lifecycle
+        .databaseForSession(SessionId('nonprimary-session'))!
+        .queryPluginRows(
+          'SELECT environment_id, baseline_commit, expected_branch_ref '
+          'FROM adele_git_task_anchors ORDER BY environment_id',
+          const {},
+        )
+        .map((row) => row.values)
+        .toList();
+
+final class _ProjectChannel implements AdeleRequestChannel {
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    expect(method, projectProviderServicePrepareSourceId);
+    return {
+      'sourceLocation': payload['sourceLocation'],
+      'databaseRelativePath': 'data.db',
+    };
   }
 }
 

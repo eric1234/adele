@@ -3683,6 +3683,10 @@ final class _InterceptingProcesses
   intercept;
 
   @override
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() =>
+      delegate.capturedIdentity();
+
+  @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     EnvironmentBufferedProcessRequest request,
   ) => intercept(request, delegate.runBufferedProcess);
@@ -3703,6 +3707,10 @@ final class _FixtureProcesses
   final Map<String, String> environment;
   final requests = <EnvironmentBufferedProcessRequest>[];
   final _active = <Process>{};
+
+  @override
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() =>
+      throw StateError('Comparison-only fixtures must not request identity.');
 
   @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(

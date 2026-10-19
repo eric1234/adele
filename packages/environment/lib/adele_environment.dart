@@ -754,6 +754,11 @@ abstract interface class AuthorizedEnvironmentProcessService {
 /// Separate from read and foreground process authority; no selector or host cwd.
 @AdeleService('authorizedEnvironmentBufferedProcess')
 abstract interface class AuthorizedEnvironmentBufferedProcessService {
+  /// Returns the exact captured Session/Environment identity while this grant is
+  /// live. Takes no selectors, grants no reads, and fails after revocation.
+  @AdeleMethod('capturedIdentity')
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity();
+
   @AdeleMethod('runBufferedProcess')
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     EnvironmentBufferedProcessRequest request,

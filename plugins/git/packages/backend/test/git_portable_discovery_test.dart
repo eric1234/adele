@@ -147,6 +147,10 @@ final class _DiscoveryProcesses
   int inventoryCount = 0;
 
   @override
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() =>
+      throw StateError('Discovery must not request identity.');
+
+  @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     EnvironmentBufferedProcessRequest request,
   ) async {

@@ -132,26 +132,41 @@ final class ProbeState {
                 serviceId: authorizedEnvironmentBufferedProcessServiceId,
               )
               .request(
-                authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId,
-                {
-                  'request': {
-                    'program': 'git',
-                    'arguments': [
-                      '-c',
-                      'adele.probeAction=queued',
-                      'hash-object',
-                      '--stdin',
-                    ],
-                    'relativeWorkingDirectory': '',
-                    'timeoutSeconds': 5,
-                    'stdinBase64': '',
-                  },
-                },
+                payload['identity'] == true
+                    ? authorizedEnvironmentBufferedProcessServiceCapturedIdentityId
+                    : authorizedEnvironmentBufferedProcessServiceRunBufferedProcessId,
+                payload['identity'] == true
+                    ? {}
+                    : {
+                        'request': {
+                          'program': 'git',
+                          'arguments': [
+                            '-c',
+                            'adele.probeAction=queued',
+                            'hash-object',
+                            '--stdin',
+                          ],
+                          'relativeWorkingDirectory': '',
+                          'timeoutSeconds': 5,
+                          'stdinBase64': '',
+                        },
+                      },
               )
               .then((_) => true, onError: (Object _) => false);
           result = {'queued': true};
         case 'queuedResult':
           result = {'ok': await _queuedBuffered!};
+        case 'retainedBufferedIdentity':
+          try {
+            final identity = await bufferedClients[key]!.capturedIdentity();
+            result = {
+              'ok': true,
+              'sessionId': identity.sessionId,
+              'environmentId': identity.environmentId,
+            };
+          } on Object {
+            result = {'ok': false};
+          }
         case 'retainedBuffered':
           try {
             await bufferedClients[key]!.runBufferedProcess(

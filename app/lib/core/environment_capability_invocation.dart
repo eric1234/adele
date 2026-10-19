@@ -170,6 +170,15 @@ final class _CapturedEnvironmentBufferedProcess
   final void Function() validate;
 
   @override
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async {
+    validate();
+    return AuthorizedEnvironmentIdentity(
+      sessionId: selection.session.id.value,
+      environmentId: selection.environment.id.value,
+    );
+  }
+
+  @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     EnvironmentBufferedProcessRequest request,
   ) async {

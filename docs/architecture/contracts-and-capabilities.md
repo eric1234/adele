@@ -500,6 +500,9 @@ acquire this service.
 
 The service reuses the Environment's bounded binary request/result and declared
 failures, preserving stdin/stdout/stderr bytes without interpreting them as text.
+Its no-argument captured-identity query returns the same operation's Session and
+Environment identity under these exact liveness checks, not a selector, read
+grant, or way to recover identity after retirement.
 Authority is checked immediately before forwarding and after settlement. Outer
 completion/failure, handle release, pane departure, provider retirement, or either
 backend's termination revokes the grant and fences late successful publication.

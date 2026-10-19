@@ -294,9 +294,9 @@ filesystem/process I/O. The existing stock `git_backend.dart` advertisement,
 provider ID, association, read grant, and all three scope methods remain unchanged.
 The portable service is not advertised as another stock provider. Production stock
 Diff still uses the Worktree-specific implementation described above, including its
-existing retained Worktree baseline and provider-state v1. Portable baseline
-establishment, durable ownership/persistence, migration and production activation
-remain deferred; no staging, approvals, or feedback mutation is implemented.
+existing retained Worktree baseline and provider-state v1. Automatic portable baseline
+establishment, Worktree baseline migration and production activation remain deferred;
+no staging, approvals, or feedback mutation is implemented.
 
 Portable Task comparison requires an immutable Git-owned backend setup value:
 `GitTaskComparisonAnchor(baselineCommit: ..., expectedBranchRef: ...)`. It carries
@@ -310,12 +310,56 @@ fail explicitly. There is no current-HEAD, merge-base, initial-commit, default-b
 or primary-Environment substitution. Unstaged and Uncommitted do not require this
 anchor. Later commits never advance it.
 
-The current independent integration fixture provisions this fixed anchor inside
-the Git Capability backend before invocation. It demonstrates comparison semantics,
-not durable per-Environment baseline ownership across arbitrary Sessions. A future
-Git-owned lifecycle must establish, associate, retain and restore trusted baselines
-before a separately reviewed production cutover; core Task/Session/Environment
-values and the public Diff contract acquire no Git metadata in this implementation.
+That trusted-value comparison boundary (G5a) remains usable independently of storage.
+`GitPersistedChangeSetSourceService` adds exact persisted lookup (G5b1) around it,
+without moving SQL or Session identity into the Git comparison routines. For each
+zero-argument Task request it observes `capturedIdentity()` through the same
+authorized buffered-process client used for all commands. Session routes the
+generation-scoped `ProjectStorageService` to the open Project; Environment selects
+the retained anchor. Neither ID is a Diff method parameter or an authority-granting
+selector. The frontend still receives only the Diff-owned generated service.
+
+`GitTaskAnchorStore` owns one current pre-release v1 schema under backend/plugin
+identity `dev.adele.plugin.git`. Its `adele_git_task_anchors` table contains only
+`environment_id` (non-null primary key and foreign key to
+`adele_product_environments.id`), `baseline_commit`, and `expected_branch_ref`.
+Lookup joins the core Session, recorded Session-to-Environment association, and
+Environment, validating both exact identities and same-Task membership. An absent
+exact anchor fails with `baseline_unavailable`; another Environment's anchor is
+never borrowed. Broken associations and malformed anchors fail distinctly as
+`baseline_association_mismatch` and `baseline_corrupt`. Repository object existence,
+commit type, object-format width and expected branch remain G5a's responsibility.
+Storage failures are `baseline_storage_failed`, never a reset or in-memory fallback.
+
+The store's backend-internal `enroll(identity: ..., anchor: ...)` is for trusted
+provisioning with explicitly known context only, not a Diff method or EVC action.
+It inserts through an atomic association-checked statement. The unique Environment
+key rejects every duplicate, even an identical duplicate, as
+`baseline_enrollment_failed`; conflicting concurrent insertions cannot both report
+success. There is no upsert, baseline update, HEAD inference, automatic retry, or
+authoritative backend cache. Ordinary snapshots only read anchors. As with other
+Project writes, a lost acknowledgement after commit is an uncertain caller outcome,
+not permission to overwrite or silently retry.
+
+Storage intentionally uses `durableOrTemporary`: durable Project backing retains
+anchors across close/reopen and fresh backend generations, while an explicitly
+volatile Project's host-owned temporary backing survives backend replacement only
+while that Project remains open. Failed durable backing never switches to temporary
+storage. Schema checks are idempotent under the existing host coordinator. Plain
+Unstaged and Uncommitted requests do not access identity or initialize this schema.
+
+The Task adapter includes identity, schema and SQL latency in the thirty-second
+deadline. Before publishing it rereads the association and anchor, requires unchanged
+values, and revalidates captured identity through the original grant. Expiry fences
+later Git commands and publication, including late storage responses. These are
+bounded best-effort observations, not an atomic SQL/filesystem transaction. No
+per-file queries or new subprocesses are introduced.
+
+Tests provision known anchors through this store before invocation; this is not
+automatic Task initialization. G5b2 must establish trusted initial anchors at the
+chosen lifecycle boundary. Migration of existing Worktree baselines and stock Diff
+cutover need separate review. Core Task/Session/Environment values and the public
+Diff contract still acquire no Git metadata.
 
 The independent Capability must declare `environmentBound` and the separate
 `bufferedProcess` host-service permission. Its consumer needs the contextual process
@@ -542,6 +586,13 @@ conflict entries, one semantic invocation per request, clean-repository batch
 scaling, explicit process
 declarations and exact retirement/departure fencing. Neither backend imports the
 other's implementation. The stock Diff frontend is not changed by this proof.
+The persisted path uses the actual Git plugin identity and exact-generation storage
+grant, real Project backing, distinct primary/nonprimary anchors, replacement and
+durable reopen without reenrollment. `app/test/core/git_task_anchor_store_test.dart`
+covers the Git store against maintained Project storage, including association,
+duplicate/concurrent enrollment, corruption, Project isolation and temporary backing.
+`git_persisted_change_set_source_test.dart` covers adapter failure/deadline boundaries;
+its controlled storage doubles do not stand in for persistence evidence.
 
 ## Filesystem and processes
 

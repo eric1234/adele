@@ -8,6 +8,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
@@ -1128,67 +1129,87 @@ final class PreparedEnvironmentCapabilityInstallation {
     required Directory files,
     required this.independent,
     this.environmentPlugin = _environmentPlugin,
+    this.callablePlugin = _callablePlugin,
+    ProductLifecycleCoordinator? lifecycle,
     Uri? sourceLocation,
     List<Environment>? environments,
   }) : capabilities = capabilities ?? CapabilityRegistry() {
-    final task = Task(
-      id: TaskId('task'),
-      projectId: ProjectId('project'),
-      title: 'C2c',
+    if (lifecycle != null) {
+      // The caller owns durable storage and may reuse it across backend generations.
+      if (capabilities == null) {
+        throw ArgumentError(
+          'An external lifecycle requires its capability registry.',
+        );
+      }
+      sessionA = lifecycle.store.session(SessionId('nonprimary-session'))!;
+      sessionB = lifecycle.store.session(SessionId('primary-session'))!;
+      environmentRuntime = lifecycle.environmentRuntime;
+    } else {
+      final task = Task(
+        id: TaskId('task'),
+        projectId: ProjectId('project'),
+        title: 'C2c',
+      );
+      final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
+      sessionA = Session(
+        id: SessionId('nonprimary-session'),
+        taskId: task.id,
+        strategyId: strategy,
+      );
+      sessionB = Session(
+        id: SessionId('primary-session'),
+        taskId: task.id,
+        strategyId: strategy,
+      );
+      final store = InMemoryProductStore();
+      store.publishRestoredProject(
+        project: Project(
+          id: task.projectId,
+          sourceLocation: sourceLocation ?? Uri.parse('test:/project'),
+        ),
+        tasks: [task],
+        environments:
+            environments ??
+            [
+              Environment(
+                id: EnvironmentId('additional'),
+                taskId: task.id,
+                role: EnvironmentRole.additional,
+                providerId: ProviderId('test.environment.a'),
+                providerState: {'root': '${files.absolute.path}/a'},
+              ),
+              Environment(
+                id: EnvironmentId('primary'),
+                taskId: task.id,
+                role: EnvironmentRole.primary,
+                providerId: ProviderId('test.environment.b'),
+                providerState: {'root': '${files.absolute.path}/b'},
+              ),
+            ],
+        sessions: [sessionA, sessionB],
+        authorities: [
+          (sessionA.id, EnvironmentId('additional')),
+          (sessionB.id, EnvironmentId('primary')),
+        ],
+        runRecords: const [],
+      );
+      environmentRuntime = EnvironmentRuntime(
+        store: store,
+        registry: this.capabilities,
+        providerForBinding: (binding) => GeneratedEnvironmentProvider(
+          providerId: binding.provider.id,
+          service: EnvironmentProviderServiceClient(binding.requestChannel),
+        ),
+        retainEnvironment: store.replaceEnvironment,
+      );
+    }
+    backends = ApplicationPluginBootstrap(
+      this.capabilities,
+      extensions,
+      createInfrastructureServices: lifecycle == null
+          ? null
+          : (connection) => projectStorageServices(lifecycle, connection),
     );
-    final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
-    sessionA = Session(
-      id: SessionId('nonprimary-session'),
-      taskId: task.id,
-      strategyId: strategy,
-    );
-    sessionB = Session(
-      id: SessionId('primary-session'),
-      taskId: task.id,
-      strategyId: strategy,
-    );
-    final store = InMemoryProductStore();
-    store.publishRestoredProject(
-      project: Project(
-        id: task.projectId,
-        sourceLocation: sourceLocation ?? Uri.parse('test:/project'),
-      ),
-      tasks: [task],
-      environments:
-          environments ??
-          [
-            Environment(
-              id: EnvironmentId('additional'),
-              taskId: task.id,
-              role: EnvironmentRole.additional,
-              providerId: ProviderId('test.environment.a'),
-              providerState: {'root': '${files.absolute.path}/a'},
-            ),
-            Environment(
-              id: EnvironmentId('primary'),
-              taskId: task.id,
-              role: EnvironmentRole.primary,
-              providerId: ProviderId('test.environment.b'),
-              providerState: {'root': '${files.absolute.path}/b'},
-            ),
-          ],
-      sessions: [sessionA, sessionB],
-      authorities: [
-        (sessionA.id, EnvironmentId('additional')),
-        (sessionB.id, EnvironmentId('primary')),
-      ],
-      runRecords: const [],
-    );
-    environmentRuntime = EnvironmentRuntime(
-      store: store,
-      registry: this.capabilities,
-      providerForBinding: (binding) => GeneratedEnvironmentProvider(
-        providerId: binding.provider.id,
-        service: EnvironmentProviderServiceClient(binding.requestChannel),
-      ),
-      retainEnvironment: store.replaceEnvironment,
-    );
-    backends = ApplicationPluginBootstrap(this.capabilities, extensions);
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,
       backends: backends,
@@ -1215,6 +1236,7 @@ final class PreparedEnvironmentCapabilityInstallation {
   final CapabilityRegistry capabilities;
   final bool independent;
   final String environmentPlugin;
+  final String callablePlugin;
   final extensions = ExtensionRegistry();
   late final Session sessionA;
   late final Session sessionB;
@@ -1224,7 +1246,7 @@ final class PreparedEnvironmentCapabilityInstallation {
   InstalledBackendActivation get callableOwner => backends.backends.singleWhere(
     (backend) =>
         backend.installation.metadata.id.value ==
-        (independent ? _callablePlugin : _plugin),
+        (independent ? callablePlugin : _plugin),
   );
   InstalledBackendActivation get environmentOwner =>
       backends.backends.singleWhere(
