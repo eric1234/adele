@@ -49,7 +49,7 @@ final class _BufferedEnvironment extends EnvironmentService {
   final _providers = <String, String>{};
 
   @override
-  Future<EnvironmentProviderResult> restore(
+  Future<EnvironmentProviderTransportResult> restore(
     EnvironmentTransportContext environment,
   ) {
     _providers[environment.environmentId] = environment.providerId;
