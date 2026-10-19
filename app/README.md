@@ -21,7 +21,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git](../plugins/git/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
-| Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
+| Exact-generation mediation of Session- or Environment-addressed relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Declared backend Capability consumption and exact-generation handles | Public [backend consumer API](../packages/plugin_backend_support/README.md#capability-consumption); provider selection: [capabilities](../packages/capabilities/README.md); semantic generated contracts remain plugin-owned. |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
@@ -1398,8 +1398,10 @@ and the [disposable-worktree manual workflow](../docs/development/testing.md#man
 
 [`project_storage_host.dart`](lib/core/project_storage_host.dart) implements the
 public `ProjectStorageService`. `ProjectStorageHost` uses
-`ProductLifecycleCoordinator.databaseForSession` to route through Session, Task,
-and the currently open Project. It revalidates the captured infrastructure context
+`ProductLifecycleCoordinator.databaseForSession` or `databaseForEnvironment` to
+route through the published identity's Task and currently open Project, sharing
+the same backing selector. The Environment route needs no Session or live provider.
+It revalidates the captured infrastructure context
 at service entry, including after generated-dispatcher queueing. Missing/closed
 storage throws; only an explicitly volatile published Session reports non-durable.
 

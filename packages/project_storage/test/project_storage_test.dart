@@ -91,6 +91,155 @@ void main() {
   );
 
   test(
+    'Environment methods transport explicit selectors and modes without authority',
+    () async {
+      final service = _Storage();
+      final dispatcher = ProjectStorageServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final client = ProjectStorageServiceClient(channel);
+      for (final mode in ProjectStorageAccessMode.values) {
+        await client.ensureSchemaForEnvironment('environment', [
+          'CREATE TABLE owned (id TEXT)',
+        ], mode);
+        expect(service.environmentId, 'environment');
+        expect(service.migrations, ['CREATE TABLE owned (id TEXT)']);
+        expect(service.accessMode, mode);
+        await client.transactionForEnvironment('environment', [
+          RelationalStatement(
+            sql: 'INSERT INTO owned VALUES (:id)',
+            parameters: {':id': 'entry'},
+            expectedRows: 1,
+          ),
+        ], mode);
+        expect(service.statements.single.parameters, {':id': 'entry'});
+        expect(service.statements.single.expectedRows, 1);
+        expect(service.accessMode, mode);
+        final rows = await client.queryForEnvironment(
+          'environment',
+          'SELECT :value',
+          {':value': 3},
+          mode,
+        );
+        expect(service.accessMode, mode);
+        expect(rows.single.values, {
+          'text': 'retained',
+          'integer': 3,
+          'nil': null,
+        });
+        expect(
+          () => rows.single.values['text'] = 'changed',
+          throwsUnsupportedError,
+        );
+        final payloads = channel.payloads.sublist(channel.payloads.length - 3);
+        expect(payloads[0], {
+          'environmentId': 'environment',
+          'migrations': ['CREATE TABLE owned (id TEXT)'],
+          'accessMode': mode.name,
+        });
+        expect(
+          payloads[1].keys,
+          unorderedEquals(['environmentId', 'statements', 'accessMode']),
+        );
+        expect(payloads[2], {
+          'environmentId': 'environment',
+          'sql': 'SELECT :value',
+          'parameters': {':value': 3},
+          'accessMode': mode.name,
+        });
+      }
+      expect(channel.methods, [
+        for (final _ in ProjectStorageAccessMode.values) ...[
+          projectStorageServiceEnsureSchemaForEnvironmentId,
+          projectStorageServiceTransactionForEnvironmentId,
+          projectStorageServiceQueryForEnvironmentId,
+        ],
+      ]);
+    },
+  );
+
+  test(
+    'Environment requests reject missing, foreign, and invalid fields',
+    () async {
+      final service = _Storage();
+      final dispatcher = ProjectStorageServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      for (final (method, arguments) in [
+        (
+          projectStorageServiceEnsureSchemaForEnvironmentId,
+          <String, Object?>{
+            'migrations': ['CREATE TABLE owned (id TEXT)'],
+          },
+        ),
+        (
+          projectStorageServiceQueryForEnvironmentId,
+          <String, Object?>{
+            'sql': 'SELECT 1',
+            'parameters': <String, Object?>{},
+          },
+        ),
+        (
+          projectStorageServiceTransactionForEnvironmentId,
+          <String, Object?>{'statements': <Object?>[]},
+        ),
+      ]) {
+        final valid = <String, Object?>{
+          'environmentId': 'environment',
+          'accessMode': 'durable',
+          ...arguments,
+        };
+        for (final payload in <Map<String, Object?>>[
+          {...valid}..remove('environmentId'),
+          {...valid, 'environmentId': null},
+          {...valid, 'environmentId': 1},
+          {...valid}..remove('accessMode'),
+          {...valid, 'accessMode': null},
+          {...valid, 'accessMode': 'memory'},
+          {...valid, 'accessMode': 1},
+          for (final key in [
+            'sessionId',
+            'projectId',
+            'ownerId',
+            'path',
+            'generationId',
+          ])
+            {...valid, key: 'caller-selected'},
+        ]) {
+          final response = await dispatcher.dispatch({
+            'kind': 'request',
+            'requestId': 1,
+            'method': method,
+            'payload': payload,
+          });
+          expect(response['ok'], isFalse, reason: '$method: $payload');
+          expect((response['error']! as Map)['code'], 'invalid_request');
+        }
+      }
+      final response = await dispatcher.dispatch({
+        'kind': 'request',
+        'requestId': 1,
+        'method': projectStorageServiceTransactionForEnvironmentId,
+        'payload': {
+          'environmentId': 'environment',
+          'accessMode': 'durable',
+          'statements': [
+            {
+              'sql': 'INSERT',
+              'parameters': {':value': true},
+              'expectedRows': null,
+            },
+          ],
+        },
+      });
+      expect(response['ok'], isFalse);
+      expect(service.environmentId, isNull);
+      expect(service.migrations, isEmpty);
+      expect(service.statements, isEmpty);
+      expect(service.accessMode, isNull);
+    },
+  );
+
+  test(
     'generated transport rejects unsupported values before service use',
     () async {
       final dispatcher = ProjectStorageServiceDispatcher(_Storage());
@@ -170,6 +319,7 @@ final class _Storage implements ProjectStorageService {
   List<String> migrations = [];
   List<RelationalStatement> statements = [];
   ProjectStorageAccessMode? accessMode;
+  String? environmentId;
 
   @override
   Future<bool> isDurableSession(String sessionId) async => true;
@@ -212,15 +362,59 @@ final class _Storage implements ProjectStorageService {
     this.statements = statements;
     this.accessMode = accessMode;
   }
+
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    this.environmentId = environmentId;
+    this.migrations = migrations;
+    this.accessMode = accessMode;
+  }
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    this.environmentId = environmentId;
+    this.accessMode = accessMode;
+    return [
+      RelationalRow(
+        values: {
+          'text': 'retained',
+          'integer': parameters[':value'],
+          'nil': null,
+        },
+      ),
+    ];
+  }
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    this.environmentId = environmentId;
+    this.statements = statements;
+    this.accessMode = accessMode;
+  }
 }
 
 final class _Channel implements AdeleRequestChannel {
   _Channel(this.dispatcher);
   final AdeleBackendDispatcher dispatcher;
   final List<Map<String, Object?>> payloads = [];
+  final List<String> methods = [];
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
+    methods.add(method);
     payloads.add(payload);
     final response = await dispatcher.dispatch({
       'kind': 'request',

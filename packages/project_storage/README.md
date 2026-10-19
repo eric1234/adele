@@ -1,9 +1,10 @@
 # ADELE Project Storage
 
 `adele_project_storage` is the pure-Dart public contract for host-mediated,
-Session-scoped relational storage. It depends only on `adele_contract`; it exposes
-neither SQLite objects nor database paths, filesystem operations, or execution
-authority. The application and plugin backends are its concrete consumers.
+Session- or Environment-addressed relational storage. It depends only on
+`adele_contract`; it exposes neither SQLite objects nor database paths, filesystem
+operations, or execution authority. The application and plugin backends are its
+concrete consumers.
 
 This service has a separate package because persistence is neither an immutable
 product value, an orchestration operation, a provider-selection extension point,
@@ -19,17 +20,21 @@ infrastructure context, not through a Run's `hostInvocationContext` and not thro
 Capability discovery. The host derives the schema owner from that connection's
 `PluginId`. Requests contain no owner, Project override, path, or generation ID.
 
-Every method takes a core Session ID. The host validates Session -> Task -> open
-Project without resolving a strategy or materializing an Environment.
+Session scope and Environment scope are alternative selectors for the same Project
+database. The host validates Session -> Task -> open Project or Environment -> Task
+-> open Project against the canonical published graph, without resolving a strategy
+or Environment provider, restoring a materialization, or selecting a primary
+Environment. Environment scope requires no Session, but a provisional or unpublished
+Environment is invalid. Neither identity grants filesystem or process authority.
 
 | Method | Semantics |
 | --- | --- |
 | `isDurableSession` | False only for a published Session in an explicitly volatile Project. Unknown Sessions, closed lifecycle, and storage errors fail. |
-| `ensureSchemaForSession` | Validate all migration statements before execution, then apply supported `CREATE TABLE` statements and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
-| `queryForSession` | Execute one read-only `SELECT` statement and return immutable `RelationalRow.values` maps. |
-| `transactionForSession` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; an unsupported statement, SQL error, or `expectedRows` mismatch rolls back the batch. |
+| `ensureSchemaForSession`, `ensureSchemaForEnvironment` | Validate all migration statements before execution, then apply supported `CREATE TABLE` statements and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
+| `queryForSession`, `queryForEnvironment` | Execute one read-only `SELECT` statement and return immutable `RelationalRow.values` maps. |
+| `transactionForSession`, `transactionForEnvironment` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; an unsupported statement, SQL error, or `expectedRows` mismatch rolls back the batch. |
 
-The latter three methods take a final required positional
+All schema, query, and transaction methods take a final required positional
 `ProjectStorageAccessMode accessMode`. `durable` preserves durable-only access:
 volatile Projects are rejected. `durableOrTemporary` explicitly opts into a
 host-owned temporary on-disk SQLite database for an already volatile Project;
@@ -41,13 +46,16 @@ requires the mode on each storage operation; it does not accept old omitted keys
 Temporary backing is retained once per Project in the live product lifecycle,
 independent of command, frontend, and backend generations. The host selects its
 private temporary directory and initializes the existing v1 schema with published
-Project/Task/Environment/Session identities, so plugin foreign keys work unchanged.
+Project/Task/Environment/Session identities, so plugin foreign keys work unchanged,
+including Tasks and Environments that have no Sessions yet.
 Subsequent core identity changes are committed to that temporary store before live
 publication. This does not make the Project reopenable or change volatile terminal
 Run/activity retention. Orderly lifecycle close closes the connection and removes
 its directory and SQLite sidecars; process-crash cleanup/recovery is not promised.
-State initialization is separate from core Session creation; a plugin may lazily
-create its own rows on first actual state access.
+Plugin state initialization is separate from core Task/Environment/Session creation.
+A write after Environment publication is not atomic with the original core creation
+transaction. This API does not coordinate mandatory initialization or gate Task
+usability; those lifecycle decisions require a separate boundary.
 
 Named SQL parameters include the SQLite parameter prefix, for example SQL
 `WHERE session_id = :session` with parameters `{':session': sessionId}`. Parameters
@@ -90,8 +98,8 @@ isolation.
 
 One Project database serves core and plugin owners. Plugins operate on their own
 tables and may reference published core identities by foreign key, but must not
-mutate or redefine core rows. Session scope selects the Project database; it is not
-row-level SQL isolation. The current native plugin model is not a malicious-SQL
+mutate or redefine core rows. Session or Environment scope selects the Project
+database; it is not row-level SQL isolation. The current native plugin model is not a malicious-SQL
 sandbox, SQL parser, or table-prefix enforcement framework. Arbitrary plugin-to-
 plugin relational contracts remain deferred.
 
@@ -119,7 +127,9 @@ round-trip, immutable-data, and scalar-subset tests run with:
 dart tools/adele.dart test --target adele_project_storage
 ```
 
-Application integration lives in `app/test/core/project_storage_host_test.dart`
-and `app/test/core/durable_chat_session_integration_test.dart`. See the canonical
+Application integration lives in `app/test/core/project_storage_host_test.dart`,
+`app/test/core/backend_capability_integration_test.dart` (compiled infrastructure),
+`app/test/core/git_task_anchor_store_test.dart` (pre-Session Git enrollment), and
+`app/test/core/durable_chat_session_integration_test.dart`. See the canonical
 [testing map](../../docs/development/testing.md) and
 [generation-scoped host services](../../docs/architecture/contracts-and-capabilities.md).

@@ -1877,6 +1877,28 @@ final class _QueryFixture implements ProjectStorageService {
     });
   }
 
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Evidence collection is Session-addressed.');
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Evidence collection is Session-addressed.');
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Evidence collection is Session-addressed.');
+
   static final _tables = [
     productRuns,
     chatSessions,

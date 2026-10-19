@@ -17,6 +17,7 @@ import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
@@ -418,6 +419,7 @@ void main() {
     WidgetTester tester, {
     Directory? backing,
     String? additionalRoot,
+    Map<String, GitTaskComparisonAnchor> initialAnchors = const {},
   }) async => (await tester.runAsync(() async {
     final source =
         backing ??
@@ -444,10 +446,12 @@ void main() {
       ),
     );
     addTearDown(registration.close);
+    final extensions = ExtensionRegistry();
     final lifecycle = ProductLifecycleCoordinator.generated(
       store: InMemoryProductStore(),
       registry: registry,
-      extensions: ExtensionRegistry(),
+      extensions: extensions,
+      ids: _FixtureSessionIds(),
     );
     addTearDown(lifecycle.close);
     final project = await lifecycle.openProject(
@@ -455,6 +459,54 @@ void main() {
       provider: lifecycle.resolveProjectProvider(providerId),
     );
     expect(project.id, ProjectId('project'));
+    if (backing == null) {
+      final database = lifecycle.databaseForEnvironment(
+        EnvironmentId('primary'),
+      )!;
+      expect(database.loadProductGraph().sessions, isEmpty);
+      // Trusted fixture provisioning, before either Sessions or AOT invocation
+      // grants exist. Production snapshots only read the retained Git state.
+      final anchors = GitTaskAnchorStore(
+        ProjectStorageHost(
+          lifecycle: lifecycle,
+          owner: PluginId(gitPluginId),
+          validateAccess: () {},
+        ),
+      );
+      for (final entry in initialAnchors.entries) {
+        await anchors.enrollForEnvironment(
+          environmentId: entry.key,
+          anchor: entry.value,
+        );
+      }
+      expect(database.loadProductGraph().sessions, isEmpty);
+      final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
+      final strategyRegistration = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('test.fixture.strategy'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategy,
+          materialize: (_) => fail('Fixture must not materialize a strategy.'),
+        ),
+      );
+      try {
+        for (final environment in ['additional', 'primary', 'additional']) {
+          lifecycle.createSession(
+            taskId: TaskId('task'),
+            strategyId: strategy,
+            environmentId: EnvironmentId(environment),
+          );
+        }
+      } finally {
+        strategyRegistration.close();
+      }
+    } else {
+      expect(
+        initialAnchors,
+        isEmpty,
+        reason: 'Reopen never reenrolls anchors.',
+      );
+    }
     for (final id in ['additional', 'primary']) {
       expect(
         lifecycle.environmentRuntime.currentMaterialization(EnvironmentId(id)),
@@ -486,7 +538,7 @@ void main() {
       expect(b, contains('GitPersistedChangeSetSourceService('));
       expect(b, contains('ProjectStorageServiceClient('));
       expect(b, contains('state.hostRequests.bindInfrastructure('));
-      expect(b, isNot(contains('.enroll(')));
+      expect(b, isNot(contains('.enrollForEnvironment(')));
       expect(
         b.indexOf('GitTaskComparisonAnchor('),
         lessThan(b.indexOf('createDispatcher:')),
@@ -529,7 +581,19 @@ void main() {
   testWidgets(
     'persisted Task anchors select exact nonprimary and primary Environments and shared Sessions',
     (tester) async {
-      final durable = await openDurable(tester);
+      final durable = await openDurable(
+        tester,
+        initialAnchors: {
+          'additional': GitTaskComparisonAnchor(
+            baselineCommit: selectedBaseline,
+            expectedBranchRef: _selectedBranchRef,
+          ),
+          'primary': GitTaskComparisonAnchor(
+            baselineCommit: primaryBaseline,
+            expectedBranchRef: 'refs/heads/main',
+          ),
+        },
+      );
       await mount(
         tester,
         registry: durable.registry,
@@ -538,29 +602,6 @@ void main() {
       );
       expect(fixture.connection.pluginId, gitPluginId);
       expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-      final anchors = _anchorStore(durable.lifecycle, fixture);
-      await tester.runAsync(() async {
-        for (final (session, environment, baseline, branch) in [
-          (
-            'nonprimary-session',
-            'additional',
-            selectedBaseline,
-            _selectedBranchRef,
-          ),
-          ('primary-session', 'primary', primaryBaseline, 'refs/heads/main'),
-        ]) {
-          await anchors.enroll(
-            identity: AuthorizedEnvironmentIdentity(
-              sessionId: session,
-              environmentId: environment,
-            ),
-            anchor: GitTaskComparisonAnchor(
-              baselineCommit: baseline,
-              expectedBranchRef: branch,
-            ),
-          );
-        }
-      });
       final database = durable.lifecycle.databaseForSession(
         fixture.sessionA.id,
       )!;
@@ -674,24 +715,20 @@ void main() {
   testWidgets(
     'persisted missing anchor never borrows primary and leaves Unstaged and Uncommitted usable',
     (tester) async {
-      final durable = await openDurable(tester);
+      final durable = await openDurable(
+        tester,
+        initialAnchors: {
+          'primary': GitTaskComparisonAnchor(
+            baselineCommit: primaryBaseline,
+            expectedBranchRef: 'refs/heads/main',
+          ),
+        },
+      );
       await mount(
         tester,
         registry: durable.registry,
         lifecycle: durable.lifecycle,
         present: false,
-      );
-      await tester.runAsync(
-        () => _anchorStore(durable.lifecycle, fixture).enroll(
-          identity: AuthorizedEnvironmentIdentity(
-            sessionId: 'primary-session',
-            environmentId: 'primary',
-          ),
-          anchor: GitTaskComparisonAnchor(
-            baselineCommit: primaryBaseline,
-            expectedBranchRef: 'refs/heads/main',
-          ),
-        ),
       );
       final retained = _anchorRows(durable.lifecycle);
       await tester.pumpWidget(fixture.widget());
@@ -734,7 +771,16 @@ void main() {
         await _git(temporary, ['clone', '--no-hardlinks', committedRoot, name]);
         return Directory('${temporary.path}/$name').resolveSymbolicLinks();
       }))!;
-      final durable = await openDurable(tester, additionalRoot: repository);
+      final durable = await openDurable(
+        tester,
+        additionalRoot: repository,
+        initialAnchors: {
+          'additional': GitTaskComparisonAnchor(
+            baselineCommit: selectedBaseline,
+            expectedBranchRef: _selectedBranchRef,
+          ),
+        },
+      );
       await mount(
         tester,
         registry: durable.registry,
@@ -747,15 +793,6 @@ void main() {
         environmentId: 'additional',
       );
       final anchors = _anchorStore(durable.lifecycle, fixture);
-      await tester.runAsync(
-        () => anchors.enroll(
-          identity: identity,
-          anchor: GitTaskComparisonAnchor(
-            baselineCommit: selectedBaseline,
-            expectedBranchRef: _selectedBranchRef,
-          ),
-        ),
-      );
       final retained = _anchorRows(durable.lifecycle);
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
@@ -918,8 +955,8 @@ void main() {
       );
       final anchors = _anchorStore(lifecycle, fixture);
       await tester.runAsync(
-        () => anchors.enroll(
-          identity: identity,
+        () => anchors.enrollForEnvironment(
+          environmentId: identity.environmentId,
           anchor: GitTaskComparisonAnchor(
             baselineCommit: selectedBaseline,
             expectedBranchRef: _selectedBranchRef,
@@ -1244,7 +1281,16 @@ void main() {
         if (count >= 500) {
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.runAsync(fixture.close);
-          final durable = await openDurable(tester, additionalRoot: repository);
+          final durable = await openDurable(
+            tester,
+            additionalRoot: repository,
+            initialAnchors: {
+              'additional': GitTaskComparisonAnchor(
+                baselineCommit: baseline,
+                expectedBranchRef: 'refs/heads/main',
+              ),
+            },
+          );
           await mount(
             tester,
             registry: durable.registry,
@@ -1259,13 +1305,6 @@ void main() {
           );
           final lookup = Stopwatch();
           await tester.runAsync(() async {
-            await anchors.enroll(
-              identity: identity,
-              anchor: GitTaskComparisonAnchor(
-                baselineCommit: baseline,
-                expectedBranchRef: 'refs/heads/main',
-              ),
-            );
             lookup.start();
             expect((await anchors.read(identity)).baselineCommit, baseline);
             lookup.stop();
@@ -1852,23 +1891,31 @@ void _seedProject(Directory source, Map<String, String> roots) {
         expectedRows: 1,
       ),
     ]);
-    for (final (id, environment) in [
-      ('nonprimary-session', 'additional'),
-      ('primary-session', 'primary'),
-      ('shared-session', 'additional'),
-    ]) {
-      database.insertSessionWithAuthority(
-        Session(
-          id: SessionId(id),
-          taskId: task.id,
-          strategyId: OrchestrationStrategyId('test.uninstalled-strategy'),
-        ),
-        EnvironmentId(environment),
-      );
-    }
   } finally {
     database.close();
   }
+}
+
+final class _FixtureSessionIds implements ProductIdSource {
+  var _nextSession = 0;
+
+  @override
+  SessionId nextSessionId() => SessionId(
+    const [
+      'nonprimary-session',
+      'primary-session',
+      'shared-session',
+    ][_nextSession++],
+  );
+
+  @override
+  ProjectId nextProjectId() => fail('Project must already exist.');
+
+  @override
+  TaskId nextTaskId() => fail('Task must already exist.');
+
+  @override
+  EnvironmentId nextEnvironmentId() => fail('Environment must already exist.');
 }
 
 GitTaskAnchorStore _anchorStore(

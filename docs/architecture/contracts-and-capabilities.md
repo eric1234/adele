@@ -879,7 +879,7 @@ transport contracts, and their tests.
 ## Generation-scoped infrastructure access
 
 Infrastructure services support non-execution access outside a Run operation,
-including Session storage and declared [backend Capability consumption](#prepared-backend-capability-consumption).
+including Project storage and declared [backend Capability consumption](#prepared-backend-capability-consumption).
 `PluginBackendHost.startPlugin` accepts a generic
 `createInfrastructureServices` factory called with the actual connection, not a
 plugin ID detached from its generation. Bootstrap carries one required opaque
@@ -907,7 +907,9 @@ filesystem services. [ADR 0034](../adr/0034-plugin-owned-relational-session-stor
 narrowly amends ADR 0032's invocation-only host-access rule without widening
 semantic operation authority.
 
-### Session-scoped relational storage
+<a id="session-scoped-relational-storage"></a>
+
+### Project relational storage
 
 Pure-Dart [`adele_project_storage`](../../packages/project_storage/lib/adele_project_storage.dart)
 owns `ProjectStorageService`, a generated host service, not a provider-selected
@@ -919,6 +921,19 @@ Capability. Its narrow surface is:
 | `ensureSchemaForSession(sessionId, migrations, accessMode)` | Validate all script statements as supported `CREATE TABLE` forms before execution, then coordinate the connection-owned plugin's schema transactionally; version is the migration list length. The [storage contract](../../packages/project_storage/README.md#service) defines the restricted script syntax. |
 | `queryForSession(sessionId, sql, parameters, accessMode)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
 | `transactionForSession(sessionId, statements, accessMode)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
+| `ensureSchemaForEnvironment(environmentId, migrations, accessMode)` | The same owner-schema operation, routed through canonical Environment -> Task -> currently open Project. |
+| `queryForEnvironment(environmentId, sql, parameters, accessMode)` | The same bounded read-only query through Environment scope. |
+| `transactionForEnvironment(environmentId, statements, accessMode)` | The same atomic statement batch through Environment scope. |
+
+Session and Environment IDs are alternative ways to select the same Project
+database, not separate storage owners or subsystems. The referenced Environment
+must already be canonical and published, with a valid Task and open Project;
+no Session is required. Provisional/unpublished identities fail. Environment
+addressing neither resolves a provider nor restores/materializes an Environment,
+and never substitutes the Task's primary Environment. It grants no filesystem,
+read, or process execution authority. Owner identity remains bound to the backend
+connection, and all statement validation, version coordination, transaction and
+result limits are shared with the Session route.
 
 Storage operations require an explicit `ProjectStorageAccessMode`: `durable`
 retains durable-only access and rejects volatile Projects; `durableOrTemporary`
@@ -938,8 +953,8 @@ Exact declarations and codecs remain owned by the package.
 The host derives backing through its canonical live graph without resolving a
 strategy or materializing an Environment. Callers supply no owner, database path,
 or raw SQLite connection. Storage requires a live infrastructure grant but the
-Session ID is a storage selector, not a per-Session permission token. SQL is
-deliberately not a parser sandbox: the host does not enforce table prefixes or
+Session or Environment ID is a storage selector, not an execution permission token.
+SQL is deliberately not a parser sandbox: the host does not enforce table prefixes or
 row isolation. Stock SQL operates on its owner's tables and uses relational
 foreign keys to core identities. This semantic ownership convention must not be
 described as protection against arbitrary malicious plugin SQL; that sandbox is

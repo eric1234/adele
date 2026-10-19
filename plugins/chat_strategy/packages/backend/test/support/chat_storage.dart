@@ -122,4 +122,26 @@ final class ChatTestStorage implements ProjectStorageService {
   }
 
   void close() => database.close();
+
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Chat storage is Session-addressed.');
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Chat storage is Session-addressed.');
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) => throw UnsupportedError('Chat storage is Session-addressed.');
 }

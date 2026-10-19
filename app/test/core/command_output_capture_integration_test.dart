@@ -1031,6 +1031,34 @@ VALUES (?, ?, ?, ?, ?)
 final class _RecordingProjectStorage implements ProjectStorageService {
   _RecordingProjectStorage(this.delegate);
   final ProjectStorageHost delegate;
+
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.ensureSchemaForEnvironment(
+    environmentId,
+    migrations,
+    accessMode,
+  );
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.queryForEnvironment(environmentId, sql, parameters, accessMode);
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) =>
+      delegate.transactionForEnvironment(environmentId, statements, accessMode);
+
   final queries =
       <
         ({

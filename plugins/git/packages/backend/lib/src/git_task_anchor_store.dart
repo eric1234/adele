@@ -85,30 +85,27 @@ final class GitTaskAnchorStore {
     }
   }
 
-  /// Trusted provisioning only: explicitly known canonical association and anchor.
+  /// Trusted provisioning only: explicitly known existing Environment and anchor.
   /// Not a Diff service method or an interpreted action. Even identical duplicate
   /// enrollment fails; concurrent writers cannot acknowledge competing anchors.
-  Future<void> enroll({
-    required AuthorizedEnvironmentIdentity identity,
+  Future<void> enrollForEnvironment({
+    required String environmentId,
     required GitTaskComparisonAnchor anchor,
   }) async {
     _validateAnchor(anchor);
     try {
-      await storage.ensureSchemaForSession(identity.sessionId, [
+      await storage.ensureSchemaForEnvironment(environmentId, [
         _schema,
       ], _access);
-      await storage.transactionForSession(identity.sessionId, [
+      await storage.transactionForEnvironment(environmentId, [
         RelationalStatement(
           sql: '''INSERT INTO adele_git_task_anchors
             (environment_id,baseline_commit,expected_branch_ref)
             SELECT e.id,:baseline,:branch
-            FROM adele_product_sessions s
-            JOIN adele_product_session_environment_authority a ON a.session_id=s.id
-            JOIN adele_product_environments e ON e.id=a.environment_id
-            WHERE s.id=:session AND e.id=:environment AND e.task_id=s.task_id''',
+            FROM adele_product_environments e
+            WHERE e.id=:environment''',
           parameters: {
-            ':session': identity.sessionId,
-            ':environment': identity.environmentId,
+            ':environment': environmentId,
             ':baseline': anchor.baselineCommit,
             ':branch': anchor.expectedBranchRef,
           },

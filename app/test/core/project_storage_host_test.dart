@@ -5,10 +5,12 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -784,7 +786,813 @@ void main() {
         );
       },
     );
+
+    test(
+      'Environment $mode storage precedes Sessions and shares only its Project backing',
+      () async {
+        final graph = await _openEnvironmentGraph(
+          runtime,
+          Directory('${temporary.path}/environment')..createSync(),
+          id: 'environment-project',
+          volatile: mode == _temporary,
+        );
+        final environment = graph.additional;
+        expect(runtime.store.sessionsForTask(graph.task.id), isEmpty);
+        expect(
+          runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+        expect(
+          () => runtime.lifecycle.environmentRuntime.resolveProvider(
+            providerId: environment.providerId,
+          ),
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        const schema =
+            'CREATE TABLE fixture_environments ('
+            'environment_id TEXT PRIMARY KEY REFERENCES adele_product_environments(id), '
+            'task_id TEXT NOT NULL REFERENCES adele_product_tasks(id), '
+            'project_id TEXT NOT NULL REFERENCES adele_product_projects(id), '
+            'value TEXT); '
+            'CREATE TABLE fixture_later_sessions ('
+            'session_id TEXT PRIMARY KEY REFERENCES adele_product_sessions(id))';
+        if (mode == _temporary) {
+          expect(
+            runtime.lifecycle.databaseForEnvironment(environment.id),
+            isNull,
+          );
+          await expectLater(
+            storage.ensureSchemaForEnvironment(environment.id.value, [
+              schema,
+            ], _durable),
+            throwsStateError,
+          );
+          await expectLater(
+            storage.queryForEnvironment(
+              environment.id.value,
+              'SELECT 1',
+              {},
+              _durable,
+            ),
+            throwsStateError,
+          );
+          await expectLater(
+            storage.transactionForEnvironment(
+              environment.id.value,
+              [],
+              _durable,
+            ),
+            throwsStateError,
+          );
+        }
+        await storage.ensureSchemaForEnvironment(environment.id.value, [
+          schema,
+        ], mode);
+        final database = runtime.lifecycle.databaseForEnvironment(
+          environment.id,
+          accessMode: mode,
+        )!;
+        expect(database.loadProductGraph().sessions, isEmpty);
+        expect(database.loadProductGraph().environments, hasLength(2));
+        expect(
+          runtime.lifecycle.databaseForEnvironment(
+            graph.primary.id,
+            accessMode: mode,
+          ),
+          same(database),
+        );
+        await storage.transactionForEnvironment(environment.id.value, [
+          for (final target in [graph.primary, environment])
+            RelationalStatement(
+              sql:
+                  'INSERT INTO fixture_environments VALUES (:environment, :task, :project, :value)',
+              parameters: {
+                ':environment': target.id.value,
+                ':task': graph.task.id.value,
+                ':project': graph.project.id.value,
+                ':value': target.id.value,
+              },
+              expectedRows: 1,
+            ),
+        ], mode);
+        expect(
+          (await storage.queryForEnvironment(
+            environment.id.value,
+            'SELECT value FROM fixture_environments WHERE environment_id = :environment',
+            {':environment': environment.id.value},
+            mode,
+          )).single.values,
+          {'value': environment.id.value},
+        );
+        final later = runtime.lifecycle.createSession(
+          taskId: graph.task.id,
+          strategyId: _strategy,
+          environmentId: environment.id,
+        );
+        expect(
+          runtime.lifecycle.databaseForSession(later.id, accessMode: mode),
+          same(database),
+        );
+        await storage.ensureSchemaForSession(later.id.value, [schema], mode);
+        await storage.transactionForSession(later.id.value, [
+          RelationalStatement(
+            sql: 'INSERT INTO fixture_later_sessions VALUES (:session)',
+            parameters: {':session': later.id.value},
+            expectedRows: 1,
+          ),
+        ], mode);
+        expect(database.loadProductGraph().sessions.single.id, later.id);
+        expect(database.loadProductGraph().authorities, [
+          (later.id, environment.id),
+        ]);
+        expect(
+          await storage.queryForEnvironment(
+            environment.id.value,
+            'SELECT * FROM fixture_later_sessions',
+            {},
+            mode,
+          ),
+          hasLength(1),
+        );
+        expect(
+          await storage.queryForSession(
+            later.id.value,
+            'SELECT * FROM fixture_environments',
+            {},
+            mode,
+          ),
+          hasLength(2),
+        );
+        expect(
+          await storage.isDurableSession(later.id.value),
+          mode == _durable,
+        );
+        expect(
+          runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+
+        final other = await _openEnvironmentGraph(
+          runtime,
+          Directory('${temporary.path}/other-environment')..createSync(),
+          id: 'other-environment-project',
+          volatile: mode == _temporary,
+        );
+        await expectLater(
+          storage.queryForEnvironment(
+            other.additional.id.value,
+            'SELECT * FROM fixture_environments',
+            {},
+            mode,
+          ),
+          throwsA(isA<SqliteException>()),
+        );
+        await storage.ensureSchemaForEnvironment(other.additional.id.value, [
+          schema,
+        ], mode);
+        expect(
+          await storage.queryForEnvironment(
+            other.additional.id.value,
+            'SELECT * FROM fixture_environments',
+            {},
+            mode,
+          ),
+          isEmpty,
+        );
+        expect(
+          runtime.lifecycle.databaseForEnvironment(
+            other.additional.id,
+            accessMode: mode,
+          ),
+          isNot(same(database)),
+        );
+
+        final path = File(database.path);
+        if (mode == _temporary) {
+          expect(path.path, isNot(startsWith(temporary.path)));
+        }
+        await runtime.close();
+        expect(path.existsSync(), mode == _durable);
+        if (mode == _temporary) {
+          expect(path.parent.existsSync(), isFalse);
+        }
+        await expectLater(
+          storage.queryForEnvironment(
+            environment.id.value,
+            'SELECT 1',
+            {},
+            mode,
+          ),
+          throwsStateError,
+        );
+      },
+    );
+
+    test(
+      'Environment $mode reuses owner, SQL validation, rollback, and limits',
+      () async {
+        final graph = await _openEnvironmentGraph(
+          runtime,
+          Directory('${temporary.path}/environment')..createSync(),
+          id: 'sql-environment-project',
+          volatile: mode == _temporary,
+        );
+        final id = graph.additional.id.value;
+        final database = runtime.lifecycle.databaseForEnvironment(
+          graph.additional.id,
+          accessMode: mode,
+        )!;
+        for (final owner in ['dev.adele.product', 'dev.adele.execution']) {
+          final reserved = ProjectStorageHost(
+            lifecycle: runtime.lifecycle,
+            owner: PluginId(owner),
+            validateAccess: () {},
+          );
+          await expectLater(
+            reserved.ensureSchemaForEnvironment(id, [_baseline], mode),
+            throwsArgumentError,
+          );
+        }
+        for (final (schema, failure) in <(String, Matcher)>[
+          (
+            'CREATE TABLE rollback_table (id TEXT); COMMIT',
+            throwsArgumentError,
+          ),
+          (
+            'CREATE TABLE rollback_table (id TEXT); CREATE TABLE incomplete (',
+            throwsA(isA<SqliteException>()),
+          ),
+        ]) {
+          await expectLater(
+            storage.ensureSchemaForEnvironment(id, [schema], mode),
+            failure,
+          );
+          expect(
+            database.queryPluginRows(
+              "SELECT name FROM sqlite_master WHERE name = 'rollback_table'",
+              {},
+            ),
+            isEmpty,
+          );
+          expect(
+            database.queryPluginRows(
+              'SELECT version FROM adele_schema_versions WHERE owner_id = :owner',
+              {':owner': storage.owner.value},
+            ),
+            isEmpty,
+          );
+        }
+        await storage.ensureSchemaForEnvironment(id, [_baseline], mode);
+        await storage.ensureSchemaForEnvironment(id, [_baseline], mode);
+        final otherOwner = ProjectStorageHost(
+          lifecycle: runtime.lifecycle,
+          owner: PluginId('dev.adele.test.other-storage'),
+          validateAccess: () {},
+        );
+        await otherOwner.ensureSchemaForEnvironment(id, [
+          'CREATE TABLE other_entries (id TEXT)',
+        ], mode);
+        expect(
+          database
+              .queryPluginRows(
+                'SELECT owner_id, version FROM adele_schema_versions ORDER BY owner_id',
+                {},
+              )
+              .map((row) => row.values),
+          [
+            {'owner_id': 'dev.adele.execution', 'version': 1},
+            {'owner_id': 'dev.adele.product', 'version': 1},
+            {'owner_id': 'dev.adele.test.other-storage', 'version': 1},
+            {'owner_id': 'dev.adele.test.storage', 'version': 1},
+          ],
+        );
+        await storage.transactionForEnvironment(id, [
+          RelationalStatement(
+            sql: ' \n iNsErT INTO fixture_entries VALUES (:value, :number)',
+            parameters: {':value': "quoted'; COMMIT", ':number': 7},
+            expectedRows: 1,
+          ),
+          RelationalStatement(
+            sql: 'INSERT INTO fixture_entries VALUES (:value, :number)',
+            parameters: {':value': null, ':number': 8},
+            expectedRows: 1,
+          ),
+        ], mode);
+        final rows = await storage.queryForEnvironment(
+          id,
+          '\t sElEcT value, number FROM fixture_entries ORDER BY number; ',
+          {},
+          mode,
+        );
+        expect(rows.map((row) => row.values), [
+          {'value': "quoted'; COMMIT", 'number': 7},
+          {'value': null, 'number': 8},
+        ]);
+        expect(() => rows.clear(), throwsUnsupportedError);
+        expect(() => rows.first.values.clear(), throwsUnsupportedError);
+        for (final (sql, failure) in <(String, Matcher)>[
+          (
+            'UPDATE fixture_entries SET value = NULL WHERE number = 99',
+            throwsStateError,
+          ),
+          (
+            'INSERT INTO missing_table VALUES (1)',
+            throwsA(isA<SqliteException>()),
+          ),
+          ('COMMIT', throwsArgumentError),
+          ('DELETE FROM fixture_entries; COMMIT', throwsArgumentError),
+        ]) {
+          await expectLater(
+            storage.transactionForEnvironment(id, [
+              RelationalStatement(
+                sql: "UPDATE fixture_entries SET value = 'must roll back'",
+                parameters: {},
+                expectedRows: 2,
+              ),
+              RelationalStatement(sql: sql, parameters: {}, expectedRows: 1),
+            ], mode),
+            failure,
+          );
+          expect(
+            (await storage.queryForEnvironment(
+              id,
+              'SELECT value, number FROM fixture_entries ORDER BY number',
+              {},
+              mode,
+            )).map((row) => row.values),
+            rows.map((row) => row.values),
+          );
+          expect(database.autocommit, isTrue);
+        }
+        for (final sql in [
+          'DELETE FROM fixture_entries',
+          'SELECT 1; SELECT 2',
+          '-- comment\nSELECT 1',
+          'WITH n AS (SELECT 1) SELECT * FROM n',
+        ]) {
+          await expectLater(
+            storage.queryForEnvironment(id, sql, {}, mode),
+            throwsArgumentError,
+          );
+        }
+        for (final sql in [
+          'SELECT 1.5',
+          "SELECT x'ff'",
+          'SELECT 1 AS same, 2 AS same',
+        ]) {
+          await expectLater(
+            storage.queryForEnvironment(id, sql, {}, mode),
+            throwsFormatException,
+          );
+        }
+        await expectLater(
+          storage.queryForEnvironment(id, 'SELECT :value', {
+            ':value': true,
+          }, mode),
+          throwsFormatException,
+        );
+        await expectLater(
+          storage.queryForEnvironment(
+            id,
+            "SELECT printf('%.*c', ${relationalQueryByteLimit + 1}, 'x') AS oversized",
+            {},
+            mode,
+          ),
+          throwsStateError,
+        );
+        await storage.transactionForEnvironment(id, [
+          for (var index = 0; index < relationalQueryRowLimit; index++)
+            RelationalStatement(
+              sql: 'INSERT INTO fixture_entries VALUES (NULL, :number)',
+              parameters: {':number': index},
+              expectedRows: 1,
+            ),
+        ], mode);
+        await expectLater(
+          storage.queryForEnvironment(
+            id,
+            'SELECT number FROM fixture_entries',
+            {},
+            mode,
+          ),
+          throwsStateError,
+        );
+      },
+    );
+
+    test(
+      'Environment $mode revalidates generation before queued entry and identity parsing',
+      () async {
+        final graph = await _openEnvironmentGraph(
+          runtime,
+          Directory('${temporary.path}/environment')..createSync(),
+          id: 'revoked-environment-project',
+          volatile: mode == _temporary,
+        );
+        final id = graph.additional.id.value;
+        await storage.ensureSchemaForEnvironment(id, [_baseline], mode);
+        final database = runtime.lifecycle.databaseForEnvironment(
+          graph.additional.id,
+          accessMode: mode,
+        )!;
+        final dispatcher = ProjectStorageServiceDispatcher(storage);
+        addTearDown(dispatcher.close);
+        final response = dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 1,
+          'method': projectStorageServiceTransactionForEnvironmentId,
+          'payload': {
+            'environmentId': id,
+            'accessMode': mode.name,
+            'statements': [
+              {
+                'sql': "INSERT INTO fixture_entries VALUES ('late', 1)",
+                'parameters': <String, Object?>{},
+                'expectedRows': 1,
+              },
+            ],
+          },
+        });
+        live = false;
+        expect((await response)['ok'], isFalse);
+        expect(
+          database.queryPluginRows('SELECT * FROM fixture_entries', {}),
+          isEmpty,
+        );
+        final revoked = throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'Retired generation',
+          ),
+        );
+        for (final target in [id, 'absent', ' invalid']) {
+          await expectLater(
+            storage.ensureSchemaForEnvironment(target, [_baseline], mode),
+            revoked,
+          );
+          await expectLater(
+            storage.queryForEnvironment(target, 'SELECT 1', {}, mode),
+            revoked,
+          );
+          await expectLater(
+            storage.transactionForEnvironment(target, [], mode),
+            revoked,
+          );
+        }
+        final replacement = ProjectStorageHost(
+          lifecycle: runtime.lifecycle,
+          owner: storage.owner,
+          validateAccess: () {},
+        );
+        expect(
+          await replacement.queryForEnvironment(
+            id,
+            'SELECT * FROM fixture_entries',
+            {},
+            mode,
+          ),
+          isEmpty,
+        );
+        await runtime.close();
+        await expectLater(
+          replacement.ensureSchemaForEnvironment(id, [_baseline], mode),
+          throwsStateError,
+        );
+        await expectLater(
+          replacement.queryForEnvironment(id, 'SELECT 1', {}, mode),
+          throwsStateError,
+        );
+        await expectLater(
+          replacement.transactionForEnvironment(id, [], mode),
+          throwsStateError,
+        );
+      },
+    );
   }
+
+  test(
+    'unknown and unpublished Environments cannot select another published backing',
+    () async {
+      final unpublished = Environment(
+        id: EnvironmentId('unpublished'),
+        taskId: session.taskId,
+        role: EnvironmentRole.additional,
+        providerId: _environmentProvider,
+        providerState: {},
+      );
+      for (final mode in ProjectStorageAccessMode.values) {
+        for (final id in ['absent', unpublished.id.value]) {
+          await expectLater(
+            storage.ensureSchemaForEnvironment(id, [_baseline], mode),
+            throwsStateError,
+          );
+          await expectLater(
+            storage.queryForEnvironment(id, 'SELECT 1', {}, mode),
+            throwsStateError,
+          );
+          await expectLater(
+            storage.transactionForEnvironment(id, [], mode),
+            throwsStateError,
+          );
+        }
+        await expectLater(
+          storage.queryForEnvironment(' invalid', 'SELECT 1', {}, mode),
+          throwsFormatException,
+        );
+      }
+      expect(
+        inspect().select(
+          'SELECT version FROM adele_schema_versions WHERE owner_id = ?',
+          [storage.owner.value],
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'malformed Environment associations are rejected before canonical publication',
+    () async {
+      final project = Project(
+        id: ProjectId('malformed-project'),
+        sourceLocation: temporary.uri,
+      );
+      final task = Task(
+        id: TaskId('malformed-task'),
+        projectId: project.id,
+        title: 'Malformed',
+      );
+      final environment = Environment(
+        id: EnvironmentId('malformed-environment'),
+        taskId: task.id,
+        role: EnvironmentRole.primary,
+        providerId: _environmentProvider,
+        providerState: {},
+      );
+      // The final store's private maps have no malformed-graph injection/removal API.
+      // Orphan Task/Project links and provisional records cannot reach storage entry;
+      // test their real publication boundary instead of inventing a fake live graph.
+      for (final (tasks, environments) in <(List<Task>, List<Environment>)>[
+        ([], [environment]),
+        (
+          [
+            Task(
+              id: task.id,
+              projectId: ProjectId('foreign'),
+              title: task.title,
+            ),
+          ],
+          [environment],
+        ),
+        (
+          [task],
+          [
+            Environment(
+              id: environment.id,
+              taskId: TaskId('foreign'),
+              role: environment.role,
+              providerId: environment.providerId,
+              providerState: {},
+            ),
+          ],
+        ),
+        (
+          [task],
+          [
+            Environment(
+              id: environment.id,
+              taskId: task.id,
+              role: environment.role,
+              providerId: environment.providerId,
+              providerState: null,
+            ),
+          ],
+        ),
+      ]) {
+        expect(
+          () => runtime.store.publishRestoredProject(
+            project: project,
+            tasks: tasks,
+            environments: environments,
+            sessions: [],
+            authorities: [],
+            runRecords: [],
+          ),
+          throwsStateError,
+        );
+        expect(runtime.store.project(project.id), isNull);
+        expect(runtime.store.task(task.id), isNull);
+        expect(runtime.store.environment(environment.id), isNull);
+        await expectLater(
+          storage.queryForEnvironment(
+            environment.id.value,
+            'SELECT 1',
+            {},
+            _temporary,
+          ),
+          throwsStateError,
+        );
+      }
+    },
+  );
+
+  test(
+    'provisional Environment storage fails during Task establishment',
+    () async {
+      final pending = Completer<Object?>();
+      final entered = Completer<Map<Object?, Object?>>();
+      final channel = _ProviderChannel()
+        ..pendingEnvironment = pending
+        ..onEstablish = (payload) =>
+            entered.complete(payload['context']! as Map<Object?, Object?>);
+      final provider = ProviderId('dev.adele.test.pending-environment');
+      final registration = runtime.registry.register(
+        provider: ProviderDescriptor(
+          id: provider,
+          capability: environmentProviderCapability,
+          pluginId: 'dev.adele.test.provider',
+          displayName: 'Pending Environment',
+          serviceId: environmentProviderServiceId,
+        ),
+        endpoint: AdeleRequestChannelEndpoint(
+          channel: channel,
+          serviceId: environmentProviderServiceId,
+          isAvailable: () => true,
+        ),
+      );
+      addTearDown(registration.close);
+      final project = runtime.store.task(session.taskId)!.projectId;
+      final creating = runtime.lifecycle.createTask(
+        projectId: project,
+        title: 'Provisional',
+        providerId: provider,
+      );
+      final context = await entered.future;
+      final id = context['environmentId']! as String;
+      expect(context['providerStateInitialized'], isFalse);
+      for (final mode in ProjectStorageAccessMode.values) {
+        await expectLater(
+          storage.ensureSchemaForEnvironment(id, [_baseline], mode),
+          throwsStateError,
+        );
+        await expectLater(
+          storage.queryForEnvironment(id, 'SELECT 1', {}, mode),
+          throwsStateError,
+        );
+        await expectLater(
+          storage.transactionForEnvironment(id, [], mode),
+          throwsStateError,
+        );
+      }
+      expect(runtime.store.environment(EnvironmentId(id)), isNull);
+      pending.complete({'providerState': <String, Object?>{}});
+      final created = await creating;
+      expect(created.environment.id.value, id);
+      expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
+      await storage.ensureSchemaForEnvironment(id, [_baseline], _durable);
+    },
+  );
+
+  test(
+    'Environment temporary opt-in never replaces failed durable storage',
+    () async {
+      final environment = runtime.store.primaryEnvironmentFor(session.taskId)!;
+      final database = runtime.lifecycle.databaseForEnvironment(
+        environment.id,
+      )!;
+      await storage.ensureSchemaForEnvironment(environment.id.value, [
+        _baseline,
+      ], _temporary);
+      expect(
+        runtime.lifecycle.databaseForEnvironment(
+          environment.id,
+          accessMode: _temporary,
+        ),
+        same(database),
+      );
+      final inspection = inspect();
+      inspection.execute('PRAGMA user_version = 71');
+      await expectLater(
+        storage.transactionForEnvironment(environment.id.value, [
+          RelationalStatement(
+            sql: 'INSERT INTO missing_table VALUES (1)',
+            parameters: {},
+            expectedRows: 1,
+          ),
+        ], _temporary),
+        throwsA(isA<SqliteException>()),
+      );
+      expect(
+        inspection.select('PRAGMA user_version').single['user_version'],
+        71,
+      );
+      database.close();
+      await expectLater(
+        storage.ensureSchemaForEnvironment(environment.id.value, [
+          _baseline,
+        ], _temporary),
+        throwsStateError,
+      );
+      await expectLater(
+        storage.queryForEnvironment(
+          environment.id.value,
+          'SELECT 1',
+          {},
+          _temporary,
+        ),
+        throwsStateError,
+      );
+      await expectLater(
+        storage.transactionForEnvironment(environment.id.value, [], _temporary),
+        throwsStateError,
+      );
+      expect(
+        runtime.lifecycle.databaseForEnvironment(
+          environment.id,
+          accessMode: _temporary,
+        ),
+        same(database),
+      );
+      await runtime.close();
+      expect(File(database.path).existsSync(), isTrue);
+    },
+  );
+}
+
+Future<
+  ({Project project, Task task, Environment primary, Environment additional})
+>
+_openEnvironmentGraph(
+  AdeleRuntime runtime,
+  Directory directory, {
+  required String id,
+  required bool volatile,
+}) async {
+  final project = Project(id: ProjectId(id), sourceLocation: directory.uri);
+  final task = Task(
+    id: TaskId('$id-task'),
+    projectId: project.id,
+    title: 'No Session',
+  );
+  Environment environment(EnvironmentRole role) => Environment(
+    id: EnvironmentId('$id-${role.name}'),
+    taskId: task.id,
+    role: role,
+    providerId: ProviderId('dev.adele.test.absent-environment'),
+    providerState: {},
+  );
+  final primary = environment(EnvironmentRole.primary);
+  final additional = environment(EnvironmentRole.additional);
+  if (volatile) {
+    runtime.store.publishRestoredProject(
+      project: project,
+      tasks: [task],
+      environments: [primary, additional],
+      sessions: [],
+      authorities: [],
+      runRecords: [],
+    );
+  } else {
+    final database = ProjectDatabase.open(
+      ProjectBacking(
+        sourceLocation: directory.uri,
+        databaseRelativePath: '.adele/data.db',
+      ),
+    );
+    try {
+      database.openProject(
+        sourceLocation: directory.uri,
+        nextProjectId: () => project.id,
+      );
+      database.insertTaskWithPrimaryEnvironment(task, primary);
+      final seed = sqlite3.open(database.path);
+      try {
+        seed.execute(
+          "INSERT INTO adele_product_environments VALUES (?, ?, 'additional', ?, '{}')",
+          [additional.id.value, task.id.value, additional.providerId.value],
+        );
+      } finally {
+        seed.close();
+      }
+    } finally {
+      database.close();
+    }
+    await runtime.lifecycle.openProject(
+      sourceLocation: directory.uri,
+      provider: runtime.lifecycle.resolveProjectProvider(_projectProvider),
+    );
+  }
+  return (
+    project: runtime.store.project(project.id)!,
+    task: runtime.store.task(task.id)!,
+    primary: runtime.store.environment(primary.id)!,
+    additional: runtime.store.environment(additional.id)!,
+  );
 }
 
 Future<Session> _createSession(
@@ -809,6 +1617,8 @@ Future<Session> _createSession(
 
 final class _ProviderChannel implements AdeleRequestChannel {
   Completer<Object?>? pending;
+  Completer<Object?>? pendingEnvironment;
+  void Function(Map<String, Object?>)? onEstablish;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
@@ -820,6 +1630,8 @@ final class _ProviderChannel implements AdeleRequestChannel {
       };
     }
     expect(method, environmentProviderServiceEstablishId);
+    onEstablish?.call(payload);
+    if (pendingEnvironment case final value?) return value.future;
     return {'providerState': <String, Object?>{}};
   }
 }

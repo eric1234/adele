@@ -99,6 +99,33 @@ final class _GatedStorage implements ProjectStorageService {
   final HttpClient client = HttpClient();
 
   @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.ensureSchemaForEnvironment(
+    environmentId,
+    migrations,
+    accessMode,
+  );
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.queryForEnvironment(environmentId, sql, parameters, accessMode);
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) =>
+      delegate.transactionForEnvironment(environmentId, statements, accessMode);
+
+  @override
   Future<bool> isDurableSession(String sessionId) =>
       delegate.isDurableSession(sessionId);
 

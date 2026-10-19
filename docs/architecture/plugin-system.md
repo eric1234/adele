@@ -801,9 +801,11 @@ ordering and shutdown distinctions belong to the
 Plugins retain semantic ownership of their domain-specific state. The implemented
 [Project database](product-model.md#project-storage) hosts core records and
 plugin-owned relational tables without absorbing plugin schemas into core. The
-pure-Dart `adele_project_storage` contract supplies Session-scoped schema, query,
-and transaction operations. SQLite, backing paths, and the single connection per
-Project stay app-private; no key/value envelope, ORM, or public database handle is
+pure-Dart `adele_project_storage` contract supplies schema, query, and transaction
+operations addressed by a published Session or Environment. Both scopes select
+the same Project backing; Environment addressing requires no Session. SQLite,
+backing paths, and the single connection per Project stay app-private; no key/value
+envelope, ORM, or public database handle is
 introduced. Owner identity comes from the exact backend connection, not a caller
 argument. [Storage access and limits](contracts-and-capabilities.md#session-scoped-relational-storage)
 define the service boundary, including its deliberate lack of SQL row isolation.
@@ -922,8 +924,8 @@ generation. Separately, an explicit
 allows plugin storage outside execution, including snapshot and configuration
 calls, and declared context-free backend Capability consumption. Neither service
 grants orchestration, model, tool, Environment-facet, or filesystem host authority.
-A Session ID selects storage backing through the live product graph,
-not execution authority. Revocation ends access, not effects already committed or
+A Session or Environment ID selects storage backing through the published product
+graph, not execution authority. Revocation ends access, not effects already committed or
 in flight. These are host-service boundaries, not an OS or malicious-plugin SQL
 sandbox. [Operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls)
 and ADRs [0032](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md)
