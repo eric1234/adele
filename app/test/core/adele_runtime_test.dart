@@ -147,7 +147,7 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     calls++;
-    return {'providerState': <String, Object?>{}};
+    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 }
 

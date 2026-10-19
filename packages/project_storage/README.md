@@ -52,10 +52,14 @@ Subsequent core identity changes are committed to that temporary store before li
 publication. This does not make the Project reopenable or change volatile terminal
 Run/activity retention. Orderly lifecycle close closes the connection and removes
 its directory and SQLite sidecars; process-crash cleanup/recovery is not promised.
-Plugin state initialization is separate from core Task/Environment/Session creation.
-A write after Environment publication is not atomic with the original core creation
-transaction. This API does not coordinate mandatory initialization or gate Task
-usability; those lifecycle decisions require a separate boundary.
+Writes through this service remain separate from core Task/Environment/Session
+creation. A write after Environment publication is not atomic with the original
+creation transaction. Required establishment-time state instead uses the optional
+[Environment initialization result](../environment/README.md#initial-plugin-state):
+core reuses relational statements inside its Task/Environment transaction, after
+separate owner-schema preparation. That result is data, not access to this service
+through a provisional identity. See the canonical
+[publication boundary](../../docs/architecture/product-model.md#prepared-establishment-state).
 
 Named SQL parameters include the SQLite parameter prefix, for example SQL
 `WHERE session_id = :session` with parameters `{':session': sessionId}`. Parameters

@@ -14,6 +14,18 @@ import 'resource_cleanup.dart';
 typedef EnvironmentProviderForBinding =
     EnvironmentProvider Function(ProviderBinding binding);
 
+/// Trusted host capture of an exact provider registration's backend origin.
+/// This is never supplied by a provider result or transported to a plugin.
+final class EnvironmentEstablishmentOwner {
+  const EnvironmentEstablishmentOwner({
+    required this.pluginId,
+    required this.validate,
+  });
+
+  final PluginId pluginId;
+  final void Function() validate;
+}
+
 abstract interface class ProductIdSource {
   ProjectId nextProjectId();
 
@@ -505,6 +517,11 @@ final class EnvironmentRuntime {
     final EnvironmentProviderResult result = await resolved.provider.restore(
       LocalEnvironment(project: project, task: task, value: durable),
     );
+    if (result.initialState != null) {
+      throw StateError(
+        'Initial plugin state is only valid during establishment.',
+      );
+    }
     final Environment restored = Environment(
       id: durable.id,
       taskId: durable.taskId,
@@ -561,6 +578,7 @@ final class ProductLifecycleCoordinator {
     required ExtensionRegistry extensions,
     required ProductIdSource ids,
     required EnvironmentProviderForBinding providerForBinding,
+    this.captureEstablishmentOwner,
   }) : strategyResolver = OrchestrationStrategyResolver(extensions),
        _registry = registry,
        _ids = ids {
@@ -577,12 +595,15 @@ final class ProductLifecycleCoordinator {
     required CapabilityRegistry registry,
     required ExtensionRegistry extensions,
     ProductIdSource? ids,
+    EnvironmentEstablishmentOwner? Function(ProviderBinding)?
+    captureEstablishmentOwner,
   }) => ProductLifecycleCoordinator(
     store: store,
     registry: registry,
     extensions: extensions,
     ids: ids ?? MonotonicProductIdSource(),
     providerForBinding: _generatedProviderForBinding,
+    captureEstablishmentOwner: captureEstablishmentOwner,
   );
 
   final InMemoryProductStore store;
@@ -590,6 +611,8 @@ final class ProductLifecycleCoordinator {
   final OrchestrationStrategyResolver strategyResolver;
   final ProductIdSource _ids;
   final CapabilityRegistry _registry;
+  final EnvironmentEstablishmentOwner? Function(ProviderBinding)?
+  captureEstablishmentOwner;
   // Membership records durable ownership; createProject never enters this map.
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
   final Map<ProjectId, ProjectDatabase> _temporaryProjectDatabases = {};
@@ -919,6 +942,10 @@ final class ProductLifecycleCoordinator {
     }
     final ResolvedEnvironmentProvider resolved = environmentRuntime
         .resolveProvider(providerId: providerId);
+    // Capture once, before calling the provider. Never look up a replacement
+    // owner after establishment returns, even when its semantic ID is unchanged.
+    final owner = captureEstablishmentOwner?.call(resolved.binding);
+    owner?.validate();
     final Task task = Task(
       id: _ids.nextTaskId(),
       projectId: project.id,
@@ -936,6 +963,11 @@ final class ProductLifecycleCoordinator {
           LocalEnvironment(project: project, task: task, value: provisional),
         );
     _requireOpen();
+    if (!identical(store.project(projectId), project)) {
+      throw StateError('The selected Project is no longer canonical.');
+    }
+    resolved.binding.endpointAs<CapabilityEndpoint>();
+    owner?.validate();
     final Environment finalized = Environment(
       id: provisional.id,
       taskId: provisional.taskId,
@@ -948,10 +980,41 @@ final class ProductLifecycleCoordinator {
       resolved,
     );
     store._validateTaskWithPrimaryEnvironment(task, finalized);
+    final initialState = established.initialState;
+    if (initialState != null && owner == null) {
+      throw StateError(
+        'Initial plugin state requires a captured backend owner.',
+      );
+    }
+    final database = initialState == null
+        ? (_projectDatabases[project.id] ??
+              _temporaryProjectDatabases[project.id])
+        : _databaseForProject(
+            project,
+            ProjectStorageAccessMode.durableOrTemporary,
+          )!;
+    if (initialState?.schema case final schema?) {
+      // Owner-version preparation has its own transaction. An unused schema may
+      // remain after failure; no Task, Environment, or semantic row exists yet.
+      database!.ensurePluginSchema(owner!.pluginId.value, [
+        schema,
+      ], definitionsOnly: true);
+    }
     // Establishment may already have external effects. There is no general
     // provider release contract to roll them back if this transaction fails.
-    (_projectDatabases[project.id] ?? _temporaryProjectDatabases[project.id])
-        ?.insertTaskWithPrimaryEnvironment(task, finalized);
+    // Admission, synchronous SQL, and coherent publication cannot interleave
+    // with provider retirement, Project close, or another lifecycle operation.
+    resolved.binding.endpointAs<CapabilityEndpoint>();
+    owner?.validate();
+    database?.insertTaskWithPrimaryEnvironment(
+      task,
+      finalized,
+      initialInserts: [
+        for (final insert
+            in initialState?.inserts ?? <EnvironmentInitialInsert>[])
+          insert.toRelationalStatement(),
+      ],
+    );
     store.publishTaskWithPrimaryEnvironment(task, finalized);
     environmentRuntime._materializations[finalized.id] = materialization;
     return TaskCreationResult(task: task, environment: finalized);

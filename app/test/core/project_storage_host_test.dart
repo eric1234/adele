@@ -1450,7 +1450,10 @@ void main() {
         );
       }
       expect(runtime.store.environment(EnvironmentId(id)), isNull);
-      pending.complete({'providerState': <String, Object?>{}});
+      pending.complete({
+        'providerState': <String, Object?>{},
+        'initialState': null,
+      });
       final created = await creating;
       expect(created.environment.id.value, id);
       expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
@@ -1632,6 +1635,6 @@ final class _ProviderChannel implements AdeleRequestChannel {
     expect(method, environmentProviderServiceEstablishId);
     onEstablish?.call(payload);
     if (pendingEnvironment case final value?) return value.future;
-    return {'providerState': <String, Object?>{}};
+    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 }

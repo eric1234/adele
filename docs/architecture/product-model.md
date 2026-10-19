@@ -269,11 +269,20 @@ by the accepted model.
 Core Task lifecycle coordinates establishment and association through the
 selected provider. Presentation invokes that lifecycle; it neither creates a
 Git worktree directly nor owns the Task-to-Environment relationship.
-Task and finalized primary Environment publish together only after provider
-success. For a lifecycle-owned durable Project, one SQLite transaction inserts
-both records and commits before in-memory publication and retention of the live
-materialization. The provisional Environment is never stored. Provider failure or
-database failure publishes neither record; there is no volatile fallback.
+Establishment prepares resources and returns data; it does not publish core
+identities. Core allocates provisional Task/Environment identities before calling
+the exact selected provider. Before commit it revalidates the open canonical
+Project, unclaimed identities, result/provider identity, and captured live provider
+registration and backend generation. Retirement before admission fails creation;
+a same-ID replacement cannot inherit the result, and there is no re-resolution or
+fallback provider selection.
+
+Task and finalized primary Environment publish together only after successful
+establishment and commit. For a lifecycle-owned durable Project, one SQLite
+transaction inserts both records and any required prepared plugin rows before
+in-memory publication and retention of the live materialization. The provisional
+Environment is never stored. Preparation, validation, or database failure publishes
+neither record; there is no volatile fallback.
 `createProject` remains volatile through lifecycle-owned durable database membership,
 not URI heuristics. Its Tasks remain in memory by default; explicitly opted-in
 temporary backing retains their identity rows for plugin foreign keys without
@@ -282,14 +291,57 @@ Subsequent generation retirement does not undo successful publication.
 
 Environment-addressed plugin storage is available only after that publication.
 A subsequent plugin SQL write is a separate transaction, not an atomic extension
-of Task creation. Mandatory plugin initialization, failure-safe Task usability,
-and coordination with publication are not supplied by the storage API or current
-creation lifecycle.
+of Task creation. Required initial state instead uses the narrow establishment
+result described below, not a Task-created event, background enrollment, persistent
+pending status, or general plugin initialization framework.
+
+### Prepared establishment state
+
+An Environment provider may return an optional immutable `EnvironmentInitialState`
+alongside its ordinary opaque provider-state snapshot. It contains an optional
+current schema baseline and a bounded insert batch with named scalar parameters
+and required affected-row counts. It is data, not a storage session or execution
+grant: it contains no plugin owner, Project selector, database path/handle,
+Session/Environment authority token, or callback. The
+[Environment contract](../../packages/environment/README.md#initial-plugin-state)
+defines its bounds and transport; existing relational parameter and row-count
+semantics are reused. Restore must not return or replay an initialization plan.
+
+The host captures owner provenance from the actual selected registration's backend
+before calling establishment. It retains that exact generation and registration
+for admission validation, not merely their IDs or a plugin label in a descriptor.
+The required rows and core identities commit through
+`ProjectDatabase.insertTaskWithPrimaryEnvironment` in one host-owned transaction.
+Schema preparation uses `ensurePluginSchema` and `MigrationCoordinator` in a
+separate preceding transaction, avoiding nested SQLite transactions. A valid but
+unused schema may remain if record insertion fails; semantic Task, Environment,
+and required plugin rows may not partially commit.
+Initial schema preparation accepts table definitions only, not data-producing
+`CREATE TABLE AS SELECT` statements.
+
+A provider without initial state imposes no additional storage requirement.
+For explicitly volatile Projects, an initial plan selects the existing
+`durableOrTemporary` backing behavior before publication: the lifecycle creates
+or reuses its Project-owned temporary database, mirrors previously published
+identities, and commits the new records together there. Backend replacement does
+not discard this backing. It remains non-reopenable, and lifecycle close retains
+the existing temporary cleanup semantics. Storage failure never falls back to
+memory or changes the Project into a durable one.
+
+The stock Git Worktree provider does not yet return an initial SQL plan. Its v1
+provider state and stock ChangeSetSource still use the existing baseline field;
+no second baseline is automatically written to Git-owned SQL. Adopting this path,
+removing that field, and switching stock comparison to Git-owned anchors must be
+one coordinated Git change, without migration, legacy import, or dual authority.
 
 Establishment can create provider-owned external resources before the database
 commit. If that later commit fails, core prevents semantic publication but cannot
 generically undo those external effects: no Environment release/destruction
-contract exists yet. Core does not implement provider-specific cleanup.
+contract exists yet. Core does not implement provider-specific cleanup, and does
+not claim that filesystem/process effects or provider-local resources were rolled
+back. Existing provider-specific best-effort establishment cleanup is unchanged.
+
+### Provider state and restoration
 
 The immutable product `Environment` records its identity, Task relationship,
 role, provider identity, and opaque provider-state snapshot. Core retains and

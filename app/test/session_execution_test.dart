@@ -2533,7 +2533,7 @@ final class _EnvironmentChannel implements AdeleStreamChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     switch (method) {
       case environmentProviderServiceEstablishId:
-        return {'providerState': <String, Object?>{}};
+        return {'providerState': <String, Object?>{}, 'initialState': null};
       case environmentProviderServiceReadFileId:
         expect(payload['relativePath'], sourcePath);
         reads.add(payload);

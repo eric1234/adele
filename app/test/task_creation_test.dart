@@ -763,7 +763,7 @@ void main() {
               find.text('Task Browser action could not be completed.'),
               findsNothing,
             );
-            // Independently retired providers still retain successful settlement.
+            // Retirement before commit admission rejects even a successful result.
             await registration.close();
             if (succeeds) {
               channel.succeed();
@@ -791,28 +791,17 @@ void main() {
             expect(runtime.store.project(project.id), same(project));
             expect(ids.calls, <String>['project', 'task', 'environment']);
             expect(channel.calls, hasLength(1));
-            if (succeeds) {
-              // Successful provider settlement survives retirement; only presentation is ignored.
-              final Task task = runtime.store.tasksFor(project.id).single;
-              final Environment environment = runtime.store
-                  .primaryEnvironmentFor(task.id)!;
-              expect(
-                environment.providerState,
-                _EnvironmentChannel.providerState,
-              );
-              expect(
-                runtime.lifecycle.environmentRuntime
-                    .currentMaterialization(environment.id)!
-                    .validateBinding,
-                throwsA(isA<ProviderUnavailable>()),
-              );
-            } else {
-              expect(runtime.store.tasksFor(project.id), isEmpty);
-              expect(
-                runtime.store.environment(EnvironmentId('environment-1')),
-                isNull,
-              );
-            }
+            expect(runtime.store.tasksFor(project.id), isEmpty);
+            expect(
+              runtime.store.environment(EnvironmentId('environment-1')),
+              isNull,
+            );
+            expect(
+              runtime.lifecycle.environmentRuntime.currentMaterialization(
+                EnvironmentId('environment-1'),
+              ),
+              isNull,
+            );
             if (exit) {
               expect(shell(tester).project, same(project));
               expect(shell(tester).task, isNull);
@@ -1020,6 +1009,6 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
   }
 
   void succeed([int index = 0]) => calls[index].result.complete(
-    <String, Object?>{'providerState': providerState},
+    <String, Object?>{'providerState': providerState, 'initialState': null},
   );
 }

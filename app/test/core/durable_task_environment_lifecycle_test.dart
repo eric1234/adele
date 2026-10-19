@@ -818,7 +818,7 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
       established.add(context);
       final state = await (onEstablish?.call(context) ?? _initialState);
       _live.add(context['environmentId']! as String);
-      return <String, Object?>{'providerState': state};
+      return <String, Object?>{'providerState': state, 'initialState': null};
     }
     expect(method, environmentProviderServiceRestoreId);
     restored.add(context);
@@ -829,7 +829,10 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
         details: {},
       );
     }
-    return <String, Object?>{'providerState': _refreshedState};
+    return <String, Object?>{
+      'providerState': _refreshedState,
+      'initialState': null,
+    };
   }
 }
 

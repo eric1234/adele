@@ -563,7 +563,7 @@ final class _ProviderChannel implements AdeleRequestChannel {
     }
     expect(method, environmentProviderServiceEstablishId);
     environmentCalls++;
-    return {'providerState': <String, Object?>{}};
+    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 }
 

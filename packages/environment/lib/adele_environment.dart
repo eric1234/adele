@@ -6,6 +6,7 @@ import 'dart:convert' as convert;
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_product/adele_product.dart' as product;
+import 'package:adele_project_storage/adele_project_storage.dart' as storage;
 
 part 'adele_environment.g.dart';
 
@@ -30,6 +31,18 @@ const int environmentTerminalTextLimit = 8192;
 
 /// Foreground output message bound in UTF-16 code units, not a transcript limit.
 const int environmentProcessTextLimit = 16 * 1024;
+
+/// Establishment-only relational initialization bounds.
+const int environmentInitialInsertLimit = 32;
+const int environmentInitialExpectedRowsLimit = 1000;
+const int environmentInitialParameterLimit = 64;
+
+/// SQL and schema bounds in UTF-16 code units.
+const int environmentInitialSqlLimit = 16 * 1024;
+const int environmentInitialSchemaLimit = 64 * 1024;
+
+/// Whole-plan JSON bound in UTF-8 bytes, including field names and escaping.
+const int environmentInitialStateByteLimit = 256 * 1024;
 
 final capabilities.CapabilityKey environmentProviderCapability =
     capabilities.CapabilityKey(
@@ -207,13 +220,123 @@ final class EnvironmentTransportContext {
   final Map<String, Object?> providerState;
 }
 
-@AdeleValue('environment.providerResult')
 final class EnvironmentProviderResult {
-  EnvironmentProviderResult({required Map<String, Object?> providerState})
-    : providerState = adeleSnapshotJsonMap(providerState);
+  EnvironmentProviderResult({
+    required Map<String, Object?> providerState,
+    this.initialState,
+  }) : providerState = adeleSnapshotJsonMap(providerState);
 
   final Map<String, Object?> providerState;
+
+  /// Required relational initialization for establishment, never restoration.
+  final EnvironmentInitialState? initialState;
 }
+
+/// Strict wire projection; native providers may omit [initialState].
+@AdeleValue('environment.providerResult')
+final class EnvironmentProviderTransportResult {
+  EnvironmentProviderTransportResult({
+    required Map<String, Object?> providerState,
+    required this.initialState,
+  }) : providerState = adeleSnapshotJsonMap(providerState);
+
+  final Map<String, Object?> providerState;
+  final EnvironmentInitialState? initialState;
+}
+
+/// Owner-free data to commit with a newly established Task and Environment.
+/// The host validates SQL and supplies storage ownership and transaction scope.
+@AdeleValue('environment.initialState')
+final class EnvironmentInitialState {
+  EnvironmentInitialState({
+    required this.schema,
+    required List<EnvironmentInitialInsert> inserts,
+  }) : inserts = List<EnvironmentInitialInsert>.unmodifiable(inserts) {
+    if (this.inserts.isEmpty ||
+        this.inserts.length > environmentInitialInsertLimit) {
+      throw const FormatException(
+        'Environment initial state requires 1..32 inserts.',
+      );
+    }
+    if (schema case final script?) {
+      if (script.trim().isEmpty ||
+          script.length > environmentInitialSchemaLimit) {
+        throw const FormatException(
+          'Environment initial schema requires 1..65536 UTF-16 code units.',
+        );
+      }
+    }
+    final encoded = convert.jsonEncode(<String, Object?>{
+      'schema': schema,
+      'inserts': [
+        for (final insert in this.inserts)
+          <String, Object?>{
+            'sql': insert.sql,
+            'parameters': insert.parameters,
+            'expectedRows': insert.expectedRows,
+          },
+      ],
+    });
+    if (convert.utf8.encode(encoded).length >
+        environmentInitialStateByteLimit) {
+      throw const FormatException(
+        'Encoded Environment initial state must not exceed 262144 UTF-8 bytes.',
+      );
+    }
+  }
+
+  /// One current v1 CREATE TABLE script, or null for an already prepared schema.
+  final String? schema;
+  final List<EnvironmentInitialInsert> inserts;
+}
+
+/// One required insert; scalar values use the shared relational storage subset.
+@AdeleValue('environment.initialInsert')
+final class EnvironmentInitialInsert {
+  EnvironmentInitialInsert({
+    required this.sql,
+    required Map<String, Object?> parameters,
+    required this.expectedRows,
+  }) : parameters = adeleSnapshotJsonMap(parameters) {
+    if (sql.trim().isEmpty || sql.length > environmentInitialSqlLimit) {
+      throw const FormatException(
+        'Environment initial SQL requires 1..16384 UTF-16 code units.',
+      );
+    }
+    if (expectedRows < 1 ||
+        expectedRows > environmentInitialExpectedRowsLimit) {
+      throw const FormatException(
+        'Environment initial inserts require 1..1000 expected rows.',
+      );
+    }
+    if (this.parameters.length > environmentInitialParameterLimit) {
+      throw const FormatException(
+        'Environment initial inserts accept at most 64 parameters.',
+      );
+    }
+    for (final name in this.parameters.keys) {
+      if (!_initialParameterName.hasMatch(name)) {
+        throw const FormatException(
+          'Initial parameter names require a SQLite prefix and ASCII identifier.',
+        );
+      }
+    }
+    storage.validateRelationalParameters(this.parameters.values);
+  }
+
+  final String sql;
+  final Map<String, Object?> parameters;
+  final int expectedRows;
+
+  storage.RelationalStatement toRelationalStatement() =>
+      storage.RelationalStatement(
+        sql: sql,
+        parameters: parameters,
+        expectedRows: expectedRows,
+      );
+}
+
+final RegExp _initialParameterName = RegExp(r'^[:@$][A-Za-z_][A-Za-z0-9_]*$');
 
 @AdeleValue('environment.textFile')
 final class EnvironmentTextFile {
@@ -605,12 +728,12 @@ final class EnvironmentDirectoryListing {
 @AdeleService('environment')
 abstract interface class EnvironmentProviderService {
   @AdeleMethod('establish')
-  Future<EnvironmentProviderResult> establish(
+  Future<EnvironmentProviderTransportResult> establish(
     EnvironmentTransportContext context,
   );
 
   @AdeleMethod('restore')
-  Future<EnvironmentProviderResult> restore(
+  Future<EnvironmentProviderTransportResult> restore(
     EnvironmentTransportContext context,
   );
 
@@ -885,7 +1008,14 @@ final class GeneratedEnvironmentProvider
   @override
   Future<EnvironmentProviderResult> establish(LocalEnvironment environment) {
     _requireSelectedProvider(environment);
-    return _service.establish(_snapshot(environment));
+    return _service
+        .establish(_snapshot(environment))
+        .then(
+          (result) => EnvironmentProviderResult(
+            providerState: result.providerState,
+            initialState: result.initialState,
+          ),
+        );
   }
 
   @override
@@ -898,7 +1028,10 @@ final class GeneratedEnvironmentProvider
         details: <String, Object?>{'environmentId': environment.id.value},
       );
     }
-    return _service.restore(_snapshot(environment));
+    return _service.restore(_snapshot(environment)).then((result) {
+      _requireNoInitialStateOnRestore(result.initialState);
+      return EnvironmentProviderResult(providerState: result.providerState);
+    });
   }
 
   @override
@@ -1003,14 +1136,27 @@ final class EnvironmentProviderServiceAdapter
   final EnvironmentProvider _provider;
 
   @override
-  Future<EnvironmentProviderResult> establish(
+  Future<EnvironmentProviderTransportResult> establish(
     EnvironmentTransportContext context,
-  ) => _provider.establish(_localEnvironment(context));
+  ) => _provider
+      .establish(_localEnvironment(context))
+      .then(
+        (result) => EnvironmentProviderTransportResult(
+          providerState: result.providerState,
+          initialState: result.initialState,
+        ),
+      );
 
   @override
-  Future<EnvironmentProviderResult> restore(
+  Future<EnvironmentProviderTransportResult> restore(
     EnvironmentTransportContext context,
-  ) => _provider.restore(_localEnvironment(context));
+  ) => _provider.restore(_localEnvironment(context)).then((result) {
+    _requireNoInitialStateOnRestore(result.initialState);
+    return EnvironmentProviderTransportResult(
+      providerState: result.providerState,
+      initialState: null,
+    );
+  });
 
   @override
   Future<EnvironmentTextFile> readFile(
@@ -1188,6 +1334,16 @@ abstract interface class EnvironmentTerminalProvider {
     product.EnvironmentId environmentId,
     String handle,
   );
+}
+
+void _requireNoInitialStateOnRestore(EnvironmentInitialState? initialState) {
+  if (initialState != null) {
+    throw const EnvironmentFailure(
+      code: 'initial_state_on_restore',
+      message: 'Environment initial state is only valid during establishment.',
+      details: <String, Object?>{},
+    );
+  }
 }
 
 EnvironmentTransportContext _snapshot(LocalEnvironment environment) {

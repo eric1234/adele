@@ -962,6 +962,14 @@ deferred. [Plugin persistence](plugin-system.md#plugin-owned-state-and-persisten
 owns schema and state semantics, while [Project storage](product-model.md#project-storage)
 owns the private database and core graph.
 
+The optional [Environment establishment result](product-model.md#prepared-establishment-state)
+is distinct from this infrastructure service. It grants no storage session and
+cannot select backing through a provisional identity. The host captures exact
+registration/backend provenance before establishment and validates it again at
+commit admission. It reuses the relational statement/scalar semantics for a
+narrow insert-only batch inside the core creation transaction, not a later reverse
+storage request. Same-ID replacement cannot revive a captured result.
+
 ## Source map
 
 | Concern | Primary anchors |

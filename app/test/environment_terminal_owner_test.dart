@@ -1349,7 +1349,7 @@ class _TerminalChannel implements AdeleStreamChannel {
       await closeGate.future;
       return null;
     }
-    return {'providerState': <String, Object?>{}};
+    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 
   @override

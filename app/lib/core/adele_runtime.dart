@@ -17,6 +17,14 @@ base class AdeleRuntime {
       registry: registry,
       extensions: extensions,
       ids: ids,
+      captureEstablishmentOwner: (binding) {
+        final backend = plugins.backendForProvider(binding);
+        if (backend == null) return null;
+        return EnvironmentEstablishmentOwner(
+          pluginId: PluginId(backend.connection!.pluginId),
+          validate: () => backend.validateProviderOwnership(binding),
+        );
+      },
     );
     plugins = ApplicationPluginBootstrap(
       registry,
