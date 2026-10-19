@@ -82,7 +82,11 @@ class PortableGitState extends State<PortableGit> {
       rendered += '\nunstaged' + renderFiles(value.unstaged.files);
       rendered += '\nconflicts' + renderFiles(value.conflicts);
     } else {
-      rendered = 'snapshot:unexpected-task-success';
+      final TaskChangeSetSnapshot value = result[1];
+      rendered += '\ncommitted' + renderFiles(value.committed.files);
+      rendered += '\nstaged' + renderFiles(value.uncommitted.staged.files);
+      rendered += '\nunstaged' + renderFiles(value.uncommitted.unstaged.files);
+      rendered += '\nconflicts' + renderFiles(value.uncommitted.conflicts);
     }
     setState(() {
       text = rendered;
