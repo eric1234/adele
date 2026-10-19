@@ -38,7 +38,18 @@ final class GitPortableUnstagedLimits {
   final Duration operationTimeout;
 }
 
-/// Unstaged and layered Uncommitted inspection using the captured process grant.
+/// Trusted backend construction metadata, never a semantic request parameter.
+final class GitTaskComparisonAnchor {
+  const GitTaskComparisonAnchor({
+    required this.baselineCommit,
+    required this.expectedBranchRef,
+  });
+
+  final String baselineCommit;
+  final String expectedBranchRef;
+}
+
+/// Layered change inspection using the captured process grant.
 ///
 /// Requires Linux-style /bin/sh, /bin/pwd, and /usr/bin/{env,git,stat,head}
 /// in the selected Environment. No host filesystem or provider implementation is
@@ -47,6 +58,7 @@ final class GitPortableUnstagedSnapshotService {
   GitPortableUnstagedSnapshotService({
     required this.processes,
     this.limits = const GitPortableUnstagedLimits(),
+    this.taskAnchor,
   }) {
     const maximum = GitPortableUnstagedLimits();
     for (final (value, bound) in [
@@ -77,17 +89,29 @@ final class GitPortableUnstagedSnapshotService {
 
   final AuthorizedEnvironmentBufferedProcessService processes;
   final GitPortableUnstagedLimits limits;
+  final GitTaskComparisonAnchor? taskAnchor;
 
   Future<ChangeSetSnapshot> snapshotUnstaged() =>
-      _snapshot(false).then((snapshot) => snapshot.unstaged);
+      _snapshot(false).then((snapshot) => snapshot.uncommitted.unstaged);
 
-  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() => _snapshot(true);
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() =>
+      _snapshot(true).then((snapshot) => snapshot.uncommitted);
 
-  Future<UncommittedChangeSetSnapshot> _snapshot(bool includeStaged) async {
+  Future<TaskChangeSetSnapshot> snapshotTaskChanges() =>
+      _snapshot(true, includeCommitted: true);
+
+  Future<TaskChangeSetSnapshot> _snapshot(
+    bool includeStaged, {
+    bool includeCommitted = false,
+  }) async {
     final operation = _PortableSnapshot(processes, limits);
     try {
       return await operation
-          .snapshot(includeStaged: includeStaged)
+          .snapshot(
+            includeStaged: includeStaged,
+            includeCommitted: includeCommitted,
+            taskAnchor: taskAnchor,
+          )
           .timeout(limits.operationTimeout);
     } on TimeoutException {
       throw _failure(
@@ -120,6 +144,8 @@ final class _PortableSnapshot {
   final Map<String, _PathState> observed = {};
   final Map<String, String> workingOids = {};
   final Map<String, String> attributes = {};
+  final Map<String, int> objectSizes = {};
+  bool validateObjects = false;
   bool closed = false;
   int commandCount = 0;
   int byteCount = 0;
@@ -140,14 +166,70 @@ final class _PortableSnapshot {
     }
   }
 
-  Future<UncommittedChangeSetSnapshot> snapshot({
+  Future<TaskChangeSetSnapshot> snapshot({
     required bool includeStaged,
+    required bool includeCommitted,
+    required GitTaskComparisonAnchor? taskAnchor,
   }) async {
+    if (includeCommitted && taskAnchor == null) {
+      throw _failure(
+        'baseline_unavailable',
+        'Task changes require a retained comparison baseline.',
+      );
+    }
     repository = await discover();
+    final anchor = includeCommitted ? taskAnchor! : null;
+    validateObjects = anchor != null;
+    final oidWidth = anchor == null ? null : await readObjectWidth();
+    if (anchor != null) {
+      await validateCommit(anchor.baselineCommit, oidWidth!, baseline: true);
+      if (!anchor.expectedBranchRef.startsWith('refs/heads/') ||
+          anchor.expectedBranchRef.contains(RegExp(r'[\x00-\x20\x7f]'))) {
+        throw _failure(
+          'invalid_branch',
+          'Task changes require a full branch ref.',
+        );
+      }
+      final valid = await git([
+        'check-ref-format',
+        anchor.expectedBranchRef,
+      ], allowDifference: true);
+      if (valid.exitCode != 0 || valid.bytes.isNotEmpty) {
+        throw _failure(
+          'invalid_branch',
+          'The retained Task branch ref is invalid.',
+        );
+      }
+    }
     final head = includeStaged ? await readHead() : null;
+    if (anchor != null) {
+      if (head!.commit.length != oidWidth) throw _malformed();
+      if (head.reference.isEmpty) {
+        throw _failure(
+          'detached_head',
+          'Task changes require the retained branch.',
+        );
+      }
+      if (head.reference != '${anchor.expectedBranchRef}\n') {
+        throw _failure(
+          'unexpected_branch',
+          'HEAD is not on the retained Task branch.',
+        );
+      }
+      if (head.commit != anchor.baselineCommit) {
+        await validateCommit(head.commit, oidWidth!, baseline: false);
+      }
+    }
     final tree = head == null ? '' : await readTree(head.commit);
     final headEntries = parseGitTree(
       tree,
+      maximumEntries: limits.inventoryEntries,
+    );
+    final baselineTree = anchor == null
+        ? ''
+        : await readTree(anchor.baselineCommit);
+    final baselineEntries = parseGitTree(
+      baselineTree,
       maximumEntries: limits.inventoryEntries,
     );
     final settings = await readSettings();
@@ -181,7 +263,11 @@ final class _PortableSnapshot {
       maximumEntries: limits.inventoryEntries,
     );
     if (head != null &&
-        [...headEntries.values, ...entries.values].any(
+        [
+          ...baselineEntries.values,
+          ...headEntries.values,
+          ...entries.values,
+        ].any(
           (entry) =>
               entry.oid.isNotEmpty && entry.oid.length != head.commit.length,
         )) {
@@ -198,10 +284,15 @@ final class _PortableSnapshot {
       _validatePath(path);
     }
     if (deleted.any((path) => !entries.containsKey(path))) throw _malformed();
+    final committed = <ChangedFile>[];
     final staged = <ChangedFile>[];
     final files = <ChangedFile>[];
     final conflicts = <ChangedFile>[];
-    final union = {...headEntries.keys, ...entries.keys};
+    final union = {
+      ...baselineEntries.keys,
+      ...headEntries.keys,
+      ...entries.keys,
+    };
     if (union.length > limits.inventoryEntries) {
       throw _failure(
         'inventory_too_large',
@@ -221,13 +312,25 @@ final class _PortableSnapshot {
     for (final path in paths) {
       checkOpen();
       final entry = entries[path];
+      if (anchor != null) {
+        retain(
+          await inspectObjects(
+            path,
+            anchor.baselineCommit,
+            baselineEntries[path],
+            headEntries[path],
+            currentCommit: head!.commit,
+          ),
+          committed,
+        );
+      }
       if (includeStaged && entry?.kind == 'conflicted') {
         retain(await inspect(path, entry!, deleted, killed), conflicts);
         continue;
       }
       if (head != null) {
         retain(
-          await inspectStaged(path, head.commit, headEntries[path], entry),
+          await inspectObjects(path, head.commit, headEntries[path], entry),
           staged,
         );
       }
@@ -239,6 +342,22 @@ final class _PortableSnapshot {
     for (final entry in attributes.entries) {
       if (await readAttributes(entry.key) != entry.value) throw _changed();
     }
+    if (anchor != null) {
+      // Only required changed-object sides are revisited; clean tree identities
+      // never cause per-file processes. Large sides remain size-only observations.
+      for (final entry in objectSizes.entries.toList()) {
+        await blob(entry.key);
+        if (objectSizes[entry.key] != entry.value) throw _changed();
+      }
+      await validateCommit(anchor.baselineCommit, oidWidth!, baseline: true);
+      if (head!.commit != anchor.baselineCommit) {
+        await validateCommit(head.commit, oidWidth, baseline: false);
+      }
+      if (await readObjectWidth() != oidWidth ||
+          await readTree(anchor.baselineCommit) != baselineTree) {
+        throw _changed();
+      }
+    }
     if (await enumerate() != inventory ||
         await readSettings() != settings ||
         await discover() != repository ||
@@ -248,10 +367,13 @@ final class _PortableSnapshot {
       throw _changed();
     }
     checkOpen();
-    return UncommittedChangeSetSnapshot(
-      staged: ChangeSetSnapshot(files: staged),
-      unstaged: ChangeSetSnapshot(files: files),
-      conflicts: conflicts,
+    return TaskChangeSetSnapshot(
+      committed: ChangeSetSnapshot(files: committed),
+      uncommitted: UncommittedChangeSetSnapshot(
+        staged: ChangeSetSnapshot(files: staged),
+        unstaged: ChangeSetSnapshot(files: files),
+        conflicts: conflicts,
+      ),
     );
   }
 
@@ -263,7 +385,7 @@ final class _PortableSnapshot {
         'The change snapshot exceeds its file limit.',
       );
     }
-    // Count both appearances of a path and escaped text across every layer.
+    // Count every appearance of a path and escaped text across all layers.
     presentationBytes +=
         512 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
     for (final hunk in file.hunks) {
@@ -623,6 +745,14 @@ final class _PortableSnapshot {
             'Git content conversion or custom diff attributes are not supported.',
       );
     }
+    return classifyBytes(old, current, binaryAttribute: binaryAttribute);
+  }
+
+  ({String status, String detail})? classifyBytes(
+    List<int> old,
+    List<int> current, {
+    bool binaryAttribute = false,
+  }) {
     if (binaryAttribute || old.contains(0) || current.contains(0)) {
       return (
         status: 'binary',
@@ -641,12 +771,13 @@ final class _PortableSnapshot {
     return null;
   }
 
-  Future<ChangedFile?> inspectStaged(
+  Future<ChangedFile?> inspectObjects(
     String path,
     String commit,
     GitIndexEntry? old,
-    GitIndexEntry? current,
-  ) async {
+    GitIndexEntry? current, {
+    String? currentCommit,
+  }) async {
     // Untracked and intent-to-add paths have no staged object. Working content
     // never supplies a side of this comparison, even when it cancels the index.
     if (current?.oid.isEmpty ?? false) current = null;
@@ -695,7 +826,11 @@ final class _PortableSnapshot {
         'A file side exceeds the rendering limit.',
       );
     }
-    final classification = await classify(path, left, right);
+    // Immutable committed objects do not inherit today's working attributes or
+    // conversion settings. Cached comparisons retain their established policy.
+    final classification = currentCommit == null
+        ? await classify(path, left, right)
+        : classifyBytes(left, right);
     if (classification != null) {
       return placeholder(classification.status, classification.detail);
     }
@@ -708,8 +843,9 @@ final class _PortableSnapshot {
       '-c',
       'diff.suppressBlankEmpty=false',
       'diff',
-      '--cached',
+      if (currentCommit == null) '--cached',
       commit,
+      ?currentCommit,
       '--patch',
       '--exit-code',
       '--no-ext-diff',
@@ -751,8 +887,8 @@ final class _PortableSnapshot {
     final hunks = parseGitPatch(text, maximumLines: limits.lines - lineCount);
     lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
     // Attribute identity to the inventory, not quoted patch-header filenames.
-    // Reconstruct the exact captured index bytes so a valid but incomplete hunk
-    // prefix cannot be published as a successful staged comparison.
+    // Reconstruct the exact captured new-side bytes so a valid but incomplete
+    // hunk prefix cannot be published as a successful object comparison.
     final oldText = _decode(left);
     final oldLines = oldText.isEmpty ? <String>[] : oldText.split('\n');
     if (oldText.endsWith('\n')) oldLines.removeLast();
@@ -826,7 +962,7 @@ final class _PortableSnapshot {
       if (error.code != 'git_failed') rethrow;
       throw _failure(
         'head_unavailable',
-        'Uncommitted changes require a valid HEAD commit.',
+        'Layered changes require a valid HEAD commit.',
       );
     }
     if (!_oid(commit)) throw _malformed();
@@ -851,6 +987,53 @@ final class _PortableSnapshot {
   Future<String> readTree(String commit) async =>
       _decode((await git(['ls-tree', '-r', '-z', commit, '--', '.'])).bytes);
 
+  Future<int> readObjectWidth() async => switch (_scalar(
+    (await git(['rev-parse', '--show-object-format'])).bytes,
+  )) {
+    'sha1' => 40,
+    'sha256' => 64,
+    _ => throw _malformed(),
+  };
+
+  Future<void> validateCommit(
+    String commit,
+    int oidWidth, {
+    required bool baseline,
+  }) async {
+    if (!_oid(commit) || commit.length != oidWidth) {
+      if (!baseline) throw _malformed();
+      throw _failure(
+        'invalid_baseline',
+        'The retained Task baseline is not an exact repository commit identity.',
+      );
+    }
+    final String type;
+    final List<int> bytes;
+    try {
+      // Do not peel tags or accept revision expressions as retained authority.
+      type = _decode((await git(['cat-file', '-t', commit])).bytes);
+      bytes = type == 'commit\n'
+          ? (await git(['cat-file', 'commit', commit])).bytes
+          : const [];
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'git_failed') rethrow;
+      throw _failure(
+        baseline ? 'baseline_unavailable' : 'head_unavailable',
+        baseline
+            ? 'The retained Task baseline commit is unavailable.'
+            : 'The captured HEAD commit is unavailable.',
+      );
+    }
+    if (type != 'commit\n' ||
+        _objectHash(bytes, oidWidth, 'commit') != commit) {
+      if (!baseline) throw _malformed();
+      throw _failure(
+        'invalid_baseline',
+        'The retained Task baseline is not an exact commit identity.',
+      );
+    }
+  }
+
   Future<List<int>?> blob(String oid) async {
     if (oid.isEmpty) return const [];
     if (!_oid(oid)) throw _malformed();
@@ -858,6 +1041,7 @@ final class _PortableSnapshot {
     if (!RegExp(r'^(0|[1-9][0-9]*)$').hasMatch(sizeText)) throw _malformed();
     final size = int.tryParse(sizeText);
     if (size == null) throw _malformed();
+    if (validateObjects) objectSizes[oid] = size;
     if (size > limits.fileBytes) return null;
     final data = (await git(['cat-file', 'blob', oid])).bytes;
     if (data.length != size || _blobHash(data, oid.length) != oid) {
@@ -1205,8 +1389,10 @@ bool _oid(String value) =>
     const {40, 64}.contains(value.length) &&
     !RegExp(r'[^0-9a-f]').hasMatch(value);
 String _blobHash(List<int> bytes, int oidLength) =>
+    _objectHash(bytes, oidLength, 'blob');
+String _objectHash(List<int> bytes, int oidLength, String type) =>
     (oidLength == 64 ? sha256 : sha1).convert([
-      ...utf8.encode('blob ${bytes.length}\u0000'),
+      ...utf8.encode('$type ${bytes.length}\u0000'),
       ...bytes,
     ]).toString();
 bool _equalBytes(List<int> left, List<int> right) {

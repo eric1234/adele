@@ -10,10 +10,18 @@ import 'prepared_environment_capability_support.dart';
 Future<void> main(
   List<String> arguments,
   Object? bootstrapMessage,
-) => runProbeBackend(
-  arguments,
-  bootstrapMessage,
-  (state) => {
+) => runProbeBackend(arguments, bootstrapMessage, (state) {
+  // Fixture-only trusted setup, captured before ready or any invocation.
+  // Durable production anchor provisioning remains deferred. Neither C nor
+  // a semantic payload chooses this anchor, and B never infers it from HEAD.
+  final configured = state.options['taskAnchor'] as Map?;
+  final taskAnchor = configured == null
+      ? null
+      : GitTaskComparisonAnchor(
+          baselineCommit: configured['baselineCommit'] as String,
+          expectedBranchRef: configured['expectedBranchRef'] as String,
+        );
+  return {
     'callable-shared': {
       changeSetSourceServiceId: AdeleContextualServiceDispatcher(
         hostRequests: state.hostRequests,
@@ -25,15 +33,18 @@ Future<void> main(
           return ChangeSetSourceServiceDispatcher(
             _Source(
               state,
-              GitPortableUnstagedSnapshotService(processes: processes),
+              GitPortableUnstagedSnapshotService(
+                processes: processes,
+                taskAnchor: taskAnchor,
+              ),
             ),
             concurrent: true,
           );
         },
       ),
     },
-  },
-);
+  };
+});
 
 final class _Source implements ChangeSetSourceService {
   const _Source(this.state, this.snapshots);
@@ -66,10 +77,13 @@ final class _Source implements ChangeSetSourceService {
 
   @override
   Future<TaskChangeSetSnapshot> snapshotTaskChanges() async {
-    state.failures.add('unsupported_scope');
-    throw const ChangeSetFailure(
-      code: 'unsupported_scope',
-      message: 'This independent provider has no Task baseline authority.',
-    );
+    try {
+      return await snapshots.snapshotTaskChanges();
+    } on ChangeSetFailure catch (error) {
+      state.failures.add(error.code);
+      rethrow;
+    } finally {
+      await state.checkpoint('settled:task');
+    }
   }
 }

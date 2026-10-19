@@ -54,6 +54,7 @@ void main() {
     String path, {
     bool exitCode = true,
     String? diffFilter,
+    String? targetCommit,
   }) => processes.runBufferedProcess(
     _withCommand(
       sourceRequest,
@@ -62,6 +63,7 @@ void main() {
         path,
         exitCode: exitCode,
         diffFilter: diffFilter,
+        targetCommit: targetCommit,
       ),
     ),
   );
@@ -81,220 +83,257 @@ void main() {
     await container.delete(recursive: true);
   });
 
-  test(
-    'cached diff cannot execute configured helpers or read FIFO workfiles',
-    () async {
-      const paths = [
-        'clean',
-        'process',
-        'custom',
-        'external',
-        'fifo',
-        'missing',
-      ];
-      for (final path in paths) {
-        await write(path, 'before\n\nsame\nold tail');
-      }
-      final captured = await commit();
-      for (final path in paths) {
-        await write(path, 'after\n\nsame\nnew tail');
-      }
-      await _git(repository, ['add', '--all']);
-
-      final helpers = <String, String>{};
-      for (final name in [
-        'clean',
-        'process',
-        'textconv',
-        'external',
-        'fsmonitor',
-        'post-index-change',
-      ]) {
-        final helper = File('${container.path}/$name');
-        await helper.writeAsString(
-          '#!/bin/sh\nprintf executed > "${container.path}/$name.executed"\nexit 99\n',
-        );
-        await _command('/usr/bin/chmod', ['+x', helper.path]);
-        helpers[name] = helper.path;
-      }
-      for (final (key, value) in [
-        ('filter.clean.clean', helpers['clean']!),
-        ('filter.clean.required', 'true'),
-        ('filter.process.process', helpers['process']!),
-        ('filter.process.required', 'true'),
-        ('diff.hostile.textconv', helpers['textconv']!),
-        ('diff.hostile.command', helpers['external']!),
-        ('diff.external', helpers['external']!),
-        ('core.fsmonitor', helpers['fsmonitor']!),
-        ('core.hooksPath', container.path),
-        ('core.untrackedCache', 'true'),
-      ]) {
-        await _git(repository, ['config', key, value]);
-      }
-      await File('${repository.path}/.git/info/attributes').writeAsString(
-        'clean filter=clean\nprocess filter=process\ncustom diff=hostile\n',
-      );
-      await File('${repository.path}/fifo').delete();
-      await _command('/usr/bin/mkfifo', ['${repository.path}/fifo']);
-      await File('${repository.path}/missing').delete();
-      processes.environment.addAll({
-        'GIT_EXTERNAL_DIFF': helpers['external']!,
-        'GIT_DIFF_OPTS': '--unified=0',
-        'GIT_CONFIG_COUNT': '1',
-        'GIT_CONFIG_KEY_0': 'core.fsmonitor',
-        'GIT_CONFIG_VALUE_0': helpers['fsmonitor']!,
-        'GIT_INDEX_FILE': '${container.path}/wrong-index',
-        'GIT_DIR': '${container.path}/wrong-repository',
-        'GIT_TRACE': '${container.path}/trace.executed',
-      });
-      final before = await _fingerprint(repository);
-      for (final path in paths) {
-        final patch = _patch(await cached(captured, path, diffFilter: 'M'));
-        expect(_lines(patch), [
-          'deletion:before',
-          'addition:after',
-          'context:',
-          'context:same',
-          'deletion:old tail',
-          'addition:new tail',
-        ]);
-        final lines = parseGitPatch(patch).single.lines;
-        expect(lines.where((line) => line.noNewline).length, 2);
-      }
-      expect(await _fingerprint(repository), before);
-      for (final name in [...helpers.keys, 'trace']) {
-        expect(
-          await File('${container.path}/$name.executed').exists(),
-          isFalse,
-        );
-      }
-      expect(await File('${container.path}/wrong-index').exists(), isFalse);
-
-      // Positive controls show these are executable traps, not inert configuration.
-      for (final path in ['clean', 'process']) {
-        final result = await _gitResult(repository, [
-          'hash-object',
-          '--path=$path',
-          path,
-        ]);
-        expect(result.exitCode, isNot(0));
-        expect(await File('${container.path}/$path.executed').exists(), isTrue);
-      }
-      for (final name in ['external', 'textconv']) {
-        final result = await _gitResult(repository, [
-          if (name == 'textconv') ...['-c', 'diff.hostile.command='],
-          'diff',
-          '--cached',
-          if (name == 'textconv') ...['--no-ext-diff', '--textconv'],
-          captured,
-          '--',
+  for (final committed in [false, true]) {
+    test(
+      '${committed ? 'commit-to-commit' : 'cached'} diff cannot execute configured helpers or read FIFO workfiles',
+      () async {
+        const paths = [
+          'clean',
+          'process',
           'custom',
-        ]);
-        expect(result.exitCode, isNot(0));
-        expect(await File('${container.path}/$name.executed').exists(), isTrue);
-      }
-      await _gitResult(repository, ['status', '--porcelain']);
-      expect(
-        await File('${container.path}/fsmonitor.executed').exists(),
-        isTrue,
-      );
-      await File('${repository.path}/.git/info/attributes').delete();
-      await _git(repository, [
-        '-c',
-        'core.fsmonitor=false',
-        'update-index',
-        '--chmod=+x',
-        'external',
-      ]);
-      expect(
-        await File('${container.path}/post-index-change.executed').exists(),
-        isTrue,
-      );
-    },
-  );
+          'external',
+          'fifo',
+          'missing',
+        ];
+        for (final path in paths) {
+          await write(path, 'before\n\nsame\nold tail');
+        }
+        final captured = await commit();
+        for (final path in paths) {
+          await write(path, 'after\n\nsame\nnew tail');
+        }
+        await _git(repository, ['add', '--all']);
+        final target = committed ? await commit() : null;
 
-  test(
-    'captured commit and literal nested paths survive HEAD and discovery changes',
-    () async {
-      const names = [
-        'space name',
-        'tab\tname',
-        'line\nname',
-        '-leading',
-        ':(glob)*',
-        '[literal]*?',
-        r'quote\"$(touch EXECUTED)',
-      ];
-      for (final name in names) {
-        await write('selected/project/$name', 'captured\n');
-      }
-      await write('outside', 'outside before\n');
-      final captured = await commit();
-      await capture('selected/project');
-      for (final name in names) {
-        await write('selected/project/$name', 'moved HEAD\n');
-      }
-      final moved = await commit();
-      expect(moved, isNot(captured));
-      for (final name in names) {
-        await write('selected/project/$name', 'index\n');
-      }
-      await write('outside', 'outside staged\n');
-      await _git(repository, ['add', '--all']);
-      for (final name in names) {
-        await File('${repository.path}/selected/project/$name').delete();
-      }
-      // Even a newly introduced nested repository cannot replace the captured roots.
-      await _git(processes.root, ['init']);
-      final before = await _fingerprint(repository);
-      for (final name in names) {
-        expect(_lines(_patch(await cached(captured, name))), [
-          'deletion:captured',
-          'addition:index',
-        ]);
-        expect(_lines(_patch(await cached(moved, name))), [
-          'deletion:moved HEAD',
-          'addition:index',
-        ]);
-      }
-      final scoped = _patch(await cached(captured, '.'));
-      expect(scoped, isNot(contains('outside')));
-      expect('diff --git '.allMatches(scoped), hasLength(names.length));
-      expect(await File('${processes.root.path}/EXECUTED').exists(), isFalse);
-      expect(await _fingerprint(repository), before);
-    },
-  );
+        final helpers = <String, String>{};
+        for (final name in [
+          'clean',
+          'process',
+          'textconv',
+          'external',
+          'fsmonitor',
+          'post-index-change',
+        ]) {
+          final helper = File('${container.path}/$name');
+          await helper.writeAsString(
+            '#!/bin/sh\nprintf executed > "${container.path}/$name.executed"\nexit 99\n',
+          );
+          await _command('/usr/bin/chmod', ['+x', helper.path]);
+          helpers[name] = helper.path;
+        }
+        for (final (key, value) in [
+          ('filter.clean.clean', helpers['clean']!),
+          ('filter.clean.required', 'true'),
+          ('filter.process.process', helpers['process']!),
+          ('filter.process.required', 'true'),
+          ('diff.hostile.textconv', helpers['textconv']!),
+          ('diff.hostile.command', helpers['external']!),
+          ('diff.external', helpers['external']!),
+          ('core.fsmonitor', helpers['fsmonitor']!),
+          ('core.hooksPath', container.path),
+          ('core.untrackedCache', 'true'),
+        ]) {
+          await _git(repository, ['config', key, value]);
+        }
+        await File('${repository.path}/.git/info/attributes').writeAsString(
+          'clean filter=clean\nprocess filter=process\ncustom diff=hostile\n',
+        );
+        await File('${repository.path}/fifo').delete();
+        await _command('/usr/bin/mkfifo', ['${repository.path}/fifo']);
+        await File('${repository.path}/missing').delete();
+        processes.environment.addAll({
+          'GIT_EXTERNAL_DIFF': helpers['external']!,
+          'GIT_DIFF_OPTS': '--unified=0',
+          'GIT_CONFIG_COUNT': '1',
+          'GIT_CONFIG_KEY_0': 'core.fsmonitor',
+          'GIT_CONFIG_VALUE_0': helpers['fsmonitor']!,
+          'GIT_INDEX_FILE': '${container.path}/wrong-index',
+          'GIT_DIR': '${container.path}/wrong-repository',
+          'GIT_TRACE': '${container.path}/trace.executed',
+        });
+        final before = await _fingerprint(repository);
+        for (final path in paths) {
+          final patch = _patch(
+            await cached(captured, path, diffFilter: 'M', targetCommit: target),
+          );
+          expect(_lines(patch), [
+            'deletion:before',
+            'addition:after',
+            'context:',
+            'context:same',
+            'deletion:old tail',
+            'addition:new tail',
+          ]);
+          final lines = parseGitPatch(patch).single.lines;
+          expect(lines.where((line) => line.noNewline).length, 2);
+        }
+        expect(await _fingerprint(repository), before);
+        for (final name in [...helpers.keys, 'trace']) {
+          expect(
+            await File('${container.path}/$name.executed').exists(),
+            isFalse,
+          );
+        }
+        expect(await File('${container.path}/wrong-index').exists(), isFalse);
 
-  test(
-    'change-kind filters isolate exact paths across file-directory replacements',
-    () async {
-      await write('file-to-dir', 'old flat\n');
-      await write('dir-to-file/child', 'old child\n');
-      final captured = await commit();
-      await File('${repository.path}/file-to-dir').delete();
-      await write('file-to-dir/child', 'new child\n');
-      await Directory('${repository.path}/dir-to-file').delete(recursive: true);
-      await write('dir-to-file', 'new flat\n');
-      await _git(repository, ['add', '--all']);
-      final before = await _fingerprint(repository);
-      for (final path in ['file-to-dir', 'dir-to-file']) {
-        final broad = _patch(await cached(captured, path));
-        expect('diff --git '.allMatches(broad), hasLength(2));
-        expect(() => parseGitPatch(broad), throwsA(anything));
-      }
-      for (final (path, filter, lines) in [
-        ('file-to-dir', 'D', ['deletion:old flat']),
-        ('file-to-dir/child', 'A', ['addition:new child']),
-        ('dir-to-file', 'A', ['addition:new flat']),
-        ('dir-to-file/child', 'D', ['deletion:old child']),
-      ]) {
-        final patch = _patch(await cached(captured, path, diffFilter: filter));
-        expect('diff --git '.allMatches(patch), hasLength(1));
-        expect(_lines(patch), lines);
-      }
-      expect(await _fingerprint(repository), before);
-    },
-  );
+        // Positive controls show these are executable traps, not inert configuration.
+        for (final path in ['clean', 'process']) {
+          final result = await _gitResult(repository, [
+            'hash-object',
+            '--path=$path',
+            path,
+          ]);
+          expect(result.exitCode, isNot(0));
+          expect(
+            await File('${container.path}/$path.executed').exists(),
+            isTrue,
+          );
+        }
+        for (final name in ['external', 'textconv']) {
+          final result = await _gitResult(repository, [
+            if (name == 'textconv') ...['-c', 'diff.hostile.command='],
+            'diff',
+            if (!committed) '--cached',
+            if (name == 'textconv') ...['--no-ext-diff', '--textconv'],
+            captured,
+            ?target,
+            '--',
+            'custom',
+          ]);
+          expect(result.exitCode, isNot(0));
+          expect(
+            await File('${container.path}/$name.executed').exists(),
+            isTrue,
+          );
+        }
+        await _gitResult(repository, ['status', '--porcelain']);
+        expect(
+          await File('${container.path}/fsmonitor.executed').exists(),
+          isTrue,
+        );
+        await File('${repository.path}/.git/info/attributes').delete();
+        await _git(repository, [
+          '-c',
+          'core.fsmonitor=false',
+          'update-index',
+          '--chmod=+x',
+          'external',
+        ]);
+        expect(
+          await File('${container.path}/post-index-change.executed').exists(),
+          isTrue,
+        );
+      },
+    );
+  }
+
+  for (final committed in [false, true]) {
+    test(
+      '${committed ? 'commit-to-commit' : 'cached'} captured commits and literal nested paths survive HEAD and discovery changes',
+      () async {
+        const names = [
+          'space name',
+          'tab\tname',
+          'line\nname',
+          '-leading',
+          ':(glob)*',
+          '[literal]*?',
+          r'quote\"$(touch EXECUTED)',
+        ];
+        for (final name in names) {
+          await write('selected/project/$name', 'captured\n');
+        }
+        await write('outside', 'outside before\n');
+        final captured = await commit();
+        await capture('selected/project');
+        for (final name in names) {
+          await write('selected/project/$name', 'moved HEAD\n');
+        }
+        final moved = await commit();
+        expect(moved, isNot(captured));
+        for (final name in names) {
+          await write('selected/project/$name', 'index\n');
+        }
+        await write('outside', 'outside staged\n');
+        await _git(repository, ['add', '--all']);
+        final target = committed ? await commit() : null;
+        if (committed) {
+          for (final name in names) {
+            await write('selected/project/$name', 'unrelated latest HEAD\n');
+          }
+          await commit();
+        }
+        for (final name in names) {
+          await File('${repository.path}/selected/project/$name').delete();
+        }
+        // Even a newly introduced nested repository cannot replace the captured roots.
+        await _git(processes.root, ['init']);
+        final before = await _fingerprint(repository);
+        for (final name in names) {
+          expect(
+            _lines(_patch(await cached(captured, name, targetCommit: target))),
+            ['deletion:captured', 'addition:index'],
+          );
+          expect(
+            _lines(_patch(await cached(moved, name, targetCommit: target))),
+            ['deletion:moved HEAD', 'addition:index'],
+          );
+        }
+        final scoped = _patch(
+          await cached(captured, '.', targetCommit: target),
+        );
+        expect(scoped, isNot(contains('outside')));
+        expect('diff --git '.allMatches(scoped), hasLength(names.length));
+        expect(await File('${processes.root.path}/EXECUTED').exists(), isFalse);
+        expect(await _fingerprint(repository), before);
+      },
+    );
+  }
+
+  for (final committed in [false, true]) {
+    test(
+      '${committed ? 'commit-to-commit' : 'cached'} change-kind filters isolate exact paths across file-directory replacements',
+      () async {
+        await write('file-to-dir', 'old flat\n');
+        await write('dir-to-file/child', 'old child\n');
+        final captured = await commit();
+        await File('${repository.path}/file-to-dir').delete();
+        await write('file-to-dir/child', 'new child\n');
+        await Directory(
+          '${repository.path}/dir-to-file',
+        ).delete(recursive: true);
+        await write('dir-to-file', 'new flat\n');
+        await _git(repository, ['add', '--all']);
+        final target = committed ? await commit() : null;
+        final before = await _fingerprint(repository);
+        for (final path in ['file-to-dir', 'dir-to-file']) {
+          final broad = _patch(
+            await cached(captured, path, targetCommit: target),
+          );
+          expect('diff --git '.allMatches(broad), hasLength(2));
+          expect(() => parseGitPatch(broad), throwsA(anything));
+        }
+        for (final (path, filter, lines) in [
+          ('file-to-dir', 'D', ['deletion:old flat']),
+          ('file-to-dir/child', 'A', ['addition:new child']),
+          ('dir-to-file', 'A', ['addition:new flat']),
+          ('dir-to-file/child', 'D', ['deletion:old child']),
+        ]) {
+          final patch = _patch(
+            await cached(
+              captured,
+              path,
+              diffFilter: filter,
+              targetCommit: target,
+            ),
+          );
+          expect('diff --git '.allMatches(patch), hasLength(1));
+          expect(_lines(patch), lines);
+        }
+        expect(await _fingerprint(repository), before);
+      },
+    );
+  }
 
   test('intent-to-add remains absent from the cached layer', () async {
     final captured = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
@@ -307,43 +346,50 @@ void main() {
     expect(await _fingerprint(repository), before);
   });
 
-  test(
-    'fixed cached diff options neutralize configured patch formatting',
-    () async {
-      final captured = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
-      await write('tracked', 'after\n\nsame\nnew tail');
-      await _git(repository, ['add', '--', 'tracked']);
-      final expected = _patch(await cached(captured, 'tracked'));
-      for (final (key, value) in [
-        ('diff.outputIndicatorNew', '>'),
-        ('diff.outputIndicatorOld', '<'),
-        ('diff.outputIndicatorContext', '='),
-        ('diff.suppressBlankEmpty', 'true'),
-        ('diff.algorithm', 'histogram'),
-        ('diff.indentHeuristic', 'true'),
-        ('diff.context', '0'),
-        ('diff.interHunkContext', '99'),
-        ('diff.colorMoved', 'zebra'),
-        ('color.ui', 'always'),
-        ('color.diff', 'always'),
-        ('diff.noprefix', 'false'),
-        ('diff.mnemonicPrefix', 'true'),
-        ('diff.srcPrefix', 'hostile-old/'),
-        ('diff.dstPrefix', 'hostile-new/'),
-        ('diff.relative', 'true'),
-        ('diff.renames', 'copies'),
-        ('diff.submodule', 'log'),
-        ('diff.wordRegex', '.'),
-      ]) {
-        await _git(repository, ['config', key, value]);
-      }
-      final before = await _fingerprint(repository);
-      final actual = _patch(await cached(captured, 'tracked'));
-      expect(actual, expected);
-      expect(_lines(actual), contains('context:'));
-      expect(await _fingerprint(repository), before);
-    },
-  );
+  for (final committed in [false, true]) {
+    test(
+      'fixed ${committed ? 'commit-to-commit' : 'cached'} diff options neutralize configured patch formatting',
+      () async {
+        final captured = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+        await write('tracked', 'after\n\nsame\nnew tail');
+        await _git(repository, ['add', '--', 'tracked']);
+        final target = committed ? await commit() : null;
+        final expected = _patch(
+          await cached(captured, 'tracked', targetCommit: target),
+        );
+        for (final (key, value) in [
+          ('diff.outputIndicatorNew', '>'),
+          ('diff.outputIndicatorOld', '<'),
+          ('diff.outputIndicatorContext', '='),
+          ('diff.suppressBlankEmpty', 'true'),
+          ('diff.algorithm', 'histogram'),
+          ('diff.indentHeuristic', 'true'),
+          ('diff.context', '0'),
+          ('diff.interHunkContext', '99'),
+          ('diff.colorMoved', 'zebra'),
+          ('color.ui', 'always'),
+          ('color.diff', 'always'),
+          ('diff.noprefix', 'false'),
+          ('diff.mnemonicPrefix', 'true'),
+          ('diff.srcPrefix', 'hostile-old/'),
+          ('diff.dstPrefix', 'hostile-new/'),
+          ('diff.relative', 'true'),
+          ('diff.renames', 'copies'),
+          ('diff.submodule', 'log'),
+          ('diff.wordRegex', '.'),
+        ]) {
+          await _git(repository, ['config', key, value]);
+        }
+        final before = await _fingerprint(repository);
+        final actual = _patch(
+          await cached(captured, 'tracked', targetCommit: target),
+        );
+        expect(actual, expected);
+        expect(_lines(actual), contains('context:'));
+        expect(await _fingerprint(repository), before);
+      },
+    );
+  }
 
   test(
     'cached diff has explicit difference exit codes and failing diagnostics',
@@ -425,11 +471,12 @@ List<String> _cachedArguments(
   String path, {
   required bool exitCode,
   String? diffFilter,
+  String? targetCommit,
 }) => [
   '-c',
   'diff.suppressBlankEmpty=false',
   'diff',
-  '--cached',
+  if (targetCommit == null) '--cached',
   '--patch',
   if (exitCode) '--exit-code',
   '--no-ext-diff',
@@ -451,6 +498,7 @@ List<String> _cachedArguments(
   '--output-indicator-old=-',
   '--output-indicator-context= ',
   commit,
+  ?targetCommit,
   '--',
   path,
 ];

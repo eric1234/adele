@@ -10,7 +10,10 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_backend/git_backend.dart'
-    show GitPortableUnstagedLimits, GitPortableUnstagedSnapshotService;
+    show
+        GitPortableUnstagedLimits,
+        GitPortableUnstagedSnapshotService,
+        GitTaskComparisonAnchor;
 import 'package:test/test.dart';
 
 void main() {
@@ -1322,6 +1325,1196 @@ void main() {
       },
     );
   }
+
+  group('Task', () {
+    late GitTaskComparisonAnchor anchor;
+
+    Future<GitTaskComparisonAnchor> captureAnchor() async =>
+        GitTaskComparisonAnchor(
+          baselineCommit: (await _git(repository, [
+            'rev-parse',
+            'HEAD',
+          ])).trim(),
+          expectedBranchRef: (await _git(repository, [
+            'symbolic-ref',
+            'HEAD',
+          ])).trim(),
+        );
+
+    setUp(() async => anchor = await captureAnchor());
+
+    Future<TaskChangeSetSnapshot> task({
+      AuthorizedEnvironmentBufferedProcessService? through,
+      GitPortableUnstagedLimits limits = const GitPortableUnstagedLimits(),
+      GitTaskComparisonAnchor? comparison,
+    }) => GitPortableUnstagedSnapshotService(
+      processes: through ?? processes,
+      limits: limits,
+      taskAnchor: comparison ?? anchor,
+    ).snapshotTaskChanges();
+
+    Matcher code(String value) =>
+        isA<ChangeSetFailure>().having((error) => error.code, 'code', value);
+
+    test(
+      'retains independent reversals progression and net cancellation',
+      () async {
+        for (final path in [
+          'reverse',
+          'progress',
+          'cancel',
+          'committed',
+          'staged',
+          'working',
+        ]) {
+          await write(path, 'A\n');
+        }
+        await commit();
+        anchor = await captureAnchor();
+        for (final path in ['reverse', 'progress', 'cancel', 'committed']) {
+          await write(path, 'B\n');
+        }
+        await commit();
+        await write('reverse', 'A\n');
+        await write('progress', 'C\n');
+        await write('cancel', 'C\n');
+        await write('staged', 'S\n');
+        await _git(repository, ['add', '--all']);
+        await write('reverse', 'B\n');
+        await write('progress', 'D\n');
+        await write('cancel', 'A\n');
+        await write('working', 'W\n');
+        final before = await _fingerprint(repository);
+        final result = await task();
+        expect(result.committed.files.map((file) => file.relativePath), [
+          'cancel',
+          'committed',
+          'progress',
+          'reverse',
+        ]);
+        expect(
+          result.uncommitted.staged.files.map((file) => file.relativePath),
+          ['cancel', 'progress', 'reverse', 'staged'],
+        );
+        expect(
+          result.uncommitted.unstaged.files.map((file) => file.relativePath),
+          ['cancel', 'progress', 'reverse', 'working'],
+        );
+        for (final (layer, path, left, right) in [
+          (result.committed, 'reverse', 'A', 'B'),
+          (result.uncommitted.staged, 'reverse', 'B', 'A'),
+          (result.uncommitted.unstaged, 'reverse', 'A', 'B'),
+          (result.uncommitted.staged, 'progress', 'B', 'C'),
+          (result.uncommitted.unstaged, 'progress', 'C', 'D'),
+          (result.uncommitted.unstaged, 'cancel', 'C', 'A'),
+        ]) {
+          expect(
+            _lines(
+              layer.files.singleWhere((file) => file.relativePath == path),
+            ),
+            ['deletion:$left', 'addition:$right'],
+          );
+        }
+        expect(result.uncommitted.conflicts, isEmpty);
+        expect(await _fingerprint(repository), before);
+        expect(
+          processes.requests.where(
+            (request) => request.arguments.contains('--show-toplevel'),
+          ),
+          hasLength(2),
+        );
+      },
+    );
+
+    test(
+      'equal baseline is empty and the same anchor stays stable across commits',
+      () async {
+        final service = GitPortableUnstagedSnapshotService(
+          processes: processes,
+          taskAnchor: anchor,
+        );
+        expect((await service.snapshotTaskChanges()).committed.files, isEmpty);
+        for (final text in ['first', 'second', 'baseline']) {
+          await write('baseline', '$text\n');
+          await commit();
+          final result = await service.snapshotTaskChanges();
+          if (text == 'baseline') {
+            expect(result.committed.files, isEmpty);
+          } else {
+            expect(_lines(result.committed.files.single), [
+              'deletion:baseline',
+              'addition:$text',
+            ]);
+          }
+          expect(result.uncommitted.staged.files, isEmpty);
+          expect(result.uncommitted.unstaged.files, isEmpty);
+        }
+        expect(service.taskAnchor, same(anchor));
+      },
+    );
+
+    test('conflict does not erase an independent committed change', () async {
+      await _git(repository, ['checkout', '-b', 'other']);
+      await write('baseline', 'other\n');
+      await commit();
+      await _git(repository, ['checkout', 'main']);
+      await write('baseline', 'main\n');
+      await commit();
+      expect(
+        (await _gitResult(repository, [
+          'merge',
+          '--no-edit',
+          'other',
+        ])).exitCode,
+        1,
+      );
+      final result = await task();
+      expect(_lines(result.committed.files.single), [
+        'deletion:baseline',
+        'addition:main',
+      ]);
+      expect(result.uncommitted.staged.files, isEmpty);
+      expect(result.uncommitted.unstaged.files, isEmpty);
+      final conflict = result.uncommitted.conflicts.single;
+      expect(
+        (conflict.relativePath, conflict.changeKind, conflict.contentStatus),
+        ('baseline', 'conflicted', 'conflicted'),
+      );
+      expect(conflict.hunks, isEmpty);
+      await expectLater(
+        task(limits: const GitPortableUnstagedLimits(files: 1)),
+        throwsA(code('snapshot_too_large')),
+      );
+    });
+
+    test(
+      'committed empty sides renames and file-directory replacements are exact',
+      () async {
+        await write('empty-deleted', '');
+        await write('rename-old', 'rename\n');
+        await write('file-to-dir', 'parent\n');
+        await write('dir-to-file/child', 'child\n');
+        await commit();
+        anchor = await captureAnchor();
+        await _git(repository, [
+          'rm',
+          '--',
+          'empty-deleted',
+          'file-to-dir',
+          'dir-to-file/child',
+        ]);
+        await _git(repository, ['mv', '--', 'rename-old', 'rename-new']);
+        await write('empty-added', '');
+        await write('file-to-dir/child', 'new child\n');
+        await write('dir-to-file', 'new parent\n');
+        await commit();
+        await write('empty-deleted', 'recreated\n');
+        final result = await task();
+        expect(
+          result.committed.files.map(
+            (file) => '${file.relativePath}:${file.changeKind}',
+          ),
+          [
+            'dir-to-file:added',
+            'dir-to-file/child:deleted',
+            'empty-added:added',
+            'empty-deleted:deleted',
+            'file-to-dir:deleted',
+            'file-to-dir/child:added',
+            'rename-new:added',
+            'rename-old:deleted',
+          ],
+        );
+        expect(result.committed.files.map(_lines), <List<String>>[
+          ['addition:new parent'],
+          ['deletion:child'],
+          [],
+          [],
+          ['deletion:parent'],
+          ['addition:new child'],
+          ['addition:rename'],
+          ['deletion:rename'],
+        ]);
+        expect(
+          result.committed.files.every((file) => file.contentStatus == 'text'),
+          isTrue,
+        );
+        expect(result.uncommitted.staged.files, isEmpty);
+        expect(_lines(result.uncommitted.unstaged.files.single), [
+          'addition:recreated',
+        ]);
+      },
+    );
+
+    test(
+      'binary invalid UTF8 modes types gitlinks and oversized objects are explicit',
+      () async {
+        for (final path in ['binary', 'invalid', 'mode', 'type', 'large-new']) {
+          await write(path, 'before\n');
+        }
+        for (final path in ['large-old', 'large-deleted']) {
+          await write(path, 'x' * 128);
+        }
+        await Link('${repository.path}/link').create('before');
+        await commit();
+        anchor = await captureAnchor();
+        await File('${repository.path}/binary').writeAsBytes([1, 0, 2]);
+        await File('${repository.path}/invalid').writeAsBytes([255, 254]);
+        await File('${repository.path}/type').delete();
+        await Link('${repository.path}/type').create('missing');
+        await Link('${repository.path}/link').update('after');
+        await _command('/usr/bin/chmod', ['755', '${repository.path}/mode']);
+        await write('large-old', 'small\n');
+        await write('large-new', 'y' * 128);
+        await write('large-added', 'z' * 128);
+        await _git(repository, ['rm', '--', 'large-deleted']);
+        await _git(repository, ['add', '--all']);
+        await _git(repository, [
+          'update-index',
+          '--add',
+          '--cacheinfo',
+          '160000,${anchor.baselineCommit},module',
+        ]);
+        await _git(repository, ['commit', '-m', 'Types']);
+        await _git(repository, ['config', 'core.filemode', 'false']);
+        final result = await task(
+          limits: const GitPortableUnstagedLimits(fileBytes: 64),
+        );
+        final files = {
+          for (final file in result.committed.files) file.relativePath: file,
+        };
+        expect(files.keys, [
+          'binary',
+          'invalid',
+          'large-added',
+          'large-deleted',
+          'large-new',
+          'large-old',
+          'link',
+          'mode',
+          'module',
+          'type',
+        ]);
+        expect(files['binary']!.contentStatus, 'binary');
+        expect(files['invalid']!.contentStatus, 'unsupported');
+        for (final path in [
+          'large-added',
+          'large-deleted',
+          'large-new',
+          'large-old',
+        ]) {
+          expect(files[path]!.contentStatus, 'oversized');
+        }
+        for (final path in ['link', 'mode', 'module', 'type']) {
+          expect(files[path]!.contentStatus, 'unsupported');
+        }
+        expect(files['mode']!.changeKind, 'typeChanged');
+        expect(files['type']!.changeKind, 'typeChanged');
+        expect(files['module']!.changeKind, 'added');
+        for (final file in files.values) {
+          expect(file.hunks, isEmpty);
+          expect(file.detail, isNotEmpty);
+        }
+      },
+    );
+
+    test(
+      'committed objects ignore working attributes conversions and executable helpers',
+      () async {
+        await write('baseline', 'committed\n');
+        await commit();
+        final marker = File('${container.path}/TASK_HELPER');
+        final hook = File('${container.path}/task-helper');
+        await hook.writeAsString(
+          '#!/bin/sh\nprintf executed > "${marker.path}"\nexit 99\n',
+        );
+        await _command('/usr/bin/chmod', ['+x', hook.path]);
+        for (final (key, value) in [
+          ('filter.hostile.clean', hook.path),
+          ('filter.hostile.process', hook.path),
+          ('filter.hostile.required', 'true'),
+          ('diff.hostile.command', hook.path),
+          ('diff.hostile.textconv', hook.path),
+          ('diff.external', hook.path),
+          ('core.fsmonitor', hook.path),
+          ('core.hooksPath', container.path),
+          ('core.autocrlf', 'true'),
+          ('core.eol', 'crlf'),
+        ]) {
+          await _git(repository, ['config', key, value]);
+        }
+        await File('${repository.path}/.git/info/attributes').writeAsString(
+          'baseline -diff filter=hostile working-tree-encoding=UTF-16 crlf\n',
+        );
+        final before = await _fingerprint(repository);
+        for (final missing in [false, true]) {
+          if (missing) await File('${repository.path}/baseline').delete();
+          processes.requests.clear();
+          final result = await task();
+          expect(_lines(result.committed.files.single), [
+            'deletion:baseline',
+            'addition:committed',
+          ]);
+          expect(result.committed.files.single.contentStatus, 'text');
+          expect(result.uncommitted.staged.files, isEmpty);
+          if (missing) {
+            expect(
+              result.uncommitted.unstaged.files.single.contentStatus,
+              'unsupported',
+            );
+          } else {
+            expect(result.uncommitted.unstaged.files, isEmpty);
+            expect(
+              processes.requests.where(
+                (request) => request.arguments.contains('check-attr'),
+              ),
+              isEmpty,
+            );
+            expect(await _fingerprint(repository), before);
+          }
+          expect(await marker.exists(), isFalse);
+        }
+        // Positive control: the configured helper is executable, not inert fixture text.
+        expect((await Process.run(hook.path, [])).exitCode, 99);
+        expect(await marker.exists(), isTrue);
+      },
+    );
+
+    test(
+      'nested scope literal names CRLF and absent final newlines survive all layers',
+      () async {
+        const paths = [
+          ' space ',
+          '-option',
+          ':(glob)*[x]',
+          'tab\tname',
+          'line\nname',
+          r'back\slash',
+          'quote\'";\$(touch INJECTED)',
+        ];
+        for (final path in [
+          ...paths.map((path) => 'selected/$path'),
+          'outside',
+        ]) {
+          await write(path, 'A\r\nlast A');
+        }
+        await commit();
+        anchor = await captureAnchor();
+        for (final text in ['B', 'C', 'D']) {
+          for (final path in [
+            ...paths.map((path) => 'selected/$path'),
+            'outside',
+          ]) {
+            await write(path, '$text\r\nlast $text');
+          }
+          if (text == 'B') await commit();
+          if (text == 'C') await _git(repository, ['add', '--all']);
+        }
+        processes = _FixtureProcesses(
+          Directory('${repository.path}/selected'),
+          container,
+        );
+        final result = await task();
+        for (final (layer, left, right) in [
+          (result.committed, 'A', 'B'),
+          (result.uncommitted.staged, 'B', 'C'),
+          (result.uncommitted.unstaged, 'C', 'D'),
+        ]) {
+          expect(
+            layer.files.map((file) => file.relativePath),
+            [...paths]..sort(),
+          );
+          for (final file in layer.files) {
+            expect(
+              file.hunks.single.lines.map(
+                (line) => (line.kind, line.text, line.noNewline),
+              ),
+              [
+                ('deletion', '$left\r', false),
+                ('deletion', 'last $left', true),
+                ('addition', '$right\r', false),
+                ('addition', 'last $right', true),
+              ],
+            );
+          }
+        }
+        expect(
+          await File('${repository.path}/selected/INJECTED').exists(),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'SHA256 anchor commits trees blobs and patches use the selected format',
+      () async {
+        repository = await Directory('${container.path}/sha256-task').create();
+        await _git(repository, [
+          'init',
+          '--object-format=sha256',
+          '--initial-branch=main',
+        ]);
+        await _git(repository, ['config', 'user.name', 'ADELE Test']);
+        await _git(repository, [
+          'config',
+          'user.email',
+          'adele@example.invalid',
+        ]);
+        await write('baseline', 'A\n');
+        await commit();
+        anchor = await captureAnchor();
+        await write('baseline', 'B\n');
+        await commit();
+        await write('baseline', 'C\n');
+        await _git(repository, ['add', '--all']);
+        await write('baseline', 'D\n');
+        processes = _FixtureProcesses(repository, container);
+        final result = await task();
+        expect(anchor.baselineCommit, hasLength(64));
+        expect(_lines(result.committed.files.single), [
+          'deletion:A',
+          'addition:B',
+        ]);
+        expect(_lines(result.uncommitted.staged.files.single), [
+          'deletion:B',
+          'addition:C',
+        ]);
+        expect(_lines(result.uncommitted.unstaged.files.single), [
+          'deletion:C',
+          'addition:D',
+        ]);
+        await expectLater(
+          task(
+            comparison: GitTaskComparisonAnchor(
+              baselineCommit: anchor.baselineCommit.substring(0, 40),
+              expectedBranchRef: anchor.expectedBranchRef,
+            ),
+          ),
+          throwsA(code('invalid_baseline')),
+        );
+      },
+    );
+
+    test(
+      'missing anchor never infers HEAD and does not disable other scopes',
+      () async {
+        final service = GitPortableUnstagedSnapshotService(
+          processes: processes,
+        );
+        await expectLater(
+          service.snapshotTaskChanges(),
+          throwsA(code('baseline_unavailable')),
+        );
+        expect(processes.requests, isEmpty);
+        expect((await service.snapshotUnstaged()).files, isEmpty);
+        expect((await service.snapshotUncommitted()).staged.files, isEmpty);
+        final invalid = GitPortableUnstagedSnapshotService(
+          processes: processes,
+          taskAnchor: const GitTaskComparisonAnchor(
+            baselineCommit: 'HEAD',
+            expectedBranchRef: 'main',
+          ),
+        );
+        expect((await invalid.snapshotUncommitted()).staged.files, isEmpty);
+      },
+    );
+
+    for (final value in [
+      '',
+      'HEAD',
+      'HEAD~1',
+      'HEAD^{commit}',
+      'abcdef0',
+      'A' * 40,
+      'g' * 40,
+      'a' * 39,
+      'a' * 64,
+      '${'a' * 39}\n',
+    ]) {
+      test(
+        'rejects malformed or wrong-width anchor ${jsonEncode(value)}',
+        () async {
+          await expectLater(
+            task(
+              comparison: GitTaskComparisonAnchor(
+                baselineCommit: value,
+                expectedBranchRef: anchor.expectedBranchRef,
+              ),
+            ),
+            throwsA(code('invalid_baseline')),
+          );
+          expect(
+            processes.requests.where(
+              (request) => request.arguments.contains('cat-file'),
+            ),
+            isEmpty,
+          );
+        },
+      );
+    }
+
+    test(
+      'unavailable baseline fails without lazy fetch or a replacement baseline',
+      () async {
+        await expectLater(
+          task(
+            comparison: GitTaskComparisonAnchor(
+              baselineCommit: 'a' * 40,
+              expectedBranchRef: anchor.expectedBranchRef,
+            ),
+          ),
+          throwsA(code('baseline_unavailable')),
+        );
+      },
+    );
+
+    for (final type in ['tag', 'blob', 'tree']) {
+      test('rejects actual $type object without peeling it', () async {
+        final String oid;
+        if (type == 'tag') {
+          await _git(repository, ['tag', '-a', 'tagged', '-m', 'Annotated']);
+          oid = (await _git(repository, ['rev-parse', 'tagged'])).trim();
+        } else {
+          oid = (await _git(repository, [
+            'rev-parse',
+            type == 'tree' ? 'HEAD^{tree}' : 'HEAD:baseline',
+          ])).trim();
+        }
+        await expectLater(
+          task(
+            comparison: GitTaskComparisonAnchor(
+              baselineCommit: oid,
+              expectedBranchRef: anchor.expectedBranchRef,
+            ),
+          ),
+          throwsA(code('invalid_baseline')),
+        );
+        expect(
+          processes.requests.any(
+            (request) =>
+                request.arguments.contains('-t') &&
+                request.arguments.last == oid,
+          ),
+          isTrue,
+        );
+      });
+    }
+
+    for (final reference in [
+      '',
+      'main',
+      'refs/tags/main',
+      'refs/heads/',
+      'refs/heads/a..b',
+      'refs/heads/a.lock',
+      'refs/heads/a@{b',
+      'refs/heads/a b',
+      'refs/heads/a\n',
+      'refs/heads/.hidden',
+      'refs/heads/a\\b',
+    ]) {
+      test('rejects malformed full branch ${jsonEncode(reference)}', () async {
+        await expectLater(
+          task(
+            comparison: GitTaskComparisonAnchor(
+              baselineCommit: anchor.baselineCommit,
+              expectedBranchRef: reference,
+            ),
+          ),
+          throwsA(code('invalid_branch')),
+        );
+      });
+    }
+
+    test('branch mismatch and detached HEAD fail explicitly', () async {
+      await expectLater(
+        task(
+          comparison: GitTaskComparisonAnchor(
+            baselineCommit: anchor.baselineCommit,
+            expectedBranchRef: 'refs/heads/other',
+          ),
+        ),
+        throwsA(code('unexpected_branch')),
+      );
+      await _git(repository, ['checkout', '--detach']);
+      await expectLater(task(), throwsA(code('detached_head')));
+      expect((await uncommitted()).staged.files, isEmpty);
+    });
+
+    for (final mutation in [
+      'HEAD commit',
+      'HEAD branch',
+      'index',
+      'working',
+      'configuration',
+      'repository',
+      'baseline unavailable',
+      'baseline tree',
+      'HEAD tree',
+      'object format',
+    ]) {
+      test(
+        '$mutation changing after committed patch rejects every layer',
+        () async {
+          await write('selected/file', 'A\n');
+          await commit();
+          anchor = await captureAnchor();
+          await write('selected/file', 'B\n');
+          await commit();
+          final capturedHead = (await _git(repository, [
+            'rev-parse',
+            'HEAD',
+          ])).trim();
+          final next = (await _git(repository, [
+            'commit-tree',
+            'HEAD^{tree}',
+            '-p',
+            'HEAD',
+            '-m',
+            'Next',
+          ])).trim();
+          await _git(repository, ['branch', 'same-commit']);
+          await write('selected/file', 'C\n');
+          await _git(repository, ['add', '--all']);
+          await write('selected/file', 'D\n');
+          processes = _FixtureProcesses(
+            Directory('${repository.path}/selected'),
+            container,
+          );
+          var changed = false;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (changed) {
+              if (mutation == 'baseline unavailable' &&
+                  request.arguments.contains('-t') &&
+                  request.arguments.last == anchor.baselineCommit) {
+                return _result(exitCode: 128);
+              }
+              if ((mutation == 'baseline tree' || mutation == 'HEAD tree') &&
+                  request.arguments.contains('ls-tree') &&
+                  request.arguments.contains(
+                    mutation == 'baseline tree'
+                        ? anchor.baselineCommit
+                        : capturedHead,
+                  )) {
+                return _result(stdout: '');
+              }
+              if (mutation == 'object format' &&
+                  request.arguments.contains('--show-object-format')) {
+                return _result(stdout: 'sha256\n');
+              }
+            }
+            if (!changed &&
+                request.arguments.contains('--patch') &&
+                !request.arguments.contains('--cached')) {
+              changed = true;
+              switch (mutation) {
+                case 'HEAD commit':
+                  await _git(repository, ['update-ref', 'HEAD', next]);
+                case 'HEAD branch':
+                  await _git(repository, [
+                    'symbolic-ref',
+                    'HEAD',
+                    'refs/heads/same-commit',
+                  ]);
+                case 'index':
+                  await _git(repository, ['add', '--all']);
+                case 'working':
+                  await write('selected/file', 'changed after capture\n');
+                case 'configuration':
+                  await _git(repository, ['config', 'core.filemode', 'false']);
+                case 'repository':
+                  await _git(processes.root, ['init']);
+              }
+            }
+            return result;
+          });
+          TaskChangeSetSnapshot? published;
+          await expectLater(
+            task(through: through).then((value) => published = value),
+            throwsA(
+              code(
+                mutation == 'baseline unavailable'
+                    ? 'baseline_unavailable'
+                    : 'snapshot_changed',
+              ),
+            ),
+          );
+          expect(changed, isTrue);
+          expect(published, isNull);
+        },
+      );
+    }
+
+    for (final side in ['baseline', 'HEAD']) {
+      for (final phase in ['capture', 'settlement']) {
+        test('$side bytes must hash to the captured commit at $phase', () async {
+          await write('baseline', 'committed\n');
+          await commit();
+          var changed = false;
+          final oid = side == 'baseline'
+              ? anchor.baselineCommit
+              : (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+          final object = File(
+            '${repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+          );
+          Future<void> corrupt() async {
+            final bytes = zlib.decode(await object.readAsBytes());
+            // Preserve a parseable commit and its type but change its message.
+            bytes[bytes.length - 2] ^= 1;
+            await object.delete();
+            await object.writeAsBytes(zlib.encode(bytes));
+            changed = true;
+          }
+
+          if (phase == 'capture') await corrupt();
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (!changed && request.arguments.contains('--patch')) {
+              await corrupt();
+            }
+            return result;
+          });
+          await expectLater(
+            task(through: through),
+            throwsA(
+              side == 'baseline'
+                  ? code('invalid_baseline')
+                  : anyOf(code('head_unavailable'), code('invalid_git_output')),
+            ),
+          );
+          expect(changed, isTrue);
+        });
+      }
+    }
+
+    for (final side in ['baseline', 'HEAD', 'index']) {
+      for (final corruption in ['missing', 'changed bytes']) {
+        test(
+          'required $side blob $corruption after its patch fails settlement',
+          () async {
+            final oldOid = (await _git(repository, [
+              'rev-parse',
+              'HEAD:baseline',
+            ])).trim();
+            await write('baseline', 'committed\n');
+            await commit();
+            final headOid = (await _git(repository, [
+              'rev-parse',
+              'HEAD:baseline',
+            ])).trim();
+            await write('baseline', 'indexed\n');
+            await _git(repository, ['add', '--all']);
+            final indexOid = (await _git(repository, [
+              'rev-parse',
+              ':baseline',
+            ])).trim();
+            final oid = switch (side) {
+              'baseline' => oldOid,
+              'HEAD' => headOid,
+              _ => indexOid,
+            };
+            var changed = false;
+            final through = _InterceptingProcesses(processes, (
+              request,
+              run,
+            ) async {
+              final result = await run(request);
+              // Both object layers have consumed their bytes; the clean workfile
+              // needs neither a patch nor another index-blob read.
+              if (!changed &&
+                  request.arguments.contains('--patch') &&
+                  request.arguments.contains('--cached')) {
+                final object = File(
+                  '${repository.path}/.git/objects/${oid.substring(0, 2)}/${oid.substring(2)}',
+                );
+                if (corruption == 'missing') {
+                  await object.delete();
+                } else {
+                  final bytes = zlib.decode(await object.readAsBytes());
+                  bytes[bytes.length - 2] ^= 1;
+                  await object.delete();
+                  await object.writeAsBytes(zlib.encode(bytes));
+                }
+                changed = true;
+              }
+              return result;
+            });
+            await expectLater(
+              task(through: through),
+              throwsA(
+                code(
+                  corruption == 'missing' ? 'git_failed' : 'invalid_git_output',
+                ),
+              ),
+            );
+            expect(changed, isTrue);
+          },
+        );
+      }
+    }
+
+    test(
+      'oversized required objects retain size and availability observations',
+      () async {
+        await write('large', 'x' * 128);
+        await commit();
+        anchor = await captureAnchor();
+        final oid = (await _git(repository, [
+          'rev-parse',
+          'HEAD:large',
+        ])).trim();
+        await write('large', 'small\n');
+        await commit();
+        var observations = 0;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (request.arguments.contains('-s') &&
+              request.arguments.last == oid &&
+              ++observations == 2) {
+            return _result(stdout: '129\n');
+          }
+          return result;
+        });
+        await expectLater(
+          task(
+            through: through,
+            limits: const GitPortableUnstagedLimits(fileBytes: 64),
+          ),
+          throwsA(code('snapshot_changed')),
+        );
+        expect(observations, 2);
+      },
+    );
+
+    for (final side in ['baseline', 'HEAD']) {
+      for (final corruption in ['malformed', 'wrong width', 'missing object']) {
+        test(
+          '$side tree $corruption fails before any result is returned',
+          () async {
+            await write('baseline', 'committed\n');
+            await commit();
+            final commitOid = side == 'baseline'
+                ? anchor.baselineCommit
+                : (await _git(repository, ['rev-parse', 'HEAD'])).trim();
+            var intercepted = false;
+            final through = _InterceptingProcesses(processes, (
+              request,
+              run,
+            ) async {
+              final result = await run(request);
+              if (!intercepted &&
+                  request.arguments.contains('ls-tree') &&
+                  request.arguments.contains(commitOid)) {
+                intercepted = true;
+                final raw = utf8.decode(base64Decode(result.stdoutBase64));
+                return switch (corruption) {
+                  'malformed' => _result(stdout: 'malformed\x00'),
+                  'wrong width' => _result(
+                    stdout: raw.replaceFirst(RegExp(r'[0-9a-f]{40}'), 'a' * 64),
+                  ),
+                  _ => _result(exitCode: 128),
+                };
+              }
+              return result;
+            });
+            await expectLater(
+              task(through: through),
+              throwsA(
+                code(
+                  corruption == 'missing object'
+                      ? 'git_failed'
+                      : 'invalid_git_output',
+                ),
+              ),
+            );
+            expect(intercepted, isTrue);
+          },
+        );
+      }
+    }
+
+    test('unborn HEAD fails with an available retained baseline', () async {
+      await _git(repository, ['symbolic-ref', 'HEAD', 'refs/heads/unborn']);
+      await expectLater(
+        task(
+          comparison: GitTaskComparisonAnchor(
+            baselineCommit: anchor.baselineCommit,
+            expectedBranchRef: 'refs/heads/unborn',
+          ),
+        ),
+        throwsA(code('head_unavailable')),
+      );
+      expect((await snapshot()).files, isEmpty);
+    });
+
+    test(
+      'empty and nonempty intent-to-add have no committed or staged object',
+      () async {
+        await write('intent-empty', '');
+        await write('intent-text', 'intent\n');
+        await _git(repository, [
+          'add',
+          '--intent-to-add',
+          '--',
+          'intent-empty',
+          'intent-text',
+        ]);
+        final result = await task();
+        expect(result.committed.files, isEmpty);
+        expect(result.uncommitted.staged.files, isEmpty);
+        expect(
+          result.uncommitted.unstaged.files.map((file) => file.relativePath),
+          ['intent-empty', 'intent-text'],
+        );
+        expect(result.uncommitted.unstaged.files.first.hunks, isEmpty);
+        expect(_lines(result.uncommitted.unstaged.files.last), [
+          'addition:intent',
+        ]);
+      },
+    );
+
+    for (final corruption in [
+      'wrong old OID',
+      'wrong new OID',
+      'valid hunk prefix',
+      'malformed',
+      'empty',
+      'stderr',
+      'nonzero',
+    ]) {
+      test('committed patch $corruption cannot publish partial data', () async {
+        final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';
+        await write('baseline', original);
+        await commit();
+        anchor = await captureAnchor();
+        await write(
+          'baseline',
+          original
+              .replaceFirst('line 1\n', 'first\n')
+              .replaceFirst('line 27\n', 'last\n'),
+        );
+        await commit();
+        var intercepted = false;
+        final through = _InterceptingProcesses(processes, (request, run) async {
+          final result = await run(request);
+          if (!request.arguments.contains('--patch') ||
+              request.arguments.contains('--cached')) {
+            return result;
+          }
+          intercepted = true;
+          var raw = utf8.decode(base64Decode(result.stdoutBase64));
+          switch (corruption) {
+            case 'wrong old OID':
+            case 'wrong new OID':
+              final identity = RegExp(
+                r'^index ([0-9a-f]{40})\.\.([0-9a-f]{40})',
+                multiLine: true,
+              ).firstMatch(raw)!;
+              raw = raw.replaceRange(
+                identity.start,
+                identity.end,
+                'index ${corruption == 'wrong old OID' ? '0' * 40 : identity[1]}..${corruption == 'wrong new OID' ? '0' * 40 : identity[2]}',
+              );
+            case 'valid hunk prefix':
+              final hunks = RegExp(
+                r'^@@ ',
+                multiLine: true,
+              ).allMatches(raw).toList();
+              expect(hunks, hasLength(2));
+              raw = raw.substring(0, hunks.last.start);
+            case 'malformed':
+              raw = '$raw+unexpected\n';
+            case 'empty':
+              raw = '';
+          }
+          return _result(
+            stdout: raw,
+            exitCode: corruption == 'nonzero' ? 128 : 1,
+            stderr: corruption == 'stderr' ? 'incomplete\n' : '',
+          );
+        });
+        await expectLater(
+          task(through: through),
+          throwsA(
+            code(switch (corruption) {
+              'valid hunk prefix' || 'malformed' => 'invalid_git_output',
+              'stderr' || 'nonzero' => 'git_failed',
+              _ => 'snapshot_changed',
+            }),
+          ),
+        );
+        expect(intercepted, isTrue);
+      });
+    }
+
+    for (final bound in ['entries', 'lines', 'bytes', 'processes']) {
+      test(
+        '$bound budget is shared across committed staged and unstaged',
+        () async {
+          await write('baseline', 'B\n');
+          await commit();
+          await write('baseline', 'C\n');
+          await _git(repository, ['add', '--all']);
+          await write('baseline', 'D\n');
+          var transportedBytes = 0;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            transportedBytes +=
+                base64Decode(request.stdinBase64).length +
+                base64Decode(result.stdoutBase64).length +
+                base64Decode(result.stderrBase64).length;
+            return result;
+          });
+          final complete = await task(through: through);
+          for (final layer in [
+            complete.committed,
+            complete.uncommitted.staged,
+            complete.uncommitted.unstaged,
+          ]) {
+            expect(layer.files, hasLength(1));
+          }
+          final limits = switch (bound) {
+            'entries' => const GitPortableUnstagedLimits(files: 2),
+            'lines' => const GitPortableUnstagedLimits(lines: 5),
+            'bytes' => GitPortableUnstagedLimits(
+              totalBytes: transportedBytes + utf8.encode('D\n').length - 1,
+            ),
+            _ => GitPortableUnstagedLimits(
+              processes: processes.requests.length - 1,
+            ),
+          };
+          final lowerLayers = await uncommitted(limits: limits);
+          expect(lowerLayers.staged.files, hasLength(1));
+          expect(lowerLayers.unstaged.files, hasLength(1));
+          await expectLater(
+            task(limits: limits),
+            throwsA(code('snapshot_too_large')),
+          );
+        },
+      );
+    }
+
+    test(
+      'baseline HEAD index untracked union has one inventory bound',
+      () async {
+        await _git(repository, ['rm', '--', 'baseline']);
+        await write('head', 'head\n');
+        await commit();
+        await _git(repository, ['rm', '--', 'head']);
+        await write('index', 'index\n');
+        await _git(repository, ['add', '--all']);
+        await write('working', 'working\n');
+        await expectLater(
+          task(limits: const GitPortableUnstagedLimits(inventoryEntries: 3)),
+          throwsA(code('inventory_too_large')),
+        );
+      },
+    );
+
+    test(
+      'deadline fences a late committed request and its continuation',
+      () async {
+        await write('baseline', 'committed\n');
+        await commit();
+        final pending = Completer<EnvironmentBufferedProcessResult>();
+        final admitted = Completer<void>();
+        var commands = 0;
+        final through = _InterceptingProcesses(processes, (request, run) {
+          commands++;
+          if (request.arguments.contains('--patch')) {
+            admitted.complete();
+            return pending.future;
+          }
+          return run(request);
+        });
+        final operation = task(
+          through: through,
+          limits: const GitPortableUnstagedLimits(
+            processTimeout: Duration(seconds: 1),
+          ),
+        );
+        final failed = expectLater(
+          operation,
+          throwsA(code('operation_timeout')),
+        );
+        await admitted.future;
+        await failed;
+        final stopped = commands;
+        pending.complete(_result(exitCode: 1));
+        await Future<void>.delayed(Duration.zero);
+        expect(commands, stopped);
+      },
+    );
+
+    for (final count in [100, 500, 900]) {
+      test('diagnostic clean $count commit-only and three-layer edits', () async {
+        for (var index = 1; index < count; index++) {
+          await write('file-${index.toString().padLeft(3, '0')}', 'A\n');
+        }
+        await commit();
+        anchor = await captureAnchor();
+        for (final phase in ['clean', 'commit-only', 'three-layer']) {
+          if (phase != 'clean') {
+            for (var index = 1; index <= 3; index++) {
+              await write(
+                'file-${index.toString().padLeft(3, '0')}',
+                phase == 'commit-only' ? 'B\n' : 'C\n',
+              );
+            }
+            if (phase == 'commit-only') {
+              await commit();
+            } else {
+              await _git(repository, ['add', '--all']);
+              for (var index = 1; index <= 3; index++) {
+                await write('file-${index.toString().padLeft(3, '0')}', 'D\n');
+              }
+            }
+          }
+          processes.requests.clear();
+          final watch = Stopwatch()..start();
+          final result = await task();
+          watch.stop();
+          print(
+            'portable Task $phase n=$count requests=${processes.requests.length} elapsed=${watch.elapsedMilliseconds}ms',
+          );
+          expect(result.committed.files, hasLength(phase == 'clean' ? 0 : 3));
+          expect(
+            result.uncommitted.staged.files,
+            hasLength(phase == 'three-layer' ? 3 : 0),
+          );
+          expect(
+            result.uncommitted.unstaged.files,
+            hasLength(phase == 'three-layer' ? 3 : 0),
+          );
+          expect(result.uncommitted.conflicts, isEmpty);
+          if (phase == 'clean') {
+            expect(
+              processes.requests,
+              hasLength(35 + 4 * ((count + 127) ~/ 128)),
+            );
+            expect(
+              processes.requests.where(
+                (request) =>
+                    request.arguments.contains('--patch') ||
+                    request.arguments.contains('/usr/bin/head'),
+              ),
+              isEmpty,
+            );
+          }
+        }
+      });
+    }
+  });
 
   group('Uncommitted', () {
     test('retains A/B/A cancellation, A/B/C and independent layers', () async {

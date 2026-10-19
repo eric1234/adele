@@ -279,22 +279,43 @@ The `git_backend` maintained target discovers both files.
 
 <a id="portable-unstaged-inspection"></a>
 
-### Portable Unstaged and Uncommitted inspection
+### Portable change inspection
 
-`GitPortableUnstagedSnapshotService` supplies `snapshotUnstaged()` and
-`snapshotUncommitted()` as a separate production implementation. Both reuse one
-operation's index-to-working-tree inspection, including nonignored untracked
+`GitPortableUnstagedSnapshotService` supplies `snapshotUnstaged()`,
+`snapshotUncommitted()` and `snapshotTaskChanges()` as a separate implementation.
+All reuse one operation's index-to-working-tree inspection, including nonignored untracked
 additions; Uncommitted also returns captured HEAD-to-index changes and a separate
 conflict collection, not a net HEAD-to-working-tree diff. It
-accepts only `AuthorizedEnvironmentBufferedProcessService` and optional reduced
-operation limits. It does not accept Session/Environment IDs or repository paths,
-import the Worktree provider, resolve live provider objects, or perform host-local
+accepts `AuthorizedEnvironmentBufferedProcessService`, optional reduced
+operation limits, and an optional trusted `GitTaskComparisonAnchor`. It does not
+accept Session/Environment IDs or repository paths, import the Worktree provider,
+resolve live provider objects, or perform host-local
 filesystem/process I/O. The existing stock `git_backend.dart` advertisement,
 provider ID, association, read grant, and all three scope methods remain unchanged.
 The portable service is not advertised as another stock provider. Production stock
-Diff still uses the Worktree-specific implementation. Portable Task/Branch baseline
-semantics and production activation remain deferred; no staging, approvals, or
-feedback mutation is implemented.
+Diff still uses the Worktree-specific implementation described above, including its
+existing retained Worktree baseline and provider-state v1. Portable baseline
+establishment, durable ownership/persistence, migration and production activation
+remain deferred; no staging, approvals, or feedback mutation is implemented.
+
+Portable Task comparison requires an immutable Git-owned backend setup value:
+`GitTaskComparisonAnchor(baselineCommit: ..., expectedBranchRef: ...)`. It carries
+only a full SHA-1/SHA-256 commit OID and full `refs/heads/...` identity, never a
+repository path, Environment selector, grant or frontend payload. Task inspection
+validates exact OID syntax and the selected repository's object-format width,
+requires the object to exist as an actual commit (not a tag to peel), validates
+the branch ref, and requires attached HEAD on that exact branch. Missing metadata,
+invalid/non-commit or unavailable objects, detached HEAD and a different branch
+fail explicitly. There is no current-HEAD, merge-base, initial-commit, default-branch
+or primary-Environment substitution. Unstaged and Uncommitted do not require this
+anchor. Later commits never advance it.
+
+The current independent integration fixture provisions this fixed anchor inside
+the Git Capability backend before invocation. It demonstrates comparison semantics,
+not durable per-Environment baseline ownership across arbitrary Sessions. A future
+Git-owned lifecycle must establish, associate, retain and restore trusted baselines
+before a separately reviewed production cutover; core Task/Session/Environment
+values and the public Diff contract acquire no Git metadata in this implementation.
 
 The independent Capability must declare `environmentBound` and the separate
 `bufferedProcess` host-service permission. Its consumer needs the contextual process
@@ -344,6 +365,14 @@ recreation is a staged deletion plus an unstaged addition. Renames remain separa
 deletion/addition entries. Unmerged paths occur only in `conflicts` for Uncommitted,
 with the stock conflicted status/detail and no ordinary approval material. Unstaged
 alone retains its existing inline conflict representation.
+
+Task captures both baseline and HEAD trees inside that same operation, then returns
+the existing `TaskChangeSetSnapshot(committed, uncommitted)` shape. Committed is the
+net baseline-to-HEAD tree difference, not a commit log or baseline-to-working diff.
+It is built independently before index-conflict handling: committed work remains
+visible on an unmerged path, with no fabricated staged/unstaged approval material.
+A/B/A/A and A/B/C/A across baseline/HEAD/index/working retain every meaningful
+layer; matching final working content never collapses intermediate changes.
 
 GNU `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
 modification/change times in bounded batches. Parents are admitted one depth at a
@@ -413,11 +442,23 @@ files or arbitrary filesystem writes are needed. Conversion/custom attributes,
 legacy `crlf`, binary/invalid UTF-8, unsupported modes and oversized sides keep the
 same conservative classification policy in both layers.
 
-Defaults are 4,096 inventory entries per HEAD/index inventory and across the union
-with untracked paths, at most that many distinct parent observations,
-256 returned entries across staged, unstaged and conflicts, 1 MiB per rendered side,
-2 MiB command stdout, 64 KiB diagnostic
-output, an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
+Committed comparison reuses this object comparison and hunk verification, replacing
+`--cached <captured-commit>` with the two captured full OIDs
+`<baseline-commit> <head-commit>`. Both sides come from their captured tree
+inventories and bounded immutable blob reads. The raw object bytes determine
+binary/invalid-UTF-8 classification, independently of current working-file
+conversion attributes. External diff/textconv remain disabled and deterministic
+patch options override configured formatting. Tests exercise configured executable
+clean/process filters, external diff, textconv, fsmonitor and hooks, with positive
+controls, unchanged Git metadata fingerprints and FIFO/missing working files.
+Pinned identities and literal nested paths remain valid after HEAD moves; a changed
+HEAD still prevents publication of the enclosing Task operation.
+
+Defaults are 4,096 inventory entries per baseline/HEAD/index inventory and across
+the union with untracked paths, at most that many distinct parent observations,
+256 returned entries across committed, staged, unstaged and conflicts, 1 MiB per
+rendered side, 2 MiB command stdout, 64 KiB diagnostic output,
+an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
 budget, and 4,096 process requests. The aggregate budget counts all transported
 input/output plus observed small-file bytes hashed outside transport, so batching
 does not bypass the content-work limit. Retained parent-path text is independently
@@ -429,7 +470,7 @@ Environment transport limits are unchanged. Any incomplete observation, malforme
 output, process/transport failure or exhausted whole-operation budget fails the
 snapshot rather than returning a truncated or deceptively clean result.
 All budgets belong to one captured operation, not a fresh allowance per layer.
-A path returned in both staged and unstaged counts twice toward the entry limit;
+A path returned in all three layers counts three times toward the entry limit;
 object reads, raw comparisons, patch lines, commands and presentation size all share
 their respective counters.
 
@@ -438,10 +479,12 @@ A flat clean Unstaged inventory with ordinary-length paths uses
 metadata and final metadata batches, plus fixed discovery/inventory/settings work.
 Uncommitted adds only six fixed requests for initial/final commit, reference and
 tree observations: `26 + 4 * ceil(fileCount / 128)`, with no staged process for a
-clean file. At the 4,096-entry maximum these are 148 and 154 requests respectively.
-The 4,096-request ceiling also
-allows up to ten additional requests per rendered tracked file (2,560 for the
-256-file bound), with headroom for parents and smaller metadata-limited batches.
+clean file. Task with baseline equal to HEAD uses
+`35 + 4 * ceil(fileCount / 128)` requests, adding fixed object-format, commit
+identity, expected-ref and baseline-tree checks, not a process per clean tracked
+file. At the 4,096-entry maximum these are 148, 154 and 163 requests respectively.
+Rendered-file work, Task's required-object rechecks, parent observations and
+smaller metadata-limited batches consume the same 4,096-request ceiling.
 It does not promise success for every possible path layout, file size or machine;
 the independent byte and thirty-second deadline bounds still apply.
 
@@ -461,15 +504,22 @@ a parent directory). A modify/delete/add combination used 60 and 76 requests in
 or CI assertions. Modest deterministic tests instead enforce batched call scaling
 and fail-closed behavior. Uncommitted regression diagnostics exercise the same
 100/500/900-file batch scaling, mixed staged/unstaged changes and independent
-prepared execution. Production activation and portable Task scope remain deferred;
-batching does not alter the Environment's isolation guarantees.
+prepared execution. Task regression diagnostics exercise clean 100/500/900-file
+snapshots, committed-only and three-layer changes, with bounded process-count
+assertions rather than wall-clock CI assertions. Production activation remains
+deferred; batching does not alter the Environment's isolation guarantees.
 
 Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
 file attributes, repository discovery and observed metadata are rechecked before
 publication. Text working bytes are also reread around patch generation. Uncommitted
 additionally revalidates HEAD commit/reference and the captured HEAD-tree inventory,
-sharing the original index and working observations. These are best-effort
-consistency checks, not an atomic filesystem/index transaction.
+sharing the original index and working observations. Task also revalidates the
+fixed baseline commit and both captured tree inventories, attached branch and HEAD,
+without fresh Environment resolution. Baseline and distinct HEAD commit bytes are
+hashed against their full identities; required changed-object sides are revisited
+before publication. Renderable blobs must still hash to their OIDs, while oversized
+sides remain bounded size/availability observations rather than raw-content claims.
+These are best-effort consistency checks, not an atomic filesystem/index transaction.
 External processes can replace paths after checks, grow files during a Git hash,
 or change and restore content between observations. Processes retain the selected
 Environment's OS-user access, including possible access outside the worktree; this
@@ -482,13 +532,14 @@ process-service adapter, including hostile configuration, unusual paths, explici
 unsupported cases, limits and changed observations. `git_portable_discovery_test.dart`
 uses controlled process responses for root/prefix validation without creating a
 repository at the host filesystem root. The maintained `git_backend` target
-discovers those, `git_portable_cached_diff_test.dart`'s staged-object feasibility
-checks, and the extracted parser tests. Application
+discovers those, `git_portable_cached_diff_test.dart`'s staged and commit-to-commit
+feasibility checks, and the extracted parser tests. Application
 `prepared_portable_git_integration_test.dart` independently prepares an Environment
 AOT backend that runs real processes, a separate AOT adapter over this production
 service, and a compiled EVC consumer of the generated Diff contract. It checks
-nonprimary Session binding, typed staged/unstaged paths and hunks, conflict entries,
-one semantic invocation per request, clean-repository batch scaling, explicit process
+nonprimary Session binding, typed committed/staged/unstaged paths and hunks,
+conflict entries, one semantic invocation per request, clean-repository batch
+scaling, explicit process
 declarations and exact retirement/departure fencing. Neither backend imports the
 other's implementation. The stock Diff frontend is not changed by this proof.
 
