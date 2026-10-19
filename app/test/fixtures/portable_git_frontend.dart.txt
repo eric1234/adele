@@ -72,9 +72,26 @@ class PortableGitState extends State<PortableGit> {
       return;
     }
     // Decoding and every nested field access happen inside compiled EVC.
-    final ChangeSetSnapshot value = result[1];
     String rendered = 'snapshot';
-    for (final ChangedFile file in value.files) {
+    if (scope == 'unstaged') {
+      final ChangeSetSnapshot value = result[1];
+      rendered += renderFiles(value.files);
+    } else if (scope == 'uncommitted') {
+      final UncommittedChangeSetSnapshot value = result[1];
+      rendered += '\nstaged' + renderFiles(value.staged.files);
+      rendered += '\nunstaged' + renderFiles(value.unstaged.files);
+      rendered += '\nconflicts' + renderFiles(value.conflicts);
+    } else {
+      rendered = 'snapshot:unexpected-task-success';
+    }
+    setState(() {
+      text = rendered;
+    });
+  }
+
+  String renderFiles(List<ChangedFile> files) {
+    String rendered = '';
+    for (final ChangedFile file in files) {
       rendered +=
           '\n${file.relativePath}|${file.changeKind}|${file.contentStatus}';
       for (final DiffHunk hunk in file.hunks) {
@@ -85,9 +102,7 @@ class PortableGitState extends State<PortableGit> {
         }
       }
     }
-    setState(() {
-      text = rendered;
-    });
+    return rendered;
   }
 
   @override
@@ -103,7 +118,13 @@ class PortableGitState extends State<PortableGit> {
   Widget build(BuildContext context) => Column(
     children: [
       Text(selection),
-      Text(text),
+      Expanded(
+        flex: 1,
+        child: ListView.builder(
+          itemCount: 1,
+          itemBuilder: (context, index) => Text(text),
+        ),
+      ),
       TextButton(
         onPressed: () {
           select(null, changeSetSourceServiceId);

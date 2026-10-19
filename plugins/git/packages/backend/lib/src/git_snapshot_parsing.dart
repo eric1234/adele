@@ -7,20 +7,69 @@ typedef GitIndexEntry = ({
   String kind,
 });
 
+/// Parses public ls-tree -r -z output, retaining literal NUL-terminated paths.
+Map<String, GitIndexEntry> parseGitTree(
+  String raw, {
+  int maximumEntries = 4096,
+  bool windowsPaths = false,
+}) {
+  final entries = <String, GitIndexEntry>{};
+  final header = RegExp(
+    r'^(100644|100755|120000|160000) (blob|commit) ([0-9a-f]{40}|[0-9a-f]{64})$',
+  );
+  var offset = 0;
+  int? oidWidth;
+  while (offset < raw.length) {
+    if (entries.length >= maximumEntries) {
+      throw _failure(
+        'inventory_too_large',
+        'The tree inventory exceeds the supported entry count.',
+      );
+    }
+    final nul = raw.indexOf('\u0000', offset);
+    final tab = raw.indexOf('\t', offset);
+    if (nul < 0 || tab < offset || tab > nul) throw _malformed();
+    final match = header.firstMatch(raw.substring(offset, tab));
+    if (match == null || match.end != tab - offset) throw _malformed();
+    final mode = match[1]!;
+    final oid = match[3]!;
+    oidWidth ??= oid.length;
+    if ((mode == '160000') != (match[2] == 'commit') ||
+        oid.length != oidWidth) {
+      throw _malformed();
+    }
+    final path = raw.substring(tab + 1, nul);
+    validateGitSnapshotPath(path, windowsPaths: windowsPaths);
+    if (entries.containsKey(path)) throw _malformed();
+    entries[path] = (oldMode: mode, newMode: mode, oid: oid, kind: 'modified');
+    offset = nul + 1;
+  }
+  // Terminating each key with '/' sorts an ancestor immediately before its
+  // first descendant, without copying every growing prefix of a deep path.
+  final paths = entries.keys.map((path) => '$path/').toList()..sort();
+  for (var index = 1; index < paths.length; index++) {
+    if (paths[index].startsWith(paths[index - 1])) throw _malformed();
+  }
+  return entries;
+}
+
 /// Parses public ls-files --cached --stage --debug -z output. Paths end at NUL;
 /// fixed metadata follows each path. Unknown metadata formats fail closed.
+/// Conflict stages collapse to one row; callers must retain raw for revalidation.
 Map<String, GitIndexEntry> parseGitIndex(
   String raw, {
   int maximumEntries = 4096,
   bool windowsPaths = false,
 }) {
   final changes = <String, GitIndexEntry>{};
+  final stages = <String, int>{};
   final header = RegExp(r'^([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-3])$');
   final metadata = RegExp(
     r'  ctime: \d+:\d+\n  mtime: \d+:\d+\n  dev: \d+\tino: \d+\n  uid: \d+\tgid: \d+\n  size: \d+\tflags: ([0-9a-f]+)\n',
   );
   var offset = 0;
   var entries = 0;
+  int? oidWidth;
   while (offset < raw.length) {
     if (++entries > maximumEntries) {
       throw _failure(
@@ -32,17 +81,33 @@ Map<String, GitIndexEntry> parseGitIndex(
     final tab = raw.indexOf('\t', offset);
     if (nul < 0 || tab < offset || tab > nul) throw _malformed();
     final match = header.firstMatch(raw.substring(offset, tab));
-    if (match == null) throw _malformed();
+    if (match == null || match.end != tab - offset) throw _malformed();
     final path = raw.substring(tab + 1, nul);
     validateGitSnapshotPath(path, windowsPaths: windowsPaths);
     final stat = metadata.matchAsPrefix(raw, nul + 1);
     if (stat == null) throw _malformed();
     offset = stat.end;
     final flags = int.tryParse(stat[1]!, radix: 16);
-    if (flags == null) throw _malformed();
+    final stage = int.parse(match[3]!);
+    if (flags == null ||
+        flags < 0 ||
+        flags > 0xffffffff ||
+        (flags & 0x3000) != stage << 12) {
+      throw _malformed();
+    }
+    final oid = match[2]!;
+    oidWidth ??= oid.length;
+    if (oid.length != oidWidth) throw _malformed();
+    final seenStages = stages[path] ?? 0;
+    if ((seenStages & (1 << stage)) != 0 ||
+        (seenStages != 0 && (stage == 0 || (seenStages & 1) != 0))) {
+      throw _malformed();
+    }
+    stages[path] = seenStages | (1 << stage);
     final oldMode = match[1]!;
     final intentToAdd = (flags & 0x20000000) != 0;
-    final kind = match[3] != '0'
+    if (intentToAdd && stage != 0) throw _malformed();
+    final kind = stage != 0
         ? 'conflicted'
         : (flags & 0x40008000) != 0 || oldMode == '160000'
         ? 'unsupported'
@@ -50,11 +115,10 @@ Map<String, GitIndexEntry> parseGitIndex(
         ? 'added'
         : 'modified';
     if (changes[path]?.kind == 'conflicted') continue;
-    if (changes.containsKey(path) && kind != 'conflicted') throw _malformed();
     changes[path] = (
       oldMode: intentToAdd ? '000000' : oldMode,
       newMode: oldMode,
-      oid: intentToAdd ? '' : match[2]!,
+      oid: intentToAdd ? '' : oid,
       kind: kind,
     );
   }

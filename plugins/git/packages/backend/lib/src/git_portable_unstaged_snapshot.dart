@@ -38,7 +38,7 @@ final class GitPortableUnstagedLimits {
   final Duration operationTimeout;
 }
 
-/// Index-to-working-tree inspection using only the captured process grant.
+/// Unstaged and layered Uncommitted inspection using the captured process grant.
 ///
 /// Requires Linux-style /bin/sh, /bin/pwd, and /usr/bin/{env,git,stat,head}
 /// in the selected Environment. No host filesystem or provider implementation is
@@ -78,10 +78,17 @@ final class GitPortableUnstagedSnapshotService {
   final AuthorizedEnvironmentBufferedProcessService processes;
   final GitPortableUnstagedLimits limits;
 
-  Future<ChangeSetSnapshot> snapshotUnstaged() async {
+  Future<ChangeSetSnapshot> snapshotUnstaged() =>
+      _snapshot(false).then((snapshot) => snapshot.unstaged);
+
+  Future<UncommittedChangeSetSnapshot> snapshotUncommitted() => _snapshot(true);
+
+  Future<UncommittedChangeSetSnapshot> _snapshot(bool includeStaged) async {
     final operation = _PortableSnapshot(processes, limits);
     try {
-      return await operation.snapshot().timeout(limits.operationTimeout);
+      return await operation
+          .snapshot(includeStaged: includeStaged)
+          .timeout(limits.operationTimeout);
     } on TimeoutException {
       throw _failure(
         'operation_timeout',
@@ -119,6 +126,7 @@ final class _PortableSnapshot {
   int verificationBytes = 0;
   int lineCount = 0;
   int presentationBytes = 0;
+  int fileCount = 0;
   _Repository? repository;
   bool fileMode = true;
   bool contentConversion = false;
@@ -132,8 +140,16 @@ final class _PortableSnapshot {
     }
   }
 
-  Future<ChangeSetSnapshot> snapshot() async {
+  Future<UncommittedChangeSetSnapshot> snapshot({
+    required bool includeStaged,
+  }) async {
     repository = await discover();
+    final head = includeStaged ? await readHead() : null;
+    final tree = head == null ? '' : await readTree(head.commit);
+    final headEntries = parseGitTree(
+      tree,
+      maximumEntries: limits.inventoryEntries,
+    );
     final settings = await readSettings();
     final effective = <String, String>{};
     for (final record in _records(settings)) {
@@ -164,6 +180,13 @@ final class _PortableSnapshot {
       inventory.index,
       maximumEntries: limits.inventoryEntries,
     );
+    if (head != null &&
+        [...headEntries.values, ...entries.values].any(
+          (entry) =>
+              entry.oid.isNotEmpty && entry.oid.length != head.commit.length,
+        )) {
+      throw _malformed();
+    }
     addGitUntrackedEntries(
       inventory.untracked,
       entries,
@@ -175,38 +198,42 @@ final class _PortableSnapshot {
       _validatePath(path);
     }
     if (deleted.any((path) => !entries.containsKey(path))) throw _malformed();
+    final staged = <ChangedFile>[];
     final files = <ChangedFile>[];
-    final paths = entries.keys.toList()..sort();
+    final conflicts = <ChangedFile>[];
+    final union = {...headEntries.keys, ...entries.keys};
+    if (union.length > limits.inventoryEntries) {
+      throw _failure(
+        'inventory_too_large',
+        'The combined inventory exceeds the supported entry count.',
+      );
+    }
+    final paths = union.toList()..sort();
     for (final path in paths) {
       _validatePath(path);
     }
-    await observeWorking(paths, entries, deleted, killed);
+    await observeWorking(
+      paths.where(entries.containsKey).toList(),
+      entries,
+      deleted,
+      killed,
+    );
     for (final path in paths) {
       checkOpen();
-      final file = await inspect(path, entries[path]!, deleted, killed);
-      if (file == null) continue;
-      if (files.length == limits.files) {
-        throw _failure(
-          'snapshot_too_large',
-          'The change snapshot exceeds its file limit.',
+      final entry = entries[path];
+      if (includeStaged && entry?.kind == 'conflicted') {
+        retain(await inspect(path, entry!, deleted, killed), conflicts);
+        continue;
+      }
+      if (head != null) {
+        retain(
+          await inspectStaged(path, head.commit, headEntries[path], entry),
+          staged,
         );
       }
-      // Conservative escaped JSON allowance, independent of the binary I/O budget.
-      presentationBytes +=
-          512 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
-      for (final hunk in file.hunks) {
-        presentationBytes += 128;
-        for (final line in hunk.lines) {
-          presentationBytes += 128 + 6 * line.text.length;
-        }
+      if (entry != null) {
+        retain(await inspect(path, entry, deleted, killed), files);
       }
-      if (presentationBytes > 6 * 1024 * 1024) {
-        throw _failure(
-          'snapshot_too_large',
-          'The snapshot exceeds its presentation budget.',
-        );
-      }
-      files.add(file);
     }
     await verifyMetadata(observed.keys.toList());
     for (final entry in attributes.entries) {
@@ -214,11 +241,44 @@ final class _PortableSnapshot {
     }
     if (await enumerate() != inventory ||
         await readSettings() != settings ||
-        await discover() != repository) {
+        await discover() != repository ||
+        (head != null &&
+            (await readTree(head.commit) != tree ||
+                await readHead() != head))) {
       throw _changed();
     }
     checkOpen();
-    return ChangeSetSnapshot(files: files);
+    return UncommittedChangeSetSnapshot(
+      staged: ChangeSetSnapshot(files: staged),
+      unstaged: ChangeSetSnapshot(files: files),
+      conflicts: conflicts,
+    );
+  }
+
+  void retain(ChangedFile? file, List<ChangedFile> layer) {
+    if (file == null) return;
+    if (++fileCount > limits.files) {
+      throw _failure(
+        'snapshot_too_large',
+        'The change snapshot exceeds its file limit.',
+      );
+    }
+    // Count both appearances of a path and escaped text across every layer.
+    presentationBytes +=
+        512 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
+    for (final hunk in file.hunks) {
+      presentationBytes += 128;
+      for (final line in hunk.lines) {
+        presentationBytes += 128 + 6 * line.text.length;
+      }
+    }
+    if (presentationBytes > 6 * 1024 * 1024) {
+      throw _failure(
+        'snapshot_too_large',
+        'The snapshot exceeds its presentation budget.',
+      );
+    }
+    layer.add(file);
   }
 
   Future<void> observeWorking(
@@ -355,7 +415,7 @@ final class _PortableSnapshot {
     if (entry.kind == 'conflicted') {
       return placeholder(
         'conflicted',
-        'Unmerged index entries are not rendered as text.',
+        'Unmerged index entries are not rendered as a text diff.',
         kind: 'conflicted',
       );
     }
@@ -461,54 +521,11 @@ final class _PortableSnapshot {
         kind: kind,
       );
     }
-    final attrs = await readAttributes(path);
-    attributes[path] = attrs;
-    final records = _records(attrs);
-    const names = [
-      'diff',
-      'text',
-      'eol',
-      'crlf',
-      'working-tree-encoding',
-      'filter',
-      'ident',
-    ];
-    if (records.length != names.length * 3) throw _malformed();
-    var binaryAttribute = false;
-    var unsupportedAttribute = false;
-    for (var i = 0; i < names.length; i++) {
-      if (records[3 * i] != path || records[3 * i + 1] != names[i]) {
-        throw _malformed();
-      }
-      final value = records[3 * i + 2];
-      if (names[i] == 'diff' && value == 'unset') binaryAttribute = true;
-      if (value != 'unspecified' &&
-          value != 'unset' &&
-          !(names[i] == 'diff' && value == 'set')) {
-        unsupportedAttribute = true;
-      }
-    }
-    if (contentConversion || unsupportedAttribute) {
+    final classification = await classify(path, old, current);
+    if (classification != null) {
       return placeholder(
-        'unsupported',
-        'Git content conversion or custom diff attributes are not supported.',
-        kind: kind,
-      );
-    }
-    if (binaryAttribute || old.contains(0) || current.contains(0)) {
-      return placeholder(
-        'binary',
-        'Binary content is not rendered as text.',
-        kind: kind,
-      );
-    }
-    try {
-      utf8.decode(old, allowMalformed: false);
-      utf8.decode(current, allowMalformed: false);
-    } on FormatException {
-      return placeholder(
-        'unsupported',
-        'Content is not valid UTF-8 text.',
+        classification.status,
+        classification.detail,
         kind: kind,
       );
     }
@@ -567,6 +584,272 @@ final class _PortableSnapshot {
       hunks: hunks,
     );
   }
+
+  Future<({String status, String detail})?> classify(
+    String path,
+    List<int> old,
+    List<int> current,
+  ) async {
+    final attrs = attributes[path] ??= await readAttributes(path);
+    final records = _records(attrs);
+    const names = [
+      'diff',
+      'text',
+      'eol',
+      'crlf',
+      'working-tree-encoding',
+      'filter',
+      'ident',
+    ];
+    if (records.length != names.length * 3) throw _malformed();
+    var binaryAttribute = false;
+    var unsupportedAttribute = false;
+    for (var i = 0; i < names.length; i++) {
+      if (records[3 * i] != path || records[3 * i + 1] != names[i]) {
+        throw _malformed();
+      }
+      final value = records[3 * i + 2];
+      if (names[i] == 'diff' && value == 'unset') binaryAttribute = true;
+      if (value != 'unspecified' &&
+          value != 'unset' &&
+          !(names[i] == 'diff' && value == 'set')) {
+        unsupportedAttribute = true;
+      }
+    }
+    if (contentConversion || unsupportedAttribute) {
+      return (
+        status: 'unsupported',
+        detail:
+            'Git content conversion or custom diff attributes are not supported.',
+      );
+    }
+    if (binaryAttribute || old.contains(0) || current.contains(0)) {
+      return (
+        status: 'binary',
+        detail: 'Binary content is not rendered as text.',
+      );
+    }
+    try {
+      utf8.decode(old, allowMalformed: false);
+      utf8.decode(current, allowMalformed: false);
+    } on FormatException {
+      return (
+        status: 'unsupported',
+        detail: 'Content is not valid UTF-8 text.',
+      );
+    }
+    return null;
+  }
+
+  Future<ChangedFile?> inspectStaged(
+    String path,
+    String commit,
+    GitIndexEntry? old,
+    GitIndexEntry? current,
+  ) async {
+    // Untracked and intent-to-add paths have no staged object. Working content
+    // never supplies a side of this comparison, even when it cancels the index.
+    if (current?.oid.isEmpty ?? false) current = null;
+    if (old == null && current == null) return null;
+    if (old != null &&
+        current != null &&
+        old.oid == current.oid &&
+        old.oldMode == current.oldMode) {
+      return null;
+    }
+    final kind = old == null
+        ? 'added'
+        : current == null
+        ? 'deleted'
+        : old.oldMode != current.oldMode
+        ? 'typeChanged'
+        : 'modified';
+    ChangedFile placeholder(String status, String detail) => ChangedFile(
+      relativePath: path,
+      changeKind: kind,
+      contentStatus: status,
+      detail: detail,
+      hunks: const [],
+    );
+    const regular = {'100644', '100755'};
+    if ((old != null && !regular.contains(old.oldMode)) ||
+        (current != null &&
+            (!regular.contains(current.oldMode) ||
+                current.kind == 'unsupported'))) {
+      return placeholder(
+        'unsupported',
+        'File type or index flags prevent ordinary text inspection.',
+      );
+    }
+    if (kind == 'typeChanged') {
+      return placeholder(
+        'unsupported',
+        'File mode changes are not rendered as text.',
+      );
+    }
+    final left = await blob(old?.oid ?? '');
+    final right = await blob(current?.oid ?? '');
+    if (left == null || right == null) {
+      return placeholder(
+        'oversized',
+        'A file side exceeds the rendering limit.',
+      );
+    }
+    final classification = await classify(path, left, right);
+    if (classification != null) {
+      return placeholder(classification.status, classification.detail);
+    }
+    final filter = switch (kind) {
+      'added' => 'A',
+      'deleted' => 'D',
+      _ => 'M',
+    };
+    final patch = await git([
+      '-c',
+      'diff.suppressBlankEmpty=false',
+      'diff',
+      '--cached',
+      commit,
+      '--patch',
+      '--exit-code',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--text',
+      '--no-renames',
+      '--no-color',
+      '--no-prefix',
+      '--no-relative',
+      '--full-index',
+      '--ignore-submodules=all',
+      '--ita-invisible-in-index',
+      // A literal file path can also select descendants after a file/directory
+      // replacement. The captured kind excludes those opposite-kind changes.
+      '--diff-filter=$filter',
+      '--diff-algorithm=myers',
+      '--no-indent-heuristic',
+      '--unified=3',
+      '--inter-hunk-context=0',
+      '--output-indicator-new=+',
+      '--output-indicator-old=-',
+      '--output-indicator-context= ',
+      '--',
+      './$path',
+    ], allowDifference: true);
+    if (patch.exitCode != 1 || patch.bytes.isEmpty) throw _changed();
+    final text = _decode(patch.bytes);
+    final zero = '0' * commit.length;
+    final identity = RegExp(
+      r'^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: ([0-7]{6}))?$',
+      multiLine: true,
+    ).allMatches(text).toList();
+    if (identity.length != 1 ||
+        identity.single[1] != (old?.oid ?? zero) ||
+        identity.single[2] != (current?.oid ?? zero) ||
+        identity.single[3] != (kind == 'modified' ? old!.oldMode : null)) {
+      throw _changed();
+    }
+    final hunks = parseGitPatch(text, maximumLines: limits.lines - lineCount);
+    lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
+    // Attribute identity to the inventory, not quoted patch-header filenames.
+    // Reconstruct the exact captured index bytes so a valid but incomplete hunk
+    // prefix cannot be published as a successful staged comparison.
+    final oldText = _decode(left);
+    final oldLines = oldText.isEmpty ? <String>[] : oldText.split('\n');
+    if (oldText.endsWith('\n')) oldLines.removeLast();
+    final newText = _decode(right);
+    final newLines = newText.isEmpty ? <String>[] : newText.split('\n');
+    if (newText.endsWith('\n')) newLines.removeLast();
+    final rebuilt = StringBuffer();
+    var oldOffset = 0;
+    var newOffset = 0;
+    for (final hunk in hunks) {
+      final start = hunk.oldStart - (hunk.oldCount == 0 ? 0 : 1);
+      if (start < oldOffset || start > oldLines.length) throw _malformed();
+      while (oldOffset < start) {
+        rebuilt.write(oldLines[oldOffset++]);
+        if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
+          rebuilt.write('\n');
+        }
+        newOffset++;
+      }
+      if (hunk.newStart - (hunk.newCount == 0 ? 0 : 1) != newOffset) {
+        throw _malformed();
+      }
+      for (final line in hunk.lines) {
+        if (line.kind != 'addition') {
+          if (oldOffset >= oldLines.length ||
+              oldLines[oldOffset] != line.text ||
+              line.noNewline !=
+                  (oldOffset == oldLines.length - 1 &&
+                      !oldText.endsWith('\n'))) {
+            throw _malformed();
+          }
+          oldOffset++;
+        }
+        if (line.kind != 'deletion') {
+          if (newOffset >= newLines.length ||
+              newLines[newOffset] != line.text ||
+              line.noNewline !=
+                  (newOffset == newLines.length - 1 &&
+                      !newText.endsWith('\n'))) {
+            throw _malformed();
+          }
+          rebuilt.write(line.text);
+          if (!line.noNewline) rebuilt.write('\n');
+          newOffset++;
+        }
+      }
+    }
+    while (oldOffset < oldLines.length) {
+      rebuilt.write(oldLines[oldOffset++]);
+      if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
+        rebuilt.write('\n');
+      }
+    }
+    if (rebuilt.toString() != newText) throw _malformed();
+    return ChangedFile(
+      relativePath: path,
+      changeKind: kind,
+      contentStatus: 'text',
+      detail: null,
+      hunks: hunks,
+    );
+  }
+
+  Future<({String commit, String reference})> readHead() async {
+    final String commit;
+    try {
+      commit = _scalar(
+        (await git(['rev-parse', '--verify', 'HEAD^{commit}'])).bytes,
+      );
+    } on ChangeSetFailure catch (error) {
+      if (error.code != 'git_failed') rethrow;
+      throw _failure(
+        'head_unavailable',
+        'Uncommitted changes require a valid HEAD commit.',
+      );
+    }
+    if (!_oid(commit)) throw _malformed();
+    final symbolic = await git([
+      'symbolic-ref',
+      '--quiet',
+      'HEAD',
+    ], allowDifference: true);
+    final reference = _decode(symbolic.bytes);
+    if ((symbolic.exitCode == 0) != reference.isNotEmpty ||
+        (reference.isNotEmpty &&
+            (!reference.startsWith('refs/') ||
+                !reference.endsWith('\n') ||
+                reference
+                    .substring(0, reference.length - 1)
+                    .contains(RegExp(r'[\x00-\x20]'))))) {
+      throw _malformed();
+    }
+    return (commit: commit, reference: reference);
+  }
+
+  Future<String> readTree(String commit) async =>
+      _decode((await git(['ls-tree', '-r', '-z', commit, '--', '.'])).bytes);
 
   Future<List<int>?> blob(String oid) async {
     if (oid.isEmpty) return const [];
@@ -919,7 +1202,8 @@ final class _PathState {
 }
 
 bool _oid(String value) =>
-    RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(value);
+    const {40, 64}.contains(value.length) &&
+    !RegExp(r'[^0-9a-f]').hasMatch(value);
 String _blobHash(List<int> bytes, int oidLength) =>
     (oidLength == 64 ? sha256 : sha1).convert([
       ...utf8.encode('blob ${bytes.length}\u0000'),

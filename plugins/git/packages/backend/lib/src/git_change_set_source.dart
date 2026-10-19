@@ -460,39 +460,11 @@ final class _SnapshotOperation {
     final raw = _decode(
       (await git(root, ['ls-tree', '-r', '-z', commit, '--', '.'])).bytes,
     );
-    final entries = <String, GitIndexEntry>{};
-    final header = RegExp(
-      r'^([0-7]{6}) (blob|commit) ([0-9a-f]{40}|[0-9a-f]{64})$',
+    return parsing.parseGitTree(
+      raw,
+      maximumEntries: limits.inventoryEntries,
+      windowsPaths: Platform.isWindows,
     );
-    var offset = 0;
-    while (offset < raw.length) {
-      if (entries.length >= limits.inventoryEntries) {
-        throw _failure(
-          'inventory_too_large',
-          'The tree inventory exceeds the supported entry count.',
-        );
-      }
-      final nul = raw.indexOf('\u0000', offset);
-      final tab = raw.indexOf('\t', offset);
-      if (nul < 0 || tab < offset || tab > nul) throw _malformed();
-      final match = header.firstMatch(raw.substring(offset, tab));
-      if (match == null) throw _malformed();
-      if (!const {'100644', '100755', '120000', '160000'}.contains(match[1]) ||
-          (match[1] == '160000') != (match[2] == 'commit')) {
-        throw _malformed();
-      }
-      final path = raw.substring(tab + 1, nul);
-      _validatePath(path);
-      if (entries.containsKey(path)) throw _malformed();
-      entries[path] = (
-        oldMode: match[1]!,
-        newMode: match[1]!,
-        oid: match[3]!,
-        kind: 'modified',
-      );
-      offset = nul + 1;
-    }
-    return entries;
   }
 
   Future<String> _settings(Directory root) async => _decode(
@@ -1327,9 +1299,6 @@ List<String> _nulRecords(String value) {
   if (!value.endsWith('\u0000')) throw _malformed();
   return value.substring(0, value.length - 1).split('\u0000');
 }
-
-void _validatePath(String path) =>
-    parsing.validateGitSnapshotPath(path, windowsPaths: Platform.isWindows);
 
 bool _sameState(FileStat a, FileStat b) =>
     a.type == b.type &&
