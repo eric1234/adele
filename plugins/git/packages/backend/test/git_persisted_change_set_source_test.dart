@@ -554,6 +554,37 @@ final class _Storage implements ProjectStorageService {
     calls.add('transaction');
     throw StateError('Snapshot must not enroll or replace an anchor.');
   }
+
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    calls.add('environmentSchema');
+    throw StateError('Snapshot must retain captured Session storage scope.');
+  }
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    calls.add('environmentQuery');
+    throw StateError('Snapshot must retain captured Session storage scope.');
+  }
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    calls.add('environmentTransaction');
+    throw StateError('Snapshot must not enroll or replace an anchor.');
+  }
 }
 
 final class _Processes implements AuthorizedEnvironmentBufferedProcessService {

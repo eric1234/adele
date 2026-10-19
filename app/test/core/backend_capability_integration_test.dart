@@ -712,6 +712,271 @@ void main() {
     },
   );
 
+  test(
+    'AOT Environment storage enrolls before Sessions with canonical backing and exact-generation infrastructure',
+    () async {
+      final store = InMemoryProductStore();
+      final lifecycle = ProductLifecycleCoordinator.generated(
+        store: store,
+        registry: CapabilityRegistry(),
+        extensions: ExtensionRegistry(),
+      );
+      addTearDown(lifecycle.close);
+      for (final id in ['a', 'b']) {
+        final project = Project(
+          id: ProjectId('project-$id'),
+          sourceLocation: Uri.parse('test:/volatile-$id'),
+        );
+        final task = Task(
+          id: TaskId('task-$id'),
+          projectId: project.id,
+          title: 'Pre-Session storage $id',
+        );
+        store.publishRestoredProject(
+          project: project,
+          tasks: [task],
+          environments: [
+            Environment(
+              id: EnvironmentId('primary-$id'),
+              taskId: task.id,
+              role: EnvironmentRole.primary,
+              providerId: ProviderId('test.uninstalled-environment'),
+              providerState: const {},
+            ),
+            Environment(
+              id: EnvironmentId('environment-$id'),
+              taskId: task.id,
+              role: EnvironmentRole.additional,
+              providerId: ProviderId('test.uninstalled-environment'),
+              providerState: const {},
+            ),
+          ],
+          sessions: const [],
+          authorities: const [],
+          runRecords: const [],
+        );
+        expect(store.sessionsForTask(task.id), isEmpty);
+      }
+      Map<String, AdeleBackendDispatcher> storageServices(
+        PluginBackendConnection connection,
+      ) {
+        final services = projectStorageServices(lifecycle, connection);
+        expect(services.keys, [projectStorageServiceId]);
+        for (final dispatcher in services.values) {
+          addTearDown(dispatcher.close);
+        }
+        return services;
+      }
+
+      final fixture = await start(
+        consumers: ['a', 'd'],
+        providers: [],
+        infrastructureServices: storageServices,
+      );
+      final consumer = fixture.consumer();
+      final peer = fixture.consumer('d');
+      final context = (await _call(
+        consumer,
+        'identity',
+      ))['infrastructureContext'];
+      Map<String, Object?> retained(String id) => {
+        'ok': true,
+        'rows': [
+          {
+            'environment_id': 'environment-$id',
+            'project_id': 'project-$id',
+            'value': 'before-session-$id',
+          },
+        ],
+      };
+      for (final id in ['a', 'b']) {
+        expect(
+          await _call(consumer, 'enrollEnvironment', {
+            'environmentId': 'environment-$id',
+            'value': 'before-session-$id',
+          }),
+          retained(id),
+        );
+        expect(
+          await _call(consumer, 'queryEnvironment', {
+            'environmentId': 'environment-$id',
+            'sql': 'SELECT COUNT(*) AS count FROM adele_product_sessions',
+          }),
+          {
+            'ok': true,
+            'rows': [
+              {'count': 0},
+            ],
+          },
+        );
+        expect(
+          await _call(consumer, 'queryEnvironment', {
+            'environmentId': 'environment-$id',
+            'sql':
+                'SELECT owner_id, version FROM adele_schema_versions '
+                "WHERE owner_id LIKE 'test.%' ORDER BY owner_id",
+          }),
+          {
+            'ok': true,
+            'rows': [
+              {'owner_id': 'test.consumer.a', 'version': 1},
+            ],
+          },
+        );
+      }
+      // A sibling Environment selects the same Project, not a per-ID database.
+      expect(
+        await _call(consumer, 'queryEnvironment', {
+          'environmentId': 'primary-a',
+        }),
+        retained('a'),
+      );
+      const query = {
+        'environmentId': 'environment-a',
+        'sql': 'SELECT value FROM fixture_environment_records',
+        'parameters': <String, Object?>{},
+        'accessMode': 'durableOrTemporary',
+      };
+      Future<Map<String, Object?>> rawStorage(
+        PluginBackendConnection connection,
+        String method,
+        Map<String, Object?> arguments, {
+        Object? token,
+      }) => _call(connection, 'attack', {
+        'serviceId': projectStorageServiceId,
+        'method': method,
+        'arguments': arguments,
+        'context': ?token,
+      });
+      void failure(Map<String, Object?> result, String code) {
+        expect(result['ok'], isFalse, reason: '$result');
+        expect(result['type'], 'remote', reason: '$result');
+        expect(result['code'], code, reason: '$result');
+      }
+
+      for (final override in [
+        {'ownerId': 'test.forged-owner'},
+        {'projectId': 'project-b'},
+        {'databasePath': '${artifacts.path}/caller-selected.db'},
+      ]) {
+        failure(
+          await rawStorage(
+            consumer,
+            projectStorageServiceEnsureSchemaForEnvironmentId,
+            {
+              'environmentId': 'environment-a',
+              'migrations': ['CREATE TABLE fixture_override (value TEXT)'],
+              'accessMode': 'durableOrTemporary',
+              ...override,
+            },
+          ),
+          'invalid_request',
+        );
+      }
+      for (final request in [
+        (
+          method: projectStorageServiceEnsureSchemaForEnvironmentId,
+          arguments: <String, Object?>{
+            'migrations': ['CREATE TABLE fixture_unknown (value TEXT)'],
+          },
+        ),
+        (
+          method: projectStorageServiceQueryForEnvironmentId,
+          arguments: <String, Object?>{
+            'sql': query['sql'],
+            'parameters': query['parameters'],
+          },
+        ),
+        (
+          method: projectStorageServiceTransactionForEnvironmentId,
+          arguments: <String, Object?>{
+            'statements': [
+              {
+                'sql': 'DELETE FROM fixture_environment_records',
+                'parameters': <String, Object?>{},
+                'expectedRows': 1,
+              },
+            ],
+          },
+        ),
+      ]) {
+        failure(
+          await rawStorage(consumer, request.method, {
+            ...request.arguments,
+            'environmentId': 'unknown-environment',
+            'accessMode': 'durableOrTemporary',
+          }),
+          'internal_error',
+        );
+      }
+      for (final attempt in [
+        (connection: consumer, token: 'forged-infrastructure'),
+        (connection: peer, token: context),
+      ]) {
+        failure(
+          await rawStorage(
+            attempt.connection,
+            projectStorageServiceQueryForEnvironmentId,
+            query,
+            token: attempt.token,
+          ),
+          'host_infrastructure_unavailable',
+        );
+      }
+      consumer.revokeInfrastructureContext();
+      failure(
+        await _call(consumer, 'queryEnvironment', {
+          'environmentId': 'environment-a',
+        }),
+        'host_infrastructure_unavailable',
+      );
+      final oldRequests = await _call(consumer, 'hostRequests');
+      await consumer.close();
+      final replacement = await fixture.bootstrap.host!.startPlugin(
+        pluginId: consumer.pluginId,
+        artifactUri: consumerArtifact.uri,
+        createInfrastructureServices: storageServices,
+      );
+      addTearDown(replacement.close);
+      final fresh = (await _call(
+        replacement,
+        'identity',
+      ))['infrastructureContext'];
+      expect(fresh, isNot(context));
+      failure(
+        await rawStorage(
+          replacement,
+          projectStorageServiceQueryForEnvironmentId,
+          query,
+          token: context,
+        ),
+        'host_infrastructure_unavailable',
+      );
+      for (final id in ['a', 'b']) {
+        expect(
+          await _call(replacement, 'queryEnvironment', {
+            'environmentId': 'environment-$id',
+          }),
+          retained(id),
+        );
+        expect(store.sessionsForTask(TaskId('task-$id')), isEmpty);
+      }
+      // No Environment provider or read/process invocation grant participates.
+      for (final snapshot in [
+        oldRequests,
+        await _call(peer, 'hostRequests'),
+        await _call(replacement, 'hostRequests'),
+      ]) {
+        final requests = snapshot['requests'] as List;
+        expect(requests, isNotEmpty);
+        for (final request in requests.cast<Map<Object?, Object?>>()) {
+          expect(request['hostContextKind'], 'infrastructure');
+          expect(request['serviceId'], projectStorageServiceId);
+        }
+      }
+    },
+  );
+
   for (final declared in [true, false]) {
     test(
       'reserved infrastructure collision fails closed with declaration=$declared',

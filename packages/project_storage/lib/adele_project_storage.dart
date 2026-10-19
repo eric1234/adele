@@ -86,4 +86,30 @@ abstract interface class ProjectStorageService {
     List<RelationalStatement> statements,
     ProjectStorageAccessMode accessMode,
   );
+
+  /// Uses a published Environment's Project without requiring a Session or a
+  /// live Environment provider. Schema ownership remains connection-scoped.
+  @AdeleMethod('ensureSchemaForEnvironment')
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  );
+
+  /// The same bounded read-only query as [queryForSession], scoped by Environment.
+  @AdeleMethod('queryForEnvironment')
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  );
+
+  /// The same atomic batch as [transactionForSession], scoped by Environment.
+  @AdeleMethod('transactionForEnvironment')
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  );
 }

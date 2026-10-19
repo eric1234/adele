@@ -14,7 +14,17 @@ import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final bootstrap = bootstrapMessage! as Map;
   final responses = bootstrap['responsePort'] as SendPort;
-  final hostRequests = AdeleHostRequestMultiplexer(send: responses.send);
+  final reverseRequests = <Map<String, Object?>>[];
+  final hostRequests = AdeleHostRequestMultiplexer(
+    send: (message) {
+      reverseRequests.add({
+        'serviceId': message['serviceId'],
+        'method': message['method'],
+        'hostContextKind': message['hostContextKind'],
+      });
+      responses.send(message);
+    },
+  );
   final context = bootstrap['hostInfrastructureContext'] as String?;
   final consumer = context == null
       ? null
@@ -44,6 +54,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       switch (command['method']) {
         case 'identity':
           return {'ok': true, 'infrastructureContext': context};
+        case 'hostRequests':
+          return {'ok': true, 'requests': reverseRequests};
         case 'storage':
           final service = ProjectStorageServiceClient(
             hostRequests.bindInfrastructure(
@@ -57,6 +69,49 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
               payload['sessionId'] as String,
             ),
           };
+        case 'enrollEnvironment':
+        case 'queryEnvironment':
+          final service = ProjectStorageServiceClient(
+            hostRequests.bindInfrastructure(
+              hostInfrastructureContext: context!,
+              serviceId: projectStorageServiceId,
+            ),
+          );
+          final environmentId = payload['environmentId'] as String;
+          const mode = ProjectStorageAccessMode.durableOrTemporary;
+          if (command['method'] == 'enrollEnvironment') {
+            await service.ensureSchemaForEnvironment(environmentId, [
+              'CREATE TABLE fixture_environment_records ('
+                  'environment_id TEXT PRIMARY KEY '
+                  'REFERENCES adele_product_environments(id), '
+                  'value TEXT NOT NULL)',
+            ], mode);
+            await service.transactionForEnvironment(environmentId, [
+              RelationalStatement(
+                sql:
+                    'INSERT INTO fixture_environment_records '
+                    '(environment_id, value) VALUES (:environment, :value)',
+                parameters: {
+                  ':environment': environmentId,
+                  ':value': payload['value'],
+                },
+                expectedRows: 1,
+              ),
+            ], mode);
+          }
+          final rows = await service.queryForEnvironment(
+            environmentId,
+            payload['sql'] as String? ??
+                'SELECT r.environment_id, t.project_id, r.value '
+                    'FROM fixture_environment_records r '
+                    'JOIN adele_product_environments e '
+                    'ON e.id = r.environment_id '
+                    'JOIN adele_product_tasks t ON t.id = e.task_id '
+                    'ORDER BY r.environment_id',
+            const {},
+            mode,
+          );
+          return {'ok': true, 'rows': rows.map((row) => row.values).toList()};
         case 'discover':
           if (consumer == null) throw StateError('No infrastructure grant.');
           final providers = await consumer.discover(capabilityId, major);

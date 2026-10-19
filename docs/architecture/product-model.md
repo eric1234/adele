@@ -90,6 +90,15 @@ creation, SQL, and cleanup errors remain errors. Crash cleanup/recovery is not
 promised. The [shared contract](contracts-and-capabilities.md#session-scoped-relational-storage)
 owns request and authority semantics; plugins retain their own schema/domain logic.
 
+Published Session and Environment identities are alternative addresses for this
+same backing. An Environment's canonical Task and Project association suffices:
+plugin schema initialization and writes can precede every Session in that Task.
+The temporary graph mirror includes these Session-less Tasks and Environments;
+later Session creation updates the same connection before live publication.
+Storage addressing does not resolve a provider, materialize the Environment, or
+grant execution authority. Provisional/unpublished Environments cannot select
+backing.
+
 The current schema is deliberately small:
 
 | Table | Owner and meaning |
@@ -129,7 +138,7 @@ updates in a transaction. Product owns its table semantics and initialization SQ
 generic host coordination does not become the semantic owner of plugin tables.
 Other owners' tables and version records remain untouched, not adopted or deleted
 by product initialization. Plugins supply their own migrations through the
-[Session-scoped storage service](contracts-and-capabilities.md#session-scoped-relational-storage),
+[Project storage service](contracts-and-capabilities.md#session-scoped-relational-storage),
 not a global plugin migration registry or public SQLite handle.
 Unsupported, malformed, or newer core storage must fail non-destructively,
 not be reset, downgraded, assigned replacement identity, or hidden behind volatile
@@ -270,6 +279,12 @@ not URI heuristics. Its Tasks remain in memory by default; explicitly opted-in
 temporary backing retains their identity rows for plugin foreign keys without
 making the Project durable.
 Subsequent generation retirement does not undo successful publication.
+
+Environment-addressed plugin storage is available only after that publication.
+A subsequent plugin SQL write is a separate transaction, not an atomic extension
+of Task creation. Mandatory plugin initialization, failure-safe Task usability,
+and coordination with publication are not supplied by the storage API or current
+creation lifecycle.
 
 Establishment can create provider-owned external resources before the database
 commit. If that later commit fails, core prevents semantic publication but cannot
@@ -583,7 +598,7 @@ those distinctions, including domains where external systems remain authoritativ
 | Task/Session browsing queries | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `InMemoryProductStore.tasksFor`, `sessionsForTask`; [Task Browser hosting](../../app/README.md#task-browser) |
 | Terminal Run retention and lookup | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `retainTerminalRun`, `runRecord`, `runsForSession`, `publishTerminalRun` |
 | Private Project SQL and migration coordination | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
-| Session-scoped plugin storage | [`packages/project_storage/lib/adele_project_storage.dart`](../../packages/project_storage/lib/adele_project_storage.dart), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
+| Session- or Environment-addressed plugin storage | [`packages/project_storage/lib/adele_project_storage.dart`](../../packages/project_storage/lib/adele_project_storage.dart), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Live Environment materialization | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `EnvironmentRuntime`, `EnvironmentMaterialization` |
 | Project selection and backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/), `ProjectSelectorContribution`, `ProjectProviderService`, `ProjectBacking` |
 | Provider-neutral Environment contract | [`packages/environment/`](../../packages/environment/), `EnvironmentProvider`, authorized read/mutation/process facets |

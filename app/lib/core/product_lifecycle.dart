@@ -753,23 +753,51 @@ final class ProductLifecycleCoordinator {
       throw StateError('Session $sessionId is not published.');
     }
     final task = store.task(session.taskId);
-    if (task == null || store.project(task.projectId) == null) {
+    final project = task == null ? null : store.project(task.projectId);
+    if (project == null) {
       throw StateError(
         'The Session does not belong to a published Project graph.',
       );
     }
-    final durable = _projectDatabases[task.projectId];
+    return _databaseForProject(project, accessMode);
+  }
+
+  /// Resolves published Environment scope without Session or provider authority.
+  ProjectDatabase? databaseForEnvironment(
+    EnvironmentId environmentId, {
+    ProjectStorageAccessMode accessMode = ProjectStorageAccessMode.durable,
+  }) {
+    _requireOpen();
+    final environment = store.environment(environmentId);
+    if (environment == null || environment.providerState == null) {
+      throw StateError('Environment $environmentId is not published.');
+    }
+    final task = store.task(environment.taskId);
+    final project = task == null ? null : store.project(task.projectId);
+    if (project == null) {
+      throw StateError(
+        'The Environment does not belong to a published Project graph.',
+      );
+    }
+    return _databaseForProject(project, accessMode);
+  }
+
+  ProjectDatabase? _databaseForProject(
+    Project project,
+    ProjectStorageAccessMode accessMode,
+  ) {
+    final durable = _projectDatabases[project.id];
     if (durable != null || accessMode == ProjectStorageAccessMode.durable) {
       return durable;
     }
-    return _temporaryProjectDatabases.putIfAbsent(task.projectId, () {
-      final tasks = store.tasksFor(task.projectId);
+    return _temporaryProjectDatabases.putIfAbsent(project.id, () {
+      final tasks = store.tasksFor(project.id);
       final taskIds = tasks.map((task) => task.id).toSet();
       final sessions = [
         for (final task in tasks) ...store.sessionsForTask(task.id),
       ];
       return ProjectDatabase.openTemporary(
-        project: store.project(task.projectId)!,
+        project: project,
         tasks: tasks,
         environments: store._environments.values.where(
           (environment) => taskIds.contains(environment.taskId),

@@ -89,4 +89,51 @@ final class ProjectStorageHost implements ProjectStorageService {
       accessMode,
     ).executePluginTransaction(statements);
   }
+
+  ProjectDatabase _requireEnvironmentDatabase(
+    String environmentId,
+    ProjectStorageAccessMode accessMode,
+  ) {
+    validateAccess();
+    return lifecycle.databaseForEnvironment(
+          EnvironmentId(environmentId),
+          accessMode: accessMode,
+        ) ??
+        (throw StateError('This Environment belongs to a volatile Project.'));
+  }
+
+  @override
+  Future<void> ensureSchemaForEnvironment(
+    String environmentId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    _requireEnvironmentDatabase(
+      environmentId,
+      accessMode,
+    ).ensurePluginSchema(owner.value, migrations);
+  }
+
+  @override
+  Future<List<RelationalRow>> queryForEnvironment(
+    String environmentId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async => _requireEnvironmentDatabase(
+    environmentId,
+    accessMode,
+  ).queryPluginRows(sql, parameters);
+
+  @override
+  Future<void> transactionForEnvironment(
+    String environmentId,
+    List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    _requireEnvironmentDatabase(
+      environmentId,
+      accessMode,
+    ).executePluginTransaction(statements);
+  }
 }

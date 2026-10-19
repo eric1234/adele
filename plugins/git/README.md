@@ -295,7 +295,7 @@ provider ID, association, read grant, and all three scope methods remain unchang
 The portable service is not advertised as another stock provider. Production stock
 Diff still uses the Worktree-specific implementation described above, including its
 existing retained Worktree baseline and provider-state v1. Automatic portable baseline
-establishment, Worktree baseline migration and production activation remain deferred;
+establishment, Worktree baseline removal and production activation remain deferred;
 no staging, approvals, or feedback mutation is implemented.
 
 Portable Task comparison requires an immutable Git-owned backend setup value:
@@ -331,9 +331,13 @@ never borrowed. Broken associations and malformed anchors fail distinctly as
 commit type, object-format width and expected branch remain G5a's responsibility.
 Storage failures are `baseline_storage_failed`, never a reset or in-memory fallback.
 
-The store's backend-internal `enroll(identity: ..., anchor: ...)` is for trusted
-provisioning with explicitly known context only, not a Diff method or EVC action.
-It inserts through an atomic association-checked statement. The unique Environment
+The store's backend-internal `enrollForEnvironment(environmentId: ..., anchor: ...)`
+is for trusted provisioning of an already canonical, published Environment, before
+any Session is required. It uses Environment-addressed Project storage to initialize
+the existing v1 schema and insert for that exact Environment in the routed Project;
+it does not resolve a provider or request Environment read/process authority. This
+is not a Diff method or EVC action. Snapshot `read()` deliberately retains the
+invocation's captured Session and Environment association checks. The unique Environment
 key rejects every duplicate, even an identical duplicate, as
 `baseline_enrollment_failed`; conflicting concurrent insertions cannot both report
 success. There is no upsert, baseline update, HEAD inference, automatic retry, or
@@ -355,10 +359,15 @@ later Git commands and publication, including late storage responses. These are
 bounded best-effort observations, not an atomic SQL/filesystem transaction. No
 per-file queries or new subprocesses are introduced.
 
-Tests provision known anchors through this store before invocation; this is not
-automatic Task initialization. G5b2 must establish trusted initial anchors at the
-chosen lifecycle boundary. Migration of existing Worktree baselines and stock Diff
-cutover need separate review. Core Task/Session/Environment values and the public
+Tests provision known anchors through this store before invocation, including before
+Session creation; this is not automatic Task initialization. The intended destination
+is one authoritative Git comparison baseline per Environment in
+`adele_git_task_anchors`, with Worktree provider state retaining only worktree/branch
+lifecycle data. Current stock snapshots still consume the unchanged provider-state
+`baselineCommit`. Mandatory baseline capture/enrollment, failure-safe Task usability,
+provider-state removal, and stock Diff cutover remain separate coordinated work,
+not a migration or compatibility path. Enrollment after core publication is not
+atomic with Task creation. Core Task/Session/Environment values and the public
 Diff contract still acquire no Git metadata.
 
 The independent Capability must declare `environmentBound` and the separate
