@@ -7,6 +7,8 @@ import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 
 import 'git_snapshot_parsing.dart';
 
+part 'git_portable_review_approval.dart';
+
 /// Operation-local bounds. Callers may reduce, but never increase, the defaults.
 final class GitPortableUnstagedLimits {
   const GitPortableUnstagedLimits({
@@ -145,8 +147,10 @@ final class _PortableSnapshot {
   final Map<String, String> workingOids = {};
   final Map<String, String> attributes = {};
   final Map<String, int> objectSizes = {};
-  bool validateObjects = false;
+  final Set<String> reviewableWorkingPaths = {};
+  _ReviewObservation? reviewObservation;
   bool closed = false;
+  bool mutationAttempted = false;
   int commandCount = 0;
   int byteCount = 0;
   int verificationBytes = 0;
@@ -170,6 +174,7 @@ final class _PortableSnapshot {
     required bool includeStaged,
     required bool includeCommitted,
     required GitTaskComparisonAnchor? taskAnchor,
+    String? selectedPath,
   }) async {
     if (includeCommitted && taskAnchor == null) {
       throw _failure(
@@ -179,7 +184,6 @@ final class _PortableSnapshot {
     }
     repository = await discover();
     final anchor = includeCommitted ? taskAnchor! : null;
-    validateObjects = anchor != null;
     final oidWidth = anchor == null ? null : await readObjectWidth();
     if (anchor != null) {
       await validateCommit(anchor.baselineCommit, oidWidth!, baseline: true);
@@ -305,7 +309,11 @@ final class _PortableSnapshot {
         'The combined inventory exceeds the supported entry count.',
       );
     }
-    final paths = union.toList()..sort();
+    final paths =
+        union
+            .where((path) => selectedPath == null || path == selectedPath)
+            .toList()
+          ..sort();
     for (final path in paths) {
       _validatePath(path);
     }
@@ -344,6 +352,62 @@ final class _PortableSnapshot {
         retain(await inspect(path, entry, deleted, killed), files);
       }
     }
+    // Review revisions are preconditions, never invocation authority. Capture
+    // identity only for actionable text; clean scans retain their batched cost.
+    final candidates = [...staged, ...files]
+        .where(
+          (file) =>
+              _reviewableFile(
+                file,
+                repository!.prefix,
+                indexBytes: objectSizes[entries[file.relativePath]?.oid],
+                maximumFileBytes: limits.fileBytes,
+                reverse: staged.contains(file),
+              ) &&
+              reviewableWorkingPaths.contains(file.relativePath),
+        )
+        .toList();
+    var reviewHead = head;
+    if (candidates.isNotEmpty && reviewHead == null) {
+      try {
+        reviewHead = await readHead();
+      } on ChangeSetFailure catch (error) {
+        if (error.code != 'head_unavailable') rethrow;
+        // An unborn repository remains displayable, but has no review targets.
+      }
+    }
+    if (candidates.isNotEmpty && reviewHead != null) {
+      checkOpen();
+      final identity = await processes.capturedIdentity();
+      checkOpen();
+      final observation = _ReviewObservation(
+        identity: identity,
+        head: reviewHead,
+        inventory: inventory,
+        entries: entries,
+        settings: settings,
+      );
+      reviewObservation = observation;
+      for (final (layer, name) in [(files, 'unstaged'), (staged, 'staged')]) {
+        for (var i = 0; i < layer.length; i++) {
+          final file = layer[i];
+          if (!candidates.contains(file)) continue;
+          layer[i] = ChangedFile(
+            relativePath: file.relativePath,
+            changeKind: file.changeKind,
+            contentStatus: file.contentStatus,
+            detail: file.detail,
+            hunks: file.hunks,
+            reviewRevision: _reviewRevision(
+              this,
+              observation,
+              file.relativePath,
+              name,
+            ),
+          );
+        }
+      }
+    }
     await verifyMetadata(observed.keys.toList());
     for (final entry in attributes.entries) {
       if (await readAttributes(entry.key) != entry.value) throw _changed();
@@ -367,9 +431,9 @@ final class _PortableSnapshot {
     if (await enumerate() != inventory ||
         await readSettings() != settings ||
         await discover() != repository ||
+        (reviewHead != null && await readHead() != reviewHead) ||
         (head != null &&
-            (await readTree(head.commit) != tree ||
-                await readHead() != head))) {
+            (await readTree(head.commit) != tree || head != reviewHead))) {
       throw _changed();
     }
     checkOpen();
@@ -535,6 +599,7 @@ final class _PortableSnapshot {
       String kind = 'unsupported',
     }) => ChangedFile(
       relativePath: path,
+      reviewRevision: null,
       changeKind: kind,
       contentStatus: status,
       detail: detail,
@@ -606,7 +671,12 @@ final class _PortableSnapshot {
         );
       }
       final workingOid = workingOids[path];
-      if (entry.kind == 'modified' && workingOid == entry.oid) return null;
+      if (entry.kind == 'modified' && workingOid == entry.oid) {
+        if (state.executable == (entry.oldMode == '100755')) {
+          reviewableWorkingPaths.add(path);
+        }
+        return null;
+      }
       if (state.size > limits.fileBytes) {
         if (entry.kind == 'added') {
           return placeholder(
@@ -704,8 +774,14 @@ final class _PortableSnapshot {
     );
     lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
     if (patch.exitCode == 0 && kind == 'modified') throw _changed();
+    if (kind == 'modified' &&
+        state != null &&
+        state.executable == (entry.oldMode == '100755')) {
+      reviewableWorkingPaths.add(path);
+    }
     return ChangedFile(
       relativePath: path,
+      reviewRevision: null,
       changeKind: kind,
       contentStatus: 'text',
       detail: null,
@@ -803,6 +879,7 @@ final class _PortableSnapshot {
         : 'modified';
     ChangedFile placeholder(String status, String detail) => ChangedFile(
       relativePath: path,
+      reviewRevision: null,
       changeKind: kind,
       contentStatus: status,
       detail: detail,
@@ -895,10 +972,10 @@ final class _PortableSnapshot {
     // Attribute identity to the inventory, not quoted patch-header filenames.
     // Reconstruct the exact captured new-side bytes so a valid but incomplete
     // hunk prefix cannot be published as a successful object comparison.
-    final oldText = _decode(left);
+    final oldText = _decodeContent(left);
     final oldLines = oldText.isEmpty ? <String>[] : oldText.split('\n');
     if (oldText.endsWith('\n')) oldLines.removeLast();
-    final newText = _decode(right);
+    final newText = _decodeContent(right);
     final newLines = newText.isEmpty ? <String>[] : newText.split('\n');
     if (newText.endsWith('\n')) newLines.removeLast();
     final rebuilt = StringBuffer();
@@ -951,6 +1028,7 @@ final class _PortableSnapshot {
     if (rebuilt.toString() != newText) throw _malformed();
     return ChangedFile(
       relativePath: path,
+      reviewRevision: null,
       changeKind: kind,
       contentStatus: 'text',
       detail: null,
@@ -1047,7 +1125,7 @@ final class _PortableSnapshot {
     if (!RegExp(r'^(0|[1-9][0-9]*)$').hasMatch(sizeText)) throw _malformed();
     final size = int.tryParse(sizeText);
     if (size == null) throw _malformed();
-    if (validateObjects) objectSizes[oid] = size;
+    objectSizes[oid] = size;
     if (size > limits.fileBytes) return null;
     final data = (await git(['cat-file', 'blob', oid])).bytes;
     if (data.length != size || _blobHash(data, oid.length) != oid) {
@@ -1226,12 +1304,14 @@ final class _PortableSnapshot {
     bool detached = false,
     bool discover = false,
     bool allowDifference = false,
+    bool indexMutation = false,
   }) => command(
     '/usr/bin/git',
     gitArguments(arguments, detached: detached, discover: discover),
     input: input,
     detached: detached,
     allowDifference: allowDifference,
+    indexMutation: indexMutation,
   );
 
   List<String> gitArguments(
@@ -1304,6 +1384,7 @@ final class _PortableSnapshot {
     List<int> input = const [],
     bool detached = false,
     bool allowDifference = false,
+    bool indexMutation = false,
   }) async {
     checkOpen();
     if (++commandCount > limits.processes) {
@@ -1316,6 +1397,7 @@ final class _PortableSnapshot {
     final timeout = remaining < limits.processTimeout
         ? remaining
         : limits.processTimeout;
+    chargeBytes(input.length);
     final request = EnvironmentBufferedProcessRequest(
       program: '/bin/sh',
       arguments: requestArguments(program, arguments, detached: detached),
@@ -1328,6 +1410,7 @@ final class _PortableSnapshot {
         maximumBytes: environmentBufferedProcessStdinLimit,
       ),
     );
+    if (indexMutation) mutationAttempted = true;
     final result = await processes.runBufferedProcess(request).timeout(timeout);
     checkOpen();
     final output = decodeEnvironmentProcessBytes(
@@ -1345,7 +1428,12 @@ final class _PortableSnapshot {
         'A snapshot process exceeded its output limit.',
       );
     }
-    chargeBytes(input.length + output.length + errors.length);
+    chargeBytes(output.length + errors.length);
+    if (indexMutation && result.exitCode > 0) {
+      // A nonzero exit is not itself proof of no effect. The review operation
+      // must verify the unchanged preimage before reporting mutation_failed.
+      return (bytes: output, exitCode: result.exitCode);
+    }
     // Git can exit successfully while reporting unreadable paths on stderr.
     // Never treat such an inventory (or a partially successful utility) as complete.
     if (errors.isNotEmpty ||
@@ -1410,6 +1498,10 @@ bool _equalBytes(List<int> left, List<int> right) {
 }
 
 String _decode(List<int> bytes) => utf8.decode(bytes, allowMalformed: false);
+// Dart's UTF-8 decoder consumes a leading BOM. File contents, unlike process
+// metadata, must preserve those bytes when reconstructing an index object.
+String _decodeContent(List<int> bytes) =>
+    '${bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? '\ufeff' : ''}${_decode(bytes)}';
 String _scalar(List<int> bytes) {
   final text = _decode(bytes);
   if (!text.endsWith('\n')) throw _malformed();

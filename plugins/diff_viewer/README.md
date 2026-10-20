@@ -54,6 +54,50 @@ The Diff frontend imports neither Git nor application/native-host implementation
 Other providers can implement the same contract without becoming dependencies
 of the frontend.
 
+## Review Approval
+
+The public contract separately defines `ReviewApprovalHandlerService`:
+`approveHunk(ReviewHunkSelection)` and `unapproveHunk(ReviewHunkSelection)` return
+`Future<void>`. Its `reviewApprovalCapability` is `adele.diff.review-approval`,
+major 1; the generated service is `diff.reviewApprovalHandler`. These mutations
+are not methods of the read-only `ChangeSetSourceService`.
+
+`ReviewHunkSelection` contains only `relativePath`, zero-based `hunkIndex`, and
+`expectedRevision`. Bounds are 4,096 UTF-16 path units, hunk indices 0 through
+8,191, and 1 through 256 printable ASCII revision characters. Paths must be
+relative with no empty, dot, parent, or `.git` component and no NUL. Native
+construction and generated request decoding enforce these bounds. No field
+selects authority, a repository, a branch, a baseline, process arguments, or patch
+text. The method selects the layer: Approve consumes an Unstaged revision;
+Unapprove consumes a Staged revision.
+
+`ChangedFile.reviewRevision` is nullable opaque snapshot data, not an authority
+token. A null revision means there is no supported hunk action for that entry.
+It is a required nullable wire field under the coherent generated-schema policy;
+native and EVC consumers must be rebuilt together. Git advertises revisions only
+for its supported tracked regular text modifications with actual bounded hunks.
+Committed changes, conflicts, untracked or whole-file additions/deletions,
+binary/invalid/oversized/uninspectable content, symlinks/gitlinks, unsupported
+modes/flags/conversions, mode-only changes, and control-character filenames have
+no revision. These entries remain visible in snapshots.
+
+The Git handler applies exactly one backend-derived hunk to the index, or
+reverses one staged hunk there, without writing working files or HEAD. Git's
+index remains the approval source of truth; there is no approval database.
+Changed revisions and consumed selections require a fresh snapshot, not a
+different hunk chosen at the old index. `ReviewApprovalFailure` declares stable
+pre-mutation rejection codes, `mutation_failed` for a verified unchanged index
+after Git rejects a write, and `outcome_uncertain` when an attempted effect cannot
+be confirmed. Lost transport or retirement can prevent any semantic response;
+consumers must not infer rollback or automatically retry. See the
+[Git handler](../git/README.md#reviewapprovalhandler) for exact limits and races.
+
+**The handler is implemented but is not advertised in stock production
+composition.** Only the independent integration fixture advertises it and grants
+its consumer access. Stock Diff has no approval permission or controls and
+remains read-only. Production advertisement, explicit action UI, and refresh/error
+handling belong to the subsequent integration slice.
+
 ## Presentation
 
 `packages/frontend/lib/main.dart` supplies `initializeDiff()` and

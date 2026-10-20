@@ -64,9 +64,58 @@ Future<void> main(
           );
         },
       ),
+      reviewApprovalHandlerServiceId: AdeleContextualServiceDispatcher(
+        hostRequests: state.hostRequests,
+        createDispatcher: (operation) {
+          final processes = AuthorizedEnvironmentBufferedProcessServiceClient(
+            operation.bind(authorizedEnvironmentBufferedProcessServiceId),
+          );
+          state.bufferedClients['approval'] = processes;
+          return ReviewApprovalHandlerServiceDispatcher(
+            _Approval(
+              state,
+              GitPortableReviewApprovalService(processes: processes),
+            ),
+            concurrent: true,
+          );
+        },
+      ),
     },
   };
 });
+
+final class _Approval implements ReviewApprovalHandlerService {
+  const _Approval(this.state, this.approvals);
+  final ProbeState state;
+  final ReviewApprovalHandlerService approvals;
+
+  @override
+  Future<void> approveHunk(ReviewHunkSelection selection) =>
+      _invoke(selection, false);
+
+  @override
+  Future<void> unapproveHunk(ReviewHunkSelection selection) =>
+      _invoke(selection, true);
+
+  Future<void> _invoke(ReviewHunkSelection selection, bool reverse) async {
+    final method = reverse ? 'unapprove' : 'approve';
+    try {
+      if (reverse) {
+        await approvals.unapproveHunk(selection);
+      } else {
+        await approvals.approveHunk(selection);
+      }
+      // The production operation has finished, including its actual index write.
+      // Retirement here fences publication, not the effect, replay, or rollback.
+      await state.checkpoint('after:$method');
+    } on ReviewApprovalFailure catch (error) {
+      state.failures.add(error.code);
+      rethrow;
+    } finally {
+      await state.checkpoint('settled:$method');
+    }
+  }
+}
 
 final class _Source implements ChangeSetSourceService {
   const _Source(this.state, this.snapshots, this.persisted);

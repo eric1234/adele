@@ -18,6 +18,14 @@ class PortableGitState extends State<PortableGit> {
   String selection = 'idle';
   String text = 'snapshot:idle';
   dynamic client;
+  dynamic approvalClient;
+  dynamic unstagedSelection;
+  dynamic stagedSelection;
+  bool approvalSelected = false;
+  bool unstagedSelected = false;
+  bool stagedSelected = false;
+  String approvalSelection = 'approval:idle';
+  String approval = 'approval:idle';
   List<String> handles = [];
   bool disposed = false;
 
@@ -75,9 +83,12 @@ class PortableGitState extends State<PortableGit> {
     String rendered = 'snapshot';
     if (scope == 'unstaged') {
       final ChangeSetSnapshot value = result[1];
+      rememberSelection(value.files, false);
       rendered += renderFiles(value.files);
     } else if (scope == 'uncommitted') {
       final UncommittedChangeSetSnapshot value = result[1];
+      rememberSelection(value.staged.files, true);
+      rememberSelection(value.unstaged.files, false);
       rendered += '\nstaged' + renderFiles(value.staged.files);
       rendered += '\nunstaged' + renderFiles(value.unstaged.files);
       rendered += '\nconflicts' + renderFiles(value.conflicts);
@@ -90,6 +101,81 @@ class PortableGitState extends State<PortableGit> {
     }
     setState(() {
       text = rendered;
+    });
+  }
+
+  void rememberSelection(List<ChangedFile> files, bool reverse) {
+    if (reverse) {
+      stagedSelected = false;
+    } else {
+      unstagedSelected = false;
+    }
+    for (final ChangedFile file in files) {
+      if (file.reviewRevision != null && file.hunks.isNotEmpty) {
+        final selected = ReviewHunkSelection(
+          relativePath: file.relativePath,
+          hunkIndex: 0,
+          expectedRevision: file.reviewRevision!,
+        );
+        if (reverse) {
+          stagedSelection = selected;
+          stagedSelected = true;
+        } else {
+          unstagedSelection = selected;
+          unstagedSelected = true;
+        }
+        return;
+      }
+    }
+  }
+
+  void selectApproval() async {
+    final handle = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      'adele.diff.review-approval',
+      1,
+      reviewApprovalHandlerServiceId,
+      null,
+    );
+    if (disposed) return;
+    if (handle == null) {
+      setState(() {
+        approvalSelected = false;
+        approvalSelection = 'approval-selection:unavailable';
+      });
+      return;
+    }
+    handles.add(handle);
+    approvalClient = ReviewApprovalHandlerServiceClient(
+      EnvironmentCapabilityRequestChannel(handle),
+    );
+    setState(() {
+      approvalSelected = true;
+      approvalSelection = 'approval-selected';
+    });
+  }
+
+  void review(dynamic selected, dynamic selection, bool reverse) async {
+    if (selected == null || selection == null || disposed) return;
+    setState(() {
+      approval = 'approval:pending';
+    });
+    final ReviewApprovalHandlerServiceClient typed = selected;
+    final ReviewHunkSelection hunk = selection;
+    dynamic result;
+    if (reverse) {
+      result = await settleEnvironmentCapabilityOperation(
+        typed.unapproveHunk(hunk),
+      );
+    } else {
+      result = await settleEnvironmentCapabilityOperation(
+        typed.approveHunk(hunk),
+      );
+    }
+    if (disposed) return;
+    setState(() {
+      approval = result[0] == true
+          ? 'approval:success'
+          : 'approval:unavailable';
     });
   }
 
@@ -122,6 +208,8 @@ class PortableGitState extends State<PortableGit> {
   Widget build(BuildContext context) => Column(
     children: [
       Text(selection),
+      Text(approvalSelection),
+      Text(approval),
       Expanded(
         flex: 1,
         child: ListView.builder(
@@ -164,6 +252,27 @@ class PortableGitState extends State<PortableGit> {
           snapshot(client, 'task');
         },
         child: Text('Task'),
+      ),
+      TextButton(
+        onPressed: () {
+          selectApproval();
+        },
+        child: Text('Select approval'),
+      ),
+      TextButton(
+        onPressed: () {
+          // The pinned evaluator cannot read an uninitialized dynamic field.
+          if (!approvalSelected || !unstagedSelected) return;
+          review(approvalClient, unstagedSelection, false);
+        },
+        child: Text('Approve'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (!approvalSelected || !stagedSelected) return;
+          review(approvalClient, stagedSelection, true);
+        },
+        child: Text('Unapprove'),
       ),
     ],
   );

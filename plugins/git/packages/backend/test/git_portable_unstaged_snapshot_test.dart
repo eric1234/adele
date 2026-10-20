@@ -4035,8 +4035,11 @@ final class _FixtureProcesses
   final _active = <Process>{};
 
   @override
-  Future<AuthorizedEnvironmentIdentity> capturedIdentity() =>
-      throw StateError('Comparison-only fixtures must not request identity.');
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async =>
+      AuthorizedEnvironmentIdentity(
+        sessionId: 'portable-session',
+        environmentId: 'portable-environment',
+      );
 
   @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(

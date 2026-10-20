@@ -1,4 +1,4 @@
-/// Diff-owned, bounded read-only change snapshots.
+/// Diff-owned, bounded change snapshots and revision-bound review operations.
 library;
 
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
@@ -9,6 +9,12 @@ part 'diff_viewer_contract.g.dart';
 final capabilities.CapabilityKey changeSetSourceCapability =
     capabilities.CapabilityKey(
       id: capabilities.CapabilityId('adele.diff.change-set-source'),
+      majorVersion: 1,
+    );
+
+final capabilities.CapabilityKey reviewApprovalCapability =
+    capabilities.CapabilityKey(
+      id: capabilities.CapabilityId('adele.diff.review-approval'),
       majorVersion: 1,
     );
 
@@ -51,6 +57,7 @@ final class ChangedFile {
     required this.changeKind,
     required this.contentStatus,
     required this.detail,
+    required this.reviewRevision,
     required List<DiffHunk> hunks,
   }) : hunks = List<DiffHunk>.unmodifiable(hunks);
 
@@ -64,6 +71,10 @@ final class ChangedFile {
   /// text, binary, unsupported, oversized, or conflicted.
   final String contentStatus;
   final String? detail;
+
+  /// Opaque provider revision for selecting a hunk from this exact file snapshot.
+  /// Null means this entry is not actionable through review approval.
+  final String? reviewRevision;
   final List<DiffHunk> hunks;
 }
 
@@ -98,6 +109,51 @@ final class DiffLine {
   final bool noNewline;
 }
 
+/// Identifies one displayed hunk without carrying patch data or authority.
+@AdeleValue('diff.reviewHunkSelection')
+final class ReviewHunkSelection {
+  ReviewHunkSelection({
+    required this.relativePath,
+    required this.hunkIndex,
+    required this.expectedRevision,
+  }) {
+    if (relativePath.isEmpty ||
+        relativePath.length > 4096 ||
+        relativePath.contains('\u0000') ||
+        relativePath
+            .split('/')
+            .any(
+              (part) =>
+                  part.isEmpty || part == '.' || part == '..' || part == '.git',
+            )) {
+      throw ArgumentError.value(relativePath, 'relativePath', 'Invalid path.');
+    }
+    if (hunkIndex < 0 || hunkIndex > 8191) {
+      throw ArgumentError.value(hunkIndex, 'hunkIndex', 'Invalid hunk index.');
+    }
+    if (expectedRevision.isEmpty ||
+        expectedRevision.length > 256 ||
+        expectedRevision.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
+      throw ArgumentError.value(
+        expectedRevision,
+        'expectedRevision',
+        'Invalid revision.',
+      );
+    }
+  }
+
+  /// Slash-separated relative path, at most 4096 UTF-16 code units, with no
+  /// empty, '.', '..', or '.git' components and no NUL. Providers may reject
+  /// additional unsupported names, including tabs or newlines.
+  final String relativePath;
+
+  /// Zero-based index in the selected file's hunks, from 0 through 8191.
+  final int hunkIndex;
+
+  /// Nonempty opaque revision, at most 256 printable ASCII characters.
+  final String expectedRevision;
+}
+
 @AdeleService('diff.changeSetSource')
 abstract interface class ChangeSetSourceService {
   /// Captured Environment authority is supplied by the host, never by arguments.
@@ -111,6 +167,17 @@ abstract interface class ChangeSetSourceService {
   /// Committed Task/branch changes and the separate uncommitted layers.
   @AdeleMethod('snapshotTaskChanges')
   Future<TaskChangeSetSnapshot> snapshotTaskChanges();
+}
+
+/// Review mutation is a separate capability from read-only change inspection.
+/// The host supplies captured Environment authority, never request arguments.
+@AdeleService('diff.reviewApprovalHandler')
+abstract interface class ReviewApprovalHandlerService {
+  @AdeleMethod('approveHunk')
+  Future<void> approveHunk(ReviewHunkSelection selection);
+
+  @AdeleMethod('unapproveHunk')
+  Future<void> unapproveHunk(ReviewHunkSelection selection);
 }
 
 @AdeleFailure('diff.changeSetFailure')
@@ -127,4 +194,29 @@ final class ChangeSetFailure implements Exception {
 
   @override
   String toString() => 'ChangeSetFailure($code): $message';
+}
+
+/// Stable codes before any mutation: `invalid_selection` (invalid bounds or
+/// fields), `stale_selection` (revision changed), `unsupported_target` (target
+/// cannot be reviewed), `hunk_unavailable` (selected hunk is absent),
+/// `inspection_failed` (preflight inspection failed), and `operation_timeout`
+/// (deadline expired before mutation).
+///
+/// `mutation_failed` means a nonzero mutation exit with a verified unchanged index.
+/// `outcome_uncertain` means a write was attempted but its outcome is unconfirmed;
+/// a fresh snapshot is required before another selection, not a blind retry.
+@AdeleFailure('diff.reviewApprovalFailure')
+final class ReviewApprovalFailure implements Exception {
+  const ReviewApprovalFailure({
+    required this.code,
+    required this.message,
+    this.details = const {},
+  });
+
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+
+  @override
+  String toString() => 'ReviewApprovalFailure($code): $message';
 }
