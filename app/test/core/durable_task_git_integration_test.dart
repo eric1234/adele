@@ -1,18 +1,30 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/environment_capability_invocation.dart';
+import 'package:adele_desktop/core/environment_capability_selection.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_database.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:sqlite3/sqlite3.dart' hide Session;
 
 const _gitPluginId = 'dev.adele.plugin.git';
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
@@ -159,13 +171,27 @@ void main() {
         final relativePath = state['worktreeRelativePath']! as String;
         expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
         expect(state, {
-          'schemaVersion': 1,
+          'schemaVersion': 2,
           'environmentId': created.environment.id.value,
           'sourceRelativePath': '',
           'worktreeRelativePath': relativePath,
           'branch': state['branch'],
-          'baselineCommit': baseline,
         });
+        final backing = original.lifecycle.existingDatabaseForProject(project)!;
+        expect(backing.path, '${originalSource.path}/.adele/data.db');
+        final anchor = _anchor(backing, created.environment.id);
+        expect(anchor, {
+          'environment_id': created.environment.id.value,
+          'baseline_commit': baseline,
+          'expected_branch_ref': 'refs/heads/${state['branch']}',
+        });
+        expect(backing.loadProductGraph().sessions, isEmpty);
+        expect(original.store.sessionsForTask(created.task.id), isEmpty);
+        final strategy = _registerStrategy(original.extensions);
+        final firstSession = original.lifecycle.createSession(
+          taskId: created.task.id,
+          strategyId: strategy,
+        );
         final originalWorktree = Directory.fromUri(
           originalSource.uri.resolve(relativePath),
         );
@@ -182,12 +208,13 @@ void main() {
 
         // Both branches advance independently; restore must not reset to baseline
         // or replace the retained Task checkout with the current source HEAD.
-        await _git(originalWorktree, [
-          'commit',
-          '--allow-empty',
-          '-m',
-          'Task progress',
-        ]);
+        final progress = File('${originalWorktree.path}/progress.txt');
+        await progress.writeAsString('First Task commit.\n');
+        await _git(originalWorktree, ['add', 'progress.txt']);
+        await _git(originalWorktree, ['commit', '-m', 'Task progress']);
+        await progress.writeAsString('Later Task commit.\n');
+        await _git(originalWorktree, ['add', 'progress.txt']);
+        await _git(originalWorktree, ['commit', '-m', 'Later Task progress']);
         final taskHead = (await _git(originalWorktree, [
           'rev-parse',
           'HEAD',
@@ -205,6 +232,48 @@ void main() {
         expect(taskHead, isNot(baseline));
         expect(sourceHead, isNot(baseline));
         expect(taskHead, isNot(sourceHead));
+        final laterSession = original.lifecycle.createSession(
+          taskId: created.task.id,
+          strategyId: strategy,
+        );
+        expect(laterSession.id, isNot(firstSession.id));
+        expect(
+          original.lifecycle.databaseForSession(laterSession.id),
+          same(backing),
+        );
+        expect(_anchorForSession(backing, laterSession.id), anchor);
+        final beforeRestart = await _invoke(
+          original,
+          laterSession,
+          (client) => client.snapshotTaskChanges(),
+        );
+        _expectOriginalBaselineChanges(beforeRestart);
+        expect(_anchor(backing, created.environment.id), anchor);
+        // The real Git schema rejects identical and conflicting insertions.
+        final storage = ProjectStorageHost(
+          lifecycle: original.lifecycle,
+          owner: PluginId(_gitPluginId),
+          validateAccess: () {},
+        );
+        for (final duplicate in [baseline, sourceHead]) {
+          await expectLater(
+            storage.transactionForEnvironment(created.environment.id.value, [
+              RelationalStatement(
+                sql: '''INSERT INTO adele_git_task_anchors
+                (environment_id, baseline_commit, expected_branch_ref)
+                VALUES (:environment, :baseline, :branch)''',
+                parameters: {
+                  ':environment': created.environment.id.value,
+                  ':baseline': duplicate,
+                  ':branch': anchor['expected_branch_ref'],
+                },
+                expectedRows: 1,
+              ),
+            ], ProjectStorageAccessMode.durable),
+            throwsA(isA<SqliteException>()),
+          );
+          expect(_anchor(backing, created.environment.id), anchor);
+        }
         final initialRead = await initial.provider.readFile(
           created.environment.id,
           'lib/example.dart',
@@ -271,6 +340,36 @@ void main() {
         ).readAsBytes();
         expect(utf8.decode(markerBytes), 'gitdir: $gitDirectory\n');
 
+        // Replace both actual AOT generations while retaining this open Project.
+        await original.plugins.close();
+        final replacementBackends = ApplicationPluginBootstrap(
+          original.registry,
+          original.extensions,
+          createInfrastructureServices: (connection) =>
+              projectStorageServices(original.lifecycle, connection),
+        );
+        addTearDown(replacementBackends.close);
+        await replacementBackends.start(
+          installationRoot: installations.path,
+          dartaotruntimeExecutable: dartaotruntime,
+          hostArtifactPath: hostArtifact.path,
+          startupArguments: const {},
+        );
+        final rematerialized = await original.lifecycle.environmentRuntime
+            .materialize(created.environment.id);
+        expect(rematerialized.provider, isNot(same(initial.provider)));
+        expect(rematerialized.environment.providerState, state);
+        expect(_anchor(backing, created.environment.id), anchor);
+        _expectOriginalBaselineChanges(
+          await _invoke(
+            original,
+            laterSession,
+            (client) => client.snapshotTaskChanges(),
+            backends: replacementBackends,
+          ),
+        );
+        expect(_anchor(backing, created.environment.id), anchor);
+        await replacementBackends.close();
         await original.close();
         expect(original.plugins.state, ApplicationPluginState.closed);
         expect(original.plugins.host!.isClosed, isTrue);
@@ -369,6 +468,17 @@ void main() {
         expect(environment.providerId, created.environment.providerId);
         expect(environment.providerState, state);
         expect(fresh.store.primaryEnvironmentFor(task.id), same(environment));
+        final reopenedBacking = fresh.lifecycle.existingDatabaseForProject(
+          reopened,
+        )!;
+        expect(_anchor(reopenedBacking, environment.id), anchor);
+        final reopenedSession = fresh.store.session(laterSession.id)!;
+        expect(reopenedSession, isNot(same(laterSession)));
+        expect(_anchorForSession(reopenedBacking, reopenedSession.id), anchor);
+        expect(
+          fresh.store.sessionsForTask(task.id).map((session) => session.id),
+          [firstSession.id, laterSession.id],
+        );
         expect(
           fresh.registry.providersFor(environmentProviderCapability).single.id,
           environment.providerId,
@@ -520,6 +630,14 @@ void main() {
           same(restored),
         );
         expect(ids.calls, 0);
+        _expectOriginalBaselineChanges(
+          await _invoke(
+            fresh,
+            reopenedSession,
+            (client) => client.snapshotTaskChanges(),
+          ),
+        );
+        expect(_anchor(reopenedBacking, environment.id), anchor);
         await fresh.close();
         expect(
           await _git(source, ['worktree', 'list', '--porcelain', '-z']),
@@ -537,6 +655,532 @@ void main() {
       },
       timeout: const Timeout(Duration(minutes: 2)),
     );
+  }
+
+  for (final failure in [
+    'missing anchor',
+    'wrong branch',
+    'unavailable commit',
+  ]) {
+    test('stock Task comparison fails closed for $failure', () async {
+      final source = await _repository('adele-git-anchor-failure-');
+      final original = await start(MonotonicProductIdSource(seed: 'anchor'));
+      final project = await original.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: original.lifecycle.resolveProjectProvider(_projectProviderId),
+      );
+      final created = await original.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Retained anchor failure',
+      );
+      final backing = original.lifecycle.existingDatabaseForProject(project)!;
+      final anchor = _anchor(backing, created.environment.id);
+      final baseline = anchor['baseline_commit']! as String;
+      final worktree = Directory.fromUri(
+        source.uri.resolve(
+          created.environment.providerState!['worktreeRelativePath']! as String,
+        ),
+      );
+      await File(
+        '${worktree.path}/progress.txt',
+      ).writeAsString('Task progress.\n');
+      await _git(worktree, ['add', 'progress.txt']);
+      await _git(worktree, ['commit', '-m', 'Later Task commit']);
+      await _git(source, [
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Later source commit',
+      ]);
+      final session = original.lifecycle.createSession(
+        taskId: created.task.id,
+        strategyId: _registerStrategy(original.extensions),
+      );
+      if (failure == 'missing anchor') {
+        backing.executePluginTransaction([
+          RelationalStatement(
+            sql: 'DELETE FROM adele_git_task_anchors WHERE environment_id=:id',
+            parameters: {':id': created.environment.id.value},
+            expectedRows: 1,
+          ),
+        ]);
+      }
+      await original.close();
+      final reopened = await start(_NoAllocationIds());
+      final reopenedProject = await reopened.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: reopened.lifecycle.resolveProjectProvider(_projectProviderId),
+      );
+      final restored = await reopened.lifecycle.environmentRuntime.materialize(
+        created.environment.id,
+      );
+      expect(
+        restored.environment.providerState,
+        created.environment.providerState,
+      );
+      expect(
+        (await restored.provider.readFile(
+          created.environment.id,
+          'progress.txt',
+        )).text,
+        'Task progress.\n',
+      );
+      final reopenedBacking = reopened.lifecycle.existingDatabaseForProject(
+        reopenedProject,
+      )!;
+      final retainedSession = reopened.store.session(session.id)!;
+      if (failure == 'wrong branch') {
+        await _git(worktree, ['switch', '-c', 'unexpected-task-branch']);
+      } else if (failure == 'unavailable commit') {
+        // Remove the exact originally stored loose object, not a guessed HEAD.
+        final object = File(
+          '${source.path}/.git/objects/${baseline.substring(0, 2)}/${baseline.substring(2)}',
+        );
+        expect(await object.exists(), isTrue);
+        await object.delete();
+      }
+      final unstaged = await _invoke(
+        reopened,
+        retainedSession,
+        (client) => client.snapshotUnstaged(),
+      );
+      expect(unstaged.files, isEmpty);
+      final uncommitted = await _invoke(
+        reopened,
+        retainedSession,
+        (client) => client.snapshotUncommitted(),
+      );
+      expect(uncommitted.staged.files, isEmpty);
+      expect(uncommitted.unstaged.files, isEmpty);
+      await expectLater(
+        _invoke(
+          reopened,
+          retainedSession,
+          (client) => client.snapshotTaskChanges(),
+        ),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (error) => error.code,
+            'code',
+            failure == 'wrong branch'
+                ? 'unexpected_branch'
+                : 'baseline_unavailable',
+          ),
+        ),
+      );
+      expect(
+        reopenedBacking
+            .queryPluginRows('SELECT * FROM adele_git_task_anchors', {})
+            .map((row) => row.values),
+        failure == 'missing anchor' ? isEmpty : equals([anchor]),
+      );
+      expect(
+        reopened.store.environment(created.environment.id)!.providerState,
+        isNot(contains('baselineCommit')),
+      );
+    });
+  }
+
+  for (final failCommit in [false, true]) {
+    test(
+      'actual Git establishment survives externally but SQL ${failCommit ? 'COMMIT' : 'insert'} failure publishes nothing',
+      () async {
+        final source = await _repository('adele-git-atomic-failure-');
+        final fixture = _HeldEstablishmentFixture(
+          installations: installations,
+          hostArtifact: hostArtifact,
+          dartaotruntime: dartaotruntime,
+        );
+        addTearDown(fixture.close);
+        await fixture.start();
+        final project = await fixture.open(source);
+        final prior = await fixture.create(project);
+        final backing = fixture.lifecycle.existingDatabaseForProject(project)!;
+        final originalAnchor = _anchor(backing, prior.environment.id);
+        final inspection = sqlite3.open(backing.path);
+        addTearDown(inspection.close);
+        if (failCommit) {
+          inspection.execute('''
+            CREATE TABLE fixture_deferred (
+              environment_id TEXT REFERENCES adele_product_environments(id)
+              DEFERRABLE INITIALLY DEFERRED
+            );
+            CREATE TRIGGER reject_anchor AFTER INSERT ON adele_git_task_anchors
+            BEGIN
+              INSERT INTO fixture_deferred (environment_id) VALUES ('absent');
+            END;
+          ''');
+        } else {
+          inspection.execute('''
+            CREATE TRIGGER reject_anchor BEFORE INSERT ON adele_git_task_anchors
+            BEGIN SELECT RAISE(ABORT, 'injected anchor insert failure'); END;
+          ''');
+        }
+        final gate = fixture.holdNext();
+        final creating = fixture.create(project);
+        final rejected = expectLater(
+          creating,
+          throwsA(
+            isA<SqliteException>().having(
+              (error) => error.causingStatement,
+              'causingStatement',
+              failCommit
+                  ? equals('COMMIT')
+                  : contains('INSERT INTO adele_git_task_anchors'),
+            ),
+          ),
+        );
+        await gate.arrived.future;
+        final plan = gate.result!['initialState']! as Map;
+        expect(plan['inserts'], hasLength(1));
+        expect(((plan['inserts']! as List).single as Map)['expectedRows'], 1);
+        gate.release.complete();
+        await rejected;
+        _expectRejected(fixture, project, gate, prior: prior);
+        expect(_anchor(backing, prior.environment.id), originalAnchor);
+        expect(inspection.select('SELECT * FROM adele_git_task_anchors'), [
+          originalAnchor,
+        ]);
+        expect(inspection.select('SELECT id FROM adele_product_tasks'), [
+          {'id': prior.task.id.value},
+        ]);
+        expect(inspection.select('SELECT id FROM adele_product_environments'), [
+          {'id': prior.environment.id.value},
+        ]);
+        expect(
+          inspection.select('SELECT * FROM adele_product_sessions'),
+          isEmpty,
+        );
+        if (failCommit) {
+          expect(inspection.select('SELECT * FROM fixture_deferred'), isEmpty);
+        }
+        expect(backing.autocommit, isTrue);
+        await _expectExternalWorktree(source, gate);
+        inspection.execute('DROP TRIGGER reject_anchor');
+        final retried = await fixture.create(project);
+        expect(retried.task.id.value, isNot(gate.context!['taskId']));
+        expect(fixture.lifecycle.store.tasksFor(project.id), hasLength(2));
+        expect(
+          inspection.select('SELECT * FROM adele_git_task_anchors'),
+          hasLength(2),
+        );
+      },
+    );
+  }
+
+  for (final replace in [false, true]) {
+    test(
+      'retired actual Git plan cannot enter SQL${replace ? ' through a same-ID replacement' : ''}',
+      () async {
+        final source = await _repository('adele-git-retired-plan-');
+        final fixture = _HeldEstablishmentFixture(
+          installations: installations,
+          hostArtifact: hostArtifact,
+          dartaotruntime: dartaotruntime,
+        );
+        addTearDown(fixture.close);
+        await fixture.start();
+        final project = await fixture.open(source);
+        final oldBinding = fixture.registry.resolve(
+          environmentProviderCapability,
+        );
+        final gate = fixture.holdNext();
+        final creating = fixture.create(project);
+        final rejected = expectLater(
+          creating,
+          throwsA(
+            isA<ProviderUnavailable>().having(
+              (error) => error.stale,
+              'stale',
+              isTrue,
+            ),
+          ),
+        );
+        await gate.arrived.future;
+        expect(gate.result!['initialState'], isA<Map<String, Object?>>());
+        final backing = fixture.lifecycle.existingDatabaseForProject(project)!;
+        expect(backing.loadProductGraph().tasks, isEmpty);
+        await fixture.backends.close();
+        if (replace) {
+          await fixture.start();
+          final freshBinding = fixture.registry.resolve(
+            environmentProviderCapability,
+          );
+          expect(freshBinding.provider.id, oldBinding.provider.id);
+          expect(freshBinding.isSameRegistration(oldBinding), isFalse);
+        }
+        gate.release.complete();
+        await rejected;
+        _expectRejected(fixture, project, gate);
+        expect(backing.loadProductGraph().tasks, isEmpty);
+        expect(backing.loadProductGraph().environments, isEmpty);
+        expect(
+          backing.queryPluginRows(
+            "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'",
+            {},
+          ),
+          isEmpty,
+        );
+        expect(
+          fixture.establishments,
+          1,
+          reason: 'Never retry on the replacement.',
+        );
+        await _expectExternalWorktree(source, gate);
+        if (replace) {
+          final fresh = await fixture.create(project);
+          expect(fixture.establishments, 2);
+          expect(fixture.lifecycle.store.tasksFor(project.id), [fresh.task]);
+          expect(
+            _anchor(backing, fresh.environment.id)['baseline_commit'],
+            gate.baseline,
+          );
+        }
+      },
+    );
+  }
+}
+
+Map<String, Object?> _anchor(
+  ProjectDatabase database,
+  EnvironmentId environment,
+) => database
+    .queryPluginRows(
+      'SELECT * FROM adele_git_task_anchors WHERE environment_id=:environment',
+      {':environment': environment.value},
+    )
+    .single
+    .values;
+
+Map<String, Object?> _anchorForSession(
+  ProjectDatabase database,
+  SessionId session,
+) => database
+    .queryPluginRows(
+      '''SELECT g.* FROM adele_product_session_environment_authority a
+      JOIN adele_git_task_anchors g ON g.environment_id=a.environment_id
+      WHERE a.session_id=:session''',
+      {':session': session.value},
+    )
+    .single
+    .values;
+
+OrchestrationStrategyId _registerStrategy(ExtensionRegistry extensions) {
+  final id = OrchestrationStrategyId('dev.adele.test.git-lifecycle');
+  final registration = extensions.register(
+    point: orchestrationStrategyContributions,
+    id: ExtensionId(id.value),
+    value: OrchestrationStrategyContribution(
+      strategyId: id,
+      materialize: (_) => throw StateError('No Run is started.'),
+    ),
+  );
+  addTearDown(registration.close);
+  return id;
+}
+
+Future<T> _invoke<T>(
+  AdeleRuntime runtime,
+  Session session,
+  Future<T> Function(ChangeSetSourceServiceClient) invoke, {
+  ApplicationPluginBootstrap? backends,
+}) async {
+  final plugins = backends ?? runtime.plugins;
+  final selection = await CapturedEnvironmentCapabilities(
+    environmentRuntime: runtime.lifecycle.environmentRuntime,
+    backends: plugins,
+    session: session,
+  ).resolve(changeSetSourceCapability);
+  return invokeEnvironmentCapabilityWithBufferedProcess(
+    selection: selection,
+    backends: plugins,
+    serviceId: changeSetSourceServiceId,
+    invoke: (channel) => invoke(ChangeSetSourceServiceClient(channel)),
+  );
+}
+
+void _expectOriginalBaselineChanges(TaskChangeSetSnapshot snapshot) {
+  expect(snapshot.committed.files.single.relativePath, 'progress.txt');
+  expect(snapshot.committed.files.single.changeKind, 'added');
+  expect(
+    snapshot.committed.files.single.hunks.single.lines.single.text,
+    'Later Task commit.',
+  );
+}
+
+Future<Directory> _repository(String prefix) async {
+  final source = await Directory.systemTemp.createTemp(prefix);
+  addTearDown(() => source.delete(recursive: true));
+  await File(
+    '${source.path}/seed.txt',
+  ).writeAsString('Original source commit.\n');
+  await _git(source, ['init', '--initial-branch=main', '--object-format=sha1']);
+  await _git(source, ['add', 'seed.txt']);
+  await _git(source, ['commit', '-m', 'Original source commit']);
+  return source;
+}
+
+void _expectRejected(
+  _HeldEstablishmentFixture fixture,
+  Project project,
+  _EstablishmentGate gate, {
+  TaskCreationResult? prior,
+}) {
+  final task = TaskId(gate.context!['taskId']! as String);
+  final environment = EnvironmentId(gate.context!['environmentId']! as String);
+  final store = fixture.lifecycle.store;
+  expect(
+    store.tasksFor(project.id),
+    prior == null ? isEmpty : equals([prior.task]),
+  );
+  expect(store.task(task), isNull);
+  expect(store.environment(environment), isNull);
+  expect(store.primaryEnvironmentFor(task), isNull);
+  expect(store.sessionsForTask(task), isEmpty);
+  expect(
+    fixture.lifecycle.environmentRuntime.currentMaterialization(environment),
+    isNull,
+  );
+}
+
+Future<void> _expectExternalWorktree(
+  Directory source,
+  _EstablishmentGate gate,
+) async {
+  final state = gate.result!['providerState']! as Map;
+  final worktree = Directory.fromUri(
+    source.uri.resolve(state['worktreeRelativePath']! as String),
+  );
+  expect(await worktree.exists(), isTrue);
+  expect((await _git(worktree, ['rev-parse', 'HEAD'])).trim(), gate.baseline);
+  expect(
+    (await _git(worktree, ['symbolic-ref', 'HEAD'])).trim(),
+    'refs/heads/${state['branch']}',
+  );
+  expect(
+    await _git(source, ['worktree', 'list', '--porcelain']),
+    contains('worktree ${worktree.path}\n'),
+  );
+}
+
+final class _HeldEstablishmentFixture {
+  _HeldEstablishmentFixture({
+    required this.installations,
+    required this.hostArtifact,
+    required this.dartaotruntime,
+  }) {
+    lifecycle = ProductLifecycleCoordinator(
+      store: InMemoryProductStore(),
+      registry: registry,
+      extensions: extensions,
+      ids: MonotonicProductIdSource(seed: 'held-git'),
+      providerForBinding: (binding) => GeneratedEnvironmentProvider(
+        providerId: binding.provider.id,
+        service: EnvironmentProviderServiceClient(
+          _EstablishmentChannel(binding.requestChannel, this),
+        ),
+      ),
+      captureEstablishmentOwner: (binding) {
+        final owner = backends.backendForProvider(binding)!;
+        return EnvironmentEstablishmentOwner(
+          pluginId: PluginId(owner.connection!.pluginId),
+          validate: () => owner.validateProviderOwnership(binding),
+        );
+      },
+    );
+  }
+
+  final Directory installations;
+  final File hostArtifact;
+  final String dartaotruntime;
+  final registry = CapabilityRegistry();
+  final extensions = ExtensionRegistry();
+  late final ProductLifecycleCoordinator lifecycle;
+  late ApplicationPluginBootstrap backends;
+  _EstablishmentGate? nextGate;
+  final gates = <_EstablishmentGate>[];
+  int establishments = 0;
+
+  Future<void> start() async {
+    backends = ApplicationPluginBootstrap(
+      registry,
+      extensions,
+      createInfrastructureServices: (connection) =>
+          projectStorageServices(lifecycle, connection),
+    );
+    await backends.start(
+      installationRoot: installations.path,
+      dartaotruntimeExecutable: dartaotruntime,
+      hostArtifactPath: hostArtifact.path,
+      startupArguments: const {},
+    );
+    expect(
+      backends.backends.map((backend) => backend.state),
+      everyElement(InstalledBackendState.active),
+    );
+  }
+
+  Future<Project> open(Directory source) => lifecycle.openProject(
+    sourceLocation: source.uri,
+    provider: lifecycle.resolveProjectProvider(_projectProviderId),
+  );
+
+  Future<TaskCreationResult> create(Project project) => lifecycle.createTask(
+    projectId: project.id,
+    title: 'Actual Git establishment',
+  );
+
+  _EstablishmentGate holdNext() {
+    final gate = _EstablishmentGate();
+    gates.add(gate);
+    return nextGate = gate;
+  }
+
+  Future<void> close() async {
+    for (final gate in gates) {
+      if (!gate.release.isCompleted) gate.release.complete();
+    }
+    await backends.close();
+    await lifecycle.close();
+  }
+}
+
+final class _EstablishmentGate {
+  final arrived = Completer<void>();
+  final release = Completer<void>();
+  Map<String, Object?>? context;
+  Map<String, Object?>? result;
+
+  String get baseline =>
+      (((result!['initialState']! as Map)['inserts']! as List).single
+              as Map)['parameters'][':baseline']
+          as String;
+}
+
+/// Observe and delay only the already-completed real AOT result, never synthesize
+/// provider state, an initial plan, or any comparison implementation.
+final class _EstablishmentChannel implements AdeleRequestChannel {
+  _EstablishmentChannel(this.delegate, this.fixture);
+
+  final AdeleRequestChannel delegate;
+  final _HeldEstablishmentFixture fixture;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (method != environmentProviderServiceEstablishId) {
+      return delegate.request(method, payload);
+    }
+    fixture.establishments++;
+    final gate = fixture.nextGate;
+    fixture.nextGate = null;
+    final result = await delegate.request(method, payload);
+    if (gate != null) {
+      gate.context = Map<String, Object?>.from(payload['context']! as Map);
+      gate.result = Map<String, Object?>.from(result! as Map);
+      gate.arrived.complete();
+      await gate.release.future;
+    }
+    return result;
   }
 }
 

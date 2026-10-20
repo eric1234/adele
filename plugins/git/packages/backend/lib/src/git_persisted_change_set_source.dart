@@ -8,7 +8,7 @@ import 'git_task_anchor_store.dart';
 
 /// Portable Diff adapter; neither SQL nor product identity enters Git comparison.
 /// Construct per invocation using its process grant and the backend generation's
-/// infrastructure-backed store. This is not the stock provider implementation.
+/// infrastructure-backed store. Used by the stock ChangeSetSource dispatcher.
 final class GitPersistedChangeSetSourceService
     implements ChangeSetSourceService {
   GitPersistedChangeSetSourceService({

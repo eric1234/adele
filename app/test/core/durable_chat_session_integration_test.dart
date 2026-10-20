@@ -68,7 +68,21 @@ void main() {
   });
 
   Future<_RuntimeBackends> start(ProductIdSource ids) async {
-    final runtime = AdeleRuntime(ids: ids);
+    late final PluginBackendActivation git;
+    final runtime = AdeleRuntime(
+      ids: ids,
+      captureEstablishmentOwner: (binding) {
+        if (!git.ownsProvider(binding)) return null;
+        return EnvironmentEstablishmentOwner(
+          pluginId: PluginId(git.connection.pluginId),
+          validate: () {
+            if (!git.ownsProvider(binding)) {
+              throw StateError('Environment owner retired.');
+            }
+          },
+        );
+      },
+    );
     addTearDown(runtime.close);
     final host = await PluginBackendHost.start(
       dartaotruntimeExecutable: aotRuntime,
@@ -77,7 +91,7 @@ void main() {
     final backends = _RuntimeBackends(runtime, host, artifacts);
     addTearDown(backends.close);
     await backends.activate(_projectPluginId);
-    await backends.activate(_gitPluginId);
+    git = await backends.activate(_gitPluginId);
     expect(
       runtime.registry.providersFor(projectProviderCapability).single.id,
       _projectProviderId,
@@ -989,6 +1003,7 @@ void _expectSchema(Database database) {
     [
       {'owner_id': 'dev.adele.execution', 'version': 1},
       {'owner_id': _chatPluginId, 'version': 1},
+      {'owner_id': _gitPluginId, 'version': 1},
       {'owner_id': 'dev.adele.product', 'version': 1},
     ],
   );
@@ -1014,6 +1029,7 @@ void _expectSchema(Database database) {
       'adele_execution_rejected_proposals',
       'adele_chat_sessions',
       'adele_chat_entries',
+      'adele_git_task_anchors',
     ]),
   );
 }

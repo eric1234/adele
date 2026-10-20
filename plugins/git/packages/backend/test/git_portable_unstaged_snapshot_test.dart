@@ -1326,6 +1326,276 @@ void main() {
     );
   }
 
+  for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
+    test(
+      '$scope rejects per-worktree core.worktree ancestor redirection',
+      () async {
+        await write('.gitignore', '/linked/\n');
+        await commit();
+        final source = repository;
+        final anchor = GitTaskComparisonAnchor(
+          baselineCommit: (await _git(source, ['rev-parse', 'HEAD'])).trim(),
+          expectedBranchRef: 'refs/heads/task',
+        );
+        final linked = Directory('${source.path}/linked');
+        await _git(source, ['worktree', 'add', '-b', 'task', linked.path]);
+        final marker = File('${linked.path}/.git');
+        final originalMarker = await marker.readAsString();
+        await _git(source, ['config', 'extensions.worktreeConfig', 'true']);
+        await _git(linked, [
+          'config',
+          '--worktree',
+          'core.worktree',
+          source.path,
+        ]);
+        expect(await marker.readAsString(), originalMarker);
+        expect(
+          (await _git(linked, ['rev-parse', '--show-toplevel'])).trim(),
+          source.path,
+        );
+        expect(
+          (await _git(linked, ['rev-parse', '--show-prefix'])).trim(),
+          'linked/',
+        );
+        expect(
+          await _git(linked, ['ls-files', '--cached', '--', '.']),
+          isEmpty,
+        );
+        expect(
+          await _git(linked, [
+            'ls-files',
+            '--others',
+            '--exclude-standard',
+            '--',
+            '.',
+          ]),
+          isEmpty,
+        );
+        await processes.close();
+        repository = linked;
+        processes = _FixtureProcesses(linked, container);
+        Future<ChangeSetSnapshot> working() async {
+          final engine = GitPortableUnstagedSnapshotService(
+            processes: processes,
+            taskAnchor: anchor,
+          );
+          return switch (scope) {
+            'Unstaged' => await engine.snapshotUnstaged(),
+            'Uncommitted' => (await engine.snapshotUncommitted()).unstaged,
+            _ => (await engine.snapshotTaskChanges()).uncommitted.unstaged,
+          };
+        }
+
+        await expectLater(
+          working(),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'unsupported_repository_configuration',
+            ),
+          ),
+        );
+        await _git(linked, [
+          'config',
+          '--worktree',
+          '--unset',
+          'core.worktree',
+        ]);
+        await write('baseline', 'actual selected checkout edit\n');
+        expect((await working()).files.single.relativePath, 'baseline');
+      },
+    );
+    test(
+      '$scope presentation budget includes all escaped layer text',
+      () async {
+        final length = switch (scope) {
+          'Unstaged' => 600000,
+          'Uncommitted' => 300000,
+          _ => 200000,
+        };
+        await write('baseline', '${'a' * length}\n');
+        await commit();
+        final anchor = GitTaskComparisonAnchor(
+          baselineCommit: (await _git(repository, [
+            'rev-parse',
+            'HEAD',
+          ])).trim(),
+          expectedBranchRef: 'refs/heads/main',
+        );
+        if (scope == 'Task') {
+          await write('baseline', '${'b' * length}\n');
+          await commit();
+        }
+        if (scope != 'Unstaged') {
+          await write('baseline', '${'c' * length}\n');
+          await _git(repository, ['add', 'baseline']);
+        }
+        await write('baseline', '${'d' * length}\n');
+        final source = GitPortableUnstagedSnapshotService(
+          processes: processes,
+          taskAnchor: anchor,
+        );
+        final Future<Object> result = switch (scope) {
+          'Unstaged' => source.snapshotUnstaged(),
+          'Uncommitted' => source.snapshotUncommitted(),
+          _ => source.snapshotTaskChanges(),
+        };
+        await expectLater(
+          result,
+          throwsA(
+            isA<ChangeSetFailure>()
+                .having((error) => error.code, 'code', 'snapshot_too_large')
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('presentation budget'),
+                ),
+          ),
+        );
+      },
+    );
+    for (final format in ['sha1', 'sha256']) {
+      test(
+        '$scope verifies 1054288-byte $format binary and text without rendering',
+        () async {
+          if (format == 'sha256') {
+            await processes.close();
+            repository = await Directory('${container.path}/sha256').create();
+            processes = _FixtureProcesses(repository, container);
+            await _git(repository, [
+              'init',
+              '--object-format=sha256',
+              '--initial-branch=main',
+            ]);
+            await _git(repository, ['config', 'user.name', 'ADELE Test']);
+            await _git(repository, [
+              'config',
+              'user.email',
+              'adele@example.invalid',
+            ]);
+            await write('baseline', 'baseline\n');
+          }
+          final bytes = Uint8List.fromList(
+            List.generate(1054288, (i) => (i * 31 + i ~/ 256) & 255),
+          );
+          final binary = File('${repository.path}/large.bin');
+          final text = File('${repository.path}/large.txt');
+          await binary.writeAsBytes(bytes);
+          await text.writeAsString('${'x' * 1054287}\n');
+          await commit();
+          final anchor = GitTaskComparisonAnchor(
+            baselineCommit: (await _git(repository, [
+              'rev-parse',
+              'HEAD',
+            ])).trim(),
+            expectedBranchRef: 'refs/heads/main',
+          );
+          Future<ChangeSetSnapshot> working() async {
+            final source = GitPortableUnstagedSnapshotService(
+              processes: processes,
+              taskAnchor: anchor,
+            );
+            return switch (scope) {
+              'Unstaged' => await source.snapshotUnstaged(),
+              'Uncommitted' => (await source.snapshotUncommitted()).unstaged,
+              _ => (await source.snapshotTaskChanges()).uncommitted.unstaged,
+            };
+          }
+
+          await binary.setLastModified(DateTime.utc(2000));
+          await text.setLastModified(DateTime.utc(2000));
+          final before = await _fingerprint(repository);
+          expect((await working()).files, isEmpty);
+          expect(
+            processes.requests.where(
+              (request) => request.arguments.contains('/usr/bin/head'),
+            ),
+            isEmpty,
+          );
+          expect(await _fingerprint(repository), before);
+          bytes[bytes.length - 1] ^= 1;
+          await binary.writeAsBytes(bytes);
+          await text.writeAsString('${'x' * 1054286}y\n');
+          await write('baseline', 'visible edit\n');
+          final dirtyBefore = await _fingerprint(repository);
+          final files = (await working()).files;
+          expect(files.map((file) => file.relativePath), [
+            'baseline',
+            'large.bin',
+            'large.txt',
+          ]);
+          expect(_lines(files.first), [
+            'deletion:baseline',
+            'addition:visible edit',
+          ]);
+          for (final file in files.skip(1)) {
+            expect(file.changeKind, 'modified');
+            expect(file.contentStatus, 'oversized');
+            expect(file.hunks, isEmpty);
+          }
+          expect(await binary.readAsBytes(), bytes);
+          expect(await _fingerprint(repository), dirtyBefore);
+        },
+      );
+    }
+    for (final verified in [true, false]) {
+      test(
+        '$scope revalidates oversized observations after verified=$verified',
+        () async {
+          final large = File('${repository.path}/a-large');
+          await large.writeAsBytes(List.generate(128, (i) => i));
+          await write('z-later', 'before\n');
+          await commit();
+          final anchor = GitTaskComparisonAnchor(
+            baselineCommit: (await _git(repository, [
+              'rev-parse',
+              'HEAD',
+            ])).trim(),
+            expectedBranchRef: 'refs/heads/main',
+          );
+          await write('z-later', 'after\n');
+          var changed = false;
+          final through = _InterceptingProcesses(processes, (
+            request,
+            run,
+          ) async {
+            final result = await run(request);
+            if (!changed && request.arguments.contains('--no-index')) {
+              changed = true;
+              await large.writeAsBytes([0], mode: FileMode.append);
+            }
+            return result;
+          });
+          final source = GitPortableUnstagedSnapshotService(
+            processes: through,
+            taskAnchor: anchor,
+            limits: GitPortableUnstagedLimits(
+              fileBytes: 32,
+              verificationFileBytes: verified ? 128 : 1,
+            ),
+          );
+          final Future<Object> result = switch (scope) {
+            'Unstaged' => source.snapshotUnstaged(),
+            'Uncommitted' => source.snapshotUncommitted(),
+            _ => source.snapshotTaskChanges(),
+          };
+          await expectLater(
+            result,
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (error) => error.code,
+                'code',
+                'snapshot_changed',
+              ),
+            ),
+          );
+          expect(changed, isTrue);
+        },
+      );
+    }
+  }
+
   group('Task', () {
     late GitTaskComparisonAnchor anchor;
 
@@ -1355,6 +1625,62 @@ void main() {
 
     Matcher code(String value) =>
         isA<ChangeSetFailure>().having((error) => error.code, 'code', value);
+
+    test(
+      'A to B to C to D preserves independent multi-hunk coordinates',
+      () async {
+        final original = '${List.generate(30, (i) => 'line $i').join('\n')}\n';
+        await write('baseline', original);
+        await commit();
+        anchor = await captureAnchor();
+        String content(String layer) => original
+            .replaceFirst('line 1\n', '$layer first\n')
+            .replaceFirst('line 27\n', '$layer last\n');
+        await write('baseline', content('B'));
+        await commit();
+        await write('baseline', content('C'));
+        await _git(repository, ['add', '.']);
+        await write('baseline', content('D'));
+        final result = await task();
+        for (final (layer, before, after) in [
+          (result.committed, ['line 1', 'line 27'], ['B first', 'B last']),
+          (
+            result.uncommitted.staged,
+            ['B first', 'B last'],
+            ['C first', 'C last'],
+          ),
+          (
+            result.uncommitted.unstaged,
+            ['C first', 'C last'],
+            ['D first', 'D last'],
+          ),
+        ]) {
+          final changed = layer.files.single;
+          expect(changed.relativePath, 'baseline');
+          expect(
+            changed.hunks.map(
+              (h) => (h.oldStart, h.oldCount, h.newStart, h.newCount),
+            ),
+            [(1, 5, 1, 5), (25, 6, 25, 6)],
+          );
+          expect(
+            changed.hunks.map(
+              (h) =>
+                  h.lines.where((line) => line.kind == 'deletion').single.text,
+            ),
+            before,
+          );
+          expect(
+            changed.hunks.map(
+              (h) =>
+                  h.lines.where((line) => line.kind == 'addition').single.text,
+            ),
+            after,
+          );
+        }
+        expect(result.uncommitted.conflicts, isEmpty);
+      },
+    );
 
     test(
       'retains independent reversals progression and net cancellation',

@@ -3,11 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:git_backend/git_backend.dart';
+import 'package:git_backend/src/git_task_anchor_schema.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -308,7 +311,7 @@ void main() {
   );
 
   test(
-    'stock AOT advertises associated changes and routes only authorized live identities',
+    'stock AOT routes process-only snapshots and generation-owned anchor storage',
     () async {
       final fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
@@ -319,9 +322,17 @@ void main() {
       addTearDown(() async {
         if (!host.isClosed) await host.close(graceful: false);
       });
+      final storage = _DiffStorage();
       final connection = await host.startPlugin(
         pluginId: gitPluginId,
         artifactUri: pluginArtifact.uri,
+        createInfrastructureServices: (owner) {
+          expect(owner.pluginId, gitPluginId);
+          storage.validate = owner.validateInfrastructureContext;
+          return {
+            projectStorageServiceId: ProjectStorageServiceDispatcher(storage),
+          };
+        },
       );
       final registry = CapabilityRegistry();
       final activation = await PluginCapabilityActivation.registerAdvertised(
@@ -338,12 +349,14 @@ void main() {
       );
       expect(connection.capabilityExposures, hasLength(2));
       expect(changes.provider.serviceId, changeSetSourceServiceId);
-      expect(
-        activation
-            .associationFor(changes)!
-            .isSameRegistration(environmentBinding),
-        isTrue,
+      expect(activation.associationFor(changes), isNull);
+      final exposure = connection.capabilityExposures.singleWhere(
+        (value) => value.providerId == changes.provider.id.value,
       );
+      expect(exposure.environmentBound, isTrue);
+      expect(exposure.environmentHostServices, [
+        AdeleEnvironmentHostService.bufferedProcess,
+      ]);
       final provider = GeneratedEnvironmentProvider(
         providerId: environmentBinding.provider.id,
         service: EnvironmentProviderServiceClient(
@@ -373,6 +386,13 @@ void main() {
         final established = await provider.establish(
           LocalEnvironment(project: project, task: task, value: environment),
         );
+        expect(
+          established.providerState.containsKey('baselineCommit'),
+          isFalse,
+        );
+        expect(established.initialState!.schema, gitTaskAnchorSchema);
+        storage.anchors[name] =
+            established.initialState!.inserts.single.parameters;
         roots[name] = Directory(
           '${fixture.projectSourceA.path}/${established.providerState['worktreeRelativePath']}/${established.providerState['sourceRelativePath']}',
         );
@@ -381,7 +401,19 @@ void main() {
           'same.txt',
           '$name content\n',
         );
+        if (name == 'primary') {
+          await _git(fixture.projectSourceA, [
+            'commit',
+            '--allow-empty',
+            '-m',
+            'Independent additional anchor',
+          ]);
+        }
       }
+      expect(
+        storage.anchors['primary']![':baseline'],
+        isNot(storage.anchors['additional']![':baseline']),
+      );
       await expectLater(
         ChangeSetSourceServiceClient(changes.requestChannel).snapshotUnstaged(),
         throwsA(
@@ -420,11 +452,11 @@ void main() {
         String environmentId,
         Future<T> Function(ChangeSetSourceServiceClient) call,
       ) async {
-        final read = AuthorizedEnvironmentReadServiceDispatcher(
-          _DiffAuthority(environmentId),
+        final processes = AuthorizedEnvironmentBufferedProcessServiceDispatcher(
+          _DiffProcesses(provider, environmentId, roots.keys.toSet()),
         );
         final invocation = connection.openHostInvocation({
-          authorizedEnvironmentReadServiceId: read,
+          authorizedEnvironmentBufferedProcessServiceId: processes,
         });
         try {
           return await call(
@@ -438,7 +470,7 @@ void main() {
           );
         } finally {
           invocation.close();
-          await read.close();
+          await processes.close();
         }
       }
 
@@ -509,6 +541,11 @@ void main() {
         'Advance live HEAD',
       ]);
       final advanced = await uncommitted('additional');
+      expect(
+        storage.reads,
+        0,
+        reason: 'Only Task requests may access storage.',
+      );
       expect(advanced.staged.files, isEmpty);
       expect(
         advanced.unstaged.files.single.hunks.single.lines.last.text,
@@ -569,13 +606,35 @@ void main() {
         ['additional working', 'additional newest'],
       );
       expect(allLayers.uncommitted.conflicts, isEmpty);
+      final retainedAnchor = storage.anchors.remove('additional')!;
+      await expectLater(
+        taskChanges('additional'),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'baseline_unavailable',
+          ),
+        ),
+      );
+      final readsWithoutAnchor = storage.reads;
+      expect(
+        (await snapshot('additional')).files.single.relativePath,
+        'same.txt',
+      );
+      expect(
+        (await uncommitted('additional')).staged.files.single.relativePath,
+        'same.txt',
+      );
+      expect(storage.reads, readsWithoutAnchor);
+      storage.anchors['additional'] = retainedAnchor;
       await expectLater(
         taskChanges('not-materialized'),
         throwsA(
           isA<ChangeSetFailure>().having(
             (failure) => failure.code,
             'code',
-            'environment_not_live',
+            'environment_process_failed',
           ),
         ),
       );
@@ -585,7 +644,7 @@ void main() {
           isA<ChangeSetFailure>().having(
             (failure) => failure.code,
             'code',
-            'environment_not_live',
+            'environment_process_failed',
           ),
         ),
       );
@@ -595,14 +654,30 @@ void main() {
           isA<ChangeSetFailure>().having(
             (failure) => failure.code,
             'code',
-            'environment_not_live',
+            'environment_process_failed',
           ),
         ),
+      );
+      connection.revokeInfrastructureContext();
+      await expectLater(
+        taskChanges('additional'),
+        throwsA(
+          isA<ChangeSetFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'baseline_storage_failed',
+          ),
+        ),
+      );
+      expect(
+        (await snapshot('additional')).files.single.relativePath,
+        'same.txt',
       );
       await activation.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),
+    skip: !Platform.isLinux ? 'Portable Git inspection requires Linux.' : false,
   );
 
   test(
@@ -815,10 +890,9 @@ void main() {
           'sourceRelativePath',
           'worktreeRelativePath',
           'branch',
-          'baselineCommit',
         ]),
       );
-      expect(established.providerState['schemaVersion'], allOf(isA<int>(), 1));
+      expect(established.providerState['schemaVersion'], allOf(isA<int>(), 2));
       expect(established.providerState['environmentId'], 'environment-\taot');
       expect(established.providerState['sourceRelativePath'], 'project-source');
       expect(
@@ -833,11 +907,11 @@ void main() {
         providerState: established.providerState,
       );
       expect(
-        established.providerState['baselineCommit'],
+        established.initialState!.inserts.single.parameters[':baseline'],
         await _git(fixture.sourceA, <String>['rev-parse', 'HEAD']),
       );
       expect(
-        established.providerState['baselineCommit'],
+        established.initialState!.inserts.single.parameters[':baseline'],
         isNot(await _git(fixture.sourceB, <String>['rev-parse', 'HEAD'])),
       );
       final EnvironmentTextFile firstRead = await providerA.readFile(
@@ -1062,6 +1136,7 @@ void main() {
       final EnvironmentProviderResult restored = await providerB.restore(
         LocalEnvironment(project: project, task: task, value: durable),
       );
+      expect(restored.initialState, isNull);
       final Environment refreshed = Environment(
         id: durable.id,
         taskId: durable.taskId,
@@ -1359,22 +1434,82 @@ exec ${_shellQuote(git)} "\$@"
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
-final class _DiffAuthority implements AuthorizedEnvironmentReadService {
-  const _DiffAuthority(this.environmentId);
+final class _DiffProcesses
+    implements AuthorizedEnvironmentBufferedProcessService {
+  const _DiffProcesses(this.provider, this.environmentId, this.liveIds);
+  final GeneratedEnvironmentProvider provider;
   final String environmentId;
+  final Set<String> liveIds;
   @override
-  Future<AuthorizedEnvironmentIdentity> authority() async =>
-      AuthorizedEnvironmentIdentity(
-        sessionId: 'session-$environmentId',
-        environmentId: environmentId,
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async {
+    if (!liveIds.contains(environmentId)) {
+      throw const EnvironmentFailure(
+        code: 'environment_not_live',
+        message: 'The captured Environment is not live.',
+        details: {},
       );
+    }
+    return AuthorizedEnvironmentIdentity(
+      sessionId: 'session-$environmentId',
+      environmentId: environmentId,
+    );
+  }
+
   @override
-  Future<EnvironmentTextFile> readFile(String relativePath) async =>
-      throw StateError('Only authority may be read.');
+  Future<EnvironmentBufferedProcessResult> runBufferedProcess(
+    EnvironmentBufferedProcessRequest request,
+  ) => provider.runBufferedProcess(EnvironmentId(environmentId), request);
+}
+
+// Transport fixture only. Atomic SQL and durable reopen are covered by app tests.
+final class _DiffStorage implements ProjectStorageService {
+  final anchors = <String, Map<String, Object?>>{};
+  late void Function() validate;
+  int reads = 0;
   @override
-  Future<EnvironmentDirectoryListing> readDirectory(
-    String relativePath,
-  ) async => throw StateError('Only authority may be read.');
+  Future<void> ensureSchemaForSession(
+    String sessionId,
+    List<String> migrations,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    validate();
+    expect(migrations, [gitTaskAnchorSchema]);
+    expect(accessMode, ProjectStorageAccessMode.durableOrTemporary);
+  }
+
+  @override
+  Future<List<RelationalRow>> queryForSession(
+    String sessionId,
+    String sql,
+    Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    validate();
+    reads++;
+    expect(parameters, {':session': sessionId});
+    expect(sql, contains('LEFT JOIN adele_git_task_anchors'));
+    expect(accessMode, ProjectStorageAccessMode.durableOrTemporary);
+    final environmentId = sessionId.substring('session-'.length);
+    final anchor = anchors[environmentId];
+    return [
+      RelationalRow(
+        values: {
+          'session_id': sessionId,
+          'session_task_id': 'diff-task',
+          'selected_environment_id': environmentId,
+          'environment_id': environmentId,
+          'environment_task_id': 'diff-task',
+          'anchor_environment_id': anchor?[':environment'],
+          'baseline_commit': anchor?[':baseline'],
+          'expected_branch_ref': anchor?[':branch'],
+        },
+      ),
+    ];
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('Snapshots must not write or reenroll anchors.');
 }
 
 Future<PluginCapabilityActivation> _register(

@@ -73,8 +73,21 @@ void main() {
   });
 
   Future<_Backends> start({required bool git}) async {
+    PluginBackendActivation? gitOwner;
     final runtime = AdeleRuntime(
       ids: MonotonicProductIdSource(seed: 'capture'),
+      captureEstablishmentOwner: (binding) {
+        final captured = gitOwner;
+        if (captured == null || !captured.ownsProvider(binding)) return null;
+        return EnvironmentEstablishmentOwner(
+          pluginId: PluginId(captured.connection.pluginId),
+          validate: () {
+            if (!captured.ownsProvider(binding)) {
+              throw StateError('Environment owner retired.');
+            }
+          },
+        );
+      },
     );
     final host = await PluginBackendHost.start(
       dartaotruntimeExecutable: aotRuntime,
@@ -83,7 +96,7 @@ void main() {
     final backends = _Backends(runtime, host, artifacts);
     addTearDown(backends.close);
     await backends.activate(_projectId);
-    if (git) await backends.activate(_gitId);
+    if (git) gitOwner = await backends.activate(_gitId);
     return backends;
   }
 

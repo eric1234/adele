@@ -37,7 +37,7 @@ artifacts must be rebuilt together under the
 
 `snapshotTaskChanges()` returns `TaskChangeSetSnapshot`, composing `committed`
 (`ChangeSetSnapshot`) and `uncommitted` (`UncommittedChangeSetSnapshot`). Committed
-changes are the net change from the provider's retained Environment baseline to
+changes are the net change from the Git-owned retained Environment baseline to
 current committed state, not a history of individual commits. The stock Git
 provider uses the exact baseline established for the selected Environment, which
 can differ between Environments within one Task. Committed, staged, unstaged, and
@@ -46,9 +46,10 @@ working content matches the baseline. No Git identities or baseline selector ent
 the public contract.
 
 The [stock Git plugin](../git/README.md#changesetsource)
-implements this deliberately public contract over the exact live Environment of
-its associated provider in the same backend, not arbitrary Environment providers.
-It owns Git/index semantics, filesystem safety, process execution and bounds.
+implements this deliberately public contract through authorized buffered processes
+on the exact selected Environment, including independent compatible providers.
+Git owns comparison/index semantics and inspection bounds; the selected Environment
+provider owns process execution, and the host owns authorization and exact bindings.
 The Diff frontend imports neither Git nor application/native-host implementation.
 Other providers can implement the same contract without becoming dependencies
 of the frontend.
@@ -57,11 +58,12 @@ of the frontend.
 
 `packages/frontend/lib/main.dart` supplies `initializeDiff()` and
 `buildDiffPane()`. Initialization opens only local pane ID `diff`; reinitializing
-does not duplicate it. The descriptor declares `environmentReadCapabilities`
+does not duplicate it. The descriptor declares `environmentBufferedProcessCapabilities`
 for the Diff capability and `canRequestSourceDisplay` for pane-only requests
 through the public source-display point. There is no context-free capability
 grant, own-backend service, direct file access, process, terminal, editor, or
-execution grant.
+execution grant. The host grants buffered-process access only to the selected
+Capability backend for each invocation, never to the interpreted pane.
 
 The mounted pane initially selects **Unstaged changes**. A minimal selector also
 offers **Uncommitted changes** and **Task / Branch** without persisting a preference.

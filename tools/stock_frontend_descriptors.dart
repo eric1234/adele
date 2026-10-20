@@ -10,7 +10,7 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'entrypoint': 'buildDiffPane',
       'order': 200,
       'canRequestSourceDisplay': true,
-      'environmentReadCapabilities': [
+      'environmentBufferedProcessCapabilities': [
         {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
       ],
     },

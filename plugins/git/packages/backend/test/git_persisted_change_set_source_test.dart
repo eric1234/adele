@@ -14,6 +14,7 @@ import 'package:git_backend/git_backend.dart'
         GitPersistedChangeSetSourceService,
         GitPortableUnstagedLimits,
         GitTaskAnchorStore;
+import 'package:git_backend/src/git_task_anchor_schema.dart';
 import 'package:test/test.dart';
 
 final _identity = AuthorizedEnvironmentIdentity(
@@ -519,7 +520,7 @@ final class _Storage implements ProjectStorageService {
     calls.add('schema');
     sessions.add(sessionId);
     expect(migrations, hasLength(1));
-    expect(migrations.single, contains('CREATE TABLE adele_git_task_anchors'));
+    expect(migrations.single, gitTaskAnchorSchema);
     expect(accessMode, ProjectStorageAccessMode.durableOrTemporary);
     await onSchema?.call();
   }

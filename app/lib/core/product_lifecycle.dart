@@ -805,6 +805,16 @@ final class ProductLifecycleCoordinator {
     return _databaseForProject(project, accessMode);
   }
 
+  /// Returns only an already-open backing, without creating temporary storage.
+  ProjectDatabase? existingDatabaseForProject(Project project) {
+    _requireOpen();
+    if (!identical(store.project(project.id), project)) {
+      throw ArgumentError('Existing backing requires the canonical Project.');
+    }
+    return _projectDatabases[project.id] ??
+        _temporaryProjectDatabases[project.id];
+  }
+
   ProjectDatabase? _databaseForProject(
     Project project,
     ProjectStorageAccessMode accessMode,

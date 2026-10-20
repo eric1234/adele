@@ -1597,7 +1597,7 @@ void main() {
             'entrypoint': 'buildDiffPane',
             'order': 200,
             'canRequestSourceDisplay': true,
-            'environmentReadCapabilities': [
+            'environmentBufferedProcessCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
             ],
           },

@@ -8,9 +8,102 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:git_backend/git_backend.dart';
 import 'package:git_backend/src/foreground_process.dart';
+import 'package:git_backend/src/git_process_environment.dart';
+import 'package:git_backend/src/git_task_anchor_schema.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'placement environment still strips routing without changing other variables',
+    () {
+      expect(
+        gitProcessEnvironment(
+          parentEnvironment: {
+            'PATH': 'relative:/usr/bin',
+            'HOME': '/fixture/home',
+            'GIT_DIR': '/foreign',
+            'GIT_WORK_TREE': '/foreign',
+            'GIT_CONFIG_COUNT': '1',
+            'GIT_CEILING_DIRECTORIES': '/fixture',
+            'CUSTOM_VALUE': 'retained',
+          },
+        ),
+        {
+          'PATH': 'relative:/usr/bin',
+          'HOME': '/fixture/home',
+          'CUSTOM_VALUE': 'retained',
+        },
+      );
+    },
+  );
+
+  test(
+    'establishment captures a SHA-256 anchor outside provider state',
+    () async {
+      final container = await Directory.systemTemp.createTemp(
+        'adele-git-sha256-',
+      );
+      addTearDown(() => container.delete(recursive: true));
+      final source = await Directory('${container.path}/source').create();
+      await _gitOutput(source, ['init', '--object-format=sha256']);
+      await _gitOutput(source, ['config', 'user.name', 'ADELE Test']);
+      await _gitOutput(source, [
+        'config',
+        'user.email',
+        'adele@example.invalid',
+      ]);
+      await File('${source.path}/README.md').writeAsString('SHA-256 source\n');
+      await _gitOutput(source, ['add', '.']);
+      await _gitOutput(source, ['commit', '-m', 'Fixture']);
+      final baseline = await _gitOutput(source, ['rev-parse', 'HEAD']);
+      expect(baseline, matches(r'^[0-9a-f]{64}$'));
+      final environment = _environment(
+        source.uri,
+        taskId: 'sha256-task',
+        environmentId: 'sha256-environment',
+        title: 'SHA-256',
+      );
+      final provider = GitWorktreeEnvironmentProvider();
+      addTearDown(provider.close);
+      final established = await provider.establish(environment);
+      _expectProviderState(environment, established.providerState);
+      _expectInitialState(environment, established, baseline);
+      await provider.close();
+      final replacement = GitWorktreeEnvironmentProvider();
+      addTearDown(replacement.close);
+      final restored = await replacement.restore(
+        _retainedEnvironment(environment, established.providerState),
+      );
+      expect(restored.providerState, established.providerState);
+      expect(restored.initialState, isNull);
+    },
+  );
+
+  test(
+    'invalid initial plan never binds a live Environment and cleans prepared resources',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final provider = GitWorktreeEnvironmentProvider();
+      addTearDown(provider.close);
+      final environment = _environment(
+        fixture.source.uri,
+        taskId: 'large-plan-task',
+        environmentId: 'x' * environmentInitialStateByteLimit,
+        title: 'Bounded plan',
+      );
+      final branches = await _branchNames(fixture.source);
+      final inventory = await _gitInventory(fixture.source);
+      await expectLater(
+        provider.establish(environment),
+        throwsA(_failureWithCode('worktree_establishment_failed')),
+      );
+      expect(provider.liveObjects.length, 0);
+      expect(await _branchNames(fixture.source), branches);
+      expect(await _gitInventory(fixture.source), inventory);
+    },
+  );
+
   test('establishes and restores Task-specific Git worktrees', () async {
     final ({Directory container, Directory source}) fixture =
         await _createRepository();
@@ -31,16 +124,12 @@ void main() {
     );
     _expectProviderState(first, firstResult.providerState);
     expect(firstResult.providerState['environmentId'], 'environment-\tfirst');
-    expect(
-      firstResult.providerState['baselineCommit'],
+    _expectInitialState(
+      first,
+      firstResult,
       await _gitOutput(fixture.source, <String>['rev-parse', 'HEAD']),
     );
     final WorktreeEnvironment firstLive = liveObjects.resolve(first.id);
-    expect(
-      firstLive.baselineCommit,
-      firstResult.providerState['baselineCommit'],
-    );
-    expect(firstLive.branch, firstResult.providerState['branch']);
     final String retainedPath = firstLive.root.path;
     expect(retainedPath, isNot(fixture.source.path));
     expect(
@@ -144,7 +233,7 @@ void main() {
       throwsA(_failureWithCode('invalid_provider_state')),
     );
 
-    final Environment symbolicBaselineState = Environment(
+    final Environment legacyBaselineState = Environment(
       id: first.id,
       taskId: first.task.id,
       role: first.role,
@@ -159,7 +248,7 @@ void main() {
         LocalEnvironment(
           project: first.task.project,
           task: first.task.value,
-          value: symbolicBaselineState,
+          value: legacyBaselineState,
         ),
       ),
       throwsA(_failureWithCode('invalid_provider_state')),
@@ -170,11 +259,7 @@ void main() {
     );
 
     expect(generationB.liveObjects.resolve(first.id).root.path, retainedPath);
-    expect(
-      generationB.liveObjects.resolve(first.id).baselineCommit,
-      firstLive.baselineCommit,
-    );
-    expect(generationB.liveObjects.resolve(first.id).branch, firstLive.branch);
+    expect(restored.initialState, isNull);
     expect(
       identical(generationB.liveObjects.resolve(first.id), firstLive),
       isFalse,
@@ -267,7 +352,96 @@ void main() {
   );
 
   test(
-    'retains independent baselines after commits and fresh restoration',
+    'buffered execution rejects missing replaced and nearer checkout markers',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final source = await Directory(
+        '${fixture.source.path}/selected/deep',
+      ).create(recursive: true);
+      await File('${source.path}/file').writeAsString('selected\n');
+      await _gitOutput(fixture.source, ['add', '.']);
+      await _gitOutput(fixture.source, ['commit', '-m', 'Scoped fixture']);
+      final environment = _environment(
+        source.uri,
+        taskId: 'checkout-task',
+        environmentId: 'checkout-environment',
+        title: 'Checkout identity',
+      );
+      final provider = GitWorktreeEnvironmentProvider();
+      addTearDown(provider.close);
+      final established = await provider.establish(environment);
+      final root = _worktreeRoot(source, established.providerState);
+      final selected = provider.liveObjects.resolve(environment.id).root;
+      final marker = File('${root.path}/.git');
+      final retained = await marker.readAsString();
+      final launched = File('${selected.path}/launched');
+      final probe = EnvironmentBufferedProcessRequest(
+        program: '/bin/sh',
+        arguments: ['-c', 'printf launched > launched'],
+        relativeWorkingDirectory: '',
+        timeoutSeconds: 5,
+        stdinBase64: '',
+      );
+      Future<void> rejected() async {
+        await expectLater(
+          provider.runBufferedProcess(environment.id, probe),
+          throwsA(_failureWithCode('git_checkout_changed')),
+        );
+        expect(await launched.exists(), isFalse);
+      }
+
+      await marker.delete();
+      await rejected();
+      await marker.writeAsString('gitdir: /missing/metadata\n');
+      await rejected();
+      await marker.writeAsString(retained);
+      final markerCopy = File('${fixture.container.path}/marker-copy');
+      await markerCopy.writeAsString(retained);
+      await marker.delete();
+      await Link(marker.path).create(markerCopy.path);
+      await rejected();
+      await Link(marker.path).delete();
+      await marker.writeAsString(retained);
+      for (final nearer in [selected, selected.parent]) {
+        await _gitOutput(nearer, ['init']);
+        await rejected();
+        await Directory('${nearer.path}/.git').delete(recursive: true);
+      }
+      final admitted = await provider.runBufferedProcess(environment.id, probe);
+      expect(admitted.exitCode, 0);
+      expect(await launched.readAsString(), 'launched');
+      await launched.delete();
+      await expectLater(
+        provider.runBufferedProcess(
+          environment.id,
+          EnvironmentBufferedProcessRequest(
+            program: '/bin/rm',
+            arguments: [marker.path],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 5,
+            stdinBase64: '',
+          ),
+        ),
+        throwsA(_failureWithCode('git_checkout_changed')),
+      );
+      expect(
+        await marker.exists(),
+        isFalse,
+        reason:
+            'The post-execution check fences publication, not already executed effects.',
+      );
+      await marker.writeAsString(retained);
+      expect(
+        (await provider.runBufferedProcess(environment.id, probe)).exitCode,
+        0,
+      );
+    },
+    skip: !Platform.isLinux ? 'Buffered execution is Linux-only.' : false,
+  );
+
+  test(
+    'prepares independent anchors once and never replays them on restoration',
     () async {
       final fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
@@ -279,10 +453,11 @@ void main() {
         environmentId: 'first-baseline',
         title: 'Independent baselines',
       );
-      final firstState = (await generationA.establish(first)).providerState;
+      final firstResult = await generationA.establish(first);
+      final firstState = firstResult.providerState;
       final firstLive = generationA.liveObjects.resolve(first.id);
       final baselineA = await _gitOutput(fixture.source, ['rev-parse', 'HEAD']);
-      expect(firstLive.baselineCommit, baselineA);
+      _expectInitialState(first, firstResult, baselineA);
 
       await File(
         '${firstLive.root.path}/README.md',
@@ -291,7 +466,7 @@ void main() {
       await _gitOutput(firstLive.root, ['commit', '-m', 'Task work']);
       final taskHead = await _gitOutput(firstLive.root, ['rev-parse', 'HEAD']);
       expect(taskHead, isNot(baselineA));
-      expect(firstLive.baselineCommit, baselineA);
+      _expectInitialState(first, firstResult, baselineA);
 
       await File(
         '${fixture.source.path}/README.md',
@@ -314,12 +489,13 @@ void main() {
           providerState: null,
         ),
       );
-      final secondState = (await generationA.establish(second)).providerState;
+      final secondResult = await generationA.establish(second);
+      final secondState = secondResult.providerState;
       final secondLive = generationA.liveObjects.resolve(second.id);
       expect(baselineB, isNot(baselineA));
-      expect(secondLive.baselineCommit, baselineB);
-      expect(secondLive.branch, isNot(firstLive.branch));
-      expect(firstLive.baselineCommit, baselineA);
+      _expectInitialState(second, secondResult, baselineB);
+      expect(secondState['branch'], isNot(firstState['branch']));
+      _expectInitialState(first, firstResult, baselineA);
       _expectProviderState(first, firstState);
       _expectProviderState(second, secondState);
 
@@ -340,10 +516,8 @@ void main() {
         );
         final live = generationB.liveObjects.resolve(entry.$1.id);
         expect(restored.providerState, entry.$2);
-        expect(live.baselineCommit, entry.$3.baselineCommit);
-        expect(live.branch, entry.$3.branch);
+        expect(restored.initialState, isNull);
         expect(live.root.path, entry.$3.root.path);
-        expect(live.gitDirectory!.path, entry.$3.gitDirectory!.path);
         expect(identical(live, entry.$3), isFalse);
       }
       expect(await _gitOutput(firstLive.root, ['rev-parse', 'HEAD']), taskHead);
@@ -370,14 +544,8 @@ void main() {
         (await generationB.readFile(first.id, 'local.txt')).revision,
         replaced.revision,
       );
-      expect(
-        generationB.liveObjects.resolve(first.id).baselineCommit,
-        baselineA,
-      );
-      expect(
-        generationB.liveObjects.resolve(second.id).baselineCommit,
-        baselineB,
-      );
+      _expectInitialState(first, firstResult, baselineA);
+      _expectInitialState(second, secondResult, baselineB);
     },
   );
 
@@ -852,10 +1020,12 @@ void main() {
           '-m',
           'Advance source branch',
         ]);
-        expect(retainedHead, isNot(state['baselineCommit']));
+        final baseline =
+            established.initialState!.inserts.single.parameters[':baseline'];
+        expect(retainedHead, isNot(baseline));
         expect(
           await _gitOutput(fixture.source, <String>['rev-parse', 'HEAD']),
-          isNot(state['baselineCommit']),
+          isNot(baseline),
         );
         await File(
           '${oldLiveRoot.path}/README.md',
@@ -916,14 +1086,7 @@ void main() {
         expect(restored.providerState, state);
         expect(established.providerState, state);
         expect(generationB.liveObjects.length, 1);
-        expect(
-          generationB.liveObjects.resolve(environment.id).baselineCommit,
-          state['baselineCommit'],
-        );
-        expect(
-          generationB.liveObjects.resolve(environment.id).branch,
-          state['branch'],
-        );
+        expect(restored.initialState, isNull);
         expect(
           generationB.liveObjects.resolve(environment.id).root.path,
           scope.isEmpty ? movedWorktree.path : '${movedWorktree.path}/$scope',
@@ -948,9 +1111,9 @@ void main() {
           await _gitOutput(movedWorktree, <String>[
             'rev-parse',
             '--verify',
-            '${state['baselineCommit']}^{commit}',
+            '$baseline^{commit}',
           ]),
-          state['baselineCommit'],
+          baseline,
         );
         final String after = await _gitOutput(movedRepository, <String>[
           'worktree',
@@ -992,123 +1155,110 @@ void main() {
     final GitWorktreeEnvironmentProvider generationB =
         GitWorktreeEnvironmentProvider();
     addTearDown(generationB.close);
-    final Map<String, Map<String, Object?>?> malformed =
-        <String, Map<String, Object?>?>{
-          'absent state': null,
-          'empty state': <String, Object?>{},
-          for (final String field in state.keys)
-            'missing $field': Map<String, Object?>.of(state)..remove(field),
-          for (final String field in state.keys)
-            for (final Object? value in <Object?>[
-              null,
-              true,
-              <Object?>[],
-              <String, Object?>{},
-            ])
-              '$field type ${value.runtimeType}': <String, Object?>{
-                ...state,
-                field: value,
-              },
-          for (final Object version in <Object>[0, 2, 1.0, '1'])
-            'version $version (${version.runtimeType})': <String, Object?>{
-              ...state,
-              'schemaVersion': version,
-            },
-          for (final String field in state.keys.where(
-            (String field) => field != 'schemaVersion',
-          ))
-            '$field integer': <String, Object?>{...state, field: 2},
-          for (final String field in <String>[
-            'environmentId',
-            'worktreeRelativePath',
-            'branch',
-            'baselineCommit',
-          ])
-            '$field empty': <String, Object?>{...state, field: ''},
-          for (final String field in <String>[
-            'sourcePath',
-            'repositoryPath',
-            'commonGitDirectory',
-            'worktreePath',
-            'unexpected',
-          ])
-            'extra $field': <String, Object?>{
-              ...state,
-              field: fixture.source.path,
-            },
-          for (final String field in <String>[
-            'sourceRelativePath',
-            'worktreeRelativePath',
-          ])
-            for (final String path in <String>[
-              '/absolute/path',
-              'C:/absolute/path',
-              r'C:\absolute\path',
-              r'\\server\share',
-              '..',
-              '../outside',
-              'inside/../outside',
-              '.',
-              './inside',
-              'inside/./child',
-              'inside//child',
-              'inside/',
-              r'inside\child',
-              'inside\u0000child',
-            ])
-              '$field path $path': <String, Object?>{...state, field: path},
-          for (final String path in <String>[
-            '.adele',
-            '.adele/worktrees',
-            '.adele/worktrees/',
-            '.adele/worktrees/flat/nested',
-            '.adele/other/flat',
-            'other/worktrees/flat',
-            '.adele/worktrees/../flat',
-            '.adele/worktrees/./flat',
-            '.adele//worktrees/flat',
-            r'.adele\worktrees\flat',
-          ])
-            'worktree shape $path': <String, Object?>{
-              ...state,
-              'worktreeRelativePath': path,
-            },
-          for (final String branch in <String>[
-            'HEAD',
-            '-option',
-            '/branch',
-            'branch/',
-            'branch//child',
-            'branch..name',
-            'branch.lock',
-            'branch name',
-            'branch@{1}',
-            r'branch\name',
-            'branch:name',
-            'branch~name',
-            'branch^name',
-            'branch?name',
-            'branch[name',
-            'branch\nname',
-          ])
-            'branch $branch': <String, Object?>{...state, 'branch': branch},
-          for (final String baseline in <String>[
-            'HEAD',
-            'a' * 39,
-            'a' * 41,
-            'a' * 63,
-            'a' * 65,
-            'A' * 40,
-            'A' * 64,
-            'g' * 40,
-            'g' * 64,
-            '${'a' * 40}\n',
-          ])
-            'baseline $baseline': <String, Object?>{
-              ...state,
-              'baselineCommit': baseline,
-            },
-        };
+    final Map<String, Map<String, Object?>?>
+    malformed = <String, Map<String, Object?>?>{
+      'absent state': null,
+      'empty state': <String, Object?>{},
+      for (final String field in state.keys)
+        'missing $field': Map<String, Object?>.of(state)..remove(field),
+      for (final String field in state.keys)
+        for (final Object? value in <Object?>[
+          null,
+          true,
+          <Object?>[],
+          <String, Object?>{},
+        ])
+          '$field type ${value.runtimeType}': <String, Object?>{
+            ...state,
+            field: value,
+          },
+      for (final Object version in <Object>[0, 1, 3, 2.0, '2'])
+        'version $version (${version.runtimeType})': <String, Object?>{
+          ...state,
+          'schemaVersion': version,
+        },
+      for (final String field in state.keys.where(
+        (String field) => field != 'schemaVersion',
+      ))
+        '$field integer': <String, Object?>{...state, field: 2},
+      for (final String field in <String>[
+        'environmentId',
+        'worktreeRelativePath',
+        'branch',
+      ])
+        '$field empty': <String, Object?>{...state, field: ''},
+      for (final String field in <String>[
+        'sourcePath',
+        'repositoryPath',
+        'commonGitDirectory',
+        'worktreePath',
+        'baselineCommit',
+        'unexpected',
+      ])
+        'extra $field': <String, Object?>{...state, field: fixture.source.path},
+      for (final String field in <String>[
+        'sourceRelativePath',
+        'worktreeRelativePath',
+      ])
+        for (final String path in <String>[
+          '/absolute/path',
+          'C:/absolute/path',
+          r'C:\absolute\path',
+          r'\\server\share',
+          '..',
+          '../outside',
+          'inside/../outside',
+          '.',
+          './inside',
+          'inside/./child',
+          'inside//child',
+          'inside/',
+          r'inside\child',
+          'inside\u0000child',
+        ])
+          '$field path $path': <String, Object?>{...state, field: path},
+      for (final String path in <String>[
+        '.adele',
+        '.adele/worktrees',
+        '.adele/worktrees/',
+        '.adele/worktrees/flat/nested',
+        '.adele/other/flat',
+        'other/worktrees/flat',
+        '.adele/worktrees/../flat',
+        '.adele/worktrees/./flat',
+        '.adele//worktrees/flat',
+        r'.adele\worktrees\flat',
+      ])
+        'worktree shape $path': <String, Object?>{
+          ...state,
+          'worktreeRelativePath': path,
+        },
+      for (final String branch in <String>[
+        'HEAD',
+        '-option',
+        '/branch',
+        'branch/',
+        'branch//child',
+        'branch..name',
+        'branch.lock',
+        'branch name',
+        'branch@{1}',
+        r'branch\name',
+        'branch:name',
+        'branch~name',
+        'branch^name',
+        'branch?name',
+        'branch[name',
+        'branch\nname',
+      ])
+        'branch $branch': <String, Object?>{...state, 'branch': branch},
+      'legacy v1 with exact baseline': {
+        ...state,
+        'schemaVersion': 1,
+        'baselineCommit':
+            established.initialState!.inserts.single.parameters[':baseline'],
+      },
+    };
     final String inventory = await _gitOutput(fixture.source, <String>[
       'worktree',
       'list',
@@ -1289,41 +1439,49 @@ void main() {
     },
   );
 
-  test(
-    'accepts full lower-hex baseline syntax but rejects unavailable commits',
-    () async {
-      final fixture = await _createRepository();
-      addTearDown(() => fixture.container.delete(recursive: true));
-      final GitWorktreeEnvironmentProvider generationA =
-          GitWorktreeEnvironmentProvider();
-      addTearDown(generationA.close);
-      final LocalEnvironment environment = _environment(
-        fixture.source.uri,
-        taskId: 'task-baseline',
-        environmentId: 'environment-baseline',
-        title: 'Missing baseline',
-      );
-      final EnvironmentProviderResult established = await generationA.establish(
-        environment,
-      );
-      await generationA.close();
-      final GitWorktreeEnvironmentProvider generationB =
-          GitWorktreeEnvironmentProvider();
-      addTearDown(generationB.close);
-      for (final int length in <int>[40, 64]) {
-        await expectLater(
-          generationB.restore(
-            _retainedEnvironment(environment, <String, Object?>{
-              ...established.providerState,
-              'baselineCommit': 'f' * length,
-            }),
-          ),
-          throwsA(_failureWithCode('restore_baseline_missing')),
-        );
-        expect(generationB.liveObjects.length, 0);
-      }
-    },
-  );
+  test('restoration does not require the original comparison commit', () async {
+    final fixture = await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationA.close);
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-baseline',
+      environmentId: 'environment-baseline',
+      title: 'Missing baseline',
+    );
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    final baseline =
+        established.initialState!.inserts.single.parameters[':baseline']!
+            as String;
+    final root = generationA.liveObjects.resolve(environment.id).root;
+    final replacement = await _gitOutput(root, [
+      'commit-tree',
+      'HEAD^{tree}',
+      '-m',
+      'Independent root',
+    ]);
+    await _gitOutput(root, ['reset', '--hard', replacement]);
+    await _gitOutput(fixture.source, ['reset', '--hard', replacement]);
+    await generationA.close();
+    await File(
+      '${fixture.source.path}/.git/objects/${baseline.substring(0, 2)}/${baseline.substring(2)}',
+    ).delete();
+    final generationB = GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+    final restored = await generationB.restore(
+      _retainedEnvironment(environment, established.providerState),
+    );
+    expect(restored.providerState, established.providerState);
+    expect(restored.initialState, isNull);
+    expect(
+      (await generationB.readFile(environment.id, 'README.md')).text,
+      contains('fixture source'),
+    );
+  });
 
   test(
     'rejects a retained path linked to a different common repository',
@@ -1438,7 +1596,7 @@ void main() {
       ]);
       expect(
         await _gitOutput(sibling, <String>['rev-parse', 'HEAD']),
-        established.providerState['baselineCommit'],
+        established.initialState!.inserts.single.parameters[':baseline'],
       );
       await candidateGitfile.writeAsString(siblingMarker);
       final String inventory = await _gitInventory(moved);
@@ -4128,10 +4286,9 @@ void _expectProviderState(
       'sourceRelativePath',
       'worktreeRelativePath',
       'branch',
-      'baselineCommit',
     ]),
   );
-  expect(state['schemaVersion'], allOf(isA<int>(), 1));
+  expect(state['schemaVersion'], allOf(isA<int>(), 2));
   expect(state['environmentId'], environment.id.value);
   expect(state['sourceRelativePath'], sourceRelativePath);
   expect(
@@ -4139,7 +4296,27 @@ void _expectProviderState(
     matches(r'^\.adele/worktrees/[a-z0-9-]+$'),
   );
   expect(state['branch'], isA<String>());
-  expect(state['baselineCommit'], matches(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$'));
+}
+
+void _expectInitialState(
+  LocalEnvironment environment,
+  EnvironmentProviderResult result,
+  String baseline,
+) {
+  final initial = result.initialState!;
+  expect(initial.schema, gitTaskAnchorSchema);
+  expect(initial.inserts, hasLength(1));
+  final insert = initial.inserts.single;
+  expect(
+    insert.sql,
+    'INSERT INTO adele_git_task_anchors (environment_id,baseline_commit,expected_branch_ref) VALUES (:environment,:baseline,:branch)',
+  );
+  expect(insert.parameters, {
+    ':environment': environment.id.value,
+    ':baseline': baseline,
+    ':branch': 'refs/heads/${result.providerState['branch']}',
+  });
+  expect(insert.expectedRows, 1);
 }
 
 Directory _worktreeRoot(Directory projectSource, Map<String, Object?> state) =>

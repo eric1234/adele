@@ -516,16 +516,17 @@ buffered-process support is a declared failure, never a local execution fallback
 
 The stock [Diff Viewer](../../plugins/diff_viewer/README.md) owns the public
 `ChangeSetSourceService` contract and its immutable file/hunk/line DTOs. The
-application neither imports that contract nor decodes review data. Git's existing
-backend implements it as a separate contextual-only service, explicitly associated
-with its exact Git Worktree Environment provider in the same backend. It obtains
-the authorized Environment identity through `AuthorizedEnvironmentReadService.authority()` and
-resolves only its own live worktree state; the request contains no caller-selected
-Environment, repository, or path. This implementation does not use the generic
-buffered-process grant to operate against other Environment providers.
+application neither imports that contract nor decodes review data. Git's stock
+backend implements it as a separate contextual-only, explicitly Environment-bound
+service with the `bufferedProcess` host-service permission, not a sibling provider
+association. The host captures the canonical selected Environment and supplies only
+the authorized buffered-process service. This works with the stock Git Worktree
+provider or an independent compatible provider; the request contains no caller-selected
+Environment, repository, branch, or baseline. Ambiguous independent providers fail
+selection rather than silently preferring Git or a primary Environment.
 
 For snapshot reads, Diff's mounted Main Content pane declares the corresponding
-`environmentReadCapabilities` entry. Each initial load, scope change, or deliberate
+`environmentBufferedProcessCapabilities` entry. Each initial load, scope change, or deliberate
 refresh resolves fresh eligible access, invokes one finite generated unary
 snapshot, then releases the handle. It uses the contextual settlement and retirement rules above,
 not context-free discovery, backend affinity, automatic activation, or a second
@@ -542,8 +543,12 @@ ordinary staged approval. `snapshotTaskChanges()` composes a committed snapshot
 with that same uncommitted result. Committed means the net tree difference from
 the selected Git-backed Environment's exact retained baseline to captured HEAD, not
 commit history or a flattened baseline-to-working-tree patch. Baseline and branch
-provenance remain in Environment provider state and its established/restored live
-object; they are neither caller-selected contract parameters nor Task-wide inferred state.
+provenance belong to Git-owned `adele_git_task_anchors`, enrolled atomically through
+the [prepared establishment result](product-model.md#prepared-establishment-state).
+There is one anchor per Environment and no historical baseline in Worktree provider
+state or live objects. The backend's generation-scoped Project storage client reads
+the exact Session/Environment association observed through the process grant;
+neither caller-selected contract parameters nor Task-wide inferred state select it.
 Missing or inconsistent Task baseline/branch identity fails without substitution,
 independently of the other scopes' availability.
 

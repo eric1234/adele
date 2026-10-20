@@ -53,14 +53,13 @@ void main() {
           'sourceRelativePath': '',
           'worktreeRelativePath': relativePath,
           'branch': 'adele-retained-task',
-          'baselineCommit': 'a' * 40,
         },
       );
       expect(
-        developmentGitWorktreePath(project, environment(1)),
+        developmentGitWorktreePath(project, environment(2)),
         await worktree.resolveSymbolicLinks(),
       );
-      for (final version in <Object>[0, 2, 1.0, '1']) {
+      for (final version in <Object>[0, 1, 2.0, '2']) {
         expect(
           () => developmentGitWorktreePath(project, environment(version)),
           throwsStateError,
@@ -225,12 +224,11 @@ void main() {
       final relativePath = state['worktreeRelativePath']! as String;
       expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
       expect(state, <String, Object?>{
-        'schemaVersion': 1,
+        'schemaVersion': 2,
         'environmentId': topology.environment.id.value,
         'sourceRelativePath': '',
         'worktreeRelativePath': relativePath,
         'branch': topology.taskBranch,
-        'baselineCommit': git.startingHead,
       });
       final worktree = Directory(topology.taskWorktreePath);
       expect(
@@ -273,6 +271,33 @@ void main() {
       expect(retainedState!.environmentId, topology.environment.id);
       expect(retainedState!.taskBranch, topology.taskBranch);
       expect(retainedState!.baselineCommit, git.startingHead);
+      expect(topology.baselineCommit, git.startingHead);
+      final baselineDatabase = topology.lifecycle.existingDatabaseForProject(
+        topology.project,
+      )!;
+      expect(
+        baselineDatabase
+            .queryPluginRows(
+              'SELECT baseline_commit FROM adele_git_task_anchors WHERE environment_id=:id',
+              {':id': topology.environment.id.value},
+            )
+            .single
+            .values['baseline_commit'],
+        git.startingHead,
+      );
+      await _git(worktree, [
+        '-c',
+        'user.name=ADELE Test',
+        '-c',
+        'user.email=adele@example.invalid',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Progress after establishment',
+      ]);
+      final progressedHead = await _git(worktree, ['rev-parse', 'HEAD']);
+      expect(progressedHead, isNot(git.startingHead));
+      expect(topology.baselineCommit, git.startingHead);
       expect(topology.runtime.plugins.host, isNull);
       expect(topology.runtime.plugins.backends, isEmpty);
       final materialized = topology.catalog.materialize().tools;
@@ -578,6 +603,8 @@ void main() {
       expect(topology.close(), same(closing));
       await closing;
       expect(topology.host.isClosed, isTrue);
+      expect(topology.baselineCommit, git.startingHead);
+      expect(File(baselineDatabase.path).existsSync(), isFalse);
       expect(
         topology.runtime.extensions.discover(inferenceContextSources),
         isEmpty,
@@ -671,10 +698,19 @@ void main() {
         taskBaseline: topology.baselineCommit,
       );
       expect(healthy.collectionSucceeded, isTrue);
-      expect(healthy.taskHead, git.startingHead);
+      expect(healthy.taskHead, progressedHead);
       expect(healthy.changedFiles, ['AGENTS.md']);
       expect(healthy.taskDiff, contains(guidance.trim()));
       expect(healthy.taskDiff, isNot(contains('Project guidance')));
+      final missingBaseline = await collectDevelopmentSelfHostingGitEvidence(
+        launchingRepository: git.launching,
+        projectSource: git.project,
+        taskWorktree: worktree,
+        taskBaseline: null,
+      );
+      expect(missingBaseline.collectionSucceeded, isFalse);
+      expect(missingBaseline.collectionFailures.single.label, 'Task baseline');
+      expect(missingBaseline.taskDiff, isEmpty);
 
       // Without its gitfile this nested worktree still has a Git ancestor.
       // Required evidence must fail instead of reporting Project changes as Task.

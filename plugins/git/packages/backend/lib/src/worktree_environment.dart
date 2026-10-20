@@ -11,28 +11,51 @@ const int maximumEnvironmentDirectoryEntries = 2048;
 const int _maximumInitialReadBufferBytes = 64 * 1024;
 
 final class WorktreeEnvironment {
-  WorktreeEnvironment(
-    Directory root, {
-    Directory? gitWorktreeRoot,
-    Directory? gitDirectory,
-    this.baselineCommit,
-    this.branch,
-  }) : root = _canonicalRoot(root),
-       gitWorktreeRoot = gitWorktreeRoot == null
-           ? null
-           : _canonicalRoot(gitWorktreeRoot),
-       gitDirectory = gitDirectory == null
-           ? null
-           : _canonicalRoot(gitDirectory);
+  WorktreeEnvironment(Directory root, {this.gitCheckout})
+    : root = _canonicalRoot(root);
 
   final Directory root;
-  // Provider-established repository identity, never inferred from caller paths.
-  final Directory? gitWorktreeRoot;
-  final Directory? gitDirectory;
-  // Exact retained provider state. Filesystem-only fixtures need neither value.
-  final String? baselineCommit;
-  final String? branch;
+  final ({Directory root, Directory gitDirectory, String marker})? gitCheckout;
   Future<void> _pendingMutation = Future<void>.value();
+
+  /// Fence repository rediscovery when a live checkout marker is replaced.
+  /// This is operational path identity, not comparison or baseline authority.
+  Future<void> validateGitCheckout() async {
+    final checkout = gitCheckout;
+    if (checkout == null) return;
+    try {
+      var current = root;
+      while (true) {
+        if (await FileSystemEntity.type(current.path, followLinks: false) !=
+                FileSystemEntityType.directory ||
+            await current.resolveSymbolicLinks() != current.path) {
+          throw _gitCheckoutChanged;
+        }
+        if (current.path == checkout.root.path) break;
+        if (await FileSystemEntity.type(
+                  '${current.path}/.git',
+                  followLinks: false,
+                ) !=
+                FileSystemEntityType.notFound ||
+            current.parent.path == current.path) {
+          throw _gitCheckoutChanged;
+        }
+        current = current.parent;
+      }
+      if (await FileSystemEntity.type(
+                checkout.gitDirectory.path,
+                followLinks: false,
+              ) !=
+              FileSystemEntityType.directory ||
+          await checkout.gitDirectory.resolveSymbolicLinks() !=
+              checkout.gitDirectory.path ||
+          await readGitWorktreeMarker(checkout.root) != checkout.marker) {
+        throw _gitCheckoutChanged;
+      }
+    } on FileSystemException {
+      throw _gitCheckoutChanged;
+    }
+  }
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
@@ -844,6 +867,39 @@ String _entityName(String path) {
   final List<String> parts = path.split(Platform.pathSeparator);
   return parts.lastWhere((String part) => part.isNotEmpty);
 }
+
+Future<String> readGitWorktreeMarker(Directory root) async {
+  final marker = File('${root.path}/.git');
+  try {
+    if (await FileSystemEntity.type(marker.path, followLinks: false) !=
+        FileSystemEntityType.file) {
+      throw _gitCheckoutChanged;
+    }
+    final handle = await marker.open();
+    try {
+      final length = await handle.length();
+      if (length > 16384) throw _gitCheckoutChanged;
+      final bytes = await handle.read(16385);
+      if (bytes.length != length) throw _gitCheckoutChanged;
+      final value = utf8.decode(bytes, allowMalformed: false);
+      if (!value.startsWith('gitdir: ')) throw _gitCheckoutChanged;
+      return value;
+    } finally {
+      await handle.close();
+    }
+  } on FileSystemException {
+    throw _gitCheckoutChanged;
+  } on FormatException {
+    throw _gitCheckoutChanged;
+  }
+}
+
+const _gitCheckoutChanged = EnvironmentFailure(
+  code: 'git_checkout_changed',
+  message:
+      'The live Git checkout identity changed; restore it before execution.',
+  details: {},
+);
 
 EnvironmentFailure _failure(
   String code,

@@ -1495,28 +1495,28 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
   void configureForRuntime(Runtime runtime) {
     const library = 'package:adele_ui/environment_capability_bridge.dart';
     runtime
-      ..registerBridgeFunc(library, 'resolveEnvironmentCapabilityProvider', (
-        _,
-        _,
-        args,
-      ) {
-        expect(args[0]!.$value, changeSetSourceCapability.id.value);
-        expect(args[1]!.$value, 1);
-        expect(args[2]!.$value, changeSetSourceServiceId);
-        expect(args[3]!.$value, isNull);
-        final handle = 'handle-${++resolutions}';
-        final wait = resolving;
-        resolving = null;
-        final completion = Completer<$Value>();
-        zone.run(() async {
-          if (wait != null) await wait;
-          if (available) handles.add(handle);
-          completion.complete(
-            wrapStructuredBridgeData(available ? handle : null),
-          );
-        });
-        return $Future<$Value>.wrap(completion.future);
-      })
+      ..registerBridgeFunc(
+        library,
+        'resolveEnvironmentBufferedProcessCapabilityProvider',
+        (_, _, args) {
+          expect(args[0]!.$value, changeSetSourceCapability.id.value);
+          expect(args[1]!.$value, 1);
+          expect(args[2]!.$value, changeSetSourceServiceId);
+          expect(args[3]!.$value, isNull);
+          final handle = 'handle-${++resolutions}';
+          final wait = resolving;
+          resolving = null;
+          final completion = Completer<$Value>();
+          zone.run(() async {
+            if (wait != null) await wait;
+            if (available) handles.add(handle);
+            completion.complete(
+              wrapStructuredBridgeData(available ? handle : null),
+            );
+          });
+          return $Future<$Value>.wrap(completion.future);
+        },
+      )
       ..registerBridgeFunc(library, 'releaseEnvironmentCapabilityProvider', (
         _,
         _,

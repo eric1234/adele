@@ -38,16 +38,15 @@ under `repository/selected/project/.adele/worktrees/<allocated-name>`. Its live
 Environment root is the corresponding `selected/project` directory inside that
 checkout, not the checkout root or original Project source.
 
-Provider-state schema **v1** contains exactly these fields, stored opaquely by core:
+Provider-state schema **v2** contains exactly these fields, stored opaquely by core:
 
 | Field | Meaning |
 | --- | --- |
-| `schemaVersion` | Integer `1`; other versions are rejected. |
+| `schemaVersion` | Integer `2`; other versions are rejected. |
 | `environmentId` | Exact retained Environment identity. |
 | `sourceRelativePath` | Selected source relative to its Git worktree root, using forward slashes; empty for a repository-root source. |
 | `worktreeRelativePath` | Project-source-relative `.adele/worktrees/<allocated-name>`, using forward slashes. |
 | `branch` | Exact provider-created Task branch. |
-| `baselineCommit` | Exact full commit identity at establishment. |
 
 Absolute paths are not part of provider state or restoration authority.
 Development reports can derive current absolute paths separately.
@@ -60,9 +59,20 @@ they target another in-source directory. Only establishment creates storage pare
 Neither establishment nor restoration edits `.gitignore` or `.git/info/exclude`;
 ignore ergonomics for local operational state remain separate policy work.
 
+Establishment captures the original full SHA-1 or SHA-256 commit once, creates the
+branch/worktree at that commit, and returns an `EnvironmentInitialState` containing
+the shared Git anchor v1 schema and one plain `INSERT ... VALUES` with
+`expectedRows: 1`. The host commits that required anchor together with the new
+Task and primary Environment before publication, including for explicit temporary
+Project backing. Provisional establishment never calls `enrollForEnvironment` or
+uses a reverse storage selector. The baseline exists only in Git-owned SQL, not in
+provider state or the live `WorktreeEnvironment`. There is no v1 import, migration,
+dual authority, or current-HEAD fallback. See
+[prepared establishment state](../../docs/architecture/product-model.md#prepared-establishment-state).
+
 ### Restoration and moves
 
-Restoration uses the **current** canonical Project source and relative v1 state.
+Restoration uses the **current** canonical Project source and relative v2 state.
 The selected source must still have the exact retained source-relative scope.
 Git's `worktree list --porcelain -z` inventory identifies the registration for the
 retained exact branch. Healthy registration at the expected path needs no repair.
@@ -82,16 +92,11 @@ identity. Private `.git/worktrees` registration contents are not parsed.
 The provider re-reads the inventory and requires
 the retained branch at the expected path. Repair success alone is not authority:
 the provider then validates the actual linked worktree, current common Git
-directory, exact branch, exact baseline commit, and confined selected source scope
+directory, exact branch, and confined selected source scope
 before binding a fresh `WorktreeEnvironment`. Successful restoration returns
-canonical relative v1 state, normally unchanged by a move.
-
-Establishment and restoration copy the exact retained `baselineCommit` and `branch`
-into that live object alongside its canonical filesystem and Git roots. Later
-commits do not advance this baseline. Independent Environments, including ones in
-the same Task, retain their own baselines; no Task-wide registry or current-Project
-HEAD lookup supplies change review authority. This metadata changes neither the
-provider-state schema nor ordinary filesystem, execution, or terminal operations.
+canonical relative v2 state, normally unchanged by a move, and no initialization
+plan. Baseline availability is a Task comparison concern: its absence must not
+prevent ordinary Environment filesystem/process restoration or other review scopes.
 
 A missing worktree fails explicitly. Restore never creates a replacement
 Environment, branch, worktree, or collision suffix. Unsupported/failed repair
@@ -123,180 +128,32 @@ The same stock AOT backend advertises the Diff-owned
 `adele.diff.change-set-source` v1 Capability through
 `diff_viewer_contract`'s zero-argument `ChangeSetSourceService.snapshotUnstaged`,
 `snapshotUncommitted`, and `snapshotTaskChanges` methods.
-Its separate `dev.adele.git.change-set-source` provider is explicitly associated
-with this generation's actual Git Worktree Environment provider in the same backend.
-The contextual dispatcher uses `AuthorizedEnvironmentReadService.authority()`
-to select only an existing
-live `WorktreeEnvironment`; it never accepts caller-selected Environment IDs,
-repository paths, or a fallback to the Task's primary Environment. Ordinary
-context-free calls are rejected. The host read grant is revalidated before success.
-Establish/restore also bind the canonical Git directory and actual worktree root to
-that live object. Inspection supplies both explicitly to Git, so a newly created
-nested `.git` or `core.worktree` setting cannot substitute another repository.
-
-For Unstaged, `git ls-files --cached --stage --debug -z` supplies the bounded index
-inventory, not HEAD; `git ls-files --others --exclude-standard -z` adds nonignored
-untracked files. Direct bounded reads are hashed as Git blobs (SHA-1 or SHA-256
-according to the index identity), omitting byte-equal tracked files without Git
-subprocesses per clean file. Staged-only ordinary files are absent. Both commands
-are scoped to the live root, including a nested Project source. Returned paths are Environment-relative,
-strictly decoded UTF-8, and sorted; NUL framing preserves spaces, punctuation,
-tabs, and newlines without treating filenames as pathspec expressions. Renames
-are represented as deletion/addition, not similarity detection.
-The stage/debug parser preserves intent-to-add, including empty additions, and
-rejects unexpected metadata layouts. Sparse/skip-worktree and assume-unchanged
-index entries have explicit unsupported state, not fabricated deletions or clean
-claims. The inventory adds every gitlink as an explicitly
-unsupported entry with unknown change state, even when its submodule is clean.
-Git is never asked to recurse into child repositories with independent executable
-filters/hooks, and an uninspected submodule is never silently presented as clean.
-Untracked nested repository directory markers are normalized to relative paths
-and retained as unsupported entries; their contents are not recursively inspected.
-
-Uncommitted captures the current HEAD commit/tree and compares its bounded,
-source-scoped tree inventory with the same resolved stage-0 index used for
-Unstaged. Bounded immutable HEAD and index blobs supply staged hunks through the
-same private patch mechanism. Index-to-working-file comparisons supply the
-unstaged layer, including nonignored untracked additions. This is a layered union,
-not HEAD-to-working-tree: A-to-B staging and B-to-A working edits both remain
-visible. A staged deletion recreated on disk is a staged deletion and an unstaged
-addition. Intent-to-add is not fully staged. Unmerged stage-1/2/3 paths appear only
-in the separate conflicts collection, never as ordinary staged approval or
-unstaged changes. Existing unsupported index flags and modes remain conservative
-placeholders rather than fabricated hunks.
-
-Task / Branch adds the net retained-baseline-tree to captured-HEAD-tree comparison
-as a separate committed layer, using the same bounded source-scoped tree enumeration,
-immutable blob reads, classification, and private patch generation as staged changes.
-It is not a log or a baseline-to-working-tree patch. Committed additions/deletions,
-mode changes and nontext placeholders remain distinct from later index and working
-edits, including changes that reverse earlier layers. Conflict paths are excluded
-from ordinary staged/unstaged layers without erasing independent committed changes.
-
-All selected layers are computed inside one contextual operation with one captured
-live Environment and repository identity, not independently resolved calls. Task
-requires an exact, available baseline commit from that live object and an attached
-HEAD matching its retained provider branch. Missing/invalid baseline information,
-missing objects, detached HEAD and unexpected checkout fail explicitly; there is
-no HEAD substitution, merge-base inference, repair or branch switching. Unstaged
-and Uncommitted remain available without Task metadata. Uncommitted and Task require
-a valid current HEAD. HEAD, baseline availability for Task, index, configuration,
-observed files, exact live binding and authority are revalidated before settlement.
-
-Text patches are actual deterministic Git unified hunks over bounded
-baseline/HEAD/index blobs and direct working-file snapshots. A private temporary
-directory outside the worktree supplies `git diff --no-index` with fixed literal
-filenames; Git does not
-run repository clean filters, textconv, external diff, or attribute-selected diff
-drivers to obtain those hunks. Neither `diff-files` nor `ls-files --modified` is
-used: both can execute clean filters while checking stat-racy files, even without
-requesting patches. Cached-only enumeration avoids that execution path, including
-when another process adds a new filter after the snapshot has begun.
-Custom conversion/diff attributes, including legacy `crlf` and `crlf=input`, and
-effective `core.autocrlf`/`core.eol` conversion are unsupported placeholders;
-unspecified or disabled `-crlf` alone does not require conversion. `-diff`
-attributes are binary placeholders. Binary data, invalid
-UTF-8, symbolic links, submodules, unmerged entries, type/mode changes, and oversized
-files likewise have explicit status/detail and no fabricated text hunks. Equal
-raw content, including binary/invalid UTF-8 with stale index stat metadata, is
-omitted before content classification. Newline absence is
-retained on the corresponding hunk line; line text otherwise preserves CR and LF
-semantics rather than normalizing file content. Effective `core.filemode=false`
-suppresses working-file executable-bit-only differences; actual HEAD/index mode
-differences and baseline-to-HEAD mode differences remain visible in their layers.
-Repository settings override lower configuration scopes. Git executable state
-uses only the owner-execute bit.
-Both snapshot implementations preserve Git's distinction between implicit boolean
-true and explicitly empty false, alongside the ordinary true/yes/on/1 and
-false/no/off/0 spellings for `core.filemode` and `core.autocrlf`.
-
-The snapshot subprocess path is separate from Environment foreground execution.
-`git_process_environment.dart` shares the existing placement isolation boundary,
-with an explicitly stricter read-only inspection policy rather than changing the
-placement/repair environment.
-It starts Git directly with argument lists and `includeParentEnvironment: false`,
-retains absolute PATH entries and normal HOME/XDG configuration discovery (plus
-Windows profile/SystemRoot/TEMP/TMP), and rejects an empty filtered search path
-rather than executing a worktree-local `git`. Source inspection preserves effective
-repository/global ignore and conversion settings; private patch generation alone
-disables system/global configuration and attributes. Inherited Git routing,
-fsmonitor, external diff/textconv, optional index locks, replacement objects, and
-lazy fetch where supported by Git are disabled. This feature never refreshes or
-writes the index, edits Git configuration,
-or writes the source worktree; only its temporary snapshot copies are written and
-removed. Git executable selection through PATH is trusted, not sandboxed.
-
-Default per-operation limits are 4,096 retained inventory paths
-(baseline/HEAD trees, index records and their union with untracked paths are bounded),
-256 returned entries across all selected layers and conflicts,
-1 MiB per rendered file side, 2 MiB collected stdout per command/patch, 64 KiB
-stderr counted without retaining diagnostics,
-8 MiB total compared inputs plus patches, 8,192 hunk lines, and a conservative 6 MiB
-escaped-text/DTO transport budget below the host frame limit. Each Git process has
-a 10-second deadline including pipe completion; the entire operation has a
-30-second deadline. Output is bounded during collection, not after an unbounded
-`Process.run`. Per-file size/patch excess is an oversized placeholder; enumeration,
-file-count, content/patch aggregate, process, and malformed-output failures reject
-the whole snapshot rather than returning a deceptively complete truncated result.
-Ordinary oversized tracked regular files have a separate streamed verification
-budget: 16 MiB per file and 64 MiB across the operation. A reusable 64 KiB buffer
-feeds the raw Git blob header and bytes into SHA-1 or SHA-256 according to the
-indexed OID, without retaining the file or executing Git conversions/filters.
-Only a complete matching identity with consistent metadata and indexed mode is
-confirmed unchanged and omitted. Raw mismatches remain oversized entries without
-hunks; untracked oversized files likewise remain explicit additions. A file beyond
-either verification budget, or whose read fails, remains oversized with explicitly
-unknown change state (`unsupported`), never an inferred clean result. Detected
-size/metadata changes reject the snapshot. Verification checks operation liveness
-between bounded reads and retains omitted files in the final observation checks.
-These scan budgets do not consume content/patch or DTO budgets. Equal inspected
-files do not consume the changed-result byte budget.
-For Uncommitted and Task these are shared operation limits, not fresh allowances
-for each layer. A path appearing in committed, staged, and unstaged layers counts
-three times toward the returned-entry limit. Nontext file sides collected within
-the rendering limit are also charged by both layered scopes;
-Unstaged retains its existing text-result accounting. Content/patch aggregate
-overflow rejects the whole result, not just one section.
-
-Line-ending configuration, enumeration and direct-path/stat observations are checked
-again before publication. Inspected tracked symlinks, including clean ones omitted
-from the result, are rechecked for direct-path safety, link type, and target text;
-their referenced files are never opened.
-Detected concurrent changes fail explicitly, but these checks are not an atomic
-filesystem/index transaction or an OS sandbox: another same-user process can race
-path or configuration replacement, preserve timestamps, or change and restore state
-between checks.
-Private copies freeze the compared bytes, not the entire repository at one instant.
-Process termination kills the directly started Git process; deliberately detached
-children of a substituted Git executable are not contained. Linux is the validated
-platform for this snapshot path; other platforms remain unvalidated.
-
-Focused tests live in `packages/backend/test/git_change_set_source_test.dart`.
-`backend_host_integration_test.dart` additionally compiles the actual shared host
-and stock Git AOT, checks both ready advertisements and their exact association,
-and exercises generated contextual requests for independent live Environments.
-The `git_backend` maintained target discovers both files.
+Its unchanged `dev.adele.git.change-set-source` provider is explicitly
+`environmentBound`, declares only the `bufferedProcess` Environment host-service
+permission, and has no sibling provider association. The invocation-local
+`GitPersistedChangeSetSourceService` receives the generated authorized buffered
+process client. Its `GitTaskAnchorStore` is generation-owned and uses a generated
+`ProjectStorageServiceClient` bound to the actual bootstrap
+`hostInfrastructureContext`, separately from operation authority. It does not
+select private live Worktree objects or require a read-service grant.
+Context-free calls remain rejected. Provider-independent selection does not imply
+that every Environment supplies the executable prerequisites below.
 
 <a id="portable-unstaged-inspection"></a>
 
 ### Portable change inspection
 
 `GitPortableUnstagedSnapshotService` supplies `snapshotUnstaged()`,
-`snapshotUncommitted()` and `snapshotTaskChanges()` as a separate implementation.
-All reuse one operation's index-to-working-tree inspection, including nonignored untracked
-additions; Uncommitted also returns captured HEAD-to-index changes and a separate
-conflict collection, not a net HEAD-to-working-tree diff. It
+`snapshotUncommitted()` and `snapshotTaskChanges()` as the stock comparison engine.
+All reuse one operation's index-to-working-tree inspection, including nonignored
+untracked additions; Uncommitted also returns captured HEAD-to-index changes and a
+separate conflict collection, not a net HEAD-to-working-tree diff. It
 accepts `AuthorizedEnvironmentBufferedProcessService`, optional reduced
 operation limits, and an optional trusted `GitTaskComparisonAnchor`. It does not
 accept Session/Environment IDs or repository paths, import the Worktree provider,
 resolve live provider objects, or perform host-local
-filesystem/process I/O. The existing stock `git_backend.dart` advertisement,
-provider ID, association, read grant, and all three scope methods remain unchanged.
-The portable service is not advertised as another stock provider. Production stock
-Diff still uses the Worktree-specific implementation described above, including its
-existing retained Worktree baseline and provider-state v1. Automatic portable baseline
-establishment, Worktree baseline removal and production activation remain deferred;
-no staging, approvals, or feedback mutation is implemented.
+filesystem/process I/O. There is one stock provider, no Worktree-specific fallback
+or second implementation. No staging, approvals, or feedback mutation is implemented.
 
 Portable Task comparison requires an immutable Git-owned backend setup value:
 `GitTaskComparisonAnchor(baselineCommit: ..., expectedBranchRef: ...)`. It carries
@@ -310,8 +167,8 @@ fail explicitly. There is no current-HEAD, merge-base, initial-commit, default-b
 or primary-Environment substitution. Unstaged and Uncommitted do not require this
 anchor. Later commits never advance it.
 
-That trusted-value comparison boundary (G5a) remains usable independently of storage.
-`GitPersistedChangeSetSourceService` adds exact persisted lookup (G5b1) around it,
+That trusted-value comparison boundary remains usable independently of storage.
+`GitPersistedChangeSetSourceService` adds exact persisted lookup around it,
 without moving SQL or Session identity into the Git comparison routines. For each
 zero-argument Task request it observes `capturedIdentity()` through the same
 authorized buffered-process client used for all commands. Session routes the
@@ -320,7 +177,8 @@ the retained anchor. Neither ID is a Diff method parameter or an authority-grant
 selector. The frontend still receives only the Diff-owned generated service.
 
 `GitTaskAnchorStore` owns one current pre-release v1 schema under backend/plugin
-identity `dev.adele.plugin.git`. Its `adele_git_task_anchors` table contains only
+identity `dev.adele.plugin.git`. `git_task_anchor_schema.dart` is the single schema
+source for both establishment and the store. Its `adele_git_task_anchors` table contains only
 `environment_id` (non-null primary key and foreign key to
 `adele_product_environments.id`), `baseline_commit`, and `expected_branch_ref`.
 Lookup joins the core Session, recorded Session-to-Environment association, and
@@ -328,7 +186,8 @@ Environment, validating both exact identities and same-Task membership. An absen
 exact anchor fails with `baseline_unavailable`; another Environment's anchor is
 never borrowed. Broken associations and malformed anchors fail distinctly as
 `baseline_association_mismatch` and `baseline_corrupt`. Repository object existence,
-commit type, object-format width and expected branch remain G5a's responsibility.
+commit type, object-format width and expected branch remain the comparison engine's
+responsibility.
 Storage failures are `baseline_storage_failed`, never a reset or in-memory fallback.
 
 The store's backend-internal `enrollForEnvironment(environmentId: ..., anchor: ...)`
@@ -359,16 +218,31 @@ later Git commands and publication, including late storage responses. These are
 bounded best-effort observations, not an atomic SQL/filesystem transaction. No
 per-file queries or new subprocesses are introduced.
 
-Tests provision known anchors through this store before invocation, including before
-Session creation; this is not automatic Task initialization. The intended destination
-is one authoritative Git comparison baseline per Environment in
-`adele_git_task_anchors`, with Worktree provider state retaining only worktree/branch
-lifecycle data. Current stock snapshots still consume the unchanged provider-state
-`baselineCommit`. Mandatory baseline capture/enrollment, failure-safe Task usability,
-provider-state removal, and stock Diff cutover remain separate coordinated work,
-not a migration or compatibility path. Enrollment after core publication is not
-atomic with Task creation. Core Task/Session/Environment values and the public
-Diff contract still acquire no Git metadata.
+Stock Worktree establishment uses the atomic initial-state path described above,
+not this post-publication provisioning method. Independent Environment providers
+can be inspected without Git lifecycle state; their Task scope needs an explicitly
+provisioned anchor for that exact Environment. Missing anchors disable only Task,
+not Unstaged or Uncommitted. Core Task/Session/Environment values and the public
+Diff contract acquire no Git metadata.
+
+The stock Worktree provider retains only operational checkout identity in its live
+object: canonical checkout/metadata directories and the bounded direct `.git`
+marker. Buffered execution checks that identity before and after each request,
+including the absence of any nearer `.git` marker between the selected source
+scope and checkout root. Missing, replaced, aliased, or nested markers fail with
+`git_checkout_changed`; Git cannot silently rediscover the enclosing source repo
+or a newly nested repo. This adds no subprocesses, baseline authority, or private
+comparison lookup. Descendant repositories below the selected Environment root
+remain available to intentional child-directory commands. These checks remain
+best-effort path observations rather than an OS sandbox or an atomic filesystem
+transaction.
+
+Portable comparison also rejects explicit `core.worktree` configuration with
+`unsupported_repository_configuration`. Per-worktree configuration can otherwise
+redirect discovery into an enclosing repository without changing the linked
+checkout marker, producing an incorrectly empty scoped inventory. This check uses
+the already captured settings, adds no subprocesses, and is deliberately
+conservative even when an explicit override happens to name the expected root.
 
 The independent Capability must declare `environmentBound` and the separate
 `bufferedProcess` host-service permission. Its consumer needs the contextual process
@@ -460,7 +334,7 @@ attributes, external diff and textconv, and fixes the diff algorithm/context.
 Using no-index inside a discovered repository is deliberately avoided: disabling
 external diff and textconv alone does not stop clean filters or EOL conversion.
 The shared patch parser has an explicit stdin-patch mode because these patches can
-omit an index header; its legacy strict default is unchanged. Binary/invalid UTF-8,
+omit an index header; its strict default is unchanged. Binary/invalid UTF-8,
 conversion/custom diff attributes, conflicts, index flags, mode changes, submodules
 and nested repositories retain explicit nontext representations. Indexed symbolic
 links remain unsupported even when their target text might be unchanged. Git does
@@ -559,8 +433,8 @@ and fail-closed behavior. Uncommitted regression diagnostics exercise the same
 100/500/900-file batch scaling, mixed staged/unstaged changes and independent
 prepared execution. Task regression diagnostics exercise clean 100/500/900-file
 snapshots, committed-only and three-layer changes, with bounded process-count
-assertions rather than wall-clock CI assertions. Production activation remains
-deferred; batching does not alter the Environment's isolation guarantees.
+assertions rather than wall-clock CI assertions. Batching does not alter the
+Environment's isolation guarantees.
 
 Index/untracked/deleted/obstructing inventories, relevant configuration, rendered
 file attributes, repository discovery and observed metadata are rechecked before
@@ -588,13 +462,12 @@ repository at the host filesystem root. The maintained `git_backend` target
 discovers those, `git_portable_cached_diff_test.dart`'s staged and commit-to-commit
 feasibility checks, and the extracted parser tests. Application
 `prepared_portable_git_integration_test.dart` independently prepares an Environment
-AOT backend that runs real processes, a separate AOT adapter over this production
-service, and a compiled EVC consumer of the generated Diff contract. It checks
+AOT backend that runs real processes, stock Git AOT with compiled stock Diff EVC,
+and separate probe-backed adapter/consumer lanes for controlled failure tests. It checks
 nonprimary Session binding, typed committed/staged/unstaged paths and hunks,
 conflict entries, one semantic invocation per request, clean-repository batch
-scaling, explicit process
-declarations and exact retirement/departure fencing. Neither backend imports the
-other's implementation. The stock Diff frontend is not changed by this proof.
+scaling, explicit process declarations and exact retirement/departure fencing.
+The independent Environment backend imports neither Git nor Diff implementation.
 The persisted path uses the actual Git plugin identity and exact-generation storage
 grant, real Project backing, distinct primary/nonprimary anchors, replacement and
 durable reopen without reenrollment. `app/test/core/git_task_anchor_store_test.dart`
@@ -602,6 +475,15 @@ covers the Git store against maintained Project storage, including association,
 duplicate/concurrent enrollment, corruption, Project isolation and temporary backing.
 `git_persisted_change_set_source_test.dart` covers adapter failure/deadline boundaries;
 its controlled storage doubles do not stand in for persistence evidence.
+`backend_host_integration_test.dart` compiles the actual shared host and stock Git
+AOT, verifies the process-only advertisement and invocation route, exercises all
+three scopes over generated Environment calls, and binds generated infrastructure
+storage to the owning backend generation. Its storage double validates transport,
+not SQL durability. Worktree tests cover exact initial SQL, SHA-1/SHA-256 capture,
+strict v2 state, restoration without baseline objects, and no restore-time replay.
+The application stock lifecycle and Diff/Git integration suites cover atomic
+initialization with real Project SQL, backend replacement/reopen/moves, and stock
+Diff's process-only grants without changing generic read/sibling contracts.
 
 ## Filesystem and processes
 
@@ -783,8 +665,9 @@ This facet adds no operation to `AuthorizedEnvironmentReadService` or the existi
 authorized streamed process service. Independent Capability backends require the
 separate explicit Environment-bound buffered-process grant described by the public
 Environment contract. Interpreted consumers invoke semantic Capabilities, not a
-generic process API. The stock Git ChangeSetSource advertisement remains unchanged;
-the portable Unstaged service above consumes that separate grant only when supplied.
+generic process API. The stock Git ChangeSetSource uses that explicit grant for
+all three snapshot scopes; it neither inherits read authority nor exposes process
+execution directly to Diff.
 
 ## Interactive terminals
 

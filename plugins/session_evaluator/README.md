@@ -289,8 +289,10 @@ Session, exact `InstalledBackendActivation`, and its default configuration/servi
 route. Metadata capture follows that retained Session's canonical same-Task
 Environment association, not an assumed Task-primary
 Environment. `SessionEvaluatorServiceClient` and `readSessionEvidence` use the
-retained route through the existing generation-validated channel. No storage reader
-is linked into the adapter. Navigation, including leaving and reentering a Session,
+retained route through the existing generation-validated channel. Evidence JSON
+still comes only from that backend; the development source-hint helper separately
+reads the original Git anchor from existing Project SQL backing. Navigation,
+including leaving and reentering a Session,
 does not replace the captured Session or retarget the backend. The selection
 revision is only an epoch, not execution or storage authority. Fresh invocation
 captures the new selection.
@@ -359,7 +361,7 @@ handoff directories manually when no longer needed.
 
 The companion README records captured Project, Task, Session, and Environment
 identities plus validated local source hints when available. The development helper
-recognizes only v1 retained state from the stock Git plugin's Environment provider,
+recognizes only v2 retained state from the stock Git plugin's Environment provider,
 validates its retained identity fields, relative paths, and selected-source scope against the
 Project source's nearest enclosing checkout marker. It resolves
 the Project source canonically, then requires direct derived worktree/scope paths
@@ -370,6 +372,14 @@ branch, or HEAD. Unsupported providers or malformed, missing, or unsafe source
 metadata are explicitly unavailable, not replaced with the Task primary, current
 checkout, or a guessed repository. The helper neither materializes the Environment
 nor runs Git commands or changes Git state.
+The original baseline comes only from `adele_git_task_anchors` in the current
+Project's already-open durable or temporary backing. This read-only developer
+diagnostic checks the exact canonical Session/Environment/same-Task association,
+supported Git schema, full commit ID, and expected branch reference. It never
+creates backing, prepares schemas, or enrolls anchors. Missing, corrupt, or
+mismatched SQL evidence makes source hints unavailable, with no provider-state,
+HEAD, primary-Environment, or other-Project fallback. Path validation is separate
+from this SQL evidence check.
 An invalid canonical product graph fails capture rather than substituting another
 Session or Environment.
 
@@ -416,8 +426,9 @@ and from a claim of process liveness.
 `app/test/session_evidence_file_test.dart` owns unique two-file directory writing,
 bounds, ownership revocation, and best-effort failure cleanup using real temporary
 files and injected write faults. `app/test/session_evaluation_handoff_test.dart`
-owns captured source metadata, canonical nonprimary association, stock Git v1
-validation, unsafe/unavailable source handling, and rendered inspection guidance.
+owns captured source metadata, canonical nonprimary association, stock Git v2
+validation, exact read-only SQL anchors, absent/corrupt backing evidence,
+unsafe/unavailable source handling, and rendered inspection guidance.
 Tooling tests check the ordinary prepared catalog and launcher target;
 application tests check the plugin-neutral Navigator/context composition seams.
 

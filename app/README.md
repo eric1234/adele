@@ -52,9 +52,12 @@ the native **Prepare Evaluation Handoff...** Command, bounded evidence collectio
 local-state output directory, and completion path/clipboard feedback.
 [`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart)
 captures the selected canonical Session's Environment association and validates
-stock Git v1 source hints for the companion README without materializing that
-Environment or changing Git state. Both stay outside `app/lib` and the legacy
-headless runner; the helper does not import the runner. Handoffs contain a README
+stock Git v2 source hints for the companion README without materializing that
+Environment or changing Git state. The small developer-only
+[`tool/development_git_baseline.dart`](tool/development_git_baseline.dart) reader
+checks the exact association and original Git-owned SQL anchor in existing Project
+backing, without creating or changing storage. These helpers stay outside `app/lib`
+and do not import the legacy headless runner. Handoffs contain a README
 and unchanged evidence JSON, not a source snapshot or portable archive.
 
 ```text

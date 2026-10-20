@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_product/adele_product.dart';
 
+import 'development_git_baseline.dart';
+
 /// Development-only interpretation of retained stock Git metadata, not a live
 /// Environment binding or a repository snapshot.
 final class SessionEvaluationHandoff {
@@ -21,9 +23,10 @@ final class SessionEvaluationHandoff {
   }) : _unavailableReason = unavailableReason;
 
   factory SessionEvaluationHandoff.capture(
-    InMemoryProductStore store,
+    ProductLifecycleCoordinator lifecycle,
     Session session,
   ) {
+    final store = lifecycle.store;
     if (!identical(store.session(session.id), session)) {
       throw ArgumentError('Evaluation handoff requires the canonical Session.');
     }
@@ -55,7 +58,7 @@ final class SessionEvaluationHandoff {
     if (environment.providerId.value != 'dev.adele.environment.git-worktree') {
       return unavailable('unsupported Environment provider.');
     }
-    // Match the stock provider's v1 schema without importing its implementation
+    // Match the stock provider's v2 schema without importing its implementation
     // or the legacy self-hosting runner. Production core keeps this state opaque.
     const fields = {
       'schemaVersion',
@@ -63,36 +66,46 @@ final class SessionEvaluationHandoff {
       'sourceRelativePath',
       'worktreeRelativePath',
       'branch',
-      'baselineCommit',
     };
     final state = environment.providerState;
     if (state == null ||
         state.length != fields.length ||
         !state.keys.every(fields.contains) ||
         state['schemaVersion'] is! int ||
-        state['schemaVersion'] != 1 ||
+        state['schemaVersion'] != 2 ||
         state['environmentId'] != environment.id.value) {
-      return unavailable('invalid or unsupported stock Git v1 state.');
+      return unavailable('invalid or unsupported stock Git v2 state.');
     }
     final scope = state['sourceRelativePath'];
     final relative = state['worktreeRelativePath'];
-    final baseline = state['baselineCommit'];
     final branch = state['branch'];
     final controls = RegExp(r'[\x00-\x1f\x7f]');
     if (scope is! String ||
         relative is! String ||
-        baseline is! String ||
         branch is! String ||
-        [scope, relative, baseline, branch].any(controls.hasMatch) ||
+        [scope, relative, branch].any(controls.hasMatch) ||
         RegExp(r'[\\:]').hasMatch(scope) ||
         (scope.isNotEmpty &&
             scope
                 .split('/')
                 .any((part) => part.isEmpty || part == '.' || part == '..')) ||
         !RegExp(r'^\.adele/worktrees/[a-z0-9][a-z0-9-]*$').hasMatch(relative) ||
-        !RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(baseline) ||
         !RegExp(r'^adele-[a-z0-9-]+$').hasMatch(branch)) {
-      return unavailable('malformed stock Git paths, baseline, or branch.');
+      return unavailable('malformed stock Git paths or branch.');
+    }
+
+    final String baseline;
+    try {
+      baseline = developmentGitBaselineCommit(
+        lifecycle,
+        environment,
+        branch: branch,
+        session: session,
+      );
+    } on Object {
+      return unavailable(
+        'retained Git SQL baseline is unavailable or invalid.',
+      );
     }
 
     try {
@@ -220,8 +233,9 @@ Retained Session evidence: [evidence.json](evidence.json)
 - Retained branch: ${_code(branch!)}
 
 The full linked checkout root is distinct from a nested selected source directory.
-Baseline and branch are retained establishment metadata, not a current HEAD or
-current branch observation. Capture checked state, direct paths and the checkout
+The baseline is retained Git-owned SQL evidence; the branch is provider lifecycle
+metadata, not a current HEAD or current branch observation. Capture checked the
+exact retained SQL association, state, direct paths and the checkout
 marker, not Git registration, commit availability, or checkout integrity.
 
 Suggested POSIX-shell inspection commands (not executed by export), run from the

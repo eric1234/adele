@@ -68,7 +68,6 @@ void main() {
       '-m',
       'baseline',
     ]);
-    final baseline = (await _git(repository, ['rev-parse', 'HEAD'])).trim();
     stockEnvironments = [];
     for (final id in ['additional', 'primary']) {
       final relative = '.adele/worktrees/$id';
@@ -96,12 +95,11 @@ void main() {
               : EnvironmentRole.primary,
           providerId: ProviderId(_stockProvider),
           providerState: {
-            'schemaVersion': 1,
+            'schemaVersion': 2,
             'environmentId': id,
             'sourceRelativePath': '',
             'worktreeRelativePath': relative,
             'branch': 'adele-$id',
-            'baselineCommit': baseline,
           },
         ),
       );

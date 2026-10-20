@@ -1,26 +1,20 @@
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
-import 'package:git_backend/src/git_change_set_source.dart' as legacy;
 import 'package:git_backend/src/git_snapshot_parsing.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('legacy imports retain the extracted index types and parsers', () {
+  test('shared parsers retain literal paths and nested repository markers', () {
     final raw = _indexRecord('dir/space tab\tnewline\n');
     final entries = parseGitIndex(raw);
-    final Map<String, legacy.GitIndexEntry> legacyEntries = legacy
-        .parseGitIndex(raw);
-    expect(legacyEntries, entries);
     const untracked = 'new\u0000nested/repository/\u0000';
     addGitUntrackedEntries(untracked, entries);
-    legacy.addGitUntrackedEntries(untracked, legacyEntries);
-    expect(legacyEntries, entries);
     expect(entries['nested/repository']!.kind, 'untrackedRepository');
     expect(
-      () => legacy.parseGitIndex(raw, maximumEntries: 0),
+      () => parseGitIndex(raw, maximumEntries: 0),
       throwsA(_code('inventory_too_large')),
     );
     expect(
-      () => legacy.addGitUntrackedEntries('extra\u0000', {}, maximumEntries: 0),
+      () => addGitUntrackedEntries('extra\u0000', {}, maximumEntries: 0),
       throwsA(_code('inventory_too_large')),
     );
   });
@@ -392,6 +386,105 @@ void main() {
     },
   );
 
+  test(
+    'untracked parser bounds retained entries before scanning remaining records',
+    () {
+      final entries = <String, GitIndexEntry>{};
+      addGitUntrackedEntries(
+        'first\u0000second\u0000',
+        entries,
+        maximumEntries: 2,
+      );
+      expect(entries.keys, ['first', 'second']);
+      expect(
+        () => addGitUntrackedEntries('third\u0000', entries, maximumEntries: 2),
+        throwsA(_code('inventory_too_large')),
+      );
+      expect(entries.keys, ['first', 'second']);
+      entries.clear();
+      final many = Iterable.generate(1000, (i) => 'n$i\u0000').join();
+      expect(
+        () => addGitUntrackedEntries(
+          '$many../invalid-tail\u0000',
+          entries,
+          maximumEntries: 3,
+        ),
+        throwsA(_code('inventory_too_large')),
+      );
+      expect(entries.keys, ['n0', 'n1', 'n2']);
+    },
+  );
+
+  test(
+    'untracked directory normalization preserves path and collision checks',
+    () {
+      final entries = <String, GitIndexEntry>{};
+      addGitUntrackedEntries('vendor/repo with spaces/\u0000', entries);
+      expect(entries.keys, ['vendor/repo with spaces']);
+      expect(entries.values.single.kind, 'untrackedRepository');
+      expect(entries.values.single.newMode, '040000');
+      for (final malformed in [
+        'unterminated',
+        '\u0000',
+        '/\u0000',
+        '/absolute/\u0000',
+        '../escape/\u0000',
+        './relative/\u0000',
+        'a/../b/\u0000',
+        'a/./b/\u0000',
+        'a//b/\u0000',
+        'a//\u0000',
+      ]) {
+        expect(
+          () => addGitUntrackedEntries(malformed, {}),
+          throwsA(_code('invalid_git_output')),
+          reason: malformed,
+        );
+      }
+      for (final records in [
+        'same\u0000same\u0000',
+        'same/\u0000same/\u0000',
+        'same\u0000same/\u0000',
+        'same/\u0000same\u0000',
+      ]) {
+        expect(
+          () => addGitUntrackedEntries(records, {}, maximumEntries: 1),
+          throwsA(_code('snapshot_changed')),
+        );
+      }
+      final tracked = parseGitIndex(_indexRecord('tracked'));
+      for (final record in ['tracked\u0000', 'tracked/\u0000']) {
+        expect(
+          () => addGitUntrackedEntries(record, tracked, maximumEntries: 1),
+          throwsA(_code('snapshot_changed')),
+        );
+      }
+    },
+  );
+
+  test('patch parser validates ranges counts ordering and newline markers', () {
+    const prefix =
+        'diff --git old new\nindex 123..456 100644\n--- old\n+++ new\n';
+    final hunk = parseGitPatch(
+      '$prefix@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n',
+    ).single;
+    expect(hunk.lines.every((line) => line.noNewline), isTrue);
+    for (final malformed in [
+      '$prefix@@ -1 +1 @@\n-old\n',
+      '$prefix@@ -1 +1 @@\n\\ No newline at end of file\n-old\n+new\n',
+      '$prefix@@ -1 +1 @@\n-old\n+new\n+extra\n',
+      '$prefix@@ -0 +1 @@\n-old\n+new\n',
+      '$prefix@@ -1 +1 @@\n-old\n+new\n@@ -1 +1 @@\n-old\n+new\n',
+      '$prefix@@ -1 +1 @@\n-old\n+new',
+      'Binary files old and new differ\n',
+    ]) {
+      expect(
+        () => parseGitPatch(malformed),
+        throwsA(_code('invalid_git_output')),
+      );
+    }
+  });
+
   const diff = 'diff --git - ./file\n';
   const paths = '--- -\n+++ ./file\n';
   const content = '@@ -1 +1 @@\n-old\r\n+new\n\\ No newline at end of file\n';
@@ -399,10 +492,6 @@ void main() {
 
   test('stdin patches opt out of the otherwise required index header', () {
     expect(() => parseGitPatch(noIndex), throwsA(_code('invalid_git_output')));
-    expect(
-      () => legacy.parseGitPatch(noIndex),
-      throwsA(_code('invalid_git_output')),
-    );
     final hunk = parseGitPatch(noIndex, requireIndex: false).single;
     expect(
       (hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount),
@@ -411,7 +500,7 @@ void main() {
     expect(hunk.lines.map((line) => line.text), ['old\r', 'new']);
     expect(hunk.lines.map((line) => line.noNewline), [false, true]);
     expect(
-      legacy.parseGitPatch('${diff}index 123..456 100644\n$paths$content'),
+      parseGitPatch('${diff}index 123..456 100644\n$paths$content'),
       hasLength(1),
     );
   });

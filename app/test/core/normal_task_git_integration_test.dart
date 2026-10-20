@@ -15,6 +15,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -263,6 +264,30 @@ void main() {
         expect(created.task.projectId, project.id);
         expect(created.task.title, 'Normal nested Task');
         expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
+        // Establishment, not a later Session/storage read, created this backing.
+        final database = runtime.lifecycle.existingDatabaseForProject(project)!;
+        final temporaryBacking = File(database.path);
+        expect(await temporaryBacking.exists(), isTrue);
+        expect(database.path, isNot(startsWith(source.path)));
+        expect(await File('${source.path}/.adele/data.db').exists(), isFalse);
+        expect(
+          runtime.lifecycle.databaseForEnvironment(created.environment.id),
+          isNull,
+        );
+        expect(database.loadProductGraph().sessions, isEmpty);
+        expect(
+          database
+              .queryPluginRows('SELECT * FROM adele_git_task_anchors', {})
+              .map((row) => row.values),
+          [
+            {
+              'environment_id': created.environment.id.value,
+              'baseline_commit': baseline,
+              'expected_branch_ref':
+                  'refs/heads/${created.environment.providerState!['branch']}',
+            },
+          ],
+        );
         expect(
           runtime.store.environment(created.environment.id),
           same(created.environment),
@@ -312,12 +337,11 @@ void main() {
         final String relativePath = state['worktreeRelativePath']! as String;
         expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
         expect(state, <String, Object?>{
-          'schemaVersion': 1,
+          'schemaVersion': 2,
           'environmentId': created.environment.id.value,
           'sourceRelativePath': 'packages/source',
           'worktreeRelativePath': relativePath,
           'branch': state['branch'],
-          'baselineCommit': baseline,
         });
         expect(
           (await _git(worktree, ['rev-parse', '--show-toplevel'])).trim(),
@@ -387,6 +411,8 @@ void main() {
         final Future<void> closing = runtime.close();
         expect(runtime.close(), same(closing));
         await closing;
+        expect(await temporaryBacking.exists(), isFalse);
+        expect(await temporaryBacking.parent.exists(), isFalse);
         expect(runtime.close(), same(closing));
         expect(runtime.plugins.state, ApplicationPluginState.closed);
         expect(runtime.plugins.failure, isNull);
@@ -1041,6 +1067,16 @@ void main() {
         projectId: project.id,
         title: 'Before OpenAI termination',
       );
+      final database = runtime.lifecycle.existingDatabaseForProject(project)!;
+      final retainedAnchor = database
+          .queryPluginRows('SELECT * FROM adele_git_task_anchors', {})
+          .single
+          .values;
+      expect(
+        retainedAnchor['baseline_commit'],
+        (await _git(source, ['rev-parse', 'HEAD'])).trim(),
+      );
+      expect(database.loadProductGraph().sessions, isEmpty);
       final EnvironmentMaterialization materialization = await runtime
           .lifecycle
           .environmentRuntime
@@ -1061,6 +1097,41 @@ void main() {
       final Session session = runtime.lifecycle.createSession(
         taskId: first.task.id,
         strategyId: strategyId,
+      );
+      expect(
+        runtime.lifecycle.databaseForSession(
+          session.id,
+          accessMode: ProjectStorageAccessMode.durableOrTemporary,
+        ),
+        same(database),
+      );
+      final worktree = Directory(
+        developmentGitWorktreePath(project, first.environment),
+      );
+      await _git(worktree, ['commit', '--allow-empty', '-m', 'Task progress']);
+      await _git(source, ['commit', '--allow-empty', '-m', 'Source progress']);
+      final laterSession = runtime.lifecycle.createSession(
+        taskId: first.task.id,
+        strategyId: strategyId,
+      );
+      expect(
+        runtime.lifecycle.databaseForSession(
+          laterSession.id,
+          accessMode: ProjectStorageAccessMode.durableOrTemporary,
+        ),
+        same(database),
+      );
+      expect(
+        database
+            .queryPluginRows(
+              '''SELECT g.* FROM adele_product_session_environment_authority a
+          JOIN adele_git_task_anchors g ON g.environment_id=a.environment_id
+          WHERE a.session_id=:session''',
+              {':session': laterSession.id.value},
+            )
+            .single
+            .values,
+        retainedAnchor,
       );
       final SessionEnvironmentAuthority authority = runtime.store
           .requireSessionAuthority(session.id);
@@ -1094,7 +1165,10 @@ void main() {
         throwsA(_staleProvider),
       );
       expect(runtime.store.session(session.id), same(session));
-      expect(runtime.store.sessionsForTask(first.task.id), [same(session)]);
+      expect(runtime.store.sessionsForTask(first.task.id), [
+        same(session),
+        same(laterSession),
+      ]);
       expect(
         runtime.store.requireSessionAuthority(session.id),
         same(authority),

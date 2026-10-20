@@ -7,11 +7,12 @@ import 'package:adele_product/adele_product.dart';
 
 import 'foreground_process.dart';
 import 'git_process_environment.dart';
+import 'git_task_anchor_schema.dart';
 import 'ids.dart';
 import 'terminal_resources.dart';
 import 'worktree_environment.dart';
 
-const int gitEnvironmentProviderStateSchemaVersion = 1;
+const int gitEnvironmentProviderStateSchemaVersion = 2;
 
 final class GitWorktreeEnvironmentProvider
     implements
@@ -112,23 +113,38 @@ final class GitWorktreeEnvironmentProvider
         environmentId: environment.id,
         worktreeRoot: worktreeRoot,
         relativePath: source.relativePath,
-        baselineCommit: baselineCommit,
-        branch: branch,
         failureCode: 'worktree_establishment_failed',
         failureMessage:
             'The Task worktree does not contain the Project source scope.',
       );
-      _requireOpen();
-      liveObjects.bind(environment.id, live);
-      return EnvironmentProviderResult(
+      final result = EnvironmentProviderResult(
         providerState: _providerState(
           environmentId: environment.id,
           source: source,
           worktreeRelativePath: resources.worktreeRelativePath,
           branch: branch,
-          baselineCommit: baselineCommit,
+        ),
+        initialState: EnvironmentInitialState(
+          schema: gitTaskAnchorSchema,
+          inserts: [
+            EnvironmentInitialInsert(
+              sql:
+                  'INSERT INTO adele_git_task_anchors '
+                  '(environment_id,baseline_commit,expected_branch_ref) '
+                  'VALUES (:environment,:baseline,:branch)',
+              parameters: {
+                ':environment': environment.id.value,
+                ':baseline': baselineCommit,
+                ':branch': 'refs/heads/$branch',
+              },
+              expectedRows: 1,
+            ),
+          ],
         ),
       );
+      _requireOpen();
+      liveObjects.bind(environment.id, live);
+      return result;
     } on Object catch (error) {
       await _cleanupFailedEstablishment(
         source,
@@ -226,25 +242,10 @@ final class GitWorktreeEnvironmentProvider
         },
       );
     }
-    final String resolvedBaseline = await _gitOutput(
-      worktreeRoot,
-      <String>['rev-parse', '--verify', '${state.baselineCommit}^{commit}'],
-      code: 'restore_baseline_missing',
-      message: 'The retained baseline commit is unavailable.',
-    );
-    if (resolvedBaseline != state.baselineCommit) {
-      throw _environmentFailure(
-        'invalid_provider_state',
-        'The retained baseline is not an exact commit identity.',
-        environmentId: environment.id,
-      );
-    }
     final WorktreeEnvironment live = await _scopedWorktreeEnvironment(
       environmentId: environment.id,
       worktreeRoot: worktreeRoot,
       relativePath: source.relativePath,
-      baselineCommit: state.baselineCommit,
-      branch: state.branch,
       failureCode: 'restore_source_scope_missing',
       failureMessage:
           'The retained worktree does not contain the Project source scope.',
@@ -257,7 +258,6 @@ final class GitWorktreeEnvironmentProvider
         source: source,
         worktreeRelativePath: state.worktreeRelativePath,
         branch: state.branch,
-        baselineCommit: state.baselineCommit,
       ),
     );
   }
@@ -314,11 +314,18 @@ final class GitWorktreeEnvironmentProvider
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     EnvironmentId environmentId,
     EnvironmentBufferedProcessRequest request,
-  ) async => _bufferedProcesses.run(
-    environmentId: environmentId,
-    environment: _resolve(environmentId),
-    request: request,
-  );
+  ) async {
+    final environment = _resolve(environmentId);
+    await environment.validateGitCheckout();
+    final result = await _bufferedProcesses.run(
+      environmentId: environmentId,
+      environment: environment,
+      request: request,
+    );
+    await environment.validateGitCheckout();
+    _requireOpen();
+    return result;
+  }
 
   @override
   Stream<EnvironmentTerminalEvent> openTerminal(
@@ -442,7 +449,6 @@ final class _GitProviderState {
     required this.sourceRelativePath,
     required this.worktreeRelativePath,
     required this.branch,
-    required this.baselineCommit,
   });
 
   factory _GitProviderState.parse(
@@ -455,7 +461,6 @@ final class _GitProviderState {
       'sourceRelativePath',
       'worktreeRelativePath',
       'branch',
-      'baselineCommit',
     };
     if (state == null ||
         state.length != fields.length ||
@@ -499,13 +504,11 @@ final class _GitProviderState {
     );
     final String worktreeRelativePath = requireString('worktreeRelativePath');
     final String branch = requireString('branch');
-    final String baselineCommit = requireString('baselineCommit');
     if (!_validSourceRelativePath(sourceRelativePath) ||
         !RegExp(
           r'^\.adele/worktrees/[a-z0-9][a-z0-9-]*$',
         ).hasMatch(worktreeRelativePath) ||
-        !RegExp(r'^adele-[a-z0-9-]+$').hasMatch(branch) ||
-        !RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(baselineCommit)) {
+        !RegExp(r'^adele-[a-z0-9-]+$').hasMatch(branch)) {
       throw _environmentFailure(
         'invalid_provider_state',
         'The Git Environment provider state contains invalid paths or Git identities.',
@@ -516,14 +519,12 @@ final class _GitProviderState {
       sourceRelativePath: sourceRelativePath,
       worktreeRelativePath: worktreeRelativePath,
       branch: branch,
-      baselineCommit: baselineCommit,
     );
   }
 
   final String sourceRelativePath;
   final String worktreeRelativePath;
   final String branch;
-  final String baselineCommit;
 }
 
 bool _validSourceRelativePath(String value) =>
@@ -731,8 +732,6 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
   required EnvironmentId environmentId,
   required Directory worktreeRoot,
   required String relativePath,
-  required String baselineCommit,
-  required String branch,
   required String failureCode,
   required String failureMessage,
 }) async {
@@ -742,18 +741,23 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
   );
   final WorktreeEnvironment live;
   try {
-    final gitDirectory = await _gitOutput(
-      worktreeRoot,
-      const ['rev-parse', '--absolute-git-dir'],
-      code: failureCode,
-      message: failureMessage,
+    // validateGitCheckout below brackets Git discovery with this exact marker.
+    final marker = await readGitWorktreeMarker(worktreeRoot);
+    final gitDirectory = Directory(
+      await _gitOutput(
+        worktreeRoot,
+        const ['rev-parse', '--absolute-git-dir'],
+        code: failureCode,
+        message: failureMessage,
+      ),
     );
     live = WorktreeEnvironment(
       expectedScope,
-      gitWorktreeRoot: worktreeRoot,
-      gitDirectory: Directory(gitDirectory),
-      baselineCommit: baselineCommit,
-      branch: branch,
+      gitCheckout: (
+        root: worktreeRoot,
+        gitDirectory: Directory(await gitDirectory.resolveSymbolicLinks()),
+        marker: marker,
+      ),
     );
   } on ArgumentError catch (error) {
     throw _environmentFailure(
@@ -788,6 +792,7 @@ Future<WorktreeEnvironment> _scopedWorktreeEnvironment({
       },
     );
   }
+  await live.validateGitCheckout();
   return live;
 }
 
@@ -832,14 +837,12 @@ Map<String, Object?> _providerState({
   required _GitSource source,
   required String worktreeRelativePath,
   required String branch,
-  required String baselineCommit,
 }) => <String, Object?>{
   'schemaVersion': gitEnvironmentProviderStateSchemaVersion,
   'environmentId': environmentId.value,
   'sourceRelativePath': source.relativePath,
   'worktreeRelativePath': worktreeRelativePath,
   'branch': branch,
-  'baselineCommit': baselineCommit,
 };
 
 String _branchName(LocalEnvironment environment) {
