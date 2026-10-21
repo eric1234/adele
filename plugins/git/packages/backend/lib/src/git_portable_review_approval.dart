@@ -1,6 +1,6 @@
 part of 'git_portable_unstaged_snapshot.dart';
 
-/// Explicit single-hunk index mutation through one captured process grant.
+/// Explicit hunk or complete-file index mutation through one captured grant.
 /// Used by the stock contextual dispatcher and independent compatible consumers.
 final class GitPortableReviewApprovalService
     implements ReviewApprovalHandlerService {
@@ -15,15 +15,39 @@ final class GitPortableReviewApprovalService
   final GitPortableUnstagedSnapshotService _inspection;
 
   @override
-  Future<void> approveHunk(ReviewHunkSelection selection) =>
-      _mutate(selection, reverse: false);
+  Future<void> approveFile(ReviewFileSelection selection) => _mutate(
+    selection.relativePath,
+    selection.expectedRevision,
+    reverse: false,
+  );
 
   @override
-  Future<void> unapproveHunk(ReviewHunkSelection selection) =>
-      _mutate(selection, reverse: true);
+  Future<void> unapproveFile(ReviewFileSelection selection) => _mutate(
+    selection.relativePath,
+    selection.expectedRevision,
+    reverse: true,
+  );
+
+  @override
+  Future<void> approveHunk(ReviewHunkSelection selection) => _mutate(
+    selection.relativePath,
+    selection.expectedRevision,
+    hunkIndex: selection.hunkIndex,
+    reverse: false,
+  );
+
+  @override
+  Future<void> unapproveHunk(ReviewHunkSelection selection) => _mutate(
+    selection.relativePath,
+    selection.expectedRevision,
+    hunkIndex: selection.hunkIndex,
+    reverse: true,
+  );
 
   Future<void> _mutate(
-    ReviewHunkSelection selection, {
+    String path,
+    String expectedRevision, {
+    int? hunkIndex,
     required bool reverse,
   }) async {
     final operation = _PortableSnapshot(
@@ -34,18 +58,24 @@ final class GitPortableReviewApprovalService
     Future<void> run() async {
       // Native decoding validates too; do not rely on an interpreted constructor.
       try {
-        ReviewHunkSelection(
-          relativePath: selection.relativePath,
-          hunkIndex: selection.hunkIndex,
-          expectedRevision: selection.expectedRevision,
-        );
+        if (hunkIndex == null) {
+          ReviewFileSelection(
+            relativePath: path,
+            expectedRevision: expectedRevision,
+          );
+        } else {
+          ReviewHunkSelection(
+            relativePath: path,
+            hunkIndex: hunkIndex,
+            expectedRevision: expectedRevision,
+          );
+        }
       } on ArgumentError {
         throw _reviewFailure(
           'invalid_selection',
           'The review selection is invalid.',
         );
       }
-      final path = selection.relativePath;
       if (!_reviewablePath(path)) {
         throw _reviewFailure(
           'unsupported_target',
@@ -68,19 +98,22 @@ final class GitPortableReviewApprovalService
         );
       }
       final file = files.single;
-      if (file.reviewRevision == null) {
+      final revision = hunkIndex == null
+          ? file.fileReviewRevision
+          : file.reviewRevision;
+      if (revision == null) {
         throw _reviewFailure(
           'unsupported_target',
           'The selected file is not an eligible tracked text modification.',
         );
       }
-      if (selection.expectedRevision != file.reviewRevision) {
+      if (expectedRevision != revision) {
         throw _reviewFailure(
           'stale_selection',
           'The selected file or comparison changed. Refresh the snapshot.',
         );
       }
-      if (selection.hunkIndex >= file.hunks.length) {
+      if (hunkIndex != null && hunkIndex >= file.hunks.length) {
         throw _reviewFailure(
           'hunk_unavailable',
           'The selected hunk does not exist.',
@@ -89,23 +122,31 @@ final class GitPortableReviewApprovalService
       final observation = operation.reviewObservation!;
       final entry = observation.entries[path]!;
       final before = (await operation.blob(entry.oid))!;
-      final hunk = file.hunks[selection.hunkIndex];
-      final after = _applyReviewHunk(before, hunk, reverse: reverse);
+      final hunks = hunkIndex == null ? file.hunks : [file.hunks[hunkIndex]];
+      final after = _applyReviewHunks(before, hunks, reverse: reverse);
       if (after.length > operation.limits.fileBytes ||
           _equalBytes(before, after)) {
         throw _reviewFailure(
           'unsupported_target',
-          'The selected hunk has no bounded index result.',
+          'The selection has no bounded index result.',
         );
       }
       final expectedOid = _blobHash(after, entry.oid.length);
+      if (hunkIndex == null &&
+          expectedOid !=
+              (reverse
+                  ? observation.headEntries[path]?.oid
+                  : operation.workingOids[path])) {
+        throw _malformed();
+      }
       final patch = _reviewPatch(
         '${operation.repository!.prefix}$path',
-        hunk,
+        hunks,
         mode: entry.oldMode,
         beforeOid: entry.oid,
         afterOid: expectedOid,
         reverse: reverse,
+        isolated: hunkIndex != null,
       );
       if (patch.length > environmentBufferedProcessStdinLimit) {
         throw _reviewFailure(
@@ -122,7 +163,10 @@ final class GitPortableReviewApprovalService
         '--no-ignore-whitespace',
         '-p1',
         if (reverse) '--reverse',
-        if (!hunk.lines.any((line) => line.kind == 'context')) '--unidiff-zero',
+        if (hunks.any(
+          (hunk) => !hunk.lines.any((line) => line.kind == 'context'),
+        ))
+          '--unidiff-zero',
       ];
       await operation.git([...arguments, '--check', '--', '-'], input: patch);
       await _verifyReviewState(
@@ -130,13 +174,12 @@ final class GitPortableReviewApprovalService
         observation,
         path,
         entry.oid,
-        verifyBlob: false,
         expectUnchangedIndex: true,
       );
       // Reserve the known postcondition traffic before admitting any write.
       // External growth can still exceed it; such effects are then uncertain.
       final verificationBytes =
-          2 * utf8.encode(observation.inventory.index).length +
+          2 * utf8.encode(observation.index).length +
           utf8.encode(observation.settings).length +
           utf8.encode(operation.attributes[path]!).length +
           (after.length > before.length ? after.length : before.length) +
@@ -178,6 +221,7 @@ final class GitPortableReviewApprovalService
         observation,
         path,
         applied.exitCode == 0 ? expectedOid : entry.oid,
+        expectedBytes: applied.exitCode == 0 ? after : before,
         expectUnchangedIndex: applied.exitCode != 0,
       );
       if (applied.exitCode != 0) {
@@ -229,21 +273,12 @@ Future<void> _verifyReviewState(
   _ReviewObservation observation,
   String path,
   String expectedOid, {
-  bool verifyBlob = true,
+  List<int>? expectedBytes,
   bool expectUnchangedIndex = false,
 }) async {
-  final raw = _decode(
-    (await operation.git([
-      'ls-files',
-      '--cached',
-      '--stage',
-      '--debug',
-      '-z',
-      '--',
-      '.',
-    ])).bytes,
-  );
-  if (expectUnchangedIndex && raw != observation.inventory.index) {
+  final raw = await _readReviewIndex(operation);
+  final repositoryPath = '${operation.repository!.prefix}$path';
+  if (expectUnchangedIndex && raw != observation.index) {
     throw _changed();
   }
   final entries = parseGitIndex(
@@ -251,12 +286,12 @@ Future<void> _verifyReviewState(
     maximumEntries: operation.limits.inventoryEntries,
   );
   final beforeEntries = parseGitIndex(
-    observation.inventory.index,
+    observation.index,
     maximumEntries: operation.limits.inventoryEntries,
   );
   if (entries.length != beforeEntries.length ||
-      _otherIndexRecords(raw, path) !=
-          _otherIndexRecords(observation.inventory.index, path)) {
+      _otherIndexRecords(raw, repositoryPath) !=
+          _otherIndexRecords(observation.index, repositoryPath)) {
     throw _changed();
   }
   for (final original in beforeEntries.entries) {
@@ -266,12 +301,16 @@ Future<void> _verifyReviewState(
         current.kind != expected.kind ||
         current.oldMode != expected.oldMode ||
         current.newMode != expected.newMode ||
-        current.oid != (original.key == path ? expectedOid : expected.oid)) {
+        current.oid !=
+            (original.key == repositoryPath ? expectedOid : expected.oid)) {
       throw _changed();
     }
   }
   // Hash-checked object bytes prove the actual index content, not just its header.
-  if (verifyBlob && await operation.blob(expectedOid) == null) throw _changed();
+  if (expectedBytes != null) {
+    final actual = await operation.blob(expectedOid);
+    if (actual == null || !_equalBytes(actual, expectedBytes)) throw _changed();
+  }
   await operation.verifyMetadata(operation.observed.keys.toList());
   final working = (await operation.command('/usr/bin/head', [
     '-c',
@@ -295,22 +334,26 @@ Future<void> _verifyReviewState(
       identity.sessionId != observation.identity.sessionId) {
     throw _changed();
   }
-  if (_decode(
-        (await operation.git([
-          'ls-files',
-          '--cached',
-          '--stage',
-          '--debug',
-          '-z',
-          '--',
-          '.',
-        ])).bytes,
-      ) !=
-      raw) {
+  if (await _readReviewIndex(operation) != raw) {
     throw _changed();
   }
   operation.checkOpen();
 }
+
+// Index mutation is repository-wide even when presentation is source-scoped.
+Future<String> _readReviewIndex(_PortableSnapshot operation) async => _decode(
+  (await operation.git([
+    '-C',
+    operation.repository!.worktree,
+    'ls-files',
+    '--cached',
+    '--stage',
+    '--debug',
+    '-z',
+    '--',
+    '.',
+  ])).bytes,
+);
 
 // Both inputs have already passed parseGitIndex. Preserve every unrelated stage,
 // flag and stat record, including conflict sides collapsed by its display map.
@@ -332,9 +375,9 @@ String _otherIndexRecords(String raw, String selectedPath) {
   return result.toString();
 }
 
-List<int> _applyReviewHunk(
+List<int> _applyReviewHunks(
   List<int> before,
-  DiffHunk hunk, {
+  List<DiffHunk> hunks, {
   required bool reverse,
 }) {
   final text = _decodeContent(before);
@@ -346,43 +389,42 @@ List<int> _applyReviewHunk(
     lines.add(text.substring(offset, end));
     offset = end;
   }
-  final count = reverse ? hunk.newCount : hunk.oldCount;
-  final start =
-      (reverse ? hunk.newStart : hunk.oldStart) - (count == 0 ? 0 : 1);
-  if (start < 0 || start + count > lines.length) throw _malformed();
-  final replacement = <String>[];
-  var source = start;
-  for (final line in hunk.lines) {
-    final value = '${line.text}${line.noNewline ? '' : '\n'}';
-    if (line.kind != (reverse ? 'deletion' : 'addition')) {
-      if (source >= lines.length || lines[source++] != value) {
-        throw _malformed();
+  final result = StringBuffer();
+  var consumed = 0;
+  for (final hunk in hunks) {
+    final count = reverse ? hunk.newCount : hunk.oldCount;
+    final start =
+        (reverse ? hunk.newStart : hunk.oldStart) - (count == 0 ? 0 : 1);
+    if (start < consumed || start + count > lines.length) throw _malformed();
+    result.writeAll(lines.getRange(consumed, start));
+    var source = start;
+    for (final line in hunk.lines) {
+      final value = '${line.text}${line.noNewline ? '' : '\n'}';
+      if (line.kind != (reverse ? 'deletion' : 'addition')) {
+        if (source >= lines.length || lines[source++] != value) {
+          throw _malformed();
+        }
+      }
+      if (line.kind != (reverse ? 'addition' : 'deletion')) {
+        result.write(value);
       }
     }
-    if (line.kind != (reverse ? 'addition' : 'deletion')) {
-      replacement.add(value);
-    }
+    if (source != start + count) throw _malformed();
+    consumed = source;
   }
-  if (source != start + count) throw _malformed();
-  lines.replaceRange(start, source, replacement);
-  return utf8.encode(lines.join());
+  result.writeAll(lines.skip(consumed));
+  return utf8.encode(result.toString());
 }
 
 List<int> _reviewPatch(
   String path,
-  DiffHunk hunk, {
+  List<DiffHunk> hunks, {
   required String mode,
   required String beforeOid,
   required String afterOid,
   required bool reverse,
+  required bool isolated,
 }) {
-  // Earlier, unselected hunks may change line counts. Locate this isolated hunk
-  // from its actual source side, not the full patch's destination coordinates.
-  final sourceCount = reverse ? hunk.newCount : hunk.oldCount;
-  final offset =
-      (reverse ? hunk.newStart : hunk.oldStart) - (sourceCount == 0 ? 0 : 1);
-  final oldStart = offset + (hunk.oldCount == 0 ? 0 : 1);
-  final newStart = offset + (hunk.newCount == 0 ? 0 : 1);
   final oldPath = _quoteReviewPath('a/$path');
   final newPath = _quoteReviewPath('b/$path');
   final patch = StringBuffer()
@@ -391,18 +433,33 @@ List<int> _reviewPatch(
       'index ${reverse ? afterOid : beforeOid}..${reverse ? beforeOid : afterOid} $mode',
     )
     ..writeln('--- $oldPath')
-    ..writeln('+++ $newPath')
-    ..writeln('@@ -$oldStart,${hunk.oldCount} +$newStart,${hunk.newCount} @@');
-  for (final line in hunk.lines) {
+    ..writeln('+++ $newPath');
+  for (final hunk in hunks) {
+    // Only an isolated hunk needs rebasing to its actual source-side coordinate.
+    // A complete patch must retain original coordinates across all line shifts.
+    final sourceCount = reverse ? hunk.newCount : hunk.oldCount;
+    final offset =
+        (reverse ? hunk.newStart : hunk.oldStart) - (sourceCount == 0 ? 0 : 1);
+    final oldStart = isolated
+        ? offset + (hunk.oldCount == 0 ? 0 : 1)
+        : hunk.oldStart;
+    final newStart = isolated
+        ? offset + (hunk.newCount == 0 ? 0 : 1)
+        : hunk.newStart;
     patch.writeln(
-      '${switch (line.kind) {
-        'context' => ' ',
-        'addition' => '+',
-        'deletion' => '-',
-        _ => throw _malformed(),
-      }}${line.text}',
+      '@@ -$oldStart,${hunk.oldCount} +$newStart,${hunk.newCount} @@',
     );
-    if (line.noNewline) patch.writeln(r'\ No newline at end of file');
+    for (final line in hunk.lines) {
+      patch.writeln(
+        '${switch (line.kind) {
+          'context' => ' ',
+          'addition' => '+',
+          'deletion' => '-',
+          _ => throw _malformed(),
+        }}${line.text}',
+      );
+      if (line.noNewline) patch.writeln(r'\ No newline at end of file');
+    }
   }
   return utf8.encode(patch.toString());
 }
@@ -428,18 +485,20 @@ final class _ReviewObservation {
   _ReviewObservation({
     required this.identity,
     required this.head,
-    required this.inventory,
+    required this.index,
     required this.entries,
+    required this.headEntries,
     required this.settings,
   });
 
   final AuthorizedEnvironmentIdentity identity;
   final ({String commit, String reference}) head;
-  final _Inventory inventory;
+  final String index;
   final Map<String, GitIndexEntry> entries;
+  final Map<String, GitIndexEntry> headEntries;
   final String settings;
   late final String indexRevision = sha256
-      .convert(utf8.encode(inventory.index))
+      .convert(utf8.encode(index))
       .toString();
 }
 
@@ -452,6 +511,7 @@ bool _reviewableFile(
   required int? indexBytes,
   required int maximumFileBytes,
   required bool reverse,
+  bool wholeFile = false,
 }) {
   if (file.changeKind != 'modified' ||
       file.contentStatus != 'text' ||
@@ -463,6 +523,8 @@ bool _reviewableFile(
   }
   // Four quoted headers, worst-case octal UTF-8 escaping, and fixed metadata.
   final metadata = 512 + 16 * utf8.encode('$prefix${file.relativePath}').length;
+  var aggregateSize = metadata;
+  var aggregateDelta = 0;
   for (final hunk in file.hunks) {
     var size = metadata;
     var delta = 0;
@@ -476,27 +538,36 @@ bool _reviewableFile(
       }
     }
     final resultBytes = indexBytes + (reverse ? -delta : delta);
-    if (size > environmentBufferedProcessStdinLimit ||
-        resultBytes < 0 ||
-        resultBytes > maximumFileBytes) {
+    if (!wholeFile &&
+        (size > environmentBufferedProcessStdinLimit ||
+            resultBytes < 0 ||
+            resultBytes > maximumFileBytes)) {
       return false;
     }
+    aggregateSize += size - metadata + 128;
+    aggregateDelta += delta;
   }
-  return true;
+  final resultBytes = indexBytes + (reverse ? -aggregateDelta : aggregateDelta);
+  return !wholeFile ||
+      (aggregateSize <= environmentBufferedProcessStdinLimit &&
+          resultBytes >= 0 &&
+          resultBytes <= maximumFileBytes);
 }
 
 String _reviewRevision(
   _PortableSnapshot operation,
   _ReviewObservation observation,
   String path,
-  String layer,
-) {
+  String layer, {
+  bool wholeFile = false,
+}) {
+  final domain = wholeFile ? 'git-file-review-v1' : 'git-review-v1';
   final repo = operation.repository!;
   final entry = observation.entries[path]!;
   final digest = sha256.convert(
     utf8.encode(
       jsonEncode([
-        'git-review-v1',
+        domain,
         layer,
         observation.identity.sessionId,
         observation.identity.environmentId,
@@ -518,5 +589,5 @@ String _reviewRevision(
       ]),
     ),
   );
-  return 'git-review-v1:$layer:$digest';
+  return '$domain:$layer:$digest';
 }

@@ -57,7 +57,8 @@ of the frontend.
 ## Review Approval
 
 The public contract separately defines `ReviewApprovalHandlerService`:
-`approveHunk(ReviewHunkSelection)` and `unapproveHunk(ReviewHunkSelection)` return
+`approveHunk(ReviewHunkSelection)`, `unapproveHunk(ReviewHunkSelection)`,
+`approveFile(ReviewFileSelection)` and `unapproveFile(ReviewFileSelection)` return
 `Future<void>`. Its `reviewApprovalCapability` is `adele.diff.review-approval`,
 major 1; the generated service is `diff.reviewApprovalHandler`. These mutations
 are not methods of the read-only `ChangeSetSourceService`.
@@ -71,6 +72,11 @@ selects authority, a repository, a branch, a baseline, process arguments, or pat
 text. The method selects the layer: Approve consumes an Unstaged revision;
 Unapprove consumes a Staged revision.
 
+`ReviewFileSelection` contains only `relativePath` and `expectedRevision`, with
+the same path/revision bounds. It is a distinct value, not a sentinel hunk index.
+Approve File consumes an Unstaged complete-file revision; Unapprove File consumes
+a Staged complete-file revision.
+
 `ChangedFile.reviewRevision` is nullable opaque snapshot data, not an authority
 token. A null revision means there is no supported hunk action for that entry.
 It is a required nullable wire field under the coherent generated-schema policy;
@@ -81,8 +87,23 @@ binary/invalid/oversized/uninspectable content, symlinks/gitlinks, unsupported
 modes/flags/conversions, mode-only changes, and control-character filenames have
 no revision. These entries remain visible in snapshots.
 
-The Git handler applies exactly one backend-derived hunk to the index, or
-reverses one staged hunk there, without writing working files or HEAD. Git's
+`ChangedFile.fileReviewRevision` separately advertises eligibility of the complete
+displayed file modification. It is another required nullable wire field, with a
+distinct revision domain. Whole-file eligibility requires complete, safely inspected
+tracked regular UTF-8 text modifications, an actual changed hunk, and a complete
+patch and resulting index blob within the provider's bounds. An aggregate patch
+can be too large while every individual hunk remains eligible: in that case only
+`fileReviewRevision` is null. The frontend never computes either revision or infers
+whole-file eligibility from rendered lines. Additions, deletions and untracked
+files remain outside review mutation.
+
+The Git handler applies one backend-derived hunk, or one complete multi-hunk file
+patch, to the index; Unapprove reverses that selected staged comparison. Each
+action uses exactly one index-mutating Git operation, never a per-hunk write loop.
+Approve File preserves already staged changes while incorporating all current
+unstaged text hunks. Unapprove File restores that file's index content to HEAD,
+leaving all working changes visible in the refreshed Unstaged layer. Neither writes
+working files, HEAD or the retained Task baseline. Git's
 index remains the approval source of truth; there is no approval database.
 Changed revisions and consumed selections require a fresh snapshot, not a
 different hunk chosen at the old index. `ReviewApprovalFailure` declares stable
@@ -131,15 +152,23 @@ releases its unused handle and an older result cannot replace a newer presentati
 Departure does not wait for independently owned backend work. If another pane refuses
 navigation, Diff remains manually refreshable.
 
-Eligible hunk headers offer **Approve** in Unstaged layers and **Unapprove** in
-Staged layers. Uncommitted and Task retain both actions in their respective layers;
-Committed and Conflicts remain read-only. Each action retains the original typed
+Eligible file headers offer **Approve File** in Unstaged layers and
+**Unapprove File** in Staged layers, retaining the literal typed path and exact
+`fileReviewRevision` in `ReviewFileSelection`. Actions sit immediately below the
+header in a narrow-safe column, preserving the independent **Open in Source** action.
+Eligible hunk headers continue to offer **Approve** in Unstaged layers and
+**Unapprove** in Staged layers. Uncommitted and Task retain both actions in their
+respective layers; Committed and Conflicts remain read-only. Each hunk action
+retains the original typed
 `ReviewHunkSelection` with the literal file path, zero-based index in that file's
 displayed layer, and exact opaque `reviewRevision`. This identity is separate from
-rendered labels and Source paths. No whole-file action is provided.
+rendered labels and Source paths. File eligibility is independent of individual
+hunk eligibility. A committed entry stays read-only even when the same path has an
+actionable staged or unstaged entry.
 
 Only a direct button invocation starts a mutation. One pane-wide pending operation
-suppresses duplicate and other hunk submissions while showing neutral pending text.
+suppresses duplicate and all other file/hunk submissions while showing neutral
+pending text.
 Approval handles capture eligibility, not a standing process grant: every generated
 request receives fresh host admission. Scope changes, Refresh, departure and disposal
 discard old selections and release retained access. Late responses cannot refresh a
@@ -186,8 +215,9 @@ Source owns document normalization, deduplication, dirty text, and native undo
 through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
-There is no automatic refresh watcher, whole-file staging, discard/revert, editing
-within Diff, commit, review feedback submission, or side-by-side mode.
+There is no automatic refresh watcher, addition/deletion staging, whole-layer
+action, discard/revert, editing within Diff, commit, review feedback submission,
+or side-by-side mode.
 
 ## Preparation And Tests
 
@@ -214,7 +244,8 @@ cleanup, held operation races, scope switching, separate
 committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. Its separate review
-dispatcher covers typed hunk indices/revisions, layer-specific actions, unavailable
+dispatcher covers typed hunk indices and file selections/revisions, independent
+complete-file eligibility, narrow headers, layer-specific actions, unavailable
 approval, single pending mutation, success refresh, unconfirmed failures and lifecycle
 fencing. It does not substitute for authority validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
@@ -224,8 +255,8 @@ catalog/Main Content hosting, including committed-only work, exact independently
 established baselines, staged-only and layered partial/cancelling changes,
 source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
-retirement/navigation. Hunk mutation acceptance checks real selected index objects,
-unchanged working bytes and HEAD, nonprimary isolation, stale selections, lock
+retirement/navigation. Hunk and atomic file mutation acceptance checks real selected
+index objects, unchanged working bytes and HEAD, nonprimary isolation, stale selections, lock
 rejection and retirement after an index effect. That cross-plugin suite requires
 the native CodeForge library; the isolated Diff frontend suite does not.
 The existing Source host suite remains the owner of Source document/operation

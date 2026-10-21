@@ -35,6 +35,7 @@ void main() {
     expect(file.contentStatus, 'text');
     expect(file.detail, isNull);
     expect(file.reviewRevision, 'opaque-review-revision');
+    expect(file.fileReviewRevision, 'opaque-file-review-revision');
     final hunk = file.hunks.single;
     expect(
       [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -68,6 +69,7 @@ void main() {
       contentStatus: 'text',
       detail: null,
       reviewRevision: null,
+      fileReviewRevision: null,
       hunks: hunks,
     );
     final files = [file];
@@ -125,6 +127,7 @@ void main() {
         expect(file.contentStatus, 'text');
         expect(file.detail, isNull);
         expect(file.reviewRevision, 'opaque-review-revision');
+        expect(file.fileReviewRevision, 'opaque-file-review-revision');
         final hunk = file.hunks.single;
         expect(
           [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -149,6 +152,7 @@ void main() {
       expect(conflict.contentStatus, 'conflicted');
       expect(conflict.detail, 'Unmerged index entries.');
       expect(conflict.reviewRevision, isNull);
+      expect(conflict.fileReviewRevision, isNull);
       expect(conflict.hunks, isEmpty);
       expect(() => snapshot.conflicts.clear(), throwsUnsupportedError);
       expect(() => conflict.hunks.clear(), throwsUnsupportedError);
@@ -177,6 +181,12 @@ void main() {
           identical(layer, snapshot.committed)
               ? null
               : 'opaque-review-revision',
+        );
+        expect(
+          file.fileReviewRevision,
+          identical(layer, snapshot.committed)
+              ? null
+              : 'opaque-file-review-revision',
         );
         final hunk = file.hunks.single;
         expect(
@@ -307,6 +317,8 @@ void main() {
         for (final invalidFile in [
           {...file}..remove('reviewRevision'),
           {...file, 'reviewRevision': 1},
+          {...file}..remove('fileReviewRevision'),
+          {...file, 'fileReviewRevision': 1},
         ])
           {
             'files': [invalidFile],
@@ -529,7 +541,7 @@ String layer(ChangeSetSnapshot snapshot) {
   final file = snapshot.files[0];
   final hunk = file.hunks[0];
   final line = hunk.lines[2];
-  return '\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
+  return '\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${file.fileReviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
 }
 
 Future<String> run() async {
@@ -540,14 +552,15 @@ Future<String> run() async {
   final conflict = snapshot.conflicts[0];
   final lines = <DiffLine>[DiffLine(kind: 'addition', text: 'detached', noNewline: false)];
   final hunks = <DiffHunk>[DiffHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: 1, lines: lines)];
-  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, hunks: hunks)];
+  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: hunks)];
   final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files), unstaged: ChangeSetSnapshot(files: files), conflicts: files);
   final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files), uncommitted: copy);
   lines[0] = DiffLine(kind: 'addition', text: 'changed', noNewline: false);
   hunks[0] = DiffHunk(oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: <DiffLine>[]);
-  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, hunks: <DiffHunk>[]);
+  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: <DiffHunk>[]);
   if (copy.staged.files[0].hunks[0].lines[0].text != 'detached' ||
       copy.staged.files[0].reviewRevision != null || conflict.reviewRevision != null ||
+      copy.staged.files[0].fileReviewRevision != null || conflict.fileReviewRevision != null ||
       copy.unstaged.files[0].relativePath != 'copy.txt' || copy.conflicts[0].relativePath != 'copy.txt' ||
       taskCopy.committed.files[0].hunks[0].lines[0].text != 'detached') {
     throw StateError('Mutable constructor inputs');
@@ -589,10 +602,10 @@ Future<TaskChangeSetSnapshot> decode(String wire) {
         'run',
       );
       const layer =
-          'dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|2,2,2,2|addition|after\u{1f600}|true';
+          'dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|opaque-file-review-revision|2,2,2,2|addition|after\u{1f600}|true';
       final committedLayer = layer.replaceFirst(
-        '|opaque-review-revision|',
-        '|none|',
+        '|opaque-review-revision|opaque-file-review-revision|',
+        '|none|none|',
       );
       expect(
         (result as $Value).$reified,
@@ -686,6 +699,8 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
       {...file}..remove('detail'),
       {...file}..remove('reviewRevision'),
       {...file, 'reviewRevision': false},
+      {...file}..remove('fileReviewRevision'),
+      {...file, 'fileReviewRevision': false},
       {...file, 'extra': true},
       {...file, 'hunks': 'patch'},
       {
@@ -743,7 +758,7 @@ class _Service implements ChangeSetSourceService {
     calls++;
     if (failure != null) throw failure!;
     return TaskChangeSetSnapshot(
-      committed: _snapshot(reviewRevision: null),
+      committed: _snapshot(reviewRevision: null, fileReviewRevision: null),
       uncommitted: _uncommitted(),
     );
   }
@@ -758,6 +773,7 @@ class _Service implements ChangeSetSourceService {
         contentStatus: 'conflicted',
         detail: 'Unmerged index entries.',
         reviewRevision: null,
+        fileReviewRevision: null,
         hunks: [],
       ),
     ],
@@ -765,6 +781,7 @@ class _Service implements ChangeSetSourceService {
 
   ChangeSetSnapshot _snapshot({
     String? reviewRevision = 'opaque-review-revision',
+    String? fileReviewRevision = 'opaque-file-review-revision',
   }) {
     return ChangeSetSnapshot(
       files: [
@@ -774,6 +791,7 @@ class _Service implements ChangeSetSourceService {
           contentStatus: 'text',
           detail: null,
           reviewRevision: reviewRevision,
+          fileReviewRevision: fileReviewRevision,
           hunks: [
             DiffHunk(
               oldStart: 2,

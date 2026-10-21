@@ -27,6 +27,8 @@ class DiffPaneState extends State<DiffPane> {
   List<List<String>> rows = [];
   Map<int, ReviewHunkSelection> approvals = {};
   Map<int, ReviewHunkSelection> unapprovals = {};
+  Map<int, ReviewFileSelection> fileApprovals = {};
+  Map<int, ReviewFileSelection> fileUnapprovals = {};
   String reviewHandle = '';
   bool reviewPending = false;
   String reviewMessage = '';
@@ -64,6 +66,8 @@ class DiffPaneState extends State<DiffPane> {
   void invalidateReview() {
     approvals = {};
     unapprovals = {};
+    fileApprovals = {};
+    fileUnapprovals = {};
     if (reviewHandle != '') {
       releaseEnvironmentCapabilityProvider(reviewHandle);
       reviewHandle = '';
@@ -168,7 +172,12 @@ class DiffPaneState extends State<DiffPane> {
       rows = next;
       status = clean ? 'clean' : 'ready';
     });
-    if (approvals.isEmpty && unapprovals.isEmpty) return;
+    if (approvals.isEmpty &&
+        unapprovals.isEmpty &&
+        fileApprovals.isEmpty &&
+        fileUnapprovals.isEmpty) {
+      return;
+    }
     final review = await resolveEnvironmentBufferedProcessCapabilityProvider(
       'adele.diff.review-approval',
       1,
@@ -207,6 +216,22 @@ class DiffPaneState extends State<DiffPane> {
               file.changeKind == 'typeChanged')) {
         // Keep the typed path separate from the human-readable header.
         header.add(file.relativePath);
+      }
+      final fileRevision = file.fileReviewRevision;
+      if ((layer == 'unstaged' || layer == 'staged') &&
+          file.changeKind == 'modified' &&
+          file.contentStatus == 'text' &&
+          file.hunks.isNotEmpty &&
+          fileRevision != null) {
+        final selection = ReviewFileSelection(
+          relativePath: file.relativePath,
+          expectedRevision: fileRevision,
+        );
+        if (layer == 'unstaged') {
+          fileApprovals[next.length] = selection;
+        } else {
+          fileUnapprovals[next.length] = selection;
+        }
       }
       next.add(header);
       if (file.contentStatus != 'text') {
@@ -264,11 +289,7 @@ class DiffPaneState extends State<DiffPane> {
     }
   }
 
-  void reviewHunk(
-    ReviewHunkSelection selection,
-    bool unapprove,
-    int captured,
-  ) async {
+  void reviewChange(Object selection, bool unapprove, int captured) async {
     if (disposed ||
         captured != revision ||
         status != 'ready' ||
@@ -285,10 +306,19 @@ class DiffPaneState extends State<DiffPane> {
       EnvironmentCapabilityRequestChannel(selected),
     );
     Future<void> operation;
-    if (unapprove) {
-      operation = client.unapproveHunk(selection);
+    if (selection is ReviewFileSelection) {
+      if (unapprove) {
+        operation = client.unapproveFile(selection);
+      } else {
+        operation = client.approveFile(selection);
+      }
     } else {
-      operation = client.approveHunk(selection);
+      final hunk = selection as ReviewHunkSelection;
+      if (unapprove) {
+        operation = client.unapproveHunk(hunk);
+      } else {
+        operation = client.approveHunk(hunk);
+      }
     }
     final result = await settleEnvironmentCapabilityOperation(operation);
     releaseEnvironmentCapabilityProvider(selected);
@@ -309,22 +339,22 @@ class DiffPaneState extends State<DiffPane> {
     }
   }
 
-  Widget reviewAction(
-    ReviewHunkSelection selection,
-    bool unapprove,
-    int captured,
-  ) {
+  Widget reviewAction(Object selection, bool unapprove, int captured) {
     if (reviewHandle != '' && !reviewPending) {
       // The evaluator pin cannot reuse a branched primitive in a closure.
       if (unapprove) {
         return TextButton(
-          onPressed: () => reviewHunk(selection, true, captured),
-          child: Text('Unapprove'),
+          onPressed: () => reviewChange(selection, true, captured),
+          child: Text(
+            selection is ReviewFileSelection ? 'Unapprove File' : 'Unapprove',
+          ),
         );
       }
       return TextButton(
-        onPressed: () => reviewHunk(selection, false, captured),
-        child: Text('Approve'),
+        onPressed: () => reviewChange(selection, false, captured),
+        child: Text(
+          selection is ReviewFileSelection ? 'Approve File' : 'Approve',
+        ),
       );
     }
     return Text(
@@ -472,6 +502,8 @@ class DiffPaneState extends State<DiffPane> {
             final captured = revision;
             final approval = approvals[index];
             final unapproval = unapprovals[index];
+            final fileApproval = fileApprovals[index];
+            final fileUnapproval = fileUnapprovals[index];
             final label = Text(
               row[1],
               style: row[0] == 'section'
@@ -484,19 +516,23 @@ class DiffPaneState extends State<DiffPane> {
             if (row[0] == 'file') background = Color(0x18888888);
             if (row[0] == 'section') background = Color(0x28888888);
             Widget content = label;
-            if (row.length > 2 || approval != null || unapproval != null) {
-              Widget action;
-              if (row.length > 2) {
-                action = sourceAction(row[2], captured);
-              } else if (approval != null) {
-                action = reviewAction(approval, false, captured);
-              } else {
-                action = reviewAction(unapproval!, true, captured);
-              }
-              content = Row(
+            if (row.length > 2 ||
+                approval != null ||
+                unapproval != null ||
+                fileApproval != null ||
+                fileUnapproval != null) {
+              content = Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(flex: 2, child: label),
-                  Expanded(flex: 1, child: action),
+                  label,
+                  if (fileApproval != null)
+                    reviewAction(fileApproval, false, captured),
+                  if (fileUnapproval != null)
+                    reviewAction(fileUnapproval, true, captured),
+                  if (row.length > 2) sourceAction(row[2], captured),
+                  if (approval != null) reviewAction(approval, false, captured),
+                  if (unapproval != null)
+                    reviewAction(unapproval, true, captured),
                 ],
               );
             }

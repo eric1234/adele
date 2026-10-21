@@ -30,6 +30,463 @@ void main() {
   for (final format in ['sha1', 'sha256']) {
     for (final staged in [false, true]) {
       test(
+        'file ${_direction(staged)} atomically handles shifting partial layers ($format)',
+        () async {
+          if (format != fixture.format) {
+            await fixture.close();
+            fixture = await _Fixture.create(format: format);
+          }
+          final original = List.generate(100, (i) => 'line $i\n').join();
+          await fixture.write('tracked.txt', original);
+          await fixture.commit();
+          final partial = original.replaceFirst('line 2\n', 'already staged\n');
+          final complete = partial
+              .replaceFirst('line 20\n', 'first\nextra\nlines\n')
+              .replaceFirst('line 50\nline 51\n', 'middle\n')
+              .replaceFirst('line 80\n', 'last\nextra\n');
+          await fixture.write('tracked.txt', staged ? complete : partial);
+          await fixture.write('other.txt', 'other staged\n');
+          await fixture.git(['add', '--all']);
+          final working = staged ? '${complete}working only\n' : complete;
+          await fixture.write('tracked.txt', working);
+          await fixture.write('other.txt', 'other working\n');
+          final file = await fixture.changed(staged: staged);
+          expect(file.hunks, hasLength(staged ? 4 : 3));
+          expect(file.hunks.last.newStart, isNot(file.hunks.last.oldStart));
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+
+          final after = await fixture.expectIndexChange(
+            before,
+            'tracked.txt',
+            staged ? original : working,
+          );
+          final applies = fixture.processes.requests
+              .where((r) => r.arguments.contains('apply'))
+              .toList();
+          expect(applies, hasLength(2));
+          expect(applies.first.arguments, contains('--check'));
+          expect(applies.last.arguments.contains('--check'), isFalse);
+          expect(applies.first.stdinBase64, applies.last.stdinBase64);
+          expect(applies.last.arguments.contains('--reverse'), staged);
+          final patch = utf8.decode(base64Decode(applies.last.stdinBase64));
+          for (final hunk in file.hunks) {
+            expect(
+              patch,
+              contains(
+                '@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@',
+              ),
+            );
+          }
+          expect(fixture.processes.writes, hasLength(1));
+          print(
+            'File ${_direction(staged)} proof ($format): HEAD=${before.head.trim()} -> ${after.head.trim()}; '
+            'index=${before.oids['0:tracked.txt']} -> ${after.oids['0:tracked.txt']}; '
+            'working=${before.working['tracked.txt']} -> ${after.working['tracked.txt']}.',
+          );
+          final layers = await fixture.snapshots.snapshotUncommitted();
+          expect(
+            (staged ? layers.staged : layers.unstaged).files.where(
+              (f) => f.relativePath == 'tracked.txt',
+            ),
+            isEmpty,
+          );
+          final confirmed = await fixture.state();
+          fixture.processes.requests.clear();
+          await expectLater(
+            fixture.mutateFile(_fileSelection(file), staged: staged),
+            throwsA(_failureCode(['stale_selection'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(confirmed);
+        },
+      );
+
+      for (final (name, original, modified) in [
+        (
+          'BOM CRLF blank no-final-newline',
+          '\ufeffbefore\r\n\r\nlast',
+          '\ufeffafter\r\n\r\nlast changed',
+        ),
+        ('empty old side', '', 'new contents\n'),
+        ('empty new side', 'old contents\n', ''),
+        ('final newline added', 'before', 'after\n'),
+        ('final newline removed', 'before\n', 'after'),
+      ]) {
+        test('file ${_direction(staged)} exact $name ($format)', () async {
+          if (format != fixture.format) {
+            await fixture.close();
+            fixture = await _Fixture.create(format: format);
+          }
+          await fixture.write('tracked.txt', original);
+          await fixture.commit();
+          await fixture.write('tracked.txt', modified);
+          if (staged) await fixture.git(['add', '--', 'tracked.txt']);
+          final file = await fixture.changed(staged: staged);
+          final before = await fixture.state();
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          await fixture.expectIndexChange(
+            before,
+            'tracked.txt',
+            staged ? original : modified,
+          );
+          expect(fixture.processes.writes, hasLength(1));
+        });
+      }
+    }
+  }
+
+  for (final kind in [
+    'newly staged addition',
+    'staged executable mode',
+    'staged symlink replacement',
+  ]) {
+    test(
+      'file approval excludes $kind with later working modifications',
+      () async {
+        const path = 'later.txt';
+        if (kind == 'staged executable mode') {
+          await fixture.write(path, 'before\n');
+          await fixture.commit();
+          await _command('/usr/bin/chmod', [
+            '755',
+            '${fixture.repository.path}/$path',
+          ]);
+        } else if (kind == 'staged symlink replacement') {
+          await Link('${fixture.repository.path}/$path').create('tracked.txt');
+          await fixture.commit();
+          await Link('${fixture.repository.path}/$path').delete();
+        }
+        await fixture.write(path, 'staged content\n');
+        await fixture.git(['add', '--', path]);
+        await fixture.write(path, 'working content\n');
+        final file = await fixture.changed(path: path);
+        expect(file.changeKind, 'modified');
+        expect(
+          file.reviewRevision,
+          isNotNull,
+          reason: 'G6a hunk eligibility is independent',
+        );
+        expect(file.fileReviewRevision, isNull);
+        final before = await fixture.state();
+        await expectLater(
+          fixture.mutateFile(_untrustedFileSelection(path)),
+          throwsA(_failureCode(['unsupported_target'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      },
+    );
+  }
+
+  for (final (name, limits) in [
+    ('process count', const GitPortableUnstagedLimits(processes: 1)),
+    ('aggregate bytes', const GitPortableUnstagedLimits(totalBytes: 1)),
+    ('stdout', const GitPortableUnstagedLimits(outputBytes: 8)),
+    ('hunk lines', const GitPortableUnstagedLimits(lines: 1)),
+    ('inventory', const GitPortableUnstagedLimits(inventoryEntries: 1)),
+  ]) {
+    test('file review $name bound rejects before a write', () async {
+      await fixture.write('tracked.txt', _text({2: 'first', 35: 'last'}));
+      final file = await fixture.changed();
+      final before = await fixture.state();
+      await expectLater(
+        fixture.mutateFile(_fileSelection(file), limits: limits),
+        throwsA(_failureCode(['inspection_failed'])),
+      );
+      expect(fixture.processes.writes, isEmpty);
+      await fixture.expectUnchanged(before);
+    });
+  }
+
+  test('file review does not execute hostile configured helpers', () async {
+    final helpers = <String, String>{};
+    for (final name in [
+      'clean',
+      'process',
+      'textconv',
+      'external',
+      'fsmonitor',
+      'post-index-change',
+    ]) {
+      final helper = File('${fixture.container.path}/$name');
+      await helper.writeAsString(
+        '#!/bin/sh\nprintf executed > "${fixture.container.path}/$name.executed"\nexit 99\n',
+      );
+      await _command('/usr/bin/chmod', ['+x', helper.path]);
+      helpers[name] = helper.path;
+    }
+    for (final (key, value) in [
+      ('filter.clean.clean', helpers['clean']!),
+      ('filter.clean.required', 'true'),
+      ('filter.process.process', helpers['process']!),
+      ('filter.process.required', 'true'),
+      ('diff.hostile.textconv', helpers['textconv']!),
+      ('diff.hostile.command', helpers['external']!),
+      ('diff.external', helpers['external']!),
+      ('core.fsmonitor', helpers['fsmonitor']!),
+      ('core.hooksPath', fixture.container.path),
+      ('apply.whitespace', 'fix'),
+      ('apply.ignoreWhitespace', 'true'),
+    ]) {
+      await fixture.git(['config', key, value]);
+    }
+    await fixture.write('tracked.txt', _text({2: 'first  ', 35: 'last\t'}));
+    for (final staged in [false, true]) {
+      final file = await fixture.changed(staged: staged);
+      await fixture.mutateFile(_fileSelection(file), staged: staged);
+      for (final name in helpers.keys) {
+        expect(
+          await File('${fixture.container.path}/$name.executed').exists(),
+          isFalse,
+        );
+      }
+    }
+    // Executable positive controls for every helper are maintained in the shared
+    // full-patch feasibility test, including hostile conversion attributes.
+  });
+
+  for (final staged in [false, true]) {
+    test(
+      'file ${_direction(staged)} preserves outside-source index records and literal paths',
+      () async {
+        const name = 'selected/project/-literal [x] \\ "\u00e9".txt';
+        await fixture.write(name, _text());
+        await fixture.commit();
+        await fixture.write(name, _text({2: 'first', 35: 'last'}));
+        await fixture.write('other.txt', 'outside staged\n');
+        await fixture.git(['add', '--', 'other.txt', if (staged) name]);
+        await fixture.write('other.txt', 'outside working\n');
+        fixture.processes.root = Directory(
+          '${fixture.repository.path}/selected/project',
+        );
+        final file = (await fixture.layer(staged: staged)).files.single;
+        final before = await fixture.state();
+        await fixture.mutateFile(_fileSelection(file), staged: staged);
+        await fixture.expectIndexChange(
+          before,
+          name,
+          staged ? _text() : _text({2: 'first', 35: 'last'}),
+        );
+        expect(fixture.processes.writes, hasLength(1));
+      },
+    );
+
+    test(
+      'file ${_direction(staged)} aggregate stdin eligibility preserves hunk revisions',
+      () async {
+        final oldLine = '\u00e9' * 140000;
+        final newLine = '\u00f8' * 140000;
+        final original = _text({2: oldLine, 35: oldLine});
+        final modified = _text({2: newLine, 35: newLine});
+        await fixture.write('tracked.txt', original);
+        await fixture.commit();
+        await fixture.write('tracked.txt', modified);
+        if (staged) await fixture.git(['add', '--', 'tracked.txt']);
+        final file = await fixture.changed(staged: staged);
+        expect(file.hunks, hasLength(2));
+        expect(file.reviewRevision, isNotNull);
+        expect(file.fileReviewRevision, isNull);
+        final before = await fixture.state();
+        await expectLater(
+          fixture.mutateFile(
+            _untrustedFileSelection('tracked.txt'),
+            staged: staged,
+          ),
+          throwsA(_failureCode(['unsupported_target'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      },
+    );
+
+    for (final loss in [
+      'lock',
+      'response lost',
+      'revoked before check',
+      'revoked after apply',
+    ]) {
+      test(
+        'file ${_direction(staged)} $loss preserves truthful outcome',
+        () async {
+          final modified = _text({2: 'first', 35: 'last'});
+          await fixture.write('tracked.txt', modified);
+          if (staged) await fixture.git(['add', '--', 'tracked.txt']);
+          final selection = _fileSelection(
+            await fixture.changed(staged: staged),
+          );
+          final before = await fixture.state();
+          var revoked = false;
+          fixture.processes.intercept = (request, run) async {
+            if (revoked ||
+                loss == 'revoked before check' &&
+                    request.arguments.contains('apply')) {
+              throw const EnvironmentFailure(
+                code: 'grant_revoked',
+                message: 'Retired grant.',
+                details: {},
+              );
+            }
+            if (_isWrite(request) && loss == 'lock') {
+              await fixture.write('.git/index.lock', 'external lock\n');
+            }
+            final result = await run(request);
+            if (_isWrite(request) && loss != 'lock') {
+              expect(result.exitCode, 0);
+              revoked = true;
+              if (loss == 'response lost') {
+                throw const EnvironmentFailure(
+                  code: 'process_output_failed',
+                  message: 'Lost acknowledgement.',
+                  details: {},
+                );
+              }
+            }
+            return result;
+          };
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged),
+            throwsA(
+              _failureCode([
+                loss == 'lock'
+                    ? 'mutation_failed'
+                    : loss == 'revoked before check'
+                    ? 'inspection_failed'
+                    : 'outcome_uncertain',
+              ]),
+            ),
+          );
+          expect(
+            fixture.processes.writes,
+            hasLength(loss == 'revoked before check' ? 0 : 1),
+          );
+          if (loss == 'lock' || loss == 'revoked before check') {
+            await fixture.expectUnchanged(before);
+          } else {
+            await fixture.expectIndexChange(
+              before,
+              'tracked.txt',
+              staged ? _text() : modified,
+            );
+          }
+        },
+      );
+    }
+  }
+
+  for (final boundary in ['before invocation', 'after check', 'after apply']) {
+    test(
+      'file review detects outside-source index changes $boundary',
+      () async {
+        await fixture.write('selected/tracked.txt', _text());
+        await fixture.commit();
+        await fixture.write(
+          'selected/tracked.txt',
+          _text({2: 'first', 35: 'last'}),
+        );
+        fixture.processes.root = Directory(
+          '${fixture.repository.path}/selected',
+        );
+        final selection = _fileSelection((await fixture.layer()).files.single);
+        _State? external;
+        Future<void> changeOutside() async {
+          await fixture.write('other.txt', 'outside index changed\n');
+          await fixture.git(['add', '--', 'other.txt']);
+          external = await fixture.state();
+        }
+
+        if (boundary == 'before invocation') await changeOutside();
+        fixture.processes.intercept = (request, run) async {
+          final result = await run(request);
+          if (request.arguments.contains('apply') &&
+              (boundary == 'after check' &&
+                      request.arguments.contains('--check') ||
+                  boundary == 'after apply' && _isWrite(request))) {
+            await changeOutside();
+          }
+          return result;
+        };
+        await expectLater(
+          fixture.mutateFile(selection),
+          throwsA(
+            _failureCode([
+              boundary == 'after apply'
+                  ? 'outcome_uncertain'
+                  : 'stale_selection',
+            ]),
+          ),
+        );
+        expect(external, isNotNull);
+        await fixture.expectUnchanged(external!);
+        expect(
+          fixture.processes.writes,
+          hasLength(boundary == 'after apply' ? 1 : 0),
+        );
+      },
+    );
+  }
+
+  for (final staged in [false, true]) {
+    test(
+      'file ${_direction(staged)} process count does not scale with hunk count',
+      () async {
+        final counts = <int>[];
+        for (final count in [1, 3, 40]) {
+          final original = List.generate(500, (i) => 'line $i\n').join();
+          await fixture.write('tracked.txt', original);
+          // Each iteration starts from the prior operation's possibly staged result.
+          await fixture.git(['add', '--all']);
+          await fixture.git([
+            'commit',
+            '--allow-empty',
+            '-m',
+            'Performance fixture',
+          ]);
+          var modified = original;
+          for (var i = 0; i < count; i++) {
+            modified = modified.replaceFirst(
+              'line ${i * 12 + 4}\n',
+              'edit $i\nextra $i\n',
+            );
+          }
+          await fixture.write('tracked.txt', modified);
+          if (staged) await fixture.git(['add', '--', 'tracked.txt']);
+          final file = await fixture.changed(staged: staged);
+          expect(file.hunks, hasLength(count));
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          final watch = Stopwatch()..start();
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          watch.stop();
+          counts.add(fixture.processes.requests.length);
+          print(
+            'File ${_direction(staged)} performance: $count hunks, ${counts.last} processes, ${watch.elapsedMilliseconds} ms (diagnostic).',
+          );
+          expect(fixture.processes.writes, hasLength(1));
+          expect(
+            fixture.processes.requests.where(
+              (r) => r.arguments.contains('apply'),
+            ),
+            hasLength(2),
+          );
+          await fixture.expectIndexChange(
+            before,
+            'tracked.txt',
+            staged ? original : modified,
+          );
+        }
+        expect(counts.toSet(), hasLength(1));
+        expect(counts.first, lessThan(100));
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  for (final format in ['sha1', 'sha256']) {
+    for (final staged in [false, true]) {
+      test(
         '${_direction(staged)} one of two distant hunks with $format objects',
         () async {
           if (format != fixture.format) {
@@ -297,6 +754,7 @@ void main() {
         expect(file.contentStatus, 'text');
         expect(file.hunks, hasLength(2));
         expect(file.reviewRevision, isNull);
+        expect(file.fileReviewRevision, isNotNull);
 
         await expectLater(
           fixture.mutate(
@@ -309,6 +767,16 @@ void main() {
 
         await fixture.expectUnchanged(before);
         expect(fixture.processes.writes, isEmpty);
+        await fixture.mutateFile(
+          _fileSelection(file),
+          staged: staged,
+          limits: limits,
+        );
+        await fixture.expectIndexChange(
+          before,
+          'tracked.txt',
+          staged ? original : modified,
+        );
       },
     );
 
@@ -322,9 +790,14 @@ void main() {
           if (staged) await fixture.git(['add', '--', name]);
           final file = await fixture.changed(path: name, staged: staged);
           expect(file.reviewRevision, isNull);
+          expect(file.fileReviewRevision, isNull);
           final before = await fixture.state();
           await expectLater(
             fixture.mutate(_untrustedSelection(name), staged: staged),
+            throwsA(_failureCode(['unsupported_target', 'invalid_selection'])),
+          );
+          await expectLater(
+            fixture.mutateFile(_untrustedFileSelection(name), staged: staged),
             throwsA(_failureCode(['unsupported_target', 'invalid_selection'])),
           );
           await fixture.expectUnchanged(before);
@@ -345,6 +818,7 @@ void main() {
         final fileA = await fixture.changed(staged: staged);
         expect(fileA.hunks, hasLength(2));
         final selectionA = _selection(fileA);
+        final fileSelectionA = _fileSelection(fileA);
         final before = await fixture.state();
         expect(
           (await fixture.changed(staged: staged)).reviewRevision,
@@ -354,6 +828,10 @@ void main() {
         fixture.processes.sessionId = 'review-session-b';
         await expectLater(
           fixture.mutate(selectionA, staged: staged),
+          throwsA(_failureCode(['stale_selection'])),
+        );
+        await expectLater(
+          fixture.mutateFile(fileSelectionA, staged: staged),
           throwsA(_failureCode(['stale_selection'])),
         );
         expect(fixture.processes.writes, isEmpty);
@@ -389,13 +867,17 @@ void main() {
       'working mode',
       'index mode',
       'Environment identity',
+      'configuration',
+      'attributes',
     ]) {
       test(
         '${_direction(staged)} rejects stale $mutation before a write',
         () async {
           await fixture.write('tracked.txt', _text({2: 'selected edit'}));
           if (staged) await fixture.git(['add', '--', 'tracked.txt']);
-          final selection = _selection(await fixture.changed(staged: staged));
+          final file = await fixture.changed(staged: staged);
+          final selection = _selection(file);
+          final fileSelection = _fileSelection(file);
           switch (mutation) {
             case 'working edit':
               await fixture.write(
@@ -448,11 +930,22 @@ void main() {
               ]);
             case 'Environment identity':
               fixture.processes.environmentId = 'different-environment';
+            case 'configuration':
+              await fixture.git(['config', 'core.filemode', 'false']);
+            case 'attributes':
+              await fixture.write(
+                '.git/info/attributes',
+                'tracked.txt -text\n',
+              );
           }
           final before = await fixture.state();
 
           await expectLater(
             fixture.mutate(selection, staged: staged),
+            throwsA(_failureCode(['stale_selection', 'unsupported_target'])),
+          );
+          await expectLater(
+            fixture.mutateFile(fileSelection, staged: staged),
             throwsA(_failureCode(['stale_selection', 'unsupported_target'])),
           );
 
@@ -568,10 +1061,24 @@ void main() {
           files.singleWhere((file) => file.relativePath == path).reviewRevision,
           isNull,
         );
+        expect(
+          files
+              .singleWhere((file) => file.relativePath == path)
+              .fileReviewRevision,
+          isNull,
+        );
 
         await expectLater(
           fixture.mutate(
             _untrustedSelection(path),
+            staged: staged,
+            limits: limits,
+          ),
+          throwsA(_failureCode(['unsupported_target', 'stale_selection'])),
+        );
+        await expectLater(
+          fixture.mutateFile(
+            _untrustedFileSelection(path),
             staged: staged,
             limits: limits,
           ),
@@ -662,6 +1169,37 @@ void main() {
     );
     await expectLater(
       fixture.mutate(_selection(layers.unstaged.files.single), staged: true),
+      throwsA(_failureCode(['stale_selection'])),
+    );
+    await expectLater(
+      fixture.mutateFile(_fileSelection(layers.staged.files.single)),
+      throwsA(_failureCode(['stale_selection'])),
+    );
+    await expectLater(
+      fixture.mutateFile(
+        _fileSelection(layers.unstaged.files.single),
+        staged: true,
+      ),
+      throwsA(_failureCode(['stale_selection'])),
+    );
+    final file = layers.unstaged.files.single;
+    await expectLater(
+      fixture.mutateFile(
+        ReviewFileSelection(
+          relativePath: file.relativePath,
+          expectedRevision: file.reviewRevision!,
+        ),
+      ),
+      throwsA(_failureCode(['stale_selection'])),
+    );
+    await expectLater(
+      fixture.mutate(
+        ReviewHunkSelection(
+          relativePath: file.relativePath,
+          hunkIndex: 0,
+          expectedRevision: file.fileReviewRevision!,
+        ),
+      ),
       throwsA(_failureCode(['stale_selection'])),
     );
     await fixture.expectUnchanged(before);
@@ -813,48 +1351,55 @@ void main() {
     },
   );
 
-  test(
-    'concurrent duplicate selections cannot both succeed or stage another hunk',
-    () async {
-      await fixture.write(
-        'tracked.txt',
-        _text({2: 'selected edit', 35: 'not selected'}),
-      );
-      final selection = _selection(await fixture.changed());
-      final before = await fixture.state();
-      final service = GitPortableReviewApprovalService(
-        processes: fixture.processes,
-      );
-      Future<Object?> invoke() async {
-        try {
-          await service.approveHunk(selection);
-          return null;
-        } on ReviewApprovalFailure catch (error) {
-          return error;
+  for (final wholeFile in [false, true]) {
+    test(
+      'concurrent duplicate ${wholeFile ? 'file' : 'hunk'} selections cannot both succeed or exceed selection',
+      () async {
+        await fixture.write(
+          'tracked.txt',
+          _text({2: 'selected edit', 35: 'not selected'}),
+        );
+        final file = await fixture.changed();
+        final selection = _selection(file);
+        final before = await fixture.state();
+        final service = GitPortableReviewApprovalService(
+          processes: fixture.processes,
+        );
+        Future<Object?> invoke() async {
+          try {
+            if (wholeFile) {
+              await service.approveFile(_fileSelection(file));
+            } else {
+              await service.approveHunk(selection);
+            }
+            return null;
+          } on ReviewApprovalFailure catch (error) {
+            return error;
+          }
         }
-      }
 
-      final outcomes = await Future.wait([invoke(), invoke()]);
+        final outcomes = await Future.wait([invoke(), invoke()]);
 
-      expect(outcomes.where((outcome) => outcome == null), hasLength(1));
-      expect(
-        outcomes.whereType<ReviewApprovalFailure>().single,
-        _failureCode([
-          'stale_selection',
-          'unsupported_target',
-          'mutation_failed',
-          'inspection_failed',
-          'outcome_uncertain',
-        ]),
-      );
-      expect(fixture.processes.writes.length, inInclusiveRange(1, 2));
-      await fixture.expectIndexChange(
-        before,
-        'tracked.txt',
-        _text({2: 'selected edit'}),
-      );
-    },
-  );
+        expect(outcomes.where((outcome) => outcome == null), hasLength(1));
+        expect(
+          outcomes.whereType<ReviewApprovalFailure>().single,
+          _failureCode([
+            'stale_selection',
+            'unsupported_target',
+            'mutation_failed',
+            'inspection_failed',
+            'outcome_uncertain',
+          ]),
+        );
+        expect(fixture.processes.writes.length, inInclusiveRange(1, 2));
+        await fixture.expectIndexChange(
+          before,
+          'tracked.txt',
+          _text({2: 'selected edit', if (wholeFile) 35: 'not selected'}),
+        );
+      },
+    );
+  }
 
   for (final failure in [
     'nonzero inspection',
@@ -999,6 +1544,23 @@ void main() {
 
 String _direction(bool staged) => staged ? 'unapprove' : 'approve';
 
+ReviewFileSelection _fileSelection(ChangedFile file) {
+  expect(
+    file.fileReviewRevision,
+    isNotNull,
+    reason: '${file.relativePath} must be file-actionable',
+  );
+  return ReviewFileSelection(
+    relativePath: file.relativePath,
+    expectedRevision: file.fileReviewRevision!,
+  );
+}
+
+ReviewFileSelection _untrustedFileSelection(String path) => ReviewFileSelection(
+  relativePath: path,
+  expectedRevision: 'display-only-entry-has-no-file-review-revision',
+);
+
 String _text([Map<int, String> replacements = const {}]) =>
     '${List.generate(40, (index) => replacements[index] ?? 'line $index').join('\n')}\n';
 
@@ -1095,6 +1657,20 @@ final class _Fixture {
     return staged
         ? service.unapproveHunk(selection)
         : service.approveHunk(selection);
+  }
+
+  Future<void> mutateFile(
+    ReviewFileSelection selection, {
+    bool staged = false,
+    GitPortableUnstagedLimits limits = const GitPortableUnstagedLimits(),
+  }) {
+    final service = GitPortableReviewApprovalService(
+      processes: processes,
+      limits: limits,
+    );
+    return staged
+        ? service.unapproveFile(selection)
+        : service.approveFile(selection);
   }
 
   Future<void> write(String path, String text) async {

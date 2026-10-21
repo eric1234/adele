@@ -44,6 +44,7 @@ const _diffPlugin = 'dev.adele.diff-viewer';
 const _sourcePlugin = 'dev.adele.source-editor';
 const _punctuatedPath = "b tracked + [file]; 'quoted'\tname.txt";
 const _reviewPath = "b review + [file]; 'quoted'.txt";
+const _fileReviewPath = "b file review + [file]; 'quoted'.txt";
 const _bound = Duration(seconds: 20);
 const _scopes = [
   ('Unstaged changes', 'No unstaged changes'),
@@ -144,6 +145,19 @@ void main() {
     await publishStockPluginInstallation(
       repositoryRoot: repository,
       installationDirectory: source,
+      pluginId: _sourcePlugin,
+      displayName: 'Source',
+      frontend: true,
+    );
+    final deniedSource = await Directory(
+      '${approvalDenied.path}/source',
+    ).create();
+    await File(
+      '${source.path}/frontend.evc',
+    ).copy('${deniedSource.path}/frontend.evc');
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: deniedSource,
       pluginId: _sourcePlugin,
       displayName: 'Source',
       frontend: true,
@@ -410,6 +424,206 @@ void main() {
       expect(await tester.runAsync(fixture.reviewState), before);
       await tester.runAsync(() => fixture.expectReviewIndex(before));
       expect(fixture.indexWrites, hasLength(2));
+      expect(fixture.reads, isEmpty);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'stock file review changes only the selected nonprimary index and refreshes Uncommitted and Task layers',
+    (tester) async {
+      final baseline = fixture.baseline(fixture.additional);
+      final committed = _fileReviewContent(committed: true);
+      final partial = _fileReviewContent(committed: true, staged: true);
+      final working = _fileReviewContent(
+        committed: true,
+        staged: true,
+        changed: true,
+      );
+      await tester.runAsync(() async {
+        await fixture.write(_fileReviewPath, committed);
+        await _git(fixture.additionalRoot, ['add', '--', _fileReviewPath]);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'File review HEAD',
+        ]);
+        await fixture.write(_fileReviewPath, partial);
+        await fixture.write('d staged.txt', 'Unrelated staged file\n');
+        await File(
+          '${fixture.additionalWorktree.path}/outside.txt',
+        ).writeAsString('Outside staged entry\n');
+        await _git(fixture.additionalWorktree, [
+          'add',
+          '--',
+          'nested source/$_fileReviewPath',
+          'nested source/d staged.txt',
+          'outside.txt',
+        ]);
+        await fixture.write(_fileReviewPath, working);
+        await fixture.write('a modified.txt', 'Other working file\n');
+        final primary = File('${fixture.primaryRoot.path}/$_fileReviewPath');
+        await primary.writeAsString('Primary staged file must remain\n');
+        await _git(fixture.primaryRoot, ['add', '--', _fileReviewPath]);
+        await primary.writeAsString('Primary working file must remain\n');
+      });
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      expect(
+        before[fixture.additional.id.value]!['head'],
+        isNot('$baseline\n'),
+      );
+      expect(baseline, isNot(fixture.baseline(fixture.primary)));
+      await mount(tester);
+      // Keep every lazy row in these layered snapshots mounted.
+      tester.view.physicalSize = const Size(1600, 5000);
+      await tester.pump();
+      await _selectScope(tester, 'Uncommitted changes');
+      await _reviewReady(tester, 'Approve File', count: 2);
+      await _reviewReady(tester, 'Unapprove File', count: 2);
+      expect(find.text('$_fileReviewPath  [modified]'), findsNWidgets(2));
+      expect(find.textContaining('@@ -'), findsNWidgets(6));
+      for (final line in [
+        '+Previously staged file change',
+        '+Inserted first file line',
+        '+Inserted second file line',
+        '-File line 54',
+        '-File line 55',
+        '+Final file replacement',
+      ]) {
+        expect(find.textContaining(line), findsOneWidget);
+      }
+      for (final absent in [
+        'Primary staged',
+        'Primary working',
+        'outside.txt',
+      ]) {
+        expect(find.textContaining(absent), findsNothing);
+      }
+      // The first unstaged header is the unrelated file, not the selected target.
+      final approve = _reviewAction('Approve File').last;
+      final staleApprove = tester.widget<TextButton>(approve).onPressed!;
+      await tester.runAsync(() => tester.tap(approve));
+      await _reviewReady(tester, 'Approve File');
+      await _reviewReady(tester, 'Unapprove', count: 5);
+      expect(find.text('$_fileReviewPath  [modified]'), findsOneWidget);
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      expect(
+        tester.getTopLeft(find.text('$_fileReviewPath  [modified]')).dy,
+        lessThan(unstagedY),
+      );
+      expect(find.textContaining('+Other working file'), findsOneWidget);
+      expect(find.textContaining('+Unrelated staged file'), findsOneWidget);
+      expect(find.textContaining('Committed changes'), findsNothing);
+      await tester.runAsync(
+        () => fixture.expectReviewIndex(
+          before,
+          path: _fileReviewPath,
+          originalContent: partial,
+          expectedContent: working,
+        ),
+      );
+      expect(fixture.indexWrites, hasLength(1));
+      final approved = (await tester.runAsync(fixture.reviewState))!;
+      staleApprove();
+      await tester.pump();
+      expect(fixture.indexWrites, hasLength(1));
+      expect(await tester.runAsync(fixture.reviewState), approved);
+
+      await _selectScope(tester, 'Task / Branch');
+      await _visible(tester, '+Committed file change');
+      await _reviewReady(tester, 'Unapprove File', count: 2);
+      expect(find.text('$_fileReviewPath  [modified]'), findsNWidgets(2));
+      expect(find.textContaining('-File line 3'), findsOneWidget);
+      // Committed rows have no file action; reverse only the staged file.
+      await tester.runAsync(
+        () => tester.tap(_reviewAction('Unapprove File').first),
+      );
+      await _reviewReady(tester, 'Unapprove File');
+      await _reviewReady(tester, 'Approve File', count: 2);
+      await _reviewReady(tester, 'Approve', count: 5);
+      expect(find.text('Committed changes'), findsOneWidget);
+      expect(find.textContaining('+Committed file change'), findsOneWidget);
+      expect(find.textContaining('-File line 3'), findsOneWidget);
+      expect(find.text('$_fileReviewPath  [modified]'), findsNWidgets(2));
+      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+      final refreshedUnstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      final headers = find.text('$_fileReviewPath  [modified]');
+      expect(tester.getTopLeft(headers.first).dy, lessThan(stagedY));
+      expect(
+        tester.getTopLeft(headers.last).dy,
+        greaterThan(refreshedUnstagedY),
+      );
+      expect(
+        tester
+            .getTopLeft(find.textContaining('+Previously staged file change'))
+            .dy,
+        greaterThan(refreshedUnstagedY),
+      );
+      expect(find.textContaining('+Unrelated staged file'), findsOneWidget);
+      await tester.runAsync(
+        () => fixture.expectReviewIndex(
+          before,
+          path: _fileReviewPath,
+          originalContent: partial,
+          expectedContent: committed,
+        ),
+      );
+      expect(fixture.indexWrites, hasLength(2));
+      final applies = fixture.processes.where(
+        (process) => ((process['request']! as Map)['arguments']! as List)
+            .contains('apply'),
+      );
+      expect(
+        applies.map(
+          (process) => ((process['request']! as Map)['arguments']! as List)
+              .contains('--check'),
+        ),
+        [true, false, true, false],
+      );
+      for (var i = 0; i < fixture.indexWrites.length; i++) {
+        final write = fixture.indexWrites[i];
+        expect(write['environmentId'], fixture.additional.id.value);
+        final request = write['request']! as Map;
+        final patch = utf8.decode(
+          base64Decode(request['stdinBase64'] as String),
+        );
+        expect(
+          RegExp(r'^@@ ', multiLine: true).allMatches(patch),
+          hasLength(i == 0 ? 3 : 4),
+        );
+        expect(
+          patch,
+          contains(
+            'index ${_blobOid(i == 0 ? partial : committed)}..${_blobOid(working)} 100644',
+          ),
+        );
+        expect(
+          request['arguments'] as List,
+          i == 0 ? isNot(contains('--reverse')) : contains('--reverse'),
+        );
+      }
+      expect(fixture.baseline(fixture.additional), baseline);
+      debugPrint(
+        'Stock file review verified index ${_blobOid(partial)} -> '
+        '${_blobOid(working)} -> ${_blobOid(committed)}; '
+        'unchanged HEAD=${(before[fixture.additional.id.value]!['head']! as String).trim()} '
+        'ref=${(before[fixture.additional.id.value]!['branch']! as String).trim()} '
+        'baseline=$baseline; unchanged working bytes, primary and unrelated index entries.',
+      );
       expect(fixture.reads, isEmpty);
       expect(
         fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
@@ -1230,6 +1444,8 @@ void main() {
         expect(find.textContaining('+Selected second change'), findsOneWidget);
         expect(_reviewAction('Approve'), findsNothing);
         expect(_reviewAction('Unapprove'), findsNothing);
+        expect(_reviewAction('Approve File'), findsNothing);
+        expect(_reviewAction('Unapprove File'), findsNothing);
         _refresh(tester);
         await _visible(tester, '+Selected second change');
         await _visible(tester, 'Review actions unavailable');
@@ -1255,19 +1471,19 @@ void main() {
           }
           expect(_reviewAction('Approve'), findsNothing);
           expect(_reviewAction('Unapprove'), findsNothing);
+          expect(_reviewAction('Approve File'), findsNothing);
+          expect(_reviewAction('Unapprove File'), findsNothing);
           expect(fixture.indexWrites, isEmpty);
           expect(await tester.runAsync(fixture.reviewState), before);
         }
-        if (absent) {
-          tester.view.physicalSize = const Size(720, 1200);
-          await tester.pump();
-          await _openFromDiff(tester);
-          expect(
-            _editor(tester).controller!.text,
-            _reviewContent(first: true, second: true),
-          );
-          expect(fixture.reads, [(fixture.additional.id.value, _reviewPath)]);
-        }
+        tester.view.physicalSize = const Size(720, 1200);
+        await tester.pump();
+        await _openFromDiff(tester);
+        expect(
+          _editor(tester).controller!.text,
+          _reviewContent(first: true, second: true),
+        );
+        expect(fixture.reads, [(fixture.additional.id.value, _reviewPath)]);
         expect(fixture.indexWrites, isEmpty);
         expect(await tester.runAsync(fixture.reviewState), before);
         expect(tester.takeException(), isNull);
@@ -1886,6 +2102,7 @@ final class _Fixture {
     for (final entry in {
       'a modified.txt': 'context before\nOriginal text\ncontext after\n',
       _reviewPath: _reviewContent(),
+      _fileReviewPath: _fileReviewContent(),
       if (Platform.isLinux) _punctuatedPath: 'Tracked source baseline\n',
       'c deleted.txt': 'Deleted baseline\n',
       'd staged.txt': 'Staged baseline\n',
@@ -2130,6 +2347,7 @@ final class _Fixture {
       result[environment.id.value] = {
         'head': await _git(root, ['rev-parse', 'HEAD']),
         'branch': await _git(root, ['symbolic-ref', 'HEAD']),
+        'refs': await _git(root, ['show-ref']),
         'baseline': baseline(environment),
         'providerState': environment.providerState,
         'index': await _git(root, ['ls-files', '--stage', '-z']),
@@ -2143,11 +2361,15 @@ final class _Fixture {
   Future<void> expectReviewIndex(
     Map<String, Map<String, Object?>> before, {
     bool first = false,
+    String path = _reviewPath,
+    String? originalContent,
+    String? expectedContent,
   }) async {
-    final content = _reviewContent(first: first);
-    final original = _blobOid(_reviewContent());
+    final content = expectedContent ?? _reviewContent(first: first);
+    final original = _blobOid(originalContent ?? _reviewContent());
     final expected = _blobOid(content);
-    final suffix = ' 0\tnested source/$_reviewPath\u0000';
+    expect(expected, matches(RegExp(r'^[0-9a-f]{40}$')));
+    final suffix = ' 0\tnested source/$path\u0000';
     final index = before[additional.id.value]!['index']! as String;
     expect(index, contains('$original$suffix'));
     expect(await reviewState(), {
@@ -2161,7 +2383,7 @@ final class _Fixture {
     expect(
       (await _git(additionalRoot, [
         'rev-parse',
-        ':nested source/$_reviewPath',
+        ':nested source/$path',
       ])).trim(),
       expected,
     );
@@ -2352,6 +2574,29 @@ String _reviewContent({bool first = false, bool second = false}) =>
       if (index == 24 && second) return 'Selected second change';
       return 'Selected line $index';
     }).join('\n')}\n';
+
+String _fileReviewContent({
+  bool committed = false,
+  bool staged = false,
+  bool changed = false,
+}) => [
+  for (var index = 0; index < 90; index++) ...[
+    if (index == 32 && changed) ...[
+      'Inserted first file line',
+      'Inserted second file line',
+    ],
+    if (!changed || (index != 54 && index != 55))
+      if (index == 3 && committed)
+        'Committed file change'
+      else if (index == 16 && staged)
+        'Previously staged file change'
+      else if (index == 76 && changed)
+        'Final file replacement'
+      else
+        'File line $index',
+  ],
+  '',
+].join('\n');
 
 String _blobOid(String content) {
   final bytes = utf8.encode(content);

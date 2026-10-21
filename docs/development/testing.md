@@ -457,9 +457,10 @@ rows, same-path cancellation, clean states, selected-scope Refresh/Retry, pendin
 scope/departure fencing, eligible/ineligible headers, unchanged unusual paths,
 availability, duplicate suppression, safe errors, and stale callbacks alongside
 snapshot rendering.
-The separate review test dispatcher exercises actual generated-client hunk actions,
-layer-specific typed revisions/indices, unavailable or denied approval, single pending
-admission, success-only refresh, unconfirmed feedback and stale-selection fencing.
+The separate review test dispatcher exercises actual generated-client hunk and file
+actions, independent complete-file eligibility, layer-specific typed revisions/indices,
+unavailable or denied approval, shared pending admission, success-only refresh,
+unconfirmed feedback and stale-selection fencing.
 Contract tests cover native and interpreted generated decoding,
 nested immutability, strict malformed responses, declared failures, and zero authority
 arguments for all methods. Real Git backend tests own baseline/HEAD/index/worktree comparison,
@@ -506,12 +507,15 @@ buffered-process response after execution on the selected Environment, then veri
 departure and retirement prevent further requests and stale publication.
 The Source read gate likewise holds a real provider response, not substituted file contents;
 neither gate adds a production testing hook. These tests do not need a PTY.
-Review controls additionally prove exact selected-hunk index object changes and
-unchanged working-file hashes, HEAD/branch and Task baseline, nonprimary isolation,
+Review controls additionally prove exact selected-hunk and complete-file index object
+changes and unchanged working-file hashes, HEAD/branch and Task baseline, nonprimary isolation,
 manual-staging staleness, index-lock rejection and retirement after a real index
 effect. Its native generated-client case rejects cross-Session revision reuse on
 the same selected Environment. Missing provider/permission keeps the actual compiled
-Diff read-only. The independent portable suite retains the separate Environment AOT
+Diff read-only with Source navigation. Complete-file cases assert one index-mutating
+request for multiple shifting hunks, preserved partial staging and unrelated entries
+outside the selected source scope, and accurate Uncommitted/Task refresh.
+The independent portable suite retains the separate Environment AOT
 to Git Capability AOT to EVC path. It also exercises the
 actual stock Git advertisement and Diff controls over an independent Environment
 provider without a Task anchor table, with an exact index-only roundtrip.

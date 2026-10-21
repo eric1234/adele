@@ -354,19 +354,24 @@ final class _PortableSnapshot {
     }
     // Review revisions are preconditions, never invocation authority. Capture
     // identity only for actionable text; clean scans retain their batched cost.
-    final candidates = [...staged, ...files]
-        .where(
-          (file) =>
-              _reviewableFile(
-                file,
-                repository!.prefix,
-                indexBytes: objectSizes[entries[file.relativePath]?.oid],
-                maximumFileBytes: limits.fileBytes,
-                reverse: staged.contains(file),
-              ) &&
-              reviewableWorkingPaths.contains(file.relativePath),
-        )
-        .toList();
+    final hunkCandidates = <ChangedFile>{};
+    final fileCandidates = <ChangedFile>{};
+    for (final file in [...staged, ...files]) {
+      if (!reviewableWorkingPaths.contains(file.relativePath)) continue;
+      for (final wholeFile in [false, true]) {
+        if (_reviewableFile(
+          file,
+          repository!.prefix,
+          indexBytes: objectSizes[entries[file.relativePath]?.oid],
+          maximumFileBytes: limits.fileBytes,
+          reverse: staged.contains(file),
+          wholeFile: wholeFile,
+        )) {
+          (wholeFile ? fileCandidates : hunkCandidates).add(file);
+        }
+      }
+    }
+    final candidates = {...hunkCandidates, ...fileCandidates};
     var reviewHead = head;
     if (candidates.isNotEmpty && reviewHead == null) {
       try {
@@ -376,15 +381,39 @@ final class _PortableSnapshot {
         // An unborn repository remains displayable, but has no review targets.
       }
     }
+    var reviewTree = head == null ? null : tree;
+    var reviewHeadEntries = headEntries;
+    if (fileCandidates.isNotEmpty && reviewHead != null) {
+      if (reviewTree == null) {
+        reviewTree = await readTree(reviewHead.commit);
+        reviewHeadEntries = parseGitTree(
+          reviewTree,
+          maximumEntries: limits.inventoryEntries,
+        );
+      }
+      // An index-to-working modification can still be a newly staged addition
+      // or type replacement. File approval requires an ordinary tracked HEAD side.
+      fileCandidates.removeWhere((file) {
+        final original = reviewHeadEntries[file.relativePath];
+        return original == null ||
+            !const {'100644', '100755'}.contains(original.oldMode) ||
+            original.oldMode != entries[file.relativePath]?.oldMode;
+      });
+    }
     if (candidates.isNotEmpty && reviewHead != null) {
       checkOpen();
       final identity = await processes.capturedIdentity();
       checkOpen();
+      final reviewIndex = repository!.prefix.isEmpty
+          ? inventory.index
+          : await _readReviewIndex(this);
+      parseGitIndex(reviewIndex, maximumEntries: limits.inventoryEntries);
       final observation = _ReviewObservation(
         identity: identity,
         head: reviewHead,
-        inventory: inventory,
+        index: reviewIndex,
         entries: entries,
+        headEntries: reviewHeadEntries,
         settings: settings,
       );
       reviewObservation = observation;
@@ -393,17 +422,23 @@ final class _PortableSnapshot {
           final file = layer[i];
           if (!candidates.contains(file)) continue;
           layer[i] = ChangedFile(
+            fileReviewRevision: fileCandidates.contains(file)
+                ? _reviewRevision(
+                    this,
+                    observation,
+                    file.relativePath,
+                    name,
+                    wholeFile: true,
+                  )
+                : null,
             relativePath: file.relativePath,
             changeKind: file.changeKind,
             contentStatus: file.contentStatus,
             detail: file.detail,
             hunks: file.hunks,
-            reviewRevision: _reviewRevision(
-              this,
-              observation,
-              file.relativePath,
-              name,
-            ),
+            reviewRevision: hunkCandidates.contains(file)
+                ? _reviewRevision(this, observation, file.relativePath, name)
+                : null,
           );
         }
       }
@@ -436,6 +471,16 @@ final class _PortableSnapshot {
             (await readTree(head.commit) != tree || head != reviewHead))) {
       throw _changed();
     }
+    if (reviewObservation != null &&
+        repository!.prefix.isNotEmpty &&
+        await _readReviewIndex(this) != reviewObservation!.index) {
+      throw _changed();
+    }
+    if (head == null &&
+        reviewTree != null &&
+        await readTree(reviewHead!.commit) != reviewTree) {
+      throw _changed();
+    }
     checkOpen();
     return TaskChangeSetSnapshot(
       committed: ChangeSetSnapshot(files: committed),
@@ -456,8 +501,9 @@ final class _PortableSnapshot {
       );
     }
     // Count every appearance of a path and escaped text across all layers.
+    // Include both optional opaque review revisions in the fixed DTO allowance.
     presentationBytes +=
-        512 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
+        640 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
     for (final hunk in file.hunks) {
       presentationBytes += 128;
       for (final line in hunk.lines) {
@@ -598,6 +644,7 @@ final class _PortableSnapshot {
       String detail, {
       String kind = 'unsupported',
     }) => ChangedFile(
+      fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
       changeKind: kind,
@@ -780,6 +827,7 @@ final class _PortableSnapshot {
       reviewableWorkingPaths.add(path);
     }
     return ChangedFile(
+      fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
       changeKind: kind,
@@ -878,6 +926,7 @@ final class _PortableSnapshot {
         ? 'typeChanged'
         : 'modified';
     ChangedFile placeholder(String status, String detail) => ChangedFile(
+      fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
       changeKind: kind,
@@ -1027,6 +1076,7 @@ final class _PortableSnapshot {
     }
     if (rebuilt.toString() != newText) throw _malformed();
     return ChangedFile(
+      fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
       changeKind: kind,

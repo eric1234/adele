@@ -21,9 +21,13 @@ class PortableGitState extends State<PortableGit> {
   dynamic approvalClient;
   dynamic unstagedSelection;
   dynamic stagedSelection;
+  dynamic unstagedFileSelection;
+  dynamic stagedFileSelection;
   bool approvalSelected = false;
   bool unstagedSelected = false;
   bool stagedSelected = false;
+  bool unstagedFileSelected = false;
+  bool stagedFileSelected = false;
   String approvalSelection = 'approval:idle';
   String approval = 'approval:idle';
   List<String> handles = [];
@@ -94,6 +98,8 @@ class PortableGitState extends State<PortableGit> {
       rendered += '\nconflicts' + renderFiles(value.conflicts);
     } else {
       final TaskChangeSetSnapshot value = result[1];
+      rememberSelection(value.uncommitted.staged.files, true);
+      rememberSelection(value.uncommitted.unstaged.files, false);
       rendered += '\ncommitted' + renderFiles(value.committed.files);
       rendered += '\nstaged' + renderFiles(value.uncommitted.staged.files);
       rendered += '\nunstaged' + renderFiles(value.uncommitted.unstaged.files);
@@ -105,6 +111,7 @@ class PortableGitState extends State<PortableGit> {
   }
 
   void rememberSelection(List<ChangedFile> files, bool reverse) {
+    rememberFileSelection(files, reverse);
     if (reverse) {
       stagedSelected = false;
     } else {
@@ -123,6 +130,30 @@ class PortableGitState extends State<PortableGit> {
         } else {
           unstagedSelection = selected;
           unstagedSelected = true;
+        }
+        return;
+      }
+    }
+  }
+
+  void rememberFileSelection(List<ChangedFile> files, bool reverse) {
+    if (reverse) {
+      stagedFileSelected = false;
+    } else {
+      unstagedFileSelected = false;
+    }
+    for (final ChangedFile file in files) {
+      if (file.fileReviewRevision != null) {
+        final selected = ReviewFileSelection(
+          relativePath: file.relativePath,
+          expectedRevision: file.fileReviewRevision!,
+        );
+        if (reverse) {
+          stagedFileSelection = selected;
+          stagedFileSelected = true;
+        } else {
+          unstagedFileSelection = selected;
+          unstagedFileSelected = true;
         }
         return;
       }
@@ -154,22 +185,40 @@ class PortableGitState extends State<PortableGit> {
     });
   }
 
-  void review(dynamic selected, dynamic selection, bool reverse) async {
+  void review(
+    dynamic selected,
+    dynamic selection,
+    bool reverse,
+    bool wholeFile,
+  ) async {
     if (selected == null || selection == null || disposed) return;
     setState(() {
       approval = 'approval:pending';
     });
     final ReviewApprovalHandlerServiceClient typed = selected;
-    final ReviewHunkSelection hunk = selection;
     dynamic result;
-    if (reverse) {
-      result = await settleEnvironmentCapabilityOperation(
-        typed.unapproveHunk(hunk),
-      );
+    if (wholeFile) {
+      final ReviewFileSelection file = selection;
+      if (reverse) {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.unapproveFile(file),
+        );
+      } else {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.approveFile(file),
+        );
+      }
     } else {
-      result = await settleEnvironmentCapabilityOperation(
-        typed.approveHunk(hunk),
-      );
+      final ReviewHunkSelection hunk = selection;
+      if (reverse) {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.unapproveHunk(hunk),
+        );
+      } else {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.approveHunk(hunk),
+        );
+      }
     }
     if (disposed) return;
     setState(() {
@@ -263,16 +312,30 @@ class PortableGitState extends State<PortableGit> {
         onPressed: () {
           // The pinned evaluator cannot read an uninitialized dynamic field.
           if (!approvalSelected || !unstagedSelected) return;
-          review(approvalClient, unstagedSelection, false);
+          review(approvalClient, unstagedSelection, false, false);
         },
         child: Text('Approve'),
       ),
       TextButton(
         onPressed: () {
           if (!approvalSelected || !stagedSelected) return;
-          review(approvalClient, stagedSelection, true);
+          review(approvalClient, stagedSelection, true, false);
         },
         child: Text('Unapprove'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (!approvalSelected || !unstagedFileSelected) return;
+          review(approvalClient, unstagedFileSelection, false, true);
+        },
+        child: Text('Approve File'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (!approvalSelected || !stagedFileSelected) return;
+          review(approvalClient, stagedFileSelection, true, true);
+        },
+        child: Text('Unapprove File'),
       ),
     ],
   );
