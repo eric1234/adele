@@ -88,23 +88,35 @@ modes/flags/conversions, mode-only changes, and control-character filenames have
 no revision. These entries remain visible in snapshots.
 
 `ChangedFile.fileReviewRevision` separately advertises eligibility of the complete
-displayed file modification. It is another required nullable wire field, with a
-distinct revision domain. Whole-file eligibility requires complete, safely inspected
-tracked regular UTF-8 text modifications, an actual changed hunk, and a complete
-patch and resulting index blob within the provider's bounds. An aggregate patch
-can be too large while every individual hunk remains eligible: in that case only
-`fileReviewRevision` is null. The frontend never computes either revision or infers
-whole-file eligibility from rendered lines. Additions, deletions and untracked
-files remain outside review mutation.
+displayed file change. It is another required nullable wire field, with a distinct
+revision domain. Whole-file modification eligibility requires complete, safely
+inspected tracked regular UTF-8 text modifications, an actual changed hunk, and a
+complete patch and resulting index blob within the provider's bounds. An aggregate
+patch can be too large while every individual hunk remains eligible: in that case
+only `fileReviewRevision` is null.
 
-The Git handler applies one backend-derived hunk, or one complete multi-hunk file
+The same file field can certify a complete new regular UTF-8 text file: an Unstaged
+`added` entry offers **Approve File**, and a Staged `added` entry offers
+**Unapprove File**. Empty new files are eligible when certified, even with no
+displayed hunks. Nonempty new files likewise have only file actions, never hunk
+Approve/Unapprove, even if a provider supplies `reviewRevision`. The frontend never
+computes either revision or infers eligibility from rendered lines, file size, or
+an `added` label alone. A null file revision leaves the addition read-only. Deleted,
+conflicted, nontext and unsupported entries remain outside review mutation; exact
+new-file eligibility and limits belong to the
+[Git handler](../git/README.md#reviewapprovalhandler).
+
+The Git handler applies one backend-derived hunk, or one complete file
 patch, to the index; Unapprove reverses that selected staged comparison. Each
 action uses exactly one index-mutating Git operation, never a per-hunk write loop.
-Approve File preserves already staged changes while incorporating all current
-unstaged text hunks. Unapprove File restores that file's index content to HEAD,
-leaving all working changes visible in the refreshed Unstaged layer. Neither writes
-working files, HEAD or the retained Task baseline. Git's
-index remains the approval source of truth; there is no approval database.
+For tracked modifications, Approve File preserves already staged changes while
+incorporating all current unstaged text hunks, and Unapprove File restores that
+file's index content to HEAD. For a certified new file, Approve File creates its
+complete index entry; Unapprove File removes the staged addition from the index
+without deleting the working file. A successful Unapprove therefore leaves the
+new file visible again as an Unstaged addition after refresh, including an empty
+file. Neither operation writes working files, HEAD or the retained Task baseline.
+Git's index remains the approval source of truth; there is no approval database.
 Changed revisions and consumed selections require a fresh snapshot, not a
 different hunk chosen at the old index. `ReviewApprovalFailure` declares stable
 pre-mutation rejection codes, `mutation_failed` for a verified unchanged index
@@ -156,6 +168,8 @@ Eligible file headers offer **Approve File** in Unstaged layers and
 **Unapprove File** in Staged layers, retaining the literal typed path and exact
 `fileReviewRevision` in `ReviewFileSelection`. Actions sit immediately below the
 header in a narrow-safe column, preserving the independent **Open in Source** action.
+Provider-certified added text entries use this same path, including zero-hunk
+empty files; they never acquire individual hunk actions.
 Eligible hunk headers continue to offer **Approve** in Unstaged layers and
 **Unapprove** in Staged layers. Uncommitted and Task retain both actions in their
 respective layers; Committed and Conflicts remain read-only. Each hunk action
@@ -215,9 +229,10 @@ Source owns document normalization, deduplication, dirty text, and native undo
 through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
-There is no automatic refresh watcher, addition/deletion staging, whole-layer
-action, discard/revert, editing within Diff, commit, review feedback submission,
-or side-by-side mode.
+There is no automatic refresh watcher, new-file hunk approval, deletion staging,
+whole-layer action, discard/revert, editing within Diff, commit, review feedback
+submission, or side-by-side mode. New-file review is bounded complete-file approval,
+not general staging of arbitrary untracked content.
 
 ## Preparation And Tests
 
@@ -245,9 +260,11 @@ committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. Its separate review
 dispatcher covers typed hunk indices and file selections/revisions, independent
-complete-file eligibility, narrow headers, layer-specific actions, unavailable
-approval, single pending mutation, success refresh, unconfirmed failures and lifecycle
-fencing. It does not substitute for authority validation:
+complete-file eligibility, certified additions including empty zero-hunk files,
+new-file hunk exclusion, narrow headers, layer-specific actions, unavailable
+approval, shared new-file/modified-file/hunk pending admission, success refresh,
+unconfirmed failures and lifecycle fencing. It does not substitute for authority
+validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
 consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
 real stock Git AOT plus independently prepared Diff and Source EVC through normal

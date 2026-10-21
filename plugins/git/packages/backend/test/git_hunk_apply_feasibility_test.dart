@@ -90,7 +90,11 @@ void main() {
     '-',
   ], input: patch);
 
-  Future<void> expectIndex(String path, String content) async {
+  Future<void> expectIndex(
+    String path,
+    String content, {
+    String mode = '100644',
+  }) async {
     final expectedBytes = utf8.encode(content);
     final inventory = _success(
       await command(['ls-files', '--stage', '-z', '--', './$path']),
@@ -100,7 +104,7 @@ void main() {
     final oid = fields[1];
     expect(
       utf8.decode(inventory),
-      '100644 ${_blobOid(expectedBytes, sha256Format: oid.length == 64)} 0\t$path\u0000',
+      '$mode ${_blobOid(expectedBytes, sha256Format: oid.length == 64)} 0\t$path\u0000',
     );
     expect(
       _success(await command(['cat-file', 'blob', oid])),
@@ -120,6 +124,125 @@ void main() {
   tearDown(() async {
     await container.delete(recursive: true);
   });
+
+  for (final format in ['sha1', 'sha256']) {
+    for (final mode in ['100644', '100755']) {
+      for (final (name, text) in [
+        ('UTF-8', '\ufeffcaf\u00e9\r\n\r\nlast  \n'),
+        ('empty', ''),
+        ('missing newline', 'caf\u00e9\nlast'),
+      ]) {
+        test('new-file $name $mode $format check/write/reverse', () async {
+          if (format == 'sha256') {
+            repository = await Directory('${container.path}/sha256').create();
+            await _git(repository, ['init', '--object-format=sha256']);
+            await _git(repository, ['config', 'user.name', 'ADELE Test']);
+            await _git(repository, [
+              'config',
+              'user.email',
+              'adele@example.invalid',
+            ]);
+          }
+          await fixture({'untouched': 'unrelated\n'});
+          const path =
+              'selected/project/-literal [x] \\ "\u00e9"\$(touch EXECUTED)';
+          final relativePath = path.substring('selected/project/'.length);
+          await write(path, text);
+          final workingFile = File('${repository.path}/$path');
+          final chmod = await Process.run('/usr/bin/chmod', [
+            mode == '100755' ? '755' : '644',
+            workingFile.path,
+          ]);
+          expect(chmod.exitCode, 0);
+          processes = _Processes(
+            Directory('${repository.path}/selected/project'),
+            container,
+          );
+          final file = (await capture()).files.single;
+          expect(file.relativePath, relativePath);
+          expect(file.changeKind, 'added');
+          expect(file.contentStatus, 'text');
+          final oid = _blobOid(
+            utf8.encode(text),
+            sha256Format: format == 'sha256',
+          );
+          final patch = _additionPatch(path, text, mode: mode, oid: oid);
+          expect(patch, contains('new file mode $mode\n'));
+          expect(patch, contains('index ${'0' * oid.length}..$oid\n'));
+          expect(patch, contains('--- /dev/null\n'));
+          expect(patch.contains('@@'), text.isNotEmpty);
+          final index = await File(
+            '${repository.path}/.git/index',
+          ).readAsBytes();
+          final working = await _workingHashes(repository);
+          final head = await _git(repository, ['rev-parse', 'HEAD']);
+          final reference = await _git(repository, ['symbolic-ref', 'HEAD']);
+          expect(
+            _success(
+              await command([
+                'ls-files',
+                '--stage',
+                '-z',
+                '--',
+                './$relativePath',
+              ]),
+            ),
+            isEmpty,
+          );
+          final start = processes.requests.length;
+          _success(await apply(patch, check: true));
+          expect(
+            await File('${repository.path}/.git/index').readAsBytes(),
+            index,
+          );
+          _success(await apply(patch));
+          expect(processes.requests.skip(start), hasLength(2));
+          await expectIndex(relativePath, text, mode: mode);
+          final added = await File(
+            '${repository.path}/.git/index',
+          ).readAsBytes();
+          _success(await apply(patch, reverse: true, check: true));
+          expect(
+            await File('${repository.path}/.git/index').readAsBytes(),
+            added,
+          );
+          _success(await apply(patch, reverse: true));
+          expect(
+            _success(
+              await command([
+                'ls-files',
+                '--stage',
+                '-z',
+                '--',
+                './$relativePath',
+              ]),
+            ),
+            isEmpty,
+          );
+          expect(
+            await _git(repository, ['ls-files', '--stage']),
+            contains('\tuntouched\n'),
+          );
+          expect(await workingFile.readAsBytes(), utf8.encode(text));
+          expect(await _workingHashes(repository), working);
+          expect(await _git(repository, ['rev-parse', 'HEAD']), head);
+          expect(await _git(repository, ['symbolic-ref', 'HEAD']), reference);
+          expect(
+            await File('${repository.path}/.git/index.lock').exists(),
+            isFalse,
+          );
+          expect(
+            await File('${processes.root.path}/EXECUTED').exists(),
+            isFalse,
+          );
+          expect(
+            processes.requests.any((r) => r.arguments.contains('add')),
+            isFalse,
+          );
+        });
+      }
+    }
+  }
 
   for (final reverse in [false, true]) {
     test(
@@ -628,6 +751,33 @@ void main() {
           await expectIndex(path, baseline);
         }
       }
+      for (final (path, text) in [
+        ('new-clean', 'new text\n'),
+        ('new-process', ''),
+      ]) {
+        await write(path, text);
+        final bytes = await File('${repository.path}/$path').readAsBytes();
+        final patch = _additionPatch(path, text);
+        // Also bypass the production conversion exclusion for an absent entry.
+        // Cached addition/removal itself must not invoke either configured filter.
+        await File('${repository.path}/.git/info/attributes').writeAsString(
+          'clean filter=clean\nprocess filter=process\ncustom diff=hostile\n'
+          'new-clean filter=clean\nnew-process filter=process\n',
+        );
+        _success(await apply(patch, check: true));
+        _success(await apply(patch));
+        await expectIndex(path, text);
+        _success(await apply(patch, reverse: true, check: true));
+        _success(await apply(patch, reverse: true));
+        expect(
+          _success(
+            await command(['ls-files', '--stage', '-z', '--', './$path']),
+          ),
+          isEmpty,
+        );
+        expect(await File('${repository.path}/$path').readAsBytes(), bytes);
+        await File('${repository.path}/$path').delete();
+      }
       expect(await _workingHashes(repository), working);
       expect(
         await File('${repository.path}/.git/config').readAsBytes(),
@@ -736,6 +886,31 @@ String _fullPatch(String path, List<DiffHunk> hunks, {String? index}) {
   return result.toString();
 }
 
+String _additionPatch(
+  String path,
+  String text, {
+  String mode = '100644',
+  String? oid,
+}) {
+  oid ??= _blobOid(utf8.encode(text));
+  final patch = StringBuffer()
+    ..writeln('diff --git ${_quote('a/$path')} ${_quote('b/$path')}')
+    ..writeln('new file mode $mode')
+    ..writeln('index ${'0' * oid.length}..$oid')
+    ..writeln('--- /dev/null')
+    ..writeln('+++ ${_quote('b/$path')}');
+  if (text.isNotEmpty) {
+    final lines = text.split('\n');
+    if (text.endsWith('\n')) lines.removeLast();
+    patch.writeln('@@ -0,0 +1,${lines.length} @@');
+    for (final line in lines) {
+      patch.writeln('+$line');
+    }
+    if (!text.endsWith('\n')) patch.writeln(r'\ No newline at end of file');
+  }
+  return patch.toString();
+}
+
 String _blobOid(List<int> bytes, {bool sha256Format = false}) =>
     (sha256Format ? sha256 : sha1).convert([
       ...utf8.encode('blob ${bytes.length}\u0000'),
@@ -751,17 +926,20 @@ List<int> _success(EnvironmentBufferedProcessResult result) {
   return base64Decode(result.stdoutBase64);
 }
 
-Future<Map<String, String>> _workingHashes(Directory root) async {
-  final hashes = <String, String>{};
+Future<Map<String, Object>> _workingHashes(Directory root) async {
+  final hashes = <String, Object>{};
   Future<void> visit(Directory directory) async {
     await for (final entry in directory.list(followLinks: false)) {
       if (entry.path == '${root.path}/.git') continue;
       if (entry is Directory) {
         await visit(entry);
       } else if (entry is File) {
-        hashes[entry.path.substring(root.path.length + 1)] = sha256
-            .convert(await entry.readAsBytes())
-            .toString();
+        final stat = await entry.stat();
+        hashes[entry.path.substring(root.path.length + 1)] = (
+          sha256.convert(await entry.readAsBytes()).toString(),
+          stat.size,
+          stat.mode,
+        );
       } else {
         throw StateError('Unexpected working-tree entry: ${entry.path}');
       }

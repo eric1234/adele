@@ -219,10 +219,11 @@ class DiffPaneState extends State<DiffPane> {
       }
       final fileRevision = file.fileReviewRevision;
       if ((layer == 'unstaged' || layer == 'staged') &&
-          file.changeKind == 'modified' &&
           file.contentStatus == 'text' &&
-          file.hunks.isNotEmpty &&
+          (file.changeKind == 'added' ||
+              (file.changeKind == 'modified' && file.hunks.isNotEmpty)) &&
           fileRevision != null) {
+        // Provider certification includes empty additions, without hunk actions.
         final selection = ReviewFileSelection(
           relativePath: file.relativePath,
           expectedRevision: fileRevision,

@@ -577,8 +577,8 @@ The frontend preserves the displayed snapshot's typed path, layer and opaque
 provider revision, plus a hunk index only for individual hunk selections. Complete-file
 eligibility has its own nullable provider revision and cannot be inferred from
 individual hunk eligibility. Only explicit Approve/Unapprove actions invoke the generated
-mutation client. Git stages or unstages one supported hunk or complete tracked text
-modification with one index-mutating operation in the captured
+mutation client. Git stages or unstages one supported hunk or complete text-file
+change with one index-mutating operation in the captured
 Environment's index, which remains authoritative approval state; no separate review
 database, working-file mutation, baseline update or Worktree association is involved.
 Unsupported entries and unavailable approval access remain read-only independently

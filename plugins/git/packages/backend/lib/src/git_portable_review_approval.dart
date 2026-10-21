@@ -104,7 +104,7 @@ final class GitPortableReviewApprovalService
       if (revision == null) {
         throw _reviewFailure(
           'unsupported_target',
-          'The selected file is not an eligible tracked text modification.',
+          'The selected file is not an eligible text review target.',
         );
       }
       if (expectedRevision != revision) {
@@ -120,18 +120,21 @@ final class GitPortableReviewApprovalService
         );
       }
       final observation = operation.reviewObservation!;
-      final entry = observation.entries[path]!;
-      final before = (await operation.blob(entry.oid))!;
+      final entry = observation.entries[path];
+      final addition = file.changeKind == 'added';
+      final before = (await operation.blob(entry?.oid ?? ''))!;
       final hunks = hunkIndex == null ? file.hunks : [file.hunks[hunkIndex]];
       final after = _applyReviewHunks(before, hunks, reverse: reverse);
       if (after.length > operation.limits.fileBytes ||
-          _equalBytes(before, after)) {
+          (!addition && _equalBytes(before, after))) {
         throw _reviewFailure(
           'unsupported_target',
           'The selection has no bounded index result.',
         );
       }
-      final expectedOid = _blobHash(after, entry.oid.length);
+      final expectedOid = addition && reverse
+          ? null
+          : _blobHash(after, observation.head.commit.length);
       if (hunkIndex == null &&
           expectedOid !=
               (reverse
@@ -139,14 +142,23 @@ final class GitPortableReviewApprovalService
                   : operation.workingOids[path])) {
         throw _malformed();
       }
+      if (addition && reverse && after.isNotEmpty) throw _malformed();
+      final mode =
+          entry?.oldMode ??
+          (operation.observed[path]!.executable ? '100755' : '100644');
+      final original = entry == null ? null : (mode: mode, oid: entry.oid);
+      final expected = expectedOid == null
+          ? null
+          : (mode: mode, oid: expectedOid);
       final patch = _reviewPatch(
         '${operation.repository!.prefix}$path',
         hunks,
-        mode: entry.oldMode,
-        beforeOid: entry.oid,
-        afterOid: expectedOid,
+        mode: mode,
+        beforeOid: entry?.oid ?? '0' * observation.head.commit.length,
+        afterOid: expectedOid ?? '0' * observation.head.commit.length,
         reverse: reverse,
         isolated: hunkIndex != null,
+        addition: addition,
       );
       if (patch.length > environmentBufferedProcessStdinLimit) {
         throw _reviewFailure(
@@ -173,8 +185,9 @@ final class GitPortableReviewApprovalService
         operation,
         observation,
         path,
-        entry.oid,
+        original,
         expectUnchangedIndex: true,
+        addition: addition,
       );
       // Reserve the known postcondition traffic before admitting any write.
       // External growth can still exceed it; such effects are then uncertain.
@@ -196,6 +209,13 @@ final class GitPortableReviewApprovalService
                         .length,
               ) +
           8192 +
+          (addition
+              ? 2 *
+                    (utf8
+                            .encode('${operation.repository!.prefix}$path')
+                            .length +
+                        512)
+              : 0) +
           2 * utf8.encode(operation.repository.toString()).length;
       final statBatches = operation.pathBatches(
         operation.observed.keys.toList(),
@@ -204,7 +224,7 @@ final class GitPortableReviewApprovalService
       ).length;
       if (operation.byteCount + patch.length + verificationBytes >
               operation.limits.totalBytes ||
-          operation.commandCount + 15 + 2 * statBatches >
+          operation.commandCount + 15 + 2 * statBatches + (addition ? 3 : 0) >
               operation.limits.processes) {
         throw _reviewFailure(
           'inspection_failed',
@@ -220,9 +240,10 @@ final class GitPortableReviewApprovalService
         operation,
         observation,
         path,
-        applied.exitCode == 0 ? expectedOid : entry.oid,
+        applied.exitCode == 0 ? expected : original,
         expectedBytes: applied.exitCode == 0 ? after : before,
         expectUnchangedIndex: applied.exitCode != 0,
+        addition: addition,
       );
       if (applied.exitCode != 0) {
         confirmedFailure = true;
@@ -272,9 +293,10 @@ Future<void> _verifyReviewState(
   _PortableSnapshot operation,
   _ReviewObservation observation,
   String path,
-  String expectedOid, {
+  ({String mode, String oid})? expected, {
   List<int>? expectedBytes,
   bool expectUnchangedIndex = false,
+  bool addition = false,
 }) async {
   final raw = await _readReviewIndex(operation);
   final repositoryPath = '${operation.repository!.prefix}$path';
@@ -289,26 +311,30 @@ Future<void> _verifyReviewState(
     observation.index,
     maximumEntries: operation.limits.inventoryEntries,
   );
-  if (entries.length != beforeEntries.length ||
+  final expectedCount =
+      beforeEntries.length -
+      (beforeEntries.containsKey(repositoryPath) ? 1 : 0) +
+      (expected == null ? 0 : 1);
+  if (entries.length != expectedCount ||
       _otherIndexRecords(raw, repositoryPath) !=
           _otherIndexRecords(observation.index, repositoryPath)) {
     throw _changed();
   }
-  for (final original in beforeEntries.entries) {
-    final expected = original.value;
-    final current = entries[original.key];
-    if (current == null ||
-        current.kind != expected.kind ||
-        current.oldMode != expected.oldMode ||
-        current.newMode != expected.newMode ||
-        current.oid !=
-            (original.key == repositoryPath ? expectedOid : expected.oid)) {
-      throw _changed();
-    }
+  final selected = entries[repositoryPath];
+  if (expected == null
+      ? selected != null
+      : selected !=
+            (
+              oldMode: expected.mode,
+              newMode: expected.mode,
+              oid: expected.oid,
+              kind: 'modified',
+            )) {
+    throw _changed();
   }
   // Hash-checked object bytes prove the actual index content, not just its header.
-  if (expectedBytes != null) {
-    final actual = await operation.blob(expectedOid);
+  if (expectedBytes != null && expected != null) {
+    final actual = await operation.blob(expected.oid);
     if (actual == null || !_equalBytes(actual, expectedBytes)) throw _changed();
   }
   await operation.verifyMetadata(operation.observed.keys.toList());
@@ -319,10 +345,28 @@ Future<void> _verifyReviewState(
     './$path',
   ])).bytes;
   if (working.length != operation.observed[path]!.size ||
-      _blobHash(working, expectedOid.length) != operation.workingOids[path]) {
+      _blobHash(working, observation.head.commit.length) !=
+          operation.workingOids[path]) {
     throw _changed();
   }
   await operation.verifyMetadata(operation.observed.keys.toList());
+  if (addition) {
+    if (!await _reviewAdditionPathSafe(operation, path)) throw _changed();
+    if (expected == null &&
+        !_equalBytes(
+          (await operation.git([
+            'ls-files',
+            '--others',
+            '--exclude-standard',
+            '-z',
+            '--',
+            './$path',
+          ])).bytes,
+          utf8.encode('$path\u0000'),
+        )) {
+      throw _changed();
+    }
+  }
   if (await operation.readAttributes(path) != operation.attributes[path] ||
       await operation.readSettings() != observation.settings ||
       await operation.readHead() != observation.head ||
@@ -424,15 +468,17 @@ List<int> _reviewPatch(
   required String afterOid,
   required bool reverse,
   required bool isolated,
+  bool addition = false,
 }) {
   final oldPath = _quoteReviewPath('a/$path');
   final newPath = _quoteReviewPath('b/$path');
-  final patch = StringBuffer()
-    ..writeln('diff --git $oldPath $newPath')
+  final patch = StringBuffer()..writeln('diff --git $oldPath $newPath');
+  if (addition) patch.writeln('new file mode $mode');
+  patch
     ..writeln(
-      'index ${reverse ? afterOid : beforeOid}..${reverse ? beforeOid : afterOid} $mode',
+      'index ${reverse ? afterOid : beforeOid}..${reverse ? beforeOid : afterOid}${addition ? '' : ' $mode'}',
     )
-    ..writeln('--- $oldPath')
+    ..writeln('--- ${addition ? '/dev/null' : oldPath}')
     ..writeln('+++ $newPath');
   for (final hunk in hunks) {
     // Only an isolated hunk needs rebasing to its actual source-side coordinate.
@@ -503,7 +549,41 @@ final class _ReviewObservation {
 }
 
 bool _reviewablePath(String path) =>
-    path.length <= 4096 && !path.contains(RegExp(r'[\x00-\x1f\x7f]'));
+    path.length <= 4096 &&
+    !path.split('/').contains('.git') &&
+    !path.contains(RegExp(r'[\x00-\x1f\x7f]'));
+
+bool _reviewPathCollision(String path, Iterable<String> paths) => paths.any(
+  (other) => other.startsWith('$path/') || path.startsWith('$other/'),
+);
+
+Future<bool> _reviewAdditionPathSafe(
+  _PortableSnapshot operation,
+  String path,
+) async {
+  final ignored = await operation.git([
+    'ls-files',
+    '--cached',
+    '--others',
+    '--ignored',
+    '--exclude-standard',
+    '-z',
+    '--',
+    './$path',
+  ]);
+  if (ignored.bytes.isNotEmpty) return false;
+  if (!path.contains('/')) return true;
+  // All parent directories have already been observed without following links.
+  // Fixed shell code inspects literal argv, never interpolated filenames.
+  final boundary = await operation.command('/bin/sh', [
+    '-c',
+    r'path=$1; while [ "${path%/*}" != "$path" ]; do path=${path%/*}; if [ -e "$path/.git" ] || [ -L "$path/.git" ]; then exit 1; fi; done',
+    'adele-review-parents',
+    path,
+  ], allowDifference: true);
+  if (boundary.bytes.isNotEmpty) throw _malformed();
+  return boundary.exitCode == 0;
+}
 
 bool _reviewableFile(
   ChangedFile file,
@@ -513,9 +593,10 @@ bool _reviewableFile(
   required bool reverse,
   bool wholeFile = false,
 }) {
-  if (file.changeKind != 'modified' ||
+  final addition = wholeFile && file.changeKind == 'added';
+  if ((!addition && file.changeKind != 'modified') ||
       file.contentStatus != 'text' ||
-      file.hunks.isEmpty ||
+      (!addition && file.hunks.isEmpty) ||
       file.hunks.length > 8192 ||
       !_reviewablePath(file.relativePath) ||
       indexBytes == null) {
@@ -560,10 +641,15 @@ String _reviewRevision(
   String path,
   String layer, {
   bool wholeFile = false,
+  bool addition = false,
 }) {
-  final domain = wholeFile ? 'git-file-review-v1' : 'git-review-v1';
+  final domain = addition
+      ? 'git-file-addition-review-v1'
+      : wholeFile
+      ? 'git-file-review-v1'
+      : 'git-review-v1';
   final repo = operation.repository!;
-  final entry = observation.entries[path]!;
+  final entry = observation.entries[path];
   final digest = sha256.convert(
     utf8.encode(
       jsonEncode([
@@ -578,9 +664,9 @@ String _reviewRevision(
         path,
         observation.head.commit,
         observation.head.reference,
-        entry.oldMode,
-        entry.oid,
-        entry.kind,
+        entry?.oldMode,
+        entry?.oid,
+        entry?.kind,
         observation.indexRevision,
         operation.workingOids[path],
         operation.observed[path]!.mode,
