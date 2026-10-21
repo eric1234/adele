@@ -58,6 +58,7 @@ final class ChangedFile {
     required this.contentStatus,
     required this.detail,
     required this.reviewRevision,
+    required this.fileReviewRevision,
     required List<DiffHunk> hunks,
   }) : hunks = List<DiffHunk>.unmodifiable(hunks);
 
@@ -73,8 +74,12 @@ final class ChangedFile {
   final String? detail;
 
   /// Opaque provider revision for selecting a hunk from this exact file snapshot.
-  /// Null means this entry is not actionable through review approval.
+  /// Null means this entry has no supported individual hunk action.
   final String? reviewRevision;
+
+  /// Opaque provider revision for the complete displayed file modification.
+  /// Null means complete-file review is unavailable, independently of hunk review.
+  final String? fileReviewRevision;
   final List<DiffHunk> hunks;
 }
 
@@ -117,28 +122,9 @@ final class ReviewHunkSelection {
     required this.hunkIndex,
     required this.expectedRevision,
   }) {
-    if (relativePath.isEmpty ||
-        relativePath.length > 4096 ||
-        relativePath.contains('\u0000') ||
-        relativePath
-            .split('/')
-            .any(
-              (part) =>
-                  part.isEmpty || part == '.' || part == '..' || part == '.git',
-            )) {
-      throw ArgumentError.value(relativePath, 'relativePath', 'Invalid path.');
-    }
+    _validateReviewSelection(relativePath, expectedRevision);
     if (hunkIndex < 0 || hunkIndex > 8191) {
       throw ArgumentError.value(hunkIndex, 'hunkIndex', 'Invalid hunk index.');
-    }
-    if (expectedRevision.isEmpty ||
-        expectedRevision.length > 256 ||
-        expectedRevision.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
-      throw ArgumentError.value(
-        expectedRevision,
-        'expectedRevision',
-        'Invalid revision.',
-      );
     }
   }
 
@@ -152,6 +138,46 @@ final class ReviewHunkSelection {
 
   /// Nonempty opaque revision, at most 256 printable ASCII characters.
   final String expectedRevision;
+}
+
+/// Identifies a complete displayed file change, never patch data or authority.
+@AdeleValue('diff.reviewFileSelection')
+final class ReviewFileSelection {
+  ReviewFileSelection({
+    required this.relativePath,
+    required this.expectedRevision,
+  }) {
+    _validateReviewSelection(relativePath, expectedRevision);
+  }
+
+  /// Same bounded relative path rules as an individual hunk selection.
+  final String relativePath;
+
+  /// The provider's complete-file revision, not an individual hunk revision.
+  final String expectedRevision;
+}
+
+void _validateReviewSelection(String relativePath, String expectedRevision) {
+  if (relativePath.isEmpty ||
+      relativePath.length > 4096 ||
+      relativePath.contains('\u0000') ||
+      relativePath
+          .split('/')
+          .any(
+            (part) =>
+                part.isEmpty || part == '.' || part == '..' || part == '.git',
+          )) {
+    throw ArgumentError.value(relativePath, 'relativePath', 'Invalid path.');
+  }
+  if (expectedRevision.isEmpty ||
+      expectedRevision.length > 256 ||
+      expectedRevision.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
+    throw ArgumentError.value(
+      expectedRevision,
+      'expectedRevision',
+      'Invalid revision.',
+    );
+  }
 }
 
 @AdeleService('diff.changeSetSource')
@@ -178,6 +204,12 @@ abstract interface class ReviewApprovalHandlerService {
 
   @AdeleMethod('unapproveHunk')
   Future<void> unapproveHunk(ReviewHunkSelection selection);
+
+  @AdeleMethod('approveFile')
+  Future<void> approveFile(ReviewFileSelection selection);
+
+  @AdeleMethod('unapproveFile')
+  Future<void> unapproveFile(ReviewFileSelection selection);
 }
 
 @AdeleFailure('diff.changeSetFailure')

@@ -55,6 +55,14 @@ void main() {
         reviewApprovalHandlerServiceUnapproveHunkId,
         'diff.reviewApprovalHandler.unapproveHunk',
       );
+      expect(
+        reviewApprovalHandlerServiceApproveFileId,
+        'diff.reviewApprovalHandler.approveFile',
+      );
+      expect(
+        reviewApprovalHandlerServiceUnapproveFileId,
+        'diff.reviewApprovalHandler.unapproveFile',
+      );
     },
   );
 
@@ -68,11 +76,27 @@ void main() {
           reason: '$wire',
         );
       }
+      for (final wire in _invalidSelections(wholeFile: true)) {
+        expect(() => _decodeFileSelection(wire), throwsArgumentError);
+      }
     },
   );
 
-  for (final eval in [false, true]) {
-    group(eval ? 'eval transport' : 'native transport', () {
+  for (final (wholeFile, eval) in [
+    for (final wholeFile in [false, true])
+      for (final eval in [false, true]) (wholeFile, eval),
+  ]) {
+    final selectionWire = {..._selection};
+    if (wholeFile) selectionWire.remove('hunkIndex');
+    final approveId = wholeFile
+        ? reviewApprovalHandlerServiceApproveFileId
+        : reviewApprovalHandlerServiceApproveHunkId;
+    final unapproveId = wholeFile
+        ? reviewApprovalHandlerServiceUnapproveFileId
+        : reviewApprovalHandlerServiceUnapproveHunkId;
+    final kind = wholeFile ? 'file' : 'hunk';
+    final transport = eval ? 'eval' : 'native';
+    group('$kind $transport transport', () {
       late ByteData bytecode;
       if (eval) {
         setUpAll(() async {
@@ -115,7 +139,17 @@ void main() {
 
       Future<void> invoke(Map<String, Object?> wire, bool reverse) async {
         if (eval) {
-          await runEval('invoke', [jsonEncode(wire), reverse]);
+          await runEval(wholeFile ? 'invokeFile' : 'invoke', [
+            jsonEncode(wire),
+            reverse,
+          ]);
+        } else if (wholeFile) {
+          final selection = _decodeFileSelection(wire);
+          if (reverse) {
+            await client.unapproveFile(selection);
+          } else {
+            await client.approveFile(selection);
+          }
         } else {
           final selection = _decodeSelection(wire);
           if (reverse) {
@@ -131,25 +165,24 @@ void main() {
           : channel.request(method, Map<String, Object?>.from(payload! as Map));
 
       test(
-        'both void methods send only the selected hunk and return null',
+        'both void methods send only the typed selection and return null',
         () async {
           for (final reverse in [false, true]) {
-            await invoke(_selection, reverse);
-            expect(
-              channel.method,
-              reverse
-                  ? reviewApprovalHandlerServiceUnapproveHunkId
-                  : reviewApprovalHandlerServiceApproveHunkId,
-            );
-            expect(channel.payload, {'selection': _selection});
+            await invoke(selectionWire, reverse);
+            expect(channel.method, reverse ? unapproveId : approveId);
+            expect(channel.payload, {'selection': selectionWire});
             expect(channel.response, isNull);
             expect(
-              service.selections.last.relativePath,
+              wholeFile
+                  ? service.fileSelections.last.relativePath
+                  : service.selections.last.relativePath,
               _selection['relativePath'],
             );
-            expect(service.selections.last.hunkIndex, 2);
+            if (!wholeFile) expect(service.selections.last.hunkIndex, 2);
             expect(
-              service.selections.last.expectedRevision,
+              wholeFile
+                  ? service.fileSelections.last.expectedRevision
+                  : service.selections.last.expectedRevision,
               'opaque:review-revision',
             );
           }
@@ -164,29 +197,35 @@ void main() {
           expect(longPath.length, 4096);
           for (final wire in [
             {
-              ..._selection,
+              ...selectionWire,
               'relativePath': 'a',
-              'hunkIndex': 0,
+              if (!wholeFile) 'hunkIndex': 0,
               'expectedRevision': ' ',
             },
             {
-              ..._selection,
+              ...selectionWire,
               'relativePath': longPath,
-              'hunkIndex': 8191,
+              if (!wholeFile) 'hunkIndex': 8191,
               'expectedRevision': List.filled(256, '~').join(),
             },
-            {..._selection, 'relativePath': 'dir/line\nbreak.txt'},
-            {..._selection, 'relativePath': '.github/.gitignore'},
+            {...selectionWire, 'relativePath': 'dir/line\nbreak.txt'},
+            {...selectionWire, 'relativePath': '.github/.gitignore'},
           ]) {
             for (final reverse in [false, true]) {
               await invoke(wire, reverse);
               expect(
-                service.selections.last.relativePath,
+                wholeFile
+                    ? service.fileSelections.last.relativePath
+                    : service.selections.last.relativePath,
                 wire['relativePath'],
               );
-              expect(service.selections.last.hunkIndex, wire['hunkIndex']);
+              if (!wholeFile) {
+                expect(service.selections.last.hunkIndex, wire['hunkIndex']);
+              }
               expect(
-                service.selections.last.expectedRevision,
+                wholeFile
+                    ? service.fileSelections.last.expectedRevision
+                    : service.selections.last.expectedRevision,
                 wire['expectedRevision'],
               );
             }
@@ -212,7 +251,7 @@ void main() {
               );
               for (final reverse in [false, true]) {
                 await expectLater(
-                  invoke(_selection, reverse),
+                  invoke(selectionWire, reverse),
                   throwsA(
                     eval
                         ? isA<AdeleRemoteFailure>()
@@ -256,7 +295,7 @@ void main() {
         service.failure = StateError('private provider diagnostics');
         for (final reverse in [false, true]) {
           await expectLater(
-            invoke(_selection, reverse),
+            invoke(selectionWire, reverse),
             throwsA(
               isA<AdeleRemoteFailure>()
                   .having((error) => error.code, 'code', 'internal_error')
@@ -283,7 +322,7 @@ void main() {
           for (final reverse in [false, true]) {
             if (eval) {
               await expectLater(
-                invoke(_selection, reverse),
+                invoke(selectionWire, reverse),
                 throwsA(
                   isA<$InstanceImpl>().having(
                     (error) {
@@ -297,7 +336,7 @@ void main() {
               );
             } else {
               await expectLater(
-                invoke(_selection, reverse),
+                invoke(selectionWire, reverse),
                 throwsA(isA<AdeleProtocolException>()),
               );
             }
@@ -309,11 +348,8 @@ void main() {
       test(
         'malformed, unknown and authority fields never reach the service',
         () async {
-          for (final method in [
-            reviewApprovalHandlerServiceApproveHunkId,
-            reviewApprovalHandlerServiceUnapproveHunkId,
-          ]) {
-            for (final payload in _invalidPayloads()) {
+          for (final method in [approveId, unapproveId]) {
+            for (final payload in _invalidPayloads(wholeFile: wholeFile)) {
               await expectLater(
                 raw(method, payload),
                 throwsA(
@@ -341,7 +377,7 @@ void main() {
             'diff.reviewApprovalHandler.applyPatch',
           ]) {
             await expectLater(
-              raw(method, {'selection': _selection}),
+              raw(method, {'selection': selectionWire}),
               throwsA(
                 isA<AdeleRemoteFailure>().having(
                   (error) => error.code,
@@ -359,7 +395,7 @@ void main() {
         test(
           'native validation rejects out-of-bounds eval-constructed selections',
           () async {
-            for (final wire in _invalidSelections()) {
+            for (final wire in _invalidSelections(wholeFile: wholeFile)) {
               for (final reverse in [false, true]) {
                 await expectLater(
                   invoke(wire, reverse),
@@ -381,6 +417,12 @@ void main() {
   }
 }
 
+ReviewFileSelection _decodeFileSelection(Map<String, Object?> wire) =>
+    ReviewFileSelection(
+      relativePath: wire['relativePath']! as String,
+      expectedRevision: wire['expectedRevision']! as String,
+    );
+
 ReviewHunkSelection _decodeSelection(Map<String, Object?> wire) =>
     ReviewHunkSelection(
       relativePath: wire['relativePath']! as String,
@@ -388,7 +430,11 @@ ReviewHunkSelection _decodeSelection(Map<String, Object?> wire) =>
       expectedRevision: wire['expectedRevision']! as String,
     );
 
-Iterable<Map<String, Object?>> _invalidSelections() sync* {
+Iterable<Map<String, Object?>> _invalidSelections({
+  bool wholeFile = false,
+}) sync* {
+  final selection = {..._selection};
+  if (wholeFile) selection.remove('hunkIndex');
   for (final path in [
     '',
     '/',
@@ -407,10 +453,10 @@ Iterable<Map<String, Object?>> _invalidSelections() sync* {
     List.filled(4097, 'x').join(),
     '${List.filled(2048, '\u{1f600}').join()}x',
   ]) {
-    yield {..._selection, 'relativePath': path};
+    yield {...selection, 'relativePath': path};
   }
-  for (final index in [-1, 8192]) {
-    yield {..._selection, 'hunkIndex': index};
+  for (final index in wholeFile ? <int>[] : [-1, 8192]) {
+    yield {...selection, 'hunkIndex': index};
   }
   for (final revision in [
     '',
@@ -424,11 +470,15 @@ Iterable<Map<String, Object?>> _invalidSelections() sync* {
     '\u03bb',
     List.filled(257, 'x').join(),
   ]) {
-    yield {..._selection, 'expectedRevision': revision};
+    yield {...selection, 'expectedRevision': revision};
   }
 }
 
-Iterable<Map<String, Object?>> _invalidPayloads() sync* {
+Iterable<Map<String, Object?>> _invalidPayloads({
+  bool wholeFile = false,
+}) sync* {
+  final valid = {..._selection};
+  if (wholeFile) valid.remove('hunkIndex');
   yield {};
   for (final selection in <Object?>[
     null,
@@ -436,15 +486,17 @@ Iterable<Map<String, Object?>> _invalidPayloads() sync* {
     'patch',
     <Object?>[],
     <String, Object?>{},
-    for (final field in _selection.keys) ...[
-      {..._selection}..remove(field),
-      {..._selection, field: null},
+    for (final field in valid.keys) ...[
+      {...valid}..remove(field),
+      {...valid, field: null},
     ],
-    {..._selection, 'relativePath': 1},
-    {..._selection, 'hunkIndex': '2'},
-    {..._selection, 'hunkIndex': 2.5},
-    {..._selection, 'expectedRevision': false},
-    ..._invalidSelections(),
+    {...valid, 'relativePath': 1},
+    {...valid, 'hunkIndex': '2'},
+    {...valid, 'hunkIndex': 2.5},
+    if (wholeFile) {...valid, 'hunkIndex': -1},
+    if (wholeFile) {...valid, 'hunkIndex': 0},
+    {...valid, 'expectedRevision': false},
+    ..._invalidSelections(wholeFile: wholeFile),
   ]) {
     yield {'selection': selection};
   }
@@ -462,10 +514,15 @@ Iterable<Map<String, Object?>> _invalidPayloads() sync* {
     'providerId',
     'baselineCommit',
     'layer',
+    'gitDirectory',
+    'branch',
+    'executable',
+    'argv',
+    'fileContents',
   ]) {
-    yield {'selection': _selection, field: 'forged'};
+    yield {'selection': valid, field: 'forged'};
     yield {
-      'selection': {..._selection, field: 'forged'},
+      'selection': {...valid, field: 'forged'},
     };
   }
 }
@@ -473,7 +530,22 @@ Iterable<Map<String, Object?>> _invalidPayloads() sync* {
 class _Service implements ReviewApprovalHandlerService {
   final operations = <String>[];
   final selections = <ReviewHunkSelection>[];
+  final fileSelections = <ReviewFileSelection>[];
   Object? failure;
+
+  @override
+  Future<void> approveFile(ReviewFileSelection selection) async {
+    operations.add('approve');
+    fileSelections.add(selection);
+    if (failure != null) throw failure!;
+  }
+
+  @override
+  Future<void> unapproveFile(ReviewFileSelection selection) async {
+    operations.add('unapprove');
+    fileSelections.add(selection);
+    if (failure != null) throw failure!;
+  }
 
   @override
   Future<void> approveHunk(ReviewHunkSelection selection) async {
@@ -562,6 +634,20 @@ Future<void> invoke(Function send, String wire, bool reverse) async {
 
 Future<Object?> raw(Function send, String method, String wire) {
   return Channel(send).request(method, jsonDecode(wire));
+}
+
+Future<void> invokeFile(Function send, String wire, bool reverse) async {
+  final value = jsonDecode(wire);
+  final selection = ReviewFileSelection(
+    relativePath: value['relativePath'],
+    expectedRevision: value['expectedRevision'],
+  );
+  final ReviewApprovalHandlerServiceClient client = ReviewApprovalHandlerServiceClient(Channel(send));
+  if (reverse) {
+    await client.unapproveFile(selection);
+  } else {
+    await client.approveFile(selection);
+  }
 }
 
 ''';

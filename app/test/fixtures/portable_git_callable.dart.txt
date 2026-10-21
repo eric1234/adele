@@ -91,20 +91,23 @@ final class _Approval implements ReviewApprovalHandlerService {
 
   @override
   Future<void> approveHunk(ReviewHunkSelection selection) =>
-      _invoke(selection, false);
+      _invoke('approve', () => approvals.approveHunk(selection));
 
   @override
   Future<void> unapproveHunk(ReviewHunkSelection selection) =>
-      _invoke(selection, true);
+      _invoke('unapprove', () => approvals.unapproveHunk(selection));
 
-  Future<void> _invoke(ReviewHunkSelection selection, bool reverse) async {
-    final method = reverse ? 'unapprove' : 'approve';
+  @override
+  Future<void> approveFile(ReviewFileSelection selection) =>
+      _invoke('approveFile', () => approvals.approveFile(selection));
+
+  @override
+  Future<void> unapproveFile(ReviewFileSelection selection) =>
+      _invoke('unapproveFile', () => approvals.unapproveFile(selection));
+
+  Future<void> _invoke(String method, Future<void> Function() invoke) async {
     try {
-      if (reverse) {
-        await approvals.unapproveHunk(selection);
-      } else {
-        await approvals.approveHunk(selection);
-      }
+      await invoke();
       // The production operation has finished, including its actual index write.
       // Retirement here fences publication, not the effect, replay, or rollback.
       await state.checkpoint('after:$method');

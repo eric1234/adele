@@ -498,14 +498,15 @@ It declares `environmentBound: true` and only
 `AdeleEnvironmentHostService.bufferedProcess`, without a same-backend association.
 Its contextual dispatcher constructs the handler per admitted operation using that
 operation's generated `AuthorizedEnvironmentBufferedProcessServiceClient`.
-It retains neither a global authorization grant nor approval state. Ordinary hunk
+It retains neither a global authorization grant nor approval state. Hunk and file
 approval requires no Task baseline or SQL anchor and works with independent
 compatible Environment providers. No Environment service, combined read/process grant,
 Worktree provider state, or Project schema is added or changed.
 
 The stock compiled Diff frontend declares this exact Capability/major separately
-from its inspection permission. It offers only explicit hunk-level Approve and
-Unapprove, never raw process authority or patch execution. Missing approval access
+from its inspection permission. It offers explicit hunk-level Approve/Unapprove
+and complete-file Approve File/Unapprove File, never raw process authority or patch
+execution. Missing approval access
 leaves read-only inspection available; see [Diff presentation](../diff_viewer/README.md#presentation)
 for pending, snapshot freshness, safe failure and retirement behavior.
 
@@ -516,6 +517,15 @@ branches, Task baseline, and unrelated staged/unstaged changes are not written.
 Git creates the resulting blob and updates its index using its own index lock;
 the index, not an ADELE database, is approval state. A subsequent layered snapshot
 shows the new Staged/Unstaged split. A commit consumes the old staged selection.
+
+Approve File applies every current index-to-working text hunk of one eligible
+tracked modified file in a single index mutation. With HEAD A, index B and working
+C, the result is index C, preserving the previously staged A-to-B changes.
+Unapprove File reverses every HEAD-to-index hunk in one mutation, restoring index
+A while working C remains untouched. Refreshed Unstaged may therefore include both
+formerly staged and already unstaged changes. No per-hunk mutation loop or separate
+approval database is used. Additions, deletions, untracked files and whole-layer
+actions are not supported.
 
 Snapshot `ChangedFile.reviewRevision` is present only for ordinary tracked regular
 text modifications with actual bounded hunks and an inspectable regular working
@@ -528,6 +538,16 @@ unsupported. The handler conservatively excludes control-character filenames (in
 tabs/newlines) even though direct Git feasibility tests establish quoted support.
 Spaces, quotes, backslashes, Unicode, punctuation and leading dashes remain literal.
 
+`ChangedFile.fileReviewRevision` independently identifies eligible complete-file
+operations. The complete displayed comparison must be safely inspected and bounded,
+with at least one actual text hunk and an existing regular HEAD entry matching the
+index mode. Newly staged additions with further working edits and staged type/mode
+replacements therefore have no file action, without reinterpreting existing hunk
+eligibility. The aggregate constructed patch must fit stdin
+and its resulting index blob must fit the existing file bound. A file can retain
+`reviewRevision` for valid hunk actions while the aggregate patch is too large for
+`fileReviewRevision`. Neither revision grants authority.
+
 The deterministic SHA-256 revision binds the layer, captured Session and
 Environment identities, discovered repository/source scope, literal path, HEAD
 commit and symbolic ref, the observed index inventory, selected stage-0 mode/object,
@@ -535,12 +555,14 @@ raw working-content identity and mode, attributes and relevant configuration. Bo
 layers conservatively bind working content and HEAD. It is a stale-state precondition,
 not a credential; no backend-global approval-state map is retained. Other Sessions
 or Environments, the opposite layer, changed branches/index/files, and
-already-consumed hunks cannot reuse it.
+already-consumed selections cannot reuse it. Whole-file revisions use a distinct
+domain from hunk revisions while binding the same observed identities and state.
 
 The handler reuses portable discovery, bounded inventories, parsers, classification
 and consistency checks, focusing content inspection on the selected validated path.
 It never accepts patch text. It reconstructs the exact expected index bytes from
-the selected parsed hunk and quotes a repository-relative patch path derived from
+the selected parsed hunk or verifies the complete comparison's expected blob, and
+quotes a repository-relative patch path derived from
 the captured source prefix and inventory, not caller-supplied patch headers.
 It then executes, through the existing sanitized wrapper:
 
@@ -551,8 +573,12 @@ It then executes, through the existing sanitized wrapper:
 --no-ignore-whitespace -p1 [--reverse] [--unidiff-zero] -- -
 ```
 
-`--reverse` is used only for Unapprove; `--unidiff-zero` only for a hunk without
-context lines. The patch is bounded stdin. The wrapper retains literal argv,
+`--reverse` is used only for Unapprove; `--unidiff-zero` is used when a selected
+hunk has no context lines. Complete-file patches have one file header and retain
+every original comparison hunk's old/new coordinates, including line-count shifts
+from earlier hunks; they do not concatenate independently reanchored hunk patches.
+Both check and write receive bounded backend-derived stdin. Each successful action
+issues exactly one index-mutating apply request. The wrapper retains literal argv,
 `env -i`, pinned repository routing, no optional locks/replacements/lazy fetch,
 fixed locale/PATH, no transports, and disabled hooks/fsmonitor/external diff.
 Observation commands retain `--no-filters`, `--no-ext-diff` and `--no-textconv`
@@ -561,7 +587,8 @@ and process filters, external diff, textconv, hooks and fsmonitor. None runs dur
 the tested apply/check/reverse operations, even under hostile attributes.
 
 Preflight revalidates the selected state after `--check`. Postflight verifies exact
-index object identity and hash-checked blob bytes, unrelated index records, working
+index object identity and hash-checked blob bytes, unrelated index records and flags
+including entries outside a nested selected source scope, working
 bytes/metadata, HEAD/ref, attributes/configuration, repository scope and captured
 identity. Git's lock prevents concurrent index writers from corrupting the index,
 but neither `--check` nor a text patch's full-index OID header is compare-and-swap.
@@ -580,6 +607,11 @@ exhaustion or transport/deadline/revocation after attempting it is uncertain. No
 generic transport limit is raised, no clean file gets a separate process, and no
 mutation is retried automatically.
 
+For actionable nested-source snapshots, the review index inventory is bounded
+across the whole repository so unrelated entries outside the displayed scope are
+also bound and verified. Unstaged file eligibility lazily observes the captured
+HEAD tree; neither check adds per-clean-file subprocesses.
+
 Declared `ReviewApprovalFailure` codes are `invalid_selection`, `stale_selection`,
 `unsupported_target`, `hunk_unavailable`, `inspection_failed`, `operation_timeout`,
 `mutation_failed`, and `outcome_uncertain`. The first six reject before mutation;
@@ -588,9 +620,13 @@ state. `outcome_uncertain` requires a fresh snapshot before another action.
 Transport retirement can suppress the failure response itself and never implies
 rollback. Success is returned only after the intended index result is confirmed.
 
-`git_hunk_apply_feasibility_test.dart` establishes the real Git mechanism and its
+`git_hunk_apply_feasibility_test.dart` establishes single- and multi-hunk Git apply,
+complete-file all-or-none rejection and the mechanism's
 non-CAS limits; `git_portable_review_approval_test.dart` exercises the production
-handler, exact object/working-byte evidence, stale targets, races and uncertainty.
+handler, exact object/working-byte evidence, aggregate eligibility, stale targets,
+races and uncertainty. Non-gating file diagnostics report complete approval and
+unapproval process counts and elapsed times for one, several and many hunks;
+process-count assertions retain one write regardless of hunk count.
 The existing `prepared_portable_git_integration_test.dart` adds independent
 Environment AOT, production-handler Capability AOT, and generated-client EVC proof.
 `prepared_diff_git_integration_test.dart` exercises the production advertisement and
@@ -887,9 +923,10 @@ unvalidated. Stock [Terminal](../terminal/README.md) owns the frontend and contr
 Stock snapshots use the selected Environment's authorized buffered processes,
 including independent providers that supply the documented executable prerequisites.
 Task comparison requires the selected Environment's retained Git-owned SQL anchor,
-never caller-selected history. Snapshot operations and the stock Diff pane remain
-read-only. The separate single-hunk review handler is implemented but unadvertised;
-whole-file/add/delete/conflict semantics, commits and stock approval controls are
-not implemented. This does not change execution-policy or model-tool approval.
+never caller-selected history. Snapshot operations remain read-only. The separate,
+authorized review handler and stock Diff controls support individual hunks and
+complete tracked regular text modifications. Addition, deletion, untracked-file,
+binary, type-replacement, conflict, whole-layer and commit actions remain outside
+review mutation. This does not change execution-policy or model-tool approval.
 The detailed platform, confinement, process, and snapshot limits above still apply;
 the plugin name supplies no additional portability or sandboxing guarantee.

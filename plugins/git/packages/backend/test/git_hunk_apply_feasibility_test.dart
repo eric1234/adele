@@ -123,6 +123,70 @@ void main() {
 
   for (final reverse in [false, true]) {
     test(
+      'one complete patch ${reverse ? 'reverses' : 'applies'} shifting hunks atomically',
+      () async {
+        final changed = baseline
+            .replaceFirst('line 4\n', 'first\ninserted\nlines\n')
+            .replaceFirst('line 20\nline 21\n', 'middle\n')
+            .replaceFirst('line 34\n', 'last edit\n');
+        await fixture({'tracked': baseline, 'untouched': 'unrelated\n'});
+        await write('tracked', changed);
+        if (reverse) {
+          await _git(repository, ['add', '--', 'tracked']);
+          await write('tracked', '${changed}working-only tail\n');
+        }
+        final file = (await capture(staged: reverse)).files.single;
+        expect(file.hunks, hasLength(3));
+        expect(file.hunks[1].newStart, isNot(file.hunks[1].oldStart));
+        final patch = _fullPatch('tracked', file.hunks);
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        final working = await _workingHashes(repository);
+        final head = await _git(repository, ['rev-parse', 'HEAD']);
+        final reference = await _git(repository, ['symbolic-ref', 'HEAD']);
+        final start = processes.requests.length;
+        _success(await apply(patch, reverse: reverse, check: true));
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+        _success(await apply(patch, reverse: reverse));
+        expect(processes.requests.skip(start), hasLength(2));
+        await expectIndex('tracked', reverse ? baseline : changed);
+        await expectIndex('untouched', 'unrelated\n');
+        expect(await _workingHashes(repository), working);
+        expect(await _git(repository, ['rev-parse', 'HEAD']), head);
+        expect(await _git(repository, ['symbolic-ref', 'HEAD']), reference);
+      },
+    );
+
+    test(
+      'a bad final full-patch hunk rejects every ${reverse ? 'reverse' : 'forward'} edit',
+      () async {
+        await fixture({'tracked': baseline});
+        await write('tracked', both);
+        if (reverse) await _git(repository, ['add', '--', 'tracked']);
+        final file = (await capture(staged: reverse)).files.single;
+        final patch = _fullPatch('tracked', file.hunks).replaceFirst(
+          reverse ? '+second edit\n' : '-line 34\n',
+          reverse ? '+wrong final preimage\n' : '-wrong final preimage\n',
+        );
+        final index = await File('${repository.path}/.git/index').readAsBytes();
+        final working = await _workingHashes(repository);
+        expect(
+          (await apply(patch, reverse: reverse, check: true)).exitCode,
+          isNot(0),
+        );
+        expect((await apply(patch, reverse: reverse)).exitCode, isNot(0));
+        expect(
+          await File('${repository.path}/.git/index').readAsBytes(),
+          index,
+        );
+        await expectIndex('tracked', reverse ? both : baseline);
+        expect(await _workingHashes(repository), working);
+      },
+    );
+
+    test(
       'cached ${reverse ? 'reverse' : 'forward'} applies only one of two distant hunks',
       () async {
         await fixture({'tracked': baseline, 'untouched': 'unrelated\n'});
@@ -551,11 +615,18 @@ void main() {
         // Deliberately bypass classification for three fixture paths to establish
         // whether cached apply itself can run their configured filters/drivers.
         // This does not authorize such paths in any production mutation policy.
-        final patch = _patch(path, ordinary.hunks.first);
-        _success(await apply(patch));
-        await expectIndex(path, first);
-        _success(await apply(patch, reverse: true));
-        await expectIndex(path, baseline);
+        for (final full in [false, true]) {
+          final patch = _fullPatch(
+            path,
+            full ? ordinary.hunks : [ordinary.hunks.first],
+          );
+          _success(await apply(patch, check: true));
+          _success(await apply(patch));
+          await expectIndex(path, full ? both : first);
+          _success(await apply(patch, reverse: true, check: true));
+          _success(await apply(patch, reverse: true));
+          await expectIndex(path, baseline);
+        }
       }
       expect(await _workingHashes(repository), working);
       expect(
@@ -636,25 +707,31 @@ String _quote(String path) =>
     '"${path.replaceAll(r'\', r'\\').replaceAll('"', r'\"').replaceAll('\t', r'\t').replaceAll('\n', r'\n').replaceAll('\r', r'\r')}"';
 
 String _patch(String path, DiffHunk hunk, {String? index}) {
+  return _fullPatch(path, [hunk], index: index);
+}
+
+String _fullPatch(String path, List<DiffHunk> hunks, {String? index}) {
   final oldPath = _quote('a/$path');
   final newPath = _quote('b/$path');
   final result = StringBuffer('diff --git $oldPath $newPath\n');
   if (index != null) result.writeln('index $index');
   result
     ..writeln('--- $oldPath')
-    ..writeln('+++ $newPath')
-    ..writeln(
+    ..writeln('+++ $newPath');
+  for (final hunk in hunks) {
+    result.writeln(
       '@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@',
     );
-  for (final line in hunk.lines) {
-    final marker = switch (line.kind) {
-      'context' => ' ',
-      'deletion' => '-',
-      'addition' => '+',
-      _ => throw StateError('Unexpected hunk line kind: ${line.kind}'),
-    };
-    result.writeln('$marker${line.text}');
-    if (line.noNewline) result.writeln(r'\ No newline at end of file');
+    for (final line in hunk.lines) {
+      final marker = switch (line.kind) {
+        'context' => ' ',
+        'deletion' => '-',
+        'addition' => '+',
+        _ => throw StateError('Unexpected hunk line kind: ${line.kind}'),
+      };
+      result.writeln('$marker${line.text}');
+      if (line.noNewline) result.writeln(r'\ No newline at end of file');
+    }
   }
   return result.toString();
 }
