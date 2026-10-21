@@ -1,7 +1,7 @@
 part of 'git_portable_unstaged_snapshot.dart';
 
 /// Explicit single-hunk index mutation through one captured process grant.
-/// Implemented for independent consumers; not advertised by stock composition.
+/// Used by the stock contextual dispatcher and independent compatible consumers.
 final class GitPortableReviewApprovalService
     implements ReviewApprovalHandlerService {
   GitPortableReviewApprovalService({

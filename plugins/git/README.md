@@ -2,9 +2,9 @@
 
 The stock Git plugin (`dev.adele.plugin.git`, display name `Git`) owns Git-specific
 behavior through public extension contracts. Its `git_backend` package supplies
-both the Git Worktree Environment provider and the Diff-owned `ChangeSetSource`
-Capability implementation; Git is not intrinsic to core Task or Environment
-semantics. The plugin has no frontend. Review presentation belongs to
+the Git Worktree Environment provider and the Diff-owned `ChangeSetSource` and
+`ReviewApprovalHandler` Capability implementations; Git is not intrinsic to core
+Task or Environment semantics. The plugin has no frontend. Review presentation belongs to
 [Diff Viewer](../diff_viewer/README.md), and the cross-system ownership boundary is
 defined in [contracts and capabilities](../../docs/architecture/contracts-and-capabilities.md#plugin-owned-change-snapshots).
 
@@ -153,7 +153,8 @@ operation limits, and an optional trusted `GitTaskComparisonAnchor`. It does not
 accept Session/Environment IDs or repository paths, import the Worktree provider,
 resolve live provider objects, or perform host-local
 filesystem/process I/O. There is one stock provider, no Worktree-specific fallback
-or second implementation. No staging, approvals, or feedback mutation is implemented.
+or second implementation. This inspection service performs no approval or feedback
+mutation; index mutation belongs to the separate handler below.
 
 Portable Task comparison requires an immutable Git-owned backend setup value:
 `GitTaskComparisonAnchor(baselineCommit: ..., expectedBranchRef: ...)`. It carries
@@ -490,12 +491,23 @@ Diff's process-only grants without changing generic read/sibling contracts.
 ## ReviewApprovalHandler
 
 `GitPortableReviewApprovalService` implements the separate Diff-owned
-`adele.diff.review-approval` v1 contract. **It is implemented but not yet advertised
-by the stock Git backend.** Stock Diff has neither an approval grant nor approval
-controls and remains read-only. The independent prepared integration advertises
-this production implementation only in its test Capability backend. No Environment
-service, combined read/process grant, anchor SQL, Worktree provider state, or
-Project schema is added or changed.
+`adele.diff.review-approval` v1 contract. The stock backend advertises
+`dev.adele.git.review-approval` through generated service
+`diff.reviewApprovalHandler`, separately from ChangeSetSource and Worktree.
+It declares `environmentBound: true` and only
+`AdeleEnvironmentHostService.bufferedProcess`, without a same-backend association.
+Its contextual dispatcher constructs the handler per admitted operation using that
+operation's generated `AuthorizedEnvironmentBufferedProcessServiceClient`.
+It retains neither a global authorization grant nor approval state. Ordinary hunk
+approval requires no Task baseline or SQL anchor and works with independent
+compatible Environment providers. No Environment service, combined read/process grant,
+Worktree provider state, or Project schema is added or changed.
+
+The stock compiled Diff frontend declares this exact Capability/major separately
+from its inspection permission. It offers only explicit hunk-level Approve and
+Unapprove, never raw process authority or patch execution. Missing approval access
+leaves read-only inspection available; see [Diff presentation](../diff_viewer/README.md#presentation)
+for pending, snapshot freshness, safe failure and retirement behavior.
 
 Approve takes one Unstaged hunk toward the working file; Unapprove reverses one
 Staged hunk toward captured HEAD. The selected Environment's authorized buffered
@@ -580,9 +592,11 @@ rollback. Success is returned only after the intended index result is confirmed.
 non-CAS limits; `git_portable_review_approval_test.dart` exercises the production
 handler, exact object/working-byte evidence, stale targets, races and uncertainty.
 The existing `prepared_portable_git_integration_test.dart` adds independent
-Environment AOT, production-handler Capability AOT, and generated-client EVC proof
-without enabling stock controls. Production advertisement and Diff UI admission,
-pending state and refresh/error behavior remain the next integration step.
+Environment AOT, production-handler Capability AOT, and generated-client EVC proof.
+`prepared_diff_git_integration_test.dart` exercises the production advertisement and
+actual stock Diff controls against selected nonprimary Git indices, independently of
+the isolated frontend state tests. Inspection and approval continue to have separate
+semantic resolution and operation grants.
 
 ## Filesystem and processes
 

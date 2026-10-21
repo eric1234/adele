@@ -508,6 +508,7 @@ void main() {
     WidgetTester tester, {
     Directory? backing,
     String? additionalRoot,
+    String? primaryRoot,
     Map<String, GitTaskComparisonAnchor> initialAnchors = const {},
   }) async => (await tester.runAsync(() async {
     final source =
@@ -516,7 +517,11 @@ void main() {
           '${temporary.absolute.path}/project-${sequence++}',
         ).create();
     if (backing == null) {
-      _seedProject(source, {...roots, 'additional': ?additionalRoot});
+      _seedProject(source, {
+        ...roots,
+        'additional': ?additionalRoot,
+        'primary': ?primaryRoot,
+      });
     }
     final registry = CapabilityRegistry();
     final providerId = ProviderId('test.portable.project');
@@ -676,8 +681,9 @@ void main() {
       expect(c, isNot(contains('EnvironmentBufferedProcessRequest')));
       expect(c, isNot(contains('runBufferedProcess')));
       expect(c, isNot(contains('package:git_backend')));
-      expect(stock, isNot(contains('reviewApprovalCapability')));
-      expect(stock, isNot(contains('ReviewApprovalHandlerServiceClient')));
+      expect(stock, contains('ReviewApprovalHandlerServiceClient('));
+      expect(stock, contains('ReviewHunkSelection('));
+      expect(stock, contains('file.reviewRevision'));
       expect(
         stock,
         contains('resolveEnvironmentBufferedProcessCapabilityProvider('),
@@ -2087,6 +2093,123 @@ void main() {
     );
   }
 
+  testWidgets(
+    'actual stock Git and Diff approve and unapprove through independent Environment AOT without Task anchors',
+    (tester) async {
+      final repositories = await reviewRepositories(tester);
+      final before = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      final durable = await openDurable(
+        tester,
+        additionalRoot: repositories['additional'],
+        primaryRoot: repositories['primary'],
+      );
+      final database = durable.lifecycle.databaseForEnvironment(
+        EnvironmentId('additional'),
+      )!;
+      const anchorTable =
+          "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
+      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        additionalRoot: repositories['additional'],
+        primaryRoot: repositories['primary'],
+        stock: true,
+      );
+      expect(fixture.connection.pluginId, gitPluginId);
+      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+      final approval = fixture.capabilities.resolve(reviewApprovalCapability);
+      expect(approval.provider.id.value, gitReviewApprovalProviderId);
+      expect(fixture.callableOwner.associationFor(approval), isNull);
+      expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
+
+      final approve = _pane('a', find.widgetWithText(TextButton, 'Approve'));
+      final unapprove = _pane(
+        'a',
+        find.widgetWithText(TextButton, 'Unapprove'),
+      );
+      await _waitFor(tester, approve, count: 2);
+      expect(approve, findsNWidgets(2));
+      expect(unapprove, findsNothing);
+      expect(find.textContaining('+additional first change'), findsOneWidget);
+      expect(find.textContaining('+additional second change'), findsOneWidget);
+      expect(find.textContaining('primary first change'), findsNothing);
+      await tester.runAsync(() => tester.tap(approve.first));
+      await _waitFor(tester, approve);
+      expect(find.textContaining('+additional first change'), findsNothing);
+      expect(find.textContaining('+additional second change'), findsOneWidget);
+      _expectReviewIndex(
+        (await tester.runAsync(() => _reviewStates(repositories)))!,
+        before,
+        'additional',
+        _reviewContent('additional', first: true),
+      );
+      expect(
+        _reviewWrites((await tester.runAsync(() => _stockEvidence(fixture)))!),
+        hasLength(1),
+      );
+
+      _press(tester, 'Uncommitted changes');
+      await _waitFor(tester, unapprove);
+      expect(approve, findsOneWidget);
+      expect(find.text('review.txt  [modified]'), findsNWidgets(2));
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      expect(
+        tester.getTopLeft(find.textContaining('+additional first change')).dy,
+        lessThan(unstagedY),
+      );
+      expect(
+        tester.getTopLeft(find.textContaining('+additional second change')).dy,
+        greaterThan(unstagedY),
+      );
+      await tester.runAsync(() => tester.tap(unapprove));
+      await _stockVisible(tester, 'No staged changes');
+      await _waitFor(tester, approve, count: 2);
+      expect(approve, findsNWidgets(2));
+      expect(unapprove, findsNothing);
+      expect(find.text('review.txt  [modified]'), findsOneWidget);
+      expect(find.textContaining('+additional first change'), findsOneWidget);
+      expect(find.textContaining('+additional second change'), findsOneWidget);
+      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
+      for (final entry in repositories.entries) {
+        expect(
+          await tester.runAsync(
+            () => File('${entry.value}/review.txt').readAsBytes(),
+          ),
+          utf8.encode(_reviewContent(entry.key, first: true, second: true)),
+        );
+      }
+      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
+      final writes = _reviewWrites(evidence);
+      expect(writes, hasLength(2));
+      expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
+      expect(writes.last['arguments'] as List, contains('--reverse'));
+      for (final write in writes) {
+        expect(write['exitCode'], 0);
+      }
+      for (final process
+          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
+        expect(process['environmentId'], 'additional');
+        expect(process['providerId'], 'test.environment.a');
+        expect(process['cwd'], repositories['additional']);
+      }
+      expect(
+        fixture.environmentRuntime.currentMaterialization(
+          EnvironmentId('primary'),
+        ),
+        isNull,
+      );
+      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final count in [100, 500, 900]) {
     testWidgets(
       'actual stock Git and Diff use independent Environment AOT for $count clean files and layered changes',
@@ -2370,6 +2493,18 @@ void main() {
         expect(find.textContaining('<<<<<<<'), findsNothing);
         expect(find.text('Open in Source'), findsNothing);
         expect(find.text('Source is unavailable.'), findsWidgets);
+        await _waitFor(
+          tester,
+          find.widgetWithText(TextButton, 'Approve'),
+          count: 4,
+        );
+        // Only the four ordinary modified paths have reviewable hunks. Added,
+        // deleted, conflicted, symbolic-link and committed entries add no action.
+        expect(find.widgetWithText(TextButton, 'Approve'), findsNWidgets(4));
+        expect(
+          find.widgetWithText(TextButton, 'Unapprove'),
+          scope == 'Unstaged changes' ? findsNothing : findsNWidgets(4),
+        );
         if (scope == 'Task / Branch') {
           // An unmerged path keeps its independent committed change, not an
           // invented staged/unstaged text patch from the conflict workfile.
@@ -2383,6 +2518,7 @@ void main() {
         expect(_anchorRows(durable.lifecycle), retained);
       }
       final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
+      expect(_reviewWrites(evidence), isEmpty);
       for (final process
           in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
         expect(process['environmentId'], 'additional');
@@ -3285,18 +3421,23 @@ Future<void> _text(
   String pane = 'a',
 }) async => _waitFor(tester, _pane(pane, find.text(text)));
 
-Future<void> _waitFor(WidgetTester tester, Finder finder) async {
+Future<void> _waitFor(
+  WidgetTester tester,
+  Finder finder, {
+  int count = 1,
+}) async {
   await tester.pump();
   await tester.runAsync(() async {
     final deadline = DateTime.now().add(_bound);
-    while (finder.evaluate().isEmpty && DateTime.now().isBefore(deadline)) {
+    while (finder.evaluate().length != count &&
+        DateTime.now().isBefore(deadline)) {
       await Future<void>(() {});
       await tester.pump();
     }
   });
   expect(
     finder,
-    findsOneWidget,
+    findsNWidgets(count),
     reason: tester
         .widgetList<Text>(find.byType(Text))
         .map((text) => text.data)

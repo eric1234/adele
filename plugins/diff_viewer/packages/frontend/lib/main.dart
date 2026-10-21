@@ -25,6 +25,11 @@ class DiffPaneState extends State<DiffPane> {
   String scope = 'unstaged';
   String status = 'loading';
   List<List<String>> rows = [];
+  Map<int, ReviewHunkSelection> approvals = {};
+  Map<int, ReviewHunkSelection> unapprovals = {};
+  String reviewHandle = '';
+  bool reviewPending = false;
+  String reviewMessage = '';
   bool sourcePending = false;
   String sourceMessage = '';
   Future<bool> Function() departure = () async => true;
@@ -48,14 +53,28 @@ class DiffPaneState extends State<DiffPane> {
   void abandon() {
     revision++;
     sourceMessage = '';
+    reviewMessage = '';
+    invalidateReview();
     if (handle != '') {
       releaseEnvironmentCapabilityProvider(handle);
       handle = '';
     }
   }
 
+  void invalidateReview() {
+    approvals = {};
+    unapprovals = {};
+    if (reviewHandle != '') {
+      releaseEnvironmentCapabilityProvider(reviewHandle);
+      reviewHandle = '';
+    }
+    // Pending tracks semantic settlement, not backend process quiescence.
+    // Releasing access can fail the request without stopping admitted work.
+  }
+
   void refresh() async {
     if (disposed) return;
+    final canReview = !reviewPending;
     abandon();
     final captured = revision;
     final task = scope == 'task';
@@ -108,7 +127,7 @@ class DiffPaneState extends State<DiffPane> {
     if (task) {
       final snapshot = result[1] as TaskChangeSetSnapshot;
       next.add(['section', 'Committed changes']);
-      appendFiles(next, snapshot.committed.files, false);
+      appendFiles(next, snapshot.committed.files, 'committed');
       clean = snapshot.committed.files.isEmpty;
       if (clean) next.add(['status', 'No committed changes.']);
     }
@@ -117,17 +136,17 @@ class DiffPaneState extends State<DiffPane> {
           ? (result[1] as TaskChangeSetSnapshot).uncommitted
           : result[1] as UncommittedChangeSetSnapshot;
       next.add(['section', 'Staged changes']);
-      appendFiles(next, snapshot.staged.files, false);
+      appendFiles(next, snapshot.staged.files, 'staged');
       if (snapshot.staged.files.isEmpty) {
         next.add(['status', 'No staged changes.']);
       }
       next.add(['section', 'Unstaged changes']);
-      appendFiles(next, snapshot.unstaged.files, true);
+      appendFiles(next, snapshot.unstaged.files, 'unstaged');
       if (snapshot.unstaged.files.isEmpty) {
         next.add(['status', 'No unstaged changes.']);
       }
       next.add(['section', 'Conflicts']);
-      appendFiles(next, snapshot.conflicts, false);
+      appendFiles(next, snapshot.conflicts, 'conflicts');
       if (snapshot.conflicts.isEmpty) next.add(['status', 'No conflicts.']);
       clean =
           clean &&
@@ -136,12 +155,32 @@ class DiffPaneState extends State<DiffPane> {
           snapshot.conflicts.isEmpty;
     } else {
       final snapshot = result[1] as ChangeSetSnapshot;
-      appendFiles(next, snapshot.files, true);
+      appendFiles(next, snapshot.files, 'unstaged');
       clean = snapshot.files.isEmpty;
+    }
+    if (!canReview) {
+      // A snapshot started during mutation stays read-only even if releasing
+      // access has already settled the old request. Only a later refresh opts in.
+      invalidateReview();
+      reviewMessage = 'Refresh again before reviewing these changes.';
     }
     setState(() {
       rows = next;
       status = clean ? 'clean' : 'ready';
+    });
+    if (approvals.isEmpty && unapprovals.isEmpty) return;
+    final review = await resolveEnvironmentBufferedProcessCapabilityProvider(
+      'adele.diff.review-approval',
+      1,
+      reviewApprovalHandlerServiceId,
+      null,
+    );
+    if (disposed || captured != revision) {
+      if (review != null) releaseEnvironmentCapabilityProvider(review);
+      return;
+    }
+    setState(() {
+      reviewHandle = review ?? '';
     });
   }
 
@@ -154,14 +193,14 @@ class DiffPaneState extends State<DiffPane> {
   void appendFiles(
     List<List<String>> next,
     List<ChangedFile> files,
-    bool currentWorking,
+    String layer,
   ) {
     for (final file in files) {
       final List<String> header = [
         'file',
         '${file.relativePath}  [${file.changeKind}]',
       ];
-      if (currentWorking &&
+      if (layer == 'unstaged' &&
           file.contentStatus == 'text' &&
           (file.changeKind == 'added' ||
               file.changeKind == 'modified' ||
@@ -175,7 +214,24 @@ class DiffPaneState extends State<DiffPane> {
       }
       final detail = file.detail;
       if (detail != null) next.add(['status', detail]);
-      for (final hunk in file.hunks) {
+      for (int hunkIndex = 0; hunkIndex < file.hunks.length; hunkIndex++) {
+        final hunk = file.hunks[hunkIndex];
+        final expectedRevision = file.reviewRevision;
+        if ((layer == 'unstaged' || layer == 'staged') &&
+            file.changeKind == 'modified' &&
+            file.contentStatus == 'text' &&
+            expectedRevision != null) {
+          final selection = ReviewHunkSelection(
+            relativePath: file.relativePath,
+            hunkIndex: hunkIndex,
+            expectedRevision: expectedRevision,
+          );
+          if (layer == 'unstaged') {
+            approvals[next.length] = selection;
+          } else {
+            unapprovals[next.length] = selection;
+          }
+        }
         next.add([
           'hunk',
           '@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@',
@@ -206,6 +262,77 @@ class DiffPaneState extends State<DiffPane> {
         }
       }
     }
+  }
+
+  void reviewHunk(
+    ReviewHunkSelection selection,
+    bool unapprove,
+    int captured,
+  ) async {
+    if (disposed ||
+        captured != revision ||
+        status != 'ready' ||
+        reviewHandle == '' ||
+        reviewPending) {
+      return;
+    }
+    final selected = reviewHandle;
+    setState(() {
+      reviewPending = true;
+      reviewMessage = '';
+    });
+    final client = ReviewApprovalHandlerServiceClient(
+      EnvironmentCapabilityRequestChannel(selected),
+    );
+    Future<void> operation;
+    if (unapprove) {
+      operation = client.unapproveHunk(selection);
+    } else {
+      operation = client.approveHunk(selection);
+    }
+    final result = await settleEnvironmentCapabilityOperation(operation);
+    releaseEnvironmentCapabilityProvider(selected);
+    if (disposed) return;
+    setState(() {
+      reviewPending = false;
+    });
+    if (captured != revision) return;
+    reviewHandle = '';
+    invalidateReview();
+    if (result[0] == true) {
+      refresh();
+    } else {
+      setState(() {
+        reviewMessage =
+            'Review change not confirmed. Refresh before trying again.';
+      });
+    }
+  }
+
+  Widget reviewAction(
+    ReviewHunkSelection selection,
+    bool unapprove,
+    int captured,
+  ) {
+    if (reviewHandle != '' && !reviewPending) {
+      // The evaluator pin cannot reuse a branched primitive in a closure.
+      if (unapprove) {
+        return TextButton(
+          onPressed: () => reviewHunk(selection, true, captured),
+          child: Text('Unapprove'),
+        );
+      }
+      return TextButton(
+        onPressed: () => reviewHunk(selection, false, captured),
+        child: Text('Approve'),
+      );
+    }
+    return Text(
+      reviewPending
+          ? 'Review change pending...'
+          : 'Review actions unavailable.',
+      style: TextStyle(color: Colors.grey),
+    );
   }
 
   String sourceStatusMessage(String state) {
@@ -334,13 +461,17 @@ class DiffPaneState extends State<DiffPane> {
       if (status == 'error' || status == 'unavailable')
         TextButton(onPressed: refresh, child: Text('Retry')),
       if (sourceMessage != '') Text(sourceMessage),
+      if (reviewMessage != '') Text(reviewMessage),
       Expanded(
         flex: 1,
         child: ListView.builder(
           itemCount: rows.length,
-          itemBuilder: (context, index) {
+          // A typed native index keeps the evaluator's map keys boxed correctly.
+          itemBuilder: (BuildContext context, int index) {
             final row = rows[index];
             final captured = revision;
+            final approval = approvals[index];
+            final unapproval = unapprovals[index];
             final label = Text(
               row[1],
               style: row[0] == 'section'
@@ -352,20 +483,27 @@ class DiffPaneState extends State<DiffPane> {
             if (row[0] == 'deletion') background = Color(0x18dd3344);
             if (row[0] == 'file') background = Color(0x18888888);
             if (row[0] == 'section') background = Color(0x28888888);
+            Widget content = label;
+            if (row.length > 2 || approval != null || unapproval != null) {
+              Widget action;
+              if (row.length > 2) {
+                action = sourceAction(row[2], captured);
+              } else if (approval != null) {
+                action = reviewAction(approval, false, captured);
+              } else {
+                action = reviewAction(unapproval!, true, captured);
+              }
+              content = Row(
+                children: [
+                  Expanded(flex: 2, child: label),
+                  Expanded(flex: 1, child: action),
+                ],
+              );
+            }
             return Container(
               color: background,
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              child: row.length > 2
-                  ? Row(
-                      children: [
-                        Expanded(flex: 2, child: label),
-                        Expanded(
-                          flex: 1,
-                          child: sourceAction(row[2], captured),
-                        ),
-                      ],
-                    )
-                  : label,
+              child: content,
             );
           },
         ),
