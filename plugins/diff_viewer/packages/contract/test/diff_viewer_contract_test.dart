@@ -6,6 +6,7 @@ import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/src/eval/runtime/class.dart' show $InstanceImpl;
+import 'package:dart_eval/stdlib/core.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:test/test.dart';
 
@@ -33,6 +34,7 @@ void main() {
     expect(file.changeKind, 'modified');
     expect(file.contentStatus, 'text');
     expect(file.detail, isNull);
+    expect(file.reviewRevision, 'opaque-review-revision');
     final hunk = file.hunks.single;
     expect(
       [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -65,6 +67,7 @@ void main() {
       changeKind: 'added',
       contentStatus: 'text',
       detail: null,
+      reviewRevision: null,
       hunks: hunks,
     );
     final files = [file];
@@ -121,6 +124,7 @@ void main() {
         expect(file.changeKind, 'modified');
         expect(file.contentStatus, 'text');
         expect(file.detail, isNull);
+        expect(file.reviewRevision, 'opaque-review-revision');
         final hunk = file.hunks.single;
         expect(
           [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -144,6 +148,7 @@ void main() {
       expect(conflict.changeKind, 'conflicted');
       expect(conflict.contentStatus, 'conflicted');
       expect(conflict.detail, 'Unmerged index entries.');
+      expect(conflict.reviewRevision, isNull);
       expect(conflict.hunks, isEmpty);
       expect(() => snapshot.conflicts.clear(), throwsUnsupportedError);
       expect(() => conflict.hunks.clear(), throwsUnsupportedError);
@@ -167,6 +172,12 @@ void main() {
         expect(file.changeKind, 'modified');
         expect(file.contentStatus, 'text');
         expect(file.detail, isNull);
+        expect(
+          file.reviewRevision,
+          identical(layer, snapshot.committed)
+              ? null
+              : 'opaque-review-revision',
+        );
         final hunk = file.hunks.single;
         expect(
           [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -189,6 +200,7 @@ void main() {
       expect(conflict.changeKind, 'conflicted');
       expect(conflict.contentStatus, 'conflicted');
       expect(conflict.detail, 'Unmerged index entries.');
+      expect(conflict.reviewRevision, isNull);
       expect(conflict.hunks, isEmpty);
       expect(
         () => snapshot.uncommitted.conflicts.clear(),
@@ -292,6 +304,13 @@ void main() {
             {...file}..remove('detail'),
           ],
         },
+        for (final invalidFile in [
+          {...file}..remove('reviewRevision'),
+          {...file, 'reviewRevision': 1},
+        ])
+          {
+            'files': [invalidFile],
+          },
         {
           'files': [
             {...file, 'hunks': 'patch'},
@@ -498,11 +517,19 @@ class Channel implements AdeleRequestChannel {
   }
 }
 
+class ResponseChannel implements AdeleRequestChannel {
+  ResponseChannel(this.wire);
+  final String wire;
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    return jsonDecode(wire);
+  }
+}
+
 String layer(ChangeSetSnapshot snapshot) {
   final file = snapshot.files[0];
   final hunk = file.hunks[0];
   final line = hunk.lines[2];
-  return '\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
+  return '\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
 }
 
 Future<String> run() async {
@@ -513,13 +540,14 @@ Future<String> run() async {
   final conflict = snapshot.conflicts[0];
   final lines = <DiffLine>[DiffLine(kind: 'addition', text: 'detached', noNewline: false)];
   final hunks = <DiffHunk>[DiffHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: 1, lines: lines)];
-  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: hunks)];
+  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, hunks: hunks)];
   final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files), unstaged: ChangeSetSnapshot(files: files), conflicts: files);
   final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files), uncommitted: copy);
   lines[0] = DiffLine(kind: 'addition', text: 'changed', noNewline: false);
   hunks[0] = DiffHunk(oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: <DiffLine>[]);
-  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, hunks: <DiffHunk>[]);
+  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, hunks: <DiffHunk>[]);
   if (copy.staged.files[0].hunks[0].lines[0].text != 'detached' ||
+      copy.staged.files[0].reviewRevision != null || conflict.reviewRevision != null ||
       copy.unstaged.files[0].relativePath != 'copy.txt' || copy.conflicts[0].relativePath != 'copy.txt' ||
       taskCopy.committed.files[0].hunks[0].lines[0].text != 'detached') {
     throw StateError('Mutable constructor inputs');
@@ -548,6 +576,10 @@ Future<TaskChangeSetSnapshot> read() {
   final ChangeSetSourceServiceClient client = ChangeSetSourceServiceClient(Channel());
   return client.snapshotTaskChanges();
 }
+Future<TaskChangeSetSnapshot> decode(String wire) {
+  final ChangeSetSourceServiceClient client = ChangeSetSourceServiceClient(ResponseChannel(wire));
+  return client.snapshotTaskChanges();
+}
 ''',
         },
       });
@@ -557,10 +589,14 @@ Future<TaskChangeSetSnapshot> read() {
         'run',
       );
       const layer =
-          'dir/two words\t\u03bb.txt|modified|text|none|2,2,2,2|addition|after\u{1f600}|true';
+          'dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|2,2,2,2|addition|after\u{1f600}|true';
+      final committedLayer = layer.replaceFirst(
+        '|opaque-review-revision|',
+        '|none|',
+      );
       expect(
         (result as $Value).$reified,
-        '$layer;$layer;$layer;$layer;$layer;$layer;conflict.txt;conflict.txt|conflicted|conflicted|Unmerged index entries.',
+        '$layer;$layer;$layer;$committedLayer;$layer;$layer;conflict.txt;conflict.txt|conflicted|conflicted|Unmerged index entries.',
       );
       final decoded = await runtime.executeLib(
         'package:runner/main.dart',
@@ -586,6 +622,27 @@ Future<TaskChangeSetSnapshot> read() {
       // Inspect stored values: the pin's public getter boxes lists into copies.
       verify(decoded);
       expect(lists, 11);
+      for (final invalid in _invalidTaskWires(
+        jsonDecode(taskWire) as Map<String, dynamic>,
+      )) {
+        await expectLater(
+          Future<Object?>.sync(
+            () => runtime.executeLib('package:runner/main.dart', 'decode', [
+              $String(jsonEncode(invalid)),
+            ]),
+          ),
+          throwsA(
+            isA<$InstanceImpl>().having(
+              (error) {
+                final message = error.values.single;
+                return message is $Value ? message.$reified : message;
+              },
+              'protocol message',
+              isA<String>(),
+            ),
+          ),
+        );
+      }
     },
   );
 }
@@ -627,6 +684,8 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
     for (final invalidFile in [
       null,
       {...file}..remove('detail'),
+      {...file}..remove('reviewRevision'),
+      {...file, 'reviewRevision': false},
       {...file, 'extra': true},
       {...file, 'hunks': 'patch'},
       {
@@ -684,7 +743,7 @@ class _Service implements ChangeSetSourceService {
     calls++;
     if (failure != null) throw failure!;
     return TaskChangeSetSnapshot(
-      committed: _snapshot(),
+      committed: _snapshot(reviewRevision: null),
       uncommitted: _uncommitted(),
     );
   }
@@ -698,12 +757,15 @@ class _Service implements ChangeSetSourceService {
         changeKind: 'conflicted',
         contentStatus: 'conflicted',
         detail: 'Unmerged index entries.',
+        reviewRevision: null,
         hunks: [],
       ),
     ],
   );
 
-  ChangeSetSnapshot _snapshot() {
+  ChangeSetSnapshot _snapshot({
+    String? reviewRevision = 'opaque-review-revision',
+  }) {
     return ChangeSetSnapshot(
       files: [
         ChangedFile(
@@ -711,6 +773,7 @@ class _Service implements ChangeSetSourceService {
           changeKind: 'modified',
           contentStatus: 'text',
           detail: null,
+          reviewRevision: reviewRevision,
           hunks: [
             DiffHunk(
               oldStart: 2,

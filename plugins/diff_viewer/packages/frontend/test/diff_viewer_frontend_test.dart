@@ -168,6 +168,7 @@ void main() {
               changeKind: entry.$1,
               contentStatus: entry.$2,
               detail: null,
+              reviewRevision: null,
               hunks: [],
             ),
           ],
@@ -397,6 +398,7 @@ void main() {
             'changeKind': 'modified',
             'contentStatus': 'text',
             'detail': null,
+            'reviewRevision': null,
             'hunks': [
               {
                 'oldStart': 1,
@@ -523,6 +525,7 @@ void main() {
               changeKind: 'unsupported',
               contentStatus: status,
               detail: 'Not displayed: $status',
+              reviewRevision: null,
               hunks: [],
             ),
         ],
@@ -544,6 +547,7 @@ void main() {
             changeKind: 'added',
             contentStatus: 'text',
             detail: null,
+            reviewRevision: null,
             hunks: [
               DiffHunk(
                 oldStart: 0,
@@ -1358,6 +1362,7 @@ ChangeSetSnapshot _snapshot({
       changeKind: 'modified',
       contentStatus: 'text',
       detail: null,
+      reviewRevision: null,
       hunks: [
         DiffHunk(
           oldStart: 3,
@@ -1390,6 +1395,7 @@ ChangedFile _conflict() => ChangedFile(
   changeKind: 'conflicted',
   contentStatus: 'conflicted',
   detail: 'Unmerged index entries.',
+  reviewRevision: null,
   hunks: [],
 );
 

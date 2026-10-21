@@ -536,8 +536,11 @@ final class _Processes implements AuthorizedEnvironmentBufferedProcessService {
   final requests = <EnvironmentBufferedProcessRequest>[];
 
   @override
-  Future<AuthorizedEnvironmentIdentity> capturedIdentity() =>
-      throw StateError('Comparison-only fixtures must not request identity.');
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async =>
+      AuthorizedEnvironmentIdentity(
+        sessionId: 'cached-session',
+        environmentId: 'cached-environment',
+      );
 
   @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(

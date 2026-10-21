@@ -209,7 +209,9 @@ anchors across close/reopen and fresh backend generations, while an explicitly
 volatile Project's host-owned temporary backing survives backend replacement only
 while that Project remains open. Failed durable backing never switches to temporary
 storage. Schema checks are idempotent under the existing host coordinator. Plain
-Unstaged and Uncommitted requests do not access identity or initialize this schema.
+Unstaged and Uncommitted requests never initialize this schema. Eligible review
+targets obtain captured Session and Environment identity through the existing
+process grant solely to bind their opaque revisions; they do not query Task anchors.
 
 The Task adapter includes identity, schema and SQL latency in the thirty-second
 deadline. Before publishing it rereads the association and anchor, requires unchanged
@@ -484,6 +486,103 @@ strict v2 state, restoration without baseline objects, and no restore-time repla
 The application stock lifecycle and Diff/Git integration suites cover atomic
 initialization with real Project SQL, backend replacement/reopen/moves, and stock
 Diff's process-only grants without changing generic read/sibling contracts.
+
+## ReviewApprovalHandler
+
+`GitPortableReviewApprovalService` implements the separate Diff-owned
+`adele.diff.review-approval` v1 contract. **It is implemented but not yet advertised
+by the stock Git backend.** Stock Diff has neither an approval grant nor approval
+controls and remains read-only. The independent prepared integration advertises
+this production implementation only in its test Capability backend. No Environment
+service, combined read/process grant, anchor SQL, Worktree provider state, or
+Project schema is added or changed.
+
+Approve takes one Unstaged hunk toward the working file; Unapprove reverses one
+Staged hunk toward captured HEAD. The selected Environment's authorized buffered
+process service performs every observation and mutation. The working file, HEAD,
+branches, Task baseline, and unrelated staged/unstaged changes are not written.
+Git creates the resulting blob and updates its index using its own index lock;
+the index, not an ADELE database, is approval state. A subsequent layered snapshot
+shows the new Staged/Unstaged split. A commit consumes the old staged selection.
+
+Snapshot `ChangedFile.reviewRevision` is present only for ordinary tracked regular
+text modifications with actual bounded hunks and an inspectable regular working
+file. Unsupported entries remain visible without a revision: committed changes,
+untracked/whole-file additions or deletions, unmerged entries, binary or invalid
+UTF-8, oversized/uninspectable sides, symlinks/gitlinks, unsupported index flags,
+mode changes, and content-conversion/custom-diff configurations. Plain CRLF is
+byte-preserved when conversion is disabled; configured conversion remains
+unsupported. The handler conservatively excludes control-character filenames (including
+tabs/newlines) even though direct Git feasibility tests establish quoted support.
+Spaces, quotes, backslashes, Unicode, punctuation and leading dashes remain literal.
+
+The deterministic SHA-256 revision binds the layer, captured Session and
+Environment identities, discovered repository/source scope, literal path, HEAD
+commit and symbolic ref, the observed index inventory, selected stage-0 mode/object,
+raw working-content identity and mode, attributes and relevant configuration. Both
+layers conservatively bind working content and HEAD. It is a stale-state precondition,
+not a credential; no backend-global approval-state map is retained. Other Sessions
+or Environments, the opposite layer, changed branches/index/files, and
+already-consumed hunks cannot reuse it.
+
+The handler reuses portable discovery, bounded inventories, parsers, classification
+and consistency checks, focusing content inspection on the selected validated path.
+It never accepts patch text. It reconstructs the exact expected index bytes from
+the selected parsed hunk and quotes a repository-relative patch path derived from
+the captured source prefix and inventory, not caller-supplied patch headers.
+It then executes, through the existing sanitized wrapper:
+
+```text
+-c apply.ignoreWhitespace=false apply --cached --whitespace=nowarn
+--no-ignore-whitespace -p1 [--reverse] [--unidiff-zero] --check -- -
+-c apply.ignoreWhitespace=false apply --cached --whitespace=nowarn
+--no-ignore-whitespace -p1 [--reverse] [--unidiff-zero] -- -
+```
+
+`--reverse` is used only for Unapprove; `--unidiff-zero` only for a hunk without
+context lines. The patch is bounded stdin. The wrapper retains literal argv,
+`env -i`, pinned repository routing, no optional locks/replacements/lazy fetch,
+fixed locale/PATH, no transports, and disabled hooks/fsmonitor/external diff.
+Observation commands retain `--no-filters`, `--no-ext-diff` and `--no-textconv`
+where applicable. Real Git tests use executable positive-control traps for clean
+and process filters, external diff, textconv, hooks and fsmonitor. None runs during
+the tested apply/check/reverse operations, even under hostile attributes.
+
+Preflight revalidates the selected state after `--check`. Postflight verifies exact
+index object identity and hash-checked blob bytes, unrelated index records, working
+bytes/metadata, HEAD/ref, attributes/configuration, repository scope and captured
+identity. Git's lock prevents concurrent index writers from corrupting the index,
+but neither `--check` nor a text patch's full-index OID header is compare-and-swap.
+An external writer can race between checks and apply, or after verification.
+There is no atomic filesystem/index transaction. A raced postcondition or lost
+acknowledgement is uncertain, never fabricated success or permission to roll back
+unrelated index state.
+
+One thirty-second operation envelope includes preflight, construction, check,
+write and verification, with the existing ten-second process cap and aggregate
+snapshot limits. The handler reserves known verification traffic and process count
+before the write. File sides retain the 1 MiB limit, hunk lines the 8,192 bound,
+stdin the existing 1 MiB bound, inventory 4,096 entries, aggregate traffic 8 MiB,
+stdout 2 MiB and stderr 64 KiB. Resource exhaustion before the write is rejection;
+exhaustion or transport/deadline/revocation after attempting it is uncertain. No
+generic transport limit is raised, no clean file gets a separate process, and no
+mutation is retried automatically.
+
+Declared `ReviewApprovalFailure` codes are `invalid_selection`, `stale_selection`,
+`unsupported_target`, `hunk_unavailable`, `inspection_failed`, `operation_timeout`,
+`mutation_failed`, and `outcome_uncertain`. The first six reject before mutation;
+`mutation_failed` additionally requires Git's nonzero result and verified unchanged
+state. `outcome_uncertain` requires a fresh snapshot before another action.
+Transport retirement can suppress the failure response itself and never implies
+rollback. Success is returned only after the intended index result is confirmed.
+
+`git_hunk_apply_feasibility_test.dart` establishes the real Git mechanism and its
+non-CAS limits; `git_portable_review_approval_test.dart` exercises the production
+handler, exact object/working-byte evidence, stale targets, races and uncertainty.
+The existing `prepared_portable_git_integration_test.dart` adds independent
+Environment AOT, production-handler Capability AOT, and generated-client EVC proof
+without enabling stock controls. Production advertisement and Diff UI admission,
+pending state and refresh/error behavior remain the next integration step.
 
 ## Filesystem and processes
 
@@ -771,16 +870,12 @@ unvalidated. Stock [Terminal](../terminal/README.md) owns the frontend and contr
 
 ## Current limitations
 
-The broader plugin identity does not make its stock `ChangeSetSource`
-implementation portable across arbitrary Environment providers. It still resolves
-only this backend generation's associated live `WorktreeEnvironment`; it does not
-use the generic buffered-process grant to inspect another provider. The separately
-tested portable Unstaged service is not yet selected by production Diff.
-Task / Branch review still obtains its baseline and branch from the Environment provider's
-retained state, not a core Task baseline or caller-selected comparison.
-
-Change snapshots are read-only. Staging, unstaging, review approval/unapproval,
-commit operations, and review-triggered mutation are not implemented. This does
-not change the host's existing execution-policy and tool-approval boundaries.
+Stock snapshots use the selected Environment's authorized buffered processes,
+including independent providers that supply the documented executable prerequisites.
+Task comparison requires the selected Environment's retained Git-owned SQL anchor,
+never caller-selected history. Snapshot operations and the stock Diff pane remain
+read-only. The separate single-hunk review handler is implemented but unadvertised;
+whole-file/add/delete/conflict semantics, commits and stock approval controls are
+not implemented. This does not change execution-policy or model-tool approval.
 The detailed platform, confinement, process, and snapshot limits above still apply;
 the plugin name supplies no additional portability or sandboxing guarantee.
