@@ -311,7 +311,7 @@ void main() {
   );
 
   test(
-    'stock AOT routes process-only snapshots and generation-owned anchor storage',
+    'stock AOT routes separate process-only snapshots and review with anchor storage',
     () async {
       final fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
@@ -347,16 +347,31 @@ void main() {
         changeSetSourceCapability,
         providerId: ProviderId(gitChangeSetSourceProviderId),
       );
-      expect(connection.capabilityExposures, hasLength(2));
-      expect(changes.provider.serviceId, changeSetSourceServiceId);
-      expect(activation.associationFor(changes), isNull);
-      final exposure = connection.capabilityExposures.singleWhere(
-        (value) => value.providerId == changes.provider.id.value,
+      final approvals = registry.resolve(
+        reviewApprovalCapability,
+        providerId: ProviderId(gitReviewApprovalProviderId),
       );
-      expect(exposure.environmentBound, isTrue);
-      expect(exposure.environmentHostServices, [
-        AdeleEnvironmentHostService.bufferedProcess,
-      ]);
+      expect(connection.capabilityExposures, hasLength(3));
+      expect(changes.provider.serviceId, changeSetSourceServiceId);
+      expect(approvals.provider.id.value, 'dev.adele.git.review-approval');
+      expect(approvals.provider.serviceId, reviewApprovalHandlerServiceId);
+      expect(
+        approvals.provider.capability.id.value,
+        'adele.diff.review-approval',
+      );
+      expect(approvals.provider.capability.majorVersion, 1);
+      for (final binding in [changes, approvals]) {
+        expect(activation.associationFor(binding), isNull);
+        expect(activation.isEnvironmentBound(binding), isTrue);
+        final exposure = connection.capabilityExposures.singleWhere(
+          (value) => value.providerId == binding.provider.id.value,
+        );
+        expect(exposure.environmentBound, isTrue);
+        expect(exposure.association, isNull);
+        expect(exposure.environmentHostServices, [
+          AdeleEnvironmentHostService.bufferedProcess,
+        ]);
+      }
       final provider = GeneratedEnvironmentProvider(
         providerId: environmentBinding.provider.id,
         service: EnvironmentProviderServiceClient(
@@ -448,9 +463,33 @@ void main() {
           ),
         ),
       );
+      final unboundReview = ReviewApprovalHandlerServiceClient(
+        approvals.requestChannel,
+      );
+      final unboundSelection = ReviewHunkSelection(
+        relativePath: 'README.md',
+        hunkIndex: 0,
+        expectedRevision: 'not-authority',
+      );
+      for (final call in [
+        unboundReview.approveHunk,
+        unboundReview.unapproveHunk,
+      ]) {
+        await expectLater(
+          call(unboundSelection),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'invalid_host_invocation_context',
+            ),
+          ),
+        );
+      }
       Future<T> invoke<T>(
         String environmentId,
-        Future<T> Function(ChangeSetSourceServiceClient) call,
+        ProviderBinding binding,
+        Future<T> Function(AdeleRequestChannel) call,
       ) async {
         final processes = AuthorizedEnvironmentBufferedProcessServiceDispatcher(
           _DiffProcesses(provider, environmentId, roots.keys.toSet()),
@@ -460,12 +499,10 @@ void main() {
         });
         try {
           return await call(
-            ChangeSetSourceServiceClient(
-              connection.bindHostInvocation(
-                channel: changes.requestChannel,
-                invocation: invocation,
-                validate: () {},
-              ),
+            connection.bindHostInvocation(
+              channel: binding.requestChannel,
+              invocation: invocation,
+              validate: () {},
             ),
           );
         } finally {
@@ -474,12 +511,23 @@ void main() {
         }
       }
 
-      Future<ChangeSetSnapshot> snapshot(String id) =>
-          invoke(id, (client) => client.snapshotUnstaged());
-      Future<UncommittedChangeSetSnapshot> uncommitted(String id) =>
-          invoke(id, (client) => client.snapshotUncommitted());
-      Future<TaskChangeSetSnapshot> taskChanges(String id) =>
-          invoke(id, (client) => client.snapshotTaskChanges());
+      Future<ChangeSetSnapshot> snapshot(String id) => invoke(
+        id,
+        changes,
+        (channel) => ChangeSetSourceServiceClient(channel).snapshotUnstaged(),
+      );
+      Future<UncommittedChangeSetSnapshot> uncommitted(String id) => invoke(
+        id,
+        changes,
+        (channel) =>
+            ChangeSetSourceServiceClient(channel).snapshotUncommitted(),
+      );
+      Future<TaskChangeSetSnapshot> taskChanges(String id) => invoke(
+        id,
+        changes,
+        (channel) =>
+            ChangeSetSourceServiceClient(channel).snapshotTaskChanges(),
+      );
 
       final results = await Future.wait([
         snapshot('primary'),
@@ -673,6 +721,96 @@ void main() {
         (await snapshot('additional')).files.single.relativePath,
         'same.txt',
       );
+      // Review is independent of anchor SQL, even after its grant is revoked.
+      final root = roots['additional']!;
+      final readme = await provider.readFile(
+        EnvironmentId('additional'),
+        'README.md',
+      );
+      await provider.replaceExistingTextFile(
+        EnvironmentId('additional'),
+        'README.md',
+        'AOT Git reviewed\n',
+        readme.revision,
+      );
+      final workingBefore = await File('${root.path}/README.md').readAsBytes();
+      final unrelatedBefore = await File('${root.path}/same.txt').readAsBytes();
+      final headBefore = await _git(root, ['rev-parse', 'HEAD']);
+      final refsBefore = await _git(root, ['show-ref']);
+      final indexBefore = await _git(root, ['ls-files', '--stage', '-z']);
+      final primaryBefore = await _git(roots['primary']!, [
+        'ls-files',
+        '--stage',
+        '-z',
+      ]);
+      final readsBeforeReview = storage.reads;
+      final target = (await snapshot(
+        'additional',
+      )).files.singleWhere((file) => file.relativePath == 'README.md');
+      expect(target.hunks, hasLength(1));
+      final selection = ReviewHunkSelection(
+        relativePath: target.relativePath,
+        hunkIndex: 0,
+        expectedRevision: target.reviewRevision!,
+      );
+      await invoke(
+        'additional',
+        approvals,
+        (channel) =>
+            ReviewApprovalHandlerServiceClient(channel).approveHunk(selection),
+      );
+      expect(
+        await _git(root, ['show', ':project-source/README.md']),
+        'AOT Git reviewed',
+      );
+      await expectLater(
+        invoke(
+          'additional',
+          approvals,
+          (channel) => ReviewApprovalHandlerServiceClient(
+            channel,
+          ).approveHunk(selection),
+        ),
+        throwsA(
+          isA<ReviewApprovalFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'stale_selection',
+          ),
+        ),
+      );
+      final approved = await uncommitted('additional');
+      expect(approved.unstaged.files.map((file) => file.relativePath), [
+        'same.txt',
+      ]);
+      final staged = approved.staged.files.singleWhere(
+        (file) => file.relativePath == 'README.md',
+      );
+      expect(staged.reviewRevision, isNot(selection.expectedRevision));
+      await invoke(
+        'additional',
+        approvals,
+        (channel) => ReviewApprovalHandlerServiceClient(channel).unapproveHunk(
+          ReviewHunkSelection(
+            relativePath: staged.relativePath,
+            hunkIndex: 0,
+            expectedRevision: staged.reviewRevision!,
+          ),
+        ),
+      );
+      expect(await _git(root, ['ls-files', '--stage', '-z']), indexBefore);
+      expect(await File('${root.path}/README.md').readAsBytes(), workingBefore);
+      expect(
+        await File('${root.path}/same.txt').readAsBytes(),
+        unrelatedBefore,
+      );
+      expect(await _git(root, ['rev-parse', 'HEAD']), headBefore);
+      expect(await _git(root, ['show-ref']), refsBefore);
+      expect(
+        await _git(roots['primary']!, ['ls-files', '--stage', '-z']),
+        primaryBefore,
+      );
+      expect(storage.reads, readsBeforeReview);
       await activation.close();
       await host.close();
     },

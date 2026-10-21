@@ -563,6 +563,34 @@ belong to the [Git plugin](../../plugins/git/README.md#changesetsource). This re
 boundary grants no staging, approval, mutation, process, or execution authority to
 the frontend and does not establish arbitrary portable Extension Point transport.
 
+### Plugin-owned hunk approval
+
+Diff's separate `ReviewApprovalHandlerService` owns hunk approval semantics;
+ChangeSetSource remains read-only. Stock Git advertises an independent
+Environment-bound handler with only the buffered-process host-service declaration.
+The mounted Diff descriptor separately declares the exact approval Capability/major
+alongside inspection. Neither declaration implies the other. Both use the existing
+contextual bridge and operation-scoped authorization; the frontend receives no
+authorized process client, native exception bridge, or Git-specific host service.
+
+The frontend preserves the displayed snapshot's typed hunk index, path, layer and
+opaque revision. Only explicit Approve/Unapprove actions invoke the generated
+mutation client. Git stages or unstages one supported hunk in the captured
+Environment's index, which remains authoritative approval state; no separate review
+database, working-file mutation, baseline update or Worktree association is involved.
+Unsupported entries and unavailable approval access remain read-only independently
+of snapshot and Source availability.
+
+Handles capture exact eligibility while each request receives fresh admission.
+Pending actions, refresh/scope fencing and explicit release obey the contextual
+lifetime rules above. Confirmed success is followed by a fresh snapshot rather than
+optimistic row movement. An unconfirmed result invalidates displayed selections and
+requires a deliberate refresh; safe interpreted settlement cannot prove unchanged
+index state, and neither retirement nor release promises rollback. Exact supported
+targets and bounded mutation semantics belong to the
+[Git handler](../../plugins/git/README.md#reviewapprovalhandler); presentation and
+recovery belong to [Diff](../../plugins/diff_viewer/README.md#presentation).
+
 ## Own-backend frontend requests
 
 Prepared frontends can use generated unary and server-streaming clients to call

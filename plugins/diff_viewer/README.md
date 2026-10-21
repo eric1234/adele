@@ -1,7 +1,7 @@
 # Diff Viewer
 
 Diff Viewer is a frontend-only stock plugin with a shared, pure-Dart public
-contract. It contributes one read-only `Diff` Main Content pane for any canonical
+contract. It contributes one `Diff` Main Content pane for any canonical
 Session, at order 200 between stock Chat and Source. It has no backend and does
 not require Chat, a strategy frontend, or a Run.
 
@@ -92,18 +92,19 @@ be confirmed. Lost transport or retirement can prevent any semantic response;
 consumers must not infer rollback or automatically retry. See the
 [Git handler](../git/README.md#reviewapprovalhandler) for exact limits and races.
 
-**The handler is implemented but is not advertised in stock production
-composition.** Only the independent integration fixture advertises it and grants
-its consumer access. Stock Diff has no approval permission or controls and
-remains read-only. Production advertisement, explicit action UI, and refresh/error
-handling belong to the subsequent integration slice.
+Stock Git advertises this handler independently of ChangeSetSource. The compiled
+Diff pane resolves it through the provider-neutral contextual Capability bridge,
+not a Git provider ID. Missing, ambiguous, denied, retired or incompatible approval
+access leaves snapshots, manual Refresh and independent Source navigation usable.
+It never substitutes another provider or Environment behind a captured handle.
 
 ## Presentation
 
 `packages/frontend/lib/main.dart` supplies `initializeDiff()` and
 `buildDiffPane()`. Initialization opens only local pane ID `diff`; reinitializing
 does not duplicate it. The descriptor declares `environmentBufferedProcessCapabilities`
-for the Diff capability and `canRequestSourceDisplay` for pane-only requests
+for both `adele.diff.change-set-source` v1 and `adele.diff.review-approval` v1,
+separately, and `canRequestSourceDisplay` for pane-only requests
 through the public source-display point. There is no context-free capability
 grant, own-backend service, direct file access, process, terminal, editor, or
 execution grant. The host grants buffered-process access only to the selected
@@ -129,6 +130,31 @@ invalidate the local request revision and release pending access; a late resolut
 releases its unused handle and an older result cannot replace a newer presentation.
 Departure does not wait for independently owned backend work. If another pane refuses
 navigation, Diff remains manually refreshable.
+
+Eligible hunk headers offer **Approve** in Unstaged layers and **Unapprove** in
+Staged layers. Uncommitted and Task retain both actions in their respective layers;
+Committed and Conflicts remain read-only. Each action retains the original typed
+`ReviewHunkSelection` with the literal file path, zero-based index in that file's
+displayed layer, and exact opaque `reviewRevision`. This identity is separate from
+rendered labels and Source paths. No whole-file action is provided.
+
+Only a direct button invocation starts a mutation. One pane-wide pending operation
+suppresses duplicate and other hunk submissions while showing neutral pending text.
+Approval handles capture eligibility, not a standing process grant: every generated
+request receives fresh host admission. Scope changes, Refresh, departure and disposal
+discard old selections and release retained access. Late responses cannot refresh a
+superseded pane, and release does not cancel or roll back an already-started Git write.
+Snapshots requested while a review is pending remain read-only even if the old
+request settles first; another explicit Refresh is required before reviewing them.
+Semantic settlement is not proof that a revoked process has stopped.
+
+Confirmed success triggers one fresh snapshot of the selected scope; rows are never
+optimistically moved between layers. If that read fails, Retry repeats only the read,
+not the confirmed mutation. Unconfirmed settlement shows only
+`Review change not confirmed. Refresh before trying again.` and disables the old
+selections until a fresh snapshot. Native exception details and process diagnostics
+do not cross the interpreted settlement boundary. Failure does not establish that
+the index stayed unchanged, and writes are never automatically retried.
 
 The pane distinguishes loading, unavailable, clean, and error states. Unified
 rows are rendered lazily with file names, change kinds, hunk ranges, both line
@@ -159,8 +185,9 @@ invalidate old callbacks and feedback, not an admitted provider operation.
 Source owns document normalization, deduplication, dirty text, and native undo
 through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
-There is no automatic refresh, watcher, staging, apply/revert, editing within Diff,
-or side-by-side mode.
+Index-only approval does not change Source working-file bytes, dirty buffers or undo.
+There is no automatic refresh watcher, whole-file staging, discard/revert, editing
+within Diff, commit, review feedback submission, or side-by-side mode.
 
 ## Preparation And Tests
 
@@ -186,8 +213,10 @@ through a test-only contextual port, covering states, manual recovery, handle
 cleanup, held operation races, scope switching, separate
 committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
-paths, pending suppression, safe failures, and stale callbacks. It does not
-substitute for authority validation:
+paths, pending suppression, safe failures, and stale callbacks. Its separate review
+dispatcher covers typed hunk indices/revisions, layer-specific actions, unavailable
+approval, single pending mutation, success refresh, unconfirmed failures and lifecycle
+fencing. It does not substitute for authority validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
 consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
 real stock Git AOT plus independently prepared Diff and Source EVC through normal
@@ -195,8 +224,10 @@ catalog/Main Content hosting, including committed-only work, exact independently
 established baselines, staged-only and layered partial/cancelling changes,
 source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
-retirement/navigation. That cross-plugin suite requires the native CodeForge
-library; the isolated Diff frontend suite does not.
+retirement/navigation. Hunk mutation acceptance checks real selected index objects,
+unchanged working bytes and HEAD, nonprimary isolation, stale selections, lock
+rejection and retirement after an index effect. That cross-plugin suite requires
+the native CodeForge library; the isolated Diff frontend suite does not.
 The existing Source host suite remains the owner of Source document/operation
 behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)
 for prerequisites and test ownership, not recorded passing outcomes.

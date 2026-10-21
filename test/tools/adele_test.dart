@@ -1599,6 +1599,7 @@ void main() {
             'canRequestSourceDisplay': true,
             'environmentBufferedProcessCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
+              {'id': 'adele.diff.review-approval', 'majorVersion': 1},
             ],
           },
         ]);

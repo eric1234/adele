@@ -10,6 +10,8 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/environment_capability_invocation.dart';
+import 'package:adele_desktop/core/environment_capability_selection.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
@@ -23,6 +25,8 @@ import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:code_forge/code_forge.dart';
+import 'package:crypto/crypto.dart';
+import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,6 +43,7 @@ const _gitPlugin = 'dev.adele.plugin.git';
 const _diffPlugin = 'dev.adele.diff-viewer';
 const _sourcePlugin = 'dev.adele.source-editor';
 const _punctuatedPath = "b tracked + [file]; 'quoted'\tname.txt";
+const _reviewPath = "b review + [file]; 'quoted'.txt";
 const _bound = Duration(seconds: 20);
 const _scopes = [
   ('Unstaged changes', 'No unstaged changes'),
@@ -54,6 +59,7 @@ void main() {
   late Directory artifacts;
   late Directory installations;
   late Directory frontendOnly;
+  late Directory approvalDenied;
   late File host;
   late String aotRuntime;
 
@@ -61,6 +67,9 @@ void main() {
     artifacts = await Directory.systemTemp.createTemp('adele-diff-artifacts-');
     installations = await Directory('${artifacts.path}/installed').create();
     frontendOnly = await Directory('${artifacts.path}/frontend-only').create();
+    approvalDenied = await Directory(
+      '${artifacts.path}/approval-denied',
+    ).create();
     final repository = Directory.current.parent;
     final dart = _dartExecutable();
     aotRuntime = File(dart).parent.uri.resolve('dartaotruntime').toFilePath();
@@ -107,6 +116,27 @@ void main() {
     final alone = await Directory('${frontendOnly.path}/diff').create();
     await File('${diff.path}/frontend.evc').copy('${alone.path}/frontend.evc');
     await _manifest(alone, _diffPlugin, component);
+    final deniedGit = await Directory('${approvalDenied.path}/git').create();
+    for (final name in ['backend.aot', 'adele_plugin.installation.json']) {
+      await File('${git.path}/$name').copy('${deniedGit.path}/$name');
+    }
+    final deniedDiff = await Directory('${approvalDenied.path}/diff').create();
+    await File(
+      '${diff.path}/frontend.evc',
+    ).copy('${deniedDiff.path}/frontend.evc');
+    await _manifest(deniedDiff, _diffPlugin, {
+      'frontend': {
+        'artifact': 'frontend.evc',
+        'presentations': [
+          {
+            ...stockFrontendDescriptors[_diffPlugin]!.single,
+            'environmentBufferedProcessCapabilities': [
+              {'id': _changes.id.value, 'majorVersion': 1},
+            ],
+          },
+        ],
+      },
+    });
     final source = await Directory('${installations.path}/source').create();
     await File('${source.path}/frontend.evc').writeAsBytes(
       await compileSourceEditorFrontend(repositoryRoot: repository),
@@ -131,12 +161,23 @@ void main() {
   });
   tearDown(() => fixture.close());
 
-  Future<void> mount(WidgetTester tester, {Directory? catalog}) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    Directory? catalog,
+    bool approvalPresent = true,
+  }) async {
     tester.view.physicalSize = const Size(1600, 2000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.runAsync(() => fixture.start(catalog ?? installations));
+    if (!approvalPresent) {
+      await tester.runAsync(
+        () => fixture.backends.backends.single.retireProvider(
+          fixture.capabilities.resolve(reviewApprovalCapability),
+        ),
+      );
+    }
     await tester.runAsync(
       () => tester.pumpWidget(fixture.widget(fixture.additionalSession)),
     );
@@ -230,6 +271,7 @@ void main() {
       expect(descriptor['environmentReadCapabilities'], isNull);
       expect(descriptor['environmentBufferedProcessCapabilities'], [
         {'id': _changes.id.value, 'majorVersion': _changes.majorVersion},
+        {'id': reviewApprovalCapability.id.value, 'majorVersion': 1},
       ]);
       final changeBinding = fixture.capabilities.resolve(_changes);
       final environmentBinding = fixture.capabilities.resolve(
@@ -260,6 +302,25 @@ void main() {
         ),
         isFalse,
       );
+      final approval = fixture.capabilities.resolve(reviewApprovalCapability);
+      expect(approval.provider.id.value, 'dev.adele.git.review-approval');
+      expect(approval.provider.serviceId, reviewApprovalHandlerServiceId);
+      expect(owner.associationFor(approval), isNull);
+      expect(owner.isEnvironmentBound(approval), isTrue);
+      expect(
+        owner.allowsEnvironmentHostService(
+          approval,
+          AdeleEnvironmentHostService.bufferedProcess,
+        ),
+        isTrue,
+      );
+      expect(
+        owner.allowsEnvironmentHostService(
+          approval,
+          AdeleEnvironmentHostService.read,
+        ),
+        isFalse,
+      );
       expect(await tester.runAsync(fixture.fingerprint), before);
 
       await tester.runAsync(
@@ -274,6 +335,94 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
+  );
+
+  testWidgets(
+    'stock Approve stages only the first nonprimary hunk and Unapprove restores that index portion',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.write(
+          _reviewPath,
+          _reviewContent(first: true, second: true),
+        );
+        await File(
+          '${fixture.primaryRoot.path}/$_reviewPath',
+        ).writeAsString('Primary Environment must remain untouched\n');
+      });
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      await mount(tester);
+      await _visible(tester, '+Selected first change');
+      await _visible(tester, '+Selected second change');
+      await _reviewReady(tester, 'Approve', count: 2);
+      expect(find.textContaining('@@ -'), findsNWidgets(2));
+      expect(_reviewAction('Unapprove'), findsNothing);
+      final stale = tester
+          .widget<TextButton>(_reviewAction('Approve').first)
+          .onPressed!;
+      await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
+      await _waitFor(
+        tester,
+        () =>
+            find.textContaining('+Selected first change').evaluate().isEmpty &&
+            _reviewAction('Approve').evaluate().length == 1,
+      );
+      expect(find.textContaining('+Selected second change'), findsOneWidget);
+      await tester.runAsync(
+        () => fixture.expectReviewIndex(before, first: true),
+      );
+      expect(fixture.indexWrites, hasLength(1));
+      expect(
+        fixture.indexWrites.single['environmentId'],
+        fixture.additional.id.value,
+      );
+      final afterApprove = (await tester.runAsync(fixture.reviewState))!;
+      stale();
+      await tester.pump();
+      expect(await tester.runAsync(fixture.reviewState), afterApprove);
+      expect(fixture.indexWrites, hasLength(1));
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _reviewReady(tester, 'Unapprove');
+      await _reviewReady(tester, 'Approve');
+      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      expect(
+        tester.getTopLeft(find.textContaining('+Selected first change')).dy,
+        greaterThan(stagedY),
+      );
+      expect(
+        tester.getTopLeft(find.textContaining('+Selected first change')).dy,
+        lessThan(unstagedY),
+      );
+      expect(
+        tester.getTopLeft(find.textContaining('+Selected second change')).dy,
+        greaterThan(unstagedY),
+      );
+      expect(find.text('$_reviewPath  [modified]'), findsNWidgets(2));
+      await tester.runAsync(() => tester.tap(_reviewAction('Unapprove')));
+      await _visible(tester, 'No staged changes');
+      await _reviewReady(tester, 'Approve', count: 2);
+      expect(_reviewAction('Unapprove'), findsNothing);
+      expect(find.textContaining('+Selected first change'), findsOneWidget);
+      expect(find.textContaining('+Selected second change'), findsOneWidget);
+      expect(await tester.runAsync(fixture.reviewState), before);
+      await tester.runAsync(() => fixture.expectReviewIndex(before));
+      expect(fixture.indexWrites, hasLength(2));
+      expect(fixture.reads, isEmpty);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
   );
 
   testWidgets(
@@ -556,6 +705,8 @@ void main() {
       expect(find.textContaining('No conflicts'), findsOneWidget);
       expect(find.textContaining('No task changes'), findsNothing);
       expect(_sourceAction(), findsNothing);
+      expect(_reviewAction('Approve'), findsNothing);
+      expect(_reviewAction('Unapprove'), findsNothing);
 
       final previousHead = await tester.runAsync(
         () => _git(fixture.additionalRoot, ['rev-parse', 'HEAD']),
@@ -697,6 +848,20 @@ void main() {
       expect(tester.getTopLeft(headers.at(2)).dy, greaterThan(unstagedY));
       expect(_sourceAction(), findsOneWidget);
       expect(tester.getTopLeft(_sourceAction()).dy, greaterThan(unstagedY));
+      await _reviewReady(tester, 'Approve');
+      await _reviewReady(tester, 'Unapprove');
+      expect(
+        tester.getTopLeft(_reviewAction('Unapprove')).dy,
+        greaterThan(stagedY),
+      );
+      expect(
+        tester.getTopLeft(_reviewAction('Unapprove')).dy,
+        lessThan(unstagedY),
+      );
+      expect(
+        tester.getTopLeft(_reviewAction('Approve')).dy,
+        greaterThan(unstagedY),
+      );
       expect(
         fixture.store
             .requireSessionAuthority(fixture.additionalSession.id)
@@ -841,7 +1006,7 @@ void main() {
   );
 
   testWidgets(
-    'actual Diff focuses an existing dirty Source document without replacing text or undo',
+    'actual Diff Unapprove preserves and focuses an existing dirty Source document without replacing text or undo',
     (tester) async {
       const path = 'a modified.txt';
       const openedText = 'Source buffer opened before the Diff action\n';
@@ -881,6 +1046,57 @@ void main() {
         tester,
         'Newer disk text must not replace the dirty buffer',
       );
+      final unstaged = (await tester.runAsync(fixture.reviewState))!;
+      await tester.runAsync(() async {
+        await _git(fixture.additionalRoot, ['add', '--', path]);
+        expect(
+          (await _git(fixture.additionalRoot, [
+            'rev-parse',
+            ':nested source/$path',
+          ])).trim(),
+          _blobOid(changedOnDisk),
+        );
+      });
+      await _selectScope(tester, 'Uncommitted changes');
+      await _reviewReady(tester, 'Unapprove');
+      expect(native.controller!.text, openedText.substring(1));
+      expect(_sourceAction(), findsNothing);
+      await tester.runAsync(() => tester.tap(_reviewAction('Unapprove')));
+      await _visible(tester, 'No staged changes');
+      await _reviewReady(tester, 'Approve');
+      expect(fixture.indexWrites, hasLength(1));
+      expect(await tester.runAsync(fixture.reviewState), unstaged);
+      await tester.runAsync(() async {
+        final original = await _git(fixture.additionalRoot, [
+          'rev-parse',
+          'HEAD:nested source/$path',
+        ]);
+        expect(
+          await _git(fixture.additionalRoot, [
+            'rev-parse',
+            ':nested source/$path',
+          ]),
+          original,
+        );
+        expect(
+          await _git(fixture.additionalRoot, [
+            'cat-file',
+            'blob',
+            original.trim(),
+          ]),
+          'context before\nOriginal text\ncontext after\n',
+        );
+        expect(
+          await fixture.file(path).readAsBytes(),
+          utf8.encode(changedOnDisk),
+        );
+      });
+      expect(find.byType(CodeForge), findsOneWidget);
+      expect(tester.element(find.byType(CodeForge)), same(element));
+      expect(_editor(tester).controller, same(native.controller));
+      expect(_editor(tester).undoController, same(native.undoController));
+      expect(native.controller!.text, openedText.substring(1));
+      expect(fixture.reads, [(fixture.additional.id.value, './$path')]);
       native.focusNode!.unfocus();
       await tester.pump();
       await _openFromDiff(tester);
@@ -976,6 +1192,448 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
+  );
+
+  for (final absent in [true, false]) {
+    testWidgets(
+      'stock review ${absent ? 'missing provider' : 'denied frontend grant'} leaves real snapshots readable',
+      (tester) async {
+        await tester.runAsync(() async {
+          await fixture.write(
+            'g baseline.txt',
+            'Review unavailable committed layer\n',
+          );
+          await _git(fixture.additionalRoot, ['add', '--', 'g baseline.txt']);
+          await _git(fixture.additionalRoot, [
+            'commit',
+            '-m',
+            'Read-only Task layer',
+          ]);
+          await fixture.write(
+            'd staged.txt',
+            'Review unavailable staged layer\n',
+          );
+          await _git(fixture.additionalRoot, ['add', '--', 'd staged.txt']);
+          await fixture.write(
+            _reviewPath,
+            _reviewContent(first: true, second: true),
+          );
+        });
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        await mount(
+          tester,
+          catalog: absent ? installations : approvalDenied,
+          approvalPresent: !absent,
+        );
+        await _visible(tester, '+Selected first change');
+        await _visible(tester, 'Review actions unavailable');
+        expect(find.textContaining('+Selected second change'), findsOneWidget);
+        expect(_reviewAction('Approve'), findsNothing);
+        expect(_reviewAction('Unapprove'), findsNothing);
+        _refresh(tester);
+        await _visible(tester, '+Selected second change');
+        await _visible(tester, 'Review actions unavailable');
+        for (final scope in ['Uncommitted changes', 'Task / Branch']) {
+          await _selectScope(tester, scope);
+          await _visible(tester, '+Review unavailable staged layer');
+          await _visible(tester, '+Selected first change');
+          await _visible(tester, '+Selected second change');
+          await _visible(tester, 'Review actions unavailable');
+          expect(find.text('Staged changes'), findsOneWidget);
+          expect(find.text('Unstaged changes'), findsNWidgets(2));
+          expect(find.text('d staged.txt  [modified]'), findsOneWidget);
+          expect(find.text('$_reviewPath  [modified]'), findsOneWidget);
+          if (scope == 'Task / Branch') {
+            await _visible(tester, '+Review unavailable committed layer');
+            expect(find.text('Committed changes'), findsOneWidget);
+            expect(find.text('g baseline.txt  [modified]'), findsOneWidget);
+          } else {
+            expect(
+              find.textContaining('Review unavailable committed layer'),
+              findsNothing,
+            );
+          }
+          expect(_reviewAction('Approve'), findsNothing);
+          expect(_reviewAction('Unapprove'), findsNothing);
+          expect(fixture.indexWrites, isEmpty);
+          expect(await tester.runAsync(fixture.reviewState), before);
+        }
+        if (absent) {
+          tester.view.physicalSize = const Size(720, 1200);
+          await tester.pump();
+          await _openFromDiff(tester);
+          expect(
+            _editor(tester).controller!.text,
+            _reviewContent(first: true, second: true),
+          );
+          expect(fixture.reads, [(fixture.additional.id.value, _reviewPath)]);
+        }
+        expect(fixture.indexWrites, isEmpty);
+        expect(await tester.runAsync(fixture.reviewState), before);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  for (final failure in ['manual staging', 'index lock']) {
+    testWidgets(
+      'stock $failure rejects stale Approve without retry and requires a truthful refresh',
+      (tester) async {
+        await tester.runAsync(
+          () => fixture.write(
+            _reviewPath,
+            _reviewContent(first: true, second: true),
+          ),
+        );
+        await mount(tester);
+        await _reviewReady(tester, 'Approve', count: 2);
+        final stale = tester
+            .widget<TextButton>(_reviewAction('Approve').first)
+            .onPressed!;
+        File? lock;
+        await tester.runAsync(() async {
+          if (failure == 'manual staging') {
+            await _git(fixture.additionalRoot, ['add', '--', _reviewPath]);
+          } else {
+            final path = (await _git(fixture.additionalRoot, [
+              'rev-parse',
+              '--path-format=absolute',
+              '--git-path',
+              'index.lock',
+            ])).trim();
+            lock = await File(path).create(exclusive: true);
+          }
+        });
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
+        await _visible(tester, 'Refresh before trying again');
+        expect(_reviewAction('Approve'), findsNothing);
+        expect(_reviewAction('Unapprove'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Retry'), findsNothing);
+        expect(find.textContaining('index.lock'), findsNothing);
+        expect(find.textContaining('stale_selection'), findsNothing);
+        expect(find.textContaining(fixture.root.path), findsNothing);
+        expect(await tester.runAsync(fixture.reviewState), before);
+        final writes = fixture.indexWrites.length;
+        final processes = fixture.processes.length;
+        expect(writes, failure == 'manual staging' ? 0 : 1);
+        stale();
+        await tester.pump();
+        expect(fixture.processes, hasLength(processes));
+        expect(fixture.indexWrites, hasLength(writes));
+        expect(await tester.runAsync(fixture.reviewState), before);
+        if (lock != null) await tester.runAsync(() => lock!.delete());
+        _refresh(tester);
+        if (failure == 'manual staging') {
+          await _visible(tester, 'No unstaged changes');
+          await _selectScope(tester, 'Uncommitted changes');
+          await _reviewReady(tester, 'Unapprove', count: 2);
+          expect(_reviewAction('Approve'), findsNothing);
+        } else {
+          await _reviewReady(tester, 'Approve', count: 2);
+        }
+        expect(
+          find.textContaining('Refresh before trying again'),
+          findsNothing,
+        );
+        expect(fixture.indexWrites, hasLength(writes));
+        expect(await tester.runAsync(fixture.reviewState), before);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'stock review retirement before admission fences the captured button without touching the index',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write(
+          _reviewPath,
+          _reviewContent(first: true, second: true),
+        ),
+      );
+      await mount(tester);
+      await _reviewReady(tester, 'Approve', count: 2);
+      final stale = tester
+          .widget<TextButton>(_reviewAction('Approve').first)
+          .onPressed!;
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      final processes = fixture.processes.length;
+      await tester.runAsync(
+        () => fixture.backends.backends.single.retireProvider(
+          fixture.capabilities.resolve(reviewApprovalCapability),
+        ),
+      );
+      stale();
+      await _visible(tester, 'Refresh before trying again');
+      expect(fixture.processes, hasLength(processes));
+      expect(fixture.indexWrites, isEmpty);
+      expect(await tester.runAsync(fixture.reviewState), before);
+      _refresh(tester);
+      await _visible(tester, '+Selected first change');
+      await _visible(tester, 'Review actions unavailable');
+      expect(_reviewAction('Approve'), findsNothing);
+      expect(await tester.runAsync(fixture.reviewState), before);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'stock review retirement after real index effect suppresses success without rollback or retry',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write(
+          _reviewPath,
+          _reviewContent(first: true, second: true),
+        ),
+      );
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      await mount(tester);
+      await _reviewReady(tester, 'Approve', count: 2);
+      final stale = tester
+          .widget<TextButton>(_reviewAction('Approve').first)
+          .onPressed!;
+      fixture.holdNextIndexWrite = true;
+      await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
+      await _waitFor(tester, () => fixture.processArrived.isCompleted);
+      await tester.runAsync(
+        () => fixture.expectReviewIndex(before, first: true),
+      );
+      final effected = (await tester.runAsync(fixture.reviewState))!;
+      final processes = fixture.processes.length;
+      expect(fixture.indexWrites, hasLength(1));
+      expect(_reviewAction('Approve'), findsNothing);
+      await tester.runAsync(
+        () => fixture.backends.backends.single.retireProvider(
+          fixture.capabilities.resolve(reviewApprovalCapability),
+        ),
+      );
+      await tester.runAsync(fixture.releaseGate);
+      await _visible(tester, 'Refresh before trying again');
+      stale();
+      await tester.pump();
+      expect(fixture.processes, hasLength(processes));
+      expect(fixture.indexWrites, hasLength(1));
+      expect(await tester.runAsync(fixture.reviewState), effected);
+      expect(find.textContaining('Approved'), findsNothing);
+      _refresh(tester);
+      await _visible(tester, '+Selected second change');
+      await _visible(tester, 'Review actions unavailable');
+      expect(find.textContaining('+Selected first change'), findsNothing);
+      await _selectScope(tester, 'Uncommitted changes');
+      await _visible(tester, '+Selected first change');
+      await _visible(tester, 'Review actions unavailable');
+      expect(find.textContaining('+Selected second change'), findsOneWidget);
+      expect(_reviewAction('Unapprove'), findsNothing);
+      expect(await tester.runAsync(fixture.reviewState), effected);
+      expect(fixture.indexWrites, hasLength(1));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'stock captured Approve control stays retired while fresh same-ID replacement access works',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write(
+          _reviewPath,
+          _reviewContent(first: true, second: true),
+        ),
+      );
+      await mount(tester);
+      await _reviewReady(tester, 'Approve', count: 2);
+      final stale = tester
+          .widget<TextButton>(_reviewAction('Approve').first)
+          .onPressed!;
+      final old = fixture.capabilities.resolve(reviewApprovalCapability);
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      final processes = fixture.processes.length;
+      await tester.runAsync(fixture.backends.close);
+      final replacement = ApplicationPluginBootstrap(
+        fixture.capabilities,
+        ExtensionRegistry(),
+        createInfrastructureServices: (connection) =>
+            projectStorageServices(fixture.lifecycle, connection),
+      );
+      try {
+        await tester.runAsync(
+          () => replacement.start(
+            installationRoot: installations.path,
+            dartaotruntimeExecutable: aotRuntime,
+            hostArtifactPath: host.path,
+            startupArguments: const {},
+          ),
+        );
+        expect(replacement.backends.single.state, InstalledBackendState.active);
+        final current = fixture.capabilities.resolve(reviewApprovalCapability);
+        expect(current.provider.id, old.provider.id);
+        expect(current.isSameRegistration(old), isFalse);
+        expect(() => old.requestChannel, throwsA(isA<ProviderUnavailable>()));
+        replacement.backends.single.validateProviderOwnership(current);
+        stale();
+        await _visible(tester, 'Refresh before trying again');
+        stale();
+        await tester.pump();
+        expect(fixture.processes, hasLength(processes));
+        expect(fixture.indexWrites, isEmpty);
+        expect(await tester.runAsync(fixture.reviewState), before);
+        expect(_reviewAction('Approve'), findsNothing);
+        // The old pane retains its closed bootstrap. This is real retirement and
+        // fresh-access recovery; the isolated compiled frontend suite separately
+        // tests live same-ID handle retargeting with an otherwise usable host.
+        await tester.runAsync(() async {
+          final captured = CapturedEnvironmentCapabilities(
+            environmentRuntime: fixture.environmentRuntime,
+            backends: replacement,
+            session: fixture.additionalSession,
+          );
+          final source = await captured.resolve(_changes);
+          expect(source.environment.id, fixture.additional.id);
+          final snapshot = await invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: source,
+            backends: replacement,
+            serviceId: changeSetSourceServiceId,
+            invoke: (channel) =>
+                ChangeSetSourceServiceClient(channel).snapshotUnstaged(),
+          );
+          final file = snapshot.files.singleWhere(
+            (file) => file.relativePath == _reviewPath,
+          );
+          expect(file.hunks, hasLength(2));
+          expect(file.reviewRevision, isNotNull);
+          final approval = await captured.resolve(reviewApprovalCapability);
+          expect(approval.binding.isSameRegistration(current), isTrue);
+          expect(approval.environment.id, fixture.additional.id);
+          await invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: approval,
+            backends: replacement,
+            serviceId: reviewApprovalHandlerServiceId,
+            invoke: (channel) =>
+                ReviewApprovalHandlerServiceClient(channel).approveHunk(
+                  ReviewHunkSelection(
+                    relativePath: _reviewPath,
+                    hunkIndex: 0,
+                    expectedRevision: file.reviewRevision!,
+                  ),
+                ),
+          );
+          await fixture.expectReviewIndex(before, first: true);
+          expect(fixture.indexWrites, hasLength(1));
+          for (final process in fixture.processes.skip(processes)) {
+            expect(process['environmentId'], fixture.additional.id.value);
+          }
+          expect(
+            fixture.environmentRuntime.currentMaterialization(
+              fixture.primary.id,
+            ),
+            isNull,
+          );
+        });
+        final effected = (await tester.runAsync(fixture.reviewState))!;
+        final replacementProcesses = fixture.processes.length;
+        stale();
+        await tester.pump();
+        expect(fixture.processes, hasLength(replacementProcesses));
+        expect(fixture.indexWrites, hasLength(1));
+        expect(await tester.runAsync(fixture.reviewState), effected);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        await tester.runAsync(replacement.close);
+      }
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'stock generated review client rejects another Session revision on the same Environment',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.write(
+          _reviewPath,
+          _reviewContent(first: true, second: true),
+        );
+        await fixture.start(installations);
+        final before = await fixture.reviewState();
+        final sibling = fixture.store.session(
+          SessionId('additional-peer-session'),
+        )!;
+        Future<EnvironmentCapabilitySelection> select(
+          Session session,
+          CapabilityKey key,
+        ) => CapturedEnvironmentCapabilities(
+          environmentRuntime: fixture.environmentRuntime,
+          backends: fixture.backends,
+          session: session,
+        ).resolve(key);
+        Future<ChangedFile> snapshot(Session session) async {
+          final selection = await select(session, _changes);
+          return (await invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: selection,
+            backends: fixture.backends,
+            serviceId: changeSetSourceServiceId,
+            invoke: (channel) =>
+                ChangeSetSourceServiceClient(channel).snapshotUnstaged(),
+          )).files.singleWhere((file) => file.relativePath == _reviewPath);
+        }
+
+        final original = await snapshot(fixture.additionalSession);
+        final other = await snapshot(sibling);
+        expect(original.reviewRevision, isNotNull);
+        expect(other.reviewRevision, isNot(original.reviewRevision));
+        final approval = await select(sibling, reviewApprovalCapability);
+        expect(approval.environment.id, fixture.additional.id);
+        await expectLater(
+          invokeEnvironmentCapabilityWithBufferedProcess(
+            selection: approval,
+            backends: fixture.backends,
+            serviceId: reviewApprovalHandlerServiceId,
+            invoke: (channel) =>
+                ReviewApprovalHandlerServiceClient(channel).approveHunk(
+                  ReviewHunkSelection(
+                    relativePath: _reviewPath,
+                    hunkIndex: 0,
+                    expectedRevision: original.reviewRevision!,
+                  ),
+                ),
+          ),
+          throwsA(
+            isA<ReviewApprovalFailure>().having(
+              (error) => error.code,
+              'code',
+              'stale_selection',
+            ),
+          ),
+        );
+        expect(fixture.indexWrites, isEmpty);
+        expect(await fixture.reviewState(), before);
+        await invokeEnvironmentCapabilityWithBufferedProcess(
+          selection: approval,
+          backends: fixture.backends,
+          serviceId: reviewApprovalHandlerServiceId,
+          invoke: (channel) =>
+              ReviewApprovalHandlerServiceClient(channel).approveHunk(
+                ReviewHunkSelection(
+                  relativePath: _reviewPath,
+                  hunkIndex: 0,
+                  expectedRevision: other.reviewRevision!,
+                ),
+              ),
+        );
+        await fixture.expectReviewIndex(before, first: true);
+        expect(fixture.indexWrites, hasLength(1));
+      });
+      expect(tester.takeException(), isNull);
+    },
+    skip: !Platform.isLinux,
   );
 
   for (final (scope, clean) in _scopes) {
@@ -1227,6 +1885,7 @@ final class _Fixture {
     final source = await Directory('${repository.path}/nested source').create();
     for (final entry in {
       'a modified.txt': 'context before\nOriginal text\ncontext after\n',
+      _reviewPath: _reviewContent(),
       if (Platform.isLinux) _punctuatedPath: 'Tracked source baseline\n',
       'c deleted.txt': 'Deleted baseline\n',
       'd staged.txt': 'Staged baseline\n',
@@ -1239,7 +1898,11 @@ final class _Fixture {
     await File(
       '${repository.path}/outside.txt',
     ).writeAsString('Outside baseline\n');
-    await _git(repository, ['init', '--initial-branch=main']);
+    await _git(repository, [
+      'init',
+      '--object-format=sha1',
+      '--initial-branch=main',
+    ]);
     await _git(repository, ['add', '.']);
     await _git(repository, ['commit', '-m', 'Diff integration baseline']);
     final capabilities = CapabilityRegistry();
@@ -1357,6 +2020,7 @@ final class _Fixture {
       );
       for (final (id, environment) in [
         ('additional-session', additional),
+        ('additional-peer-session', additional),
         ('primary-session', created.environment),
       ]) {
         expect(environment.providerState!['schemaVersion'], 2);
@@ -1437,9 +2101,71 @@ final class _Fixture {
   final readArrived = Completer<void>();
   final readRelease = Completer<void>();
   bool holdNextProcess = false;
+  bool holdNextIndexWrite = false;
   final processArrived = Completer<void>();
   final processRelease = Completer<void>();
   final processes = <Map<String, Object?>>[];
+
+  List<Map<String, Object?>> get indexWrites =>
+      processes.where(_isIndexWrite).toList();
+
+  Future<Map<String, Map<String, Object?>>> reviewState() async {
+    final result = <String, Map<String, Object?>>{};
+    for (final environment in [additional, primary]) {
+      final root = worktree(environment);
+      final workingBytes = <String, String>{};
+      final workingHashes = <String, String>{};
+      await for (final entry in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        final path = entry.path.substring(root.path.length + 1);
+        if (path == '.git' || path.startsWith('.git/') || entry is! File) {
+          continue;
+        }
+        final bytes = await entry.readAsBytes();
+        workingBytes[path] = base64Encode(bytes);
+        workingHashes[path] = sha256.convert(bytes).toString();
+      }
+      result[environment.id.value] = {
+        'head': await _git(root, ['rev-parse', 'HEAD']),
+        'branch': await _git(root, ['symbolic-ref', 'HEAD']),
+        'baseline': baseline(environment),
+        'providerState': environment.providerState,
+        'index': await _git(root, ['ls-files', '--stage', '-z']),
+        'workingBytes': workingBytes,
+        'workingHashes': workingHashes,
+      };
+    }
+    return result;
+  }
+
+  Future<void> expectReviewIndex(
+    Map<String, Map<String, Object?>> before, {
+    bool first = false,
+  }) async {
+    final content = _reviewContent(first: first);
+    final original = _blobOid(_reviewContent());
+    final expected = _blobOid(content);
+    final suffix = ' 0\tnested source/$_reviewPath\u0000';
+    final index = before[additional.id.value]!['index']! as String;
+    expect(index, contains('$original$suffix'));
+    expect(await reviewState(), {
+      ...before,
+      additional.id.value: {
+        ...before[additional.id.value]!,
+        'index': index.replaceFirst('$original$suffix', '$expected$suffix'),
+      },
+    });
+    expect(await _git(additionalRoot, ['cat-file', 'blob', expected]), content);
+    expect(
+      (await _git(additionalRoot, [
+        'rev-parse',
+        ':nested source/$_reviewPath',
+      ])).trim(),
+      expected,
+    );
+  }
 
   String baseline(Environment environment) =>
       lifecycle
@@ -1546,8 +2272,10 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     if (method == environmentProviderServiceRunBufferedProcessId) {
       fixture.processes.add(Map.of(payload));
-      final held = fixture.holdNextProcess;
+      final indexWrite = fixture.holdNextIndexWrite && _isIndexWrite(payload);
+      final held = fixture.holdNextProcess || indexWrite;
       fixture.holdNextProcess = false;
+      if (indexWrite) fixture.holdNextIndexWrite = false;
       final result = await delegate.request(method, payload);
       if (held) {
         // Real stock Git executed the command. Gate only its unchanged response.
@@ -1617,6 +2345,33 @@ VoidCallback _refreshCallback(WidgetTester tester) => tester
     .widget<TextButton>(find.widgetWithText(TextButton, 'Refresh'))
     .onPressed!;
 void _refresh(WidgetTester tester) => _refreshCallback(tester)();
+
+String _reviewContent({bool first = false, bool second = false}) =>
+    '${List.generate(30, (index) {
+      if (index == 3 && first) return 'Selected first change';
+      if (index == 24 && second) return 'Selected second change';
+      return 'Selected line $index';
+    }).join('\n')}\n';
+
+String _blobOid(String content) {
+  final bytes = utf8.encode(content);
+  return sha1.convert([
+    ...utf8.encode('blob ${bytes.length}\u0000'),
+    ...bytes,
+  ]).toString();
+}
+
+bool _isIndexWrite(Map<String, Object?> payload) {
+  final arguments = (payload['request']! as Map)['arguments']! as List;
+  return arguments.contains('apply') &&
+      arguments.contains('--cached') &&
+      !arguments.contains('--check');
+}
+
+Finder _reviewAction(String label) => find.widgetWithText(TextButton, label);
+
+Future<void> _reviewReady(WidgetTester tester, String label, {int count = 1}) =>
+    _waitFor(tester, () => _reviewAction(label).evaluate().length == count);
 
 Future<void> _selectScope(WidgetTester tester, String scope) async {
   await tester.runAsync(

@@ -1,4 +1,4 @@
-/// Stock Git backend with Worktree Environments and change snapshots.
+/// Stock Git backend with Worktree Environments, snapshots and hunk approval.
 library;
 
 export 'package:adele_environment/adele_environment.dart'
