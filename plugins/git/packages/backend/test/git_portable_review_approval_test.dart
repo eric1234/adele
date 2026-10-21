@@ -333,6 +333,50 @@ void main() {
       );
     }
 
+    test(
+      '${_direction(staged)} requires a fresh revision across Sessions sharing an Environment',
+      () async {
+        fixture.processes.sessionId = 'review-session-a';
+        await fixture.write(
+          'tracked.txt',
+          _text({2: 'first edit', 35: 'last edit'}),
+        );
+        if (staged) await fixture.git(['add', '--', 'tracked.txt']);
+        final fileA = await fixture.changed(staged: staged);
+        expect(fileA.hunks, hasLength(2));
+        final selectionA = _selection(fileA);
+        final before = await fixture.state();
+        expect(
+          (await fixture.changed(staged: staged)).reviewRevision,
+          selectionA.expectedRevision,
+        );
+
+        fixture.processes.sessionId = 'review-session-b';
+        await expectLater(
+          fixture.mutate(selectionA, staged: staged),
+          throwsA(_failureCode(['stale_selection'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+
+        final selectionB = _selection(await fixture.changed(staged: staged));
+        expect(selectionB.expectedRevision, isNot(selectionA.expectedRevision));
+        expect(
+          (await fixture.changed(staged: staged)).reviewRevision,
+          selectionB.expectedRevision,
+        );
+        await fixture.expectUnchanged(before);
+        await fixture.mutate(selectionB, staged: staged);
+
+        await fixture.expectIndexChange(
+          before,
+          'tracked.txt',
+          staged ? _text({35: 'last edit'}) : _text({2: 'first edit'}),
+        );
+        expect(fixture.processes.writes, hasLength(1));
+      },
+    );
+
     for (final mutation in [
       'working edit',
       'working deletion',
@@ -1269,6 +1313,7 @@ final class _Processes implements AuthorizedEnvironmentBufferedProcessService {
 
   Directory root;
   final Directory home;
+  String sessionId = 'review-session';
   String environmentId = 'selected-review-environment';
   final requests = <EnvironmentBufferedProcessRequest>[];
   final _active = <Process>{};
@@ -1280,7 +1325,7 @@ final class _Processes implements AuthorizedEnvironmentBufferedProcessService {
   @override
   Future<AuthorizedEnvironmentIdentity> capturedIdentity() async =>
       AuthorizedEnvironmentIdentity(
-        sessionId: 'review-session',
+        sessionId: sessionId,
         environmentId: environmentId,
       );
 

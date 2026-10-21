@@ -210,8 +210,8 @@ volatile Project's host-owned temporary backing survives backend replacement onl
 while that Project remains open. Failed durable backing never switches to temporary
 storage. Schema checks are idempotent under the existing host coordinator. Plain
 Unstaged and Uncommitted requests never initialize this schema. Eligible review
-targets obtain captured Environment identity through the existing process grant
-solely to bind their opaque revisions; they do not query Task anchors.
+targets obtain captured Session and Environment identity through the existing
+process grant solely to bind their opaque revisions; they do not query Task anchors.
 
 The Task adapter includes identity, schema and SQL latency in the thirty-second
 deadline. Before publishing it rereads the association and anchor, requires unchanged
@@ -516,13 +516,14 @@ unsupported. The handler conservatively excludes control-character filenames (in
 tabs/newlines) even though direct Git feasibility tests establish quoted support.
 Spaces, quotes, backslashes, Unicode, punctuation and leading dashes remain literal.
 
-The deterministic SHA-256 revision binds the layer, selected Environment identity,
-discovered repository/source scope, literal path, HEAD commit and symbolic ref,
-the observed index inventory, selected stage-0 mode/object, raw working-content
-identity and mode, attributes and relevant configuration. Both layers conservatively
-bind working content and HEAD. It is a stale-state precondition, not a credential;
-no backend-global approval-state map is retained. Other Environments, the opposite
-layer, changed branches/index/files, and already-consumed hunks cannot reuse it.
+The deterministic SHA-256 revision binds the layer, captured Session and
+Environment identities, discovered repository/source scope, literal path, HEAD
+commit and symbolic ref, the observed index inventory, selected stage-0 mode/object,
+raw working-content identity and mode, attributes and relevant configuration. Both
+layers conservatively bind working content and HEAD. It is a stale-state precondition,
+not a credential; no backend-global approval-state map is retained. Other Sessions
+or Environments, the opposite layer, changed branches/index/files, and
+already-consumed hunks cannot reuse it.
 
 The handler reuses portable discovery, bounded inventories, parsers, classification
 and consistency checks, focusing content inspection on the selected validated path.

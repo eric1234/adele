@@ -498,6 +498,7 @@ String _reviewRevision(
       jsonEncode([
         'git-review-v1',
         layer,
+        observation.identity.sessionId,
         observation.identity.environmentId,
         repo.root,
         repo.worktree,
