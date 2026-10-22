@@ -530,8 +530,19 @@ Unapprove File reverses a staged addition, removing its stage-0 entry without
 deleting or rewriting the working file. This includes manually staged additions,
 empty files (without fake hunks), and staged content B with later working content C:
 Unapprove removes B and preserves C. Approving the additional B-to-C working
-modification as a complete file remains excluded. Tracked deletions, partial hunk
-approval of additions, and whole-layer actions are not supported.
+modification as a complete file remains excluded.
+
+Approve File also stages the complete deletion of an eligible tracked regular
+text file that is absent from the working tree. With HEAD A, index B and working
+absence, approval removes the index entry, superseding any previously staged A-to-B
+modification. Unapprove File reverses the resulting HEAD-to-absence comparison,
+restoring the exact HEAD A mode and blob to stage 0, not the earlier B. Neither
+operation restores, deletes or rewrites a working file: the path remains absent.
+Empty tracked files use the same membership transitions without invented hunks.
+Staged deletions followed by working recreation, newly staged additions followed
+by deletion, file/directory replacements, unsafe ancestors and nested repositories
+remain read-only. Partial hunk approval of additions or deletions and whole-layer
+actions are not supported.
 
 Snapshot `ChangedFile.reviewRevision` is present only for ordinary tracked regular
 text modifications with actual bounded hunks and an inspectable regular working
@@ -553,7 +564,12 @@ entry, and a bounded regular text working file with supported matching mode. Emp
 additions need no hunks. Intent-to-add, ignored paths, nested repositories, and
 ancestor/descendant index or HEAD replacements have no addition action. Newly staged
 additions with further working edits have no Unstaged file action, without
-reinterpreting existing modification-hunk eligibility. The aggregate patch must fit stdin
+reinterpreting existing modification-hunk eligibility. Complete deletions instead
+require explicit working-path absence, compatible regular HEAD/index modes,
+bounded validated text blobs and no ancestor/descendant index or HEAD collision.
+Approval requires one ordinary stage-0 entry; reversal requires complete index
+absence, including conflict stages, and uses the captured HEAD entry. Deletions
+never receive hunk revisions, and empty deletions need no hunks. The aggregate patch must fit stdin
 and its resulting index blob must fit the existing file bound. A file can retain
 `reviewRevision` for valid hunk actions while the aggregate patch is too large for
 `fileReviewRevision`. Neither revision grants authority.
@@ -566,9 +582,28 @@ layers conservatively bind working content and HEAD. It is a stale-state precond
 not a credential; no backend-global approval-state map is retained. Other Sessions
 or Environments, the opposite layer, changed branches/index/files, and
 already-consumed selections cannot reuse it. Whole-file revisions use distinct
-modification/addition domains from hunk revisions, binding index presence or absence
+modification/addition/deletion domains from hunk revisions, binding index presence or absence
 as well as the same observed identities and state. Untracked content identity comes
 from independently verified bounded raw bytes, never a content-cleaning filter.
+The `git-file-deletion-review-v1` domain additionally binds the exact HEAD entry
+and the explicit working-absence proof rather than a fabricated empty-file hash.
+
+Deletion eligibility and mutation verification share one narrowly scoped absence
+probe through the captured buffered-process grant. Fixed shell code receives only
+literal argv and walks parents one component at a time. GNU `stat` does not
+dereference each candidate; only verified directories are entered with physical
+`cd -P`, and their canonical paths and exact metadata must agree before any
+descendant inspection. This pins the current directory against later ancestor
+replacement. A symlink, special file, leaf directory, recreated regular file or
+nested `.git` marker is not absence. Only GNU stat's C-locale ENOENT diagnostic
+for a single operand is accepted as a missing component; permission, I/O, process,
+framing and other errors fail closed. A genuinely missing parent safely proves
+descendant absence without traversing the missing suffix. Existing parent metadata
+and the first missing component form a bounded NUL-framed proof, rechecked before
+snapshot publication and around mutation. These physical-path observations cannot
+provide an atomic no-follow filesystem transaction against hostile concurrent
+renames or substitutions; they reject observed mismatches rather than continuing
+into a different tree. No generic Environment filesystem service is added.
 
 The handler reuses portable discovery, bounded inventories, parsers, classification
 and consistency checks, focusing content inspection on the selected validated path.
@@ -592,6 +627,12 @@ from earlier hunks; they do not concatenate independently reanchored hunk patche
 Addition patches carry `new file mode` (`100644` or `100755`), a full-width zero old
 OID, the exact new blob OID, and `/dev/null` as the old side. Empty additions use a
 mode-only patch; reversal removes membership rather than creating an empty entry.
+Deletion patches instead carry `deleted file mode`, the captured index blob OID
+for approval or HEAD blob OID for unapproval, a full-width zero new OID, and
+`/dev/null` as the new side. They retain complete deletion hunks and exact
+no-final-newline markers; empty deletions use mode-only metadata. Applying the
+HEAD-derived deletion patch with `--reverse` recreates only index membership,
+never the working file. SHA-1 and SHA-256 object identities retain their full widths.
 Both check and write receive bounded backend-derived stdin. Each successful action
 issues exactly one index-mutating apply request. The wrapper retains literal argv,
 `env -i`, pinned repository routing, no optional locks/replacements/lazy fetch,
@@ -605,7 +646,8 @@ Preflight revalidates the selected state after `--check`. Postflight verifies ex
 index membership, stage-0 mode/object identity and hash-checked created blob bytes,
 or complete selected-entry absence after removal, plus unrelated index records and flags
 including entries outside a nested selected source scope, working
-bytes/metadata, HEAD/ref, attributes/configuration, repository scope and captured
+bytes/metadata or the explicit working-absence proof, HEAD/ref,
+attributes/configuration, repository scope and captured
 identity. Git's lock prevents concurrent index writers from corrupting the index,
 but neither `--check` nor a text patch's full-index OID header is compare-and-swap.
 An external writer can race between checks and apply, or after verification.
@@ -622,6 +664,9 @@ stdout 2 MiB and stderr 64 KiB. Resource exhaustion before the write is rejectio
 exhaustion or transport/deadline/revocation after attempting it is uncertain. No
 generic transport limit is raised, no clean file gets a separate process, and no
 mutation is retried automatically.
+Absence requests, their transported proofs and retained parent-path text share
+these same budgets. Index insertion by addition approval or deletion unapproval
+also reserves inventory and output growth before advertising eligibility.
 
 For actionable nested-source snapshots, the review index inventory is bounded
 across the whole repository so unrelated entries outside the displayed scope are

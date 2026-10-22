@@ -29,6 +29,1119 @@ void main() {
 
   for (final format in ['sha1', 'sha256']) {
     for (final mode in ['100644', '100755']) {
+      for (final (name, original, indexed) in [
+        ('ordinary', 'HEAD A\n', 'HEAD A\n'),
+        ('partially staged', 'HEAD A\n', 'index B\n'),
+        ('empty', '', ''),
+        ('empty index', 'HEAD A\n', ''),
+        ('empty HEAD', '', 'index B\n'),
+        (
+          'BOM CRLF no newline',
+          '\ufeffHEAD\r\n\r\nlast',
+          '\ufeffindex\r\nlast B',
+        ),
+      ]) {
+        test(
+          'deletion cycle $name $mode $format restores HEAD not index',
+          () async {
+            if (format != fixture.format) {
+              await fixture.close();
+              fixture = await _Fixture.create(format: format);
+            }
+            await fixture.deleteTracked(
+              original: original,
+              indexed: indexed,
+              mode: mode,
+            );
+            final initial = await fixture.state();
+            final headOid = (await fixture.git([
+              'rev-parse',
+              'HEAD:tracked.txt',
+            ])).trim();
+            final layers = await fixture.snapshots.snapshotUncommitted();
+            expect(layers.staged.files.isEmpty, original == indexed);
+            final deleted = layers.unstaged.files.single;
+            expect(deleted.changeKind, 'deleted');
+            expect(deleted.contentStatus, 'text');
+            expect(deleted.reviewRevision, isNull);
+            expect(deleted.hunks.isEmpty, indexed.isEmpty);
+            final approve = _fileSelection(deleted);
+            expect(
+              (await fixture.changed()).fileReviewRevision,
+              approve.expectedRevision,
+            );
+            fixture.processes.requests.clear();
+            await expectLater(
+              fixture.mutate(
+                ReviewHunkSelection(
+                  relativePath: 'tracked.txt',
+                  hunkIndex: 0,
+                  expectedRevision: approve.expectedRevision,
+                ),
+              ),
+              throwsA(_failureCode(['unsupported_target'])),
+            );
+            expect(fixture.processes.writes, isEmpty);
+            await fixture.expectUnchanged(initial);
+
+            for (final staged in [false, true]) {
+              final before = await fixture.state();
+              final file = await fixture.changed(staged: staged);
+              final selection = _fileSelection(file);
+              expect(file.changeKind, 'deleted');
+              expect(file.contentStatus, 'text');
+              expect(file.reviewRevision, isNull);
+              expect(file.hunks.isEmpty, (staged ? original : indexed).isEmpty);
+              if (staged) {
+                expect(
+                  selection.expectedRevision,
+                  isNot(approve.expectedRevision),
+                );
+              }
+              fixture.processes.requests.clear();
+              if (staged) {
+                await expectLater(
+                  fixture.mutateFile(approve, staged: true),
+                  throwsA(_failureCode(['stale_selection'])),
+                );
+                await expectLater(
+                  fixture.mutate(
+                    ReviewHunkSelection(
+                      relativePath: file.relativePath,
+                      hunkIndex: 0,
+                      expectedRevision: selection.expectedRevision,
+                    ),
+                    staged: true,
+                  ),
+                  throwsA(_failureCode(['unsupported_target'])),
+                );
+                expect(fixture.processes.writes, isEmpty);
+                await fixture.expectUnchanged(before);
+                fixture.processes.requests.clear();
+              }
+
+              await fixture.mutateFile(selection, staged: staged);
+
+              final after = await fixture.expectIndexPresence(
+                before,
+                'tracked.txt',
+                staged ? original : null,
+                mode: mode,
+              );
+              expect(
+                await FileSystemEntity.type(
+                  '${fixture.repository.path}/tracked.txt',
+                  followLinks: false,
+                ),
+                FileSystemEntityType.notFound,
+              );
+              final patch = _checkedFilePatch(fixture, staged: staged);
+              final oid = staged ? headOid : initial.oids['0:tracked.txt']!;
+              expect(patch, contains('deleted file mode $mode\n'));
+              expect(patch, contains('index $oid..${'0' * oid.length}\n'));
+              expect(patch, contains('+++ /dev/null\n'));
+              final oldText = staged ? original : indexed;
+              expect(patch.contains('@@'), oldText.isNotEmpty);
+              expect(
+                patch.contains('\\ No newline at end of file'),
+                oldText.isNotEmpty && !oldText.endsWith('\n'),
+              );
+              final refreshed = await fixture.snapshots.snapshotUncommitted();
+              expect(
+                (staged ? refreshed.staged : refreshed.unstaged).files,
+                isEmpty,
+              );
+              final remaining =
+                  (staged ? refreshed.unstaged : refreshed.staged).files.single;
+              expect(remaining.changeKind, 'deleted');
+              expect(remaining.reviewRevision, isNull);
+              expect(remaining.fileReviewRevision, isNotNull);
+              expect(remaining.hunks.isEmpty, original.isEmpty);
+              fixture.processes.requests.clear();
+              await expectLater(
+                fixture.mutateFile(selection, staged: staged),
+                throwsA(
+                  _failureCode(['stale_selection', 'unsupported_target']),
+                ),
+              );
+              expect(fixture.processes.writes, isEmpty);
+              await fixture.expectUnchanged(after);
+            }
+            final restored = await fixture.state();
+            expect(restored.oids['0:tracked.txt'], headOid);
+            expect(restored.blobs['0:tracked.txt'], utf8.encode(original));
+            expect(restored.working, initial.working);
+          },
+        );
+      }
+    }
+  }
+
+  for (final staged in [false, true]) {
+    for (final missing in ['leaf', 'one parent', 'several parents']) {
+      test(
+        'deletion ${_direction(staged)} verifies absent $missing without recreating directories',
+        () async {
+          const path = 'selected/project/parent/deep/deleted.txt';
+          await fixture.deleteTracked(path: path, staged: staged);
+          if (missing != 'leaf') {
+            await Directory(
+              '${fixture.repository.path}/selected/project/parent${missing == 'one parent' ? '/deep' : ''}',
+            ).delete(recursive: true);
+          }
+          fixture.processes.root = Directory(
+            '${fixture.repository.path}/selected/project',
+          );
+          final file = await fixture.changed(
+            path: 'parent/deep/deleted.txt',
+            staged: staged,
+          );
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          await fixture.expectIndexPresence(
+            before,
+            path,
+            staged ? 'HEAD A\n' : null,
+          );
+          _checkedFilePatch(fixture, staged: staged);
+          expect(
+            await FileSystemEntity.type(
+              '${fixture.repository.path}/$path',
+              followLinks: false,
+            ),
+            FileSystemEntityType.notFound,
+          );
+        },
+      );
+    }
+
+    for (final name in [
+      'space name',
+      '-leading-option',
+      ':(glob)*[x]',
+      r'back\slash',
+      'quotes\'";\$(touch INJECTED) \u00e9',
+      '\ufeffdeleted.txt',
+    ]) {
+      test(
+        'deletion ${_direction(staged)} nested literal ${jsonEncode(name)}',
+        () async {
+          final path = 'selected/project/$name';
+          await fixture.deleteTracked(path: path, staged: staged);
+          await fixture.write('other.txt', 'outside staged\n');
+          await fixture.git(['add', '--', 'other.txt']);
+          await fixture.write('other.txt', 'outside working\n');
+          fixture.processes.root = Directory(
+            '${fixture.repository.path}/selected/project',
+          );
+          final file = await fixture.changed(path: name, staged: staged);
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          await fixture.expectIndexPresence(
+            before,
+            path,
+            staged ? 'HEAD A\n' : null,
+          );
+          _checkedFilePatch(fixture, staged: staged);
+          expect(
+            await File('${fixture.processes.root.path}/INJECTED').exists(),
+            isFalse,
+          );
+          expect(
+            await File('${fixture.repository.path}/INJECTED').exists(),
+            isFalse,
+          );
+        },
+      );
+    }
+
+    for (final kind in [
+      'binary',
+      'invalid UTF-8',
+      'oversized',
+      'symlink HEAD',
+      'gitlink HEAD',
+      if (staged) ...['working recreation', 'empty recreation'],
+      'directory replacement',
+      'symlink leaf',
+      'dangling symlink',
+      'symlink parent',
+      'dangling symlink parent',
+      'file ancestor',
+      'index ancestor',
+      'index descendant',
+      'nested repository',
+      'conflict',
+      'tab path',
+      'newline path',
+      if (!staged) ...[
+        'index binary',
+        'index invalid UTF-8',
+        'index oversized',
+        'HEAD binary index text',
+        'HEAD invalid UTF-8 index text',
+        'HEAD oversized index text',
+        'index symlink',
+        'index gitlink',
+        'index mode mismatch',
+        'assume-unchanged',
+        'skip-worktree',
+        'intent-to-add',
+        'new staged addition missing',
+      ],
+    ]) {
+      test('deletion ${_direction(staged)} excludes $kind', () async {
+        final path = kind == 'tab path'
+            ? 'parent/deleted\tname'
+            : kind == 'newline path'
+            ? 'parent/deleted\nname'
+            : 'parent/deleted.txt';
+        await fixture.write(
+          path,
+          kind == 'oversized' || kind == 'HEAD oversized index text'
+              ? 'x' * 100
+              : 'HEAD A\n',
+        );
+        if (kind == 'binary' ||
+            kind == 'invalid UTF-8' ||
+            kind == 'HEAD binary index text' ||
+            kind == 'HEAD invalid UTF-8 index text') {
+          await File(
+            '${fixture.repository.path}/$path',
+          ).writeAsBytes(kind.contains('binary') ? [1, 0, 2] : [255, 254, 10]);
+        }
+        if (kind == 'symlink HEAD') {
+          await File('${fixture.repository.path}/$path').delete();
+          await Link(
+            '${fixture.repository.path}/$path',
+          ).create('../tracked.txt');
+        }
+        if (kind != 'new staged addition missing') await fixture.commit();
+        if (kind.endsWith('index text')) {
+          await fixture.write(path, 'index B\n');
+          await fixture.git(['add', '--', path]);
+        }
+        if (kind == 'gitlink HEAD') {
+          final oid = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+          await fixture.git([
+            'update-index',
+            '--cacheinfo',
+            '160000,$oid,$path',
+          ]);
+          await fixture.git(['commit', '-m', 'Gitlink fixture']);
+        }
+        if (kind.startsWith('index ') &&
+            [
+              'index binary',
+              'index invalid UTF-8',
+              'index oversized',
+            ].contains(kind)) {
+          await File('${fixture.repository.path}/$path').writeAsBytes(
+            kind == 'index binary'
+                ? [1, 0, 2]
+                : kind == 'index invalid UTF-8'
+                ? [255, 254, 10]
+                : utf8.encode('x' * 100),
+          );
+          await fixture.git(['add', '--', path]);
+        }
+        if (kind == 'new staged addition missing') {
+          await fixture.git(['add', '--', path]);
+        }
+        if (kind == 'intent-to-add') {
+          await fixture.git(['update-index', '--force-remove', '--', path]);
+          await fixture.git(['add', '--intent-to-add', '--', path]);
+        }
+        if (kind == 'symlink HEAD') {
+          await Link('${fixture.repository.path}/$path').delete();
+        } else {
+          await File('${fixture.repository.path}/$path').delete();
+        }
+        if (staged) {
+          await fixture.git(['update-index', '--force-remove', '--', path]);
+        }
+        switch (kind) {
+          case 'working recreation':
+            await fixture.write(path, 'recreated\n');
+          case 'empty recreation':
+            await fixture.write(path, '');
+          case 'directory replacement':
+            await fixture.write('$path/child.txt', 'replacement\n');
+          case 'symlink leaf':
+          case 'dangling symlink':
+            await Link('${fixture.repository.path}/$path').create(
+              kind == 'symlink leaf' ? '../tracked.txt' : 'missing-target',
+            );
+          case 'symlink parent':
+          case 'dangling symlink parent':
+            await Directory(
+              '${fixture.repository.path}/parent',
+            ).rename('${fixture.repository.path}/real-parent');
+            await Link('${fixture.repository.path}/parent').create(
+              kind == 'symlink parent' ? 'real-parent' : 'missing-parent',
+            );
+          case 'file ancestor':
+            await Directory('${fixture.repository.path}/parent').delete();
+            await fixture.write('parent', 'obstruction\n');
+          case 'index ancestor':
+          case 'index descendant':
+            final oid = (await fixture.git([
+              'rev-parse',
+              'HEAD:tracked.txt',
+            ])).trim();
+            await fixture.git(['update-index', '--force-remove', '--', path]);
+            await fixture.git([
+              'update-index',
+              '--add',
+              '--cacheinfo',
+              '100644,$oid,${kind == 'index ancestor' ? 'parent' : '$path/child.txt'}',
+            ]);
+          case 'nested repository':
+            await fixture.git([
+              '-C',
+              '${fixture.repository.path}/parent',
+              'init',
+            ]);
+          case 'conflict':
+            await fixture.makeConflict(path: path);
+          case 'index mode mismatch':
+            final oid = (await fixture.git(['rev-parse', ':$path'])).trim();
+            await fixture.git([
+              'update-index',
+              '--cacheinfo',
+              '100755,$oid,$path',
+            ]);
+          case 'index symlink':
+          case 'index gitlink':
+            final oid = (await fixture.git([
+              'rev-parse',
+              kind == 'index gitlink' ? 'HEAD' : 'HEAD:$path',
+            ])).trim();
+            await fixture.git([
+              'update-index',
+              '--cacheinfo',
+              '${kind == 'index gitlink' ? '160000' : '120000'},$oid,$path',
+            ]);
+          case 'assume-unchanged':
+          case 'skip-worktree':
+            await fixture.git(['update-index', '--$kind', '--', path]);
+        }
+        final limits = kind.contains('oversized')
+            ? const GitPortableUnstagedLimits(fileBytes: 64)
+            : const GitPortableUnstagedLimits();
+        final before = await fixture.state();
+        final snapshot = await fixture
+            .snapshotsWith(limits)
+            .snapshotUncommitted();
+        for (final file in [
+          ...(staged ? snapshot.staged : snapshot.unstaged).files,
+          ...snapshot.conflicts,
+        ].where((file) => file.relativePath == path)) {
+          expect(file.fileReviewRevision, isNull);
+          expect(file.reviewRevision, isNull);
+        }
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateFile(
+            _untrustedFileSelection(path),
+            staged: staged,
+            limits: limits,
+          ),
+          throwsA(_failureCode(['unsupported_target', 'stale_selection'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      });
+    }
+
+    for (final rule in [
+      'filter=hostile',
+      'diff=hostile',
+      '-diff',
+      'text',
+      'eol=crlf',
+      'crlf',
+      'working-tree-encoding=UTF-16',
+      'ident',
+      'config autocrlf',
+      'config eol',
+    ]) {
+      test(
+        'deletion ${_direction(staged)} excludes conversion $rule',
+        () async {
+          await fixture.deleteTracked(staged: staged);
+          if (rule.startsWith('config')) {
+            await fixture.git([
+              'config',
+              'core.${rule.split(' ').last}',
+              rule.endsWith('autocrlf') ? 'true' : 'crlf',
+            ]);
+          } else {
+            await fixture.write('.git/info/attributes', 'tracked.txt $rule\n');
+          }
+          final before = await fixture.state();
+          final file = await fixture.changed(staged: staged);
+          expect(file.reviewRevision, isNull);
+          expect(file.fileReviewRevision, isNull);
+          await expectLater(
+            fixture.mutateFile(
+              _untrustedFileSelection('tracked.txt'),
+              staged: staged,
+            ),
+            throwsA(_failureCode(['unsupported_target'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    for (final mutation in [
+      'working recreation',
+      'empty recreation',
+      'working directory',
+      'dangling symlink',
+      'symlink parent',
+      'file ancestor',
+      'index changed',
+      'unrelated index',
+      'index metadata',
+      'HEAD commit',
+      'branch switch',
+      'detached HEAD',
+      'Session',
+      'Environment',
+      'source scope',
+      'configuration',
+      'attributes',
+      'conflict',
+      'nested repository',
+      'parent metadata',
+      if (!staged) ...['index mode', 'index flag'],
+    ]) {
+      test('deletion ${_direction(staged)} rejects stale $mutation', () async {
+        const path = 'parent/deleted.txt';
+        await fixture.deleteTracked(path: path, staged: staged);
+        final selection = _fileSelection(
+          await fixture.changed(path: path, staged: staged),
+        );
+        switch (mutation) {
+          case 'working recreation':
+          case 'empty recreation':
+            await fixture.write(
+              path,
+              mutation == 'empty recreation' ? '' : 'recreated\n',
+            );
+          case 'working directory':
+            await fixture.write('$path/child.txt', 'replacement\n');
+          case 'dangling symlink':
+            await Link(
+              '${fixture.repository.path}/$path',
+            ).create('missing-target');
+          case 'symlink parent':
+            await Directory(
+              '${fixture.repository.path}/parent',
+            ).rename('${fixture.repository.path}/real-parent');
+            await Link(
+              '${fixture.repository.path}/parent',
+            ).create('real-parent');
+          case 'file ancestor':
+            await Directory('${fixture.repository.path}/parent').delete();
+            await fixture.write('parent', 'obstruction\n');
+          case 'index changed':
+            if (staged) {
+              final oid = (await fixture.git([
+                'rev-parse',
+                'HEAD:$path',
+              ])).trim();
+              await fixture.git([
+                'update-index',
+                '--add',
+                '--cacheinfo',
+                '100644,$oid,$path',
+              ]);
+            } else {
+              await fixture.git(['update-index', '--force-remove', '--', path]);
+            }
+          case 'unrelated index':
+            await fixture.write('other.txt', 'external staged\n');
+            await fixture.git(['add', '--', 'other.txt']);
+          case 'index metadata':
+            final oid = (await fixture.git(['rev-parse', ':other.txt'])).trim();
+            await fixture.git([
+              'update-index',
+              '--cacheinfo',
+              '100644,$oid,other.txt',
+            ]);
+          case 'index mode':
+            final oid = (await fixture.git(['rev-parse', ':$path'])).trim();
+            await fixture.git([
+              'update-index',
+              '--cacheinfo',
+              '100755,$oid,$path',
+            ]);
+          case 'index flag':
+            await fixture.git([
+              'update-index',
+              '--assume-unchanged',
+              '--',
+              path,
+            ]);
+          case 'HEAD commit':
+            final old = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+            final tree = (await fixture.git([
+              'rev-parse',
+              'HEAD^{tree}',
+            ])).trim();
+            final head = (await fixture.git([
+              'commit-tree',
+              tree,
+              '-p',
+              old,
+              '-m',
+              'External HEAD',
+            ])).trim();
+            await fixture.git(['update-ref', 'HEAD', head, old]);
+          case 'branch switch':
+            await fixture.git([
+              'symbolic-ref',
+              'HEAD',
+              'refs/heads/other-branch',
+            ]);
+            final old = (await fixture.git([
+              'rev-parse',
+              'refs/heads/main',
+            ])).trim();
+            await fixture.git(['update-ref', 'HEAD', old]);
+          case 'detached HEAD':
+            final old = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+            await fixture.git(['update-ref', '--no-deref', 'HEAD', old]);
+          case 'Session':
+            fixture.processes.sessionId = 'other-session';
+          case 'Environment':
+            fixture.processes.environmentId = 'other-environment';
+          case 'source scope':
+            fixture.processes.root = Directory(
+              '${fixture.repository.path}/parent',
+            );
+          case 'configuration':
+            await fixture.git(['config', 'core.filemode', 'false']);
+          case 'attributes':
+            await fixture.write('.git/info/attributes', '$path -text\n');
+          case 'conflict':
+            await fixture.makeConflict(path: path);
+          case 'nested repository':
+            await fixture.git([
+              '-C',
+              '${fixture.repository.path}/parent',
+              'init',
+            ]);
+          case 'parent metadata':
+            await fixture.write('parent/another.txt', 'new sibling\n');
+        }
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateFile(selection, staged: staged),
+          throwsA(_failureCode(['unsupported_target', 'stale_selection'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+        if (mutation == 'Session' || mutation == 'Environment') {
+          final fresh = _fileSelection(
+            await fixture.changed(path: path, staged: staged),
+          );
+          expect(fresh.expectedRevision, isNot(selection.expectedRevision));
+          fixture.processes.requests.clear();
+          await fixture.mutateFile(fresh, staged: staged);
+          await fixture.expectIndexPresence(
+            before,
+            path,
+            staged ? 'HEAD A\n' : null,
+          );
+          _checkedFilePatch(fixture, staged: staged);
+        }
+      });
+    }
+
+    for (final failure in [
+      'nonzero',
+      'permission denied',
+      'stderr',
+      'empty output',
+      'truncated output',
+      'wrong path',
+      'wrong type',
+      'unavailable with success',
+      'absent with failure',
+      'transport loss',
+    ]) {
+      test(
+        'deletion ${_direction(staged)} absence $failure fails closed in snapshot and mutation',
+        () async {
+          await fixture.deleteTracked(
+            path: 'parent/deleted.txt',
+            staged: staged,
+          );
+          final selection = _fileSelection(
+            await fixture.changed(path: 'parent/deleted.txt', staged: staged),
+          );
+          final before = await fixture.state();
+          var probes = 0;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            if (!request.arguments.contains('adele-review-absence')) {
+              return run(request);
+            }
+            probes++;
+            if (failure == 'transport loss') {
+              throw const EnvironmentFailure(
+                code: 'process_output_failed',
+                message: 'Absence response lost.',
+                details: {},
+              );
+            }
+            final valid = await run(request);
+            expect(valid.exitCode, 0);
+            var bytes = base64Decode(valid.stdoutBase64);
+            if (failure == 'empty output') bytes = Uint8List(0);
+            if (failure == 'truncated output') {
+              bytes = bytes.sublist(0, bytes.length - 1);
+            }
+            if (failure == 'wrong path') {
+              bytes = Uint8List.fromList(
+                utf8.encode(
+                  utf8
+                      .decode(bytes)
+                      .replaceFirst(
+                        'parent/deleted.txt\x00',
+                        'parent/other.txt\x00',
+                      ),
+                ),
+              );
+            }
+            if (failure == 'wrong type') {
+              bytes = Uint8List.fromList(
+                utf8.encode(
+                  utf8
+                      .decode(bytes)
+                      .replaceFirst(RegExp(r'\x004[0-9a-f]{3} '), '\x0081a4 '),
+                ),
+              );
+            }
+            if (failure == 'unavailable with success') {
+              bytes = Uint8List.fromList(utf8.encode('unavailable\x00'));
+            }
+            return EnvironmentBufferedProcessResult(
+              exitCode: failure == 'nonzero' || failure == 'permission denied'
+                  ? 2
+                  : failure == 'absent with failure'
+                  ? 1
+                  : 0,
+              stdoutBase64: base64Encode(bytes),
+              stderrBase64:
+                  failure == 'stderr' || failure == 'permission denied'
+                  ? base64Encode(utf8.encode('stat: Permission denied\n'))
+                  : '',
+            );
+          };
+          await expectLater(
+            fixture.snapshots.snapshotUncommitted(),
+            throwsA(isA<ChangeSetFailure>()),
+          );
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged),
+            throwsA(_failureCode(['inspection_failed'])),
+          );
+          expect(probes, 2);
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    for (final boundary in ['after check', 'after apply']) {
+      test(
+        'deletion ${_direction(staged)} absence inspection error $boundary is not absence',
+        () async {
+          await fixture.deleteTracked(staged: staged);
+          final selection = _fileSelection(
+            await fixture.changed(staged: staged),
+          );
+          final before = await fixture.state();
+          var failProbe = false;
+          var failures = 0;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            if (failProbe &&
+                request.arguments.contains('adele-review-absence')) {
+              failures++;
+              return EnvironmentBufferedProcessResult(
+                exitCode: 2,
+                stdoutBase64: '',
+                stderrBase64: base64Encode(
+                  utf8.encode('stat: Input/output error\n'),
+                ),
+              );
+            }
+            final result = await run(request);
+            if (boundary == 'after apply'
+                ? _isWrite(request)
+                : request.arguments.contains('apply') &&
+                      request.arguments.contains('--check')) {
+              failProbe = true;
+            }
+            return result;
+          };
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged),
+            throwsA(
+              _failureCode([
+                boundary == 'after check'
+                    ? 'inspection_failed'
+                    : 'outcome_uncertain',
+              ]),
+            ),
+          );
+          expect(failures, 1);
+          expect(
+            fixture.processes.writes,
+            hasLength(boundary == 'after check' ? 0 : 1),
+          );
+          if (boundary == 'after check') {
+            await fixture.expectUnchanged(before);
+          } else {
+            await fixture.expectIndexPresence(
+              before,
+              'tracked.txt',
+              staged ? 'HEAD A\n' : null,
+            );
+          }
+        },
+      );
+    }
+
+    for (final replacement in ['directory', 'symlink', 'file']) {
+      test(
+        'deletion ${_direction(staged)} rejects changed missing-parent boundary $replacement',
+        () async {
+          const path = 'parent/deep/deleted.txt';
+          await fixture.deleteTracked(path: path, staged: staged);
+          await Directory(
+            '${fixture.repository.path}/parent',
+          ).delete(recursive: true);
+          final selection = _fileSelection(
+            await fixture.changed(path: path, staged: staged),
+          );
+          if (replacement == 'directory') {
+            await Directory(
+              '${fixture.repository.path}/parent/deep',
+            ).create(recursive: true);
+          } else if (replacement == 'symlink') {
+            await Link(
+              '${fixture.repository.path}/parent',
+            ).create('missing-elsewhere');
+          } else {
+            await fixture.write('parent', 'obstruction\n');
+          }
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged),
+            throwsA(_failureCode(['unsupported_target', 'stale_selection'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    for (final (name, limits) in [
+      ('process count', const GitPortableUnstagedLimits(processes: 1)),
+      ('aggregate bytes', const GitPortableUnstagedLimits(totalBytes: 1)),
+      ('stdout', const GitPortableUnstagedLimits(outputBytes: 8)),
+      ('hunk lines', const GitPortableUnstagedLimits(lines: 1)),
+      ('inventory', const GitPortableUnstagedLimits(inventoryEntries: 1)),
+    ]) {
+      test(
+        'deletion ${_direction(staged)} $name bound rejects before writing',
+        () async {
+          await fixture.deleteTracked(
+            original: _text({0: 'deletion bound'}),
+            staged: staged,
+          );
+          final selection = _fileSelection(
+            await fixture.changed(staged: staged),
+          );
+          final before = await fixture.state();
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged, limits: limits),
+            throwsA(_failureCode(['inspection_failed'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    for (final loss in [
+      'failed check',
+      'lock',
+      'response lost',
+      'process timeout',
+      'revoked before check',
+      'revoked after check',
+      'revoked after apply',
+    ]) {
+      test(
+        'deletion ${_direction(staged)} $loss has truthful effect without retry',
+        () async {
+          await fixture.deleteTracked(staged: staged);
+          final selection = _fileSelection(
+            await fixture.changed(staged: staged),
+          );
+          final before = await fixture.state();
+          var revoked = false;
+          var checks = 0;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            final check =
+                request.arguments.contains('apply') &&
+                request.arguments.contains('--check');
+            if (check) checks++;
+            if (revoked || loss == 'revoked before check' && check) {
+              throw const EnvironmentFailure(
+                code: 'grant_revoked',
+                message: 'Retired grant.',
+                details: {},
+              );
+            }
+            if (loss == 'failed check' && check) {
+              return EnvironmentBufferedProcessResult(
+                exitCode: 1,
+                stdoutBase64: '',
+                stderrBase64: base64Encode(
+                  utf8.encode('error: patch does not apply\n'),
+                ),
+              );
+            }
+            if (loss == 'lock' && _isWrite(request)) {
+              await fixture.write('.git/index.lock', 'external lock owner\n');
+            }
+            final result = await run(request);
+            if (loss == 'revoked after check' && check) revoked = true;
+            if (_isWrite(request) && loss != 'lock') {
+              expect(result.exitCode, 0);
+              revoked = true;
+              if (loss == 'response lost' || loss == 'process timeout') {
+                throw EnvironmentFailure(
+                  code: loss == 'response lost'
+                      ? 'process_output_failed'
+                      : 'process_timeout',
+                  message: 'Write acknowledgement lost.',
+                  details: const {},
+                );
+              }
+            }
+            return result;
+          };
+          final prewrite =
+              loss == 'failed check' ||
+              loss == 'revoked before check' ||
+              loss == 'revoked after check';
+          await expectLater(
+            fixture.mutateFile(selection, staged: staged),
+            throwsA(
+              _failureCode([
+                loss == 'lock'
+                    ? 'mutation_failed'
+                    : prewrite
+                    ? 'inspection_failed'
+                    : 'outcome_uncertain',
+              ]),
+            ),
+          );
+          expect(checks, 1);
+          expect(fixture.processes.writes, hasLength(prewrite ? 0 : 1));
+          if (prewrite || loss == 'lock') {
+            await fixture.expectUnchanged(before);
+            if (loss == 'lock') {
+              expect(
+                await File(
+                  '${fixture.repository.path}/.git/index.lock',
+                ).readAsString(),
+                'external lock owner\n',
+              );
+            }
+          } else {
+            await fixture.expectIndexPresence(
+              before,
+              'tracked.txt',
+              staged ? 'HEAD A\n' : null,
+            );
+          }
+        },
+      );
+    }
+
+    for (final boundary in ['after check', 'at write', 'after apply']) {
+      for (final change in ['index', 'working recreation']) {
+        test(
+          'deletion ${_direction(staged)} external $change $boundary never retries',
+          () async {
+            await fixture.deleteTracked(staged: staged);
+            final selection = _fileSelection(
+              await fixture.changed(staged: staged),
+            );
+            _State? external;
+            Future<void> changeState() async {
+              expect(external, isNull, reason: 'no retry');
+              if (change == 'working recreation') {
+                await fixture.write('tracked.txt', 'external recreation\n');
+              } else if (boundary == 'after apply') {
+                await fixture.write('other.txt', 'external staged\n');
+                await fixture.git(['add', '--', 'other.txt']);
+              } else if (staged) {
+                final oid = (await fixture.git([
+                  'rev-parse',
+                  'HEAD:tracked.txt',
+                ])).trim();
+                await fixture.git([
+                  'update-index',
+                  '--add',
+                  '--cacheinfo',
+                  '100644,$oid,tracked.txt',
+                ]);
+              } else {
+                await fixture.git([
+                  'update-index',
+                  '--force-remove',
+                  '--',
+                  'tracked.txt',
+                ]);
+              }
+              external = await fixture.state();
+            }
+
+            fixture.processes.requests.clear();
+            fixture.processes.intercept = (request, run) async {
+              if (boundary == 'at write' && _isWrite(request)) {
+                await changeState();
+              }
+              final result = await run(request);
+              if (boundary == 'after check' &&
+                      request.arguments.contains('apply') &&
+                      request.arguments.contains('--check') ||
+                  boundary == 'after apply' && _isWrite(request)) {
+                await changeState();
+              }
+              return result;
+            };
+            await expectLater(
+              fixture.mutateFile(selection, staged: staged),
+              throwsA(
+                _failureCode([
+                  boundary == 'after check'
+                      ? 'stale_selection'
+                      : 'outcome_uncertain',
+                ]),
+              ),
+            );
+            expect(external, isNotNull);
+            if (change == 'working recreation' && boundary == 'at write') {
+              await fixture.expectIndexPresence(
+                external!,
+                'tracked.txt',
+                staged ? 'HEAD A\n' : null,
+              );
+            } else {
+              await fixture.expectUnchanged(external!);
+            }
+            expect(
+              fixture.processes.writes,
+              hasLength(boundary == 'after check' ? 0 : 1),
+            );
+          },
+        );
+      }
+    }
+
+    test(
+      'deletion ${_direction(staged)} concurrent duplicates have one effect',
+      () async {
+        await fixture.deleteTracked(staged: staged);
+        final selection = _fileSelection(await fixture.changed(staged: staged));
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        Future<Object?> invoke() async {
+          try {
+            await fixture.mutateFile(selection, staged: staged);
+            return null;
+          } on ReviewApprovalFailure catch (error) {
+            return error;
+          }
+        }
+
+        final outcomes = await Future.wait([invoke(), invoke()]);
+        expect(outcomes.where((outcome) => outcome == null), hasLength(1));
+        expect(
+          outcomes.whereType<ReviewApprovalFailure>().single,
+          _failureCode([
+            'stale_selection',
+            'unsupported_target',
+            'mutation_failed',
+            'inspection_failed',
+            'outcome_uncertain',
+          ]),
+        );
+        expect(fixture.processes.writes.length, inInclusiveRange(1, 2));
+        await fixture.expectIndexPresence(
+          before,
+          'tracked.txt',
+          staged ? 'HEAD A\n' : null,
+        );
+      },
+    );
+
+    test(
+      'deletion ${_direction(staged)} process count is independent of line count',
+      () async {
+        final counts = <int>[];
+        for (final lines in [0, 1, 1000]) {
+          final text = List.generate(lines, (i) => 'line $i\n').join();
+          await fixture.deleteTracked(original: text, staged: staged);
+          final file = await fixture.changed(staged: staged);
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          final watch = Stopwatch()..start();
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          watch.stop();
+          counts.add(fixture.processes.requests.length);
+          print(
+            'Deletion ${_direction(staged)} performance: $lines lines, ${counts.last} processes, ${watch.elapsedMilliseconds} ms (diagnostic).',
+          );
+          _checkedFilePatch(fixture, staged: staged);
+          await fixture.expectIndexPresence(
+            before,
+            'tracked.txt',
+            staged ? text : null,
+          );
+        }
+        expect(
+          counts[1],
+          counts[2],
+          reason: 'long text has the same bounded process path as short text',
+        );
+        expect(counts.every((count) => count < 150), isTrue);
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  for (final format in ['sha1', 'sha256']) {
+    for (final mode in ['100644', '100755']) {
       for (final staged in [false, true]) {
         for (final (name, text) in [
           ('UTF-8', 'caf\u00e9\nnew text  \n'),
@@ -227,150 +1340,175 @@ void main() {
   }
 
   for (final staged in [false, true]) {
-    test(
-      'new-file ${_direction(staged)} preserves exact outside-source flags stat and conflict records',
-      () async {
-        const path = 'selected/project/new.txt';
-        const text = 'selected new text\n';
-        const inventory = ['ls-files', '--stage', '--debug', '-z'];
-        await fixture.write(path, text);
-        if (staged) await fixture.git(['add', '--', path]);
-        await fixture.git([
-          'update-index',
-          '--assume-unchanged',
-          '--',
-          'tracked.txt',
-        ]);
-        await fixture.git([
-          'update-index',
-          '--skip-worktree',
-          '--',
-          'other.txt',
-        ]);
-        await fixture.write(
-          'tracked.txt',
-          'unrelated assume-unchanged working bytes\n',
-        );
-        await fixture.write(
-          'other.txt',
-          'unrelated skip-worktree working bytes\n',
-        );
-        await fixture.write('conflict.txt', 'unresolved working bytes\n');
-        final conflictOids = <String>[];
-        for (final side in ['base', 'ours', 'theirs']) {
-          conflictOids.add(
-            (await fixture.git([
-              'hash-object',
-              '-w',
-              '--stdin',
-            ], input: '$side\n')).trim(),
-          );
-        }
-        await fixture.git(
-          ['update-index', '--index-info'],
-          input: [
-            for (var stage = 1; stage <= 3; stage++)
-              '${stage == 2 ? '100755' : '100644'} ${conflictOids[stage - 1]} $stage\tconflict.txt\n',
-          ].join(),
-        );
-        expect(
+    for (final deletion in [false, true]) {
+      test(
+        '${deletion ? 'deletion' : 'new-file'} ${_direction(staged)} preserves exact outside-source flags stat and conflict records',
+        () async {
+          const path = 'selected/project/new.txt';
+          const text = 'selected new text\n';
+          const inventory = ['ls-files', '--stage', '--debug', '-z'];
+          if (deletion) {
+            await fixture.write('removed.txt', 'unrelated HEAD entry\n');
+            await fixture.deleteTracked(
+              path: path,
+              original: text,
+              staged: staged,
+            );
+            await fixture.git([
+              'update-index',
+              '--force-remove',
+              '--',
+              'removed.txt',
+            ]);
+            await fixture.write('added.txt', 'unrelated index addition\n');
+            await fixture.git(['add', '--', 'added.txt']);
+            await fixture.write('added.txt', 'unrelated working addition\n');
+          } else {
+            await fixture.write(path, text);
+            if (staged) await fixture.git(['add', '--', path]);
+          }
           await fixture.git([
-            'ls-files',
-            '-v',
-            '-z',
+            'update-index',
+            '--assume-unchanged',
             '--',
             'tracked.txt',
+          ]);
+          await fixture.git([
+            'update-index',
+            '--skip-worktree',
+            '--',
             'other.txt',
-          ]),
-          'S other.txt\x00h tracked.txt\x00',
-        );
-        fixture.processes.root = Directory(
-          '${fixture.repository.path}/selected/project',
-        );
-        final before = await fixture.state();
-        final rawBefore = await fixture.gitBytes(inventory);
-        final selectedBefore = await fixture.gitBytes([
-          ...inventory,
-          '--',
-          path,
-        ]);
-        expect(selectedBefore.isNotEmpty, staged);
-        for (final name in ['tracked', 'other']) {
-          expect(
-            String.fromCharCodes(rawBefore),
-            contains(
-              RegExp('\\t$name\\.txt\\x00  ctime: [1-9][0-9]*:[0-9]+\\n'),
-            ),
-            reason:
-                'unrelated entries retain populated stat metadata, not zero fixtures',
+          ]);
+          await fixture.write(
+            'tracked.txt',
+            'unrelated assume-unchanged working bytes\n',
           );
-        }
-        for (var stage = 1; stage <= 3; stage++) {
-          expect(before.oids['$stage:conflict.txt'], conflictOids[stage - 1]);
-        }
-        final records = before.oids.length;
-        expect(records, staged ? 6 : 5);
-        await expectLater(
-          fixture
-              .snapshotsWith(
-                GitPortableUnstagedLimits(inventoryEntries: records - 1),
-              )
-              .snapshotUncommitted(),
-          throwsA(
-            isA<ChangeSetFailure>().having(
-              (failure) => failure.code,
-              'code',
-              'inventory_too_large',
-            ),
-          ),
-        );
-        final layers = await fixture
-            .snapshotsWith(
-              GitPortableUnstagedLimits(
-                inventoryEntries: records + (staged ? 0 : 1),
+          await fixture.write(
+            'other.txt',
+            'unrelated skip-worktree working bytes\n',
+          );
+          await fixture.write('conflict.txt', 'unresolved working bytes\n');
+          final conflictOids = <String>[];
+          for (final side in ['base', 'ours', 'theirs']) {
+            conflictOids.add(
+              (await fixture.git([
+                'hash-object',
+                '-w',
+                '--stdin',
+              ], input: '$side\n')).trim(),
+            );
+          }
+          await fixture.git(
+            ['update-index', '--index-info'],
+            input: [
+              for (var stage = 1; stage <= 3; stage++)
+                '${stage == 2 ? '100755' : '100644'} ${conflictOids[stage - 1]} $stage\tconflict.txt\n',
+            ].join(),
+          );
+          expect(
+            await fixture.git([
+              'ls-files',
+              '-v',
+              '-z',
+              '--',
+              'tracked.txt',
+              'other.txt',
+            ]),
+            'S other.txt\x00h tracked.txt\x00',
+          );
+          fixture.processes.root = Directory(
+            '${fixture.repository.path}/selected/project',
+          );
+          final before = await fixture.state();
+          final rawBefore = await fixture.gitBytes(inventory);
+          final selectedBefore = await fixture.gitBytes([
+            ...inventory,
+            '--',
+            path,
+          ]);
+          final presentBefore = deletion ? !staged : staged;
+          expect(selectedBefore.isNotEmpty, presentBefore);
+          for (final name in ['tracked', 'other']) {
+            expect(
+              String.fromCharCodes(rawBefore),
+              contains(
+                RegExp('\\t$name\\.txt\\x00  ctime: [1-9][0-9]*:[0-9]+\\n'),
               ),
-            )
-            .snapshotUncommitted();
-        expect(
-          layers.conflicts,
-          isEmpty,
-          reason: 'conflicts are outside the selected source',
-        );
-        final file = (staged ? layers.staged : layers.unstaged).files.single;
-        expect(file.relativePath, 'new.txt');
-        fixture.processes.requests.clear();
+              reason:
+                  'unrelated entries retain populated stat metadata, not zero fixtures',
+            );
+          }
+          for (var stage = 1; stage <= 3; stage++) {
+            expect(before.oids['$stage:conflict.txt'], conflictOids[stage - 1]);
+          }
+          final records = before.oids.length;
+          expect(records, (presentBefore ? 6 : 5) + (deletion ? 1 : 0));
+          await expectLater(
+            fixture
+                .snapshotsWith(
+                  GitPortableUnstagedLimits(inventoryEntries: records - 1),
+                )
+                .snapshotUncommitted(),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (failure) => failure.code,
+                'code',
+                'inventory_too_large',
+              ),
+            ),
+          );
+          final layers = await fixture
+              .snapshotsWith(
+                GitPortableUnstagedLimits(
+                  inventoryEntries: records + (presentBefore ? 0 : 1),
+                ),
+              )
+              .snapshotUncommitted();
+          expect(
+            layers.conflicts,
+            isEmpty,
+            reason: 'conflicts are outside the selected source',
+          );
+          final file = (staged ? layers.staged : layers.unstaged).files.single;
+          expect(file.relativePath, 'new.txt');
+          fixture.processes.requests.clear();
 
-        await fixture.mutateFile(_fileSelection(file), staged: staged);
+          await fixture.mutateFile(_fileSelection(file), staged: staged);
 
-        await fixture.expectIndexPresence(before, path, staged ? null : text);
-        expect(fixture.processes.writes, hasLength(1));
-        final rawAfter = await fixture.gitBytes(inventory);
-        final selectedAfter = await fixture.gitBytes([
-          ...inventory,
-          '--',
-          path,
-        ]);
-        expect(selectedAfter.isNotEmpty, !staged);
-        List<int> withoutSelected(List<int> raw, List<int> selected) {
-          if (selected.isEmpty) return raw;
-          // One code unit per byte keeps offsets exact without decoding paths or
-          // reusing the production index parser/record-preservation helper.
-          final all = String.fromCharCodes(raw);
-          final record = String.fromCharCodes(selected);
-          final start = all.indexOf(record);
-          expect(start, greaterThanOrEqualTo(0));
-          expect(all.indexOf(record, start + 1), -1);
-          return [...raw.take(start), ...raw.skip(start + selected.length)];
-        }
+          await fixture.expectIndexPresence(
+            before,
+            path,
+            presentBefore ? null : text,
+          );
+          _checkedFilePatch(fixture, staged: staged);
+          final rawAfter = await fixture.gitBytes(inventory);
+          final selectedAfter = await fixture.gitBytes([
+            ...inventory,
+            '--',
+            path,
+          ]);
+          expect(selectedAfter.isNotEmpty, !presentBefore);
+          List<int> withoutSelected(List<int> raw, List<int> selected) {
+            if (selected.isEmpty) return raw;
+            // One code unit per byte keeps offsets exact without decoding paths or
+            // reusing the production index parser/record-preservation helper.
+            final all = String.fromCharCodes(raw);
+            final record = String.fromCharCodes(selected);
+            final start = all.indexOf(record);
+            expect(start, greaterThanOrEqualTo(0));
+            expect(all.indexOf(record, start + 1), -1);
+            return [...raw.take(start), ...raw.skip(start + selected.length)];
+          }
 
-        expect(
-          withoutSelected(rawAfter, selectedAfter),
-          orderedEquals(withoutSelected(rawBefore, selectedBefore)),
-          reason:
-              'every unrelated mode, OID, stage, flag and stat byte is unchanged',
-        );
-      },
-    );
+          expect(
+            withoutSelected(rawAfter, selectedAfter),
+            orderedEquals(withoutSelected(rawBefore, selectedBefore)),
+            reason:
+                'every unrelated mode, OID, stage, flag and stat byte is unchanged',
+          );
+        },
+      );
+    }
 
     for (final name in [
       'space name',
@@ -1091,10 +2229,22 @@ void main() {
     });
   }
 
-  for (final target in ['modified', 'new text', 'new empty']) {
+  for (final target in [
+    'modified',
+    'new text',
+    'new empty',
+    'deleted text',
+    'deleted empty',
+  ]) {
     test(
       'file review $target does not execute hostile configured helpers',
       () async {
+        final deletion = target.startsWith('deleted');
+        if (deletion) {
+          await fixture.deleteTracked(
+            original: target == 'deleted empty' ? '' : '\ufeffHEAD\r\nlast  ',
+          );
+        }
         final helpers = <String, String>{};
         for (final name in [
           'clean',
@@ -1126,18 +2276,38 @@ void main() {
         ]) {
           await fixture.git(['config', key, value]);
         }
-        final path = target == 'modified' ? 'tracked.txt' : 'new.txt';
+        final path = target == 'modified' || deletion
+            ? 'tracked.txt'
+            : 'new.txt';
         final text = target == 'new empty'
             ? ''
             : _text({2: 'first  ', 35: 'last\t'});
-        await fixture.write(path, text);
+        if (!deletion) await fixture.write(path, text);
         for (final staged in [false, true]) {
           final file = await fixture.changed(path: path, staged: staged);
+          final before = await fixture.state();
           await fixture.mutateFile(_fileSelection(file), staged: staged);
-          expect(
-            await File('${fixture.repository.path}/$path').readAsBytes(),
-            utf8.encode(text),
-          );
+          if (deletion) {
+            await fixture.expectIndexPresence(
+              before,
+              path,
+              staged
+                  ? (target == 'deleted empty' ? '' : '\ufeffHEAD\r\nlast  ')
+                  : null,
+            );
+            expect(
+              await FileSystemEntity.type(
+                '${fixture.repository.path}/$path',
+                followLinks: false,
+              ),
+              FileSystemEntityType.notFound,
+            );
+          } else {
+            expect(
+              await File('${fixture.repository.path}/$path').readAsBytes(),
+              utf8.encode(text),
+            );
+          }
           expect(fixture.processes.writes, hasLength(staged ? 2 : 1));
           for (final name in helpers.keys) {
             expect(
@@ -1969,9 +3139,9 @@ void main() {
           files
               .singleWhere((file) => file.relativePath == path)
               .fileReviewRevision,
-          kind == 'addition' ? isNotNull : isNull,
+          kind == 'addition' || kind == 'deletion' ? isNotNull : isNull,
           reason:
-              'complete additions are file-only; existing hunk exclusions remain',
+              'complete additions and deletions are file-only; existing hunk exclusions remain',
         );
 
         await expectLater(
@@ -2500,6 +3670,30 @@ bool _isWrite(EnvironmentBufferedProcessRequest request) =>
     request.arguments.contains('--cached') &&
     !request.arguments.contains('--check');
 
+String _checkedFilePatch(_Fixture fixture, {required bool staged}) {
+  final applies = fixture.processes.requests
+      .where((request) => request.arguments.contains('apply'))
+      .toList();
+  expect(applies, hasLength(2));
+  expect(applies.first.arguments, contains('--check'));
+  expect(applies.last.arguments, isNot(contains('--check')));
+  for (final request in applies) {
+    expect(request.arguments, contains('--cached'));
+    expect(request.arguments.contains('--reverse'), staged);
+  }
+  expect(applies.first.stdinBase64, applies.last.stdinBase64);
+  expect(fixture.processes.writes, hasLength(1));
+  expect(
+    fixture.processes.requests.any(
+      (request) => request.arguments.any(
+        ['add', 'rm', 'reset', 'checkout', 'update-index'].contains,
+      ),
+    ),
+    isFalse,
+  );
+  return utf8.decode(base64Decode(applies.last.stdinBase64));
+}
+
 final class _Fixture {
   _Fixture(this.container, this.repository, this.processes, this.format);
 
@@ -2585,6 +3779,35 @@ final class _Fixture {
     await file.writeAsString(text);
   }
 
+  Future<void> deleteTracked({
+    String path = 'tracked.txt',
+    String original = 'HEAD A\n',
+    String? indexed,
+    String mode = '100644',
+    bool staged = false,
+  }) async {
+    await write(path, original);
+    await _command('/usr/bin/chmod', [
+      mode == '100755' ? '755' : '644',
+      '${repository.path}/$path',
+    ]);
+    await commit();
+    if (indexed != null && indexed != original) {
+      await write(path, indexed);
+      await git(['--literal-pathspecs', 'add', '--', path]);
+    }
+    await File('${repository.path}/$path').delete();
+    if (staged) {
+      await git([
+        '--literal-pathspecs',
+        'update-index',
+        '--force-remove',
+        '--',
+        path,
+      ]);
+    }
+  }
+
   Future<String> git(List<String> arguments, {String input = ''}) async =>
       utf8.decode(await gitBytes(arguments, input: input));
 
@@ -2635,15 +3858,15 @@ final class _Fixture {
     await git(['commit', '-m', 'Fixture']);
   }
 
-  Future<void> makeConflict() async {
-    final oid = (await git(['rev-parse', 'HEAD:tracked.txt'])).trim();
+  Future<void> makeConflict({String path = 'tracked.txt'}) async {
+    final oid = (await git(['rev-parse', 'HEAD:$path'])).trim();
     await git(
       ['update-index', '--index-info'],
       input:
-          '0 ${'0' * oid.length}\ttracked.txt\n'
-          '100644 $oid 1\ttracked.txt\n'
-          '100644 $oid 2\ttracked.txt\n'
-          '100644 $oid 3\ttracked.txt\n',
+          '0 ${'0' * oid.length}\t$path\n'
+          '100644 $oid 1\t$path\n'
+          '100644 $oid 2\t$path\n'
+          '100644 $oid 3\t$path\n',
     );
   }
 
@@ -2651,7 +3874,14 @@ final class _Fixture {
     final indexBytes = await File(
       '${repository.path}/.git/index',
     ).readAsBytes();
-    final listing = await git(['ls-files', '--stage', '-z']);
+    // Evidence collection must not execute the hostile helper under test.
+    final listing = await git([
+      '-c',
+      'core.fsmonitor=false',
+      'ls-files',
+      '--stage',
+      '-z',
+    ]);
     final oids = <String, String>{};
     final blobs = <String, List<int>>{};
     for (final record
@@ -2662,7 +3892,11 @@ final class _Fixture {
       ).firstMatch(record)!;
       final key = '${match[3]}:${match[4]}';
       oids[key] = match[2]!;
-      blobs[key] = await gitBytes(['cat-file', 'blob', match[2]!]);
+      blobs[key] = await gitBytes([
+        'cat-file',
+        match[1] == '160000' ? 'commit' : 'blob',
+        match[2]!,
+      ]);
     }
     final working = <String, Object>{};
     await for (final entity in repository.list(
@@ -2765,7 +3999,7 @@ final class _Fixture {
     expect(
       after.listing.split('\x00').where((record) => record.isNotEmpty),
       unorderedEquals(records),
-      reason: 'only the selected stage-0 addition may be inserted or removed',
+      reason: 'only the selected stage-0 entry may be inserted or removed',
     );
     expect(after.oids, oids);
     expect(after.blobs, blobs, reason: 'all exact index blob bytes');

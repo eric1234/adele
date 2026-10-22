@@ -95,15 +95,16 @@ complete patch and resulting index blob within the provider's bounds. An aggrega
 patch can be too large while every individual hunk remains eligible: in that case
 only `fileReviewRevision` is null.
 
-The same file field can certify a complete new regular UTF-8 text file: an Unstaged
-`added` entry offers **Approve File**, and a Staged `added` entry offers
-**Unapprove File**. Empty new files are eligible when certified, even with no
-displayed hunks. Nonempty new files likewise have only file actions, never hunk
-Approve/Unapprove, even if a provider supplies `reviewRevision`. The frontend never
-computes either revision or infers eligibility from rendered lines, file size, or
-an `added` label alone. A null file revision leaves the addition read-only. Deleted,
-conflicted, nontext and unsupported entries remain outside review mutation; exact
-new-file eligibility and limits belong to the
+The same file field can certify a complete new regular UTF-8 text file or a
+complete tracked regular UTF-8 text deletion: an Unstaged `added` or `deleted`
+entry offers **Approve File**, and a Staged entry offers **Unapprove File**.
+Empty files are eligible when certified, even with no displayed hunks. Additions
+and deletions have only file actions, never hunk Approve/Unapprove, even if a
+provider supplies `reviewRevision`. The frontend never computes either revision
+or infers eligibility from rendered lines, file size, or a change-kind label
+alone. A null file revision leaves the entry read-only. Conflicted, nontext and
+unsupported entries remain outside review mutation. Exact eligibility and limits,
+including working-path absence proof for deletions, belong to the
 [Git handler](../git/README.md#reviewapprovalhandler).
 
 The Git handler applies one backend-derived hunk, or one complete file
@@ -116,8 +117,15 @@ complete index entry; Unapprove File removes the staged addition from the index
 without deleting the working file. A successful Unapprove therefore leaves the
 new file visible again as an Unstaged addition after refresh, including an empty
 file. Neither operation writes working files, HEAD or the retained Task baseline.
+For a certified deletion, Approve File removes the complete index entry;
+Unapprove File restores its exact HEAD mode and blob in the index while leaving
+the working path absent. It does not recreate the working file, and the refreshed
+Unstaged deletion can be reviewed again. This includes empty tracked text files.
+A staged deletion followed by working-file recreation, file/directory replacements,
+and other unsupported deletion states remain visible but read-only.
 Git's index remains the approval source of truth; there is no approval database.
-Changed revisions and consumed selections require a fresh snapshot, not a
+Revisions are freshness preconditions, not invocation authority. Changed revisions
+and consumed selections require a fresh snapshot, not a
 different hunk chosen at the old index. `ReviewApprovalFailure` declares stable
 pre-mutation rejection codes, `mutation_failed` for a verified unchanged index
 after Git rejects a write, and `outcome_uncertain` when an attempted effect cannot
@@ -168,8 +176,9 @@ Eligible file headers offer **Approve File** in Unstaged layers and
 **Unapprove File** in Staged layers, retaining the literal typed path and exact
 `fileReviewRevision` in `ReviewFileSelection`. Actions sit immediately below the
 header in a narrow-safe column, preserving the independent **Open in Source** action.
-Provider-certified added text entries use this same path, including zero-hunk
-empty files; they never acquire individual hunk actions.
+Provider-certified added and deleted text entries use this same path, including
+zero-hunk empty files; they never acquire individual hunk actions. Deleted entries
+never offer **Open in Source**, independently of review eligibility.
 Eligible hunk headers continue to offer **Approve** in Unstaged layers and
 **Unapprove** in Staged layers. Uncommitted and Task retain both actions in their
 respective layers; Committed and Conflicts remain read-only. Each hunk action
@@ -229,10 +238,10 @@ Source owns document normalization, deduplication, dirty text, and native undo
 through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
-There is no automatic refresh watcher, new-file hunk approval, deletion staging,
+There is no automatic refresh watcher, addition/deletion hunk approval,
 whole-layer action, discard/revert, editing within Diff, commit, review feedback
-submission, or side-by-side mode. New-file review is bounded complete-file approval,
-not general staging of arbitrary untracked content.
+submission, or side-by-side mode. Addition/deletion review is bounded complete-file
+approval, not general staging of arbitrary untracked content or unsupported deletions.
 
 ## Preparation And Tests
 
@@ -260,9 +269,10 @@ committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. Its separate review
 dispatcher covers typed hunk indices and file selections/revisions, independent
-complete-file eligibility, certified additions including empty zero-hunk files,
-new-file hunk exclusion, narrow headers, layer-specific actions, unavailable
-approval, shared new-file/modified-file/hunk pending admission, success refresh,
+complete-file eligibility, certified additions and deletions including empty
+zero-hunk files, addition/deletion hunk exclusion and deletion Source exclusion,
+narrow headers, layer-specific actions, unavailable approval, shared
+added/deleted/modified-file/hunk pending admission, success refresh,
 unconfirmed failures and lifecycle fencing. It does not substitute for authority
 validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
