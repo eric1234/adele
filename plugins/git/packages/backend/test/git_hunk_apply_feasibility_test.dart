@@ -128,6 +128,126 @@ void main() {
   for (final format in ['sha1', 'sha256']) {
     for (final mode in ['100644', '100755']) {
       for (final (name, text) in [
+        ('UTF-8 BOM and CRLF', '\ufeffcaf\u00e9\r\n\r\nlast  \n'),
+        ('empty', ''),
+        ('missing newline', 'caf\u00e9\nlast'),
+      ]) {
+        test('deletion $name $mode $format check/write/reverse', () async {
+          if (format == 'sha256') {
+            repository = await Directory('${container.path}/sha256').create();
+            await _git(repository, ['init', '--object-format=sha256']);
+            await _git(repository, ['config', 'user.name', 'ADELE Test']);
+            await _git(repository, [
+              'config',
+              'user.email',
+              'adele@example.invalid',
+            ]);
+          }
+          const path =
+              'selected/project/-literal [x] \\ "\u00e9"\$(touch EXECUTED)';
+          final relativePath = path.substring('selected/project/'.length);
+          await write(path, text);
+          final workingFile = File('${repository.path}/$path');
+          expect(
+            (await Process.run('/usr/bin/chmod', [
+              mode == '100755' ? '755' : '644',
+              workingFile.path,
+            ])).exitCode,
+            0,
+          );
+          await fixture({path: text, 'untouched': 'unrelated\n'});
+          await workingFile.delete();
+          processes = _Processes(
+            Directory('${repository.path}/selected/project'),
+            container,
+          );
+          final file = (await capture()).files.single;
+          expect(file.relativePath, relativePath);
+          expect(file.changeKind, 'deleted');
+          expect(file.contentStatus, 'text');
+          final oid = _blobOid(
+            utf8.encode(text),
+            sha256Format: format == 'sha256',
+          );
+          final patch = _deletionPatch(path, text, mode: mode, oid: oid);
+          expect(patch, contains('deleted file mode $mode\n'));
+          expect(patch, contains('index $oid..${'0' * oid.length}\n'));
+          expect(patch, contains('+++ /dev/null\n'));
+          expect(patch.contains('@@'), text.isNotEmpty);
+          final originalIndex = await _git(repository, [
+            'ls-files',
+            '--stage',
+            '-z',
+          ]);
+          final index = await File(
+            '${repository.path}/.git/index',
+          ).readAsBytes();
+          final working = await _workingHashes(repository);
+          final head = await _git(repository, ['rev-parse', 'HEAD']);
+          final reference = await _git(repository, ['symbolic-ref', 'HEAD']);
+          await expectIndex(relativePath, text, mode: mode);
+          final start = processes.requests.length;
+          _success(await apply(patch, check: true));
+          expect(
+            await File('${repository.path}/.git/index').readAsBytes(),
+            index,
+          );
+          _success(await apply(patch));
+          expect(processes.requests.skip(start), hasLength(2));
+          expect(
+            _success(
+              await command([
+                'ls-files',
+                '--stage',
+                '-z',
+                '--',
+                './$relativePath',
+              ]),
+            ),
+            isEmpty,
+          );
+          expect(
+            await FileSystemEntity.type(workingFile.path, followLinks: false),
+            FileSystemEntityType.notFound,
+          );
+          final deleted = await File(
+            '${repository.path}/.git/index',
+          ).readAsBytes();
+          final reverseStart = processes.requests.length;
+          _success(await apply(patch, reverse: true, check: true));
+          expect(
+            await File('${repository.path}/.git/index').readAsBytes(),
+            deleted,
+          );
+          _success(await apply(patch, reverse: true));
+          expect(processes.requests.skip(reverseStart), hasLength(2));
+          await expectIndex(relativePath, text, mode: mode);
+          expect(
+            await _git(repository, ['ls-files', '--stage', '-z']),
+            originalIndex,
+          );
+          expect(
+            await FileSystemEntity.type(workingFile.path, followLinks: false),
+            FileSystemEntityType.notFound,
+          );
+          expect(await _workingHashes(repository), working);
+          expect(await _git(repository, ['rev-parse', 'HEAD']), head);
+          expect(await _git(repository, ['symbolic-ref', 'HEAD']), reference);
+          expect(
+            await File('${processes.root.path}/EXECUTED').exists(),
+            isFalse,
+          );
+          expect(
+            processes.requests.where(
+              (r) =>
+                  r.arguments.contains('apply') &&
+                  !r.arguments.contains('--check'),
+            ),
+            hasLength(2),
+          );
+        });
+      }
+      for (final (name, text) in [
         ('UTF-8', '\ufeffcaf\u00e9\r\n\r\nlast  \n'),
         ('empty', ''),
         ('missing newline', 'caf\u00e9\nlast'),
@@ -750,6 +870,36 @@ void main() {
           _success(await apply(patch, reverse: true));
           await expectIndex(path, baseline);
         }
+        await File('${repository.path}/$path').delete();
+        final absentWorking = await _workingHashes(repository);
+        final deletion = _deletionPatch(
+          path,
+          baseline,
+          mode: '100644',
+          oid: _blobOid(utf8.encode(baseline)),
+        );
+        // Exercise cached deletion and reversal even with hostile attributes;
+        // production still rejects conversion/custom-diff targets beforehand.
+        _success(await apply(deletion, check: true));
+        _success(await apply(deletion));
+        expect(
+          _success(
+            await command(['ls-files', '--stage', '-z', '--', './$path']),
+          ),
+          isEmpty,
+        );
+        _success(await apply(deletion, reverse: true, check: true));
+        _success(await apply(deletion, reverse: true));
+        await expectIndex(path, baseline);
+        expect(await _workingHashes(repository), absentWorking);
+        expect(
+          await FileSystemEntity.type(
+            '${repository.path}/$path',
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+        );
+        await write(path, both);
       }
       for (final (path, text) in [
         ('new-clean', 'new text\n'),
@@ -916,6 +1066,30 @@ String _blobOid(List<int> bytes, {bool sha256Format = false}) =>
       ...utf8.encode('blob ${bytes.length}\u0000'),
       ...bytes,
     ]).toString();
+
+String _deletionPatch(
+  String path,
+  String text, {
+  required String mode,
+  required String oid,
+}) {
+  final patch = StringBuffer()
+    ..writeln('diff --git ${_quote('a/$path')} ${_quote('b/$path')}')
+    ..writeln('deleted file mode $mode')
+    ..writeln('index $oid..${'0' * oid.length}')
+    ..writeln('--- ${_quote('a/$path')}')
+    ..writeln('+++ /dev/null');
+  if (text.isNotEmpty) {
+    final lines = text.split('\n');
+    if (text.endsWith('\n')) lines.removeLast();
+    patch.writeln('@@ -1,${lines.length} +0,0 @@');
+    for (final line in lines) {
+      patch.writeln('-$line');
+    }
+    if (!text.endsWith('\n')) patch.writeln(r'\ No newline at end of file');
+  }
+  return patch.toString();
+}
 
 String _stderr(EnvironmentBufferedProcessResult result) =>
     utf8.decode(base64Decode(result.stderrBase64));

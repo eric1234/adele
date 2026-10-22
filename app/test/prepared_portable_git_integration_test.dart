@@ -47,6 +47,7 @@ const _approvalProvider = 'test.callable.approval';
 const _selectedBranch = 'selected-task';
 const _selectedBranchRef = 'refs/heads/$_selectedBranch';
 const _newFileReviewPath = "new review + [file]; 'quoted'.txt";
+const _deletedFileReviewPath = "deleted review + [file]; 'quoted'.txt";
 const _library = 'package:portable_git_consumer/main.dart';
 final _capability = CapabilityKey(
   id: CapabilityId('adele.diff.change-set-source'),
@@ -470,6 +471,7 @@ void main() {
     WidgetTester tester, {
     bool wholeFile = false,
     String? newFileContent,
+    String? deletedFileContent,
   }) async => (await tester.runAsync(() async {
     final result = <String, String>{};
     final name = 'review-${sequence++}';
@@ -484,6 +486,14 @@ void main() {
         '${root.path}/review.txt',
       ).writeAsString(wholeFile ? _fileReviewContent(id) : _reviewContent(id));
       await File('${root.path}/untouched.txt').writeAsString('$id sentinel\n');
+      if (deletedFileContent != null) {
+        final deleted = File('${root.path}/$_deletedFileReviewPath');
+        await deleted.writeAsString(deletedFileContent);
+        if (deletedFileContent.isNotEmpty) {
+          final chmod = await Process.run('/bin/chmod', ['755', deleted.path]);
+          expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
+        }
+      }
       if (wholeFile) {
         await File(
           '${root.path}/z-other.txt',
@@ -511,7 +521,20 @@ void main() {
           '${root.path}/z-other.txt',
         ).writeAsString('$id other working\n');
       }
-      if (newFileContent != null) {
+      if (deletedFileContent != null) {
+        await File(
+          '${root.path}/untouched.txt',
+        ).writeAsString('$id unrelated staged deletion sentinel\n');
+        await _git(root, ['add', '--', 'untouched.txt']);
+        final deleted = File('${root.path}/$_deletedFileReviewPath');
+        if (id == 'primary') {
+          await deleted.writeAsString('Primary staged deletion sentinel\n');
+          await _git(root, ['add', '--', _deletedFileReviewPath]);
+          await deleted.writeAsString('Primary working deletion sentinel\n');
+        } else {
+          await deleted.delete();
+        }
+      } else if (newFileContent != null) {
         await File(
           '${root.path}/untouched.txt',
         ).writeAsString('$id unrelated staged sentinel\n');
@@ -2670,6 +2693,200 @@ void main() {
     );
   }
 
+  for (final empty in [false, true]) {
+    testWidgets(
+      'G6c2b stock ${empty ? 'empty tracked file' : 'executable text file'} deletion approval roundtrip uses independent Environment AOT without Task anchors',
+      (tester) async {
+        const path = _deletedFileReviewPath;
+        final content = empty
+            ? ''
+            : 'Independent deletion HEAD\nFinal line without newline';
+        final mode = empty ? '100644' : '100755';
+        final repositories = await reviewRepositories(
+          tester,
+          deletedFileContent: content,
+        );
+        final before = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        await tester.runAsync(
+          () => _expectDeletedFileIndex(
+            repositories,
+            before,
+            content,
+            mode,
+            approved: false,
+          ),
+        );
+        final durable = await openDurable(
+          tester,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+        );
+        final database = durable.lifecycle.databaseForEnvironment(
+          EnvironmentId('additional'),
+        )!;
+        const anchorTable =
+            "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
+        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+        await mount(
+          tester,
+          registry: durable.registry,
+          lifecycle: durable.lifecycle,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+          withTaskAnchor: false,
+          stock: true,
+        );
+        expect(fixture.connection.pluginId, gitPluginId);
+        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+        expect(fixture.environmentConnection.pluginId, _environmentPlugin);
+        final approval = fixture.capabilities.resolve(reviewApprovalCapability);
+        expect(approval.provider.id.value, gitReviewApprovalProviderId);
+        expect(fixture.callableOwner.associationFor(approval), isNull);
+        expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
+        expect(
+          durable.lifecycle.store
+              .requireSessionAuthority(fixture.sessionA.id)
+              .environmentId,
+          EnvironmentId('additional'),
+        );
+        final approve = _pane(
+          'a',
+          find.widgetWithText(TextButton, 'Approve File'),
+        );
+        final unapprove = _pane(
+          'a',
+          find.widgetWithText(TextButton, 'Unapprove File'),
+        );
+        await _waitFor(tester, approve);
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Unapprove'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
+        expect(
+          find.textContaining('@@ -'),
+          empty ? findsNothing : findsOneWidget,
+        );
+        if (!empty) {
+          expect(
+            find.textContaining('-Independent deletion HEAD'),
+            findsOneWidget,
+          );
+          expect(
+            find.textContaining('-Final line without newline'),
+            findsOneWidget,
+          );
+        }
+        final staleApprove = tester.widget<TextButton>(approve).onPressed!;
+        await tester.runAsync(() => tester.tap(approve));
+        await _stockVisible(tester, 'No unstaged changes');
+        expect(approve, findsNothing);
+        await tester.runAsync(
+          () => _expectDeletedFileIndex(
+            repositories,
+            before,
+            content,
+            mode,
+            approved: true,
+          ),
+        );
+        final approved = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        staleApprove();
+        await tester.pump();
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          approved,
+        );
+        expect(
+          _reviewWrites(
+            (await tester.runAsync(() => _stockEvidence(fixture)))!,
+          ),
+          hasLength(1),
+        );
+
+        _press(tester, 'Uncommitted changes');
+        await _waitFor(tester, unapprove, count: 2);
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        // Only the unrelated staged sentinel has a hunk action.
+        expect(find.widgetWithText(TextButton, 'Unapprove'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          greaterThan(tester.getTopLeft(find.text('Staged changes')).dy),
+        );
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          lessThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+        final staleUnapprove = tester
+            .widget<TextButton>(unapprove.first)
+            .onPressed!;
+        await tester.runAsync(() => tester.tap(unapprove.first));
+        await _waitFor(tester, approve);
+        expect(unapprove, findsOneWidget);
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+        expect(
+          find.textContaining('+additional unrelated staged deletion sentinel'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Primary'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
+        await tester.runAsync(
+          () => _expectDeletedFileIndex(
+            repositories,
+            before,
+            content,
+            mode,
+            approved: false,
+          ),
+        );
+        staleUnapprove();
+        await tester.pump();
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          before,
+        );
+        final evidence = (await tester.runAsync(
+          () => _stockEvidence(fixture),
+        ))!;
+        final writes = _reviewWrites(evidence);
+        expect(writes, hasLength(2));
+        expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
+        expect(writes.last['arguments'] as List, contains('--reverse'));
+        for (final write in writes) {
+          expect(write['exitCode'], 0);
+        }
+        for (final process
+            in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
+          expect(process['environmentId'], 'additional');
+          expect(process['providerId'], 'test.environment.a');
+          expect(process['cwd'], repositories['additional']);
+        }
+        expect(
+          fixture.environmentRuntime.currentMaterialization(
+            EnvironmentId('primary'),
+          ),
+          isNull,
+        );
+        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+        expect(
+          durable.lifecycle.store.runsForSession(fixture.sessionA.id),
+          isEmpty,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
   for (final count in [100, 500, 900]) {
     testWidgets(
       'actual stock Git and Diff use independent Environment AOT for $count clean files and layered changes',
@@ -2962,8 +3179,8 @@ void main() {
           find.widgetWithText(TextButton, 'Approve'),
           count: 4,
         );
-        // Only the four ordinary modified paths have reviewable hunks. Added,
-        // deleted, conflicted, symbolic-link and committed entries add no action.
+        // Only the four ordinary modified paths have reviewable hunks. The
+        // ordinary deletion adds one file-only action in each mutable layer.
         expect(find.widgetWithText(TextButton, 'Approve'), findsNWidgets(4));
         expect(
           find.widgetWithText(TextButton, 'Unapprove'),
@@ -2971,11 +3188,16 @@ void main() {
         );
         expect(
           find.widgetWithText(TextButton, 'Approve File'),
-          findsNWidgets(4),
+          findsNWidgets(5),
         );
+        expect(find.text('deleted.txt  [deleted]'), findsOneWidget);
         expect(
           find.widgetWithText(TextButton, 'Unapprove File'),
-          scope == 'Unstaged changes' ? findsNothing : findsNWidgets(4),
+          scope == 'Unstaged changes' ? findsNothing : findsNWidgets(5),
+        );
+        expect(
+          find.text('staged deleted.txt  [deleted]'),
+          scope == 'Unstaged changes' ? findsNothing : findsOneWidget,
         );
         if (scope == 'Task / Branch') {
           // An unmerged path keeps its independent committed change, not an
@@ -3877,6 +4099,57 @@ Future<void> _expectNewFileIndex(
   if (approved) {
     expect(await _git(root, ['cat-file', 'blob', oid], trim: false), content);
   }
+}
+
+Future<void> _expectDeletedFileIndex(
+  Map<String, String> roots,
+  Map<String, Map<String, Object>> before,
+  String content,
+  String mode, {
+  required bool approved,
+}) async {
+  const path = _deletedFileReviewPath;
+  final oid = _reviewBlobOid(content);
+  final entry = '$mode $oid 0\t$path\u0000';
+  final originalIndex = before['additional']!['index']! as String;
+  expect(
+    originalIndex.split('\u0000'),
+    contains(entry.substring(0, entry.length - 1)),
+  );
+  expect(await _reviewStates(roots), {
+    ...before,
+    'additional': {
+      ...before['additional']!,
+      'index': approved ? originalIndex.replaceFirst(entry, '') : originalIndex,
+    },
+  });
+  final root = Directory(roots['additional']!);
+  expect(
+    await _git(root, ['ls-tree', '-z', 'HEAD', '--', path], trim: false),
+    '$mode blob $oid\t$path\u0000',
+  );
+  expect(
+    await _git(root, ['ls-files', '--stage', '-z', '--', path], trim: false),
+    approved ? '' : entry,
+  );
+  expect(
+    await _git(root, [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--',
+      path,
+    ], trim: false),
+    '${approved ? 'D ' : ' D'} $path\u0000',
+  );
+  expect(await _git(root, ['cat-file', 'blob', oid], trim: false), content);
+  if (!approved) {
+    expect(await _git(root, ['show', ':$path'], trim: false), content);
+  }
+  expect(
+    await FileSystemEntity.type('${root.path}/$path', followLinks: false),
+    FileSystemEntityType.notFound,
+  );
 }
 
 List<Map<Object?, Object?>> _reviewWrites(Map<Object?, Object?> evidence) =>

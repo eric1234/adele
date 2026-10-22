@@ -117,7 +117,18 @@ void main() {
         ('added', 'oversized', 'hunk', 'file', 2, false, false),
         ('added', 'unsupported', 'hunk', 'file', 2, false, false),
         ('added', 'conflicted', 'hunk', 'file', 2, false, false),
-        ('deleted', 'text', 'hunk', 'file', 2, false, false),
+        ('deleted', 'text', 'hunk', 'file', 2, false, true),
+        ('deleted', 'text', null, 'file', 2, false, true),
+        ('deleted', 'text', 'hunk', null, 2, false, false),
+        ('deleted', 'text', null, null, 2, false, false),
+        ('deleted', 'text', 'hunk', 'file', 0, false, true),
+        ('deleted', 'text', null, 'file', 0, false, true),
+        ('deleted', 'text', 'hunk', null, 0, false, false),
+        ('deleted', 'text', null, null, 0, false, false),
+        ('deleted', 'binary', 'hunk', 'file', 2, false, false),
+        ('deleted', 'oversized', 'hunk', 'file', 2, false, false),
+        ('deleted', 'unsupported', 'hunk', 'file', 2, false, false),
+        ('deleted', 'conflicted', 'hunk', 'file', 2, false, false),
         ('typeChanged', 'text', 'hunk', 'file', 2, false, false),
         ('conflicted', 'text', 'hunk', 'file', 2, false, false),
         ('unsupported', 'text', 'hunk', 'file', 2, false, false),
@@ -396,9 +407,18 @@ void main() {
             expect(port.review.selections, isEmpty);
           }
           expect(source.paths, isEmpty);
-          await tester.tap(find.text('Open in Source'));
-          await tester.pumpAndSettle();
-          expect(source.paths, [path]);
+          if (review.changeKind == 'deleted') {
+            expect(find.text('Open in Source'), findsNothing);
+            expect(find.textContaining('+new-'), findsNothing);
+            expect(
+              find.text('   1      -old-0'),
+              review.hunks == 0 ? findsNothing : findsWidgets,
+            );
+          } else {
+            await tester.tap(find.text('Open in Source'));
+            await tester.pumpAndSettle();
+            expect(source.paths, [path]);
+          }
           expect(tester.takeException(), isNull);
         },
       );
@@ -436,6 +456,7 @@ void main() {
         expect(find.text('Unapprove'), findsNothing);
         expect(find.text('Approve File'), findsNothing);
         expect(find.text('Unapprove File'), findsNothing);
+        expect(find.text('Open in Source'), findsNothing);
         expect(port.reviewResolutions, 0);
         expect(port.handles, isEmpty);
         expect(tester.takeException(), isNull);
@@ -487,7 +508,10 @@ void main() {
               find.text('Unapprove File'),
               scope == 'Uncommitted changes' ? findsOneWidget : findsNothing,
             );
-            expect(find.text('Open in Source'), findsOneWidget);
+            expect(
+              find.text('Open in Source'),
+              review.changeKind == 'deleted' ? findsNothing : findsOneWidget,
+            );
             expect(
               tester
                   .getTopLeft(find.widgetWithText(TextButton, 'Approve File'))
@@ -504,25 +528,34 @@ void main() {
                     .dy,
               ),
             );
-            expect(
-              tester
-                  .getTopLeft(find.widgetWithText(TextButton, 'Open in Source'))
-                  .dy,
-              greaterThanOrEqualTo(
+            if (review.changeKind != 'deleted') {
+              expect(
                 tester
-                    .getBottomLeft(
-                      find.widgetWithText(TextButton, 'Approve File'),
+                    .getTopLeft(
+                      find.widgetWithText(TextButton, 'Open in Source'),
                     )
                     .dy,
-              ),
-            );
-            await tester.tap(find.text('Open in Source'));
-            await tester.pumpAndSettle();
+                greaterThanOrEqualTo(
+                  tester
+                      .getBottomLeft(
+                        find.widgetWithText(TextButton, 'Approve File'),
+                      )
+                      .dy,
+                ),
+              );
+              await tester.tap(find.text('Open in Source'));
+              await tester.pumpAndSettle();
+            }
             expect(tester.takeException(), isNull);
           }
         }
         expect(port.review.operations, isEmpty);
-        expect(source.paths, List.filled(6, 'dir/with spaces [modified].txt'));
+        expect(
+          source.paths,
+          review.changeKind == 'deleted'
+              ? isEmpty
+              : List.filled(6, 'dir/with spaces [modified].txt'),
+        );
       },
     );
 
@@ -559,10 +592,19 @@ void main() {
           );
           expect(port.handles, isEmpty);
           expect(port.review.operations, isEmpty);
-          await tester.tap(find.text('Open in Source'));
-          await tester.pumpAndSettle();
+          if (review.changeKind == 'deleted') {
+            expect(find.text('Open in Source'), findsNothing);
+          } else {
+            await tester.tap(find.text('Open in Source'));
+            await tester.pumpAndSettle();
+          }
         }
-        expect(source.paths, List.filled(4, 'review.txt'));
+        expect(
+          source.paths,
+          review.changeKind == 'deleted'
+              ? isEmpty
+              : List.filled(4, 'review.txt'),
+        );
         port.reviewAvailability = 'available';
         await tester.tap(find.text('Refresh'));
         await tester.pumpAndSettle();
@@ -677,7 +719,11 @@ void main() {
             await tester.binding.setSurfaceSize(const Size(900, 1500));
             addTearDown(() => tester.binding.setSurfaceSize(null));
             registerSource();
-            final added = review.changeKind == 'added';
+            final path = review.changeKind == 'deleted'
+                ? 'deleted.txt'
+                : review.changeKind == 'added'
+                ? 'new.txt'
+                : 'review.txt';
             port.service.uncommitted = _uncommitted(
               staged: ChangeSetSnapshot(
                 files: [
@@ -689,6 +735,12 @@ void main() {
                     path: 'new.txt',
                     fileRevision: 'staged:new-file',
                     changeKind: 'added',
+                    hunks: review.hunks,
+                  ).files,
+                  ..._reviewSnapshot(
+                    path: 'deleted.txt',
+                    fileRevision: 'staged:deleted-file',
+                    changeKind: 'deleted',
                     hunks: review.hunks,
                   ).files,
                 ],
@@ -703,6 +755,12 @@ void main() {
                     path: 'new.txt',
                     fileRevision: 'unstaged:new-file',
                     changeKind: 'added',
+                    hunks: review.hunks,
+                  ).files,
+                  ..._reviewSnapshot(
+                    path: 'deleted.txt',
+                    fileRevision: 'unstaged:deleted-file',
+                    changeKind: 'deleted',
                     hunks: review.hunks,
                   ).files,
                 ],
@@ -728,13 +786,16 @@ void main() {
                   ),
                 )
                 .toList();
-            expect(buttons, hasLength(8));
+            expect(buttons, hasLength(10));
             final held = Completer<void>();
             port.review.pending = held.future;
             final matching = buttons.where(
               (button) => (button.child! as Text).data == action,
             );
-            (added ? matching.last : matching.first).onPressed!();
+            final selected = review.fileReview
+                ? ['modified', 'added', 'deleted'].indexOf(review.changeKind)
+                : 0;
+            matching.elementAt(selected).onPressed!();
             for (final button in buttons) {
               button.onPressed!();
               button.onPressed!();
@@ -744,9 +805,9 @@ void main() {
             expect(port.service.uncommittedCalls, 1);
             expect(
               port.review.payloads.single['selection'],
-              containsPair('relativePath', added ? 'new.txt' : 'review.txt'),
+              containsPair('relativePath', path),
             );
-            if (added) expect(port.review.selections, isEmpty);
+            if (review.fileReview) expect(port.review.selections, isEmpty);
             expect(find.text('Approve'), findsNothing);
             expect(find.text('Unapprove'), findsNothing);
             expect(find.text('Approve File'), findsNothing);
@@ -790,8 +851,8 @@ void main() {
             await tester.pumpAndSettle();
             expect(find.text(_reviewRefreshRequired), findsNothing);
             expect(find.text('Approve'), findsNWidgets(2));
-            expect(find.text('Approve File'), findsNWidgets(2));
-            expect(find.text('Unapprove File'), findsNWidgets(2));
+            expect(find.text('Approve File'), findsNWidgets(3));
+            expect(find.text('Unapprove File'), findsNWidgets(3));
             expect(port.reviewHandles.keys, ['review-2']);
             expect(port.service.uncommittedCalls, 3);
             await tester.tap(find.widgetWithText(TextButton, 'Approve').last);
@@ -968,9 +1029,14 @@ void main() {
             expect(port.review.operations, [operation]);
             expect(port.methods, hasLength(snapshots));
             old.onPressed!();
-            await tester.tap(find.text('Open in Source'));
-            await tester.pumpAndSettle();
-            expect(source.paths, ['review.txt']);
+            if (review.changeKind == 'deleted') {
+              expect(find.text('Open in Source'), findsNothing);
+              expect(source.paths, isEmpty);
+            } else {
+              await tester.tap(find.text('Open in Source'));
+              await tester.pumpAndSettle();
+              expect(source.paths, ['review.txt']);
+            }
             expect(port.review.operations, [operation]);
             // Failed manual refresh cannot resurrect old selections or replay mutation.
             port.review.failure = null;
@@ -1308,11 +1374,18 @@ void main() {
       '$action ${review.name} and Source pending operations remain independent',
       (tester) async {
         registerSource();
-        port.service.value = _reviewSnapshot(
-          path: 'dir/notes [modified] with spaces.txt',
-          fileRevision: 'file:revision',
-          changeKind: review.changeKind,
-          hunks: review.hunks,
+        const path = 'dir/notes [modified] with spaces.txt';
+        port.service.value = ChangeSetSnapshot(
+          files: [
+            ..._reviewSnapshot(
+              path: path,
+              fileRevision: 'file:revision',
+              changeKind: review.changeKind,
+              hunks: review.hunks,
+            ).files,
+            if (review.changeKind == 'deleted')
+              ..._snapshot(path: 'existing.txt').files,
+          ],
         );
         await mount(tester);
         final sourceHeld = Completer<Map<String, Object?>>();
@@ -1329,17 +1402,14 @@ void main() {
         await tester.tap(find.widgetWithText(TextButton, action).last);
         await tester.pumpAndSettle();
         if (fileReview) {
-          expect(
-            port.review.fileSelections.single.relativePath,
-            source.paths.single,
-          );
+          expect(port.review.fileSelections.single.relativePath, path);
         } else {
-          expect(
-            port.review.selections.single.relativePath,
-            source.paths.single,
-          );
+          expect(port.review.selections.single.relativePath, path);
           expect(port.review.selections.single.hunkIndex, 1);
         }
+        expect(source.paths, [
+          review.changeKind == 'deleted' ? 'existing.txt' : path,
+        ]);
         expect(find.text('Opening in Source...'), findsOneWidget);
         reviewHeld.complete();
         await tester.pumpAndSettle();
@@ -2633,6 +2703,13 @@ const _reviewCases = [
   (name: 'modified file', fileReview: true, changeKind: 'modified', hunks: 2),
   (name: 'added file', fileReview: true, changeKind: 'added', hunks: 1),
   (name: 'empty added file', fileReview: true, changeKind: 'added', hunks: 0),
+  (name: 'deleted file', fileReview: true, changeKind: 'deleted', hunks: 1),
+  (
+    name: 'empty deleted file',
+    fileReview: true,
+    changeKind: 'deleted',
+    hunks: 0,
+  ),
 ];
 
 ChangeSetSnapshot _reviewSnapshot({
@@ -2654,10 +2731,18 @@ ChangeSetSnapshot _reviewSnapshot({
       hunks: [
         for (var index = 0; index < hunks; index++)
           DiffHunk(
-            oldStart: changeKind == 'added' ? 0 : 10 + index * 20,
+            oldStart: changeKind == 'added'
+                ? 0
+                : changeKind == 'deleted'
+                ? 1 + index * 20
+                : 10 + index * 20,
             oldCount: changeKind == 'added' ? 0 : 1,
-            newStart: changeKind == 'added' ? 1 + index * 20 : 10 + index * 20,
-            newCount: 1,
+            newStart: changeKind == 'added'
+                ? 1 + index * 20
+                : changeKind == 'deleted'
+                ? 0
+                : 10 + index * 20,
+            newCount: changeKind == 'deleted' ? 0 : 1,
             lines: [
               if (changeKind != 'added')
                 DiffLine(
@@ -2665,7 +2750,12 @@ ChangeSetSnapshot _reviewSnapshot({
                   text: 'old-$index',
                   noNewline: false,
                 ),
-              DiffLine(kind: 'addition', text: 'new-$index', noNewline: false),
+              if (changeKind != 'deleted')
+                DiffLine(
+                  kind: 'addition',
+                  text: 'new-$index',
+                  noNewline: false,
+                ),
             ],
           ),
       ],

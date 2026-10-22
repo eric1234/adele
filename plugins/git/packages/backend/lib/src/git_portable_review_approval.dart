@@ -122,17 +122,18 @@ final class GitPortableReviewApprovalService
       final observation = operation.reviewObservation!;
       final entry = observation.entries[path];
       final addition = file.changeKind == 'added';
+      final deletion = file.changeKind == 'deleted';
       final before = (await operation.blob(entry?.oid ?? ''))!;
       final hunks = hunkIndex == null ? file.hunks : [file.hunks[hunkIndex]];
       final after = _applyReviewHunks(before, hunks, reverse: reverse);
       if (after.length > operation.limits.fileBytes ||
-          (!addition && _equalBytes(before, after))) {
+          (!addition && !deletion && _equalBytes(before, after))) {
         throw _reviewFailure(
           'unsupported_target',
           'The selection has no bounded index result.',
         );
       }
-      final expectedOid = addition && reverse
+      final expectedOid = (addition && reverse) || (deletion && !reverse)
           ? null
           : _blobHash(after, observation.head.commit.length);
       if (hunkIndex == null &&
@@ -143,9 +144,12 @@ final class GitPortableReviewApprovalService
         throw _malformed();
       }
       if (addition && reverse && after.isNotEmpty) throw _malformed();
+      if (deletion && !reverse && after.isNotEmpty) throw _malformed();
       final mode =
           entry?.oldMode ??
-          (operation.observed[path]!.executable ? '100755' : '100644');
+          (deletion
+              ? observation.headEntries[path]!.oldMode
+              : (operation.observed[path]!.executable ? '100755' : '100644'));
       final original = entry == null ? null : (mode: mode, oid: entry.oid);
       final expected = expectedOid == null
           ? null
@@ -159,6 +163,7 @@ final class GitPortableReviewApprovalService
         reverse: reverse,
         isolated: hunkIndex != null,
         addition: addition,
+        deletion: deletion,
       );
       if (patch.length > environmentBufferedProcessStdinLimit) {
         throw _reviewFailure(
@@ -188,6 +193,7 @@ final class GitPortableReviewApprovalService
         original,
         expectUnchangedIndex: true,
         addition: addition,
+        deletion: deletion,
       );
       // Reserve the known postcondition traffic before admitting any write.
       // External growth can still exceed it; such effects are then uncertain.
@@ -196,7 +202,8 @@ final class GitPortableReviewApprovalService
           utf8.encode(observation.settings).length +
           utf8.encode(operation.attributes[path]!).length +
           (after.length > before.length ? after.length : before.length) +
-          operation.observed[path]!.size +
+          (operation.observed[path]?.size ?? 0) +
+          2 * utf8.encode(operation.workingAbsences[path] ?? '').length +
           2 *
               operation.observed.entries.fold<int>(
                 0,
@@ -209,7 +216,7 @@ final class GitPortableReviewApprovalService
                         .length,
               ) +
           8192 +
-          (addition
+          (addition || deletion
               ? 2 *
                     (utf8
                             .encode('${operation.repository!.prefix}$path')
@@ -224,7 +231,10 @@ final class GitPortableReviewApprovalService
       ).length;
       if (operation.byteCount + patch.length + verificationBytes >
               operation.limits.totalBytes ||
-          operation.commandCount + 15 + 2 * statBatches + (addition ? 3 : 0) >
+          operation.commandCount +
+                  15 +
+                  2 * statBatches +
+                  (addition || deletion ? 3 : 0) >
               operation.limits.processes) {
         throw _reviewFailure(
           'inspection_failed',
@@ -244,6 +254,7 @@ final class GitPortableReviewApprovalService
         expectedBytes: applied.exitCode == 0 ? after : before,
         expectUnchangedIndex: applied.exitCode != 0,
         addition: addition,
+        deletion: deletion,
       );
       if (applied.exitCode != 0) {
         confirmedFailure = true;
@@ -297,6 +308,7 @@ Future<void> _verifyReviewState(
   List<int>? expectedBytes,
   bool expectUnchangedIndex = false,
   bool addition = false,
+  bool deletion = false,
 }) async {
   final raw = await _readReviewIndex(operation);
   final repositoryPath = '${operation.repository!.prefix}$path';
@@ -338,16 +350,24 @@ Future<void> _verifyReviewState(
     if (actual == null || !_equalBytes(actual, expectedBytes)) throw _changed();
   }
   await operation.verifyMetadata(operation.observed.keys.toList());
-  final working = (await operation.command('/usr/bin/head', [
-    '-c',
-    '${operation.limits.fileBytes + 1}',
-    '--',
-    './$path',
-  ])).bytes;
-  if (working.length != operation.observed[path]!.size ||
-      _blobHash(working, observation.head.commit.length) !=
-          operation.workingOids[path]) {
-    throw _changed();
+  if (deletion) {
+    if (operation.workingAbsences[path] == null ||
+        await operation.workingAbsence(path) !=
+            operation.workingAbsences[path]) {
+      throw _changed();
+    }
+  } else {
+    final working = (await operation.command('/usr/bin/head', [
+      '-c',
+      '${operation.limits.fileBytes + 1}',
+      '--',
+      './$path',
+    ])).bytes;
+    if (working.length != operation.observed[path]!.size ||
+        _blobHash(working, observation.head.commit.length) !=
+            operation.workingOids[path]) {
+      throw _changed();
+    }
   }
   await operation.verifyMetadata(operation.observed.keys.toList());
   if (addition) {
@@ -379,6 +399,10 @@ Future<void> _verifyReviewState(
     throw _changed();
   }
   if (await _readReviewIndex(operation) != raw) {
+    throw _changed();
+  }
+  if (deletion &&
+      await operation.workingAbsence(path) != operation.workingAbsences[path]) {
     throw _changed();
   }
   operation.checkOpen();
@@ -469,17 +493,19 @@ List<int> _reviewPatch(
   required bool reverse,
   required bool isolated,
   bool addition = false,
+  bool deletion = false,
 }) {
   final oldPath = _quoteReviewPath('a/$path');
   final newPath = _quoteReviewPath('b/$path');
   final patch = StringBuffer()..writeln('diff --git $oldPath $newPath');
   if (addition) patch.writeln('new file mode $mode');
+  if (deletion) patch.writeln('deleted file mode $mode');
   patch
     ..writeln(
-      'index ${reverse ? afterOid : beforeOid}..${reverse ? beforeOid : afterOid}${addition ? '' : ' $mode'}',
+      'index ${reverse ? afterOid : beforeOid}..${reverse ? beforeOid : afterOid}${addition || deletion ? '' : ' $mode'}',
     )
     ..writeln('--- ${addition ? '/dev/null' : oldPath}')
-    ..writeln('+++ $newPath');
+    ..writeln('+++ ${deletion ? '/dev/null' : newPath}');
   for (final hunk in hunks) {
     // Only an isolated hunk needs rebasing to its actual source-side coordinate.
     // A complete patch must retain original coordinates across all line shifts.
@@ -594,9 +620,10 @@ bool _reviewableFile(
   bool wholeFile = false,
 }) {
   final addition = wholeFile && file.changeKind == 'added';
-  if ((!addition && file.changeKind != 'modified') ||
+  final deletion = wholeFile && file.changeKind == 'deleted';
+  if ((!addition && !deletion && file.changeKind != 'modified') ||
       file.contentStatus != 'text' ||
-      (!addition && file.hunks.isEmpty) ||
+      (!addition && !deletion && file.hunks.isEmpty) ||
       file.hunks.length > 8192 ||
       !_reviewablePath(file.relativePath) ||
       indexBytes == null) {
@@ -642,8 +669,11 @@ String _reviewRevision(
   String layer, {
   bool wholeFile = false,
   bool addition = false,
+  bool deletion = false,
 }) {
-  final domain = addition
+  final domain = deletion
+      ? 'git-file-deletion-review-v1'
+      : addition
       ? 'git-file-addition-review-v1'
       : wholeFile
       ? 'git-file-review-v1'
@@ -669,7 +699,12 @@ String _reviewRevision(
         entry?.kind,
         observation.indexRevision,
         operation.workingOids[path],
-        operation.observed[path]!.mode,
+        operation.observed[path]?.mode,
+        if (deletion) ...[
+          observation.headEntries[path]?.oldMode,
+          observation.headEntries[path]?.oid,
+          operation.workingAbsences[path],
+        ],
         observation.settings,
         operation.attributes[path],
       ]),

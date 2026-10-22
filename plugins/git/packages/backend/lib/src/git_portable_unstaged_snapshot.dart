@@ -145,9 +145,12 @@ final class _PortableSnapshot {
   final Stopwatch watch = Stopwatch()..start();
   final Map<String, _PathState> observed = {};
   final Map<String, String> workingOids = {};
+  final Map<String, String> workingAbsences = {};
   final Map<String, String> attributes = {};
   final Map<String, int> objectSizes = {};
   final Set<String> reviewableWorkingPaths = {};
+  final Set<String> parentPaths = {};
+  int parentPathText = 0;
   int? additionOidWidth;
   _ReviewObservation? reviewObservation;
   bool closed = false;
@@ -358,18 +361,28 @@ final class _PortableSnapshot {
     final hunkCandidates = <ChangedFile>{};
     final fileCandidates = <ChangedFile>{};
     for (final file in [...staged, ...files]) {
-      if (!reviewableWorkingPaths.contains(file.relativePath)) continue;
+      final deletion = file.changeKind == 'deleted';
+      final reverse = staged.contains(file);
+      if (!deletion && !reviewableWorkingPaths.contains(file.relativePath)) {
+        continue;
+      }
       for (final wholeFile in [false, true]) {
         if (_reviewableFile(
           file,
           repository!.prefix,
-          indexBytes: entries[file.relativePath]?.oid == ''
+          indexBytes:
+              deletion && reverse || entries[file.relativePath]?.oid == ''
               ? 0
               : objectSizes[entries[file.relativePath]?.oid],
           maximumFileBytes: limits.fileBytes,
-          reverse: staged.contains(file),
+          reverse: reverse,
           wholeFile: wholeFile,
         )) {
+          if (deletion) {
+            final proof = await workingAbsence(file.relativePath);
+            if (proof == null) continue;
+            workingAbsences[file.relativePath] = proof;
+          }
           (wholeFile ? fileCandidates : hunkCandidates).add(file);
         }
       }
@@ -397,6 +410,10 @@ final class _PortableSnapshot {
       fileCandidates.removeWhere((file) {
         final original = reviewHeadEntries[file.relativePath];
         if (file.changeKind == 'added') return original != null;
+        if (file.changeKind == 'deleted' && staged.contains(file)) {
+          return original == null ||
+              !const {'100644', '100755'}.contains(original.oldMode);
+        }
         // Further edits of a staged addition remain outside file approval.
         return original == null ||
             !const {'100644', '100755'}.contains(original.oldMode) ||
@@ -414,11 +431,11 @@ final class _PortableSnapshot {
         reviewIndex,
         maximumEntries: limits.inventoryEntries,
       );
-      final additions = fileCandidates
-          .where((file) => file.changeKind == 'added')
+      final membershipChanges = fileCandidates
+          .where((file) => const {'added', 'deleted'}.contains(file.changeKind))
           .toList();
       final fullHeadEntries =
-          additions.isNotEmpty && repository!.prefix.isNotEmpty
+          membershipChanges.isNotEmpty && repository!.prefix.isNotEmpty
           ? parseGitTree(
               _decode(
                 (await git([
@@ -435,18 +452,21 @@ final class _PortableSnapshot {
               maximumEntries: limits.inventoryEntries,
             )
           : reviewHeadEntries;
-      for (final file in additions) {
+      for (final file in membershipChanges) {
         final path = file.relativePath;
         final repositoryPath = '${repository!.prefix}$path';
         final indexed = indexEntries[repositoryPath];
         final reverse = staged.contains(file);
-        final validIndex = reverse
+        final deletion = file.changeKind == 'deleted';
+        final insertsEntry = deletion ? reverse : !reverse;
+        final validIndex = !insertsEntry
             ? indexed != null &&
                   indexed.kind == 'modified' &&
                   const {'100644', '100755'}.contains(indexed.oldMode)
-            : indexed == null && _records(inventory.untracked).contains(path);
+            : indexed == null &&
+                  (deletion || _records(inventory.untracked).contains(path));
         if (!validIndex ||
-            (!reverse &&
+            (insertsEntry &&
                 ('\u0000'.allMatches(reviewIndex).length >=
                         limits.inventoryEntries ||
                     utf8.encode(reviewIndex).length +
@@ -454,8 +474,26 @@ final class _PortableSnapshot {
                             512 >
                         limits.outputBytes)) ||
             _reviewPathCollision(repositoryPath, indexEntries.keys) ||
-            fullHeadEntries.containsKey(repositoryPath) ||
-            _reviewPathCollision(repositoryPath, fullHeadEntries.keys) ||
+            _reviewPathCollision(repositoryPath, fullHeadEntries.keys)) {
+          fileCandidates.remove(file);
+          continue;
+        }
+        if (deletion) {
+          final original = fullHeadEntries[repositoryPath];
+          if (original == null ||
+              !const {'100644', '100755'}.contains(original.oldMode) ||
+              (!reverse && indexed!.oldMode != original.oldMode)) {
+            fileCandidates.remove(file);
+            continue;
+          }
+          // Approving B -> absence supersedes A -> B. Require A to remain a
+          // bounded ordinary text file too; reversal will restore A, never B.
+          final originalBytes = await blob(original.oid);
+          if (originalBytes == null ||
+              classifyBytes(originalBytes, const []) != null) {
+            fileCandidates.remove(file);
+          }
+        } else if (fullHeadEntries.containsKey(repositoryPath) ||
             !await _reviewAdditionPathSafe(this, path)) {
           fileCandidates.remove(file);
         }
@@ -485,6 +523,7 @@ final class _PortableSnapshot {
                     name,
                     wholeFile: true,
                     addition: file.changeKind == 'added',
+                    deletion: file.changeKind == 'deleted',
                   )
                 : null,
             relativePath: file.relativePath,
@@ -500,6 +539,9 @@ final class _PortableSnapshot {
       }
     }
     await verifyMetadata(observed.keys.toList());
+    for (final entry in workingAbsences.entries) {
+      if (await workingAbsence(entry.key) != entry.value) throw _changed();
+    }
     for (final entry in attributes.entries) {
       if (await readAttributes(entry.key) != entry.value) throw _changed();
     }
@@ -597,8 +639,6 @@ final class _PortableSnapshot {
           );
     }).toList();
     final parents = <int, Set<String>>{};
-    var parentCount = 0;
-    var parentText = 0;
     for (final path in candidates) {
       final components = path.split('/');
       var parent = '';
@@ -607,15 +647,7 @@ final class _PortableSnapshot {
             ? components[depth]
             : '$parent/${components[depth]}';
         if ((parents[depth] ??= {}).add(parent)) {
-          parentCount++;
-          parentText += parent.length;
-          if (parentCount > limits.inventoryEntries ||
-              parentText > limits.totalBytes) {
-            throw _failure(
-              'snapshot_too_large',
-              'The snapshot exceeds its parent-path observation budget.',
-            );
-          }
+          retainParentPath(parent);
         }
       }
     }
@@ -693,6 +725,107 @@ final class _PortableSnapshot {
     for (final path in paths) {
       if (current[path] != observed[path]) throw _changed();
     }
+  }
+
+  void retainParentPath(String path) {
+    if (!parentPaths.add(path)) return;
+    parentPathText += path.length;
+    if (parentPaths.length > limits.inventoryEntries ||
+        parentPathText > limits.totalBytes) {
+      throw _failure(
+        'snapshot_too_large',
+        'The snapshot exceeds its parent-path observation budget.',
+      );
+    }
+  }
+
+  /// A deletion-only negative observation, not a failed ordinary file read.
+  Future<String?> workingAbsence(String path) async {
+    final components = path.split('/');
+    final prefixes = <String>['.'];
+    var prefix = '';
+    for (final component in components) {
+      prefix = prefix.isEmpty ? component : '$prefix/$component';
+      prefixes.add(prefix);
+    }
+    for (final parent in prefixes.skip(1).take(components.length - 1)) {
+      retainParentPath(parent);
+    }
+    final result = await command('/bin/sh', [
+      '-c',
+      // Each cd pins a physical directory. Check its canonical path and identity
+      // before looking at a descendant, so a substituted ancestor cannot redirect
+      // a later stat into another tree. This remains best-effort, not openat/CAS.
+      r'''
+unavailable() { printf 'unavailable\000'; exit 1; }
+probe() {
+  state=$(/usr/bin/stat --printf='%f %s %d %i %y %z' -- "$1" 2>&1)
+  result=$?
+  if [ "$result" -eq 0 ]; then return 0; fi
+  if [ "$result" -eq 1 ]; then
+    case "$state" in
+      "/usr/bin/stat: cannot statx "*": No such file or directory") return 1 ;;
+    esac
+  fi
+  printf '%s\n' "$state" >&2
+  exit 2
+}
+root=$1
+remaining=$2
+parent=.
+[ "$(/bin/pwd -P)" = "$root" ] || exit 2
+probe . || exit 2
+[ "$((0x${state%% *} & 61440))" -eq 16384 ] || exit 2
+parent_state=$state
+set -- . "$state"
+while :; do
+  component=${remaining%%/*}
+  if [ "$parent" = . ]; then next=$component; else next=$parent/$component; fi
+  if ! probe "./$component"; then
+    probe . || exit 2
+    [ "$state" = "$parent_state" ] || exit 2
+    if [ "$parent" = . ]; then expected=$root; else expected=${root%/}/$parent; fi
+    [ "$(/bin/pwd -P)" = "$expected" ] || exit 2
+    printf '%s\000' "$@" "$next" absent
+    exit 0
+  fi
+  [ "$remaining" != "$component" ] || unavailable
+  [ "$((0x${state%% *} & 61440))" -eq 16384 ] || unavailable
+  parent_state=$state
+  CDPATH= cd -P -- "./$component" || exit 2
+  [ "$(/bin/pwd -P)" = "${root%/}/$next" ] || exit 2
+  probe . || exit 2
+  [ "$state" = "$parent_state" ] || exit 2
+  if probe ./.git; then unavailable; fi
+  set -- "$@" "$next" "$parent_state"
+  remaining=${remaining#*/}
+  parent=$next
+done
+''',
+      'adele-review-absence',
+      repository!.root,
+      path,
+    ], allowDifference: true);
+    final proof = _decodeContent(result.bytes);
+    if (result.exitCode == 1) {
+      if (proof != 'unavailable\u0000') throw _malformed();
+      return null;
+    }
+    final records = _records(proof);
+    if (records.length < 4 ||
+        records.length.isOdd ||
+        records.length > prefixes.length * 2 ||
+        records.last != 'absent') {
+      throw _malformed();
+    }
+    for (var index = 0; index < records.length ~/ 2; index++) {
+      if (records[index * 2] != prefixes[index]) throw _malformed();
+      if (index < records.length ~/ 2 - 1 &&
+          _parsePathState(records[index * 2 + 1]).type != 0x4000) {
+        throw _malformed();
+      }
+    }
+    return proof;
   }
 
   Future<ChangedFile?> inspect(
@@ -882,6 +1015,9 @@ final class _PortableSnapshot {
       requireIndex: false,
     );
     lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
+    if (missing && _applyReviewHunks(old, hunks, reverse: false).isNotEmpty) {
+      throw _malformed();
+    }
     if (patch.exitCode == 0 && kind == 'modified') throw _changed();
     if (kind == 'modified' &&
         state != null &&
@@ -1273,15 +1409,7 @@ final class _PortableSnapshot {
       for (var index = 0; index < batch.length; index++) {
         final path = batch[index];
         if (records[index * 2] != './$path') throw _malformed();
-        final raw = records[index * 2 + 1];
-        final match = RegExp(
-          r'^([0-9a-f]+) (\d+) (\d+) (\d+) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4}) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4})$',
-        ).firstMatch(raw);
-        if (match == null || match.end != raw.length) throw _malformed();
-        final mode = int.tryParse(match[1]!, radix: 16);
-        final size = int.tryParse(match[2]!);
-        if (mode == null || size == null) throw _malformed();
-        states[path] = _PathState(mode: mode, size: size, description: raw);
+        states[path] = _parsePathState(records[index * 2 + 1]);
       }
     }
     return states;
@@ -1598,6 +1726,17 @@ final class _PathState {
       other is _PathState && description == other.description;
   @override
   int get hashCode => description.hashCode;
+}
+
+_PathState _parsePathState(String raw) {
+  final match = RegExp(
+    r'^([0-9a-f]+) (\d+) (\d+) (\d+) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4}) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9} [+-]\d{4})$',
+  ).firstMatch(raw);
+  if (match == null || match.end != raw.length) throw _malformed();
+  final mode = int.tryParse(match[1]!, radix: 16);
+  final size = int.tryParse(match[2]!);
+  if (mode == null || size == null) throw _malformed();
+  return _PathState(mode: mode, size: size, description: raw);
 }
 
 bool _oid(String value) =>

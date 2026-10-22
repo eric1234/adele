@@ -819,6 +819,276 @@ void main() {
     );
   }
 
+  for (final empty in [false, true]) {
+    testWidgets(
+      'G6c2b stock ${empty ? 'empty tracked file' : 'executable text file'} deletion approval roundtrip preserves nonprimary Source and unrelated Git state',
+      (tester) async {
+        const path = 'c deleted.txt';
+        final content = empty
+            ? ''
+            : 'Selected deletion HEAD\nFinal line without newline';
+        final mode = empty ? '100644' : '100755';
+        final baseline = fixture.baseline(fixture.additional);
+        expect(baseline, isNot(fixture.baseline(fixture.primary)));
+        await tester.runAsync(() async {
+          await fixture.write(path, content);
+          if (!empty) {
+            final chmod = await Process.run('/bin/chmod', [
+              '755',
+              fixture.file(path).path,
+            ]);
+            expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
+          }
+          await fixture.write(
+            'g baseline.txt',
+            'Committed deletion sentinel\n',
+          );
+          await _git(fixture.additionalRoot, [
+            'add',
+            '--',
+            path,
+            'g baseline.txt',
+          ]);
+          await _git(fixture.additionalRoot, ['commit', '-m', 'Deletion HEAD']);
+          await fixture.write(
+            'd staged.txt',
+            'Unrelated staged deletion sentinel\n',
+          );
+          final outside = File(
+            '${fixture.additionalWorktree.path}/outside.txt',
+          );
+          await outside.writeAsString('Outside staged deletion sentinel\n');
+          await _git(fixture.additionalWorktree, [
+            'add',
+            '--',
+            'nested source/d staged.txt',
+            'outside.txt',
+          ]);
+          await outside.writeAsString('Outside working deletion sentinel\n');
+          final primary = File('${fixture.primaryRoot.path}/$path');
+          await primary.writeAsString('Primary staged deletion sentinel\n');
+          await _git(fixture.primaryRoot, ['add', '--', path]);
+          await primary.writeAsString('Primary working deletion sentinel\n');
+        });
+        await mount(tester);
+        await _visible(tester, 'No unstaged changes');
+        expect(fixture.reads, isEmpty);
+
+        // Retain a real Source document before its working file disappears.
+        await tester.runAsync(
+          () => tester.tap(find.widgetWithText(TextButton, 'Open Source...')),
+        );
+        await _visible(tester, 'Open Source File');
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), path);
+        await tester.pump();
+        await tester.tap(find.widgetWithText(TextButton, 'Open'));
+        await _visible(tester, 'Source Document opened.');
+        await tester.tap(find.byTooltip('Close input'));
+        await _waitFor(tester, () => find.byType(Dialog).evaluate().isEmpty);
+        final native = _editor(tester);
+        final element = tester.element(find.byType(CodeForge));
+        expect(native.controller!.text, content);
+        if (!empty) {
+          native.focusNode!.requestFocus();
+          await tester.pump();
+          await _key(tester, LogicalKeyboardKey.home, control: true);
+          await _key(tester, LogicalKeyboardKey.delete);
+          expect(native.controller!.text, content.substring(1));
+          await _visible(tester, 'Possibly modified');
+        }
+        await tester.runAsync(() => fixture.file(path).delete());
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        expect(
+          before[fixture.additional.id.value]!['head'],
+          isNot('$baseline\n'),
+        );
+        await tester.runAsync(
+          () => fixture.expectDeletedFileIndex(
+            before,
+            path,
+            content,
+            mode,
+            approved: false,
+          ),
+        );
+        _refresh(tester);
+        await _reviewReady(tester, 'Approve File');
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        expect(_reviewAction('Approve'), findsNothing);
+        expect(_reviewAction('Unapprove'), findsNothing);
+        expect(_sourceAction(), findsNothing);
+        expect(
+          find.textContaining('@@ -'),
+          empty ? findsNothing : findsOneWidget,
+        );
+        if (!empty) {
+          expect(
+            find.textContaining('-Selected deletion HEAD'),
+            findsOneWidget,
+          );
+          expect(
+            find.textContaining('-Final line without newline'),
+            findsOneWidget,
+          );
+        }
+        tester.view.physicalSize = const Size(1600, 5000);
+        await tester.pump();
+        final staleApprove = tester
+            .widget<TextButton>(_reviewAction('Approve File'))
+            .onPressed!;
+        await tester.runAsync(() => tester.tap(_reviewAction('Approve File')));
+        await _visible(tester, 'No unstaged changes');
+        expect(_reviewAction('Approve File'), findsNothing);
+        await tester.runAsync(
+          () => fixture.expectDeletedFileIndex(
+            before,
+            path,
+            content,
+            mode,
+            approved: true,
+          ),
+        );
+        final approved = (await tester.runAsync(fixture.reviewState))!;
+        staleApprove();
+        await tester.pump();
+        expect(fixture.indexWrites, hasLength(1));
+        expect(await tester.runAsync(fixture.reviewState), approved);
+
+        await _selectScope(tester, 'Uncommitted changes');
+        await _reviewReady(tester, 'Unapprove File', count: 2);
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        expect(_reviewAction('Unapprove'), findsOneWidget);
+        expect(_sourceAction(), findsNothing);
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          greaterThan(tester.getTopLeft(find.text('Staged changes')).dy),
+        );
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          lessThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+
+        await _selectScope(tester, 'Task / Branch');
+        await _reviewReady(tester, 'Unapprove File', count: 2);
+        await _visible(tester, '+Committed deletion sentinel');
+        expect(
+          find.textContaining('-Additional establishment baseline'),
+          findsOneWidget,
+        );
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        // The other file/hunk action belongs to the unrelated staged sentinel.
+        expect(_reviewAction('Unapprove'), findsOneWidget);
+        expect(_sourceAction(), findsNothing);
+        for (final absent in [
+          'Primary',
+          'outside.txt',
+          'Outside',
+          'nested source/',
+        ]) {
+          expect(find.textContaining(absent), findsNothing);
+        }
+        final unapprove = _reviewAction('Unapprove File').first;
+        final staleUnapprove = tester.widget<TextButton>(unapprove).onPressed!;
+        await tester.runAsync(() => tester.tap(unapprove));
+        await _reviewReady(tester, 'Approve File');
+        await _reviewReady(tester, 'Unapprove File');
+        expect(find.text('$path  [deleted]'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('$path  [deleted]')).dy,
+          greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+        expect(
+          find.textContaining('+Committed deletion sentinel'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('+Unrelated staged deletion sentinel'),
+          findsOneWidget,
+        );
+        expect(_reviewAction('Approve'), findsNothing);
+        expect(_sourceAction(), findsNothing);
+        await tester.runAsync(
+          () => fixture.expectDeletedFileIndex(
+            before,
+            path,
+            content,
+            mode,
+            approved: false,
+          ),
+        );
+        staleUnapprove();
+        await tester.pump();
+        expect(fixture.indexWrites, hasLength(2));
+        expect(await tester.runAsync(fixture.reviewState), before);
+        final staleTaskApprove = tester
+            .widget<TextButton>(_reviewAction('Approve File'))
+            .onPressed!;
+        await _selectScope(tester, 'Unstaged changes');
+        await _reviewReady(tester, 'Approve File');
+        staleTaskApprove();
+        await tester.pump();
+        expect(fixture.indexWrites, hasLength(2));
+        expect(await tester.runAsync(fixture.reviewState), before);
+        expect(_sourceAction(), findsNothing);
+        expect(tester.element(find.byType(CodeForge)), same(element));
+        expect(_editor(tester).controller, same(native.controller));
+        expect(_editor(tester).undoController, same(native.undoController));
+        expect(native.controller!.text, empty ? content : content.substring(1));
+        if (!empty) {
+          native.focusNode!.requestFocus();
+          await tester.pump();
+          await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+          expect(native.controller!.text, content);
+        }
+        expect(fixture.reads, [(fixture.additional.id.value, path)]);
+        for (final write in fixture.indexWrites) {
+          expect(write['environmentId'], fixture.additional.id.value);
+        }
+        expect(
+          (fixture.indexWrites.first['request'] as Map)['arguments'] as List,
+          isNot(contains('--reverse')),
+        );
+        expect(
+          (fixture.indexWrites.last['request'] as Map)['arguments'] as List,
+          contains('--reverse'),
+        );
+        expect(fixture.baseline(fixture.additional), baseline);
+        expect(
+          fixture.store
+              .requireSessionAuthority(fixture.additionalSession.id)
+              .environmentId,
+          fixture.additional.id,
+        );
+        expect(fixture.additional.role, EnvironmentRole.additional);
+        expect(
+          fixture.additional.providerState!['sourceRelativePath'],
+          'nested source',
+        );
+        expect(
+          fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+          isNull,
+        );
+        expect(
+          fixture.store.runsForSession(fixture.additionalSession.id),
+          isEmpty,
+        );
+        await tester.runAsync(
+          () => fixture.expectDeletedFileIndex(
+            before,
+            path,
+            content,
+            mode,
+            approved: false,
+          ),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
   testWidgets(
     'stock Uncommitted scope shows staged-only nonprimary changes and confines HEAD inventory',
     (tester) async {
@@ -2032,93 +2302,118 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
-    'G6c2a stock new-file approval and unapproval reject another Session revision on the same Environment',
-    (tester) async {
-      await tester.runAsync(() async {
-        const path = _newFileReviewPath;
-        const content = 'New file belongs to the selected Session revision\n';
-        await fixture.write(path, content);
-        await fixture.start(installations);
-        final before = await fixture.reviewState();
-        final sibling = fixture.store.session(
-          SessionId('additional-peer-session'),
-        )!;
-        Future<EnvironmentCapabilitySelection> select(
-          Session session,
-          CapabilityKey key,
-        ) => CapturedEnvironmentCapabilities(
-          environmentRuntime: fixture.environmentRuntime,
-          backends: fixture.backends,
-          session: session,
-        ).resolve(key);
-        final approval = await select(sibling, reviewApprovalCapability);
-        expect(approval.environment.id, fixture.additional.id);
-        for (final reverse in [false, true]) {
-          Future<ChangedFile> snapshot(Session session) async {
-            final source = await select(session, _changes);
-            final value = await invokeEnvironmentCapabilityWithBufferedProcess(
-              selection: source,
-              backends: fixture.backends,
-              serviceId: changeSetSourceServiceId,
-              invoke: (channel) =>
-                  ChangeSetSourceServiceClient(channel).snapshotUncommitted(),
-            );
-            return (reverse ? value.staged : value.unstaged).files.singleWhere(
-              (file) => file.relativePath == path,
-            );
+  for (final deletion in [false, true]) {
+    testWidgets(
+      '${deletion ? 'G6c2b deletion' : 'G6c2a stock new-file'} approval and unapproval reject another Session revision on the same Environment',
+      (tester) async {
+        await tester.runAsync(() async {
+          const path = _newFileReviewPath;
+          const content = 'New file belongs to the selected Session revision\n';
+          await fixture.write(path, content);
+          if (deletion) {
+            await _git(fixture.additionalRoot, ['add', '--', path]);
+            await _git(fixture.additionalRoot, [
+              'commit',
+              '-m',
+              'Deletion identity fixture',
+            ]);
+            await fixture.file(path).delete();
           }
-
-          final original = await snapshot(fixture.additionalSession);
-          final other = await snapshot(sibling);
-          expect(original.changeKind, 'added');
-          expect(original.reviewRevision, isNull);
-          expect(original.fileReviewRevision, isNotNull);
-          expect(other.fileReviewRevision, isNotNull);
-          expect(other.fileReviewRevision, isNot(original.fileReviewRevision));
-          Future<void> invoke(ChangedFile file) =>
-              invokeEnvironmentCapabilityWithBufferedProcess(
-                selection: approval,
-                backends: fixture.backends,
-                serviceId: reviewApprovalHandlerServiceId,
-                invoke: (channel) {
-                  final client = ReviewApprovalHandlerServiceClient(channel);
-                  final selection = ReviewFileSelection(
-                    relativePath: path,
-                    expectedRevision: file.fileReviewRevision!,
+          await fixture.start(installations);
+          final before = await fixture.reviewState();
+          final sibling = fixture.store.session(
+            SessionId('additional-peer-session'),
+          )!;
+          Future<EnvironmentCapabilitySelection> select(
+            Session session,
+            CapabilityKey key,
+          ) => CapturedEnvironmentCapabilities(
+            environmentRuntime: fixture.environmentRuntime,
+            backends: fixture.backends,
+            session: session,
+          ).resolve(key);
+          final approval = await select(sibling, reviewApprovalCapability);
+          expect(approval.environment.id, fixture.additional.id);
+          for (final reverse in [false, true]) {
+            Future<ChangedFile> snapshot(Session session) async {
+              final source = await select(session, _changes);
+              final value =
+                  await invokeEnvironmentCapabilityWithBufferedProcess(
+                    selection: source,
+                    backends: fixture.backends,
+                    serviceId: changeSetSourceServiceId,
+                    invoke: (channel) => ChangeSetSourceServiceClient(
+                      channel,
+                    ).snapshotUncommitted(),
                   );
-                  return reverse
-                      ? client.unapproveFile(selection)
-                      : client.approveFile(selection);
-                },
-              );
-          final unchanged = await fixture.reviewState();
-          await expectLater(
-            invoke(original),
-            throwsA(
-              isA<ReviewApprovalFailure>().having(
-                (error) => error.code,
-                'code',
-                'stale_selection',
+              return (reverse ? value.staged : value.unstaged).files
+                  .singleWhere((file) => file.relativePath == path);
+            }
+
+            final original = await snapshot(fixture.additionalSession);
+            final other = await snapshot(sibling);
+            expect(original.changeKind, deletion ? 'deleted' : 'added');
+            expect(original.reviewRevision, isNull);
+            expect(original.fileReviewRevision, isNotNull);
+            expect(other.fileReviewRevision, isNotNull);
+            expect(
+              other.fileReviewRevision,
+              isNot(original.fileReviewRevision),
+            );
+            Future<void> invoke(ChangedFile file) =>
+                invokeEnvironmentCapabilityWithBufferedProcess(
+                  selection: approval,
+                  backends: fixture.backends,
+                  serviceId: reviewApprovalHandlerServiceId,
+                  invoke: (channel) {
+                    final client = ReviewApprovalHandlerServiceClient(channel);
+                    final selection = ReviewFileSelection(
+                      relativePath: path,
+                      expectedRevision: file.fileReviewRevision!,
+                    );
+                    return reverse
+                        ? client.unapproveFile(selection)
+                        : client.approveFile(selection);
+                  },
+                );
+            final unchanged = await fixture.reviewState();
+            await expectLater(
+              invoke(original),
+              throwsA(
+                isA<ReviewApprovalFailure>().having(
+                  (error) => error.code,
+                  'code',
+                  'stale_selection',
+                ),
               ),
-            ),
-          );
-          expect(await fixture.reviewState(), unchanged);
-          expect(fixture.indexWrites, hasLength(reverse ? 1 : 0));
-          await invoke(other);
-          await fixture.expectNewFileIndex(
-            before,
-            path,
-            content,
-            approved: !reverse,
-          );
-          expect(fixture.indexWrites, hasLength(reverse ? 2 : 1));
-        }
-      });
-      expect(tester.takeException(), isNull);
-    },
-    skip: !Platform.isLinux,
-  );
+            );
+            expect(await fixture.reviewState(), unchanged);
+            expect(fixture.indexWrites, hasLength(reverse ? 1 : 0));
+            await invoke(other);
+            if (deletion) {
+              await fixture.expectDeletedFileIndex(
+                before,
+                path,
+                content,
+                '100644',
+                approved: !reverse,
+              );
+            } else {
+              await fixture.expectNewFileIndex(
+                before,
+                path,
+                content,
+                approved: !reverse,
+              );
+            }
+            expect(fixture.indexWrites, hasLength(reverse ? 2 : 1));
+          }
+        });
+        expect(tester.takeException(), isNull);
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   for (final (scope, clean) in _scopes) {
     testWidgets(
@@ -2704,6 +2999,70 @@ final class _Fixture {
     if (approved) {
       expect(await _git(additionalRoot, ['cat-file', 'blob', oid]), content);
     }
+  }
+
+  Future<void> expectDeletedFileIndex(
+    Map<String, Map<String, Object?>> before,
+    String path,
+    String content,
+    String mode, {
+    required bool approved,
+  }) async {
+    final repositoryPath = 'nested source/$path';
+    final oid = _blobOid(content);
+    final entry = '$mode $oid 0\t$repositoryPath\u0000';
+    final originalIndex = before[additional.id.value]!['index']! as String;
+    expect(
+      originalIndex.split('\u0000'),
+      contains(entry.substring(0, entry.length - 1)),
+    );
+    expect(await reviewState(), {
+      ...before,
+      additional.id.value: {
+        ...before[additional.id.value]!,
+        'index': approved
+            ? originalIndex.replaceFirst(entry, '')
+            : originalIndex,
+      },
+    });
+    expect(
+      await _git(additionalWorktree, [
+        'ls-tree',
+        '-z',
+        'HEAD',
+        '--',
+        repositoryPath,
+      ]),
+      '$mode blob $oid\t$repositoryPath\u0000',
+    );
+    expect(
+      await _git(additionalWorktree, [
+        'ls-files',
+        '--stage',
+        '-z',
+        '--',
+        repositoryPath,
+      ]),
+      approved ? '' : entry,
+    );
+    expect(
+      await _git(additionalRoot, [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--',
+        path,
+      ]),
+      '${approved ? 'D ' : ' D'} $repositoryPath\u0000',
+    );
+    expect(await _git(additionalRoot, ['cat-file', 'blob', oid]), content);
+    if (!approved) {
+      expect(await _git(additionalRoot, ['show', ':$repositoryPath']), content);
+    }
+    expect(
+      await FileSystemEntity.type(file(path).path, followLinks: false),
+      FileSystemEntityType.notFound,
+    );
   }
 
   String baseline(Environment environment) =>
