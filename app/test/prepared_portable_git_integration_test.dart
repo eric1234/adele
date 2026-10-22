@@ -470,6 +470,7 @@ void main() {
   Future<Map<String, String>> reviewRepositories(
     WidgetTester tester, {
     bool wholeFile = false,
+    bool wholeLayer = false,
     String? newFileContent,
     String? deletedFileContent,
   }) async => (await tester.runAsync(() async {
@@ -482,10 +483,15 @@ void main() {
         '--object-format=sha1',
         '--initial-branch=main',
       ]);
-      await File(
-        '${root.path}/review.txt',
-      ).writeAsString(wholeFile ? _fileReviewContent(id) : _reviewContent(id));
+      await File('${root.path}/review.txt').writeAsString(
+        wholeFile || wholeLayer ? _fileReviewContent(id) : _reviewContent(id),
+      );
       await File('${root.path}/untouched.txt').writeAsString('$id sentinel\n');
+      if (wholeLayer) {
+        await File(
+          '${root.path}/$_deletedFileReviewPath',
+        ).writeAsString('$id deleted layer\n');
+      }
       if (deletedFileContent != null) {
         final deleted = File('${root.path}/$_deletedFileReviewPath');
         await deleted.writeAsString(deletedFileContent);
@@ -494,7 +500,7 @@ void main() {
           expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
         }
       }
-      if (wholeFile) {
+      if (wholeFile || wholeLayer) {
         await File(
           '${root.path}/z-other.txt',
         ).writeAsString('$id other baseline\n');
@@ -509,7 +515,7 @@ void main() {
         '-m',
         'approval baseline',
       ]);
-      if (wholeFile) {
+      if (wholeFile || wholeLayer) {
         await File(
           '${root.path}/review.txt',
         ).writeAsString(_fileReviewContent(id, staged: true));
@@ -549,10 +555,16 @@ void main() {
         }
       } else {
         await File('${root.path}/review.txt').writeAsString(
-          wholeFile
+          wholeFile || wholeLayer
               ? _fileReviewContent(id, staged: true, changed: true)
               : _reviewContent(id, first: true, second: true),
         );
+      }
+      if (wholeLayer) {
+        await File('${root.path}/$_deletedFileReviewPath').delete();
+        await File(
+          '${root.path}/$_newFileReviewPath',
+        ).writeAsString('$id added layer\n');
       }
       result[id] = await root.resolveSymbolicLinks();
     }
@@ -726,6 +738,22 @@ void main() {
       expect(c, contains('file.fileReviewRevision'));
       expect(c, contains('typed.approveFile(file)'));
       expect(c, contains('typed.unapproveFile(file)'));
+      expect(c, contains('ReviewLayerSelection('));
+      expect(c, contains('expectedRevision: layer.layerReviewRevision!'));
+      expect(c, contains('typed.approveAllUnstaged(layer)'));
+      expect(c, contains('typed.unapproveAllStaged(layer)'));
+      expect(
+        b,
+        contains(
+          'Future<void> approveAllUnstaged(ReviewLayerSelection selection)',
+        ),
+      );
+      expect(
+        b,
+        contains(
+          'Future<void> unapproveAllStaged(ReviewLayerSelection selection)',
+        ),
+      );
       expect(
         c,
         contains('final UncommittedChangeSetSnapshot value = result[1];'),
@@ -922,9 +950,9 @@ void main() {
     'absent provider',
   ]) {
     testWidgets(
-      'G6a $denial denies approval independently of snapshot access',
+      'G6a/G6c3a $denial denies approval independently of snapshot access',
       (tester) async {
-        final repositories = await reviewRepositories(tester);
+        final repositories = await reviewRepositories(tester, wholeLayer: true);
         final before = (await tester.runAsync(
           () => _reviewStates(repositories),
         ))!;
@@ -952,11 +980,13 @@ void main() {
         _press(tester, 'Uncommitted');
         expect(
           await _snapshot(tester),
-          contains('addition:additional first change:false'),
+          contains('addition:additional inserted first:false'),
         );
         _press(tester, 'Approve');
         _press(tester, 'Approve File');
         _press(tester, 'Unapprove File');
+        _press(tester, 'Approve All');
+        _press(tester, 'Unapprove All');
         await _text(tester, 'approval:idle');
         expect(
           await tester.runAsync(
@@ -1189,6 +1219,266 @@ void main() {
   );
 
   testWidgets(
+    'G6c3a generated whole-layer methods apply one mixed patch and preserve exact selected repository state',
+    (tester) async {
+      final repositories = await reviewRepositories(tester, wholeLayer: true);
+      final before = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      expect(
+        before['additional']!['index'],
+        contains(
+          '${_reviewBlobOid(_fileReviewContent('additional', staged: true))} 0\treview.txt\u0000',
+        ),
+      );
+      await mount(
+        tester,
+        additionalRoot: repositories['additional'],
+        primaryRoot: repositories['primary'],
+        approvalGrant: true,
+        approvalProviderPresent: true,
+        baselineCommit: before['additional']!['head']! as String,
+        expectedBranchRef: 'refs/heads/main',
+      );
+      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+      _press(tester, 'Select approval');
+      await _text(tester, 'approval-selected');
+      _press(tester, 'Approve All');
+      _press(tester, 'Unapprove All');
+      await _text(tester, 'approval:idle');
+      expect(
+        await tester.runAsync(
+          () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+        ),
+        isEmpty,
+      );
+      await _select(tester);
+      _press(tester, 'Uncommitted');
+      final initial = await _snapshot(tester);
+      expect(initial, contains('review.txt|modified|text'));
+      expect(initial, contains('$_newFileReviewPath|added|text'));
+      expect(initial, contains('$_deletedFileReviewPath|deleted|text'));
+      expect(initial, contains('z-other.txt|modified|text'));
+      expect(initial, contains('untouched.txt|modified|text'));
+      expect(initial, isNot(contains('primary')));
+
+      _press(tester, 'Approve All');
+      await _text(tester, 'approval:success');
+      final approved = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      _expectLayerReviewIndex(approved, before, approved: true);
+      expect(
+        _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+        hasLength(1),
+      );
+      _press(tester, 'Approve All');
+      await _text(tester, 'approval:unavailable');
+      expect(
+        await tester.runAsync(() => _reviewStates(repositories)),
+        approved,
+      );
+
+      // Task decoding must retain the same layer-only token, not select a file.
+      _press(tester, 'Task');
+      final staged = await _snapshot(tester);
+      expect(staged, startsWith('snapshot\ncommitted\nstaged\n'));
+      expect(staged.split('\nunstaged')[1], '\nconflicts');
+      _press(tester, 'Approve All');
+      await _text(tester, 'approval:unavailable');
+      expect(
+        await tester.runAsync(
+          () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+        ),
+        hasLength(2),
+        reason: 'An empty layer has no actionable revision.',
+      );
+      _press(tester, 'Unapprove All');
+      await _text(tester, 'approval:success');
+      final unapproved = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      _expectLayerReviewIndex(unapproved, before, approved: false);
+      _press(tester, 'Unapprove All');
+      await _text(tester, 'approval:unavailable');
+      expect(
+        await tester.runAsync(() => _reviewStates(repositories)),
+        unapproved,
+      );
+      _press(tester, 'Uncommitted');
+      final refreshed = await _snapshot(tester);
+      expect(refreshed, startsWith('snapshot\nstaged\nunstaged\n'));
+      expect(refreshed, contains('untouched.txt|modified|text'));
+      expect(refreshed, contains('$_newFileReviewPath|added|text'));
+      expect(refreshed, contains('$_deletedFileReviewPath|deleted|text'));
+      _press(tester, 'Unapprove All');
+      await _text(tester, 'approval:unavailable');
+
+      final calls = (await tester.runAsync(
+        () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+      ))!;
+      expect(calls.map((call) => call['method']), [
+        reviewApprovalHandlerServiceApproveAllUnstagedId,
+        reviewApprovalHandlerServiceApproveAllUnstagedId,
+        reviewApprovalHandlerServiceUnapproveAllStagedId,
+        reviewApprovalHandlerServiceUnapproveAllStagedId,
+      ]);
+      expect(
+        calls.map((call) => call['hostInvocationContext']).toSet(),
+        hasLength(4),
+      );
+      for (final call in calls) {
+        expect(call['payload'], {
+          'selection': {
+            'expectedRevision': isA<String>().having(
+              (value) => value.isNotEmpty,
+              'not empty',
+              isTrue,
+            ),
+          },
+        });
+        await tester.runAsync(
+          () => _denied(fixture, call['hostInvocationContext'] as String),
+        );
+      }
+      expect(
+        (calls.first['payload'] as Map)['selection'],
+        isNot((calls.last['payload'] as Map)['selection']),
+      );
+      final probe =
+          (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
+      expect(probe['failures'], ['stale_selection', 'stale_selection']);
+      final evidence = (await tester.runAsync(fixture.snapshot))!;
+      final applies = (evidence['processes'] as List)
+          .cast<Map<Object?, Object?>>()
+          .where((process) => (process['arguments'] as List).contains('apply'))
+          .toList();
+      expect(
+        applies.map(
+          (process) => (process['arguments'] as List).contains('--check'),
+        ),
+        [true, false, true, false],
+      );
+      final writes = _reviewWrites(evidence);
+      expect(writes, hasLength(2));
+      for (var i = 0; i < writes.length; i++) {
+        final write = writes[i];
+        expect(write['environmentId'], 'additional');
+        expect(write['providerId'], 'test.environment.a');
+        expect(write['cwd'], repositories['additional']);
+        expect(write['exitCode'], 0);
+        expect(write['stdinBase64'], applies[i * 2]['stdinBase64']);
+        expect(
+          write['arguments'] as List,
+          i == 0 ? isNot(contains('--reverse')) : contains('--reverse'),
+        );
+        final patch = utf8.decode(base64Decode(write['stdinBase64'] as String));
+        expect(
+          RegExp(r'^diff --git ', multiLine: true).allMatches(patch),
+          hasLength(i == 0 ? 4 : 5),
+        );
+        for (final path in [
+          'review.txt',
+          'z-other.txt',
+          _newFileReviewPath,
+          _deletedFileReviewPath,
+        ]) {
+          expect(patch, contains(path));
+        }
+        expect(
+          patch,
+          i == 0 ? isNot(contains('untouched.txt')) : contains('untouched.txt'),
+        );
+      }
+      await tester.runAsync(() async {
+        final root = Directory(repositories['additional']!);
+        expect(await _git(root, ['diff', '--cached', '--exit-code']), isEmpty);
+        for (final entry in _layerReviewContents(
+          'additional',
+          approved: false,
+        ).entries) {
+          expect(
+            await _git(root, ['show', ':${entry.key}'], trim: false),
+            entry.value,
+          );
+        }
+        expect(
+          await File('${root.path}/$_deletedFileReviewPath').exists(),
+          isFalse,
+        );
+      });
+      expect(evidence['reads'], isEmpty);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(
+          EnvironmentId('primary'),
+        ),
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  for (final reverse in [false, true]) {
+    testWidgets(
+      'G6c3a stale ${reverse ? 'staged' : 'unstaged'} layer rejects an external edit without any index write',
+      (tester) async {
+        final repositories = await reviewRepositories(tester, wholeLayer: true);
+        await mount(
+          tester,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+          approvalGrant: true,
+          approvalProviderPresent: true,
+        );
+        await _select(tester);
+        _press(tester, 'Uncommitted');
+        await _snapshot(tester);
+        _press(tester, 'Select approval');
+        await _text(tester, 'approval-selected');
+        final before = (await tester.runAsync(() async {
+          await File(
+            '${repositories['additional']}/z-other.txt',
+          ).writeAsString('external edit outside the first file\n');
+          if (reverse) {
+            await _git(Directory(repositories['additional']!), [
+              'add',
+              '--',
+              'z-other.txt',
+            ]);
+          }
+          return _reviewStates(repositories);
+        }))!;
+        _press(tester, reverse ? 'Unapprove All' : 'Approve All');
+        await _text(tester, 'approval:unavailable');
+        final probe =
+            (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
+        expect(probe['failures'], ['stale_selection']);
+        expect(
+          _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+          isEmpty,
+        );
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          before,
+        );
+        final calls = (await tester.runAsync(
+          () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+        ))!;
+        expect(calls, hasLength(1));
+        expect(
+          calls.single['method'],
+          reverse
+              ? reviewApprovalHandlerServiceUnapproveAllStagedId
+              : reviewApprovalHandlerServiceApproveAllUnstagedId,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
+  testWidgets(
     'G6a stale EVC selection rejects a working-tree edit without index or unrelated writes',
     (tester) async {
       final repositories = await reviewRepositories(tester);
@@ -1342,29 +1632,43 @@ void main() {
     },
   );
 
-  for (final (side, termination, fileAction, reverse) in [
+  for (final (side, termination, fileAction, reverse, wholeLayer) in [
     for (final side in ['environment', 'callable'])
       for (final termination in [false, true])
-        (side, termination, false, false),
-    ('environment', false, true, false),
-    ('callable', false, true, true),
+        (side, termination, false, false, false),
+    ('environment', false, true, false, false),
+    ('callable', false, true, true, false),
+    for (final termination in [false, true]) ...[
+      ('environment', termination, false, false, true),
+      ('callable', termination, false, true, true),
+    ],
   ]) {
-    final action = fileAction
+    final action = wholeLayer
+        ? (reverse ? 'Unapprove All' : 'Approve All')
+        : fileAction
         ? (reverse ? 'Unapprove File' : 'Approve File')
         : 'Approve';
-    final method = fileAction
+    final method = wholeLayer
+        ? (reverse ? 'unapproveAllStaged' : 'approveAllUnstaged')
+        : fileAction
         ? (reverse ? 'unapproveFile' : 'approveFile')
         : 'approve';
     testWidgets(
-      '${fileAction ? 'G6c1 $action' : 'G6a'} $side ${termination ? 'backend' : 'provider'} retirement after effect suppresses success without replay or rollback',
+      '${wholeLayer
+          ? 'G6c3a $action'
+          : fileAction
+          ? 'G6c1 $action'
+          : 'G6a'} $side ${termination ? 'backend' : 'provider'} retirement after effect suppresses success without replay or rollback',
       (tester) async {
-        final repositories = await reviewRepositories(tester);
+        final repositories = await reviewRepositories(
+          tester,
+          wholeLayer: wholeLayer,
+        );
         if (reverse) {
           await tester.runAsync(
             () => _git(Directory(repositories['additional']!), [
               'add',
-              '--',
-              'review.txt',
+              if (wholeLayer) '--all' else ...['--', 'review.txt'],
             ]),
           );
         }
@@ -1395,19 +1699,23 @@ void main() {
         final effected = (await tester.runAsync(
           () => _reviewStates(repositories),
         ))!;
-        _expectReviewIndex(
-          effected,
-          before,
-          'additional',
-          _reviewContent(
+        if (wholeLayer) {
+          _expectLayerReviewIndex(effected, before, approved: !reverse);
+        } else {
+          _expectReviewIndex(
+            effected,
+            before,
             'additional',
-            first: !reverse,
-            second: fileAction && !reverse,
-          ),
-          originalContent: reverse
-              ? _reviewContent('additional', first: true, second: true)
-              : null,
-        );
+            _reviewContent(
+              'additional',
+              first: !reverse,
+              second: fileAction && !reverse,
+            ),
+            originalContent: reverse
+                ? _reviewContent('additional', first: true, second: true)
+                : null,
+          );
+        }
         final evidence = (await tester.runAsync(fixture.snapshot))!;
         expect(_reviewWrites(evidence), hasLength(1));
         expect(_reviewWrites(evidence).single['exitCode'], 0);
@@ -1506,9 +1814,9 @@ void main() {
   }
 
   testWidgets(
-    'G6a same-ID replacement requires fresh approval access and never replays an effected old request',
+    'G6c3a departure never retargets an effected whole-layer request to the primary Session',
     (tester) async {
-      final repositories = await reviewRepositories(tester);
+      final repositories = await reviewRepositories(tester, wholeLayer: true);
       final before = (await tester.runAsync(
         () => _reviewStates(repositories),
       ))!;
@@ -1524,115 +1832,209 @@ void main() {
       await _snapshot(tester);
       _press(tester, 'Select approval');
       await _text(tester, 'approval-selected');
-      final old = fixture;
-      final oldApproval = old.capabilities.resolve(
-        reviewApprovalCapability,
-        providerId: ProviderId(_approvalProvider),
-      );
-      final oldEnvironment = old.capabilities.resolve(
-        environmentProviderCapability,
-        providerId: ProviderId('test.environment.a'),
-      );
-      final stale = _callback(tester, 'Approve');
       await tester.runAsync(
-        () => old.control('hold', {'key': 'after:approve'}),
+        () => fixture.control('hold', {'key': 'after:approveAllUnstaged'}),
       );
-      _press(tester, 'Approve');
-      await tester.runAsync(() => old.wait(tester, 'after:approve'));
+      final stale = _callback(tester, 'Approve All');
+      _press(tester, 'Approve All');
+      await tester.runAsync(
+        () => fixture.wait(tester, 'after:approveAllUnstaged'),
+      );
       final token = (await tester.runAsync(
-        () => _token(old, serviceId: reviewApprovalHandlerServiceId),
+        () => _token(fixture, serviceId: reviewApprovalHandlerServiceId),
       ))!;
       final effected = (await tester.runAsync(
         () => _reviewStates(repositories),
       ))!;
-      _expectReviewIndex(
-        effected,
-        before,
-        'additional',
-        _reviewContent('additional', first: true),
-      );
-      expect(
-        _reviewWrites((await tester.runAsync(old.snapshot))!),
-        hasLength(1),
-      );
-      await tester.runAsync(old.backends.close);
-      await _text(tester, 'approval:unavailable');
-      await mount(
-        tester,
-        additionalRoot: repositories['additional'],
-        primaryRoot: repositories['primary'],
-        approvalGrant: true,
-        approvalProviderPresent: true,
-        registry: old.capabilities,
-        present: false,
-      );
-      expect(fixture.connection, isNot(same(old.connection)));
-      expect(
-        fixture.environmentConnection,
-        isNot(same(old.environmentConnection)),
-      );
-      expect(
-        fixture.capabilities
-            .resolve(
-              reviewApprovalCapability,
-              providerId: ProviderId(_approvalProvider),
-            )
-            .isSameRegistration(oldApproval),
-        isFalse,
-      );
-      expect(
-        fixture.capabilities
-            .resolve(
-              environmentProviderCapability,
-              providerId: ProviderId('test.environment.a'),
-            )
-            .isSameRegistration(oldEnvironment),
-        isFalse,
-      );
+      _expectLayerReviewIndex(effected, before, approved: true);
+      fixture.frontends.unbind(fixture.sessionA);
+      await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
+      await tester.pumpAndSettle();
       stale();
-      await _text(tester, 'approval:unavailable');
-      await tester.runAsync(() => _denied(fixture, token));
+      await tester.runAsync(() async {
+        await _denied(fixture, token);
+        await fixture.control('release', {'key': 'after:approveAllUnstaged'});
+        await fixture.wait(tester, 'settled:approveAllUnstaged');
+      });
+      await _select(tester);
+      _press(tester, 'Uncommitted');
+      expect(
+        await _snapshot(tester),
+        contains('addition:primary inserted first:false'),
+      );
+      expect(find.text('approval:success'), findsNothing);
       expect(
         await tester.runAsync(
           () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
         ),
-        isEmpty,
+        hasLength(1),
       );
-      expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
+      final writes = _reviewWrites((await tester.runAsync(fixture.snapshot))!);
+      expect(writes, hasLength(1));
+      expect(writes.single['environmentId'], 'additional');
+      expect(writes.single['cwd'], repositories['additional']);
       expect(
         await tester.runAsync(() => _reviewStates(repositories)),
         effected,
-      );
-      await tester.pumpWidget(fixture.widget());
-      await tester.pumpAndSettle();
-      await _select(tester);
-      _press(tester, 'Uncommitted');
-      await _snapshot(tester);
-      _press(tester, 'Select approval');
-      await _text(tester, 'approval-selected');
-      _press(tester, 'Unapprove');
-      await _text(tester, 'approval:success');
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
-      final calls = (await tester.runAsync(
-        () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
-      ))!;
-      expect(calls, hasLength(1));
-      expect(
-        calls.single['method'],
-        reviewApprovalHandlerServiceUnapproveHunkId,
-      );
-      expect(calls.single['hostInvocationContext'], isNot(token));
-      expect(
-        _reviewWrites((await tester.runAsync(fixture.snapshot))!),
-        hasLength(1),
-      );
-      await tester.runAsync(
-        () => _denied(fixture, calls.single['hostInvocationContext'] as String),
       );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  for (final wholeLayer in [false, true]) {
+    final action = wholeLayer ? 'Approve All' : 'Approve';
+    final reverseAction = wholeLayer ? 'Unapprove All' : 'Unapprove';
+    final method = wholeLayer ? 'approveAllUnstaged' : 'approve';
+    testWidgets(
+      '${wholeLayer ? 'G6c3a' : 'G6a'} same-ID replacement requires fresh approval access and never replays an effected old request',
+      (tester) async {
+        final repositories = await reviewRepositories(
+          tester,
+          wholeLayer: wholeLayer,
+        );
+        final before = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        await mount(
+          tester,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+          approvalGrant: true,
+          approvalProviderPresent: true,
+        );
+        await _select(tester);
+        _press(tester, 'Uncommitted');
+        await _snapshot(tester);
+        _press(tester, 'Select approval');
+        await _text(tester, 'approval-selected');
+        final old = fixture;
+        final oldApproval = old.capabilities.resolve(
+          reviewApprovalCapability,
+          providerId: ProviderId(_approvalProvider),
+        );
+        final oldEnvironment = old.capabilities.resolve(
+          environmentProviderCapability,
+          providerId: ProviderId('test.environment.a'),
+        );
+        final stale = _callback(tester, action);
+        await tester.runAsync(
+          () => old.control('hold', {'key': 'after:$method'}),
+        );
+        _press(tester, action);
+        await tester.runAsync(() => old.wait(tester, 'after:$method'));
+        final token = (await tester.runAsync(
+          () => _token(old, serviceId: reviewApprovalHandlerServiceId),
+        ))!;
+        final effected = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        if (wholeLayer) {
+          _expectLayerReviewIndex(effected, before, approved: true);
+        } else {
+          _expectReviewIndex(
+            effected,
+            before,
+            'additional',
+            _reviewContent('additional', first: true),
+          );
+        }
+        expect(
+          _reviewWrites((await tester.runAsync(old.snapshot))!),
+          hasLength(1),
+        );
+        await tester.runAsync(old.backends.close);
+        await _text(tester, 'approval:unavailable');
+        await mount(
+          tester,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+          approvalGrant: true,
+          approvalProviderPresent: true,
+          registry: old.capabilities,
+          present: false,
+        );
+        expect(fixture.connection, isNot(same(old.connection)));
+        expect(
+          fixture.environmentConnection,
+          isNot(same(old.environmentConnection)),
+        );
+        expect(
+          fixture.capabilities
+              .resolve(
+                reviewApprovalCapability,
+                providerId: ProviderId(_approvalProvider),
+              )
+              .isSameRegistration(oldApproval),
+          isFalse,
+        );
+        expect(
+          fixture.capabilities
+              .resolve(
+                environmentProviderCapability,
+                providerId: ProviderId('test.environment.a'),
+              )
+              .isSameRegistration(oldEnvironment),
+          isFalse,
+        );
+        stale();
+        await _text(tester, 'approval:unavailable');
+        await tester.runAsync(() => _denied(fixture, token));
+        expect(
+          await tester.runAsync(
+            () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+          ),
+          isEmpty,
+        );
+        expect(
+          (await tester.runAsync(fixture.snapshot))!['processes'],
+          isEmpty,
+        );
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          effected,
+        );
+        await tester.pumpWidget(fixture.widget());
+        await tester.pumpAndSettle();
+        await _select(tester);
+        _press(tester, 'Uncommitted');
+        await _snapshot(tester);
+        _press(tester, 'Select approval');
+        await _text(tester, 'approval-selected');
+        _press(tester, reverseAction);
+        await _text(tester, 'approval:success');
+        final restored = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        if (wholeLayer) {
+          _expectLayerReviewIndex(restored, before, approved: false);
+        } else {
+          expect(restored, before);
+        }
+        final calls = (await tester.runAsync(
+          () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
+        ))!;
+        expect(calls, hasLength(1));
+        expect(
+          calls.single['method'],
+          wholeLayer
+              ? reviewApprovalHandlerServiceUnapproveAllStagedId
+              : reviewApprovalHandlerServiceUnapproveHunkId,
+        );
+        expect(calls.single['hostInvocationContext'], isNot(token));
+        expect(
+          _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+          hasLength(1),
+        );
+        await tester.runAsync(
+          () =>
+              _denied(fixture, calls.single['hostInvocationContext'] as String),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets(
     'persisted Task anchors select exact nonprimary and primary Environments and shared Sessions',
@@ -3995,6 +4397,36 @@ String _reviewBlobOid(String content) {
   ]).toString();
 }
 
+Map<String, String> _layerReviewContents(String id, {required bool approved}) =>
+    {
+      if (!approved) _deletedFileReviewPath: '$id deleted layer\n',
+      if (approved) _newFileReviewPath: '$id added layer\n',
+      'review.txt': _fileReviewContent(id, staged: approved, changed: approved),
+      'untouched.txt': approved ? '$id staged sentinel\n' : '$id sentinel\n',
+      'z-other.txt': approved ? '$id other working\n' : '$id other baseline\n',
+    };
+
+void _expectLayerReviewIndex(
+  Map<String, Map<String, Object>> actual,
+  Map<String, Map<String, Object>> before, {
+  required bool approved,
+}) {
+  final contents = _layerReviewContents('additional', approved: approved);
+  final paths = contents.keys.toList()..sort();
+  expect(actual, {
+    ...before,
+    'additional': {
+      ...before['additional']!,
+      'index': paths
+          .map(
+            (path) =>
+                '100644 ${_reviewBlobOid(contents[path]!)} 0\t$path\u0000',
+          )
+          .join(),
+    },
+  });
+}
+
 Future<Map<String, Map<String, Object>>> _reviewStates(
   Map<String, String> roots,
 ) async {
@@ -4003,6 +4435,7 @@ Future<Map<String, Map<String, Object>>> _reviewStates(
     final root = Directory(entry.value);
     final hashes = <String, String>{};
     final workingBytes = <String, String>{};
+    final workingModes = <String, int>{};
     await for (final entity in root.list(recursive: true, followLinks: false)) {
       final path = entity.path.substring(root.path.length + 1);
       if (path == '.git' || path.startsWith('.git/')) continue;
@@ -4010,6 +4443,7 @@ Future<Map<String, Map<String, Object>>> _reviewStates(
       final bytes = await File(entity.path).readAsBytes();
       hashes[path] = sha256.convert(bytes).toString();
       workingBytes[path] = base64Encode(bytes);
+      workingModes[path] = (await entity.stat()).mode;
     }
     result[entry.key] = {
       'head': await _git(root, ['rev-parse', 'HEAD']),
@@ -4018,6 +4452,7 @@ Future<Map<String, Map<String, Object>>> _reviewStates(
       'index': await _git(root, ['ls-files', '--stage', '-z']),
       'workingHashes': hashes,
       'workingBytes': workingBytes,
+      'workingModes': workingModes,
     };
   }
   return result;

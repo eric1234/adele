@@ -58,10 +58,12 @@ of the frontend.
 
 The public contract separately defines `ReviewApprovalHandlerService`:
 `approveHunk(ReviewHunkSelection)`, `unapproveHunk(ReviewHunkSelection)`,
-`approveFile(ReviewFileSelection)` and `unapproveFile(ReviewFileSelection)` return
-`Future<void>`. Its `reviewApprovalCapability` is `adele.diff.review-approval`,
-major 1; the generated service is `diff.reviewApprovalHandler`. These mutations
-are not methods of the read-only `ChangeSetSourceService`.
+`approveFile(ReviewFileSelection)`, `unapproveFile(ReviewFileSelection)`,
+`approveAllUnstaged(ReviewLayerSelection)` and
+`unapproveAllStaged(ReviewLayerSelection)` return `Future<void>`. Its unchanged
+`reviewApprovalCapability` is `adele.diff.review-approval`, major 1; the generated
+service is `diff.reviewApprovalHandler`. These mutations are not methods of the
+read-only `ChangeSetSourceService`.
 
 `ReviewHunkSelection` contains only `relativePath`, zero-based `hunkIndex`, and
 `expectedRevision`. Bounds are 4,096 UTF-16 path units, hunk indices 0 through
@@ -76,6 +78,12 @@ Unapprove consumes a Staged revision.
 the same path/revision bounds. It is a distinct value, not a sentinel hunk index.
 Approve File consumes an Unstaged complete-file revision; Unapprove File consumes
 a Staged complete-file revision.
+
+`ReviewLayerSelection` contains only `expectedRevision`, with the same printable
+ASCII revision bound. It carries no paths, hunk indices, layer/action selector,
+patch or authority fields. The method selects the complete Unstaged or Staged
+layer, not an arbitrary subset of files. Committed changes and conflicts cannot
+be selected by either method.
 
 `ChangedFile.reviewRevision` is nullable opaque snapshot data, not an authority
 token. A null revision means there is no supported hunk action for that entry.
@@ -93,7 +101,7 @@ revision domain. Whole-file modification eligibility requires complete, safely
 inspected tracked regular UTF-8 text modifications, an actual changed hunk, and a
 complete patch and resulting index blob within the provider's bounds. An aggregate
 patch can be too large while every individual hunk remains eligible: in that case
-only `fileReviewRevision` is null.
+`fileReviewRevision` is null while `reviewRevision` remains available.
 
 The same file field can certify a complete new regular UTF-8 text file or a
 complete tracked regular UTF-8 text deletion: an Unstaged `added` or `deleted`
@@ -107,9 +115,22 @@ unsupported entries remain outside review mutation. Exact eligibility and limits
 including working-path absence proof for deletions, belong to the
 [Git handler](../git/README.md#reviewapprovalhandler).
 
-The Git handler applies one backend-derived hunk, or one complete file
-patch, to the index; Unapprove reverses that selected staged comparison. Each
-action uses exactly one index-mutating Git operation, never a per-hunk write loop.
+`ChangeSetSnapshot.layerReviewRevision` is a separate required nullable wire field
+for the complete displayed layer. It is opaque freshness data, not authority or
+an aggregation performed by the frontend. Stock Git certifies a nonempty layer only
+when every reported change within the selected Environment source scope has
+complete-file eligibility and the combined operation fits the shared bounds.
+An unsupported entry or aggregate-limit failure withholds the layer revision,
+never narrows the action to an eligible subset. Individual file and hunk revisions
+remain independently available, including when Git's 16-file whole-layer cap is
+exceeded. Committed snapshots and empty layers have no layer
+revision; an in-scope conflict disables both Uncommitted/Task layer revisions and
+the standalone Unstaged layer revision. Native and EVC artifacts must be rebuilt
+together for this required nullable field, just as for the existing file revisions.
+
+For hunk and file actions, the Git handler applies one backend-derived hunk or one
+complete file patch to the index; Unapprove reverses that selected staged comparison.
+Each action uses exactly one index-mutating Git operation, never a per-hunk write loop.
 For tracked modifications, Approve File preserves already staged changes while
 incorporating all current unstaged text hunks, and Unapprove File restores that
 file's index content to HEAD. For a certified new file, Approve File creates its
@@ -123,6 +144,11 @@ the working path absent. It does not recreate the working file, and the refreshe
 Unstaged deletion can be reviewed again. This includes empty tracked text files.
 A staged deletion followed by working-file recreation, file/directory replacements,
 and other unsupported deletion states remain visible but read-only.
+Whole-layer methods combine those same complete-file changes into one
+backend-derived multi-file patch and use one index-mutating operation, not repeated
+file actions.
+The Git handler checks the combined patch and verifies every selected result and
+unrelated index state under the same bounded operation and failure semantics.
 Git's index remains the approval source of truth; there is no approval database.
 Revisions are freshness preconditions, not invocation authority. Changed revisions
 and consumed selections require a fresh snapshot, not a
@@ -239,8 +265,10 @@ through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
 There is no automatic refresh watcher, addition/deletion hunk approval,
-whole-layer action, discard/revert, editing within Diff, commit, review feedback
-submission, or side-by-side mode. Addition/deletion review is bounded complete-file
+whole-layer button, discard/revert, editing within Diff, commit, review feedback
+submission, or side-by-side mode. Whole-layer contract/backend support does not yet
+add stock Diff frontend controls; Approve All/Unapprove All buttons and feedback
+are deferred to G6c3b. Addition/deletion review is bounded complete-file
 approval, not general staging of arbitrary untracked content or unsupported deletions.
 
 ## Preparation And Tests
@@ -261,7 +289,8 @@ dart tools/adele.dart test --target adele_tools
 ```
 
 The contract suite checks native and interpreted nested transport for all scopes,
-strict decoding, empty request payloads, declared failures, and list immutability.
+strict decoding, empty snapshot request payloads, revision-only layer selections,
+required nullable layer revisions, declared failures, and list immutability.
 The frontend suite compiles and mounts real EVC with generated native/eval codecs
 through a test-only contextual port, covering states, manual recovery, handle
 cleanup, held operation races, scope switching, separate

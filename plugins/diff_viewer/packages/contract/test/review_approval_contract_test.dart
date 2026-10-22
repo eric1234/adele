@@ -63,6 +63,14 @@ void main() {
         reviewApprovalHandlerServiceUnapproveFileId,
         'diff.reviewApprovalHandler.unapproveFile',
       );
+      expect(
+        reviewApprovalHandlerServiceApproveAllUnstagedId,
+        'diff.reviewApprovalHandler.approveAllUnstaged',
+      );
+      expect(
+        reviewApprovalHandlerServiceUnapproveAllStagedId,
+        'diff.reviewApprovalHandler.unapproveAllStaged',
+      );
     },
   );
 
@@ -79,22 +87,31 @@ void main() {
       for (final wire in _invalidSelections(wholeFile: true)) {
         expect(() => _decodeFileSelection(wire), throwsArgumentError);
       }
+      for (final wire in _invalidSelections(wholeLayer: true)) {
+        expect(() => _decodeLayerSelection(wire), throwsArgumentError);
+      }
     },
   );
 
-  for (final (wholeFile, eval) in [
-    for (final wholeFile in [false, true])
-      for (final eval in [false, true]) (wholeFile, eval),
+  for (final (kind, eval) in [
+    for (final kind in ['hunk', 'file', 'layer'])
+      for (final eval in [false, true]) (kind, eval),
   ]) {
+    final wholeFile = kind == 'file';
+    final wholeLayer = kind == 'layer';
     final selectionWire = {..._selection};
-    if (wholeFile) selectionWire.remove('hunkIndex');
-    final approveId = wholeFile
+    if (wholeFile || wholeLayer) selectionWire.remove('hunkIndex');
+    if (wholeLayer) selectionWire.remove('relativePath');
+    final approveId = wholeLayer
+        ? reviewApprovalHandlerServiceApproveAllUnstagedId
+        : wholeFile
         ? reviewApprovalHandlerServiceApproveFileId
         : reviewApprovalHandlerServiceApproveHunkId;
-    final unapproveId = wholeFile
+    final unapproveId = wholeLayer
+        ? reviewApprovalHandlerServiceUnapproveAllStagedId
+        : wholeFile
         ? reviewApprovalHandlerServiceUnapproveFileId
         : reviewApprovalHandlerServiceUnapproveHunkId;
-    final kind = wholeFile ? 'file' : 'hunk';
     final transport = eval ? 'eval' : 'native';
     group('$kind $transport transport', () {
       late ByteData bytecode;
@@ -139,10 +156,21 @@ void main() {
 
       Future<void> invoke(Map<String, Object?> wire, bool reverse) async {
         if (eval) {
-          await runEval(wholeFile ? 'invokeFile' : 'invoke', [
-            jsonEncode(wire),
-            reverse,
-          ]);
+          await runEval(
+            wholeLayer
+                ? 'invokeLayer'
+                : wholeFile
+                ? 'invokeFile'
+                : 'invoke',
+            [jsonEncode(wire), reverse],
+          );
+        } else if (wholeLayer) {
+          final selection = _decodeLayerSelection(wire);
+          if (reverse) {
+            await client.unapproveAllStaged(selection);
+          } else {
+            await client.approveAllUnstaged(selection);
+          }
         } else if (wholeFile) {
           final selection = _decodeFileSelection(wire);
           if (reverse) {
@@ -172,15 +200,19 @@ void main() {
             expect(channel.method, reverse ? unapproveId : approveId);
             expect(channel.payload, {'selection': selectionWire});
             expect(channel.response, isNull);
+            if (!wholeLayer) {
+              expect(
+                wholeFile
+                    ? service.fileSelections.last.relativePath
+                    : service.selections.last.relativePath,
+                _selection['relativePath'],
+              );
+              if (!wholeFile) expect(service.selections.last.hunkIndex, 2);
+            }
             expect(
-              wholeFile
-                  ? service.fileSelections.last.relativePath
-                  : service.selections.last.relativePath,
-              _selection['relativePath'],
-            );
-            if (!wholeFile) expect(service.selections.last.hunkIndex, 2);
-            expect(
-              wholeFile
+              wholeLayer
+                  ? service.layerSelections.last.expectedRevision
+                  : wholeFile
                   ? service.fileSelections.last.expectedRevision
                   : service.selections.last.expectedRevision,
               'opaque:review-revision',
@@ -198,32 +230,38 @@ void main() {
           for (final wire in [
             {
               ...selectionWire,
-              'relativePath': 'a',
-              if (!wholeFile) 'hunkIndex': 0,
+              if (!wholeLayer) 'relativePath': 'a',
+              if (kind == 'hunk') 'hunkIndex': 0,
               'expectedRevision': ' ',
             },
             {
               ...selectionWire,
-              'relativePath': longPath,
-              if (!wholeFile) 'hunkIndex': 8191,
+              if (!wholeLayer) 'relativePath': longPath,
+              if (kind == 'hunk') 'hunkIndex': 8191,
               'expectedRevision': List.filled(256, '~').join(),
             },
-            {...selectionWire, 'relativePath': 'dir/line\nbreak.txt'},
-            {...selectionWire, 'relativePath': '.github/.gitignore'},
+            if (!wholeLayer)
+              {...selectionWire, 'relativePath': 'dir/line\nbreak.txt'},
+            if (!wholeLayer)
+              {...selectionWire, 'relativePath': '.github/.gitignore'},
           ]) {
             for (final reverse in [false, true]) {
               await invoke(wire, reverse);
-              expect(
-                wholeFile
-                    ? service.fileSelections.last.relativePath
-                    : service.selections.last.relativePath,
-                wire['relativePath'],
-              );
-              if (!wholeFile) {
+              if (!wholeLayer) {
+                expect(
+                  wholeFile
+                      ? service.fileSelections.last.relativePath
+                      : service.selections.last.relativePath,
+                  wire['relativePath'],
+                );
+              }
+              if (kind == 'hunk') {
                 expect(service.selections.last.hunkIndex, wire['hunkIndex']);
               }
               expect(
-                wholeFile
+                wholeLayer
+                    ? service.layerSelections.last.expectedRevision
+                    : wholeFile
                     ? service.fileSelections.last.expectedRevision
                     : service.selections.last.expectedRevision,
                 wire['expectedRevision'],
@@ -349,7 +387,10 @@ void main() {
         'malformed, unknown and authority fields never reach the service',
         () async {
           for (final method in [approveId, unapproveId]) {
-            for (final payload in _invalidPayloads(wholeFile: wholeFile)) {
+            for (final payload in _invalidPayloads(
+              wholeFile: wholeFile,
+              wholeLayer: wholeLayer,
+            )) {
               await expectLater(
                 raw(method, payload),
                 throwsA(
@@ -395,7 +436,10 @@ void main() {
         test(
           'native validation rejects out-of-bounds eval-constructed selections',
           () async {
-            for (final wire in _invalidSelections(wholeFile: wholeFile)) {
+            for (final wire in _invalidSelections(
+              wholeFile: wholeFile,
+              wholeLayer: wholeLayer,
+            )) {
               for (final reverse in [false, true]) {
                 await expectLater(
                   invoke(wire, reverse),
@@ -423,6 +467,9 @@ ReviewFileSelection _decodeFileSelection(Map<String, Object?> wire) =>
       expectedRevision: wire['expectedRevision']! as String,
     );
 
+ReviewLayerSelection _decodeLayerSelection(Map<String, Object?> wire) =>
+    ReviewLayerSelection(expectedRevision: wire['expectedRevision']! as String);
+
 ReviewHunkSelection _decodeSelection(Map<String, Object?> wire) =>
     ReviewHunkSelection(
       relativePath: wire['relativePath']! as String,
@@ -432,30 +479,35 @@ ReviewHunkSelection _decodeSelection(Map<String, Object?> wire) =>
 
 Iterable<Map<String, Object?>> _invalidSelections({
   bool wholeFile = false,
+  bool wholeLayer = false,
 }) sync* {
   final selection = {..._selection};
-  if (wholeFile) selection.remove('hunkIndex');
-  for (final path in [
-    '',
-    '/',
-    '/absolute',
-    'dir/',
-    'dir//file',
-    '.',
-    '..',
-    '.git',
-    './file',
-    '../file',
-    'dir/./file',
-    'dir/../file',
-    'dir/.git/file',
-    'dir/file\u0000name',
-    List.filled(4097, 'x').join(),
-    '${List.filled(2048, '\u{1f600}').join()}x',
-  ]) {
+  if (wholeFile || wholeLayer) selection.remove('hunkIndex');
+  if (wholeLayer) selection.remove('relativePath');
+  for (final path
+      in wholeLayer
+          ? <String>[]
+          : [
+              '',
+              '/',
+              '/absolute',
+              'dir/',
+              'dir//file',
+              '.',
+              '..',
+              '.git',
+              './file',
+              '../file',
+              'dir/./file',
+              'dir/../file',
+              'dir/.git/file',
+              'dir/file\u0000name',
+              List.filled(4097, 'x').join(),
+              '${List.filled(2048, '\u{1f600}').join()}x',
+            ]) {
     yield {...selection, 'relativePath': path};
   }
-  for (final index in wholeFile ? <int>[] : [-1, 8192]) {
+  for (final index in wholeFile || wholeLayer ? <int>[] : [-1, 8192]) {
     yield {...selection, 'hunkIndex': index};
   }
   for (final revision in [
@@ -476,9 +528,11 @@ Iterable<Map<String, Object?>> _invalidSelections({
 
 Iterable<Map<String, Object?>> _invalidPayloads({
   bool wholeFile = false,
+  bool wholeLayer = false,
 }) sync* {
   final valid = {..._selection};
-  if (wholeFile) valid.remove('hunkIndex');
+  if (wholeFile || wholeLayer) valid.remove('hunkIndex');
+  if (wholeLayer) valid.remove('relativePath');
   yield {};
   for (final selection in <Object?>[
     null,
@@ -496,7 +550,7 @@ Iterable<Map<String, Object?>> _invalidPayloads({
     if (wholeFile) {...valid, 'hunkIndex': -1},
     if (wholeFile) {...valid, 'hunkIndex': 0},
     {...valid, 'expectedRevision': false},
-    ..._invalidSelections(wholeFile: wholeFile),
+    ..._invalidSelections(wholeFile: wholeFile, wholeLayer: wholeLayer),
   ]) {
     yield {'selection': selection};
   }
@@ -519,11 +573,24 @@ Iterable<Map<String, Object?>> _invalidPayloads({
     'executable',
     'argv',
     'fileContents',
+    'paths',
+    'actions',
+    'selections',
+    if (wholeLayer) 'relativePath',
+    if (wholeLayer) 'hunkIndex',
   ]) {
     yield {'selection': valid, field: 'forged'};
     yield {
       'selection': {...valid, field: 'forged'},
     };
+  }
+  if (wholeLayer) {
+    for (final field in ['paths', 'actions', 'selections']) {
+      yield {'selection': valid, field: <Object?>[]};
+      yield {
+        'selection': {...valid, field: <Object?>[]},
+      };
+    }
   }
 }
 
@@ -531,7 +598,22 @@ class _Service implements ReviewApprovalHandlerService {
   final operations = <String>[];
   final selections = <ReviewHunkSelection>[];
   final fileSelections = <ReviewFileSelection>[];
+  final layerSelections = <ReviewLayerSelection>[];
   Object? failure;
+
+  @override
+  Future<void> approveAllUnstaged(ReviewLayerSelection selection) async {
+    operations.add('approve');
+    layerSelections.add(selection);
+    if (failure != null) throw failure!;
+  }
+
+  @override
+  Future<void> unapproveAllStaged(ReviewLayerSelection selection) async {
+    operations.add('unapprove');
+    layerSelections.add(selection);
+    if (failure != null) throw failure!;
+  }
 
   @override
   Future<void> approveFile(ReviewFileSelection selection) async {
@@ -647,6 +729,17 @@ Future<void> invokeFile(Function send, String wire, bool reverse) async {
     await client.unapproveFile(selection);
   } else {
     await client.approveFile(selection);
+  }
+}
+
+Future<void> invokeLayer(Function send, String wire, bool reverse) async {
+  final value = jsonDecode(wire);
+  final selection = ReviewLayerSelection(expectedRevision: value['expectedRevision']);
+  final ReviewApprovalHandlerServiceClient client = ReviewApprovalHandlerServiceClient(Channel(send));
+  if (reverse) {
+    await client.unapproveAllStaged(selection);
+  } else {
+    await client.approveAllUnstaged(selection);
   }
 }
 

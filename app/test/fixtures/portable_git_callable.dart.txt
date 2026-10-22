@@ -105,6 +105,18 @@ final class _Approval implements ReviewApprovalHandlerService {
   Future<void> unapproveFile(ReviewFileSelection selection) =>
       _invoke('unapproveFile', () => approvals.unapproveFile(selection));
 
+  @override
+  Future<void> approveAllUnstaged(ReviewLayerSelection selection) => _invoke(
+    'approveAllUnstaged',
+    () => approvals.approveAllUnstaged(selection),
+  );
+
+  @override
+  Future<void> unapproveAllStaged(ReviewLayerSelection selection) => _invoke(
+    'unapproveAllStaged',
+    () => approvals.unapproveAllStaged(selection),
+  );
+
   Future<void> _invoke(String method, Future<void> Function() invoke) async {
     try {
       await invoke();

@@ -13,7 +13,8 @@ import 'package:git_backend/git_backend.dart'
     show
         GitPortableReviewApprovalService,
         GitPortableUnstagedLimits,
-        GitPortableUnstagedSnapshotService;
+        GitPortableUnstagedSnapshotService,
+        GitTaskComparisonAnchor;
 import 'package:test/test.dart';
 
 void main() {
@@ -26,6 +27,1148 @@ void main() {
   tearDown(() async {
     await fixture.close();
   });
+
+  test('whole-layer empty snapshots have no action or mutation', () async {
+    final layers = await fixture.snapshots.snapshotUncommitted();
+    final before = await fixture.state();
+    for (final staged in [false, true]) {
+      final layer = staged ? layers.staged : layers.unstaged;
+      expect(layer.files, isEmpty);
+      expect(layer.layerReviewRevision, isNull);
+      await expectLater(
+        fixture.mutateLayer(_untrustedLayerSelection(), staged: staged),
+        throwsA(_failureCode(['stale_selection', 'unsupported_target'])),
+      );
+    }
+    expect(fixture.processes.writes, isEmpty);
+    await fixture.expectUnchanged(before);
+  });
+
+  for (final format in ['sha1', 'sha256']) {
+    test('whole-layer mixed membership roundtrip $format', () async {
+      if (format != fixture.format) {
+        await fixture.close();
+        fixture = await _Fixture.create(format: format);
+      }
+      final changes = await fixture.layerChanges(mixed: true);
+      final initial = await fixture.state();
+      for (final staged in [false, true]) {
+        final layer = await fixture.layer(staged: staged);
+        expect(layer.files, hasLength(6));
+        expect(
+          layer.files.map((file) => file.changeKind),
+          unorderedEquals([
+            'modified',
+            'modified',
+            'added',
+            'added',
+            'deleted',
+            'deleted',
+          ]),
+        );
+        expect(
+          layer.files
+              .where((file) => file.relativePath.contains('empty'))
+              .every(
+                (file) => file.hunks.isEmpty && file.fileReviewRevision != null,
+              ),
+          isTrue,
+        );
+        final before = await fixture.state();
+        final selection = _layerSelection(layer);
+        fixture.processes.requests.clear();
+        await fixture.mutateLayer(selection, staged: staged);
+        final patch = _checkedFilePatch(fixture, staged: staged);
+        expect('diff --git '.allMatches(patch), hasLength(6));
+        expect('new file mode '.allMatches(patch), hasLength(2));
+        expect('deleted file mode '.allMatches(patch), hasLength(2));
+        final after = await fixture.expectIndexChanges(
+          before,
+          staged ? changes.head : changes.working,
+        );
+        final refreshed = await fixture.snapshots.snapshotUncommitted();
+        expect((staged ? refreshed.staged : refreshed.unstaged).files, isEmpty);
+        expect(
+          (staged ? refreshed.staged : refreshed.unstaged).layerReviewRevision,
+          isNull,
+        );
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateLayer(selection, staged: staged),
+          throwsA(_failureCode(['stale_selection', 'unsupported_target'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(after);
+      }
+      final restored = await fixture.state();
+      expect(restored.listing, initial.listing);
+      expect(restored.blobs, initial.blobs);
+    });
+
+    for (final staged in [false, true]) {
+      test(
+        'whole-layer ${_direction(staged)} exact nested bytes and outside records $format',
+        () async {
+          if (format != fixture.format) {
+            await fixture.close();
+            fixture = await _Fixture.create(format: format);
+          }
+          const prefix = 'selected/project/';
+          final head = <String, String?>{
+            '$prefix-literal [x] \\ "\u00e9".txt': '\ufeffHEAD\r\n\r\nlast',
+            '$prefix:(glob)*[x]': 'before\n',
+            '$prefix\ufeffdeleted.txt': '\ufeffdeleted\r\nlast',
+            '${prefix}empty-deleted': '',
+            '${prefix}quotes\'";\$(touch INJECTED)': null,
+            '${prefix}empty-new': null,
+          };
+          final working = <String, String?>{
+            head.keys.elementAt(0): '\ufeffworking\r\n\r\nlast changed',
+            head.keys.elementAt(1): '',
+            head.keys.elementAt(2): null,
+            head.keys.elementAt(3): null,
+            head.keys.elementAt(4): '\ufeffnew\r\nlast  ',
+            head.keys.elementAt(5): '',
+          };
+          for (final entry in head.entries) {
+            if (entry.value == null) continue;
+            await fixture.write(entry.key, entry.value!);
+            await _command('/usr/bin/chmod', [
+              '755',
+              '${fixture.repository.path}/${entry.key}',
+            ]);
+          }
+          await fixture.write('conflict.txt', 'conflict HEAD\n');
+          await fixture.commit();
+          for (final entry in working.entries) {
+            if (entry.value == null) {
+              await File('${fixture.repository.path}/${entry.key}').delete();
+            } else {
+              await fixture.write(entry.key, entry.value!);
+              await _command('/usr/bin/chmod', [
+                '755',
+                '${fixture.repository.path}/${entry.key}',
+              ]);
+            }
+          }
+          if (staged) await fixture.git(['add', '--all']);
+          await fixture.git([
+            'update-index',
+            '--assume-unchanged',
+            '--',
+            'tracked.txt',
+          ]);
+          await fixture.git([
+            'update-index',
+            '--skip-worktree',
+            '--',
+            'other.txt',
+          ]);
+          await fixture.write(
+            'tracked.txt',
+            'outside assume-unchanged working\n',
+          );
+          await fixture.write('other.txt', 'outside skip-worktree working\n');
+          await fixture.write('outside-new.txt', 'outside staged\n');
+          await fixture.git(['add', '--', 'outside-new.txt']);
+          await fixture.write('outside-new.txt', 'outside working\n');
+          await fixture.makeConflict(path: 'conflict.txt');
+          fixture.processes.root = Directory(
+            '${fixture.repository.path}/selected/project',
+          );
+          const outside = [
+            'ls-files',
+            '--stage',
+            '--debug',
+            '-z',
+            '--',
+            'tracked.txt',
+            'other.txt',
+            'outside-new.txt',
+            'conflict.txt',
+          ];
+          final outsideBefore = await fixture.gitBytes(outside);
+          final before = await fixture.state();
+          final layers = await fixture.snapshots.snapshotUncommitted();
+          expect(layers.conflicts, isEmpty);
+          final layer = staged ? layers.staged : layers.unstaged;
+          expect(layer.files, hasLength(6));
+          fixture.processes.requests.clear();
+          await fixture.mutateLayer(_layerSelection(layer), staged: staged);
+          _checkedFilePatch(fixture, staged: staged);
+          final after = await fixture.expectIndexChanges(
+            before,
+            staged ? head : working,
+            mode: '100755',
+          );
+          expect(
+            await fixture.gitBytes(outside),
+            outsideBefore,
+            reason:
+                'all unrelated flag, stat, mode, OID and conflict-stage bytes',
+          );
+          expect(
+            after.oids.values.every(
+              (oid) => oid.length == (format == 'sha256' ? 64 : 40),
+            ),
+            isTrue,
+          );
+          expect(
+            await File('${fixture.processes.root.path}/INJECTED').exists(),
+            isFalse,
+          );
+          expect(
+            await File('${fixture.repository.path}/INJECTED').exists(),
+            isFalse,
+          );
+        },
+      );
+    }
+  }
+
+  test(
+    'whole-layer revisions are stable across methods and distinct from file hunk and committed',
+    () async {
+      final baseline = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+      await fixture.layerChanges();
+      await fixture.git(['add', '--all']);
+      await fixture.write(
+        'tracked.txt',
+        _text({2: 'working C', 35: 'later C'}),
+      );
+      await fixture.write('other.txt', _text({2: 'other C', 35: 'later C'}));
+      final source = GitPortableUnstagedSnapshotService(
+        processes: fixture.processes,
+        taskAnchor: GitTaskComparisonAnchor(
+          baselineCommit: baseline,
+          expectedBranchRef: 'refs/heads/main',
+        ),
+      );
+      final unstaged = await source.snapshotUnstaged();
+      final uncommitted = await source.snapshotUncommitted();
+      final task = await source.snapshotTaskChanges();
+      final before = await fixture.state();
+      expect(task.committed.files, isNotEmpty);
+      expect(task.committed.layerReviewRevision, isNull);
+      expect(unstaged.layerReviewRevision, isNotNull);
+      expect(uncommitted.staged.layerReviewRevision, isNotNull);
+      expect(
+        unstaged.layerReviewRevision,
+        uncommitted.unstaged.layerReviewRevision,
+      );
+      expect(
+        unstaged.layerReviewRevision,
+        task.uncommitted.unstaged.layerReviewRevision,
+      );
+      expect(
+        uncommitted.staged.layerReviewRevision,
+        task.uncommitted.staged.layerReviewRevision,
+      );
+      expect(
+        (await source.snapshotUnstaged()).layerReviewRevision,
+        unstaged.layerReviewRevision,
+      );
+      expect(
+        uncommitted.staged.layerReviewRevision,
+        isNot(unstaged.layerReviewRevision),
+      );
+      for (final staged in [false, true]) {
+        final layer = staged ? uncommitted.staged : unstaged;
+        final other = staged ? unstaged : uncommitted.staged;
+        for (final revision in [
+          other.layerReviewRevision!,
+          layer.files.first.fileReviewRevision!,
+          layer.files.first.reviewRevision!,
+        ]) {
+          await expectLater(
+            fixture.mutateLayer(
+              ReviewLayerSelection(expectedRevision: revision),
+              staged: staged,
+            ),
+            throwsA(_failureCode(['stale_selection'])),
+          );
+        }
+        await expectLater(
+          fixture.mutateFile(
+            ReviewFileSelection(
+              relativePath: layer.files.first.relativePath,
+              expectedRevision: layer.layerReviewRevision!,
+            ),
+            staged: staged,
+          ),
+          throwsA(_failureCode(['stale_selection'])),
+        );
+      }
+      expect(fixture.processes.writes, isEmpty);
+      await fixture.expectUnchanged(before);
+    },
+  );
+
+  test(
+    'whole-layer reserves combined index growth rather than one insertion',
+    () async {
+      await fixture.write('selected/first.txt', 'first\n');
+      await fixture.write('selected/second.txt', 'second\n');
+      fixture.processes.root = Directory('${fixture.repository.path}/selected');
+      const limits = GitPortableUnstagedLimits(inventoryEntries: 3);
+      final before = await fixture.state();
+      final layer = await fixture.snapshotsWith(limits).snapshotUnstaged();
+      expect(layer.files, hasLength(2));
+      expect(
+        layer.files.every((file) => file.fileReviewRevision != null),
+        isTrue,
+      );
+      expect(layer.layerReviewRevision, isNull);
+      fixture.processes.requests.clear();
+      await expectLater(
+        fixture.mutateLayer(_untrustedLayerSelection(), limits: limits),
+        throwsA(_failureCode(['unsupported_target'])),
+      );
+      expect(fixture.processes.writes, isEmpty);
+      await fixture.expectUnchanged(before);
+    },
+  );
+
+  test(
+    'whole-layer unapprove removes staged addition B and preserves working C',
+    () async {
+      final changes = await fixture.layerChanges(staged: true);
+      await fixture.write('new.txt', 'staged B\n');
+      await fixture.git(['add', '--', 'new.txt']);
+      await fixture.write('new.txt', 'working C\n');
+      final layers = await fixture.snapshots.snapshotUncommitted();
+      expect(layers.unstaged.layerReviewRevision, isNull);
+      expect(layers.staged.files, hasLength(3));
+      final before = await fixture.state();
+      fixture.processes.requests.clear();
+      await fixture.mutateLayer(_layerSelection(layers.staged), staged: true);
+      _checkedFilePatch(fixture, staged: true);
+      await fixture.expectIndexChanges(before, {
+        ...changes.head,
+        'new.txt': null,
+      });
+      final refreshed = await fixture.snapshots.snapshotUncommitted();
+      expect(refreshed.staged.files, isEmpty);
+      expect(refreshed.unstaged.files, hasLength(3));
+      expect(refreshed.unstaged.layerReviewRevision, isNotNull);
+    },
+  );
+
+  test('whole-layer reserves combined untracked stdout growth', () async {
+    final prefix = List.generate(15, (index) => '$index${'p' * 238}').join('/');
+    final paths = List.generate(20, (index) => '$prefix/file-$index');
+    for (final path in paths) {
+      await fixture.write(path, '');
+    }
+    await fixture.git(['add', '--', ...paths.take(2)]);
+    const limits = GitPortableUnstagedLimits(outputBytes: 69 * 1024);
+    final untracked = await fixture.gitBytes([
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+      '-z',
+    ]);
+    expect(untracked.length, lessThan(limits.outputBytes));
+    expect(
+      untracked.length + utf8.encode('${paths[0]}\x00${paths[1]}\x00').length,
+      greaterThan(limits.outputBytes),
+    );
+    final before = await fixture.state();
+    final layers = await fixture.snapshotsWith(limits).snapshotUncommitted();
+    expect(layers.staged.files, hasLength(2));
+    expect(layers.unstaged.files, hasLength(18));
+    expect(
+      layers.staged.files.every((file) => file.fileReviewRevision != null),
+      isTrue,
+    );
+    expect(layers.staged.layerReviewRevision, isNull);
+    fixture.processes.requests.clear();
+    await expectLater(
+      fixture.mutateLayer(
+        _untrustedLayerSelection(),
+        staged: true,
+        limits: limits,
+      ),
+      throwsA(_failureCode(['unsupported_target'])),
+    );
+    expect(fixture.processes.writes, isEmpty);
+    await fixture.expectUnchanged(before);
+  });
+
+  for (final staged in [false, true]) {
+    test(
+      'whole-layer ${_direction(staged)} keeps identical blobs on distinct paths',
+      () async {
+        const paths = ['tracked.txt', 'other.txt'];
+        for (final path in paths) {
+          await fixture.write(path, 'shared HEAD\n');
+        }
+        await fixture.commit();
+        for (final path in paths) {
+          await fixture.write(path, 'shared working\n');
+        }
+        if (staged) await fixture.git(['add', '--all']);
+        final layer = await fixture.layer(staged: staged);
+        expect(layer.files, hasLength(2));
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        await fixture.mutateLayer(_layerSelection(layer), staged: staged);
+        _checkedFilePatch(fixture, staged: staged);
+        final after = await fixture.expectIndexChanges(before, {
+          for (final path in paths)
+            path: staged ? 'shared HEAD\n' : 'shared working\n',
+        });
+        expect(after.oids['0:tracked.txt'], after.oids['0:other.txt']);
+      },
+    );
+
+    for (final cancelling in [false, true]) {
+      test(
+        'whole-layer ${_direction(staged)} preserves A/B/${cancelling ? 'A' : 'C'} partial staging',
+        () async {
+          final head = {
+            'tracked.txt': _text(),
+            'other.txt': 'other original\n',
+          };
+          final indexed = {
+            'tracked.txt': _text({2: 'index B'}),
+            'other.txt': 'other index B\n',
+          };
+          final working = cancelling
+              ? head
+              : {
+                  'tracked.txt': _text({2: 'index B', 35: 'working C'}),
+                  'other.txt': 'other working C\n',
+                };
+          for (final entry in indexed.entries) {
+            await fixture.write(entry.key, entry.value);
+          }
+          await fixture.git(['add', '--all']);
+          for (final entry in working.entries) {
+            await fixture.write(entry.key, entry.value);
+          }
+          final layers = await fixture.snapshots.snapshotUncommitted();
+          expect(layers.staged.files, hasLength(2));
+          expect(layers.unstaged.files, hasLength(2));
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await fixture.mutateLayer(
+            _layerSelection(staged ? layers.staged : layers.unstaged),
+            staged: staged,
+          );
+          _checkedFilePatch(fixture, staged: staged);
+          await fixture.expectIndexChanges(before, staged ? head : working);
+          final refreshed = await fixture.snapshots.snapshotUncommitted();
+          expect(
+            (staged ? refreshed.staged : refreshed.unstaged).files,
+            isEmpty,
+          );
+          expect(
+            (staged ? refreshed.unstaged : refreshed.staged).files,
+            cancelling ? isEmpty : hasLength(2),
+          );
+        },
+      );
+    }
+
+    for (final kind in [
+      'binary',
+      'invalid UTF-8',
+      'oversized',
+      'symlink',
+      'submodule',
+      'conflict',
+      'path collision',
+      'assume-unchanged',
+      'skip-worktree',
+      'intent-to-add',
+      'mode change',
+      'tab path',
+      'newline path',
+      'filter=hostile',
+      'diff=hostile',
+      '-diff',
+      'text',
+      'eol=crlf',
+      'crlf',
+      'working-tree-encoding=UTF-16',
+      'ident',
+      if (!staged) 'staged new further edits',
+    ]) {
+      test(
+        'whole-layer ${_direction(staged)} rejects every target when one is $kind',
+        () async {
+          final path = kind == 'tab path'
+              ? 'bad\tname'
+              : kind == 'newline path'
+              ? 'bad\nname'
+              : 'tracked.txt';
+          await fixture.write(path, 'before\n');
+          await fixture.write('other.txt', 'safe before\n');
+          await fixture.commit();
+          await fixture.write('other.txt', 'safe after\n');
+          await fixture.write(
+            path,
+            kind == 'oversized' ? 'x' * 100 : 'after\n',
+          );
+          if (kind == 'binary' || kind == 'invalid UTF-8') {
+            await File(
+              '${fixture.repository.path}/$path',
+            ).writeAsBytes(kind == 'binary' ? [1, 0, 2] : [255, 254, 10]);
+          } else if (kind == 'symlink') {
+            await File('${fixture.repository.path}/$path').delete();
+            await Link('${fixture.repository.path}/$path').create('other.txt');
+          } else if (kind == 'path collision') {
+            await File('${fixture.repository.path}/$path').delete();
+            await fixture.write('$path/child.txt', 'replacement\n');
+          } else if (kind == 'mode change') {
+            await _command('/usr/bin/chmod', [
+              '755',
+              '${fixture.repository.path}/$path',
+            ]);
+          }
+          if (staged) await fixture.git(['add', '--all']);
+          if (kind == 'submodule') {
+            final oid = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+            await fixture.git([
+              'update-index',
+              '--cacheinfo',
+              '160000,$oid,$path',
+            ]);
+          } else if (kind == 'conflict') {
+            await fixture.makeConflict(path: path);
+          } else if (kind == 'assume-unchanged' || kind == 'skip-worktree') {
+            await fixture.git(['update-index', '--$kind', '--', path]);
+          } else if (kind == 'intent-to-add') {
+            await fixture.git(['update-index', '--force-remove', '--', path]);
+            await fixture.git(['add', '--intent-to-add', '--', path]);
+          } else if (kind == 'staged new further edits') {
+            await fixture.write('new.txt', 'staged B\n');
+            await fixture.git(['add', '--', 'new.txt']);
+            await fixture.write('new.txt', 'working C\n');
+          } else if ([
+            'filter=hostile',
+            'diff=hostile',
+            '-diff',
+            'text',
+            'eol=crlf',
+            'crlf',
+            'working-tree-encoding=UTF-16',
+            'ident',
+          ].contains(kind)) {
+            await fixture.write('.git/info/attributes', '$path $kind\n');
+          }
+          final limits = kind == 'oversized'
+              ? const GitPortableUnstagedLimits(fileBytes: 64)
+              : const GitPortableUnstagedLimits();
+          final before = await fixture.state();
+          final layers = await fixture
+              .snapshotsWith(limits)
+              .snapshotUncommitted();
+          final layer = staged ? layers.staged : layers.unstaged;
+          expect(
+            layer.files
+                .singleWhere((file) => file.relativePath == 'other.txt')
+                .fileReviewRevision,
+            isNotNull,
+            reason: 'an eligible companion must not be silently selected alone',
+          );
+          expect(
+            layer.files
+                .singleWhere((file) => file.relativePath == 'other.txt')
+                .reviewRevision,
+            isNotNull,
+          );
+          expect(layer.layerReviewRevision, isNull);
+          if (kind == 'conflict') {
+            expect(layers.staged.layerReviewRevision, isNull);
+            expect(layers.unstaged.layerReviewRevision, isNull);
+          }
+          if (!staged) {
+            expect(
+              (await fixture.snapshotsWith(limits).snapshotUnstaged())
+                  .layerReviewRevision,
+              isNull,
+            );
+          }
+          fixture.processes.requests.clear();
+          await expectLater(
+            fixture.mutateLayer(
+              _untrustedLayerSelection(),
+              staged: staged,
+              limits: limits,
+            ),
+            throwsA(_failureCode(['unsupported_target'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    test(
+      'whole-layer ${_direction(staged)} aggregate stdin bound retains individual eligibility',
+      () async {
+        // Two-byte text separates the stdin bound from DTO's conservative
+        // six-bytes-per-code-unit presentation allowance.
+        final original = '${'\u00e9' * 70000}\n';
+        final modified = '${'\u00f8' * 70000}\n';
+        final paths = ['tracked.txt', 'other.txt', 'third.txt', 'fourth.txt'];
+        for (final path in paths) {
+          await fixture.write(path, original);
+        }
+        await fixture.commit();
+        for (final path in paths) {
+          await fixture.write(path, modified);
+        }
+        if (staged) await fixture.git(['add', '--all']);
+        final layer = await fixture.layer(staged: staged);
+        expect(layer.files, hasLength(4));
+        expect(
+          layer.files.every((file) => file.fileReviewRevision != null),
+          isTrue,
+        );
+        expect(layer.layerReviewRevision, isNull);
+        expect(
+          utf8.encode(original + modified).length * paths.length,
+          greaterThan(environmentBufferedProcessStdinLimit),
+        );
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        final watch = Stopwatch()..start();
+        await expectLater(
+          fixture.mutateLayer(_untrustedLayerSelection(), staged: staged),
+          throwsA(_failureCode(['unsupported_target'])),
+        );
+        watch.stop();
+        print(
+          'Whole-layer ${_direction(staged)} performance: rejected aggregate, ${fixture.processes.requests.length} processes, ${watch.elapsedMilliseconds} ms (diagnostic).',
+        );
+        expect(fixture.processes.requests.length, lessThan(250));
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      },
+    );
+
+    for (final mutation in [
+      'added file',
+      'removed file',
+      'deleted working file',
+      'changed file',
+      'working metadata',
+      'index',
+      'index metadata',
+      'HEAD',
+      'branch',
+      'detached HEAD',
+      'Session',
+      'Environment',
+      'attributes',
+      'configuration',
+    ]) {
+      test(
+        'whole-layer ${_direction(staged)} rejects stale $mutation',
+        () async {
+          final changes = await fixture.layerChanges(staged: staged);
+          final selection = _layerSelection(
+            await fixture.layer(staged: staged),
+          );
+          switch (mutation) {
+            case 'added file':
+              await fixture.write('new.txt', 'new after display\n');
+              if (staged) await fixture.git(['add', '--', 'new.txt']);
+            case 'removed file':
+              if (staged) {
+                await fixture.git(['reset', 'HEAD', '--', 'other.txt']);
+              } else {
+                await fixture.write('other.txt', changes.head['other.txt']!);
+              }
+            case 'changed file':
+              await fixture.write('other.txt', 'changed after display\n');
+            case 'working metadata':
+              await File(
+                '${fixture.repository.path}/other.txt',
+              ).setLastModified(DateTime.utc(2000));
+            case 'deleted working file':
+              await File('${fixture.repository.path}/other.txt').delete();
+            case 'index':
+              await fixture.write('other.txt', 'external index\n');
+              await fixture.git(['add', '--', 'other.txt']);
+            case 'index metadata':
+              final oid = (await fixture.git([
+                'rev-parse',
+                ':other.txt',
+              ])).trim();
+              await fixture.git([
+                'update-index',
+                '--cacheinfo',
+                '100644,$oid,other.txt',
+              ]);
+            case 'HEAD':
+              final old = (await fixture.git(['rev-parse', 'HEAD'])).trim();
+              final tree = (await fixture.git([
+                'rev-parse',
+                'HEAD^{tree}',
+              ])).trim();
+              final next = (await fixture.git([
+                'commit-tree',
+                tree,
+                '-p',
+                old,
+                '-m',
+                'External HEAD',
+              ])).trim();
+              await fixture.git(['update-ref', 'HEAD', next, old]);
+            case 'branch':
+              await fixture.git(['checkout', '-b', 'other-branch']);
+            case 'detached HEAD':
+              await fixture.git(['checkout', '--detach']);
+            case 'Session':
+              fixture.processes.sessionId = 'other-session';
+            case 'Environment':
+              fixture.processes.environmentId = 'other-environment';
+            case 'attributes':
+              await fixture.write('.git/info/attributes', 'other.txt -text\n');
+            case 'configuration':
+              await fixture.git(['config', 'core.filemode', 'false']);
+          }
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await expectLater(
+            fixture.mutateLayer(selection, staged: staged),
+            throwsA(_failureCode(['stale_selection', 'unsupported_target'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+          if (mutation == 'Session' || mutation == 'Environment') {
+            final fresh = _layerSelection(await fixture.layer(staged: staged));
+            expect(fresh.expectedRevision, isNot(selection.expectedRevision));
+            fixture.processes.requests.clear();
+            await fixture.mutateLayer(fresh, staged: staged);
+            _checkedFilePatch(fixture, staged: staged);
+            await fixture.expectIndexChanges(
+              before,
+              staged ? changes.head : changes.working,
+            );
+          }
+        },
+      );
+    }
+
+    for (final loss in [
+      'failed check',
+      'lock',
+      'response lost',
+      'process timeout',
+      'revoked before check',
+      'revoked after check',
+      'revoked after apply',
+    ]) {
+      test(
+        'whole-layer ${_direction(staged)} $loss never retries or reports false success',
+        () async {
+          final changes = await fixture.layerChanges(
+            staged: staged,
+            mixed: true,
+          );
+          final selection = _layerSelection(
+            await fixture.layer(staged: staged),
+          );
+          final before = await fixture.state();
+          var revoked = false;
+          var checks = 0;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            final check =
+                request.arguments.contains('apply') &&
+                request.arguments.contains('--check');
+            if (check) checks++;
+            if (revoked || loss == 'revoked before check' && check) {
+              throw const EnvironmentFailure(
+                code: 'grant_revoked',
+                message: 'Retired grant.',
+                details: {},
+              );
+            }
+            if (loss == 'failed check' && check) {
+              return EnvironmentBufferedProcessResult(
+                exitCode: 1,
+                stdoutBase64: '',
+                stderrBase64: base64Encode(
+                  utf8.encode('error: patch does not apply\n'),
+                ),
+              );
+            }
+            if (loss == 'lock' && _isWrite(request)) {
+              await fixture.write('.git/index.lock', 'external owner\n');
+            }
+            final result = await run(request);
+            if (loss == 'revoked after check' && check) revoked = true;
+            if (_isWrite(request) && loss != 'lock') {
+              expect(result.exitCode, 0);
+              revoked = true;
+              if (loss == 'response lost' || loss == 'process timeout') {
+                throw EnvironmentFailure(
+                  code: loss == 'response lost'
+                      ? 'process_output_failed'
+                      : 'process_timeout',
+                  message: 'Write acknowledgement lost.',
+                  details: const {},
+                );
+              }
+            }
+            return result;
+          };
+          final prewrite =
+              loss == 'failed check' ||
+              loss == 'revoked before check' ||
+              loss == 'revoked after check';
+          await expectLater(
+            fixture.mutateLayer(selection, staged: staged),
+            throwsA(
+              _failureCode([
+                loss == 'lock'
+                    ? 'mutation_failed'
+                    : prewrite
+                    ? 'inspection_failed'
+                    : 'outcome_uncertain',
+              ]),
+            ),
+          );
+          expect(checks, 1);
+          expect(fixture.processes.writes, hasLength(prewrite ? 0 : 1));
+          if (prewrite || loss == 'lock') {
+            await fixture.expectUnchanged(before);
+            if (loss == 'lock') {
+              expect(
+                await File(
+                  '${fixture.repository.path}/.git/index.lock',
+                ).readAsString(),
+                'external owner\n',
+              );
+            }
+          } else {
+            await fixture.expectIndexChanges(
+              before,
+              staged ? changes.head : changes.working,
+            );
+          }
+        },
+      );
+    }
+
+    for (final boundary in ['after check', 'at write', 'after apply']) {
+      for (final target in ['index', 'working']) {
+        test(
+          'whole-layer ${_direction(staged)} external $target $boundary is stale or uncertain',
+          () async {
+            final changes = await fixture.layerChanges(
+              staged: staged,
+              mixed: true,
+            );
+            final selection = _layerSelection(
+              await fixture.layer(staged: staged),
+            );
+            _State? external;
+            Future<void> changeState() async {
+              expect(external, isNull, reason: 'no retry');
+              if (target == 'working') {
+                await fixture.write('other.txt', 'external working\n');
+              } else if (boundary == 'after apply') {
+                await fixture.write('outside.txt', 'external index addition\n');
+                await fixture.git(['add', '--', 'outside.txt']);
+              } else {
+                await fixture.write('other.txt', 'external index\n');
+                await fixture.git(['add', '--', 'other.txt']);
+              }
+              external = await fixture.state();
+            }
+
+            fixture.processes.requests.clear();
+            fixture.processes.intercept = (request, run) async {
+              if (boundary == 'at write' && _isWrite(request)) {
+                await changeState();
+              }
+              final result = await run(request);
+              if (boundary == 'after check' &&
+                      request.arguments.contains('apply') &&
+                      request.arguments.contains('--check') ||
+                  boundary == 'after apply' && _isWrite(request)) {
+                await changeState();
+              }
+              return result;
+            };
+            await expectLater(
+              fixture.mutateLayer(selection, staged: staged),
+              throwsA(
+                _failureCode([
+                  boundary == 'after check'
+                      ? 'stale_selection'
+                      : 'outcome_uncertain',
+                ]),
+              ),
+            );
+            expect(external, isNotNull);
+            expect(
+              fixture.processes.writes,
+              hasLength(boundary == 'after check' ? 0 : 1),
+            );
+            if (target == 'working' && boundary == 'at write') {
+              await fixture.expectIndexChanges(
+                external!,
+                staged ? changes.head : changes.working,
+              );
+            } else {
+              await fixture.expectUnchanged(external!);
+            }
+          },
+        );
+      }
+    }
+
+    test(
+      'whole-layer ${_direction(staged)} concurrent duplicates have one complete effect',
+      () async {
+        final changes = await fixture.layerChanges(staged: staged, mixed: true);
+        final selection = _layerSelection(await fixture.layer(staged: staged));
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        Future<Object?> invoke() async {
+          try {
+            await fixture.mutateLayer(selection, staged: staged);
+            return null;
+          } on ReviewApprovalFailure catch (error) {
+            return error;
+          }
+        }
+
+        final outcomes = await Future.wait([invoke(), invoke()]);
+        expect(outcomes.where((outcome) => outcome == null), hasLength(1));
+        expect(
+          outcomes.whereType<ReviewApprovalFailure>().single,
+          _failureCode([
+            'stale_selection',
+            'unsupported_target',
+            'mutation_failed',
+            'inspection_failed',
+            'outcome_uncertain',
+          ]),
+        );
+        expect(fixture.processes.writes.length, inInclusiveRange(1, 2));
+        await fixture.expectIndexChanges(
+          before,
+          staged ? changes.head : changes.working,
+        );
+      },
+    );
+
+    for (final change in ['new untracked', 'previously clean tracked']) {
+      test(
+        'whole-layer ${_direction(staged)} detects $change after check',
+        () async {
+          await fixture.write('clean.txt', 'clean HEAD\n');
+          await fixture.layerChanges(staged: staged);
+          final selection = _layerSelection(
+            await fixture.layer(staged: staged),
+          );
+          _State? external;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            final result = await run(request);
+            if (request.arguments.contains('apply') &&
+                request.arguments.contains('--check')) {
+              expect(external, isNull);
+              await fixture.write(
+                change == 'new untracked' ? 'late.txt' : 'clean.txt',
+                'late change\n',
+              );
+              external = await fixture.state();
+            }
+            return result;
+          };
+          await expectLater(
+            fixture.mutateLayer(selection, staged: staged),
+            throwsA(_failureCode(['stale_selection'])),
+          );
+          expect(external, isNotNull);
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(external!);
+        },
+      );
+    }
+
+    for (final corruption in ['conflict-only', 'wrong mode', 'absent']) {
+      test(
+        'whole-layer ${_direction(staged)} later selected $corruption after apply is uncertain',
+        () async {
+          final changes = await fixture.layerChanges(
+            staged: staged,
+            mixed: true,
+          );
+          final selection = _layerSelection(
+            await fixture.layer(staged: staged),
+          );
+          final before = await fixture.state();
+          _State? external;
+          fixture.processes.requests.clear();
+          fixture.processes.intercept = (request, run) async {
+            final result = await run(request);
+            if (_isWrite(request)) {
+              expect(result.exitCode, 0);
+              expect(external, isNull, reason: 'no retry or rollback');
+              await fixture.expectIndexChanges(
+                before,
+                staged ? changes.head : changes.working,
+              );
+              if (corruption == 'conflict-only') {
+                await fixture.makeConflict();
+              } else if (corruption == 'wrong mode') {
+                await fixture.git([
+                  'update-index',
+                  '--chmod=+x',
+                  '--',
+                  'tracked.txt',
+                ]);
+              } else {
+                await fixture.git([
+                  'update-index',
+                  '--force-remove',
+                  '--',
+                  'tracked.txt',
+                ]);
+              }
+              external = await fixture.state();
+            }
+            return result;
+          };
+          await expectLater(
+            fixture.mutateLayer(selection, staged: staged),
+            throwsA(_failureCode(['outcome_uncertain'])),
+          );
+          expect(external, isNotNull);
+          expect(fixture.processes.writes, hasLength(1));
+          await fixture.expectUnchanged(external!);
+        },
+      );
+    }
+
+    test(
+      'whole-layer ${_direction(staged)} reserves verification beyond a complete snapshot',
+      () async {
+        await fixture.layerChanges(staged: staged);
+        fixture.processes.requests.clear();
+        final selection = _layerSelection(await fixture.layer(staged: staged));
+        final snapshotRequests = fixture.processes.requests.length;
+        final limits = GitPortableUnstagedLimits(
+          processes: snapshotRequests + 10,
+        );
+        final before = await fixture.state();
+        final source = fixture.snapshotsWith(limits);
+        final layer = staged
+            ? (await source.snapshotUncommitted()).staged
+            : await source.snapshotUnstaged();
+        expect(
+          layer.files.every((file) => file.fileReviewRevision != null),
+          isTrue,
+        );
+        expect(layer.layerReviewRevision, isNull);
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateLayer(selection, staged: staged, limits: limits),
+          throwsA(_failureCode(['unsupported_target', 'inspection_failed'])),
+        );
+        expect(
+          fixture.processes.requests.length,
+          greaterThanOrEqualTo(snapshotRequests),
+        );
+        expect(
+          fixture.processes.requests.length,
+          lessThanOrEqualTo(limits.processes),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      },
+    );
+
+    for (final (name, limits) in [
+      ('process count', const GitPortableUnstagedLimits(processes: 1)),
+      ('aggregate bytes', const GitPortableUnstagedLimits(totalBytes: 1)),
+      ('stdout', const GitPortableUnstagedLimits(outputBytes: 8)),
+      ('hunk lines', const GitPortableUnstagedLimits(lines: 1)),
+      ('inventory', const GitPortableUnstagedLimits(inventoryEntries: 1)),
+    ]) {
+      test(
+        'whole-layer ${_direction(staged)} $name exhaustion rejects before writing',
+        () async {
+          await fixture.layerChanges(staged: staged);
+          final selection = _layerSelection(
+            await fixture.layer(staged: staged),
+          );
+          final before = await fixture.state();
+          fixture.processes.requests.clear();
+          await expectLater(
+            fixture.mutateLayer(selection, staged: staged, limits: limits),
+            throwsA(_failureCode(['inspection_failed'])),
+          );
+          expect(fixture.processes.writes, isEmpty);
+          await fixture.expectUnchanged(before);
+        },
+      );
+    }
+
+    for (final (name, count, mixed) in [
+      ('two files', 2, false),
+      ('mixed', 2, true),
+      ('larger bounded', 16, false),
+    ]) {
+      test('whole-layer ${_direction(staged)} performance $name', () async {
+        final changes = await fixture.layerChanges(
+          staged: staged,
+          mixed: mixed,
+          count: count,
+        );
+        final layer = await fixture.layer(staged: staged);
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        final watch = Stopwatch()..start();
+        await fixture.mutateLayer(_layerSelection(layer), staged: staged);
+        watch.stop();
+        final requests = fixture.processes.requests.length;
+        print(
+          'Whole-layer ${_direction(staged)} performance: $name, ${layer.files.length} files, $requests processes, ${watch.elapsedMilliseconds} ms (diagnostic).',
+        );
+        final patch = _checkedFilePatch(fixture, staged: staged);
+        expect('diff --git '.allMatches(patch), hasLength(layer.files.length));
+        expect(requests, lessThan(80 + 40 * layer.files.length));
+        await fixture.expectIndexChanges(
+          before,
+          staged ? changes.head : changes.working,
+        );
+      });
+    }
+
+    test(
+      'whole-layer ${_direction(staged)} file-count cap retains file actions',
+      () async {
+        await fixture.layerChanges(staged: staged, count: 17);
+        final layer = await fixture.layer(staged: staged);
+        expect(layer.files, hasLength(17));
+        expect(
+          layer.files.every((file) => file.fileReviewRevision != null),
+          isTrue,
+        );
+        expect(layer.layerReviewRevision, isNull);
+        final before = await fixture.state();
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateLayer(_untrustedLayerSelection(), staged: staged),
+          throwsA(_failureCode(['unsupported_target'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(before);
+      },
+    );
+  }
 
   for (final format in ['sha1', 'sha256']) {
     for (final mode in ['100644', '100755']) {
@@ -2235,11 +3378,16 @@ void main() {
     'new empty',
     'deleted text',
     'deleted empty',
+    'whole-layer',
   ]) {
     test(
       'file review $target does not execute hostile configured helpers',
       () async {
         final deletion = target.startsWith('deleted');
+        final wholeLayer = target == 'whole-layer';
+        final changes = wholeLayer
+            ? await fixture.layerChanges(mixed: true)
+            : null;
         if (deletion) {
           await fixture.deleteTracked(
             original: target == 'deleted empty' ? '' : '\ufeffHEAD\r\nlast  ',
@@ -2282,11 +3430,24 @@ void main() {
         final text = target == 'new empty'
             ? ''
             : _text({2: 'first  ', 35: 'last\t'});
-        if (!deletion) await fixture.write(path, text);
+        if (!deletion && !wholeLayer) await fixture.write(path, text);
         for (final staged in [false, true]) {
-          final file = await fixture.changed(path: path, staged: staged);
+          final layer = await fixture.layer(staged: staged);
           final before = await fixture.state();
-          await fixture.mutateFile(_fileSelection(file), staged: staged);
+          if (wholeLayer) {
+            await fixture.mutateLayer(_layerSelection(layer), staged: staged);
+            await fixture.expectIndexChanges(
+              before,
+              staged ? changes!.head : changes!.working,
+            );
+          } else {
+            await fixture.mutateFile(
+              _fileSelection(
+                layer.files.singleWhere((file) => file.relativePath == path),
+              ),
+              staged: staged,
+            );
+          }
           if (deletion) {
             await fixture.expectIndexPresence(
               before,
@@ -2302,7 +3463,7 @@ void main() {
               ),
               FileSystemEntityType.notFound,
             );
-          } else {
+          } else if (!wholeLayer) {
             expect(
               await File('${fixture.repository.path}/$path').readAsBytes(),
               utf8.encode(text),
@@ -2314,6 +3475,32 @@ void main() {
               await File('${fixture.container.path}/$name.executed').exists(),
               isFalse,
             );
+          }
+        }
+        if (wholeLayer) {
+          for (final rule in [
+            'filter=clean',
+            'filter=process',
+            'diff=hostile',
+          ]) {
+            await fixture.write('.git/info/attributes', 'tracked.txt $rule\n');
+            final before = await fixture.state();
+            expect((await fixture.layer()).layerReviewRevision, isNull);
+            await expectLater(
+              fixture.mutateLayer(_untrustedLayerSelection()),
+              throwsA(_failureCode(['unsupported_target'])),
+            );
+            await fixture.expectUnchanged(before);
+            expect(fixture.processes.writes, hasLength(2));
+          }
+          for (final entry in helpers.entries) {
+            final marker = File(
+              '${fixture.container.path}/${entry.key}.executed',
+            );
+            expect(await marker.exists(), isFalse);
+            final control = await Process.run(entry.value, const <String>[]);
+            expect(control.exitCode, 99);
+            expect(await marker.readAsString(), 'executed');
           }
         }
         // Executable positive controls for every helper are maintained in the shared
@@ -3620,6 +4807,19 @@ void main() {
 
 String _direction(bool staged) => staged ? 'unapprove' : 'approve';
 
+ReviewLayerSelection _layerSelection(ChangeSetSnapshot layer) {
+  expect(
+    layer.layerReviewRevision,
+    isNotNull,
+    reason: 'the entire layer must be actionable',
+  );
+  return ReviewLayerSelection(expectedRevision: layer.layerReviewRevision!);
+}
+
+ReviewLayerSelection _untrustedLayerSelection() => ReviewLayerSelection(
+  expectedRevision: 'display-only-layer-has-no-review-revision',
+);
+
 ReviewFileSelection _fileSelection(ChangedFile file) {
   expect(
     file.fileReviewRevision,
@@ -3771,6 +4971,61 @@ final class _Fixture {
     return staged
         ? service.unapproveFile(selection)
         : service.approveFile(selection);
+  }
+
+  Future<void> mutateLayer(
+    ReviewLayerSelection selection, {
+    bool staged = false,
+    GitPortableUnstagedLimits limits = const GitPortableUnstagedLimits(),
+  }) {
+    final service = GitPortableReviewApprovalService(
+      processes: processes,
+      limits: limits,
+    );
+    return staged
+        ? service.unapproveAllStaged(selection)
+        : service.approveAllUnstaged(selection);
+  }
+
+  Future<({Map<String, String?> head, Map<String, String?> working})>
+  layerChanges({bool staged = false, bool mixed = false, int count = 2}) async {
+    final paths = [
+      'tracked.txt',
+      'other.txt',
+      for (var i = 2; i < count; i++) 'file-$i.txt',
+    ];
+    final head = <String, String?>{
+      for (var i = 0; i < paths.length; i++) paths[i]: _text({2: 'HEAD $i'}),
+      if (mixed) ...{
+        'deleted.txt': 'HEAD deleted\n',
+        'empty-deleted.txt': '',
+        'new.txt': null,
+        'empty-new.txt': null,
+      },
+    };
+    final working = <String, String?>{
+      for (var i = 0; i < paths.length; i++)
+        paths[i]: _text({2: 'working $i', 35: 'last $i'}),
+      if (mixed) ...{
+        'deleted.txt': null,
+        'empty-deleted.txt': null,
+        'new.txt': 'new text\n',
+        'empty-new.txt': '',
+      },
+    };
+    for (final entry in head.entries) {
+      if (entry.value != null) await write(entry.key, entry.value!);
+    }
+    await commit();
+    for (final entry in working.entries) {
+      if (entry.value == null) {
+        await File('${repository.path}/${entry.key}').delete();
+      } else {
+        await write(entry.key, entry.value!);
+      }
+    }
+    if (staged) await git(['add', '--all']);
+    return (head: head, working: working);
   }
 
   Future<void> write(String path, String text) async {
@@ -3978,15 +5233,29 @@ final class _Fixture {
     String path,
     String? text, {
     String mode = '100644',
+  }) => expectIndexChanges(before, {path: text}, mode: mode);
+
+  Future<_State> expectIndexChanges(
+    _State before,
+    Map<String, String?> changes, {
+    String mode = '100644',
   }) async {
     final after = await state();
     _expectWorkingAndHead(before, after);
     final records = before.listing.split('\x00')
-      ..removeWhere((record) => record.isEmpty || record.endsWith('\t$path'));
-    final oids = {...before.oids}..remove('0:$path');
-    final blobs = {...before.blobs}..remove('0:$path');
-    if (text != null) {
-      final bytes = utf8.encode(text);
+      ..removeWhere(
+        (record) =>
+            record.isEmpty ||
+            changes.keys.any((path) => record.endsWith('\t$path')),
+      );
+    final oids = {...before.oids};
+    final blobs = {...before.blobs};
+    for (final entry in changes.entries) {
+      final path = entry.key;
+      oids.remove('0:$path');
+      blobs.remove('0:$path');
+      if (entry.value == null) continue;
+      final bytes = utf8.encode(entry.value!);
       final oid = (format == 'sha256' ? sha256 : sha1).convert([
         ...utf8.encode('blob ${bytes.length}\x00'),
         ...bytes,
@@ -3999,7 +5268,7 @@ final class _Fixture {
     expect(
       after.listing.split('\x00').where((record) => record.isNotEmpty),
       unorderedEquals(records),
-      reason: 'only the selected stage-0 entry may be inserted or removed',
+      reason: 'only selected stage-0 entries may change membership or content',
     );
     expect(after.oids, oids);
     expect(after.blobs, blobs, reason: 'all exact index blob bytes');

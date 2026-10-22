@@ -498,10 +498,10 @@ It declares `environmentBound: true` and only
 `AdeleEnvironmentHostService.bufferedProcess`, without a same-backend association.
 Its contextual dispatcher constructs the handler per admitted operation using that
 operation's generated `AuthorizedEnvironmentBufferedProcessServiceClient`.
-It retains neither a global authorization grant nor approval state. Hunk and file
-approval requires no Task baseline or SQL anchor and works with independent
+It retains neither a global authorization grant nor approval state. Hunk, file and
+whole-layer approval require no Task baseline or SQL anchor and work with independent
 compatible Environment providers. No Environment service, combined read/process grant,
-Worktree provider state, or Project schema is added or changed.
+provider registration, Worktree provider state, or Project schema is added or changed.
 
 The stock compiled Diff frontend declares this exact Capability/major separately
 from its inspection permission. It offers explicit hunk-level Approve/Unapprove
@@ -509,6 +509,11 @@ and complete-file Approve File/Unapprove File, never raw process authority or pa
 execution. Missing approval access
 leaves read-only inspection available; see [Diff presentation](../diff_viewer/README.md#presentation)
 for pending, snapshot freshness, safe failure and retirement behavior.
+The same handler also implements `approveAllUnstaged(ReviewLayerSelection)` and
+`unapproveAllStaged(ReviewLayerSelection)`; stock Diff has no whole-layer buttons yet.
+Those controls and their UI feedback are deferred to G6c3b.
+`ReviewLayerSelection` carries only `expectedRevision`, never a caller-supplied
+path list, patch, layer/action selector or authority.
 
 Approve takes one Unstaged hunk toward the working file; Unapprove reverses one
 Staged hunk toward captured HEAD. The selected Environment's authorized buffered
@@ -541,8 +546,18 @@ operation restores, deletes or rewrites a working file: the path remains absent.
 Empty tracked files use the same membership transitions without invented hunks.
 Staged deletions followed by working recreation, newly staged additions followed
 by deletion, file/directory replacements, unsafe ancestors and nested repositories
-remain read-only. Partial hunk approval of additions or deletions and whole-layer
-actions are not supported.
+remain read-only. Partial hunk approval of additions or deletions is not supported.
+
+Approve All Unstaged applies every reported change in the selected Environment's
+Unstaged layer; Unapprove All Staged reverses every reported change in its Staged
+layer. Both use the complete-file modification/addition/deletion semantics above,
+including empty files and partially staged modifications. "All" is confined to
+the selected Environment source scope, not the whole repository when that source
+is nested. It never means only the eligible subset of reported changes. Committed
+changes and conflicts cannot be selected; Task uses its separate uncommitted layers,
+not a baseline-to-working-tree comparison. Ignored files remain outside Git's ordinary
+Unstaged set. Committed work has no remaining staged approval to reverse, and
+unmerged entries have no resolved stage-0 approval state.
 
 Snapshot `ChangedFile.reviewRevision` is present only for ordinary tracked regular
 text modifications with actual bounded hunks and an inspectable regular working
@@ -574,6 +589,17 @@ and its resulting index blob must fit the existing file bound. A file can retain
 `reviewRevision` for valid hunk actions while the aggregate patch is too large for
 `fileReviewRevision`. Neither revision grants authority.
 
+`ChangeSetSnapshot.layerReviewRevision` is a required nullable field, advertised
+only for a nonempty layer when every reported file has a `fileReviewRevision` and
+the combined patch, resulting index membership and verification work fit the shared
+bounds. Any unsupported reported file or aggregate-limit failure makes the whole
+layer unavailable rather than skipping that file or truncating the patch. Individual
+file and hunk revisions remain intact when only layer eligibility fails. Empty and
+Committed snapshots have no layer revision. Any conflict within the selected source
+scope disables both Uncommitted/Task layer revisions and standalone Unstaged layer
+review. Out-of-scope conflicts do not disable layer review; their raw index records
+must remain unchanged.
+
 The deterministic SHA-256 revision binds the layer, captured Session and
 Environment identities, discovered repository/source scope, literal path, HEAD
 commit and symbolic ref, the observed index inventory, selected stage-0 mode/object,
@@ -587,6 +613,14 @@ as well as the same observed identities and state. Untracked content identity co
 from independently verified bounded raw bytes, never a content-cleaning filter.
 The `git-file-deletion-review-v1` domain additionally binds the exact HEAD entry
 and the explicit working-absence proof rather than a fabricated empty-file hash.
+The separate `git-layer-review-v1` domain derives a deterministic SHA-256 revision
+from the selected layer and its complete ordered membership and file revisions.
+It also binds the selected regular files' already-observed metadata, including
+identity and modification/change times. It retains the file revisions' captured
+identity, repository, HEAD, index and working-state preconditions without a second
+approval-state store. A file/hunk revision or
+opposite-layer revision is not a layer selection, and changes to membership or any
+constituent revision require a fresh snapshot.
 
 Deletion eligibility and mutation verification share one narrowly scoped absence
 probe through the captured buffered-process grant. Fixed shell code receives only
@@ -606,10 +640,12 @@ renames or substitutions; they reject observed mismatches rather than continuing
 into a different tree. No generic Environment filesystem service is added.
 
 The handler reuses portable discovery, bounded inventories, parsers, classification
-and consistency checks, focusing content inspection on the selected validated path.
+and consistency checks, focusing content inspection on the selected validated path
+for hunk/file actions or inspecting the complete selected layer for layer actions.
+Whole-layer review uses one captured operation, not repeated file-handler invocations.
 It never accepts patch text. It reconstructs the exact expected index bytes from
-the selected parsed hunk or verifies the complete comparison's expected blob, and
-quotes a repository-relative patch path derived from
+the selected parsed hunk or verifies each complete comparison's expected blob, and
+quotes repository-relative patch paths derived from
 the captured source prefix and inventory, not caller-supplied patch headers.
 It then executes, through the existing sanitized wrapper:
 
@@ -633,6 +669,11 @@ for approval or HEAD blob OID for unapproval, a full-width zero new OID, and
 no-final-newline markers; empty deletions use mode-only metadata. Applying the
 HEAD-derived deletion patch with `--reverse` recreates only index membership,
 never the working file. SHA-1 and SHA-256 object identities retain their full widths.
+Whole-layer review combines the complete per-file patches into one bounded stdin
+payload, preserving each file's headers, coordinates, modes, OIDs and newline markers.
+It runs one combined cached `--check`, then exactly one cached apply or reverse
+write. It does not apply a valid prefix, loop over file writes, use `git add` or
+`reset`, or stage through a temporary index.
 Both check and write receive bounded backend-derived stdin. Each successful action
 issues exactly one index-mutating apply request. The wrapper retains literal argv,
 `env -i`, pinned repository routing, no optional locks/replacements/lazy fetch,
@@ -643,21 +684,24 @@ and process filters, external diff, textconv, hooks and fsmonitor. None runs dur
 the tested apply/check/reverse operations, even under hostile attributes.
 
 Preflight revalidates the selected state after `--check`. Postflight verifies exact
-index membership, stage-0 mode/object identity and hash-checked created blob bytes,
-or complete selected-entry absence after removal, plus unrelated index records and flags
-including entries outside a nested selected source scope, working
-bytes/metadata or the explicit working-absence proof, HEAD/ref,
+index membership, stage-0 mode/object identity and hash-checked created blob bytes
+for every selected path, or complete selected-entry absence after removal. It also
+preserves the raw unrelated index stage/debug records, including flags, stat records,
+conflict sides and entries outside a nested selected source scope, rather than
+comparing only a collapsed display map. Verification includes selected working
+bytes/metadata and parents or the explicit working-absence proof, HEAD/ref,
 attributes/configuration, repository scope and captured
 identity. Git's lock prevents concurrent index writers from corrupting the index,
 but neither `--check` nor a text patch's full-index OID header is compare-and-swap.
 An external writer can race between checks and apply, or after verification.
 There is no atomic filesystem/index transaction. A raced postcondition or lost
 acknowledgement is uncertain, never fabricated success or permission to roll back
-unrelated index state.
+unrelated index state. The handler never rolls back an attempted mutation.
 
 One thirty-second operation envelope includes preflight, construction, check,
 write and verification, with the existing ten-second process cap and aggregate
-snapshot limits. The handler reserves known verification traffic and process count
+snapshot limits shared across all selected files, not renewed per file or layer.
+The handler reserves known verification traffic and process count
 before the write. File sides retain the 1 MiB limit, hunk lines the 8,192 bound,
 stdin the existing 1 MiB bound, inventory 4,096 entries, aggregate traffic 8 MiB,
 stdout 2 MiB and stderr 64 KiB. Resource exhaustion before the write is rejection;
@@ -666,7 +710,18 @@ generic transport limit is raised, no clean file gets a separate process, and no
 mutation is retried automatically.
 Absence requests, their transported proofs and retained parent-path text share
 these same budgets. Index insertion by addition approval or deletion unapproval
-also reserves inventory and output growth before advertising eligibility.
+also reserves inventory and output growth before advertising eligibility, including
+the combined growth of all insertions in a layer.
+Layer eligibility conservatively estimates combined patch size, index growth and
+working-inventory output growth, plus pre/post-verification traffic and process
+counts from existing observations; deriving
+the layer revision adds no scan or subprocess. Whole-layer mutations additionally
+support at most 16 changed files. Sequential complete-operation measurements motivate
+this conservative cap, leaving headroom for both verification passes inside the
+thirty-second envelope; it is not a timing guarantee for arbitrary providers or
+repository layouts. Larger layers remain inspectable with individual file/hunk
+actions, but no layer revision. All changed entries still share the 256-entry
+snapshot limit and 4,096-process ceiling, without renewing budgets per file.
 
 For actionable nested-source snapshots, the review index inventory is bounded
 across the whole repository so unrelated entries outside the displayed scope are
@@ -682,14 +737,32 @@ Transport retirement can suppress the failure response itself and never implies
 rollback. Success is returned only after the intended index result is confirmed.
 
 `git_hunk_apply_feasibility_test.dart` establishes single- and multi-hunk Git apply,
-complete-file all-or-none rejection and the mechanism's
+complete-file and combined multi-file all-or-none rejection and the mechanism's
 non-CAS limits; `git_portable_review_approval_test.dart` exercises the production
-handler, exact object/working-byte evidence, aggregate eligibility, stale targets,
-races and uncertainty. Non-gating file diagnostics report complete approval and
+handler, exact per-path object/working-byte evidence, mixed multi-file operations,
+aggregate eligibility, stale targets, races and uncertainty.
+Non-gating file diagnostics report complete approval and
 unapproval process counts and elapsed times for one, several and many hunks;
 process-count assertions retain one write regardless of hunk count.
+Representative Linux whole-layer diagnostics, including fresh inspection,
+construction, check, one write and full verification, measured:
+
+| Layer | Approve requests / elapsed | Unapprove requests / elapsed |
+| --- | --- | --- |
+| Two modified files | 100 / 3.079 s | 94 / 2.876 s |
+| Six mixed files, including empty additions/deletions | 173 / 5.362 s | 160 / 5.293 s |
+| Sixteen modified files | 352 / 10.584 s | 304 / 9.875 s |
+| Four files rejected by combined patch bounds | 70 / 2.877 s | 58 / 2.347 s |
+
+Each admitted case uses exactly one index-writing request; rejected aggregates use
+none. The 16-file cap leaves measured headroom rather than promising that the
+256-entry inspection limit is whole-layer mutation capacity. CI checks deterministic
+request/mutation bounds, not these host-dependent elapsed times. Clean 100/500/900-file
+snapshots retain the existing batch-scaling model; revision calculation adds no requests.
 The existing `prepared_portable_git_integration_test.dart` adds independent
 Environment AOT, production-handler Capability AOT, and generated-client EVC proof.
+Its layer selections exercise the same generated Capability without adding stock
+frontend controls or a new grant.
 `prepared_diff_git_integration_test.dart` exercises the production advertisement and
 actual stock Diff controls against selected nonprimary Git indices, independently of
 the isolated frontend state tests. Inspection and approval continue to have separate

@@ -23,11 +23,15 @@ class PortableGitState extends State<PortableGit> {
   dynamic stagedSelection;
   dynamic unstagedFileSelection;
   dynamic stagedFileSelection;
+  dynamic unstagedLayerSelection;
+  dynamic stagedLayerSelection;
   bool approvalSelected = false;
   bool unstagedSelected = false;
   bool stagedSelected = false;
   bool unstagedFileSelected = false;
   bool stagedFileSelected = false;
+  bool unstagedLayerSelected = false;
+  bool stagedLayerSelected = false;
   String approvalSelection = 'approval:idle';
   String approval = 'approval:idle';
   List<String> handles = [];
@@ -87,10 +91,13 @@ class PortableGitState extends State<PortableGit> {
     String rendered = 'snapshot';
     if (scope == 'unstaged') {
       final ChangeSetSnapshot value = result[1];
+      rememberLayerSelection(value, false);
       rememberSelection(value.files, false);
       rendered += renderFiles(value.files);
     } else if (scope == 'uncommitted') {
       final UncommittedChangeSetSnapshot value = result[1];
+      rememberLayerSelection(value.staged, true);
+      rememberLayerSelection(value.unstaged, false);
       rememberSelection(value.staged.files, true);
       rememberSelection(value.unstaged.files, false);
       rendered += '\nstaged' + renderFiles(value.staged.files);
@@ -98,6 +105,8 @@ class PortableGitState extends State<PortableGit> {
       rendered += '\nconflicts' + renderFiles(value.conflicts);
     } else {
       final TaskChangeSetSnapshot value = result[1];
+      rememberLayerSelection(value.uncommitted.staged, true);
+      rememberLayerSelection(value.uncommitted.unstaged, false);
       rememberSelection(value.uncommitted.staged.files, true);
       rememberSelection(value.uncommitted.unstaged.files, false);
       rendered += '\ncommitted' + renderFiles(value.committed.files);
@@ -108,6 +117,25 @@ class PortableGitState extends State<PortableGit> {
     setState(() {
       text = rendered;
     });
+  }
+
+  void rememberLayerSelection(ChangeSetSnapshot layer, bool reverse) {
+    if (reverse) {
+      stagedLayerSelected = false;
+    } else {
+      unstagedLayerSelected = false;
+    }
+    if (layer.layerReviewRevision == null) return;
+    final selected = ReviewLayerSelection(
+      expectedRevision: layer.layerReviewRevision!,
+    );
+    if (reverse) {
+      stagedLayerSelection = selected;
+      stagedLayerSelected = true;
+    } else {
+      unstagedLayerSelection = selected;
+      unstagedLayerSelected = true;
+    }
   }
 
   void rememberSelection(List<ChangedFile> files, bool reverse) {
@@ -189,15 +217,27 @@ class PortableGitState extends State<PortableGit> {
     dynamic selected,
     dynamic selection,
     bool reverse,
-    bool wholeFile,
-  ) async {
+    bool wholeFile, [
+    bool wholeLayer = false,
+  ]) async {
     if (selected == null || selection == null || disposed) return;
     setState(() {
       approval = 'approval:pending';
     });
     final ReviewApprovalHandlerServiceClient typed = selected;
     dynamic result;
-    if (wholeFile) {
+    if (wholeLayer) {
+      final ReviewLayerSelection layer = selection;
+      if (reverse) {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.unapproveAllStaged(layer),
+        );
+      } else {
+        result = await settleEnvironmentCapabilityOperation(
+          typed.approveAllUnstaged(layer),
+        );
+      }
+    } else if (wholeFile) {
       final ReviewFileSelection file = selection;
       if (reverse) {
         result = await settleEnvironmentCapabilityOperation(
@@ -336,6 +376,20 @@ class PortableGitState extends State<PortableGit> {
           review(approvalClient, stagedFileSelection, true, true);
         },
         child: Text('Unapprove File'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (!approvalSelected || !unstagedLayerSelected) return;
+          review(approvalClient, unstagedLayerSelection, false, false, true);
+        },
+        child: Text('Approve All'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (!approvalSelected || !stagedLayerSelected) return;
+          review(approvalClient, stagedLayerSelection, true, false, true);
+        },
+        child: Text('Unapprove All'),
       ),
     ],
   );

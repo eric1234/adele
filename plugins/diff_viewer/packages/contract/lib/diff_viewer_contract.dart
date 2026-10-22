@@ -44,10 +44,16 @@ final class UncommittedChangeSetSnapshot {
 
 @AdeleValue('diff.changeSetSnapshot')
 final class ChangeSetSnapshot {
-  ChangeSetSnapshot({required List<ChangedFile> files})
-    : files = List<ChangedFile>.unmodifiable(files);
+  ChangeSetSnapshot({
+    required List<ChangedFile> files,
+    required this.layerReviewRevision,
+  }) : files = List<ChangedFile>.unmodifiable(files);
 
   final List<ChangedFile> files;
+
+  /// Opaque provider revision for the complete displayed layer, not authority.
+  /// Null means whole-layer review is unavailable, independently of file review.
+  final String? layerReviewRevision;
 }
 
 @AdeleValue('diff.changedFile')
@@ -157,6 +163,17 @@ final class ReviewFileSelection {
   final String expectedRevision;
 }
 
+/// Selects the complete displayed layer without paths, actions, or authority.
+@AdeleValue('diff.reviewLayerSelection')
+final class ReviewLayerSelection {
+  ReviewLayerSelection({required this.expectedRevision}) {
+    _validateReviewRevision(expectedRevision);
+  }
+
+  /// Nonempty opaque layer revision, at most 256 printable ASCII characters.
+  final String expectedRevision;
+}
+
 void _validateReviewSelection(String relativePath, String expectedRevision) {
   if (relativePath.isEmpty ||
       relativePath.length > 4096 ||
@@ -169,6 +186,10 @@ void _validateReviewSelection(String relativePath, String expectedRevision) {
           )) {
     throw ArgumentError.value(relativePath, 'relativePath', 'Invalid path.');
   }
+  _validateReviewRevision(expectedRevision);
+}
+
+void _validateReviewRevision(String expectedRevision) {
   if (expectedRevision.isEmpty ||
       expectedRevision.length > 256 ||
       expectedRevision.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
@@ -210,6 +231,14 @@ abstract interface class ReviewApprovalHandlerService {
 
   @AdeleMethod('unapproveFile')
   Future<void> unapproveFile(ReviewFileSelection selection);
+
+  /// Approves the complete provider-certified Unstaged layer in one operation.
+  @AdeleMethod('approveAllUnstaged')
+  Future<void> approveAllUnstaged(ReviewLayerSelection selection);
+
+  /// Unapproves the complete provider-certified Staged layer in one operation.
+  @AdeleMethod('unapproveAllStaged')
+  Future<void> unapproveAllStaged(ReviewLayerSelection selection);
 }
 
 @AdeleFailure('diff.changeSetFailure')
