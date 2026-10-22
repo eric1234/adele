@@ -46,6 +46,7 @@ const _service = 'diff.changeSetSource';
 const _approvalProvider = 'test.callable.approval';
 const _selectedBranch = 'selected-task';
 const _selectedBranchRef = 'refs/heads/$_selectedBranch';
+const _newFileReviewPath = "new review + [file]; 'quoted'.txt";
 const _library = 'package:portable_git_consumer/main.dart';
 final _capability = CapabilityKey(
   id: CapabilityId('adele.diff.change-set-source'),
@@ -468,6 +469,7 @@ void main() {
   Future<Map<String, String>> reviewRepositories(
     WidgetTester tester, {
     bool wholeFile = false,
+    String? newFileContent,
   }) async => (await tester.runAsync(() async {
     final result = <String, String>{};
     final name = 'review-${sequence++}';
@@ -509,11 +511,26 @@ void main() {
           '${root.path}/z-other.txt',
         ).writeAsString('$id other working\n');
       }
-      await File('${root.path}/review.txt').writeAsString(
-        wholeFile
-            ? _fileReviewContent(id, staged: true, changed: true)
-            : _reviewContent(id, first: true, second: true),
-      );
+      if (newFileContent != null) {
+        await File(
+          '${root.path}/untouched.txt',
+        ).writeAsString('$id unrelated staged sentinel\n');
+        await _git(root, ['add', '--', 'untouched.txt']);
+        final added = File('${root.path}/$_newFileReviewPath');
+        if (id == 'primary') {
+          await added.writeAsString('Primary staged new file\n');
+          await _git(root, ['add', '--', _newFileReviewPath]);
+          await added.writeAsString('Primary working new file\n');
+        } else {
+          await added.writeAsString(newFileContent);
+        }
+      } else {
+        await File('${root.path}/review.txt').writeAsString(
+          wholeFile
+              ? _fileReviewContent(id, staged: true, changed: true)
+              : _reviewContent(id, first: true, second: true),
+        );
+      }
       result[id] = await root.resolveSymbolicLinks();
     }
     return result;
@@ -2475,6 +2492,184 @@ void main() {
     },
   );
 
+  for (final empty in [false, true]) {
+    testWidgets(
+      'G6c2a stock ${empty ? 'empty file' : 'new text file'} approval roundtrip uses independent Environment AOT without Task anchors',
+      (tester) async {
+        const path = _newFileReviewPath;
+        final content = empty
+            ? ''
+            : 'Independent new text\nFinal line without newline';
+        final repositories = await reviewRepositories(
+          tester,
+          newFileContent: content,
+        );
+        final before = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        await tester.runAsync(
+          () => _expectNewFileIndex(
+            repositories,
+            before,
+            content,
+            approved: false,
+          ),
+        );
+        final durable = await openDurable(
+          tester,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+        );
+        final database = durable.lifecycle.databaseForEnvironment(
+          EnvironmentId('additional'),
+        )!;
+        const anchorTable =
+            "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
+        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+        await mount(
+          tester,
+          registry: durable.registry,
+          lifecycle: durable.lifecycle,
+          additionalRoot: repositories['additional'],
+          primaryRoot: repositories['primary'],
+          withTaskAnchor: false,
+          stock: true,
+        );
+        expect(fixture.connection.pluginId, gitPluginId);
+        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+        final approval = fixture.capabilities.resolve(reviewApprovalCapability);
+        expect(approval.provider.id.value, gitReviewApprovalProviderId);
+        expect(fixture.callableOwner.associationFor(approval), isNull);
+        expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
+        expect(
+          durable.lifecycle.store
+              .requireSessionAuthority(fixture.sessionA.id)
+              .environmentId,
+          EnvironmentId('additional'),
+        );
+        final approve = _pane(
+          'a',
+          find.widgetWithText(TextButton, 'Approve File'),
+        );
+        final unapprove = _pane(
+          'a',
+          find.widgetWithText(TextButton, 'Unapprove File'),
+        );
+        await _waitFor(tester, approve);
+        expect(find.text('$path  [added]'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Unapprove'), findsNothing);
+        expect(
+          find.textContaining('@@ -'),
+          empty ? findsNothing : findsOneWidget,
+        );
+        if (!empty) {
+          expect(find.textContaining('+Independent new text'), findsOneWidget);
+          expect(
+            find.textContaining('+Final line without newline'),
+            findsOneWidget,
+          );
+        }
+        final staleApprove = tester.widget<TextButton>(approve).onPressed!;
+        await tester.runAsync(() => tester.tap(approve));
+        await _stockVisible(tester, 'No unstaged changes');
+        expect(approve, findsNothing);
+        await tester.runAsync(
+          () => _expectNewFileIndex(
+            repositories,
+            before,
+            content,
+            approved: true,
+          ),
+        );
+        final approved = (await tester.runAsync(
+          () => _reviewStates(repositories),
+        ))!;
+        staleApprove();
+        await tester.pump();
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          approved,
+        );
+        expect(
+          _reviewWrites(
+            (await tester.runAsync(() => _stockEvidence(fixture)))!,
+          ),
+          hasLength(1),
+        );
+
+        _press(tester, 'Uncommitted changes');
+        await _waitFor(tester, unapprove, count: 2);
+        expect(find.text('$path  [added]'), findsOneWidget);
+        // The other file action belongs to the unrelated staged sentinel.
+        expect(find.widgetWithText(TextButton, 'Unapprove'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('$path  [added]')).dy,
+          lessThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+        final staleUnapprove = tester
+            .widget<TextButton>(unapprove.first)
+            .onPressed!;
+        await tester.runAsync(() => tester.tap(unapprove.first));
+        await _waitFor(tester, approve);
+        expect(unapprove, findsOneWidget);
+        expect(find.text('$path  [added]'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('$path  [added]')).dy,
+          greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
+        );
+        expect(
+          find.textContaining('+additional unrelated staged sentinel'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Primary'), findsNothing);
+        await tester.runAsync(
+          () => _expectNewFileIndex(
+            repositories,
+            before,
+            content,
+            approved: false,
+          ),
+        );
+        staleUnapprove();
+        await tester.pump();
+        expect(
+          await tester.runAsync(() => _reviewStates(repositories)),
+          before,
+        );
+        final evidence = (await tester.runAsync(
+          () => _stockEvidence(fixture),
+        ))!;
+        final writes = _reviewWrites(evidence);
+        expect(writes, hasLength(2));
+        expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
+        expect(writes.last['arguments'] as List, contains('--reverse'));
+        for (final write in writes) {
+          expect(write['exitCode'], 0);
+        }
+        for (final process
+            in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
+          expect(process['environmentId'], 'additional');
+          expect(process['providerId'], 'test.environment.a');
+          expect(process['cwd'], repositories['additional']);
+        }
+        expect(
+          fixture.environmentRuntime.currentMaterialization(
+            EnvironmentId('primary'),
+          ),
+          isNull,
+        );
+        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+        expect(
+          durable.lifecycle.store.runsForSession(fixture.sessionA.id),
+          isEmpty,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
   for (final count in [100, 500, 900]) {
     testWidgets(
       'actual stock Git and Diff use independent Environment AOT for $count clean files and layered changes',
@@ -3526,6 +3721,7 @@ Future<String> _git(
   Directory root,
   List<String> arguments, {
   int exitCode = 0,
+  bool trim = true,
 }) async {
   final result = await Process.run(
     '/usr/bin/git',
@@ -3537,7 +3733,8 @@ Future<String> _git(
     exitCode,
     reason: '${result.stdout}\n${result.stderr}',
   );
-  return (result.stdout as String).trim();
+  final output = result.stdout as String;
+  return trim ? output.trim() : output;
 }
 
 String _reviewContent(String id, {bool first = false, bool second = false}) =>
@@ -3583,13 +3780,14 @@ Future<Map<String, Map<String, Object>>> _reviewStates(
   for (final entry in roots.entries) {
     final root = Directory(entry.value);
     final hashes = <String, String>{};
+    final workingBytes = <String, String>{};
     await for (final entity in root.list(recursive: true, followLinks: false)) {
       final path = entity.path.substring(root.path.length + 1);
       if (path == '.git' || path.startsWith('.git/')) continue;
       expect(entity, isA<File>(), reason: 'Unexpected worktree entry: $path');
-      hashes[path] = sha256
-          .convert(await File(entity.path).readAsBytes())
-          .toString();
+      final bytes = await File(entity.path).readAsBytes();
+      hashes[path] = sha256.convert(bytes).toString();
+      workingBytes[path] = base64Encode(bytes);
     }
     result[entry.key] = {
       'head': await _git(root, ['rev-parse', 'HEAD']),
@@ -3597,6 +3795,7 @@ Future<Map<String, Map<String, Object>>> _reviewStates(
       'refs': await _git(root, ['show-ref']),
       'index': await _git(root, ['ls-files', '--stage', '-z']),
       'workingHashes': hashes,
+      'workingBytes': workingBytes,
     };
   }
   return result;
@@ -3627,6 +3826,57 @@ void _expectReviewIndex(
       ),
     },
   });
+}
+
+Future<void> _expectNewFileIndex(
+  Map<String, String> roots,
+  Map<String, Map<String, Object>> before,
+  String content, {
+  required bool approved,
+}) async {
+  const path = _newFileReviewPath;
+  const suffix = '\t$path';
+  expect(
+    (before['additional']!['index']! as String)
+        .split('\u0000')
+        .where((entry) => entry.endsWith(suffix)),
+    isEmpty,
+  );
+  final current = await _reviewStates(roots);
+  final entries = (current['additional']!['index']! as String)
+      .split('\u0000')
+      .where((entry) => entry.isNotEmpty)
+      .toList();
+  final oid = _reviewBlobOid(content);
+  expect(
+    entries.where((entry) => entry.endsWith(suffix)),
+    approved ? ['100644 $oid 0$suffix'] : isEmpty,
+  );
+  expect({
+    ...current,
+    'additional': {
+      ...current['additional']!,
+      'index': entries
+          .where((entry) => !entry.endsWith(suffix))
+          .map((entry) => '$entry\u0000')
+          .join(),
+    },
+  }, before);
+  final root = Directory(roots['additional']!);
+  expect(
+    await _git(root, [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--',
+      path,
+    ], trim: false),
+    '${approved ? 'A ' : '??'} $path\u0000',
+  );
+  expect(await File('${root.path}/$path').readAsBytes(), utf8.encode(content));
+  if (approved) {
+    expect(await _git(root, ['cat-file', 'blob', oid], trim: false), content);
+  }
 }
 
 List<Map<Object?, Object?>> _reviewWrites(Map<Object?, Object?> evidence) =>

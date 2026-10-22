@@ -77,7 +77,7 @@ final class ChangedFile {
   /// Null means this entry has no supported individual hunk action.
   final String? reviewRevision;
 
-  /// Opaque provider revision for the complete displayed file modification.
+  /// Opaque provider revision for the complete displayed file change.
   /// Null means complete-file review is unavailable, independently of hunk review.
   final String? fileReviewRevision;
   final List<DiffHunk> hunks;

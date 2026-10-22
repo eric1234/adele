@@ -148,6 +148,7 @@ final class _PortableSnapshot {
   final Map<String, String> attributes = {};
   final Map<String, int> objectSizes = {};
   final Set<String> reviewableWorkingPaths = {};
+  int? additionOidWidth;
   _ReviewObservation? reviewObservation;
   bool closed = false;
   bool mutationAttempted = false;
@@ -362,7 +363,9 @@ final class _PortableSnapshot {
         if (_reviewableFile(
           file,
           repository!.prefix,
-          indexBytes: objectSizes[entries[file.relativePath]?.oid],
+          indexBytes: entries[file.relativePath]?.oid == ''
+              ? 0
+              : objectSizes[entries[file.relativePath]?.oid],
           maximumFileBytes: limits.fileBytes,
           reverse: staged.contains(file),
           wholeFile: wholeFile,
@@ -391,10 +394,10 @@ final class _PortableSnapshot {
           maximumEntries: limits.inventoryEntries,
         );
       }
-      // An index-to-working modification can still be a newly staged addition
-      // or type replacement. File approval requires an ordinary tracked HEAD side.
       fileCandidates.removeWhere((file) {
         final original = reviewHeadEntries[file.relativePath];
+        if (file.changeKind == 'added') return original != null;
+        // Further edits of a staged addition remain outside file approval.
         return original == null ||
             !const {'100644', '100755'}.contains(original.oldMode) ||
             original.oldMode != entries[file.relativePath]?.oldMode;
@@ -407,12 +410,64 @@ final class _PortableSnapshot {
       final reviewIndex = repository!.prefix.isEmpty
           ? inventory.index
           : await _readReviewIndex(this);
-      parseGitIndex(reviewIndex, maximumEntries: limits.inventoryEntries);
+      final indexEntries = parseGitIndex(
+        reviewIndex,
+        maximumEntries: limits.inventoryEntries,
+      );
+      final additions = fileCandidates
+          .where((file) => file.changeKind == 'added')
+          .toList();
+      final fullHeadEntries =
+          additions.isNotEmpty && repository!.prefix.isNotEmpty
+          ? parseGitTree(
+              _decode(
+                (await git([
+                  '-C',
+                  repository!.worktree,
+                  'ls-tree',
+                  '-r',
+                  '-z',
+                  reviewHead.commit,
+                  '--',
+                  '.',
+                ])).bytes,
+              ),
+              maximumEntries: limits.inventoryEntries,
+            )
+          : reviewHeadEntries;
+      for (final file in additions) {
+        final path = file.relativePath;
+        final repositoryPath = '${repository!.prefix}$path';
+        final indexed = indexEntries[repositoryPath];
+        final reverse = staged.contains(file);
+        final validIndex = reverse
+            ? indexed != null &&
+                  indexed.kind == 'modified' &&
+                  const {'100644', '100755'}.contains(indexed.oldMode)
+            : indexed == null && _records(inventory.untracked).contains(path);
+        if (!validIndex ||
+            (!reverse &&
+                ('\u0000'.allMatches(reviewIndex).length >=
+                        limits.inventoryEntries ||
+                    utf8.encode(reviewIndex).length +
+                            utf8.encode(repositoryPath).length +
+                            512 >
+                        limits.outputBytes)) ||
+            _reviewPathCollision(repositoryPath, indexEntries.keys) ||
+            fullHeadEntries.containsKey(repositoryPath) ||
+            _reviewPathCollision(repositoryPath, fullHeadEntries.keys) ||
+            !await _reviewAdditionPathSafe(this, path)) {
+          fileCandidates.remove(file);
+        }
+      }
       final observation = _ReviewObservation(
         identity: identity,
         head: reviewHead,
         index: reviewIndex,
-        entries: entries,
+        entries: {
+          for (final path in entries.keys)
+            path: ?indexEntries['${repository!.prefix}$path'],
+        },
         headEntries: reviewHeadEntries,
         settings: settings,
       );
@@ -429,6 +484,7 @@ final class _PortableSnapshot {
                     file.relativePath,
                     name,
                     wholeFile: true,
+                    addition: file.changeKind == 'added',
                   )
                 : null,
             relativePath: file.relativePath,
@@ -446,6 +502,12 @@ final class _PortableSnapshot {
     await verifyMetadata(observed.keys.toList());
     for (final entry in attributes.entries) {
       if (await readAttributes(entry.key) != entry.value) throw _changed();
+    }
+    for (final file in fileCandidates) {
+      if (file.changeKind == 'added' &&
+          !await _reviewAdditionPathSafe(this, file.relativePath)) {
+        throw _changed();
+      }
     }
     if (anchor != null) {
       // Only required changed-object sides are revisited; clean tree identities
@@ -824,6 +886,15 @@ final class _PortableSnapshot {
     if (kind == 'modified' &&
         state != null &&
         state.executable == (entry.oldMode == '100755')) {
+      reviewableWorkingPaths.add(path);
+    }
+    if (kind == 'added' && state != null) {
+      // Untracked paths are not in the tracked hash batch. Hash only the bounded
+      // raw bytes independently reread above, never Git's content-cleaning path.
+      workingOids[path] = _blobHash(
+        current,
+        additionOidWidth ??= await readObjectWidth(),
+      );
       reviewableWorkingPaths.add(path);
     }
     return ChangedFile(
@@ -1305,7 +1376,7 @@ final class _PortableSnapshot {
         '.',
       ])).bytes,
     ),
-    untracked: _decode(
+    untracked: _decodeContent(
       (await git([
         'ls-files',
         '--others',
@@ -1315,10 +1386,10 @@ final class _PortableSnapshot {
         '.',
       ])).bytes,
     ),
-    deleted: _decode(
+    deleted: _decodeContent(
       (await git(['ls-files', '--deleted', '-z', '--', '.'])).bytes,
     ),
-    killed: _decode(
+    killed: _decodeContent(
       (await git(['ls-files', '--killed', '-z', '--', '.'])).bytes,
     ),
   );
@@ -1332,7 +1403,7 @@ final class _PortableSnapshot {
     ], allowDifference: true)).bytes,
   );
 
-  Future<String> readAttributes(String path) async => _decode(
+  Future<String> readAttributes(String path) async => _decodeContent(
     (await git([
       'check-attr',
       '-z',
@@ -1549,7 +1620,8 @@ bool _equalBytes(List<int> left, List<int> right) {
 
 String _decode(List<int> bytes) => utf8.decode(bytes, allowMalformed: false);
 // Dart's UTF-8 decoder consumes a leading BOM. File contents, unlike process
-// metadata, must preserve those bytes when reconstructing an index object.
+// scalar metadata, must preserve those bytes when reconstructing an index object.
+// Filename-first NUL inventories also use this decoder to retain literal names.
 String _decodeContent(List<int> bytes) =>
     '${bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? '\ufeff' : ''}${_decode(bytes)}';
 String _scalar(List<int> bytes) {

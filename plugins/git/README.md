@@ -524,8 +524,14 @@ C, the result is index C, preserving the previously staged A-to-B changes.
 Unapprove File reverses every HEAD-to-index hunk in one mutation, restoring index
 A while working C remains untouched. Refreshed Unstaged may therefore include both
 formerly staged and already unstaged changes. No per-hunk mutation loop or separate
-approval database is used. Additions, deletions, untracked files and whole-layer
-actions are not supported.
+approval database is used. Approve File also stages the complete exact bytes of a
+nonignored untracked regular UTF-8 text file absent from HEAD and the index.
+Unapprove File reverses a staged addition, removing its stage-0 entry without
+deleting or rewriting the working file. This includes manually staged additions,
+empty files (without fake hunks), and staged content B with later working content C:
+Unapprove removes B and preserves C. Approving the additional B-to-C working
+modification as a complete file remains excluded. Tracked deletions, partial hunk
+approval of additions, and whole-layer actions are not supported.
 
 Snapshot `ChangedFile.reviewRevision` is present only for ordinary tracked regular
 text modifications with actual bounded hunks and an inspectable regular working
@@ -541,9 +547,13 @@ Spaces, quotes, backslashes, Unicode, punctuation and leading dashes remain lite
 `ChangedFile.fileReviewRevision` independently identifies eligible complete-file
 operations. The complete displayed comparison must be safely inspected and bounded,
 with at least one actual text hunk and an existing regular HEAD entry matching the
-index mode. Newly staged additions with further working edits and staged type/mode
-replacements therefore have no file action, without reinterpreting existing hunk
-eligibility. The aggregate constructed patch must fit stdin
+index mode for modifications. Complete additions instead require absence from HEAD,
+either verified nonignored untracked membership or one ordinary resolved stage-0
+entry, and a bounded regular text working file with supported matching mode. Empty
+additions need no hunks. Intent-to-add, ignored paths, nested repositories, and
+ancestor/descendant index or HEAD replacements have no addition action. Newly staged
+additions with further working edits have no Unstaged file action, without
+reinterpreting existing modification-hunk eligibility. The aggregate patch must fit stdin
 and its resulting index blob must fit the existing file bound. A file can retain
 `reviewRevision` for valid hunk actions while the aggregate patch is too large for
 `fileReviewRevision`. Neither revision grants authority.
@@ -555,8 +565,10 @@ raw working-content identity and mode, attributes and relevant configuration. Bo
 layers conservatively bind working content and HEAD. It is a stale-state precondition,
 not a credential; no backend-global approval-state map is retained. Other Sessions
 or Environments, the opposite layer, changed branches/index/files, and
-already-consumed selections cannot reuse it. Whole-file revisions use a distinct
-domain from hunk revisions while binding the same observed identities and state.
+already-consumed selections cannot reuse it. Whole-file revisions use distinct
+modification/addition domains from hunk revisions, binding index presence or absence
+as well as the same observed identities and state. Untracked content identity comes
+from independently verified bounded raw bytes, never a content-cleaning filter.
 
 The handler reuses portable discovery, bounded inventories, parsers, classification
 and consistency checks, focusing content inspection on the selected validated path.
@@ -577,6 +589,9 @@ It then executes, through the existing sanitized wrapper:
 hunk has no context lines. Complete-file patches have one file header and retain
 every original comparison hunk's old/new coordinates, including line-count shifts
 from earlier hunks; they do not concatenate independently reanchored hunk patches.
+Addition patches carry `new file mode` (`100644` or `100755`), a full-width zero old
+OID, the exact new blob OID, and `/dev/null` as the old side. Empty additions use a
+mode-only patch; reversal removes membership rather than creating an empty entry.
 Both check and write receive bounded backend-derived stdin. Each successful action
 issues exactly one index-mutating apply request. The wrapper retains literal argv,
 `env -i`, pinned repository routing, no optional locks/replacements/lazy fetch,
@@ -587,7 +602,8 @@ and process filters, external diff, textconv, hooks and fsmonitor. None runs dur
 the tested apply/check/reverse operations, even under hostile attributes.
 
 Preflight revalidates the selected state after `--check`. Postflight verifies exact
-index object identity and hash-checked blob bytes, unrelated index records and flags
+index membership, stage-0 mode/object identity and hash-checked created blob bytes,
+or complete selected-entry absence after removal, plus unrelated index records and flags
 including entries outside a nested selected source scope, working
 bytes/metadata, HEAD/ref, attributes/configuration, repository scope and captured
 identity. Git's lock prevents concurrent index writers from corrupting the index,
