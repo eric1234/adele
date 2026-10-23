@@ -58,6 +58,10 @@ Future<Object?> requestEnvironmentCapability(
 /// Safe generated-client settlement: [true, interpretedValue] or [false, null].
 /// Native exceptions/diagnostics are not reconstructed in the interpreted client.
 /// Settlement does not extend the originating operation's grant or lifetime.
+/// An optional originating [handle] lets native developer diagnostics correlate
+/// response decoding for a single-request handle. It grants no access, returns no
+/// diagnostics, and does not change settlement for missing or reused handles.
 Future<List<dynamic>> settleEnvironmentCapabilityOperation(
-  Future<dynamic> operation,
-) => throw UnsupportedError('Interpreted host only.');
+  Future<dynamic> operation, [
+  String? handle,
+]) => throw UnsupportedError('Interpreted host only.');

@@ -108,6 +108,172 @@ void main() {
     expect(await _fingerprint(repository), before);
   });
 
+  for (final scope in ['Unstaged', 'Uncommitted']) {
+    Future<ChangeSetSnapshot> working({
+      GitPortableUnstagedLimits limits = const GitPortableUnstagedLimits(),
+    }) async {
+      if (scope == 'Unstaged') return snapshot(limits: limits);
+      final layered = await uncommitted(limits: limits);
+      expect(layered.staged.files, isEmpty);
+      expect(layered.conflicts, isEmpty);
+      return layered.unstaged;
+    }
+
+    for (final dirty in [false, true]) {
+      test(
+        '$scope ${dirty ? 'modified' : 'clean'} tracked small files exceed 8 MiB without exhausting transport',
+        () async {
+          const count = 160;
+          const fileBytes = 64 * 1024;
+          const limits = GitPortableUnstagedLimits();
+          expect(fileBytes, lessThan(limits.fileBytes));
+          expect((count - 1) * fileBytes, greaterThan(limits.totalBytes));
+          expect(
+            (count - 1) * fileBytes + 32,
+            lessThan(limits.verificationTotalBytes),
+          );
+          for (var index = 1; index < count; index++) {
+            await write(
+              'file-${index.toString().padLeft(3, '0')}',
+              'x' * fileBytes,
+            );
+          }
+          await commit();
+          if (dirty) await write('baseline', 'visible edit\n');
+          final before = await _fingerprint(repository);
+          final result = await working();
+          if (dirty) {
+            final file = result.files.single;
+            expect(file.relativePath, 'baseline');
+            expect(file.changeKind, 'modified');
+            expect(file.contentStatus, 'text');
+            expect(_lines(file), [
+              'deletion:baseline',
+              'addition:visible edit',
+            ]);
+          } else {
+            expect(result.files, isEmpty);
+          }
+          final cleanRequests = (scope == 'Unstaged' ? 20 : 26) + 4 * 2;
+          expect(
+            processes.requests.length,
+            dirty ? lessThanOrEqualTo(cleanRequests + 16) : cleanRequests,
+          );
+          final hashes = processes.requests
+              .where((request) => request.arguments.contains('hash-object'))
+              .toList();
+          expect(hashes, hasLength(2));
+          expect(
+            hashes.expand(
+              (request) =>
+                  request.arguments.skip(request.arguments.indexOf('--') + 1),
+            ),
+            hasLength(count),
+          );
+          final reads = processes.requests.where(
+            (request) => request.arguments.contains('/usr/bin/head'),
+          );
+          expect(reads, hasLength(dirty ? 2 : 0));
+          expect(
+            reads.every((request) => request.arguments.last == './baseline'),
+            isTrue,
+          );
+          expect(await _fingerprint(repository), before);
+        },
+      );
+    }
+
+    test(
+      '$scope raw hashes use verification allowance but rendered bytes still consume transport',
+      () async {
+        const size = 64 * 1024;
+        await write('large-clean', 'x' * size);
+        await commit();
+        const limits = GitPortableUnstagedLimits(
+          totalBytes: size,
+          verificationFileBytes: size,
+          verificationTotalBytes: size + 9,
+        );
+        expect((await working(limits: limits)).files, isEmpty);
+        expect(
+          processes.requests.where(
+            (request) => request.arguments.contains('hash-object'),
+          ),
+          hasLength(1),
+        );
+        expect(
+          processes.requests.where(
+            (request) => request.arguments.contains('/usr/bin/head'),
+          ),
+          isEmpty,
+        );
+
+        await write('large-clean', '${'x' * (size - 1)}y');
+        processes.requests.clear();
+        await expectLater(
+          working(limits: limits),
+          throwsA(
+            isA<ChangeSetFailure>().having(
+              (error) => error.code,
+              'code',
+              'snapshot_too_large',
+            ),
+          ),
+        );
+        expect(
+          processes.requests.where(
+            (request) => request.arguments.contains('/usr/bin/head'),
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    for (final bound in ['file', 'total']) {
+      test(
+        '$scope reduced $bound verification budget cannot report unverified small files clean',
+        () async {
+          const size = 64 * 1024;
+          await write('unverified', 'x' * size);
+          await commit();
+          final limits = bound == 'file'
+              ? const GitPortableUnstagedLimits(verificationFileBytes: size - 1)
+              : const GitPortableUnstagedLimits(
+                  verificationTotalBytes: size + 8,
+                );
+          for (final dirty in [false, true]) {
+            if (dirty) await write('unverified', '${'x' * (size - 1)}y');
+            processes.requests.clear();
+            await expectLater(
+              working(limits: limits),
+              throwsA(
+                isA<ChangeSetFailure>()
+                    .having((error) => error.code, 'code', 'snapshot_too_large')
+                    .having(
+                      (error) => error.message,
+                      'message',
+                      contains('verification budget'),
+                    ),
+              ),
+            );
+            expect(
+              processes.requests.where(
+                (request) => request.arguments.contains('hash-object'),
+              ),
+              isEmpty,
+            );
+            expect(
+              processes.requests.where(
+                (request) => request.arguments.contains('/usr/bin/head'),
+              ),
+              isEmpty,
+            );
+          }
+        },
+      );
+    }
+  }
+
   test(
     'long literal paths split batches within complete transport metadata bounds',
     () async {
@@ -167,38 +333,6 @@ void main() {
     },
   );
 
-  test(
-    'raw hash input is charged even though only small OIDs cross transport',
-    () async {
-      await write('large-clean', 'x' * (64 * 1024));
-      await commit();
-      await expectLater(
-        snapshot(
-          limits: const GitPortableUnstagedLimits(totalBytes: 64 * 1024),
-        ),
-        throwsA(
-          isA<ChangeSetFailure>().having(
-            (error) => error.code,
-            'code',
-            'snapshot_too_large',
-          ),
-        ),
-      );
-      expect(
-        processes.requests.where(
-          (request) => request.arguments.contains('hash-object'),
-        ),
-        isEmpty,
-      );
-      expect(
-        processes.requests.where(
-          (request) => request.arguments.contains('/usr/bin/head'),
-        ),
-        isEmpty,
-      );
-    },
-  );
-
   test('parent metadata has a bounded observation inventory', () async {
     await write('one/two/three/file', 'small\n');
     await commit();
@@ -247,7 +381,7 @@ void main() {
   );
 
   test(
-    'oversized hash batches retain unknown entries beyond their aggregate budget',
+    'small and oversized hash inputs share one aggregate verification budget',
     () async {
       for (final path in ['large-a', 'large-b', 'large-c']) {
         await write(path, 'x' * 128);
@@ -257,7 +391,7 @@ void main() {
         limits: const GitPortableUnstagedLimits(
           fileBytes: 64,
           verificationFileBytes: 256,
-          verificationTotalBytes: 256,
+          verificationTotalBytes: 256 + 9,
         ),
       );
       expect(result.files.single.relativePath, 'large-c');
@@ -268,6 +402,22 @@ void main() {
           .expand((request) => request.arguments);
       expect(operands, containsAll(['./large-a', './large-b']));
       expect(operands, isNot(contains('./large-c')));
+      final reduced = await snapshot(
+        limits: const GitPortableUnstagedLimits(
+          fileBytes: 64,
+          verificationFileBytes: 256,
+          verificationTotalBytes: 256 + 8,
+        ),
+      );
+      expect(reduced.files.map((file) => file.relativePath), [
+        'large-b',
+        'large-c',
+      ]);
+      for (final file in reduced.files) {
+        expect(file.changeKind, 'unsupported');
+        expect(file.contentStatus, 'oversized');
+        expect(file.detail, contains('change state is unknown'));
+      }
     },
   );
 
@@ -1572,7 +1722,7 @@ void main() {
             taskAnchor: anchor,
             limits: GitPortableUnstagedLimits(
               fileBytes: 32,
-              verificationFileBytes: verified ? 128 : 1,
+              verificationFileBytes: verified ? 128 : 32,
             ),
           );
           final Future<Object> result = switch (scope) {
@@ -2713,7 +2863,7 @@ void main() {
             'entries' => const GitPortableUnstagedLimits(files: 2),
             'lines' => const GitPortableUnstagedLimits(lines: 5),
             'bytes' => GitPortableUnstagedLimits(
-              totalBytes: transportedBytes + utf8.encode('D\n').length - 1,
+              totalBytes: transportedBytes - 1,
             ),
             _ => GitPortableUnstagedLimits(
               processes: processes.requests.length - 1,
@@ -3847,10 +3997,8 @@ void main() {
           final limits = switch (bound) {
             'entries' => const GitPortableUnstagedLimits(files: 1),
             'lines' => const GitPortableUnstagedLimits(lines: 3),
-            // Raw hash input is charged in addition to transported bytes.
             'bytes' => GitPortableUnstagedLimits(
-              totalBytes:
-                  transportedBytes + utf8.encode('working\n').length - 1,
+              totalBytes: transportedBytes - 1,
             ),
             _ => GitPortableUnstagedLimits(
               processes: processes.requests.length - 1,
