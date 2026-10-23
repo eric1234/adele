@@ -364,6 +364,297 @@ void main() {
     }
   }
 
+  for (final format in ['sha1', 'sha256']) {
+    for (final reverse in [false, true]) {
+      for (final rejectLast in [false, true]) {
+        test(
+          'whole-layer mixed $format ${reverse ? 'reverse' : 'forward'} '
+          '${rejectLast ? 'bad final file rejects every edit' : 'check then one write'}',
+          () async {
+            if (format == 'sha256') {
+              repository = await Directory('${container.path}/sha256').create();
+              await _git(repository, ['init', '--object-format=sha256']);
+              await _git(repository, ['config', 'user.name', 'ADELE Test']);
+              await _git(repository, [
+                'config',
+                'user.email',
+                'adele@example.invalid',
+              ]);
+            }
+            const prefix = 'selected/project/';
+            const modified = '01-literal [x] \\ "\u00e9"\$(touch EXECUTED)';
+            final shifted = baseline
+                .replaceFirst('line 4\n', 'first\ninserted\nlines\n')
+                .replaceFirst('line 20\nline 21\n', 'middle\n')
+                .replaceFirst('line 34\n', 'last edit\n');
+            // Null means absent membership, distinct from an empty regular file.
+            final changes = <String, (String?, String?, String)>{
+              modified: (baseline, shifted, '100644'),
+              '02-added': (null, '\ufeffcaf\u00e9\r\n\r\nlast  ', '100644'),
+              '03-deleted': ('\ufeffold\r\n\r\nlast  ', null, '100755'),
+              '04-empty-added': (null, '', '100755'),
+              '05-empty-deleted': ('', null, '100644'),
+              '06-filled': ('', 'filled\n', '100644'),
+              '07-emptied': ('emptied\n', '', '100644'),
+              '99-final': (baseline, both, '100644'),
+            };
+            for (final entry in changes.entries) {
+              final (oldText, _, mode) = entry.value;
+              if (oldText == null) continue;
+              await write('$prefix${entry.key}', oldText);
+              expect(
+                (await Process.run('/usr/bin/chmod', [
+                  mode == '100755' ? '755' : '644',
+                  '${repository.path}/$prefix${entry.key}',
+                ])).exitCode,
+                0,
+              );
+            }
+            await fixture({
+              '${prefix}untouched': 'unrelated\n',
+              'outside': 'outside HEAD\n',
+            });
+            for (final entry in changes.entries) {
+              final (_, newText, mode) = entry.value;
+              if (newText == null) {
+                await File('${repository.path}/$prefix${entry.key}').delete();
+              } else {
+                await write('$prefix${entry.key}', newText);
+                expect(
+                  (await Process.run('/usr/bin/chmod', [
+                    mode == '100755' ? '755' : '644',
+                    '${repository.path}/$prefix${entry.key}',
+                  ])).exitCode,
+                  0,
+                );
+              }
+            }
+            if (reverse) {
+              await _git(repository, ['add', '--all']);
+              await write('$prefix$modified', '${shifted}working-only tail\n');
+              await write('${prefix}02-added', 'later working-only addition\n');
+            }
+            // Preserve unrelated staged and unstaged work outside the source scope.
+            await write('outside', 'outside staged\n');
+            await _git(repository, ['add', '--', 'outside']);
+            await write('outside', 'outside working\n');
+            processes = _Processes(
+              Directory('${repository.path}/selected/project'),
+              container,
+            );
+            final files = (await capture(staged: reverse)).files;
+            expect(files.map((file) => file.relativePath), changes.keys);
+            final patches = <String, String>{};
+            for (final file in files) {
+              final (oldText, newText, mode) = changes[file.relativePath]!;
+              final path = '$prefix${file.relativePath}';
+              expect(file.contentStatus, 'text');
+              expect(
+                file.changeKind,
+                oldText == null
+                    ? 'added'
+                    : (newText == null ? 'deleted' : 'modified'),
+              );
+              final patch = oldText == null
+                  ? _additionPatch(
+                      path,
+                      newText!,
+                      mode: mode,
+                      oid: _blobOid(
+                        utf8.encode(newText),
+                        sha256Format: format == 'sha256',
+                      ),
+                    )
+                  : newText == null
+                  ? _deletionPatch(
+                      path,
+                      oldText,
+                      mode: mode,
+                      oid: _blobOid(
+                        utf8.encode(oldText),
+                        sha256Format: format == 'sha256',
+                      ),
+                    )
+                  : _fullPatch(path, file.hunks);
+              if (file.relativePath == modified) {
+                expect(file.hunks, hasLength(3));
+                expect(file.hunks[1].newStart, isNot(file.hunks[1].oldStart));
+              }
+              if (file.relativePath.startsWith('04-') ||
+                  file.relativePath.startsWith('05-')) {
+                expect(file.hunks, isEmpty);
+                expect(patch, isNot(contains('@@')));
+                expect(patch, contains('file mode $mode\n'));
+              }
+              patches[file.relativePath] = patch;
+            }
+            final patch = _combinedPatch(patches);
+            expect(
+              _combinedPatch(
+                Map.fromEntries(patches.entries.toList().reversed),
+              ),
+              patch,
+              reason: 'Input enumeration must not change the combined bytes',
+            );
+            expect(
+              RegExp(r'^diff --git ', multiLine: true).allMatches(patch),
+              hasLength(changes.length),
+            );
+            expect(patch, contains(r'\ No newline at end of file'));
+            expect(patch.endsWith(patches['99-final']!), isTrue);
+            final zeroContext = files.any(
+              (file) => file.hunks.any(
+                (hunk) => hunk.lines.every((line) => line.kind != 'context'),
+              ),
+            );
+            expect(zeroContext, isTrue);
+            final indexFile = File('${repository.path}/.git/index');
+            final index = await indexFile.readAsBytes();
+            final inventory = await _git(repository, [
+              'ls-files',
+              '--stage',
+              '-z',
+            ]);
+            final working = await _workingHashes(repository);
+            final head = await _git(repository, ['rev-parse', 'HEAD']);
+            final reference = await _git(repository, ['symbolic-ref', 'HEAD']);
+            var selectedPatch = patch;
+            if (rejectLast) {
+              // Establish that every preceding file would apply, including both
+              // empty membership transitions. The failure must be in the last file.
+              _success(
+                await apply(
+                  _combinedPatch({...patches}..remove('99-final')),
+                  reverse: reverse,
+                  zeroContext: zeroContext,
+                  check: true,
+                ),
+              );
+              expect(await indexFile.readAsBytes(), index);
+              selectedPatch = patch.replaceFirst(
+                reverse ? '+second edit\n' : '-line 34\n',
+                reverse ? '+wrong final preimage\n' : '-wrong final preimage\n',
+                patch.length - patches['99-final']!.length,
+              );
+              expect(selectedPatch, isNot(patch));
+            }
+            final start = processes.requests.length;
+            final checked = await apply(
+              selectedPatch,
+              reverse: reverse,
+              zeroContext: zeroContext,
+              check: true,
+            );
+            if (rejectLast) {
+              expect(checked.exitCode, isNot(0));
+              expect(_stderr(checked), contains('${prefix}99-final'));
+              expect(_stderr(checked), contains('patch does not apply'));
+            } else {
+              _success(checked);
+            }
+            expect(await indexFile.readAsBytes(), index);
+            // Deliberately attempt the rejected payload as well: --check alone
+            // cannot establish atomicity of the actual index-mutating command.
+            final written = await apply(
+              selectedPatch,
+              reverse: reverse,
+              zeroContext: zeroContext,
+            );
+            final actionRequests = processes.requests.skip(start).toList();
+            expect(actionRequests, hasLength(2));
+            expect(actionRequests.first.arguments, contains('--check'));
+            expect(actionRequests.last.arguments, isNot(contains('--check')));
+            for (final request in actionRequests) {
+              expect(
+                request.arguments,
+                containsAll(['apply', '--cached', '--unidiff-zero']),
+              );
+              expect(request.arguments.contains('--reverse'), reverse);
+              expect(
+                base64Decode(request.stdinBase64),
+                utf8.encode(selectedPatch),
+              );
+            }
+            if (rejectLast) {
+              expect(written.exitCode, isNot(0));
+              expect(_stderr(written), contains('${prefix}99-final'));
+              expect(_stderr(written), contains('patch does not apply'));
+              expect(await indexFile.readAsBytes(), index);
+              expect(
+                await _git(repository, ['ls-files', '--stage', '-z']),
+                inventory,
+              );
+            } else {
+              _success(written);
+              expect(await indexFile.readAsBytes(), isNot(index));
+            }
+            final expectedRecords = <String, String>{};
+            for (final entry in changes.entries) {
+              final (oldText, newText, mode) = entry.value;
+              final text = (reverse != rejectLast) ? oldText : newText;
+              if (text == null) {
+                expect(
+                  _success(
+                    await command([
+                      'ls-files',
+                      '--stage',
+                      '-z',
+                      '--',
+                      './${entry.key}',
+                    ]),
+                  ),
+                  isEmpty,
+                );
+              } else {
+                await expectIndex(entry.key, text, mode: mode);
+                expectedRecords['$prefix${entry.key}'] =
+                    '$mode ${_blobOid(utf8.encode(text), sha256Format: format == 'sha256')} 0\t$prefix${entry.key}\u0000';
+              }
+            }
+            await expectIndex('untouched', 'unrelated\n');
+            for (final (path, text) in [
+              ('${prefix}untouched', 'unrelated\n'),
+              ('outside', 'outside staged\n'),
+            ]) {
+              expectedRecords[path] =
+                  '100644 ${_blobOid(utf8.encode(text), sha256Format: format == 'sha256')} 0\t$path\u0000';
+            }
+            final expectedPaths = expectedRecords.keys.toList()..sort();
+            expect(
+              await _git(repository, ['ls-files', '--stage', '-z']),
+              expectedPaths.map((path) => expectedRecords[path]!).join(),
+            );
+            expect(await _workingHashes(repository), working);
+            expect(await _git(repository, ['rev-parse', 'HEAD']), head);
+            expect(await _git(repository, ['symbolic-ref', 'HEAD']), reference);
+            expect(
+              await File('${repository.path}/.git/index.lock').exists(),
+              isFalse,
+            );
+            expect(
+              await File('${processes.root.path}/EXECUTED').exists(),
+              isFalse,
+            );
+            expect(
+              processes.requests.any(
+                (request) => request.arguments.contains('add'),
+              ),
+              isFalse,
+            );
+            expect(
+              processes.requests.where(
+                (request) =>
+                    request.arguments.contains('apply') &&
+                    !request.arguments.contains('--check'),
+              ),
+              hasLength(1),
+            );
+          },
+        );
+      }
+    }
+  }
+
   for (final reverse in [false, true]) {
     test(
       'one complete patch ${reverse ? 'reverses' : 'applies'} shifting hunks atomically',
@@ -1034,6 +1325,11 @@ String _fullPatch(String path, List<DiffHunk> hunks, {String? index}) {
     }
   }
   return result.toString();
+}
+
+String _combinedPatch(Map<String, String> patches) {
+  final paths = patches.keys.toList()..sort();
+  return paths.map((path) => patches[path]!).join();
 }
 
 String _additionPatch(

@@ -486,6 +486,21 @@ void main() {
           ),
         );
       }
+      for (final call in [
+        unboundReview.approveAllUnstaged,
+        unboundReview.unapproveAllStaged,
+      ]) {
+        await expectLater(
+          call(ReviewLayerSelection(expectedRevision: 'not-authority')),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'invalid_host_invocation_context',
+            ),
+          ),
+        );
+      }
       Future<T> invoke<T>(
         String environmentId,
         ProviderBinding binding,
@@ -799,6 +814,96 @@ void main() {
         ),
       );
       expect(await _git(root, ['ls-files', '--stage', '-z']), indexBefore);
+      expect(await File('${root.path}/README.md').readAsBytes(), workingBefore);
+      expect(
+        await File('${root.path}/same.txt').readAsBytes(),
+        unrelatedBefore,
+      );
+      expect(await _git(root, ['rev-parse', 'HEAD']), headBefore);
+      expect(await _git(root, ['show-ref']), refsBefore);
+      expect(
+        await _git(roots['primary']!, ['ls-files', '--stage', '-z']),
+        primaryBefore,
+      );
+      expect(storage.reads, readsBeforeReview);
+      // Both new methods use the actual stock contextual dispatcher and ordinary
+      // generated client, with no anchor-storage grant or Worktree association.
+      final layer = await uncommitted('additional');
+      expect(layer.unstaged.files.map((file) => file.relativePath), [
+        'README.md',
+        'same.txt',
+      ]);
+      final layerSelection = ReviewLayerSelection(
+        expectedRevision: layer.unstaged.layerReviewRevision!,
+      );
+      await invoke(
+        'additional',
+        approvals,
+        (channel) => ReviewApprovalHandlerServiceClient(
+          channel,
+        ).approveAllUnstaged(layerSelection),
+      );
+      String blob(String content) {
+        final bytes = utf8.encode(content);
+        return sha1.convert([
+          ...utf8.encode('blob ${bytes.length}\u0000'),
+          ...bytes,
+        ]).toString();
+      }
+
+      expect(
+        await _git(root, ['ls-files', '--stage', '-z']),
+        indexBefore
+            .replaceFirst(blob(readme.text), blob('AOT Git reviewed\n'))
+            .replaceFirst(
+              blob('additional working\n'),
+              blob('additional newest\n'),
+            ),
+      );
+      expect(
+        await _git(root, ['show', ':project-source/README.md']),
+        'AOT Git reviewed',
+      );
+      expect(
+        await _git(root, ['show', ':project-source/same.txt']),
+        'additional newest',
+      );
+      final allApproved = await uncommitted('additional');
+      expect(allApproved.unstaged.files, isEmpty);
+      expect(allApproved.unstaged.layerReviewRevision, isNull);
+      expect(allApproved.staged.files.map((file) => file.relativePath), [
+        'README.md',
+        'same.txt',
+      ]);
+      final reverseSelection = ReviewLayerSelection(
+        expectedRevision: allApproved.staged.layerReviewRevision!,
+      );
+      expect(
+        reverseSelection.expectedRevision,
+        isNot(layerSelection.expectedRevision),
+      );
+      await invoke(
+        'additional',
+        approvals,
+        (channel) => ReviewApprovalHandlerServiceClient(
+          channel,
+        ).unapproveAllStaged(reverseSelection),
+      );
+      expect(
+        await _git(root, ['ls-files', '--stage', '-z']),
+        indexBefore.replaceFirst(
+          blob('additional working\n'),
+          blob('additional content\n'),
+        ),
+      );
+      expect(await _git(root, ['diff', '--cached', '--exit-code']), isEmpty);
+      final allUnapproved = await uncommitted('additional');
+      expect(allUnapproved.staged.files, isEmpty);
+      expect(allUnapproved.staged.layerReviewRevision, isNull);
+      expect(allUnapproved.unstaged.files.map((file) => file.relativePath), [
+        'README.md',
+        'same.txt',
+      ]);
       expect(await File('${root.path}/README.md').readAsBytes(), workingBefore);
       expect(
         await File('${root.path}/same.txt').readAsBytes(),

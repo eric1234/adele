@@ -726,6 +726,7 @@ void main() {
                 : 'review.txt';
             port.service.uncommitted = _uncommitted(
               staged: ChangeSetSnapshot(
+                layerReviewRevision: null,
                 files: [
                   ..._reviewSnapshot(
                     revision: 'staged',
@@ -746,6 +747,7 @@ void main() {
                 ],
               ),
               unstaged: ChangeSetSnapshot(
+                layerReviewRevision: null,
                 files: [
                   ..._reviewSnapshot(
                     revision: 'unstaged',
@@ -1376,6 +1378,7 @@ void main() {
         registerSource();
         const path = 'dir/notes [modified] with spaces.txt';
         port.service.value = ChangeSetSnapshot(
+          layerReviewRevision: null,
           files: [
             ..._reviewSnapshot(
               path: path,
@@ -1501,6 +1504,7 @@ void main() {
         ('modified', 'conflicted', false),
       ]) {
         port.service.value = ChangeSetSnapshot(
+          layerReviewRevision: null,
           files: [
             ChangedFile(
               relativePath: 'file.txt',
@@ -1698,7 +1702,7 @@ void main() {
       expect(port.service.calls, 1);
       expect(find.text('Loading unstaged changes...'), findsOneWidget);
       expect(port.handles, hasLength(1));
-      held.complete(ChangeSetSnapshot(files: []));
+      held.complete(ChangeSetSnapshot(files: [], layerReviewRevision: null));
       await tester.pumpAndSettle();
       expect(find.text('No unstaged changes.'), findsOneWidget);
       expect(port.handles, isEmpty);
@@ -1732,6 +1736,7 @@ void main() {
     'generated eval decoder rejects malformed nested DTOs and retry resolves anew',
     (tester) async {
       port.wireResponse = {
+        'layerReviewRevision': null,
         'files': [
           {
             'relativePath': 'invalid.txt',
@@ -1854,6 +1859,7 @@ void main() {
     'non-text statuses are explicit and large text builds rows lazily',
     (tester) async {
       port.service.value = ChangeSetSnapshot(
+        layerReviewRevision: null,
         files: [
           for (final status in [
             'binary',
@@ -1883,6 +1889,7 @@ void main() {
         expect(find.text('Not displayed: $status'), findsOneWidget);
       }
       port.service.value = ChangeSetSnapshot(
+        layerReviewRevision: null,
         files: [
           ChangedFile(
             relativePath: 'large.txt',
@@ -2555,7 +2562,7 @@ void main() {
         {...wire, 'staged': null},
         {
           ...wire,
-          'unstaged': {'files': 'invalid'},
+          'unstaged': {'files': 'invalid', 'layerReviewRevision': null},
         },
         {
           ...wire,
@@ -2565,6 +2572,7 @@ void main() {
           {
             ...wire,
             layer: {
+              'layerReviewRevision': null,
               'files': [
                 {...((wire[layer] as Map)['files'] as List).single as Map}
                   ..remove('detail'),
@@ -2645,11 +2653,13 @@ void main() {
         for (final layer in ['committed', 'staged', 'unstaged'])
           for (final bad in [
             {
+              'layerReviewRevision': null,
               'files': [
                 {...file}..remove('detail'),
               ],
             },
             {
+              'layerReviewRevision': null,
               'files': [
                 {
                   ...file,
@@ -2720,6 +2730,7 @@ ChangeSetSnapshot _reviewSnapshot({
   String contentStatus = 'text',
   int hunks = 2,
 }) => ChangeSetSnapshot(
+  layerReviewRevision: null,
   files: [
     ChangedFile(
       relativePath: path,
@@ -2768,6 +2779,7 @@ ChangeSetSnapshot _snapshot({
   String before = 'before',
   String after = 'after',
 }) => ChangeSetSnapshot(
+  layerReviewRevision: null,
   files: [
     ChangedFile(
       relativePath: path,
@@ -2798,8 +2810,8 @@ UncommittedChangeSetSnapshot _uncommitted({
   ChangeSetSnapshot? unstaged,
   List<ChangedFile> conflicts = const [],
 }) => UncommittedChangeSetSnapshot(
-  staged: staged ?? ChangeSetSnapshot(files: []),
-  unstaged: unstaged ?? ChangeSetSnapshot(files: []),
+  staged: staged ?? ChangeSetSnapshot(files: [], layerReviewRevision: null),
+  unstaged: unstaged ?? ChangeSetSnapshot(files: [], layerReviewRevision: null),
   conflicts: conflicts,
 );
 
@@ -2817,12 +2829,16 @@ TaskChangeSetSnapshot _task({
   ChangeSetSnapshot? committed,
   UncommittedChangeSetSnapshot? uncommitted,
 }) => TaskChangeSetSnapshot(
-  committed: committed ?? ChangeSetSnapshot(files: []),
+  committed:
+      committed ?? ChangeSetSnapshot(files: [], layerReviewRevision: null),
   uncommitted: uncommitted ?? _uncommitted(),
 );
 
 class _Service implements ChangeSetSourceService {
-  ChangeSetSnapshot value = ChangeSetSnapshot(files: []);
+  ChangeSetSnapshot value = ChangeSetSnapshot(
+    files: [],
+    layerReviewRevision: null,
+  );
   UncommittedChangeSetSnapshot uncommitted = _uncommitted();
   TaskChangeSetSnapshot task = _task();
   Future<ChangeSetSnapshot>? pending;
@@ -2894,6 +2910,7 @@ class _ReviewProvider
   final List<String> operations = [];
   final List<ReviewHunkSelection> selections = [];
   final List<ReviewFileSelection> fileSelections = [];
+  final List<ReviewLayerSelection> layerSelections = [];
   final List<Map<String, Object?>> payloads = [];
   late final dispatcher = ReviewApprovalHandlerServiceDispatcher(
     this,
@@ -2904,6 +2921,8 @@ class _ReviewProvider
     operations.add(operation);
     if (selection is ReviewFileSelection) {
       fileSelections.add(selection);
+    } else if (selection is ReviewLayerSelection) {
+      layerSelections.add(selection);
     } else {
       selections.add(selection as ReviewHunkSelection);
     }
@@ -2930,6 +2949,14 @@ class _ReviewProvider
       apply('unapproveFile', selection);
 
   @override
+  Future<void> approveAllUnstaged(ReviewLayerSelection selection) =>
+      apply('approveAllUnstaged', selection);
+
+  @override
+  Future<void> unapproveAllStaged(ReviewLayerSelection selection) =>
+      apply('unapproveAllStaged', selection);
+
+  @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     if (!active) throw StateError('private retired provider');
     expectSync(
@@ -2939,6 +2966,8 @@ class _ReviewProvider
         reviewApprovalHandlerServiceUnapproveHunkId,
         reviewApprovalHandlerServiceApproveFileId,
         reviewApprovalHandlerServiceUnapproveFileId,
+        reviewApprovalHandlerServiceApproveAllUnstagedId,
+        reviewApprovalHandlerServiceUnapproveAllStagedId,
       ]),
     );
     payloads.add(payload);

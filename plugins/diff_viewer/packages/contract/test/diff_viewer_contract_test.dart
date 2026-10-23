@@ -29,6 +29,11 @@ void main() {
     expect(changeSetSourceCapability.majorVersion, 1);
     expect(channel.method, 'diff.changeSetSource.snapshotUnstaged');
     expect(channel.payload, isEmpty);
+    expect(snapshot.layerReviewRevision, 'opaque-layer-review-revision');
+    expect(
+      (channel.response! as Map)['layerReviewRevision'],
+      'opaque-layer-review-revision',
+    );
     final file = snapshot.files.single;
     expect(file.relativePath, 'dir/two words\t\u03bb.txt');
     expect(file.changeKind, 'modified');
@@ -73,15 +78,15 @@ void main() {
       hunks: hunks,
     );
     final files = [file];
-    final snapshot = ChangeSetSnapshot(files: files);
+    final snapshot = ChangeSetSnapshot(files: files, layerReviewRevision: null);
     final conflicts = [file];
     final uncommitted = UncommittedChangeSetSnapshot(
       staged: snapshot,
-      unstaged: ChangeSetSnapshot(files: files),
+      unstaged: ChangeSetSnapshot(files: files, layerReviewRevision: null),
       conflicts: conflicts,
     );
     final task = TaskChangeSetSnapshot(
-      committed: ChangeSetSnapshot(files: files),
+      committed: ChangeSetSnapshot(files: files, layerReviewRevision: null),
       uncommitted: uncommitted,
     );
     lines.clear();
@@ -121,6 +126,7 @@ void main() {
       expect(channel.payload, isEmpty);
       expect(service.calls, 1);
       for (final layer in [snapshot.staged, snapshot.unstaged]) {
+        expect(layer.layerReviewRevision, 'opaque-layer-review-revision');
         final file = layer.files.single;
         expect(file.relativePath, 'dir/two words\t\u03bb.txt');
         expect(file.changeKind, 'modified');
@@ -171,6 +177,12 @@ void main() {
         snapshot.uncommitted.staged,
         snapshot.uncommitted.unstaged,
       ]) {
+        expect(
+          layer.layerReviewRevision,
+          identical(layer, snapshot.committed)
+              ? null
+              : 'opaque-layer-review-revision',
+        );
         final file = layer.files.single;
         expect(file.relativePath, 'dir/two words\t\u03bb.txt');
         expect(file.changeKind, 'modified');
@@ -205,6 +217,9 @@ void main() {
         expect(() => file.hunks.clear(), throwsUnsupportedError);
         expect(() => hunk.lines.clear(), throwsUnsupportedError);
       }
+      final committedWire = (channel.response! as Map)['committed'] as Map;
+      expect(committedWire.containsKey('layerReviewRevision'), isTrue);
+      expect(committedWire['layerReviewRevision'], isNull);
       final conflict = snapshot.uncommitted.conflicts.single;
       expect(conflict.relativePath, 'conflict.txt');
       expect(conflict.changeKind, 'conflicted');
@@ -309,7 +324,11 @@ void main() {
       for (final invalid in <Object?>[
         <String, Object?>{},
         {...snapshot, 'extra': true},
+        {...snapshot}..remove('layerReviewRevision'),
+        for (final value in [false, 1, 1.5, <Object?>[], <String, Object?>{}])
+          {...snapshot, 'layerReviewRevision': value},
         {
+          ...snapshot,
           'files': [
             {...file}..remove('detail'),
           ],
@@ -321,14 +340,17 @@ void main() {
           {...file, 'fileReviewRevision': 1},
         ])
           {
+            ...snapshot,
             'files': [invalidFile],
           },
         {
+          ...snapshot,
           'files': [
             {...file, 'hunks': 'patch'},
           ],
         },
         {
+          ...snapshot,
           'files': [
             {
               ...file,
@@ -339,6 +361,7 @@ void main() {
           ],
         },
         {
+          ...snapshot,
           'files': [
             {
               ...file,
@@ -384,11 +407,20 @@ void main() {
           {...wire, layer: <String, Object?>{}},
           {
             ...wire,
+            layer: {...staged}..remove('layerReviewRevision'),
+          },
+          {
+            ...wire,
+            layer: {...staged, 'layerReviewRevision': false},
+          },
+          {
+            ...wire,
             layer: {...staged, 'extra': true},
           },
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {...file}..remove('detail'),
               ],
@@ -397,6 +429,7 @@ void main() {
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {
                   ...file,
@@ -410,6 +443,7 @@ void main() {
           {
             ...wire,
             layer: {
+              ...staged,
               'files': [
                 {
                   ...file,
@@ -541,7 +575,7 @@ String layer(ChangeSetSnapshot snapshot) {
   final file = snapshot.files[0];
   final hunk = file.hunks[0];
   final line = hunk.lines[2];
-  return '\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${file.fileReviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
+  return '\${snapshot.layerReviewRevision ?? 'none'}|\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${file.fileReviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
 }
 
 Future<String> run() async {
@@ -553,12 +587,14 @@ Future<String> run() async {
   final lines = <DiffLine>[DiffLine(kind: 'addition', text: 'detached', noNewline: false)];
   final hunks = <DiffHunk>[DiffHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: 1, lines: lines)];
   final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: hunks)];
-  final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files), unstaged: ChangeSetSnapshot(files: files), conflicts: files);
-  final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files), uncommitted: copy);
+  final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files, layerReviewRevision: null), unstaged: ChangeSetSnapshot(files: files, layerReviewRevision: null), conflicts: files);
+  final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files, layerReviewRevision: null), uncommitted: copy);
   lines[0] = DiffLine(kind: 'addition', text: 'changed', noNewline: false);
   hunks[0] = DiffHunk(oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: <DiffLine>[]);
   files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: <DiffHunk>[]);
   if (copy.staged.files[0].hunks[0].lines[0].text != 'detached' ||
+      copy.staged.layerReviewRevision != null || copy.unstaged.layerReviewRevision != null ||
+      taskCopy.committed.layerReviewRevision != null ||
       copy.staged.files[0].reviewRevision != null || conflict.reviewRevision != null ||
       copy.staged.files[0].fileReviewRevision != null || conflict.fileReviewRevision != null ||
       copy.unstaged.files[0].relativePath != 'copy.txt' || copy.conflicts[0].relativePath != 'copy.txt' ||
@@ -570,7 +606,7 @@ Future<String> run() async {
   collected.addAll(task.uncommitted.staged.files);
   collected.addAll(task.uncommitted.unstaged.files);
   collected.addAll(task.uncommitted.conflicts);
-  collected.addAll(ChangeSetSnapshot(files: <ChangedFile>[]).files);
+  collected.addAll(ChangeSetSnapshot(files: <ChangedFile>[], layerReviewRevision: null).files);
   final collectedHunks = <DiffHunk>[];
   collectedHunks.addAll(collected[0].hunks);
   collectedHunks.addAll(collected[3].hunks);
@@ -602,11 +638,13 @@ Future<TaskChangeSetSnapshot> decode(String wire) {
         'run',
       );
       const layer =
-          'dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|opaque-file-review-revision|2,2,2,2|addition|after\u{1f600}|true';
-      final committedLayer = layer.replaceFirst(
-        '|opaque-review-revision|opaque-file-review-revision|',
-        '|none|none|',
-      );
+          'opaque-layer-review-revision|dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|opaque-file-review-revision|2,2,2,2|addition|after\u{1f600}|true';
+      final committedLayer = layer
+          .replaceFirst('opaque-layer-review-revision|', 'none|')
+          .replaceFirst(
+            '|opaque-review-revision|opaque-file-review-revision|',
+            '|none|none|',
+          );
       expect(
         (result as $Value).$reified,
         '$layer;$layer;$layer;$committedLayer;$layer;$layer;conflict.txt;conflict.txt|conflicted|conflicted|Unmerged index entries.',
@@ -693,6 +731,23 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
   final file = (committed['files'] as List).single as Map<String, dynamic>;
   final hunk = (file['hunks'] as List).single as Map<String, dynamic>;
   final line = (hunk['lines'] as List).first as Map<String, dynamic>;
+  for (final layer in ['committed', 'staged', 'unstaged']) {
+    final snapshot = layer == 'committed'
+        ? committed
+        : uncommitted[layer] as Map<String, dynamic>;
+    for (final bad in [
+      {...snapshot}..remove('layerReviewRevision'),
+      for (final value in [false, 1, 1.5, <Object?>[], <String, Object?>{}])
+        {...snapshot, 'layerReviewRevision': value},
+    ]) {
+      yield layer == 'committed'
+          ? {...wire, layer: bad}
+          : {
+              ...wire,
+              'uncommitted': {...uncommitted, layer: bad},
+            };
+    }
+  }
   for (final layer in ['committed', 'staged', 'unstaged', 'conflicts']) {
     for (final invalidFile in [
       null,
@@ -724,6 +779,7 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
       final bad = layer == 'conflicts'
           ? [invalidFile]
           : {
+              'layerReviewRevision': null,
               'files': [invalidFile],
             };
       yield layer == 'committed'
@@ -758,7 +814,11 @@ class _Service implements ChangeSetSourceService {
     calls++;
     if (failure != null) throw failure!;
     return TaskChangeSetSnapshot(
-      committed: _snapshot(reviewRevision: null, fileReviewRevision: null),
+      committed: _snapshot(
+        reviewRevision: null,
+        fileReviewRevision: null,
+        layerReviewRevision: null,
+      ),
       uncommitted: _uncommitted(),
     );
   }
@@ -782,8 +842,10 @@ class _Service implements ChangeSetSourceService {
   ChangeSetSnapshot _snapshot({
     String? reviewRevision = 'opaque-review-revision',
     String? fileReviewRevision = 'opaque-file-review-revision',
+    String? layerReviewRevision = 'opaque-layer-review-revision',
   }) {
     return ChangeSetSnapshot(
+      layerReviewRevision: layerReviewRevision,
       files: [
         ChangedFile(
           relativePath: 'dir/two words\t\u03bb.txt',

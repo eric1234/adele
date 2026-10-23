@@ -1,6 +1,6 @@
 part of 'git_portable_unstaged_snapshot.dart';
 
-/// Explicit hunk or complete-file index mutation through one captured grant.
+/// Hunk, complete-file or complete-layer index mutation through one captured grant.
 /// Used by the stock contextual dispatcher and independent compatible consumers.
 final class GitPortableReviewApprovalService
     implements ReviewApprovalHandlerService {
@@ -13,6 +13,14 @@ final class GitPortableReviewApprovalService
        );
 
   final GitPortableUnstagedSnapshotService _inspection;
+
+  @override
+  Future<void> approveAllUnstaged(ReviewLayerSelection selection) =>
+      _mutate(null, selection.expectedRevision, reverse: false);
+
+  @override
+  Future<void> unapproveAllStaged(ReviewLayerSelection selection) =>
+      _mutate(null, selection.expectedRevision, reverse: true);
 
   @override
   Future<void> approveFile(ReviewFileSelection selection) => _mutate(
@@ -45,7 +53,7 @@ final class GitPortableReviewApprovalService
   );
 
   Future<void> _mutate(
-    String path,
+    String? path,
     String expectedRevision, {
     int? hunkIndex,
     required bool reverse,
@@ -58,7 +66,9 @@ final class GitPortableReviewApprovalService
     Future<void> run() async {
       // Native decoding validates too; do not rely on an interpreted constructor.
       try {
-        if (hunkIndex == null) {
+        if (path == null) {
+          ReviewLayerSelection(expectedRevision: expectedRevision);
+        } else if (hunkIndex == null) {
           ReviewFileSelection(
             relativePath: path,
             expectedRevision: expectedRevision,
@@ -76,99 +86,125 @@ final class GitPortableReviewApprovalService
           'The review selection is invalid.',
         );
       }
-      if (!_reviewablePath(path)) {
+      if (path != null && !_reviewablePath(path)) {
         throw _reviewFailure(
           'unsupported_target',
           'Control-character filenames are not review targets.',
         );
       }
+      final identity = path == null
+          ? await operation.processes.capturedIdentity()
+          : null;
       final snapshot = await operation.snapshot(
         includeStaged: reverse,
         includeCommitted: false,
         taskAnchor: null,
         selectedPath: path,
       );
-      final files = reverse
-          ? snapshot.uncommitted.staged.files
-          : snapshot.uncommitted.unstaged.files;
+      final layer = reverse
+          ? snapshot.uncommitted.staged
+          : snapshot.uncommitted.unstaged;
+      final files = layer.files;
       if (files.isEmpty) {
         throw _reviewFailure(
           'stale_selection',
           'The selected change is no longer present. Refresh the snapshot.',
         );
       }
-      final file = files.single;
-      final revision = hunkIndex == null
-          ? file.fileReviewRevision
-          : file.reviewRevision;
+      final revision = path == null
+          ? layer.layerReviewRevision
+          : hunkIndex == null
+          ? files.single.fileReviewRevision
+          : files.single.reviewRevision;
       if (revision == null) {
         throw _reviewFailure(
           'unsupported_target',
-          'The selected file is not an eligible text review target.',
+          'The complete selection is not an eligible text review target.',
         );
       }
       if (expectedRevision != revision) {
         throw _reviewFailure(
           'stale_selection',
-          'The selected file or comparison changed. Refresh the snapshot.',
+          'The selected change or comparison changed. Refresh the snapshot.',
         );
       }
-      if (hunkIndex != null && hunkIndex >= file.hunks.length) {
+      if (hunkIndex != null && hunkIndex >= files.single.hunks.length) {
         throw _reviewFailure(
           'hunk_unavailable',
           'The selected hunk does not exist.',
         );
       }
       final observation = operation.reviewObservation!;
-      final entry = observation.entries[path];
-      final addition = file.changeKind == 'added';
-      final deletion = file.changeKind == 'deleted';
-      final before = (await operation.blob(entry?.oid ?? ''))!;
-      final hunks = hunkIndex == null ? file.hunks : [file.hunks[hunkIndex]];
-      final after = _applyReviewHunks(before, hunks, reverse: reverse);
-      if (after.length > operation.limits.fileBytes ||
-          (!addition && !deletion && _equalBytes(before, after))) {
-        throw _reviewFailure(
-          'unsupported_target',
-          'The selection has no bounded index result.',
+      if (identity != null &&
+          (identity.sessionId != observation.identity.sessionId ||
+              identity.environmentId != observation.identity.environmentId)) {
+        throw _changed();
+      }
+      final targets = <String, _ReviewTarget>{};
+      final patch = <int>[];
+      var zeroContext = false;
+      for (final file in files) {
+        final selectedPath = file.relativePath;
+        final entry = observation.entries[selectedPath];
+        final addition = file.changeKind == 'added';
+        final deletion = file.changeKind == 'deleted';
+        final before = (await operation.blob(entry?.oid ?? ''))!;
+        final hunks = hunkIndex == null ? file.hunks : [file.hunks[hunkIndex]];
+        final after = _applyReviewHunks(before, hunks, reverse: reverse);
+        if (after.length > operation.limits.fileBytes ||
+            (!addition && !deletion && _equalBytes(before, after))) {
+          throw _reviewFailure(
+            'unsupported_target',
+            'The selection has no bounded index result.',
+          );
+        }
+        final expectedOid = (addition && reverse) || (deletion && !reverse)
+            ? null
+            : _blobHash(after, observation.head.commit.length);
+        if (hunkIndex == null &&
+            expectedOid !=
+                (reverse
+                    ? observation.headEntries[selectedPath]?.oid
+                    : operation.workingOids[selectedPath])) {
+          throw _malformed();
+        }
+        if (addition && reverse && after.isNotEmpty) throw _malformed();
+        if (deletion && !reverse && after.isNotEmpty) throw _malformed();
+        final mode =
+            entry?.oldMode ??
+            (deletion
+                ? observation.headEntries[selectedPath]!.oldMode
+                : (operation.observed[selectedPath]!.executable
+                      ? '100755'
+                      : '100644'));
+        targets[selectedPath] = (
+          file: file,
+          before: before,
+          after: after,
+          original: entry == null ? null : (mode: mode, oid: entry.oid),
+          expected: expectedOid == null ? null : (mode: mode, oid: expectedOid),
         );
-      }
-      final expectedOid = (addition && reverse) || (deletion && !reverse)
-          ? null
-          : _blobHash(after, observation.head.commit.length);
-      if (hunkIndex == null &&
-          expectedOid !=
-              (reverse
-                  ? observation.headEntries[path]?.oid
-                  : operation.workingOids[path])) {
-        throw _malformed();
-      }
-      if (addition && reverse && after.isNotEmpty) throw _malformed();
-      if (deletion && !reverse && after.isNotEmpty) throw _malformed();
-      final mode =
-          entry?.oldMode ??
-          (deletion
-              ? observation.headEntries[path]!.oldMode
-              : (operation.observed[path]!.executable ? '100755' : '100644'));
-      final original = entry == null ? null : (mode: mode, oid: entry.oid);
-      final expected = expectedOid == null
-          ? null
-          : (mode: mode, oid: expectedOid);
-      final patch = _reviewPatch(
-        '${operation.repository!.prefix}$path',
-        hunks,
-        mode: mode,
-        beforeOid: entry?.oid ?? '0' * observation.head.commit.length,
-        afterOid: expectedOid ?? '0' * observation.head.commit.length,
-        reverse: reverse,
-        isolated: hunkIndex != null,
-        addition: addition,
-        deletion: deletion,
-      );
-      if (patch.length > environmentBufferedProcessStdinLimit) {
-        throw _reviewFailure(
-          'unsupported_target',
-          'The selected patch exceeds its input bound.',
+        patch.addAll(
+          _reviewPatch(
+            '${operation.repository!.prefix}$selectedPath',
+            hunks,
+            mode: mode,
+            beforeOid: entry?.oid ?? '0' * observation.head.commit.length,
+            afterOid: expectedOid ?? '0' * observation.head.commit.length,
+            reverse: reverse,
+            isolated: hunkIndex != null,
+            addition: addition,
+            deletion: deletion,
+          ),
+        );
+        if (patch.length > environmentBufferedProcessStdinLimit) {
+          throw _reviewFailure(
+            'unsupported_target',
+            'The combined patch exceeds its input bound.',
+          );
+        }
+        zeroContext |= hunks.any(
+          (hunk) => !hunk.lines.any((line) => line.kind == 'context'),
         );
       }
       final arguments = [
@@ -180,67 +216,50 @@ final class GitPortableReviewApprovalService
         '--no-ignore-whitespace',
         '-p1',
         if (reverse) '--reverse',
-        if (hunks.any(
-          (hunk) => !hunk.lines.any((line) => line.kind == 'context'),
-        ))
-          '--unidiff-zero',
+        if (zeroContext) '--unidiff-zero',
       ];
+      final budget = _reviewVerificationBudget(
+        operation,
+        observation,
+        files,
+        blobBytes: targets.values.fold<int>(
+          0,
+          (sum, target) =>
+              sum +
+              (target.after.length > target.before.length
+                  ? target.after.length
+                  : target.before.length),
+        ),
+        wholeLayer: path == null,
+      );
+      void reserve(int verifications, int applies) {
+        if (operation.byteCount +
+                    applies * patch.length +
+                    verifications * budget.bytes >
+                operation.limits.totalBytes ||
+            operation.commandCount +
+                    applies +
+                    verifications * budget.processes >
+                operation.limits.processes) {
+          throw _reviewFailure(
+            'inspection_failed',
+            'The review operation has insufficient verification budget.',
+          );
+        }
+      }
+
+      reserve(2, 2);
       await operation.git([...arguments, '--check', '--', '-'], input: patch);
       await _verifyReviewState(
         operation,
         observation,
-        path,
-        original,
+        targets,
         expectUnchangedIndex: true,
-        addition: addition,
-        deletion: deletion,
+        wholeLayer: path == null,
       );
       // Reserve the known postcondition traffic before admitting any write.
       // External growth can still exceed it; such effects are then uncertain.
-      final verificationBytes =
-          2 * utf8.encode(observation.index).length +
-          utf8.encode(observation.settings).length +
-          utf8.encode(operation.attributes[path]!).length +
-          (after.length > before.length ? after.length : before.length) +
-          (operation.observed[path]?.size ?? 0) +
-          2 * utf8.encode(operation.workingAbsences[path] ?? '').length +
-          2 *
-              operation.observed.entries.fold<int>(
-                0,
-                (sum, entry) =>
-                    sum +
-                    utf8
-                        .encode(
-                          './${entry.key}\u0000${entry.value.description}\u0000',
-                        )
-                        .length,
-              ) +
-          8192 +
-          (addition || deletion
-              ? 2 *
-                    (utf8
-                            .encode('${operation.repository!.prefix}$path')
-                            .length +
-                        512)
-              : 0) +
-          2 * utf8.encode(operation.repository.toString()).length;
-      final statBatches = operation.pathBatches(
-        operation.observed.keys.toList(),
-        '/usr/bin/stat',
-        const [r'--printf=%n\0%f %s %d %i %y %z\0', '--'],
-      ).length;
-      if (operation.byteCount + patch.length + verificationBytes >
-              operation.limits.totalBytes ||
-          operation.commandCount +
-                  15 +
-                  2 * statBatches +
-                  (addition || deletion ? 3 : 0) >
-              operation.limits.processes) {
-        throw _reviewFailure(
-          'inspection_failed',
-          'The review operation has insufficient verification budget.',
-        );
-      }
+      reserve(1, 1);
       final applied = await operation.git(
         [...arguments, '--', '-'],
         input: patch,
@@ -249,12 +268,11 @@ final class GitPortableReviewApprovalService
       await _verifyReviewState(
         operation,
         observation,
-        path,
-        applied.exitCode == 0 ? expected : original,
-        expectedBytes: applied.exitCode == 0 ? after : before,
+        targets,
+        applied: applied.exitCode == 0,
+        verifyBlobs: true,
         expectUnchangedIndex: applied.exitCode != 0,
-        addition: addition,
-        deletion: deletion,
+        wholeLayer: path == null,
       );
       if (applied.exitCode != 0) {
         confirmedFailure = true;
@@ -300,18 +318,24 @@ final class GitPortableReviewApprovalService
   }
 }
 
+typedef _ReviewTarget = ({
+  ChangedFile file,
+  List<int> before,
+  List<int> after,
+  ({String mode, String oid})? original,
+  ({String mode, String oid})? expected,
+});
+
 Future<void> _verifyReviewState(
   _PortableSnapshot operation,
   _ReviewObservation observation,
-  String path,
-  ({String mode, String oid})? expected, {
-  List<int>? expectedBytes,
+  Map<String, _ReviewTarget> targets, {
+  bool applied = false,
+  bool verifyBlobs = false,
   bool expectUnchangedIndex = false,
-  bool addition = false,
-  bool deletion = false,
+  bool wholeLayer = false,
 }) async {
   final raw = await _readReviewIndex(operation);
-  final repositoryPath = '${operation.repository!.prefix}$path';
   if (expectUnchangedIndex && raw != observation.index) {
     throw _changed();
   }
@@ -323,72 +347,126 @@ Future<void> _verifyReviewState(
     observation.index,
     maximumEntries: operation.limits.inventoryEntries,
   );
+  final repositoryPaths = {
+    for (final path in targets.keys) '${operation.repository!.prefix}$path',
+  };
   final expectedCount =
       beforeEntries.length -
-      (beforeEntries.containsKey(repositoryPath) ? 1 : 0) +
-      (expected == null ? 0 : 1);
+      repositoryPaths.where(beforeEntries.containsKey).length +
+      targets.values
+          .where(
+            (target) => (applied ? target.expected : target.original) != null,
+          )
+          .length;
   if (entries.length != expectedCount ||
-      _otherIndexRecords(raw, repositoryPath) !=
-          _otherIndexRecords(observation.index, repositoryPath)) {
+      _otherIndexRecords(raw, repositoryPaths) !=
+          _otherIndexRecords(observation.index, repositoryPaths)) {
     throw _changed();
   }
-  final selected = entries[repositoryPath];
-  if (expected == null
-      ? selected != null
-      : selected !=
-            (
-              oldMode: expected.mode,
-              newMode: expected.mode,
-              oid: expected.oid,
-              kind: 'modified',
-            )) {
-    throw _changed();
-  }
-  // Hash-checked object bytes prove the actual index content, not just its header.
-  if (expectedBytes != null && expected != null) {
-    final actual = await operation.blob(expected.oid);
-    if (actual == null || !_equalBytes(actual, expectedBytes)) throw _changed();
-  }
-  await operation.verifyMetadata(operation.observed.keys.toList());
-  if (deletion) {
-    if (operation.workingAbsences[path] == null ||
-        await operation.workingAbsence(path) !=
-            operation.workingAbsences[path]) {
+  for (final entry in targets.entries) {
+    final expected = applied ? entry.value.expected : entry.value.original;
+    final selected = entries['${operation.repository!.prefix}${entry.key}'];
+    if (expected == null
+        ? selected != null
+        : selected !=
+              (
+                oldMode: expected.mode,
+                newMode: expected.mode,
+                oid: expected.oid,
+                kind: 'modified',
+              )) {
       throw _changed();
     }
-  } else {
-    final working = (await operation.command('/usr/bin/head', [
-      '-c',
-      '${operation.limits.fileBytes + 1}',
-      '--',
-      './$path',
-    ])).bytes;
-    if (working.length != operation.observed[path]!.size ||
-        _blobHash(working, observation.head.commit.length) !=
-            operation.workingOids[path]) {
-      throw _changed();
+    // Hash-checked bytes prove each actual index blob, not just its header.
+    if (verifyBlobs && expected != null) {
+      final actual = await operation.blob(expected.oid);
+      final expectedBytes = applied ? entry.value.after : entry.value.before;
+      if (actual == null || !_equalBytes(actual, expectedBytes)) {
+        throw _changed();
+      }
     }
   }
   await operation.verifyMetadata(operation.observed.keys.toList());
-  if (addition) {
-    if (!await _reviewAdditionPathSafe(operation, path)) throw _changed();
-    if (expected == null &&
-        !_equalBytes(
-          (await operation.git([
-            'ls-files',
-            '--others',
-            '--exclude-standard',
-            '-z',
-            '--',
-            './$path',
-          ])).bytes,
-          utf8.encode('$path\u0000'),
-        )) {
+  for (final entry in targets.entries) {
+    final path = entry.key;
+    if (entry.value.file.changeKind == 'deleted') {
+      if (operation.workingAbsences[path] == null ||
+          await operation.workingAbsence(path) !=
+              operation.workingAbsences[path]) {
+        throw _changed();
+      }
+    } else {
+      final working = (await operation.command('/usr/bin/head', [
+        '-c',
+        '${operation.limits.fileBytes + 1}',
+        '--',
+        './$path',
+      ])).bytes;
+      if (working.length != operation.observed[path]!.size ||
+          _blobHash(working, observation.head.commit.length) !=
+              operation.workingOids[path]) {
+        throw _changed();
+      }
+    }
+  }
+  await operation.verifyMetadata(operation.observed.keys.toList());
+  for (final entry in targets.entries) {
+    final path = entry.key;
+    if (entry.value.file.changeKind == 'added') {
+      if (!await _reviewAdditionPathSafe(operation, path)) throw _changed();
+      if ((applied ? entry.value.expected : entry.value.original) == null &&
+          !_equalBytes(
+            (await operation.git([
+              'ls-files',
+              '--others',
+              '--exclude-standard',
+              '-z',
+              '--',
+              './$path',
+            ])).bytes,
+            utf8.encode('$path\u0000'),
+          )) {
+        throw _changed();
+      }
+    }
+    if (await operation.readAttributes(path) != operation.attributes[path]) {
       throw _changed();
     }
   }
-  if (await operation.readAttributes(path) != operation.attributes[path] ||
-      await operation.readSettings() != observation.settings ||
+  if (wholeLayer) {
+    final inventory = await operation.enumerate();
+    if (!applied) {
+      if (inventory != observation.inventory) throw _changed();
+    } else {
+      // Index membership transitions alter only these two working inventories.
+      // New or missing unrelated paths cannot silently shrink an All operation.
+      final untracked = _records(observation.inventory.untracked).toSet();
+      final deleted = _records(observation.inventory.deleted).toSet();
+      for (final entry in targets.entries) {
+        if (entry.value.file.changeKind == 'added') {
+          if (entry.value.expected == null) {
+            untracked.add(entry.key);
+          } else {
+            untracked.remove(entry.key);
+          }
+        } else if (entry.value.file.changeKind == 'deleted') {
+          if (entry.value.expected == null) {
+            deleted.remove(entry.key);
+          } else {
+            deleted.add(entry.key);
+          }
+        }
+      }
+      String sorted(Iterable<String> paths) =>
+          (paths.toList()..sort()).join('\u0000');
+      if (sorted(_records(inventory.untracked)) != sorted(untracked) ||
+          sorted(_records(inventory.deleted)) != sorted(deleted) ||
+          inventory.killed != observation.inventory.killed) {
+        throw _changed();
+      }
+    }
+  }
+  if (await operation.readSettings() != observation.settings ||
       await operation.readHead() != observation.head ||
       await operation.discover() != operation.repository) {
     throw _changed();
@@ -401,9 +479,12 @@ Future<void> _verifyReviewState(
   if (await _readReviewIndex(operation) != raw) {
     throw _changed();
   }
-  if (deletion &&
-      await operation.workingAbsence(path) != operation.workingAbsences[path]) {
-    throw _changed();
+  for (final entry in targets.entries) {
+    if (entry.value.file.changeKind == 'deleted' &&
+        await operation.workingAbsence(entry.key) !=
+            operation.workingAbsences[entry.key]) {
+      throw _changed();
+    }
   }
   operation.checkOpen();
 }
@@ -425,7 +506,7 @@ Future<String> _readReviewIndex(_PortableSnapshot operation) async => _decode(
 
 // Both inputs have already passed parseGitIndex. Preserve every unrelated stage,
 // flag and stat record, including conflict sides collapsed by its display map.
-String _otherIndexRecords(String raw, String selectedPath) {
+String _otherIndexRecords(String raw, Set<String> selectedPaths) {
   final result = StringBuffer();
   var start = 0;
   while (start < raw.length) {
@@ -435,7 +516,7 @@ String _otherIndexRecords(String raw, String selectedPath) {
     for (var line = 0; line < 5; line++) {
       end = raw.indexOf('\n', end) + 1;
     }
-    if (raw.substring(tab + 1, nul) != selectedPath) {
+    if (!selectedPaths.contains(raw.substring(tab + 1, nul))) {
       result.write(raw.substring(start, end));
     }
     start = end;
@@ -561,6 +642,7 @@ final class _ReviewObservation {
     required this.entries,
     required this.headEntries,
     required this.settings,
+    required this.inventory,
   });
 
   final AuthorizedEnvironmentIdentity identity;
@@ -569,9 +651,193 @@ final class _ReviewObservation {
   final Map<String, GitIndexEntry> entries;
   final Map<String, GitIndexEntry> headEntries;
   final String settings;
+  final _Inventory inventory;
   late final String indexRevision = sha256
       .convert(utf8.encode(index))
       .toString();
+}
+
+// Compute known verification work without another repository inspection. Reserve
+// both success and rejected-write postconditions, including index growth.
+({int bytes, int processes}) _reviewVerificationBudget(
+  _PortableSnapshot operation,
+  _ReviewObservation observation,
+  List<ChangedFile> files, {
+  required int blobBytes,
+  required bool wholeLayer,
+}) {
+  final indexCopies = wholeLayer ? 3 : 2;
+  var bytes =
+      indexCopies * utf8.encode(observation.index).length +
+      utf8.encode(observation.settings).length +
+      blobBytes +
+      8192 +
+      2 * utf8.encode(operation.repository.toString()).length +
+      2 *
+          operation.observed.entries.fold<int>(
+            0,
+            (sum, entry) =>
+                sum +
+                utf8
+                    .encode(
+                      './${entry.key}\u0000${entry.value.description}\u0000',
+                    )
+                    .length,
+          );
+  final statBatches = operation.pathBatches(
+    operation.observed.keys.toList(),
+    '/usr/bin/stat',
+    const [r'--printf=%n\0%f %s %d %i %y %z\0', '--'],
+  ).length;
+  // Two index reads, settings, HEAD/ref, discovery, and per-file blob/working/attrs.
+  var processes = 10 + 2 * statBatches + 4 * files.length;
+  if (wholeLayer) {
+    processes += 4;
+    bytes +=
+        utf8.encode(observation.inventory.untracked).length +
+        utf8.encode(observation.inventory.deleted).length +
+        utf8.encode(observation.inventory.killed).length;
+  }
+  for (final file in files) {
+    final path = file.relativePath;
+    bytes +=
+        utf8.encode(operation.attributes[path]!).length +
+        (operation.observed[path]?.size ?? 0) +
+        2 * utf8.encode(operation.workingAbsences[path] ?? '').length;
+    if (file.changeKind == 'added' || file.changeKind == 'deleted') {
+      processes += 3;
+      bytes +=
+          (indexCopies + 1) *
+          (utf8.encode('${operation.repository!.prefix}$path').length + 512);
+    }
+  }
+  return (bytes: bytes, processes: processes);
+}
+
+// Complete operations include sequential inspection and two verification passes.
+// Keep headroom inside the shared 30-second deadline; this is not a latency SLA.
+const _maximumLayerReviewFiles = 16;
+
+String? _layerReviewRevision(
+  _PortableSnapshot operation,
+  List<ChangedFile> files, {
+  required bool reverse,
+}) {
+  final observation = operation.reviewObservation;
+  if (observation == null ||
+      files.isEmpty ||
+      files.length > _maximumLayerReviewFiles ||
+      files.any((file) => file.fileReviewRevision == null)) {
+    return null;
+  }
+  final sorted = files.toList()
+    ..sort((a, b) => a.relativePath.compareTo(b.relativePath));
+  var patchBytes = 0;
+  var beforeBytes = 0;
+  var blobBytes = 0;
+  var insertions = 0;
+  var growth = 0;
+  var untrackedBytes = utf8.encode(observation.inventory.untracked).length;
+  var deletedBytes = utf8.encode(observation.inventory.deleted).length;
+  for (final file in sorted) {
+    final path = file.relativePath;
+    final beforeOid = observation.entries[path]?.oid;
+    final afterOid = reverse
+        ? observation.headEntries[path]?.oid
+        : operation.workingOids[path];
+    final before = beforeOid == null ? 0 : operation.objectSizes[beforeOid];
+    final after = afterOid == null
+        ? 0
+        : reverse
+        ? operation.objectSizes[afterOid]
+        : operation.observed[path]?.size;
+    if (before == null ||
+        after == null ||
+        _reviewPathCollision(path, sorted.map((file) => file.relativePath))) {
+      return null;
+    }
+    beforeBytes += before;
+    blobBytes += before > after ? before : after;
+    patchBytes += _reviewPatchBound(file, operation.repository!.prefix);
+    if (beforeOid == null && afterOid != null) {
+      insertions++;
+      growth +=
+          utf8.encode('${operation.repository!.prefix}$path').length + 512;
+    }
+    if (reverse && file.changeKind == 'added') {
+      untrackedBytes += utf8.encode(path).length + 1;
+    } else if (reverse && file.changeKind == 'deleted') {
+      deletedBytes += utf8.encode(path).length + 1;
+    }
+  }
+  if (patchBytes > environmentBufferedProcessStdinLimit ||
+      '\u0000'.allMatches(observation.index).length + insertions >
+          operation.limits.inventoryEntries ||
+      utf8.encode(observation.index).length + growth >
+          operation.limits.outputBytes ||
+      untrackedBytes > operation.limits.outputBytes ||
+      deletedBytes > operation.limits.outputBytes) {
+    return null;
+  }
+  final budget = _reviewVerificationBudget(
+    operation,
+    observation,
+    sorted,
+    blobBytes: blobBytes,
+    wholeLayer: true,
+  );
+  // Construction rereads original blobs; check and apply share the same stdin.
+  // Preflight and postflight share the original operation's remaining budgets.
+  if (operation.byteCount +
+              beforeBytes +
+              64 * files.length +
+              2 * patchBytes +
+              2 * budget.bytes >
+          operation.limits.totalBytes ||
+      operation.commandCount + 2 * files.length + 2 + 2 * budget.processes >
+          operation.limits.processes) {
+    return null;
+  }
+  final layer = reverse ? 'staged' : 'unstaged';
+  const domain = 'git-layer-review-v1';
+  final repo = operation.repository!;
+  final digest = sha256.convert(
+    utf8.encode(
+      jsonEncode([
+        domain,
+        layer,
+        observation.identity.sessionId,
+        observation.identity.environmentId,
+        repo.root,
+        repo.worktree,
+        repo.directory,
+        repo.prefix,
+        observation.head.commit,
+        observation.head.reference,
+        observation.indexRevision,
+        for (final file in sorted)
+          [
+            file.relativePath,
+            file.changeKind,
+            file.fileReviewRevision,
+            operation.observed[file.relativePath]?.description,
+          ],
+      ]),
+    ),
+  );
+  return '$domain:$layer:$digest';
+}
+
+int _reviewPatchBound(ChangedFile file, String prefix) {
+  // Four quoted headers, worst-case octal UTF-8 escaping, and fixed metadata.
+  var size = 512 + 16 * utf8.encode('$prefix${file.relativePath}').length;
+  for (final hunk in file.hunks) {
+    size += 128;
+    for (final line in hunk.lines) {
+      size += utf8.encode(line.text).length + 2 + (line.noNewline ? 28 : 0);
+    }
+  }
+  return size;
 }
 
 bool _reviewablePath(String path) =>
@@ -631,7 +897,6 @@ bool _reviewableFile(
   }
   // Four quoted headers, worst-case octal UTF-8 escaping, and fixed metadata.
   final metadata = 512 + 16 * utf8.encode('$prefix${file.relativePath}').length;
-  var aggregateSize = metadata;
   var aggregateDelta = 0;
   for (final hunk in file.hunks) {
     var size = metadata;
@@ -652,12 +917,12 @@ bool _reviewableFile(
             resultBytes > maximumFileBytes)) {
       return false;
     }
-    aggregateSize += size - metadata + 128;
     aggregateDelta += delta;
   }
   final resultBytes = indexBytes + (reverse ? -aggregateDelta : aggregateDelta);
   return !wholeFile ||
-      (aggregateSize <= environmentBufferedProcessStdinLimit &&
+      (_reviewPatchBound(file, prefix) <=
+              environmentBufferedProcessStdinLimit &&
           resultBytes >= 0 &&
           resultBytes <= maximumFileBytes);
 }

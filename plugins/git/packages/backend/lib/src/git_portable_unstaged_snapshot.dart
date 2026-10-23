@@ -159,7 +159,8 @@ final class _PortableSnapshot {
   int byteCount = 0;
   int verificationBytes = 0;
   int lineCount = 0;
-  int presentationBytes = 0;
+  // Three layer envelopes, including their required nullable review revisions.
+  int presentationBytes = 1024;
   int fileCount = 0;
   _Repository? repository;
   bool fileMode = true;
@@ -508,6 +509,7 @@ final class _PortableSnapshot {
         },
         headEntries: reviewHeadEntries,
         settings: settings,
+        inventory: inventory,
       );
       reviewObservation = observation;
       for (final (layer, name) in [(files, 'unstaged'), (staged, 'staged')]) {
@@ -587,10 +589,20 @@ final class _PortableSnapshot {
     }
     checkOpen();
     return TaskChangeSetSnapshot(
-      committed: ChangeSetSnapshot(files: committed),
+      committed: ChangeSetSnapshot(files: committed, layerReviewRevision: null),
       uncommitted: UncommittedChangeSetSnapshot(
-        staged: ChangeSetSnapshot(files: staged),
-        unstaged: ChangeSetSnapshot(files: files),
+        staged: ChangeSetSnapshot(
+          files: staged,
+          layerReviewRevision: selectedPath == null && conflicts.isEmpty
+              ? _layerReviewRevision(this, staged, reverse: true)
+              : null,
+        ),
+        unstaged: ChangeSetSnapshot(
+          files: files,
+          layerReviewRevision: selectedPath == null && conflicts.isEmpty
+              ? _layerReviewRevision(this, files, reverse: false)
+              : null,
+        ),
         conflicts: conflicts,
       ),
     );
