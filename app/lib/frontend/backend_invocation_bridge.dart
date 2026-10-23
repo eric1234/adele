@@ -5,6 +5,7 @@ import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/async.dart';
 import 'package:dart_eval/stdlib/core.dart';
 
+import 'environment_capability_diagnostics.dart';
 import 'structured_bridge_data.dart';
 
 /// Structured transport and evaluator settlement for a captured presentation.
@@ -16,17 +17,21 @@ final class BackendInvocationBridge {
     required void Function() validateSettlement,
     required bool Function() isPresentationActive,
     void Function()? validateStream,
+    EnvironmentCapabilityDiagnostic? Function(String method)? beginDiagnostic,
   }) : _channelFor = channelFor,
        _validateAdmission = validateAdmission,
        _validateSettlement = validateSettlement,
        _validateStream = validateStream ?? validateSettlement,
-       _isPresentationActive = isPresentationActive;
+       _isPresentationActive = isPresentationActive,
+       _beginDiagnostic = beginDiagnostic;
 
   final AdeleRequestChannel? Function(String route) _channelFor;
   final void Function() _validateAdmission;
   final void Function() _validateSettlement;
   final void Function() _validateStream;
   final bool Function() _isPresentationActive;
+  final EnvironmentCapabilityDiagnostic? Function(String method)?
+  _beginDiagnostic;
   final Zone _nativeZone = Zone.current;
   final Set<void Function()> _streams = {};
   bool _active = true;
@@ -37,19 +42,32 @@ final class BackendInvocationBridge {
   }
 
   Future<Object?> request(String route, String method, Object? payload) async {
-    _validate(_validateAdmission);
-    final channel = _channelFor(route);
-    if (channel == null) {
-      throw StateError('Backend service is not allowlisted.');
+    final diagnostic = _beginDiagnostic?.call(method);
+    var phase = 'admission';
+    try {
+      _validate(_validateAdmission);
+      final channel = _channelFor(route);
+      if (channel == null) {
+        throw StateError('Backend service is not allowlisted.');
+      }
+      if (method.isEmpty) {
+        throw const FormatException('Backend method is empty.');
+      }
+      final copied = copyStructuredBridgeData(payload);
+      if (copied is! Map<String, Object?>) {
+        throw const FormatException('Backend request payload must be a map.');
+      }
+      phase = 'invocation';
+      final result = await channel.request(method, copied);
+      phase = 'response';
+      _validate(_validateSettlement);
+      final response = copyStructuredBridgeData(result);
+      diagnostic?.response();
+      return response;
+    } on Object catch (error) {
+      diagnostic?.failure(phase, error);
+      rethrow;
     }
-    if (method.isEmpty) throw const FormatException('Backend method is empty.');
-    final copied = copyStructuredBridgeData(payload);
-    if (copied is! Map<String, Object?>) {
-      throw const FormatException('Backend request payload must be a map.');
-    }
-    final result = await channel.request(method, copied);
-    _validate(_validateSettlement);
-    return copyStructuredBridgeData(result);
   }
 
   Stream<Object?> stream(String route, String method, Object? payload) {
@@ -201,19 +219,29 @@ final class BackendInvocationBridge {
   }
 
   /// Preserve interpreted success values without exposing native failures.
-  static $Future<$Value> settleOperation(Runtime runtime, List<$Value?> args) {
-    final operation = args.single! as $Future;
+  static $Future<$Value> settleOperation(
+    Runtime runtime,
+    List<$Value?> args, {
+    EnvironmentCapabilityDiagnostic? diagnostic,
+  }) {
+    final operation = args.first! as $Future;
     return $Future<$Value>.wrap(
       operation.$value.then<$Value>(
-        (value) => $List.wrap(
-          List<$Value>.unmodifiable([
-            $bool(true),
-            value is $Value ? value : runtime.wrap(value),
-          ]),
-        ),
-        onError: (Object error, StackTrace stack) => $List.wrap(
-          List<$Value>.unmodifiable([$bool(false), const $null()]),
-        ),
+        (value) {
+          diagnostic?.settle(null);
+          return $List.wrap(
+            List<$Value>.unmodifiable([
+              $bool(true),
+              value is $Value ? value : runtime.wrap(value),
+            ]),
+          );
+        },
+        onError: (Object error, StackTrace stack) {
+          diagnostic?.settle(error);
+          return $List.wrap(
+            List<$Value>.unmodifiable([$bool(false), const $null()]),
+          );
+        },
       ),
     );
   }

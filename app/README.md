@@ -347,6 +347,33 @@ asynchronous frontend retirement cleanup. An exact `ExtensionBinding.onRetire`
 subscription covers direct registration closure too, without requiring a frame or
 registry-change delivery.
 
+For native development diagnosis of contextual requests (including stock Diff
+snapshots), close any existing checkout launcher, then run from the repository:
+
+```sh
+ADELE_ENVIRONMENT_CAPABILITY_DIAGNOSTICS=1 dart tools/adele.dart run linux
+```
+
+[`EnvironmentCapabilityDiagnostics`](lib/frontend/environment_capability_diagnostics.dart)
+is enabled only in debug builds with that exact local flag. Bounded single-line
+records identify the semantic service/method, captured callable and Environment
+provider categories, grant kind, operation sequence, elapsed milliseconds, and
+admission/invocation/response outcome. Declared failures retain only their safe
+code; other exceptions use fixed classifications. No handles, authority tokens,
+payloads, process arguments/stdin/output, snapshot contents, exception messages or
+stacks are logged. Profile/release builds and normal unflagged launches are silent.
+The logger cannot grant access, retry requests, change a failure or substitute an
+Environment.
+
+Stock Diff also supplies its originating single-request handle to safe client
+settlement, allowing a successful native response followed by generated-client
+decoding failure to be distinguished from invocation failure. This input-only
+correlation does not expose diagnostics to interpreted code: settlement remains
+`[true, value]` or `[false, null]`. Reused/unknown handles are not guessed at. When
+reporting a failure, retain the matching operation records, selected scope, and
+whether it occurs in a new minimal Git Task as well as the development Project;
+do not attach Project databases or full process/snapshot payloads.
+
 [`prepared_environment_capability_integration_test.dart`](test/prepared_environment_capability_integration_test.dart)
 uses the same authored scalar/value-DTO proof contract with independently prepared
 frontend-only EVC and backend-only AOT installations. Normal catalog/activation and

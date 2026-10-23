@@ -120,7 +120,10 @@ class DiffPaneState extends State<DiffPane> {
     } else {
       operation = client.snapshotUnstaged();
     }
-    final result = await settleEnvironmentCapabilityOperation(operation);
+    final result = await settleEnvironmentCapabilityOperation(
+      operation,
+      selected,
+    );
     releaseEnvironmentCapabilityProvider(selected);
     if (disposed || captured != revision) return;
     handle = '';

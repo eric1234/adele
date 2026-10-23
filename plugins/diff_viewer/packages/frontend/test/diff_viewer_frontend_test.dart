@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/frontend/backend_invocation_bridge.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
+import 'package:adele_desktop/frontend/environment_capability_diagnostics.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
@@ -2543,6 +2545,12 @@ void main() {
   testWidgets(
     'generated eval decoder rejects malformed nested DTOs and retry resolves anew',
     (tester) async {
+      final diagnosticLines = <String>[];
+      port.diagnostics = EnvironmentCapabilityDiagnostics(
+        debugBuild: true,
+        environment: {EnvironmentCapabilityDiagnostics.flag: '1'},
+        sink: diagnosticLines.add,
+      );
       port.wireResponse = {
         'layerReviewRevision': null,
         'files': [
@@ -2570,11 +2578,66 @@ void main() {
       await mount(tester);
       expect(find.text('Unable to load unstaged changes.'), findsOneWidget);
       expect(port.handles, isEmpty);
+      expect(port.settlementHandles, ['handle-1']);
+      final failedRecords = _diagnosticRecords(diagnosticLines);
+      expect(failedRecords.map((record) => record['phase']), [
+        'response',
+        'response-decoding',
+      ]);
+      expect(failedRecords.map((record) => record['outcome']), [
+        'success',
+        'failure',
+      ]);
+      expect(failedRecords.last['classification'], isA<String>());
+      expect(failedRecords.map((record) => record['operation']), [1, 1]);
+      expect(diagnosticLines.join(), isNot(contains('invalid.txt')));
+      expect(diagnosticLines.join(), isNot(contains('noNewline')));
+      expect(diagnosticLines.join(), isNot(contains('handle-1')));
+      expect(find.textContaining('response-decoding'), findsNothing);
       port.wireResponse = null;
       await tester.tap(find.text('Retry'));
       await tester.pumpAndSettle();
       expect(find.text('No unstaged changes.'), findsOneWidget);
       expect(port.resolutions, 2);
+      expect(port.settlementHandles, ['handle-1', 'handle-2']);
+      expect(port.releases, ['handle-1', 'handle-2']);
+      final retriedRecords = _diagnosticRecords(diagnosticLines).skip(2);
+      expect(retriedRecords.map((record) => record['phase']), [
+        'response',
+        'response-decoding',
+      ]);
+      expect(retriedRecords.map((record) => record['outcome']), [
+        'success',
+        'success',
+      ]);
+      expect(retriedRecords.map((record) => record['operation']), [2, 2]);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'diagnostics distinguish invocation failure from generated response decoding',
+    (tester) async {
+      final diagnosticLines = <String>[];
+      port.diagnostics = EnvironmentCapabilityDiagnostics(
+        debugBuild: true,
+        environment: {EnvironmentCapabilityDiagnostics.flag: '1'},
+        sink: diagnosticLines.add,
+      );
+      port.service.failure = true;
+      await mount(tester);
+      expect(find.text('Unable to load unstaged changes.'), findsOneWidget);
+      expect(find.textContaining('private'), findsNothing);
+      expect(find.textContaining('invocation'), findsNothing);
+      expect(port.handles, isEmpty);
+      expect(port.releases, ['handle-1']);
+      expect(port.settlementHandles, ['handle-1']);
+      final record = _diagnosticRecords(diagnosticLines).single;
+      expect(record['phase'], 'invocation');
+      expect(record['outcome'], 'failure');
+      expect(record['method'], changeSetSourceServiceSnapshotUnstagedId);
+      expect(diagnosticLines.join(), isNot(contains('private failure')));
+      expect(diagnosticLines.join(), isNot(contains('handle-1')));
       expect(tester.takeException(), isNull);
     },
   );
@@ -3867,12 +3930,26 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
   Object? lastResponse;
   final List<String> methods = [];
   Future<void>? resolving;
+  EnvironmentCapabilityDiagnostics? diagnostics;
+  EnvironmentCapabilityDiagnostic? _requestDiagnostic;
+  final Map<String, EnvironmentCapabilityDiagnostic?> _diagnosticRequests = {};
+  final Map<String, int> _requestCounts = {};
+  final List<String?> settlementHandles = [];
   late final transport = BackendInvocationBridge(
     channelFor: (handle) =>
         reviewHandles[handle] ?? (handles.contains(handle) ? this : null),
     validateAdmission: () {},
     validateSettlement: () {},
     isPresentationActive: () => active,
+    beginDiagnostic: (method) => _requestDiagnostic = diagnostics?.begin(
+      service: method.startsWith('$reviewApprovalHandlerServiceId.')
+          ? reviewApprovalHandlerServiceId
+          : changeSetSourceServiceId,
+      method: method,
+      provider: 'dev.adele.test.snapshot',
+      environmentProvider: 'dev.adele.test.environment',
+      grant: 'bufferedProcess',
+    ),
   );
 
   @override
@@ -3936,16 +4013,32 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
         if (removed) releases.add(handle);
         return $bool(removed);
       })
-      ..registerBridgeFunc(
-        library,
-        'requestEnvironmentCapability',
-        (_, _, args) => transport.evalRequest(runtime, args),
-      )
-      ..registerBridgeFunc(
-        library,
-        'settleEnvironmentCapabilityOperation',
-        (_, _, args) => BackendInvocationBridge.settleOperation(runtime, args),
-      );
+      ..registerBridgeFunc(library, 'requestEnvironmentCapability', (
+        _,
+        _,
+        args,
+      ) {
+        final result = transport.evalRequest(runtime, args);
+        final handle = args[0]!.$value as String;
+        _requestCounts.update(handle, (count) => count + 1, ifAbsent: () => 1);
+        _diagnosticRequests[handle] = _requestDiagnostic;
+        return result;
+      })
+      ..registerBridgeFunc(library, 'settleEnvironmentCapabilityOperation', (
+        _,
+        _,
+        args,
+      ) {
+        final handle = args.length > 1 ? args[1]?.$value as String? : null;
+        settlementHandles.add(handle);
+        return BackendInvocationBridge.settleOperation(
+          runtime,
+          args,
+          diagnostic: _requestCounts[handle] == 1
+              ? _diagnosticRequests[handle]
+              : null,
+        );
+      });
   }
 
   void replaceReview() {
@@ -3989,3 +4082,9 @@ class _Port extends EnvironmentCapabilityAccessDeclarations
     transport.invalidate();
   }
 }
+
+List<Map<String, dynamic>> _diagnosticRecords(List<String> lines) => [
+  for (final line in lines)
+    jsonDecode(line.substring('[adele.environment-capability] '.length))
+        as Map<String, dynamic>,
+];
