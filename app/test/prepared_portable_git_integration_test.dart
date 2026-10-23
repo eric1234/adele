@@ -2917,6 +2917,214 @@ void main() {
     },
   );
 
+  testWidgets(
+    'G6c3b stock bulk controls roundtrip mixed changes through independent Environment AOT without Task anchors',
+    (tester) async {
+      final repositories = await reviewRepositories(tester, wholeLayer: true);
+      final before = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      final durable = await openDurable(
+        tester,
+        additionalRoot: repositories['additional'],
+        primaryRoot: repositories['primary'],
+      );
+      final database = durable.lifecycle.databaseForEnvironment(
+        EnvironmentId('additional'),
+      )!;
+      const anchorTable =
+          "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
+      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+      await mount(
+        tester,
+        registry: durable.registry,
+        lifecycle: durable.lifecycle,
+        additionalRoot: repositories['additional'],
+        primaryRoot: repositories['primary'],
+        withTaskAnchor: false,
+        stock: true,
+      );
+      tester.view.physicalSize = const Size(1600, 5000);
+      await tester.pump();
+      expect(fixture.connection.pluginId, gitPluginId);
+      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
+      final approval = fixture.capabilities.resolve(reviewApprovalCapability);
+      expect(approval.provider.id.value, gitReviewApprovalProviderId);
+      expect(fixture.callableOwner.associationFor(approval), isNull);
+      expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
+      expect(
+        durable.lifecycle.store
+            .requireSessionAuthority(fixture.sessionA.id)
+            .environmentId,
+        EnvironmentId('additional'),
+      );
+      final approve = _pane(
+        'a',
+        find.widgetWithText(TextButton, 'Approve All Unstaged'),
+      );
+      final unapprove = _pane(
+        'a',
+        find.widgetWithText(TextButton, 'Unapprove All Staged'),
+      );
+      await _waitFor(tester, approve);
+      await _waitFor(
+        tester,
+        find.widgetWithText(TextButton, 'Approve File'),
+        count: 4,
+      );
+      for (final header in [
+        'review.txt  [modified]',
+        'z-other.txt  [modified]',
+        '$_newFileReviewPath  [added]',
+        '$_deletedFileReviewPath  [deleted]',
+      ]) {
+        expect(find.text(header), findsOneWidget);
+      }
+      expect(unapprove, findsNothing);
+      expect(find.widgetWithText(TextButton, 'Approve'), findsWidgets);
+      expect(find.textContaining('primary'), findsNothing);
+      final staleApprove = tester.widget<TextButton>(approve).onPressed!;
+      await tester.runAsync(() => tester.tap(approve));
+      await _stockVisible(tester, 'No unstaged changes');
+      expect(approve, findsNothing);
+      final approved = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      _expectLayerReviewIndex(approved, before, approved: true);
+      staleApprove();
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => _reviewStates(repositories)),
+        approved,
+      );
+      expect(
+        _reviewWrites((await tester.runAsync(() => _stockEvidence(fixture)))!),
+        hasLength(1),
+      );
+
+      _press(tester, 'Uncommitted changes');
+      await _waitFor(tester, unapprove);
+      await _waitFor(
+        tester,
+        find.widgetWithText(TextButton, 'Unapprove File'),
+        count: 5,
+      );
+      expect(find.widgetWithText(TextButton, 'Unapprove'), findsWidgets);
+      expect(approve, findsNothing);
+      await _stockVisible(tester, 'No unstaged changes');
+      final staleUnapprove = tester.widget<TextButton>(unapprove).onPressed!;
+      await tester.runAsync(() => tester.tap(unapprove));
+      await _stockVisible(tester, 'No staged changes');
+      await _waitFor(tester, approve);
+      await _waitFor(
+        tester,
+        find.widgetWithText(TextButton, 'Approve File'),
+        count: 5,
+      );
+      expect(unapprove, findsNothing);
+      expect(find.widgetWithText(TextButton, 'Unapprove File'), findsNothing);
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      for (final header in [
+        'review.txt  [modified]',
+        'z-other.txt  [modified]',
+        'untouched.txt  [modified]',
+        '$_newFileReviewPath  [added]',
+        '$_deletedFileReviewPath  [deleted]',
+      ]) {
+        expect(find.text(header), findsOneWidget);
+        expect(tester.getTopLeft(find.text(header)).dy, greaterThan(unstagedY));
+      }
+      final unapproved = (await tester.runAsync(
+        () => _reviewStates(repositories),
+      ))!;
+      _expectLayerReviewIndex(unapproved, before, approved: false);
+      staleApprove();
+      staleUnapprove();
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => _reviewStates(repositories)),
+        unapproved,
+      );
+      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
+      final applies = (evidence['processes'] as List)
+          .cast<Map<Object?, Object?>>()
+          .where((process) => (process['arguments'] as List).contains('apply'))
+          .toList();
+      expect(
+        applies.map(
+          (process) => (process['arguments'] as List).contains('--check'),
+        ),
+        [true, false, true, false],
+      );
+      final writes = _reviewWrites(evidence);
+      expect(writes, hasLength(2));
+      for (var i = 0; i < writes.length; i++) {
+        final write = writes[i];
+        expect(write['exitCode'], 0);
+        expect(write['stdinBase64'], applies[i * 2]['stdinBase64']);
+        expect(
+          write['arguments'] as List,
+          i == 0 ? isNot(contains('--reverse')) : contains('--reverse'),
+        );
+        final patch = utf8.decode(base64Decode(write['stdinBase64'] as String));
+        expect(
+          RegExp(r'^diff --git ', multiLine: true).allMatches(patch),
+          hasLength(i == 0 ? 4 : 5),
+        );
+        for (final path in [
+          'review.txt',
+          'z-other.txt',
+          _newFileReviewPath,
+          _deletedFileReviewPath,
+        ]) {
+          expect(patch, contains(path));
+        }
+        expect(
+          patch,
+          i == 0 ? isNot(contains('untouched.txt')) : contains('untouched.txt'),
+        );
+      }
+      for (final process
+          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
+        expect(process['environmentId'], 'additional');
+        expect(process['providerId'], 'test.environment.a');
+        expect(process['cwd'], repositories['additional']);
+      }
+      await tester.runAsync(() async {
+        final root = Directory(repositories['additional']!);
+        expect(await _git(root, ['diff', '--cached', '--exit-code']), isEmpty);
+        for (final entry in _layerReviewContents(
+          'additional',
+          approved: false,
+        ).entries) {
+          expect(
+            await _git(root, ['show', ':${entry.key}'], trim: false),
+            entry.value,
+          );
+        }
+        expect(
+          await File('${root.path}/$_deletedFileReviewPath').exists(),
+          isFalse,
+        );
+      });
+      expect(
+        fixture.environmentRuntime.currentMaterialization(
+          EnvironmentId('primary'),
+        ),
+        isNull,
+      );
+      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
+      expect(
+        durable.lifecycle.store.runsForSession(fixture.sessionA.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final empty in [false, true]) {
     testWidgets(
       'G6c2a stock ${empty ? 'empty file' : 'new text file'} approval roundtrip uses independent Environment AOT without Task anchors',

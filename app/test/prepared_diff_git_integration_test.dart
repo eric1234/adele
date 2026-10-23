@@ -640,6 +640,290 @@ void main() {
     skip: !Platform.isLinux,
   );
 
+  testWidgets(
+    'G6c3b stock bulk review applies one mixed nonprimary patch per direction and preserves Source and scoped Git state',
+    (tester) async {
+      const added = 'New bulk text\nFinal line without newline';
+      const deleted = 'Deleted baseline\n';
+      final partial = _reviewContent(first: true);
+      final working = _reviewContent(first: true, second: true);
+      final baseline = fixture.baseline(fixture.additional);
+      await tester.runAsync(() async {
+        await fixture.write('g baseline.txt', 'Committed bulk sentinel\n');
+        await _git(fixture.additionalRoot, ['add', '--', 'g baseline.txt']);
+        await _git(fixture.additionalRoot, [
+          'commit',
+          '-m',
+          'Bulk review HEAD',
+        ]);
+        await fixture.write(_reviewPath, partial);
+        await fixture.write(
+          'c deleted.txt',
+          'Previously staged deletion bytes\n',
+        );
+        await fixture.write(
+          'd staged.txt',
+          'Previously staged bulk sentinel\n',
+        );
+        final outside = File('${fixture.additionalWorktree.path}/outside.txt');
+        await outside.writeAsString('Outside staged bulk sentinel\n');
+        await _git(fixture.additionalWorktree, [
+          'add',
+          '--',
+          'nested source/$_reviewPath',
+          'nested source/c deleted.txt',
+          'nested source/d staged.txt',
+          'outside.txt',
+        ]);
+        await outside.writeAsString('Outside working bulk sentinel\n');
+        await fixture.write(_reviewPath, working);
+        await fixture.write(_newFileReviewPath, added);
+        await fixture.file('c deleted.txt').delete();
+        final primary = File('${fixture.primaryRoot.path}/$_reviewPath');
+        await primary.writeAsString('Primary staged bulk sentinel\n');
+        await _git(fixture.primaryRoot, ['add', '--', _reviewPath]);
+        await primary.writeAsString('Primary working bulk sentinel\n');
+      });
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      final outsideIndex = await tester.runAsync(
+        () => _git(fixture.additionalWorktree, [
+          'ls-files',
+          '--stage',
+          '--debug',
+          '-z',
+          '--',
+          'outside.txt',
+        ]),
+      );
+      expect(
+        before[fixture.additional.id.value]!['head'],
+        isNot('$baseline\n'),
+      );
+      expect(baseline, isNot(fixture.baseline(fixture.primary)));
+      await mount(tester);
+      tester.view.physicalSize = const Size(1600, 5000);
+      await tester.pump();
+      await _reviewReady(tester, 'Approve All Unstaged');
+      await _reviewReady(tester, 'Approve File', count: 3);
+      await _reviewReady(tester, 'Approve');
+      expect(_reviewAction('Unapprove All Staged'), findsNothing);
+      expect(find.text('$_newFileReviewPath  [added]'), findsOneWidget);
+      expect(find.text('c deleted.txt  [deleted]'), findsOneWidget);
+      expect(find.text('$_reviewPath  [modified]'), findsOneWidget);
+      for (final absent in ['outside.txt', 'Primary', 'nested source/']) {
+        expect(find.textContaining(absent), findsNothing);
+      }
+
+      // The new file sorts before the tracked modification. Keep its real Source
+      // buffer dirty across both index-only operations, without saving it.
+      await tester.runAsync(() => tester.tap(_sourceAction().first));
+      await _waitFor(
+        tester,
+        () => find.byType(CodeForge).evaluate().length == 1,
+      );
+      final native = _editor(tester);
+      final element = tester.element(find.byType(CodeForge));
+      expect(native.controller!.text, added);
+      native.focusNode!.requestFocus();
+      await tester.pump();
+      await _key(tester, LogicalKeyboardKey.home, control: true);
+      await _key(tester, LogicalKeyboardKey.delete);
+      expect(native.controller!.text, added.substring(1));
+      await _visible(tester, 'Possibly modified');
+
+      final staleApprove = tester
+          .widget<TextButton>(_reviewAction('Approve All Unstaged'))
+          .onPressed!;
+      await tester.runAsync(
+        () => tester.tap(_reviewAction('Approve All Unstaged')),
+      );
+      await _visible(tester, 'No unstaged changes');
+      expect(_reviewAction('Approve All Unstaged'), findsNothing);
+      expect(_reviewAction('Approve File'), findsNothing);
+      expect(_reviewAction('Approve'), findsNothing);
+      await tester.runAsync(
+        () => fixture.expectLayerReviewIndex(before, {
+          _reviewPath: working,
+          _newFileReviewPath: added,
+          'c deleted.txt': null,
+        }),
+      );
+      final approved = (await tester.runAsync(fixture.reviewState))!;
+      staleApprove();
+      await tester.pump();
+      expect(fixture.indexWrites, hasLength(1));
+      expect(await tester.runAsync(fixture.reviewState), approved);
+      expect(
+        await tester.runAsync(
+          () => _git(fixture.additionalWorktree, [
+            'ls-files',
+            '--stage',
+            '--debug',
+            '-z',
+            '--',
+            'outside.txt',
+          ]),
+        ),
+        outsideIndex,
+      );
+
+      await _selectScope(tester, 'Uncommitted changes');
+      await _reviewReady(tester, 'Unapprove All Staged');
+      await _reviewReady(tester, 'Unapprove File', count: 4);
+      await _reviewReady(tester, 'Unapprove', count: 3);
+      expect(_reviewAction('Approve All Unstaged'), findsNothing);
+      expect(find.textContaining('Committed bulk sentinel'), findsNothing);
+      await _visible(tester, 'No unstaged changes');
+      await _selectScope(tester, 'Task / Branch');
+      await _visible(tester, '+Committed bulk sentinel');
+      await _reviewReady(tester, 'Unapprove All Staged');
+      await _reviewReady(tester, 'Unapprove File', count: 4);
+      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+      final unstagedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      for (final header in [
+        '$_reviewPath  [modified]',
+        '$_newFileReviewPath  [added]',
+        'c deleted.txt  [deleted]',
+        'd staged.txt  [modified]',
+      ]) {
+        expect(find.text(header), findsOneWidget);
+        expect(tester.getTopLeft(find.text(header)).dy, greaterThan(stagedY));
+        expect(tester.getTopLeft(find.text(header)).dy, lessThan(unstagedY));
+      }
+      final staleUnapprove = tester
+          .widget<TextButton>(_reviewAction('Unapprove All Staged'))
+          .onPressed!;
+      await tester.runAsync(
+        () => tester.tap(_reviewAction('Unapprove All Staged')),
+      );
+      await _visible(tester, 'No staged changes');
+      await _reviewReady(tester, 'Approve All Unstaged');
+      await _reviewReady(tester, 'Approve File', count: 4);
+      await _reviewReady(tester, 'Approve', count: 3);
+      expect(_reviewAction('Unapprove All Staged'), findsNothing);
+      expect(_reviewAction('Unapprove File'), findsNothing);
+      expect(_reviewAction('Unapprove'), findsNothing);
+      expect(find.textContaining('+Committed bulk sentinel'), findsOneWidget);
+      final refreshedY = tester
+          .getTopLeft(find.text('Unstaged changes').last)
+          .dy;
+      for (final header in [
+        '$_reviewPath  [modified]',
+        '$_newFileReviewPath  [added]',
+        'c deleted.txt  [deleted]',
+        'd staged.txt  [modified]',
+      ]) {
+        expect(find.text(header), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text(header)).dy,
+          greaterThan(refreshedY),
+        );
+      }
+      await tester.runAsync(
+        () => fixture.expectLayerReviewIndex(before, {
+          _reviewPath: _reviewContent(),
+          _newFileReviewPath: null,
+          'c deleted.txt': deleted,
+          'd staged.txt': 'Staged baseline\n',
+        }),
+      );
+      final unapproved = (await tester.runAsync(fixture.reviewState))!;
+      staleApprove();
+      staleUnapprove();
+      await tester.pump();
+      expect(fixture.indexWrites, hasLength(2));
+      expect(await tester.runAsync(fixture.reviewState), unapproved);
+      final applies = fixture.processes
+          .where(
+            (process) => ((process['request']! as Map)['arguments']! as List)
+                .contains('apply'),
+          )
+          .toList();
+      expect(
+        applies.map(
+          (process) => ((process['request']! as Map)['arguments']! as List)
+              .contains('--check'),
+        ),
+        [true, false, true, false],
+      );
+      for (var i = 0; i < fixture.indexWrites.length; i++) {
+        final write = fixture.indexWrites[i];
+        expect(write['environmentId'], fixture.additional.id.value);
+        final request = write['request']! as Map;
+        expect(
+          request['stdinBase64'],
+          (applies[i * 2]['request']! as Map)['stdinBase64'],
+        );
+        expect(
+          request['arguments'] as List,
+          i == 0 ? isNot(contains('--reverse')) : contains('--reverse'),
+        );
+        final patch = utf8.decode(
+          base64Decode(request['stdinBase64'] as String),
+        );
+        expect(
+          RegExp(r'^diff --git ', multiLine: true).allMatches(patch),
+          hasLength(i == 0 ? 3 : 4),
+        );
+        for (final path in [_reviewPath, _newFileReviewPath, 'c deleted.txt']) {
+          expect(patch, contains('nested source/$path'));
+        }
+        expect(
+          patch,
+          i == 0 ? isNot(contains('d staged.txt')) : contains('d staged.txt'),
+        );
+        expect(patch, isNot(contains('outside.txt')));
+      }
+      expect(
+        await tester.runAsync(
+          () => _git(fixture.additionalWorktree, [
+            'ls-files',
+            '--stage',
+            '--debug',
+            '-z',
+            '--',
+            'outside.txt',
+          ]),
+        ),
+        outsideIndex,
+      );
+      expect(
+        await tester.runAsync(() => fixture.file('c deleted.txt').exists()),
+        isFalse,
+      );
+      expect(tester.element(find.byType(CodeForge)), same(element));
+      expect(_editor(tester).controller, same(native.controller));
+      expect(_editor(tester).undoController, same(native.undoController));
+      expect(native.controller!.text, added.substring(1));
+      native.focusNode!.requestFocus();
+      await tester.pump();
+      await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+      expect(native.controller!.text, added);
+      expect(fixture.reads, [
+        (fixture.additional.id.value, _newFileReviewPath),
+      ]);
+      expect(fixture.baseline(fixture.additional), baseline);
+      expect(fixture.additional.role, EnvironmentRole.additional);
+      expect(
+        fixture.additional.providerState!['sourceRelativePath'],
+        'nested source',
+      );
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
   for (final empty in [false, true]) {
     testWidgets(
       'G6c2a stock ${empty ? 'empty file' : 'new text file'} approval roundtrip preserves nonprimary Source and unrelated Git state',
@@ -1858,6 +2142,97 @@ void main() {
     },
   );
 
+  for (final blocker in ['binary', 'unsupported mode', 'conflict']) {
+    testWidgets(
+      'G6c3b stock $blocker fails closed for both whole layers while individual review remains available',
+      (tester) async {
+        await tester.runAsync(() async {
+          if (blocker == 'conflict') {
+            final branch = (await _git(fixture.additionalRoot, [
+              'symbolic-ref',
+              '--short',
+              'HEAD',
+            ])).trim();
+            for (final side in ['bulk-conflict-side', branch]) {
+              await _git(fixture.additionalRoot, [
+                'checkout',
+                if (side == 'bulk-conflict-side') '-b',
+                side,
+              ]);
+              await fixture.write('c deleted.txt', '$side conflict\n');
+              await _git(fixture.additionalRoot, [
+                'add',
+                '--',
+                'c deleted.txt',
+              ]);
+              await _git(fixture.additionalRoot, ['commit', '-m', side]);
+            }
+            await _git(fixture.additionalRoot, [
+              'merge',
+              '--no-commit',
+              'bulk-conflict-side',
+            ], exitCode: 1);
+          } else if (blocker == 'binary') {
+            await fixture.file('c deleted.txt').writeAsBytes([0, 1, 2, 255]);
+            await _git(fixture.additionalRoot, ['add', '--', 'c deleted.txt']);
+            await fixture.file('c deleted.txt').writeAsBytes([0, 3, 4, 255]);
+          } else {
+            final path = fixture.file('c deleted.txt').path;
+            final executable = await Process.run('/bin/chmod', ['755', path]);
+            expect(executable.exitCode, 0, reason: '${executable.stderr}');
+            await _git(fixture.additionalRoot, ['add', '--', 'c deleted.txt']);
+            final regular = await Process.run('/bin/chmod', ['644', path]);
+            expect(regular.exitCode, 0, reason: '${regular.stderr}');
+          }
+          await fixture.write(_reviewPath, _reviewContent(first: true));
+          await _git(fixture.additionalRoot, ['add', '--', _reviewPath]);
+          await fixture.write(
+            _reviewPath,
+            _reviewContent(first: true, second: true),
+          );
+        });
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        await mount(tester);
+        tester.view.physicalSize = const Size(1600, 5000);
+        await tester.pump();
+        for (final (scope, _) in _scopes) {
+          if (scope != 'Unstaged changes') await _selectScope(tester, scope);
+          await _reviewReady(tester, 'Approve File');
+          await _reviewReady(tester, 'Approve');
+          if (scope != 'Unstaged changes') {
+            await _reviewReady(tester, 'Unapprove File');
+            await _reviewReady(tester, 'Unapprove');
+          }
+          expect(_reviewAction('Approve All Unstaged'), findsNothing);
+          expect(_reviewAction('Unapprove All Staged'), findsNothing);
+          expect(
+            find.textContaining('+Selected second change'),
+            findsOneWidget,
+          );
+          if (blocker == 'conflict') {
+            expect(find.text('c deleted.txt  [conflicted]'), findsOneWidget);
+            expect(find.text('conflicted'), findsOneWidget);
+            expect(find.textContaining('<<<<<<<'), findsNothing);
+            if (scope != 'Unstaged changes') {
+              expect(find.text('Conflicts'), findsOneWidget);
+            }
+          } else {
+            expect(
+              find.text(blocker == 'binary' ? 'binary' : 'unsupported'),
+              findsWidgets,
+            );
+          }
+          expect(_sourceAction(), findsOneWidget);
+          expect(fixture.indexWrites, isEmpty);
+          expect(await tester.runAsync(fixture.reviewState), before);
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
   for (final absent in [true, false]) {
     testWidgets(
       'stock review ${absent ? 'missing provider' : 'denied frontend grant'} leaves real snapshots readable',
@@ -1896,6 +2271,8 @@ void main() {
         expect(_reviewAction('Unapprove'), findsNothing);
         expect(_reviewAction('Approve File'), findsNothing);
         expect(_reviewAction('Unapprove File'), findsNothing);
+        expect(_reviewAction('Approve All Unstaged'), findsNothing);
+        expect(_reviewAction('Unapprove All Staged'), findsNothing);
         _refresh(tester);
         await _visible(tester, '+Selected second change');
         await _visible(tester, 'Review actions unavailable');
@@ -1923,6 +2300,8 @@ void main() {
           expect(_reviewAction('Unapprove'), findsNothing);
           expect(_reviewAction('Approve File'), findsNothing);
           expect(_reviewAction('Unapprove File'), findsNothing);
+          expect(_reviewAction('Approve All Unstaged'), findsNothing);
+          expect(_reviewAction('Unapprove All Staged'), findsNothing);
           expect(fixture.indexWrites, isEmpty);
           expect(await tester.runAsync(fixture.reviewState), before);
         }
@@ -2050,60 +2429,92 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
-    'stock review retirement after real index effect suppresses success without rollback or retry',
-    (tester) async {
-      await tester.runAsync(
-        () => fixture.write(
-          _reviewPath,
-          _reviewContent(first: true, second: true),
-        ),
-      );
-      final before = (await tester.runAsync(fixture.reviewState))!;
-      await mount(tester);
-      await _reviewReady(tester, 'Approve', count: 2);
-      final stale = tester
-          .widget<TextButton>(_reviewAction('Approve').first)
-          .onPressed!;
-      fixture.holdNextIndexWrite = true;
-      await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
-      await _waitFor(tester, () => fixture.processArrived.isCompleted);
-      await tester.runAsync(
-        () => fixture.expectReviewIndex(before, first: true),
-      );
-      final effected = (await tester.runAsync(fixture.reviewState))!;
-      final processes = fixture.processes.length;
-      expect(fixture.indexWrites, hasLength(1));
-      expect(_reviewAction('Approve'), findsNothing);
-      await tester.runAsync(
-        () => fixture.backends.backends.single.retireProvider(
-          fixture.capabilities.resolve(reviewApprovalCapability),
-        ),
-      );
-      await tester.runAsync(fixture.releaseGate);
-      await _visible(tester, 'Refresh before trying again');
-      stale();
-      await tester.pump();
-      expect(fixture.processes, hasLength(processes));
-      expect(fixture.indexWrites, hasLength(1));
-      expect(await tester.runAsync(fixture.reviewState), effected);
-      expect(find.textContaining('Approved'), findsNothing);
-      _refresh(tester);
-      await _visible(tester, '+Selected second change');
-      await _visible(tester, 'Review actions unavailable');
-      expect(find.textContaining('+Selected first change'), findsNothing);
-      await _selectScope(tester, 'Uncommitted changes');
-      await _visible(tester, '+Selected first change');
-      await _visible(tester, 'Review actions unavailable');
-      expect(find.textContaining('+Selected second change'), findsOneWidget);
-      expect(_reviewAction('Unapprove'), findsNothing);
-      expect(await tester.runAsync(fixture.reviewState), effected);
-      expect(fixture.indexWrites, hasLength(1));
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-    skip: !Platform.isLinux,
-  );
+  for (final wholeLayer in [false, true]) {
+    testWidgets(
+      'stock ${wholeLayer ? 'G6c3b bulk' : 'hunk'} review retirement after real index effect suppresses success without rollback or retry',
+      (tester) async {
+        final action = wholeLayer ? 'Approve All Unstaged' : 'Approve';
+        const added = 'New file in held bulk write\n';
+        await tester.runAsync(() async {
+          await fixture.write(
+            _reviewPath,
+            _reviewContent(first: true, second: true),
+          );
+          if (wholeLayer) await fixture.write(_newFileReviewPath, added);
+        });
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        await mount(tester);
+        await _reviewReady(tester, action, count: wholeLayer ? 1 : 2);
+        final stale = tester
+            .widget<TextButton>(_reviewAction(action).first)
+            .onPressed!;
+        final staleFile = tester
+            .widget<TextButton>(_reviewAction('Approve File').first)
+            .onPressed!;
+        fixture.holdNextIndexWrite = true;
+        await tester.runAsync(() => tester.tap(_reviewAction(action).first));
+        await _waitFor(tester, () => fixture.processArrived.isCompleted);
+        await tester.runAsync(() async {
+          if (wholeLayer) {
+            await fixture.expectLayerReviewIndex(before, {
+              _reviewPath: _reviewContent(first: true, second: true),
+              _newFileReviewPath: added,
+            });
+          } else {
+            await fixture.expectReviewIndex(before, first: true);
+          }
+        });
+        final effected = (await tester.runAsync(fixture.reviewState))!;
+        final processes = fixture.processes.length;
+        expect(fixture.indexWrites, hasLength(1));
+        expect(_reviewAction('Approve'), findsNothing);
+        expect(_reviewAction('Approve File'), findsNothing);
+        expect(_reviewAction('Approve All Unstaged'), findsNothing);
+        stale();
+        staleFile();
+        await tester.pump();
+        expect(fixture.processes, hasLength(processes));
+        await tester.runAsync(
+          () => fixture.backends.backends.single.retireProvider(
+            fixture.capabilities.resolve(reviewApprovalCapability),
+          ),
+        );
+        await tester.runAsync(fixture.releaseGate);
+        await _visible(tester, 'Refresh before trying again');
+        stale();
+        staleFile();
+        await tester.pump();
+        expect(fixture.processes, hasLength(processes));
+        expect(fixture.indexWrites, hasLength(1));
+        expect(await tester.runAsync(fixture.reviewState), effected);
+        expect(find.textContaining('Approved'), findsNothing);
+        _refresh(tester);
+        if (wholeLayer) {
+          await _visible(tester, 'No unstaged changes');
+        } else {
+          await _visible(tester, '+Selected second change');
+          await _visible(tester, 'Review actions unavailable');
+        }
+        expect(find.textContaining('+Selected first change'), findsNothing);
+        await _selectScope(tester, 'Uncommitted changes');
+        await _visible(tester, '+Selected first change');
+        await _visible(tester, 'Review actions unavailable');
+        expect(find.textContaining('+Selected second change'), findsOneWidget);
+        if (wholeLayer) {
+          expect(find.text('$_newFileReviewPath  [added]'), findsOneWidget);
+          expect(find.textContaining('No unstaged changes'), findsOneWidget);
+        }
+        expect(_reviewAction('Unapprove'), findsNothing);
+        expect(_reviewAction('Unapprove File'), findsNothing);
+        expect(_reviewAction('Unapprove All Staged'), findsNothing);
+        expect(await tester.runAsync(fixture.reviewState), effected);
+        expect(fixture.indexWrites, hasLength(1));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   testWidgets(
     'stock captured Approve control stays retired while fresh same-ID replacement access works',
@@ -2952,6 +3363,41 @@ final class _Fixture {
     );
   }
 
+  Future<void> expectLayerReviewIndex(
+    Map<String, Map<String, Object?>> before,
+    Map<String, String?> contents,
+  ) async {
+    final index = before[additional.id.value]!['index']! as String;
+    final entries = index
+        .split('\u0000')
+        .where((entry) => entry.isNotEmpty)
+        .toList();
+    for (final entry in contents.entries) {
+      final suffix = '\tnested source/${entry.key}';
+      entries.removeWhere((record) => record.endsWith(suffix));
+      if (entry.value case final content?) {
+        final oid = _blobOid(content);
+        entries.add('100644 $oid 0$suffix');
+        expect(
+          await _git(additionalRoot, ['show', ':nested source/${entry.key}']),
+          content,
+        );
+        expect(await _git(additionalRoot, ['cat-file', 'blob', oid]), content);
+      }
+    }
+    final current = await reviewState();
+    expect(
+      (current[additional.id.value]!['index']! as String)
+          .split('\u0000')
+          .where((entry) => entry.isNotEmpty),
+      unorderedEquals(entries),
+    );
+    expect({
+      ...current,
+      additional.id.value: {...current[additional.id.value]!, 'index': index},
+    }, before);
+  }
+
   Future<void> expectNewFileIndex(
     Map<String, Map<String, Object?>> before,
     String path,
@@ -3216,7 +3662,11 @@ Future<void> _manifest(
   );
 }
 
-Future<String> _git(Directory directory, List<String> arguments) async {
+Future<String> _git(
+  Directory directory,
+  List<String> arguments, {
+  int exitCode = 0,
+}) async {
   final result = await Process.run(
     'git',
     arguments,
@@ -3235,7 +3685,7 @@ Future<String> _git(Directory directory, List<String> arguments) async {
     },
     includeParentEnvironment: false,
   );
-  expect(result.exitCode, 0, reason: '${result.stderr}');
+  expect(result.exitCode, exitCode, reason: '${result.stderr}');
   return result.stdout as String;
 }
 
