@@ -505,13 +505,13 @@ provider registration, Worktree provider state, or Project schema is added or ch
 
 The stock compiled Diff frontend declares this exact Capability/major separately
 from its inspection permission. It offers explicit hunk-level Approve/Unapprove
-and complete-file Approve File/Unapprove File, never raw process authority or patch
-execution. Missing approval access
+and complete-file Approve File/Unapprove File, plus **Approve All Unstaged** and
+**Unapprove All Staged** for provider-certified complete layers, never raw process
+authority or patch execution. Missing approval access
 leaves read-only inspection available; see [Diff presentation](../diff_viewer/README.md#presentation)
 for pending, snapshot freshness, safe failure and retirement behavior.
 The same handler also implements `approveAllUnstaged(ReviewLayerSelection)` and
-`unapproveAllStaged(ReviewLayerSelection)`; stock Diff has no whole-layer buttons yet.
-Those controls and their UI feedback are deferred to G6c3b.
+`unapproveAllStaged(ReviewLayerSelection)`, invoked by those stock Diff controls.
 `ReviewLayerSelection` carries only `expectedRevision`, never a caller-supplied
 path list, patch, layer/action selector or authority.
 

@@ -215,9 +215,25 @@ rendered labels and Source paths. File eligibility is independent of individual
 hunk eligibility. A committed entry stays read-only even when the same path has an
 actionable staged or unstaged entry.
 
+The review toolbar below Refresh offers **Approve All Unstaged** only for a
+provider-certified Unstaged layer and **Unapprove All Staged** only for a
+provider-certified Staged layer. Unstaged scope has only the first action;
+Uncommitted and Task / Branch use their separate uncommitted layers, never
+Committed changes. Each retains its own exact `layerReviewRevision` in a typed
+`ReviewLayerSelection`, separately from rendered rows. No paths or patches are
+constructed for these actions. A layer-only selection can resolve approval access
+independently of file and hunk selections.
+
+"All" means the entire selected layer, never just its eligible files. Unsupported,
+conflicted, empty or over-limit layers have no whole-layer action; individual
+file/hunk actions remain available where independently supported. Stock Git allows
+at most 16 changed files in one whole-layer operation, with one combined index
+mutation rather than a sequence of file mutations. Buttons are stacked vertically
+for narrow panes and appear only with resolved approval access and no pending review.
+
 Only a direct button invocation starts a mutation. One pane-wide pending operation
-suppresses duplicate and all other file/hunk submissions while showing neutral
-pending text.
+suppresses duplicate and all other layer/file/hunk submissions while showing one
+neutral pane-level pending message, not per-file progress.
 Approval handles capture eligibility, not a standing process grant: every generated
 request receives fresh host admission. Scope changes, Refresh, departure and disposal
 discard old selections and release retained access. Late responses cannot refresh a
@@ -265,10 +281,8 @@ through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
 There is no automatic refresh watcher, addition/deletion hunk approval,
-whole-layer button, discard/revert, editing within Diff, commit, review feedback
-submission, or side-by-side mode. Whole-layer contract/backend support does not yet
-add stock Diff frontend controls; Approve All/Unapprove All buttons and feedback
-are deferred to G6c3b. Addition/deletion review is bounded complete-file
+discard/revert, editing within Diff, commit, review feedback submission, or
+side-by-side mode. Addition/deletion review is bounded complete-file
 approval, not general staging of arbitrary untracked content or unsupported deletions.
 
 ## Preparation And Tests
@@ -297,11 +311,12 @@ cleanup, held operation races, scope switching, separate
 committed/staged/unstaged/conflict rows, cancellation,
 selected-scope Refresh/Retry, lazy display, and Source action eligibility, raw
 paths, pending suppression, safe failures, and stale callbacks. Its separate review
-dispatcher covers typed hunk indices and file selections/revisions, independent
-complete-file eligibility, certified additions and deletions including empty
+dispatcher covers typed hunk indices, file selections and exact revision-only
+whole-layer selections, independent complete-file eligibility, certified additions
+and deletions including empty
 zero-hunk files, addition/deletion hunk exclusion and deletion Source exclusion,
 narrow headers, layer-specific actions, unavailable approval, shared
-added/deleted/modified-file/hunk pending admission, success refresh,
+layer/added/deleted/modified-file/hunk pending admission, success refresh,
 unconfirmed failures and lifecycle fencing. It does not substitute for authority
 validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
@@ -311,9 +326,10 @@ catalog/Main Content hosting, including committed-only work, exact independently
 established baselines, staged-only and layered partial/cancelling changes,
 source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
-retirement/navigation. Hunk and atomic file mutation acceptance checks real selected
-index objects, unchanged working bytes and HEAD, nonprimary isolation, stale selections, lock
-rejection and retirement after an index effect. That cross-plugin suite requires
+retirement/navigation. Hunk, atomic file and mixed whole-layer mutation acceptance
+checks real selected index objects, unchanged working bytes and HEAD, nonprimary
+isolation, stale selections, lock rejection and retirement after an index effect.
+That cross-plugin suite requires
 the native CodeForge library; the isolated Diff frontend suite does not.
 The existing Source host suite remains the owner of Source document/operation
 behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)

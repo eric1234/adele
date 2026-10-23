@@ -29,6 +29,8 @@ class DiffPaneState extends State<DiffPane> {
   Map<int, ReviewHunkSelection> unapprovals = {};
   Map<int, ReviewFileSelection> fileApprovals = {};
   Map<int, ReviewFileSelection> fileUnapprovals = {};
+  ReviewLayerSelection? unstagedLayerSelection;
+  ReviewLayerSelection? stagedLayerSelection;
   String reviewHandle = '';
   bool reviewPending = false;
   String reviewMessage = '';
@@ -68,6 +70,8 @@ class DiffPaneState extends State<DiffPane> {
     unapprovals = {};
     fileApprovals = {};
     fileUnapprovals = {};
+    unstagedLayerSelection = null;
+    stagedLayerSelection = null;
     if (reviewHandle != '') {
       releaseEnvironmentCapabilityProvider(reviewHandle);
       reviewHandle = '';
@@ -139,6 +143,16 @@ class DiffPaneState extends State<DiffPane> {
       final snapshot = task
           ? (result[1] as TaskChangeSetSnapshot).uncommitted
           : result[1] as UncommittedChangeSetSnapshot;
+      if (snapshot.staged.layerReviewRevision != null) {
+        stagedLayerSelection = ReviewLayerSelection(
+          expectedRevision: snapshot.staged.layerReviewRevision!,
+        );
+      }
+      if (snapshot.unstaged.layerReviewRevision != null) {
+        unstagedLayerSelection = ReviewLayerSelection(
+          expectedRevision: snapshot.unstaged.layerReviewRevision!,
+        );
+      }
       next.add(['section', 'Staged changes']);
       appendFiles(next, snapshot.staged.files, 'staged');
       if (snapshot.staged.files.isEmpty) {
@@ -159,6 +173,11 @@ class DiffPaneState extends State<DiffPane> {
           snapshot.conflicts.isEmpty;
     } else {
       final snapshot = result[1] as ChangeSetSnapshot;
+      if (snapshot.layerReviewRevision != null) {
+        unstagedLayerSelection = ReviewLayerSelection(
+          expectedRevision: snapshot.layerReviewRevision!,
+        );
+      }
       appendFiles(next, snapshot.files, 'unstaged');
       clean = snapshot.files.isEmpty;
     }
@@ -175,7 +194,9 @@ class DiffPaneState extends State<DiffPane> {
     if (approvals.isEmpty &&
         unapprovals.isEmpty &&
         fileApprovals.isEmpty &&
-        fileUnapprovals.isEmpty) {
+        fileUnapprovals.isEmpty &&
+        unstagedLayerSelection == null &&
+        stagedLayerSelection == null) {
       return;
     }
     final review = await resolveEnvironmentBufferedProcessCapabilityProvider(
@@ -302,13 +323,26 @@ class DiffPaneState extends State<DiffPane> {
     final selected = reviewHandle;
     setState(() {
       reviewPending = true;
-      reviewMessage = '';
+      reviewMessage = 'Review change pending...';
+      if (selection is ReviewLayerSelection) {
+        if (unapprove) {
+          reviewMessage = 'Unapproving all staged changes...';
+        } else {
+          reviewMessage = 'Approving all unstaged changes...';
+        }
+      }
     });
     final client = ReviewApprovalHandlerServiceClient(
       EnvironmentCapabilityRequestChannel(selected),
     );
     Future<void> operation;
-    if (selection is ReviewFileSelection) {
+    if (selection is ReviewLayerSelection) {
+      if (unapprove) {
+        operation = client.unapproveAllStaged(selection);
+      } else {
+        operation = client.approveAllUnstaged(selection);
+      }
+    } else if (selection is ReviewFileSelection) {
       if (unapprove) {
         operation = client.unapproveFile(selection);
       } else {
@@ -342,14 +376,27 @@ class DiffPaneState extends State<DiffPane> {
   }
 
   Widget reviewAction(Object selection, bool unapprove, int captured) {
-    if (reviewHandle != '' && !reviewPending) {
+    if (reviewPending) return Text('');
+    if (!disposed && status == 'ready' && reviewHandle != '') {
       // The evaluator pin cannot reuse a branched primitive in a closure.
       if (unapprove) {
+        if (selection is ReviewLayerSelection) {
+          return TextButton(
+            onPressed: () => reviewChange(selection, true, captured),
+            child: Text('Unapprove All Staged'),
+          );
+        }
         return TextButton(
           onPressed: () => reviewChange(selection, true, captured),
           child: Text(
             selection is ReviewFileSelection ? 'Unapprove File' : 'Unapprove',
           ),
+        );
+      }
+      if (selection is ReviewLayerSelection) {
+        return TextButton(
+          onPressed: () => reviewChange(selection, false, captured),
+          child: Text('Approve All Unstaged'),
         );
       }
       return TextButton(
@@ -360,9 +407,7 @@ class DiffPaneState extends State<DiffPane> {
       );
     }
     return Text(
-      reviewPending
-          ? 'Review change pending...'
-          : 'Review actions unavailable.',
+      'Review actions unavailable.',
       style: TextStyle(color: Colors.grey),
     );
   }
@@ -485,6 +530,19 @@ class DiffPaneState extends State<DiffPane> {
         ],
       ),
       TextButton(onPressed: refresh, child: Text('Refresh')),
+      if (!disposed &&
+          status == 'ready' &&
+          reviewHandle != '' &&
+          !reviewPending)
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (unstagedLayerSelection != null)
+              reviewAction(unstagedLayerSelection!, false, revision),
+            if (stagedLayerSelection != null)
+              reviewAction(stagedLayerSelection!, true, revision),
+          ],
+        ),
       if (status == 'loading') Text('Loading $scope changes...'),
       if (status == 'unavailable')
         Text('Diff unavailable for this Environment.'),

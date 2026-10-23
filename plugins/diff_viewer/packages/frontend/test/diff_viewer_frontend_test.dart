@@ -86,6 +86,817 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  void setLayerReview({
+    String stamp = 'old',
+    bool individual = true,
+    int hunks = 2,
+  }) {
+    port.service.value = _reviewSnapshot(
+      layerRevision: '$stamp:unstaged:layer',
+      revision: individual ? '$stamp:unstaged:hunk' : null,
+      fileRevision: individual ? '$stamp:unstaged:file' : null,
+      hunks: hunks,
+    );
+    port.service.uncommitted = _uncommitted(
+      staged: _reviewSnapshot(
+        layerRevision: '$stamp:staged:layer',
+        revision: individual ? '$stamp:staged:hunk' : null,
+        fileRevision: individual ? '$stamp:staged:file' : null,
+        hunks: hunks,
+      ),
+      unstaged: port.service.value,
+    );
+    port.service.task = _task(
+      committed: _reviewSnapshot(
+        layerRevision: '$stamp:committed:never-select',
+        revision: null,
+        hunks: hunks,
+      ),
+      uncommitted: port.service.uncommitted,
+    );
+  }
+
+  group('whole-layer review', () {
+    Future<void> mountReview(
+      WidgetTester tester, {
+      double height = 1600,
+    }) async {
+      await tester.binding.setSurfaceSize(Size(900, height));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      return mount(tester);
+    }
+
+    for (final scope in [
+      ('Unstaged changes', changeSetSourceServiceSnapshotUnstagedId),
+      ('Uncommitted changes', changeSetSourceServiceSnapshotUncommittedId),
+      ('Task / Branch', changeSetSourceServiceSnapshotTaskChangesId),
+    ]) {
+      for (final review in _layerReviewCases) {
+        if (scope.$1 == 'Unstaged changes' && review.unapprove) continue;
+        testWidgets(
+          '${scope.$1} ${review.label} uses only the certified layer revision and one selected refresh',
+          (tester) async {
+            registerSource();
+            setLayerReview();
+            await mountReview(tester);
+            await tester.tap(find.widgetWithText(TextButton, scope.$1));
+            await tester.pumpAndSettle();
+            expect(find.text('Approve All Unstaged'), findsOneWidget);
+            expect(
+              find.text('Unapprove All Staged'),
+              scope.$1 == 'Unstaged changes' ? findsNothing : findsOneWidget,
+            );
+            expect(find.text('Approve File'), findsOneWidget);
+            expect(find.text('Approve'), findsNWidgets(2));
+            final old = tester.widget<TextButton>(
+              find.widgetWithText(TextButton, review.label),
+            );
+            final snapshots = port.methods.length;
+            final resolutions = port.reviewResolutions;
+            final held = Completer<void>();
+            port.review.pending = held.future;
+            // A changed provider snapshot must not replace the displayed token.
+            setLayerReview(stamp: 'fresh');
+            old.onPressed!();
+            old.onPressed!();
+            await tester.pumpAndSettle();
+            expect(port.review.methods, [review.method]);
+            expect(port.review.operations, [review.operation]);
+            expect(port.review.payloads.single, {
+              'selection': {'expectedRevision': 'old:${review.layer}:layer'},
+            });
+            expect(
+              port.review.layerSelections.single.expectedRevision,
+              'old:${review.layer}:layer',
+            );
+            expect(port.review.fileSelections, isEmpty);
+            expect(port.review.selections, isEmpty);
+            expect(port.methods, hasLength(snapshots));
+            expect(find.text(review.pendingMessage), findsOneWidget);
+            _expectNoReviewActions();
+            expect(source.paths, isEmpty);
+            held.complete();
+            await tester.pumpAndSettle();
+            expect(port.methods.skip(snapshots), [scope.$2]);
+            expect(port.reviewResolutions, resolutions + 1);
+            expect(port.releases, contains('review-$resolutions'));
+            expect(port.reviewHandles, hasLength(1));
+            old.onPressed!();
+            await tester.pumpAndSettle();
+            expect(port.review.operations, [review.operation]);
+            await tester.tap(find.widgetWithText(TextButton, review.label));
+            await tester.pumpAndSettle();
+            expect(port.review.methods, [review.method, review.method]);
+            expect(port.review.payloads.last, {
+              'selection': {'expectedRevision': 'fresh:${review.layer}:layer'},
+            });
+            expect(port.methods.skip(snapshots), [scope.$2, scope.$2]);
+            await tester.tap(find.text('Open in Source'));
+            await tester.pumpAndSettle();
+            expect(source.paths, ['review.txt']);
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+
+      testWidgets(
+        '${scope.$1} layer-only certification resolves review without individual selections or Source',
+        (tester) async {
+          setLayerReview(individual: false);
+          await mountReview(tester);
+          await tester.tap(find.widgetWithText(TextButton, scope.$1));
+          await tester.pumpAndSettle();
+          expect(port.reviewHandles, hasLength(1));
+          expect(
+            port.reviewResolutions,
+            scope.$1 == 'Unstaged changes' ? 1 : 2,
+          );
+          expect(find.text('Approve'), findsNothing);
+          expect(find.text('Approve File'), findsNothing);
+          expect(find.text('Unapprove'), findsNothing);
+          expect(find.text('Unapprove File'), findsNothing);
+          expect(find.text('Open in Source'), findsNothing);
+          expect(find.text('Source is unavailable.'), findsOneWidget);
+          await tester.tap(find.text('Approve All Unstaged'));
+          await tester.pumpAndSettle();
+          expect(port.review.methods, [
+            'diff.reviewApprovalHandler.approveAllUnstaged',
+          ]);
+          if (scope.$1 != 'Unstaged changes') {
+            await tester.tap(find.text('Unapprove All Staged'));
+            await tester.pumpAndSettle();
+            expect(
+              port.review.methods.last,
+              'diff.reviewApprovalHandler.unapproveAllStaged',
+            );
+          }
+          expect(source.paths, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+
+      testWidgets(
+        '${scope.$1} null layer certification never infers All from files or other layers',
+        (tester) async {
+          await mountReview(tester);
+          await tester.tap(find.widgetWithText(TextButton, scope.$1));
+          await tester.pumpAndSettle();
+          for (final snapshot in [
+            ChangeSetSnapshot(files: [], layerReviewRevision: null),
+            _reviewSnapshot(revision: null, fileRevision: 'eligible:file'),
+            _reviewSnapshot(revision: null, contentStatus: 'unsupported'),
+            ChangeSetSnapshot(files: [_conflict()], layerReviewRevision: null),
+          ]) {
+            port.service.value = snapshot;
+            port.service.uncommitted = _uncommitted(
+              staged: snapshot,
+              unstaged: snapshot,
+              conflicts: [_conflict()],
+            );
+            port.service.task = _task(
+              committed: _reviewSnapshot(
+                layerRevision: 'committed:never-select',
+                revision: 'committed:hunk',
+                fileRevision: 'committed:file',
+              ),
+              uncommitted: port.service.uncommitted,
+            );
+            final resolutions = port.reviewResolutions;
+            await tester.tap(find.text('Refresh'));
+            await tester.pumpAndSettle();
+            expect(find.text('Approve All Unstaged'), findsNothing);
+            expect(find.text('Unapprove All Staged'), findsNothing);
+            final eligible = snapshot.files.any(
+              (file) => file.fileReviewRevision != null,
+            );
+            expect(port.reviewResolutions, resolutions + (eligible ? 1 : 0));
+            expect(
+              find.text('Approve File'),
+              eligible ? findsOneWidget : findsNothing,
+            );
+            expect(port.review.operations, isEmpty);
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'one uncertified layer never borrows the other layer revision',
+      (tester) async {
+        await mountReview(tester);
+        for (final scope in ['Uncommitted changes', 'Task / Branch']) {
+          await tester.tap(find.widgetWithText(TextButton, scope));
+          await tester.pumpAndSettle();
+          for (final review in _layerReviewCases) {
+            final certified = _reviewSnapshot(
+              layerRevision: 'only:${review.layer}',
+              revision: null,
+            );
+            final uncertified = _reviewSnapshot(revision: null);
+            port.service.uncommitted = _uncommitted(
+              staged: review.unapprove ? certified : uncertified,
+              unstaged: review.unapprove ? uncertified : certified,
+            );
+            port.service.task = _task(uncommitted: port.service.uncommitted);
+            await tester.tap(find.text('Refresh'));
+            await tester.pumpAndSettle();
+            expect(_reviewButtons(tester), hasLength(1));
+            expect(find.text(review.label), findsOneWidget);
+            await tester.tap(find.text(review.label));
+            await tester.pumpAndSettle();
+            expect(port.review.methods.last, review.method);
+            expect(port.review.payloads.last, {
+              'selection': {'expectedRevision': 'only:${review.layer}'},
+            });
+          }
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('17 eligible files retain file actions without a layer token', (
+      tester,
+    ) async {
+      // The frontend consumes certification; it must neither synthesize a token
+      // from eligible files nor hide their independent complete-file actions.
+      port.service.value = ChangeSetSnapshot(
+        layerReviewRevision: null,
+        files: [
+          for (var index = 0; index < 17; index++)
+            ..._reviewSnapshot(
+              path: 'empty-$index.txt',
+              revision: null,
+              fileRevision: 'file:$index',
+              changeKind: 'added',
+              hunks: 0,
+            ).files,
+        ],
+      );
+      port.service.uncommitted = _uncommitted(
+        staged: port.service.value,
+        unstaged: port.service.value,
+      );
+      port.service.task = _task(uncommitted: port.service.uncommitted);
+      await mountReview(tester, height: 5200);
+      await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+      await tester.pumpAndSettle();
+      expect(find.text('Approve All Unstaged'), findsNothing);
+      expect(find.text('Unapprove All Staged'), findsNothing);
+      expect(find.text('Approve File'), findsNWidgets(17));
+      expect(find.text('Unapprove File'), findsNWidgets(17));
+      expect(port.reviewHandles, hasLength(1));
+      await tester.tap(find.widgetWithText(TextButton, 'Approve File').last);
+      await tester.pumpAndSettle();
+      expect(port.review.payloads.single, {
+        'selection': {
+          'relativePath': 'empty-16.txt',
+          'expectedRevision': 'file:16',
+        },
+      });
+      expect(port.review.layerSelections, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final unavailable in [
+      'missing',
+      'denied',
+      'ambiguous',
+      'incompatible',
+      'retired',
+    ]) {
+      testWidgets(
+        '$unavailable review access leaves both layers and Source usable',
+        (tester) async {
+          registerSource();
+          setLayerReview();
+          port.reviewAvailability = unavailable;
+          await mountReview(tester);
+          await tester.tap(
+            find.widgetWithText(TextButton, 'Uncommitted changes'),
+          );
+          await tester.pumpAndSettle();
+          _expectNoReviewActions();
+          expect(find.text('Review actions unavailable.'), findsWidgets);
+          expect(find.text('review.txt  [modified]'), findsNWidgets(2));
+          expect(port.handles, isEmpty);
+          await tester.tap(find.text('Open in Source'));
+          await tester.pumpAndSettle();
+          expect(source.paths, ['review.txt']);
+          expect(port.review.operations, isEmpty);
+          port.reviewAvailability = 'available';
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(find.text('Approve All Unstaged'), findsOneWidget);
+          expect(find.text('Unapprove All Staged'), findsOneWidget);
+          expect(port.reviewHandles, hasLength(1));
+          expect(port.review.operations, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final action in _reviewActionLabels) {
+      testWidgets('$action shares one pending gate with every review action', (
+        tester,
+      ) async {
+        registerSource();
+        setLayerReview();
+        await mountReview(tester);
+        await tester.tap(
+          find.widgetWithText(TextButton, 'Uncommitted changes'),
+        );
+        await tester.pumpAndSettle();
+        final buttons = _reviewButtons(tester);
+        expect(buttons, hasLength(8));
+        final snapshots = port.methods.length;
+        final held = Completer<void>();
+        port.review.pending = held.future;
+        buttons
+            .firstWhere((button) => (button.child! as Text).data == action)
+            .onPressed!();
+        for (final button in buttons) {
+          button.onPressed!();
+          button.onPressed!();
+        }
+        await tester.pumpAndSettle();
+        expect(port.review.operations, hasLength(1));
+        expect(port.methods, hasLength(snapshots));
+        _expectNoReviewActions();
+        expect(
+          find.text(
+            action == 'Approve All Unstaged'
+                ? 'Approving all unstaged changes...'
+                : action == 'Unapprove All Staged'
+                ? 'Unapproving all staged changes...'
+                : 'Review change pending...',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('review.txt  [modified]'), findsNWidgets(2));
+        await tester.tap(find.text('Open in Source'));
+        await tester.pumpAndSettle();
+        expect(source.paths, ['review.txt']);
+        held.complete();
+        await tester.pumpAndSettle();
+        expect(port.methods.skip(snapshots), [
+          changeSetSourceServiceSnapshotUncommittedId,
+        ]);
+        expect(_reviewButtons(tester), hasLength(8));
+        for (final button in buttons) {
+          button.onPressed!();
+        }
+        await tester.pumpAndSettle();
+        expect(port.review.operations, hasLength(1));
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    for (final review in _layerReviewCases) {
+      for (final failure in [
+        'stale_selection',
+        'mutation_failed',
+        'outcome_uncertain',
+        'native',
+      ]) {
+        testWidgets(
+          '${review.label} $failure requires explicit refresh, never substitutes a revision',
+          (tester) async {
+            setLayerReview();
+            await mountReview(tester);
+            await tester.tap(
+              find.widgetWithText(TextButton, 'Uncommitted changes'),
+            );
+            await tester.pumpAndSettle();
+            final snapshots = port.methods.length;
+            final buttons = _reviewButtons(tester);
+            port.review.failure = failure == 'native'
+                ? StateError('private native failure')
+                : ReviewApprovalFailure(
+                    code: failure,
+                    message: 'private review failure',
+                  );
+            setLayerReview(stamp: 'fresh');
+            await tester.tap(find.text(review.label));
+            await tester.pumpAndSettle();
+            expect(find.text(_reviewFailure), findsOneWidget);
+            expect(find.textContaining('private'), findsNothing);
+            _expectNoReviewActions();
+            expect(port.review.payloads.single, {
+              'selection': {'expectedRevision': 'old:${review.layer}:layer'},
+            });
+            expect(port.methods, hasLength(snapshots));
+            expect(port.handles, isEmpty);
+            for (final button in buttons) {
+              button.onPressed!();
+            }
+            await tester.pumpAndSettle();
+            expect(port.review.operations, [review.operation]);
+            port.review.failure = null;
+            port.service.failure = true;
+            await tester.tap(find.text('Refresh'));
+            await tester.pumpAndSettle();
+            expect(
+              find.text('Unable to load uncommitted changes.'),
+              findsOneWidget,
+            );
+            _expectNoReviewActions();
+            expect(port.review.operations, [review.operation]);
+            port.service.failure = false;
+            await tester.tap(find.text('Retry'));
+            await tester.pumpAndSettle();
+            for (final button in buttons) {
+              button.onPressed!();
+            }
+            await tester.pumpAndSettle();
+            expect(port.review.operations, [review.operation]);
+            await tester.tap(find.text(review.label));
+            await tester.pumpAndSettle();
+            expect(port.review.payloads.last, {
+              'selection': {'expectedRevision': 'fresh:${review.layer}:layer'},
+            });
+            expect(port.review.methods, [review.method, review.method]);
+            expect(
+              port.methods.skip(snapshots),
+              List.filled(3, changeSetSourceServiceSnapshotUncommittedId),
+            );
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+
+      testWidgets(
+        '${review.label} confirmed success followed by failed snapshot retries only the read',
+        (tester) async {
+          setLayerReview();
+          await mountReview(tester);
+          await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+          await tester.pumpAndSettle();
+          final snapshots = port.methods.length;
+          port.service.failure = true;
+          await tester.tap(find.text(review.label));
+          await tester.pumpAndSettle();
+          expect(find.text('Unable to load task changes.'), findsOneWidget);
+          _expectNoReviewActions();
+          expect(port.handles, isEmpty);
+          expect(port.review.operations, [review.operation]);
+          expect(port.methods.skip(snapshots), [
+            changeSetSourceServiceSnapshotTaskChangesId,
+          ]);
+          port.service.failure = false;
+          await tester.tap(find.text('Retry'));
+          await tester.pumpAndSettle();
+          expect(find.text(review.label), findsOneWidget);
+          expect(
+            port.methods.skip(snapshots),
+            List.filled(2, changeSetSourceServiceSnapshotTaskChangesId),
+          );
+          expect(port.review.operations, [review.operation]);
+          expect(tester.takeException(), isNull);
+        },
+      );
+
+      for (final ending in ['refresh', 'scope']) {
+        for (final fails in [false, true]) {
+          for (final settlesBeforeSnapshot in [false, true]) {
+            testWidgets(
+              '${review.label} $ending during pending stays read-only failure=$fails settlementBeforeRead=$settlesBeforeSnapshot',
+              (tester) async {
+                setLayerReview();
+                await mountReview(tester);
+                await tester.tap(
+                  find.widgetWithText(TextButton, 'Uncommitted changes'),
+                );
+                await tester.pumpAndSettle();
+                final buttons = _reviewButtons(tester);
+                final resolutions = port.reviewResolutions;
+                final semantic = Completer<void>();
+                port.review.pending = semantic.future;
+                await tester.tap(find.text(review.label));
+                await tester.pumpAndSettle();
+                setLayerReview(stamp: 'fresh');
+                final task = Completer<TaskChangeSetSnapshot>();
+                final uncommitted = Completer<UncommittedChangeSetSnapshot>();
+                if (ending == 'scope') {
+                  port.service.pendingTask = task.future;
+                  await tester.tap(
+                    find.widgetWithText(TextButton, 'Task / Branch'),
+                  );
+                } else {
+                  port.service.pendingUncommitted = uncommitted.future;
+                  await tester.tap(find.text('Refresh'));
+                }
+                await tester.pumpAndSettle();
+                expect(port.releases, contains('review-$resolutions'));
+                expect(port.reviewHandles, isEmpty);
+                // Neither ordering can make a read admitted during mutation eligible.
+                if (settlesBeforeSnapshot) {
+                  if (fails) {
+                    semantic.completeError(StateError('private late failure'));
+                  } else {
+                    semantic.complete();
+                  }
+                  await tester.pumpAndSettle();
+                }
+                if (ending == 'scope') {
+                  task.complete(port.service.task);
+                } else {
+                  uncommitted.complete(port.service.uncommitted);
+                }
+                await tester.pumpAndSettle();
+                expect(find.text(_reviewRefreshRequired), findsOneWidget);
+                _expectNoReviewActions();
+                if (!settlesBeforeSnapshot) {
+                  if (fails) {
+                    semantic.completeError(StateError('private late failure'));
+                  } else {
+                    semantic.complete();
+                  }
+                  await tester.pumpAndSettle();
+                }
+                expect(find.text(_reviewRefreshRequired), findsOneWidget);
+                expect(find.text(_reviewFailure), findsNothing);
+                expect(find.text('Review change pending...'), findsNothing);
+                expect(find.text(review.pendingMessage), findsNothing);
+                _expectNoReviewActions();
+                expect(port.reviewResolutions, resolutions);
+                expect(port.handles, isEmpty);
+                final snapshots = port.methods.length;
+                for (final button in buttons) {
+                  button.onPressed!();
+                }
+                await tester.pumpAndSettle();
+                expect(port.review.operations, [review.operation]);
+                expect(port.methods, hasLength(snapshots));
+                await tester.tap(find.text('Refresh'));
+                await tester.pumpAndSettle();
+                expect(find.text(_reviewRefreshRequired), findsNothing);
+                expect(_reviewButtons(tester), hasLength(8));
+                expect(port.reviewResolutions, resolutions + 1);
+                await tester.tap(find.text(review.label));
+                await tester.pumpAndSettle();
+                expect(port.review.payloads.last, {
+                  'selection': {
+                    'expectedRevision': 'fresh:${review.layer}:layer',
+                  },
+                });
+                expect(
+                  port.methods.skip(snapshots),
+                  List.filled(
+                    2,
+                    ending == 'scope'
+                        ? changeSetSourceServiceSnapshotTaskChangesId
+                        : changeSetSourceServiceSnapshotUncommittedId,
+                  ),
+                );
+                expect(tester.takeException(), isNull);
+              },
+            );
+          }
+        }
+      }
+
+      for (final ending in ['departure', 'dispose', 'frontend retirement']) {
+        for (final fails in [false, true]) {
+          testWidgets(
+            '${review.label} $ending releases immediately and fences late failure=$fails',
+            (tester) async {
+              setLayerReview();
+              await mountReview(tester);
+              await tester.tap(
+                find.widgetWithText(TextButton, 'Uncommitted changes'),
+              );
+              await tester.pumpAndSettle();
+              final old = tester.widget<TextButton>(
+                find.widgetWithText(TextButton, review.label),
+              );
+              final resolutions = port.reviewResolutions;
+              final snapshots = port.methods.length;
+              final held = Completer<void>();
+              port.review.pending = held.future;
+              old.onPressed!();
+              await tester.pumpAndSettle();
+              if (ending == 'departure') {
+                await lifecycle.prepareToDeactivate();
+              } else if (ending == 'dispose') {
+                await tester.pumpWidget(const SizedBox());
+              } else {
+                frontend.invalidate();
+              }
+              await tester.pumpAndSettle();
+              expect(port.releases, contains('review-$resolutions'));
+              expect(port.handles, isEmpty);
+              if (fails) {
+                held.completeError(StateError('private late failure'));
+              } else {
+                held.complete();
+              }
+              await tester.pumpAndSettle();
+              expect(port.review.operations, [review.operation]);
+              expect(port.methods, hasLength(snapshots));
+              expect(find.text(_reviewFailure), findsNothing);
+              expect(find.text('review.txt  [modified]'), findsNothing);
+              _expectNoReviewActions();
+              if (ending == 'departure') {
+                await tester.tap(find.text('Refresh'));
+                await tester.pumpAndSettle();
+                old.onPressed!();
+                await tester.pumpAndSettle();
+                expect(find.text(review.label), findsOneWidget);
+                expect(port.review.operations, [review.operation]);
+              }
+              expect(tester.takeException(), isNull);
+            },
+          );
+        }
+      }
+
+      for (final replace in [false, true]) {
+        for (final admitted in [false, true]) {
+          testWidgets(
+            '${review.label} provider retirement replacement=$replace admitted=$admitted never migrates',
+            (tester) async {
+              setLayerReview();
+              await mountReview(tester);
+              await tester.tap(
+                find.widgetWithText(TextButton, 'Uncommitted changes'),
+              );
+              await tester.pumpAndSettle();
+              final original = port.review;
+              final snapshots = port.methods.length;
+              final resolutions = port.reviewResolutions;
+              final old = tester.widget<TextButton>(
+                find.widgetWithText(TextButton, review.label),
+              );
+              final held = Completer<void>();
+              if (admitted) {
+                original.pending = held.future;
+                old.onPressed!();
+                await tester.pumpAndSettle();
+              }
+              if (replace) {
+                port.replaceReview();
+                expect(port.review.id, original.id);
+              } else {
+                original.active = false;
+              }
+              if (admitted) {
+                held.complete();
+              } else {
+                old.onPressed!();
+              }
+              await tester.pumpAndSettle();
+              expect(find.text(_reviewFailure), findsOneWidget);
+              expect(find.textContaining('private'), findsNothing);
+              _expectNoReviewActions();
+              expect(
+                original.operations,
+                admitted ? [review.operation] : isEmpty,
+              );
+              if (replace) expect(port.review.operations, isEmpty);
+              expect(port.methods, hasLength(snapshots));
+              expect(port.reviewResolutions, resolutions);
+              expect(port.handles, isEmpty);
+              await tester.tap(find.text('Refresh'));
+              await tester.pumpAndSettle();
+              old.onPressed!();
+              await tester.pumpAndSettle();
+              if (replace) {
+                expect(port.review.operations, isEmpty);
+                await tester.tap(find.text(review.label));
+                await tester.pumpAndSettle();
+                expect(port.review.methods, [review.method]);
+                expect(port.review.payloads.single, {
+                  'selection': {
+                    'expectedRevision': 'old:${review.layer}:layer',
+                  },
+                });
+              } else {
+                _expectNoReviewActions();
+                expect(port.handles, isEmpty);
+              }
+              expect(tester.takeException(), isNull);
+            },
+          );
+        }
+      }
+    }
+
+    for (final ending in [
+      'refresh',
+      'scope',
+      'departure',
+      'dispose',
+      'retirement',
+    ]) {
+      testWidgets(
+        'late layer-only review resolution releases unused access after $ending',
+        (tester) async {
+          setLayerReview(individual: false);
+          final held = Completer<void>();
+          port.reviewResolving = held.future;
+          await mountReview(tester);
+          expect(port.reviewResolutions, 1);
+          expect(port.reviewHandles, isEmpty);
+          if (ending == 'refresh') {
+            port.service.value = _snapshot(path: 'fresh.txt');
+            await tester.tap(find.text('Refresh'));
+          } else if (ending == 'scope') {
+            port.service.task = _task(committed: _snapshot(path: 'fresh.txt'));
+            await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+          } else if (ending == 'departure') {
+            await lifecycle.prepareToDeactivate();
+          } else if (ending == 'dispose') {
+            await tester.pumpWidget(const SizedBox());
+          } else {
+            frontend.invalidate();
+          }
+          await tester.pumpAndSettle();
+          held.complete();
+          await tester.pumpAndSettle();
+          expect(port.handles, isEmpty);
+          expect(port.releases, contains('review-1'));
+          expect(port.review.operations, isEmpty);
+          _expectNoReviewActions();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'All toolbar and individual actions remain usable in narrow panes',
+      (tester) async {
+        registerSource();
+        setLayerReview(hunks: 1);
+        await mountReview(tester);
+        for (final width in [320.0, 480.0, 900.0]) {
+          await tester.binding.setSurfaceSize(Size(width, 900));
+          for (final scope in [
+            'Unstaged changes',
+            'Uncommitted changes',
+            'Task / Branch',
+          ]) {
+            await tester.tap(find.widgetWithText(TextButton, scope));
+            await tester.pumpAndSettle();
+            expect(find.text('Approve All Unstaged'), findsOneWidget);
+            expect(
+              find.text('Unapprove All Staged'),
+              scope == 'Unstaged changes' ? findsNothing : findsOneWidget,
+            );
+            for (final button in tester.widgetList<TextButton>(
+              find.byType(TextButton),
+            )) {
+              final rect = tester.getRect(find.byWidget(button));
+              expect(rect.left, greaterThanOrEqualTo(0));
+              expect(rect.right, lessThanOrEqualTo(width));
+            }
+            await tester.tap(find.text('Approve All Unstaged'));
+            await tester.pumpAndSettle();
+            if (scope != 'Unstaged changes') {
+              await tester.tap(find.text('Unapprove All Staged'));
+              await tester.pumpAndSettle();
+            }
+            await tester.tap(find.text('Open in Source'));
+            await tester.pumpAndSettle();
+            expect(tester.takeException(), isNull, reason: '$width / $scope');
+          }
+        }
+        expect(port.review.layerSelections, hasLength(15));
+        expect(source.paths, List.filled(9, 'review.txt'));
+      },
+    );
+
+    testWidgets(
+      'Source pending does not block All and late Source feedback cannot replace refreshed review',
+      (tester) async {
+        registerSource();
+        setLayerReview();
+        await mountReview(tester);
+        final sourceHeld = Completer<Map<String, Object?>>();
+        final reviewHeld = Completer<void>();
+        source.pending = sourceHeld.future;
+        port.review.pending = reviewHeld.future;
+        await tester.tap(find.text('Open in Source'));
+        await tester.pumpAndSettle();
+        expect(find.text('Approve All Unstaged'), findsOneWidget);
+        await tester.tap(find.text('Approve All Unstaged'));
+        await tester.pumpAndSettle();
+        expect(port.review.operations, ['approveAllUnstaged']);
+        expect(find.text('Opening in Source...'), findsOneWidget);
+        reviewHeld.complete();
+        await tester.pumpAndSettle();
+        expect(port.service.calls, 2);
+        expect(find.text('Approve All Unstaged'), findsOneWidget);
+        sourceHeld.complete({'ok': false});
+        await tester.pumpAndSettle();
+        expect(find.text('Unable to open file in Source.'), findsNothing);
+        expect(find.text('Open in Source'), findsOneWidget);
+        expect(source.paths, ['review.txt']);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
   testWidgets('review eligibility is independent of Source and snapshot scope', (
     tester,
   ) async {
@@ -666,10 +1477,7 @@ void main() {
           find.text('  10      -old-0'),
           review.changeKind == 'modified' ? findsOneWidget : findsNothing,
         );
-        expect(
-          find.text('Review change pending...'),
-          findsNWidgets(review.changeKind == 'modified' ? 3 : 1),
-        );
+        expect(find.text('Review change pending...'), findsOneWidget);
         held.complete();
         await tester.pumpAndSettle();
         expect(port.service.uncommittedCalls, 2);
@@ -2708,6 +3516,51 @@ const _reviewFailure =
     'Review change not confirmed. Refresh before trying again.';
 const _reviewRefreshRequired = 'Refresh again before reviewing these changes.';
 
+const _layerReviewCases = [
+  (
+    label: 'Approve All Unstaged',
+    pendingMessage: 'Approving all unstaged changes...',
+    operation: 'approveAllUnstaged',
+    method: reviewApprovalHandlerServiceApproveAllUnstagedId,
+    layer: 'unstaged',
+    unapprove: false,
+  ),
+  (
+    label: 'Unapprove All Staged',
+    pendingMessage: 'Unapproving all staged changes...',
+    operation: 'unapproveAllStaged',
+    method: reviewApprovalHandlerServiceUnapproveAllStagedId,
+    layer: 'staged',
+    unapprove: true,
+  ),
+];
+
+const _reviewActionLabels = [
+  'Approve All Unstaged',
+  'Unapprove All Staged',
+  'Approve File',
+  'Unapprove File',
+  'Approve',
+  'Unapprove',
+];
+
+List<TextButton> _reviewButtons(WidgetTester tester) => tester
+    .widgetList<TextButton>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextButton &&
+            widget.child is Text &&
+            _reviewActionLabels.contains((widget.child! as Text).data),
+      ),
+    )
+    .toList();
+
+void _expectNoReviewActions() {
+  for (final label in _reviewActionLabels) {
+    expect(find.widgetWithText(TextButton, label), findsNothing);
+  }
+}
+
 const _reviewCases = [
   (name: 'hunk', fileReview: false, changeKind: 'modified', hunks: 2),
   (name: 'modified file', fileReview: true, changeKind: 'modified', hunks: 2),
@@ -2726,11 +3579,12 @@ ChangeSetSnapshot _reviewSnapshot({
   String path = 'review.txt',
   String? revision = 'opaque:revision',
   String? fileRevision,
+  String? layerRevision,
   String changeKind = 'modified',
   String contentStatus = 'text',
   int hunks = 2,
 }) => ChangeSetSnapshot(
-  layerReviewRevision: null,
+  layerReviewRevision: layerRevision,
   files: [
     ChangedFile(
       relativePath: path,
@@ -2911,6 +3765,7 @@ class _ReviewProvider
   final List<ReviewHunkSelection> selections = [];
   final List<ReviewFileSelection> fileSelections = [];
   final List<ReviewLayerSelection> layerSelections = [];
+  final List<String> methods = [];
   final List<Map<String, Object?>> payloads = [];
   late final dispatcher = ReviewApprovalHandlerServiceDispatcher(
     this,
@@ -2970,6 +3825,7 @@ class _ReviewProvider
         reviewApprovalHandlerServiceUnapproveAllStagedId,
       ]),
     );
+    methods.add(method);
     payloads.add(payload);
     final result = await dispatcher.dispatch({
       'kind': 'request',
