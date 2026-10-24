@@ -14,6 +14,7 @@ import '../core/environment_capability_invocation.dart';
 import '../core/environment_capability_selection.dart';
 import '../core/product_lifecycle.dart';
 import 'backend_invocation_bridge.dart';
+import 'environment_capability_diagnostics.dart';
 import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
 
@@ -89,6 +90,7 @@ class EnvironmentCapabilityAccessDeclarations implements EvalPlugin {
             BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.future)),
             false,
           ),
+          BridgeParameter('handle', nullableString, true),
         ],
       ),
     ]) {
@@ -335,7 +337,13 @@ final class EnvironmentCapabilityAccessBridge
       ..registerBridgeFunc(
         _library,
         'settleEnvironmentCapabilityOperation',
-        (_, _, args) => BackendInvocationBridge.settleOperation(runtime, args),
+        (_, _, args) => BackendInvocationBridge.settleOperation(
+          runtime,
+          args,
+          diagnostic: args.length > 1
+              ? _handles[args[1]?.$value]?.settlementDiagnostic
+              : null,
+        ),
       );
   }
 
@@ -372,6 +380,18 @@ final class _EnvironmentCapabilityAccess implements AdeleRequestChannel {
       validateAdmission: validate,
       validateSettlement: validate,
       isPresentationActive: isPresentationActive,
+      beginDiagnostic: (method) {
+        _requests++;
+        if (_requests > 1) _diagnostic?.suppressSettlement();
+        return _diagnostic = EnvironmentCapabilityDiagnostics.native.begin(
+          service: serviceId,
+          method: method,
+          provider: selection.binding.provider.id.value,
+          environmentProvider:
+              selection.materialization.binding.provider.id.value,
+          grant: grant.name,
+        );
+      },
     );
   }
 
@@ -383,6 +403,11 @@ final class _EnvironmentCapabilityAccess implements AdeleRequestChannel {
   late final BackendInvocationBridge transport;
   final Set<void Function()> _retirements = {};
   bool _active = true;
+  int _requests = 0;
+  EnvironmentCapabilityDiagnostic? _diagnostic;
+
+  EnvironmentCapabilityDiagnostic? get settlementDiagnostic =>
+      _requests == 1 ? _diagnostic : null;
 
   void validate() {
     validatePresentation();

@@ -696,16 +696,18 @@ final class _PortableSnapshot {
           (fileMode && state.executable != (entry.oldMode == '100755'))) {
         continue;
       }
-      if (state.size <= limits.fileBytes) {
-        // Hashing saves transport, not the budget for compared source content.
-        chargeBytes(state.size);
-      } else {
-        if (state.size > limits.verificationFileBytes ||
-            state.size > limits.verificationTotalBytes - verificationBytes) {
-          continue;
+      if (state.size > limits.verificationFileBytes ||
+          state.size > limits.verificationTotalBytes - verificationBytes) {
+        if (state.size <= limits.fileBytes) {
+          throw _failure(
+            'snapshot_too_large',
+            'The snapshot exceeds its raw-file verification budget.',
+          );
         }
-        verificationBytes += state.size;
+        continue;
       }
+      // Raw hashing consumes verification work; only its output is transported.
+      verificationBytes += state.size;
       hashPaths.add(path);
     }
     const arguments = ['hash-object', '--no-filters', '--'];

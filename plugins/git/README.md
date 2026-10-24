@@ -318,10 +318,11 @@ file's content is hashed, even when index timestamps and sizes appear unchanged.
 Exact hash count, framing and index hash width are checked. Metadata is rechecked
 in batches immediately after hashing and again before publication. Equal raw
 content is omitted before text classification; unchanged files need no individual
-`head` or `stat` requests. Oversized hashing remains subject to the separate
-observed-size verification budget, and unverifiable files remain explicit
-oversized entries with unknown change state. A failed batch rejects the whole
-snapshot, even if Git or stat produced a valid prefix of output.
+`head` or `stat` requests. Raw hashing at every file size is subject to the separate
+observed-size verification budget. Exceeding that allowance for a file within the
+rendering limit fails the snapshot; unverifiable oversized files retain explicit
+oversized entries with unknown change state, never inferred clean. A failed batch
+rejects the whole snapshot, even if Git or stat produced a valid prefix of output.
 
 Each batch contains at most 128 literal path arguments, reduced further to fit
 the generic 256-argument and 65,536-UTF-16-unit metadata bounds. Accounting includes
@@ -388,13 +389,14 @@ Defaults are 4,096 inventory entries per baseline/HEAD/index inventory and acros
 the union with untracked paths, at most that many distinct parent observations,
 256 returned entries across committed, staged, unstaged and conflicts, 1 MiB per
 rendered side, 2 MiB command stdout, 64 KiB diagnostic output,
-an 8 MiB aggregate byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
+an 8 MiB aggregate transport byte budget, 8,192 hunk lines, a conservative 6 MiB DTO
 budget, and 4,096 process requests. The aggregate budget counts all transported
-input/output plus observed small-file bytes hashed outside transport, so batching
-does not bypass the content-work limit. Retained parent-path text is independently
-capped at `totalBytes` UTF-16 code units before metadata execution. Oversized
-verification admits at most 16 MiB per observed file and 64 MiB total observed
-sizes. Commands have a ten-second deadline within
+input/output, including raw rendered-content reads and rereads, blob bytes,
+patches, metadata and hash output. Raw working-file hashing instead shares one
+verification allowance across all sizes: at most 16 MiB per observed file and
+64 MiB total observed sizes. Batching does not bypass either budget. Retained
+parent-path text is independently capped at `totalBytes` UTF-16 code units before
+metadata execution. Commands have a ten-second deadline within
 the whole snapshot's thirty seconds; execution remains sequential. Generic
 Environment transport limits are unchanged. Any incomplete observation, malformed
 output, process/transport failure or exhausted whole-operation budget fails the

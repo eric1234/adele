@@ -1518,6 +1518,195 @@ void main() {
     },
   );
 
+  Future<ChangeSetSnapshot> budgetSnapshot(String scope) async {
+    final selection = await CapturedEnvironmentCapabilities(
+      environmentRuntime: fixture.environmentRuntime,
+      backends: fixture.backends,
+      session: fixture.additionalSession,
+    ).resolve(_changes);
+    expect(selection.session.id, fixture.additionalSession.id);
+    expect(selection.environment.id, fixture.additional.id);
+    return invokeEnvironmentCapabilityWithBufferedProcess(
+      selection: selection,
+      backends: fixture.backends,
+      serviceId: changeSetSourceServiceId,
+      invoke: (channel) async {
+        final client = ChangeSetSourceServiceClient(channel);
+        if (scope == 'Unstaged changes') return client.snapshotUnstaged();
+        final snapshot = await client.snapshotUncommitted();
+        expect(snapshot.staged.files, isEmpty);
+        expect(snapshot.conflicts, isEmpty);
+        return snapshot.unstaged;
+      },
+    );
+  }
+
+  for (final (scope, clean) in _scopes.take(2)) {
+    testWidgets(
+      'stock snapshot budgets allow $scope over 8 MiB of clean small tracked files and a small edit',
+      (tester) async {
+        const fileBytes = 1024 * 1024;
+        final paths = List.generate(9, (index) => 'budget-clean-$index.txt');
+        await tester.runAsync(() async {
+          final previous = fixture;
+          fixture = await _Fixture.create(
+            installations: installations,
+            host: host,
+            aotRuntime: aotRuntime,
+            initializeSource: (source) async {
+              // Each file fits the rendered-side bound, but together they exceed
+              // the transport budget. They exist before either Environment does.
+              final bytes = Uint8List(fileBytes)..fillRange(0, fileBytes, 0x61);
+              bytes[fileBytes - 1] = 0x0a;
+              for (var index = 0; index < paths.length; index++) {
+                bytes[0] = 0x30 + index;
+                await File(
+                  '${source.path}/${paths[index]}',
+                ).writeAsBytes(bytes);
+              }
+            },
+          );
+          await previous.close();
+          expect(paths.length * fileBytes, greaterThan(8 * 1024 * 1024));
+          for (final environment in [fixture.additional, fixture.primary]) {
+            final root = fixture.sourceRoot(environment);
+            expect(
+              (await _git(root, [
+                'ls-files',
+                '-z',
+                '--',
+                ...paths,
+              ])).split('\u0000').where((path) => path.isNotEmpty),
+              paths,
+            );
+            for (final path in paths) {
+              expect(await File('${root.path}/$path').length(), fileBytes);
+            }
+          }
+          expect(
+            await _git(fixture.additionalRoot, ['status', '--porcelain=v1']),
+            isEmpty,
+          );
+          await File(
+            '${fixture.primaryRoot.path}/a modified.txt',
+          ).writeAsString(
+            'Primary Environment must not supply this snapshot\n',
+          );
+        });
+        final before = (await tester.runAsync(fixture.snapshotState))!;
+        await mount(tester);
+        // Native generated transport keeps a pre-fix snapshot_too_large failure
+        // explicit rather than diagnosing only the frontend's safe error text.
+        await tester.runAsync(() async {
+          expect((await budgetSnapshot(scope)).files, isEmpty);
+        });
+        await _visible(tester, 'No unstaged changes');
+        if (scope != 'Unstaged changes') await _selectScope(tester, scope);
+        await _visible(tester, clean);
+        expect(await tester.runAsync(fixture.snapshotState), before);
+
+        await tester.runAsync(
+          () => fixture.write(
+            'a modified.txt',
+            'context before\nSmall nonprimary budget edit\ncontext after\n',
+          ),
+        );
+        final edited = (await tester.runAsync(fixture.snapshotState))!;
+        _refresh(tester);
+        await _visible(tester, '+Small nonprimary budget edit');
+        expect(find.text('a modified.txt  [modified]'), findsOneWidget);
+        expect(find.textContaining('-Original text'), findsOneWidget);
+        expect(find.textContaining('@@ -1,3 +1,3 @@'), findsOneWidget);
+        if (scope == 'Uncommitted changes') {
+          expect(find.text('No staged changes.'), findsOneWidget);
+        }
+        for (final absent in [
+          ...paths,
+          'Primary Environment',
+          'Unable to load',
+          'oversized',
+          'binary',
+        ]) {
+          expect(find.textContaining(absent), findsNothing);
+        }
+        expect(
+          fixture.store
+              .requireSessionAuthority(fixture.additionalSession.id)
+              .environmentId,
+          fixture.additional.id,
+        );
+        expect(fixture.additional.role, EnvironmentRole.additional);
+        expect(
+          fixture.additional.providerState!['sourceRelativePath'],
+          'nested source',
+        );
+        expect(fixture.processes, isNotEmpty);
+        expect(
+          fixture.processes.map((process) => process['environmentId']),
+          everyElement(fixture.additional.id.value),
+        );
+        expect(
+          fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+          isNull,
+        );
+        expect(fixture.indexWrites, isEmpty);
+        expect(fixture.reads, isEmpty);
+        expect(await tester.runAsync(fixture.snapshotState), edited);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'stock snapshot budgets reject inventory overflow explicitly instead of reporting clean',
+    (tester) async {
+      await tester.runAsync(() async {
+        final directory = await Directory(
+          '${fixture.additionalRoot.path}/inventory',
+        ).create();
+        // Exceed the unchanged 4,096-entry bound without a content-byte overflow.
+        for (var index = 0; index < 4097; index++) {
+          await File('${directory.path}/$index.txt').writeAsString('');
+        }
+      });
+      final before = (await tester.runAsync(fixture.snapshotState))!;
+      await mount(tester);
+      for (final (scope, clean) in _scopes.take(2)) {
+        await tester.runAsync(() async {
+          await expectLater(
+            budgetSnapshot(scope),
+            throwsA(
+              isA<ChangeSetFailure>().having(
+                (failure) => failure.code,
+                'code',
+                'inventory_too_large',
+              ),
+            ),
+          );
+        });
+        if (scope != 'Unstaged changes') await _selectScope(tester, scope);
+        await _visible(tester, 'Unable to load');
+        expect(find.textContaining(clean), findsNothing);
+      }
+      expect(
+        fixture.processes.map((process) => process['environmentId']),
+        everyElement(fixture.additional.id.value),
+      );
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+      expect(fixture.indexWrites, isEmpty);
+      expect(fixture.reads, isEmpty);
+      expect(await tester.runAsync(fixture.snapshotState), before);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
   testWidgets(
     'stock Uncommitted layers retain partial staging and cancellation and refresh the selected scope',
     (tester) async {
@@ -3069,6 +3258,7 @@ final class _Fixture {
     required Directory installations,
     required File host,
     required String aotRuntime,
+    Future<void> Function(Directory source)? initializeSource,
   }) async {
     final root = await Directory.systemTemp.createTemp('adele-diff-case-');
     final repository = await Directory('${root.path}/repository').create();
@@ -3089,6 +3279,7 @@ final class _Fixture {
     await File(
       '${repository.path}/outside.txt',
     ).writeAsString('Outside baseline\n');
+    await initializeSource?.call(source);
     await _git(repository, [
       'init',
       '--object-format=sha1',
@@ -3299,6 +3490,37 @@ final class _Fixture {
 
   List<Map<String, Object?>> get indexWrites =>
       processes.where(_isIndexWrite).toList();
+
+  Future<Map<String, String>> snapshotState() async {
+    final result = <String, String>{};
+    for (final environment in [additional, primary]) {
+      final root = worktree(environment);
+      final prefix = environment.id.value;
+      result['$prefix/head'] = await _git(root, ['rev-parse', 'HEAD']);
+      result['$prefix/refs'] = await _git(root, ['show-ref']);
+      result['$prefix/baseline'] = baseline(environment);
+      final index = File(
+        (await _git(root, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-path',
+          'index',
+        ])).trim(),
+      );
+      result['$prefix/index'] = (await sha256.bind(index.openRead()).single)
+          .toString();
+      await for (final entry in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entry is! File) continue;
+        final path = entry.path.substring(root.path.length + 1);
+        result['$prefix/working/$path'] =
+            (await sha256.bind(entry.openRead()).single).toString();
+      }
+    }
+    return result;
+  }
 
   Future<Map<String, Map<String, Object?>>> reviewState() async {
     final result = <String, Map<String, Object?>>{};
