@@ -52,7 +52,8 @@ compiler share this primitive.
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
 shared host AOT snapshot, stock backend AOT snapshots, and stock frontend EVCs
-before launching the Flutter run/build command. Backend compilation
+before launching the Flutter run/build command, reusing verified checkout-local
+cached components when their inputs match. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes. Linux run/build automatically select
 `app/tool/development_main.dart` for development composition, without an opt-in flag.
@@ -66,26 +67,35 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 Repository tooling owns configured contract generation once at its
 prerequisite boundary, before desktop artifact compilation. Neither individual
 snapshot compilations nor frontend preparation repeat that repository-wide step.
+Generation still runs on every invocation, including an otherwise fully cached
+preparation; generation failure is fatal rather than permission to use old output.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
+It prepares the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
 Command Tools, Local Directory Project, and Session Evaluator backends.
 Session Evaluator is a trusted development-only backend installation with semantic
 identity `dev.adele.plugin.session-evaluator`; it has no frontend and needs no
 startup arguments or additional deployment defines. Inclusion in checkout builds,
 including release mode, is not production/release packaging support.
-`tools/frontend_artifacts.dart` prepares stock EVCs in the same installation
-root with the selected Flutter SDK. `tools/stock_frontend_descriptors.dart` is the
-singular stock build-side source for presentation and behavioral extension
+`tools/frontend_artifacts.dart` prepares or reuses stock EVCs with the selected
+Flutter SDK for the same installation snapshot.
+`tools/stock_frontend_descriptors.dart` is the singular stock build-side source for
+presentation and behavioral extension
 descriptors, shared with installation fixtures rather than duplicated in app runtime
 activation. Manifests are written after all component
 preparation succeeds. The launcher passes only four generic deployment defines:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
 - `ADELE_BACKEND_HOST_ARTIFACT`: absolute shared host `.aot` path.
-- `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
-- `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
+- `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute prepared-installations snapshot root.
+- `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute, separately content-identified
+  generic startup-arguments JSON file.
+
+Unchanged preparation and startup configuration reuse the same paths and defines.
+Linux run/build and debug/profile/release modes share these plugin artifacts: the
+app's Flutter mode does not change the component compiler arguments. Startup
+configuration is not a component compilation input.
 
 Installation directories are immediate children of the one installation root;
 Chat, Local Directory Project, Filesystem Tools, Command Tools, and OpenAI each
@@ -94,9 +104,9 @@ frontend components. Backend-bearing installations have this layout; frontend-on
 installations occupy sibling directories:
 
 ```text
-desktop-plugins/build-*/
+.dart_tool/adele/desktop-plugins/snapshots/<identity>/entry-*/
 |-- host.aot
-|-- startup-arguments.json
+|-- receipt.json
 `-- installations/
     |-- chat-strategy/
     |   |-- adele_plugin.installation.json
@@ -171,8 +181,9 @@ including pre-release changes that retain the version; prior development artifac
 are unsupported. The installed manifest uses version 1. See the
 [transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
-The separate temporary startup file is a JSON object mapping PluginId to
-`List<String>` argv. The launcher derives OpenAI's credential-file reference and
+The separate startup file under
+`.dart_tool/adele/desktop-plugins/startup/<identity>/entry-*/` is a JSON object
+mapping PluginId to `List<String>` argv. The launcher derives OpenAI's credential-file reference and
 public OAuth/endpoint options from its environment, never token contents. It always
 writes `--chatgpt-only` for OpenAI, adding a second JSON-string argument only when
 configured. With no configuration the backend starts with zero capabilities; it
@@ -190,7 +201,8 @@ registry. This does not implement general provider/model configuration. See
 The defines carry deployment locations, not tokens or model values. This temporary
 seam is intended to disappear with general plugin configuration/profiles.
 
-Frontend preparation invokes `app/tool/compile_chat_frontend.dart` from `app/`
+On a component cache miss, frontend preparation invokes
+`app/tool/compile_chat_frontend.dart` from `app/`
 with `flutter test --no-pub --concurrency 1 tool/compile_chat_frontend.dart`.
 `ADELE_REPOSITORY_ROOT` and `ADELE_CHAT_FRONTEND_OUTPUT` are build-time environment
 inputs, not normal runtime source/compiler configuration. The test runner supplies
@@ -198,9 +210,10 @@ the Flutter environment required by the eval compiler; this package remains pure
 Dart and does not gain Flutter/eval dependencies. See
 [`app/README.md`](../../app/README.md#prepared-chat-frontend) for standalone use.
 
-The same launcher invokes `app/tool/compile_tool_inspection_frontends.dart` once
-for each owning tool frontend, using `ADELE_TOOL_INSPECTION_FRONTEND` and
-`ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` alongside the repository root. It also
+The same launcher invokes `app/tool/compile_tool_inspection_frontends.dart` for
+each owning tool frontend needing compilation, using
+`ADELE_TOOL_INSPECTION_FRONTEND` and `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT`
+alongside the repository root. It also
 invokes `app/tool/compile_openai_activity_frontend.dart` with build-time inputs
 `ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Local Directory Project
 uses `app/tool/compile_local_directory_project_frontend.dart` with the exact helper
@@ -232,13 +245,33 @@ without a stock OpenAI activator or runtime identity switch. These compile
 harnesses stand in for future installation/update-time preparation, not
 an installer.
 
-Each invocation gets one fresh `.dart_tool/adele/desktop-plugins/build-*` directory.
-Outputs are retained, including partial failed builds, so later invocations do not
-replace artifacts still used by an app or previously built bundle. This is local
-development provisioning, not portable distribution: bundles retain absolute paths,
-and removing those artifacts or changing the SDK can invalidate them. There is no
-cache, installer/update manager, automatic cleanup, or production packaging here;
-the prepared installation manifests serve only bounded startup discovery.
+`tools/desktop_artifact_cache.dart` owns the checkout-local cache under
+`.dart_tool/adele/desktop-plugins/`, separately from this package's reference
+development builder and its `current.json` pointer. Each host/backend AOT, frontend
+EVC, and Git PTY helper has its own SHA-256 input identity and immutable output
+receipt. `tools/desktop_build_inputs_worker.dart` runs after generation to discover
+source dependencies; the launcher itself retains an SDK-only import graph.
+See [checkout cache identity and invalidation](../../docs/development/toolchain.md#artifact-identity-and-invalidation)
+for dependency coverage, conservative invalidation, and native compiler context.
+
+Preparation holds an exclusive checkout lease and builds/assembles in private
+staging. Before publication it rediscovers the graph and rechecks input contents
+and file/directory stats; detected changes fail preparation. Validated component
+outputs feed content-identified installation snapshots containing manifests and
+copied declaration schemas. Hits verify receipts against output contents and
+executable bits. A damaged entry is rebuilt at a new immutable path, never repaired
+in place or replaced with an older incompatible build. Startup JSON has a separate
+identity, so changing public startup configuration need not recompile components
+or replace an unchanged installation snapshot.
+
+The desktop cache has no mutable current pointer or automatic garbage collection.
+Published outputs and partial failed staging are retained rather than replacing
+paths that an app or previously built bundle may still use. This remains local
+development provisioning, not portable distribution: bundles retain absolute
+checkout and matched-SDK paths; deleting those artifacts, moving the checkout, or
+removing/changing the SDK can invalidate them. It is not a runtime cache, new
+installer/update manager, or production packaging system. The prepared installation
+manifests still serve only bounded startup discovery.
 Workspace dependencies must already be bootstrapped for real compilation. The
 launcher uses SDK-only relative imports so `test-plan --json` still runs before
 bootstrap. Focused launcher tests use fake SDK processes rather than desktop builds.
@@ -259,10 +292,11 @@ invalidate those artifacts.
 
 Future installation/update should prepare artifacts independently of activation.
 Normal activation only consumes prepared artifacts and never compiles source.
-Current checkout tooling assembles fresh prepared installations for runtime
-discovery as a stand-in for that preparation, not an installer, update manager,
-profile system, or cache. Discovery and activation remain separate; normal startup
-attempts all discovered valid backend and frontend components without enable/disable
+Current checkout tooling prepares or reuses immutable installation snapshots for
+runtime discovery as a stand-in for that preparation, not an installer, update
+manager, or profile system. Its local compilation cache does not cache runtime
+activation or live registrations. Discovery and activation remain separate; normal
+startup attempts all discovered valid backend and frontend components without enable/disable
 controls, version solving, watching, or hot upgrade. Future profiles choose
 activation participation separately from prepared descriptors. The remote AGENTS.md
 source and Search tools use narrow unary host reads; Filesystem tools also use a
@@ -283,8 +317,9 @@ source URI; it does not prepare or activate the directory-picker frontend.
 
 Frontend EVC compilation belongs to Flutter build-time tooling under `app/tool`,
 not the normal app runtime or generic prepared frontend host. This package stays
-pure Dart and must not depend on eval or Flutter. Production
-caching, installation, signing, and invalidation remain deferred. Generation is
+pure Dart and must not depend on eval or Flutter. A general third-party plugin
+artifact cache, production installation, signing, and compatibility/invalidation
+policy remain deferred beyond the checkout-local tooling cache. Generation is
 owned by `contract_codegen`; this package invokes it for the selected plugin
 contract before compilation. Build-pointer publication requires both expected
 artifact files. Its tests create isolated temporary plugin layouts so preparation

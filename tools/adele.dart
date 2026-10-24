@@ -6,6 +6,7 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
+import 'build_timing.dart';
 import 'code_editor_dependency.dart';
 import 'code_editor_smoke.dart';
 import 'contract_artifacts.dart';
@@ -601,6 +602,8 @@ analysisTargets = <({String name, String path, bool flutter})>[
 ];
 
 Future<void> main(List<String> arguments) async {
+  final launcherTimer = Stopwatch()..start();
+  var launcherSucceeded = false;
   if (arguments.isEmpty) {
     _usage();
     exitCode = 64;
@@ -763,7 +766,12 @@ Future<void> main(List<String> arguments) async {
             ? arguments[1]
             : _defaultDesktopDevice();
         final String mode = _mode(arguments);
+        final toolStats = target == 'linux'
+            ? await desktopPreparationToolStats(Directory.current)
+            : null;
+        final sourceTimer = Stopwatch()..start();
         await withCodeEditorSource(Directory.current, (_) async {
+          reportBuildTiming('codeforge-source-preparation', sourceTimer);
           final String flutter = target == 'linux'
               ? _which('flutter')
               : 'flutter';
@@ -774,23 +782,28 @@ Future<void> main(List<String> arguments) async {
               ? await prepareDesktopPluginDefines(
                   repositoryRoot: Directory.current,
                   flutterExecutable: flutter,
+                  initialToolStats: toolStats,
                 )
               : const <String>[];
-          await _run(
-            'adele_desktop $target ${arguments.first}',
-            flutter,
-            <String>[
-              arguments.first,
-              if (arguments.first == 'run') '-d',
-              target,
-              '--$mode',
-              if (target == 'linux') '--target=tool/development_main.dart',
-              ...defines,
-            ],
-            workingDirectory: 'app',
-            environment: {'RUST_MIN_STACK': '16777216'},
+          await timeBuildStage(
+            'flutter-${arguments.first}',
+            () => _run(
+              'adele_desktop $target ${arguments.first}',
+              flutter,
+              <String>[
+                arguments.first,
+                if (arguments.first == 'run') '-d',
+                target,
+                '--$mode',
+                if (target == 'linux') '--target=tool/development_main.dart',
+                ...defines,
+              ],
+              workingDirectory: 'app',
+              environment: {'RUST_MIN_STACK': '16777216'},
+            ),
           );
         });
+        launcherSucceeded = true;
         return;
       case 'smoke':
         _validateDesktopArguments(arguments);
@@ -856,6 +869,14 @@ Future<void> main(List<String> arguments) async {
   } on StateError catch (failure) {
     stderr.writeln('FAILED: ${failure.message}');
     exitCode = 1;
+  } finally {
+    if (arguments.first == 'run' || arguments.first == 'build') {
+      reportBuildTiming(
+        'launcher-total',
+        launcherTimer,
+        launcherSucceeded ? 'done' : 'failed',
+      );
+    }
   }
 }
 
