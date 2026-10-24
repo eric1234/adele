@@ -9,6 +9,7 @@ import 'build_timing.dart';
 import 'contract_artifacts.dart';
 import 'desktop_artifact_cache.dart';
 import 'desktop_build_inputs.dart';
+import 'desktop_tool_artifacts.dart';
 import 'frontend_artifacts.dart';
 import 'git_pty_artifact.dart';
 import 'stock_frontend_descriptors.dart';
@@ -29,6 +30,8 @@ Future<Map<String, Object>> desktopPreparationToolStats(Directory root) =>
         'tools/git_pty_artifact.dart',
         'tools/desktop_artifact_cache.dart',
         'tools/desktop_build_inputs.dart',
+        'tools/desktop_tool_artifacts.dart',
+        'tools/contract_artifacts.dart',
         'tools/build_timing.dart',
         'tools/stock_frontend_descriptors.dart',
         'packages/plugin_builder/lib/src/development_plugin_builder.dart',
@@ -102,21 +105,6 @@ Future<List<String>> _prepareDesktopPlugins({
   }
   reportBuildTiming('flutter-sdk-inspection', sdkTimer);
 
-  await timeBuildStage(
-    'contract-generation',
-    () => runContractCodegen(
-      repositoryRoot: repositoryRoot,
-      dartExecutable: dart.path,
-    ),
-  );
-
-  final inputs = await timeBuildStage(
-    'dependency-discovery',
-    () => discoverDesktopBuildInputs(
-      repositoryRoot: repositoryRoot,
-      dartExecutable: dart.path,
-    ),
-  );
   final enginePlatform = Abi.current() == Abi.linuxArm64
       ? 'linux-arm64'
       : 'linux-x64';
@@ -140,6 +128,32 @@ Future<List<String>> _prepareDesktopPlugins({
     ])
       File.fromUri(flutterRoot.uri.resolve(path)).path,
   ];
+  final tools = await timeBuildStage(
+    'build-tool-preparation',
+    () => DesktopToolArtifacts.prepare(
+      repositoryRoot: repositoryRoot,
+      cache: cache,
+      dartExecutable: dart.path,
+      sdkFiles: sdkFiles,
+      sdkVersion: version,
+    ),
+  );
+  await timeBuildStage(
+    'contract-generation',
+    () => runContractCodegen(
+      repositoryRoot: repositoryRoot,
+      dartExecutable: runtime.path,
+      snapshot: tools.generator,
+    ),
+  );
+  final inputs = await timeBuildStage('dependency-discovery', () async {
+    await tools.validateArtifacts();
+    return discoverDesktopBuildInputs(
+      repositoryRoot: repositoryRoot,
+      dartExecutable: runtime.path,
+      snapshot: tools.discovery,
+    );
+  });
   final tooling =
       <String>[
             'tools/desktop_artifact_cache.dart',
@@ -413,9 +427,11 @@ Future<List<String>> _prepareDesktopPlugins({
   // must not be published under the graph observed before compilation.
   assemblyTimer.stop();
   await timeBuildStage('build-input-revalidation', () async {
+    await tools.validate();
     final finalInputs = await discoverDesktopBuildInputs(
       repositoryRoot: repositoryRoot,
-      dartExecutable: dart.path,
+      dartExecutable: runtime.path,
+      snapshot: tools.discovery,
     );
     if (jsonEncode(toolStats) !=
             jsonEncode(await desktopPreparationToolStats(repositoryRoot)) ||
@@ -440,8 +456,10 @@ Future<List<String>> _prepareDesktopPlugins({
         'Build inputs changed during desktop preparation. Retry.',
       );
     }
+    await tools.validate();
   });
   assemblyTimer.start();
+  await tools.cache.publishComponents();
   await cache.publishComponents();
   final published = await cache.publishSnapshot(output);
   final publishedHost = File.fromUri(published.uri.resolve('host.aot'));

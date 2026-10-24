@@ -45,6 +45,9 @@ The optional diagnostic callback is awaited before checking the result, preservi
 the builder's stdout/stderr files even on compiler failure. Source discovery,
 toolchain selection, contract generation, dependency resolution, and artifact
 lifetime stay with callers. The primitive is generation agnostic.
+An optional `depfile` forwards the compiler's dependency-file output path; callers
+own its parent directory, validation, and lifetime. An optional `packageConfig`
+pins compilation to the caller's fingerprinted package resolution.
 The development builder, self-hosting compiler, and resource-inspector smoke
 compiler share this primitive.
 
@@ -80,6 +83,11 @@ startup arguments or additional deployment defines. Inclusion in checkout builds
 including release mode, is not production/release packaging support.
 `tools/frontend_artifacts.dart` prepares or reuses stock EVCs with the selected
 Flutter SDK for the same installation snapshot.
+Before generation, `tools/desktop_tool_artifacts.dart` prepares the generator and
+dependency worker as cached AOT tools using the same checkout cache and lease.
+They are not installed components; generation and both discovery passes still run.
+The [toolchain policy](../../docs/development/toolchain.md#compiled-preparation-tools)
+owns their input scope, invalidation, and source-execution workflow boundaries.
 `tools/stock_frontend_descriptors.dart` is the singular stock build-side source for
 presentation and behavioral extension
 descriptors, shared with installation fixtures rather than duplicated in app runtime

@@ -64,6 +64,8 @@ Future<PluginBuildDiagnostic> compileAotSnapshot({
   required String entrypoint,
   required File artifact,
   required String stage,
+  File? depfile,
+  File? packageConfig,
   FutureOr<void> Function(PluginBuildDiagnostic diagnostic)? onDiagnostic,
 }) async {
   await artifact.parent.create(recursive: true);
@@ -75,6 +77,8 @@ Future<PluginBuildDiagnostic> compileAotSnapshot({
       entrypoint,
       '-o',
       artifact.absolute.path,
+      if (depfile != null) ...['--depfile', depfile.absolute.path],
+      if (packageConfig != null) ...['--packages', packageConfig.absolute.path],
     ], workingDirectory.path);
   } on ProcessException catch (error) {
     throw PluginBuildFailure('$stage could not start: $error');

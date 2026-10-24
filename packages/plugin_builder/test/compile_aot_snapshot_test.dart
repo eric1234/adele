@@ -91,6 +91,41 @@ exit 7
     expect(artifact.existsSync(), isFalse);
   });
 
+  test(
+    'appends depfile and package configuration without changing artifact argv',
+    () async {
+      final File depfile = File('${root.path}/compiler dependencies.d');
+      final File packageConfig = File('${root.path}/package config.json');
+      final File compiler = _compiler(root, '''
+printf 'snapshot' > "\$5"
+printf 'compiler depfile' > "\$7"
+''');
+      final PluginBuildDiagnostic result = await compileAotSnapshot(
+        dartExecutable: compiler.path,
+        workingDirectory: root,
+        entrypoint: 'source with spaces.dart',
+        artifact: artifact,
+        stage: 'tool-compilation',
+        depfile: depfile,
+        packageConfig: packageConfig,
+      );
+      expect(result.command, <String>[
+        compiler.path,
+        'compile',
+        'aot-snapshot',
+        'source with spaces.dart',
+        '-o',
+        artifact.absolute.path,
+        '--depfile',
+        depfile.absolute.path,
+        '--packages',
+        packageConfig.absolute.path,
+      ]);
+      expect(artifact.readAsStringSync(), 'snapshot');
+      expect(depfile.readAsStringSync(), 'compiler depfile');
+    },
+  );
+
   test('rejects compiler success without an output artifact', () async {
     final File compiler = _compiler(root, 'exit 0');
     await expectLater(

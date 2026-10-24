@@ -7,6 +7,7 @@ import 'dart:io';
 Future<Map<String, List<String>>> discoverDesktopBuildInputs({
   required Directory repositoryRoot,
   required String dartExecutable,
+  File? snapshot,
 }) async {
   final root = repositoryRoot.absolute;
   final worker = File.fromUri(
@@ -16,7 +17,7 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
   try {
     result = await Process.run(
       dartExecutable,
-      [worker.path, root.path],
+      [snapshot?.path ?? worker.path, root.path],
       workingDirectory: root.path,
       runInShell: Platform.isWindows,
     );

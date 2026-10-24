@@ -469,6 +469,47 @@ their plugin compiler arguments do not vary with the app mode. A hit avoids that
 component's compilation, not SDK inspection, contract generation, input discovery,
 output verification, or installation assembly.
 
+### Compiled preparation tools
+
+After SDK inspection, Linux `run` and `build` prepare or reuse AOT snapshots of
+the contract generator and dependency-discovery worker through
+[`tools/desktop_tool_artifacts.dart`](../../tools/desktop_tool_artifacts.dart).
+They execute with the selected SDK's matching `dartaotruntime`, retaining the
+repository working directory, arguments, diagnostics, and failure behavior.
+Generation still executes once and dependency discovery twice on every launch.
+These snapshots are local developer tools, not installation catalog components;
+their identities do not enter the runtime snapshot or deployment defines.
+Bootstrap, explicit generation/check/cleanup, analysis, tests, pre-bootstrap
+`test-plan --json`, and non-Linux commands retain their source-execution paths.
+
+Tool identities hash source-tree membership and contents, resolved package
+configuration/graph and lockfiles, owning manifests/overrides, compiler arguments,
+preparation implementation, platform, and the selected SDK/compiler/runtime files.
+The generator includes its `bin/` and resolved library trees. The worker includes
+`tools/` and the root's resolved tooling dependencies, including development
+dependencies; transitive packages contribute normal dependencies only. Package
+locations come from package configuration, including path overrides and nonstandard
+library directories. Compilation explicitly selects that root package configuration,
+so stale nested configurations cannot shadow it. Entire selected library trees are
+conservative compilation inputs, not a symbol-level import cache. Ordinary plugin
+implementations and contract declarations are execution inputs, not tool-compilation inputs.
+Dependency-resolution metadata rewrites can conservatively recompile tools even
+when their library contents have not changed.
+
+Each cold compilation emits a temporary compiler depfile. Every compiler input must
+already belong to the pre-fingerprinted scope; an uncovered input fails preparation
+rather than publishing an incompletely keyed executable. Bootstrap after changing
+dependency declarations/resolution. Imports outside the tooling and resolved package
+library trees require an explicit scope change. Depfiles are not reused to skip
+discovery. Tool input membership, contents and race observations are rechecked before
+use and publication, as are artifact contents. The tools share the existing lease,
+receipt validation, staging, immutable publication and retention below. Missing or
+damaged snapshots rebuild; compilation or execution failure never falls back to an
+old tool or bypasses generation/discovery.
+Directory race observations also guard transient source/optional-override additions
+and removals; unrelated membership changes in those watched directories may require
+a retry. Flutter's unrelated `.dart_tool/` cache membership is not watched.
+
 ### Input identities
 
 AOT/EVC identities use SHA-256 over ordered input paths and content hashes, compiler
@@ -555,9 +596,9 @@ compiled artifacts when source and build context are identical.
 
 Stage diagnostics report elapsed time and status, including component `cached`,
 `rebuilt`, or `failed` results, CodeForge source preparation, SDK inspection,
-generation, dependency discovery, installation assembly, desktop preparation, the
-Flutter command, and launcher total. `flutter-run` and its enclosing launcher total
-include the application's lifetime until the Flutter process exits; they are not
+build-tool preparation, generation, dependency discovery, installation assembly,
+desktop preparation, the Flutter command, and launcher total. `flutter-run` and its
+enclosing launcher total include the application's lifetime until the Flutter process exits; they are not
 startup-to-first-frame measurements. Use preparation/component stages to distinguish
 cache work from the subsequent app build/run. The native editor's own source and
 native-test preparation workflow above remains separate from this cache.
