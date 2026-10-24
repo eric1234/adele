@@ -783,6 +783,7 @@ Future<void> main(List<String> arguments) async {
                   repositoryRoot: Directory.current,
                   flutterExecutable: flutter,
                   initialToolStats: toolStats,
+                  incrementalContracts: true,
                 )
               : const <String>[];
           await timeBuildStage(

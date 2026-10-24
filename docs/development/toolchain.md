@@ -278,10 +278,13 @@ and listing precede generation of the sources in `contract_codegen.yaml`, leavin
 ordinary IDE analysis and direct Dart/Flutter compilation ready to use.
 
 `tools/adele.dart` regenerates before analysis and before starting test workers.
-Linux desktop preparation regenerates once with the selected Flutter SDK's Dart
-before dependency discovery or any backend AOT or frontend harness compilation,
-even when all compiled components can be reused from the checkout cache. Generation
-failures stop preparation; cached output is not a fallback. Other desktop build/run
+Linux development `run` and `build` validate every configured contract using the
+selected Flutter SDK's prepared AOT generator before dependency discovery or any
+backend AOT or frontend harness compilation. A content-matching successful
+generation receipt permits reuse without semantic resolution; missing, stale, or
+uncertain evidence requires authoritative generation. This validation still runs
+when all compiled components can be reused. Generation failures stop preparation;
+cached output is not a fallback. Other desktop build/run
 commands and development smoke generate before launching Flutter. The SDK-only
 `app/bin/adele_self_host.dart` launcher generates before starting its native CLI
 consumer, which in turn compiles the self-hosting AOT artifacts. Low-level snapshot
@@ -294,13 +297,26 @@ native imports, so repository preparation happens before starting that harness.
 `DevelopmentPluginBuilder.prepareBackend()` separately generates only its explicit
 selected-plugin contract source before backend compilation, not the repository set.
 
-Generation recomputes prospective output and writes only changed content. It can
-replace stale siblings left by branch switches without manual deletion; no timestamp
-dependency engine or alternate build system is involved. `generate --check` writes
+Explicit generation recomputes prospective output and writes only changed content.
+It can replace stale siblings left by branch switches without manual deletion; no
+timestamp dependency engine or alternate build system is involved. `generate --check` writes
 nothing and fails for missing/stale local outputs. Each independent CI consumer job
 bootstraps; the generated job runs bootstrap then check as an independent
-idempotence/freshness verification. Root `check` checks freshness before any
-automatic regeneration so it does not hide stale local output.
+idempotence/freshness verification, independent of incremental receipts. Root `check`
+checks freshness before any automatic regeneration so it does not hide stale local
+output.
+
+Linux incremental receipts live in `.dart_tool/adele/contracts/`, separate from
+immutable plugin artifacts. They validate source-specific transitive inputs,
+analyzer resolution/configuration probes, selected SDK inputs, tool/runtime identity,
+and generated output bytes. Only the target generated sibling is excluded from its
+own inputs; other generated libraries retain their normal analyzer behavior.
+Unchanged outputs retain their modification times. Receipt publication is atomic
+after successful generation/validation, under the preparation lease and a local
+generation lock. Source additions/removals follow `contract_codegen.yaml` without
+unnecessarily invalidating unrelated receipts. See the owning
+[incremental generation policy](../../packages/contract_codegen/README.md#incremental-linux-preparation)
+for dependency coverage, conservative fallbacks, races, and diagnostics.
 
 `dart tools/adele.dart clean-contracts` is a narrow escape hatch: it removes the
 configured native contract outputs and recognizes orphan native parts by an
@@ -466,8 +482,8 @@ The Linux checkout launcher uses
 stock frontend EVC, and the Git PTY helper are separate cache components. Linux
 `run` and `build`, including debug/profile/release app modes, share these components:
 their plugin compiler arguments do not vary with the app mode. A hit avoids that
-component's compilation, not SDK inspection, contract generation, input discovery,
-output verification, or installation assembly.
+component's compilation, not SDK inspection, contract freshness validation, input
+discovery, output verification, or installation assembly.
 
 ### Compiled preparation tools
 
@@ -476,7 +492,9 @@ the contract generator and dependency-discovery worker through
 [`tools/desktop_tool_artifacts.dart`](../../tools/desktop_tool_artifacts.dart).
 They execute with the selected SDK's matching `dartaotruntime`, retaining the
 repository working directory, arguments, diagnostics, and failure behavior.
-Generation still executes once and dependency discovery twice on every launch.
+The generator CLI still executes once and dependency discovery twice on every
+launch. Linux `run`/`build` select incremental native generation within that CLI;
+explicit generation/check and editor smoke retain full semantic generation.
 These snapshots are local developer tools, not installation catalog components;
 their identities do not enter the runtime snapshot or deployment defines.
 Bootstrap, explicit generation/check/cleanup, analysis, tests, pre-bootstrap

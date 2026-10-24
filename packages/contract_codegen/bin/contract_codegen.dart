@@ -1,24 +1,31 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:args/args.dart';
 import 'package:contract_codegen/contract_codegen.dart';
+import 'package:contract_codegen/src/contract_inputs.dart';
+import 'package:contract_codegen/src/incremental_generation.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 Future<void> main(List<String> arguments) async {
   final ArgParser parser = ArgParser()
     ..addFlag('check', negatable: false)
     ..addFlag('clean', negatable: false)
+    ..addFlag('incremental', negatable: false)
     ..addMultiOption('source', abbr: 's');
   try {
     final ArgResults options = parser.parse(arguments);
     final bool check = options.flag('check');
     final bool clean = options.flag('clean');
+    final bool incremental = options.flag('incremental');
     if (options.rest.isNotEmpty ||
-        clean && (check || options.wasParsed('source'))) {
+        clean && (check || options.wasParsed('source')) ||
+        incremental && (clean || check || options.wasParsed('source'))) {
       throw const FormatException(
-        'Use --clean alone, or generate with [--check] [--source <path>].',
+        'Use --clean or --incremental alone, or generate with [--check] [--source <path>].',
       );
     }
     final configured = options.multiOption('source').isEmpty
@@ -40,6 +47,51 @@ Future<void> main(List<String> arguments) async {
       throw const FormatException(
         'No contract sources found. Pass --source or configure contract_codegen.yaml.',
       );
+    }
+    if (incremental) {
+      if (configured == null ||
+          !Platform.isLinux ||
+          p.basename(Platform.resolvedExecutable) != 'dartaotruntime') {
+        throw const FormatException(
+          '--incremental requires the prepared Linux AOT generator and repository configuration.',
+        );
+      }
+      final timer = Stopwatch()..start();
+      final identityInputs = ContractInputs(excludedOutput: '');
+      final identity = sha256
+          .convert(
+            utf8.encode(
+              jsonEncode([
+                Platform.version,
+                Platform.resolvedExecutable,
+                for (final path in [
+                  Platform.script.toFilePath(),
+                  Platform.resolvedExecutable,
+                ])
+                  sha256
+                      .convert(
+                        identityInputs.resources
+                            .getFile(path)
+                            .readAsBytesSync(),
+                      )
+                      .toString(),
+              ]),
+            ),
+          )
+          .toString();
+      final result = await generateIncrementally(
+        root: configured.root,
+        sources: sources,
+        configuration: configured.contents,
+        generatorIdentity: identity,
+        validateIdentity: identityInputs.validate,
+      );
+      stdout.writeln(
+        'contract-generation: ${result.current} current, '
+        '${result.regenerated} regenerated, '
+        '${(timer.elapsedMilliseconds / 1000).toStringAsFixed(2)}s',
+      );
+      return;
     }
     final List<ContractGeneratedFile> outputs = <ContractGeneratedFile>[];
     for (final File source in sources) {
@@ -72,12 +124,14 @@ Future<void> main(List<String> arguments) async {
   } on FileSystemException catch (error) {
     stderr.writeln(error);
     exitCode = 1;
+  } on StateError catch (error) {
+    stderr.writeln(error.message);
+    exitCode = 1;
   }
 }
 
-Future<({Directory root, List<File> sources})?> _configuredSources(
-  Directory start,
-) async {
+Future<({Directory root, List<File> sources, String contents})?>
+_configuredSources(Directory start) async {
   Directory directory = Directory(p.normalize(start.absolute.path));
   while (true) {
     final File config = File(
@@ -85,7 +139,8 @@ Future<({Directory root, List<File> sources})?> _configuredSources(
     );
     if (config.existsSync()) {
       final List<File> sources = <File>[];
-      for (final String line in await config.readAsLines()) {
+      final contents = await config.readAsString();
+      for (final String line in const LineSplitter().convert(contents)) {
         final String value = line.trim();
         if (value.isEmpty || value.startsWith('#') || value == 'sources:') {
           continue;
@@ -95,7 +150,7 @@ Future<({Directory root, List<File> sources})?> _configuredSources(
         }
         sources.add(File(p.join(directory.path, value.substring(2).trim())));
       }
-      return (root: directory, sources: sources);
+      return (root: directory, sources: sources, contents: contents);
     }
     final Directory parent = directory.parent;
     if (parent.path == directory.path) return null;

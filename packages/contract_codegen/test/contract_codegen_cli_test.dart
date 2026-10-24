@@ -1,6 +1,9 @@
 @Timeout(Duration(minutes: 2))
 library;
 
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import 'support/contract_generator_support.dart';
@@ -28,7 +31,7 @@ void main() {
   });
 
   test(
-    'matched AOT runtime preserves CLI output and diagnostics',
+    'matched AOT runtime preserves CLI semantics and incremental authority',
     () async {
       final snapshot = p.join(p.dirname(_cliSnapshot), 'contract_codegen.aot');
       final compilation = await Process.run(Platform.resolvedExecutable, [
@@ -76,9 +79,120 @@ void main() {
         expect(aot.stderr, source.stderr);
       }
       expect(await File(expected.path).readAsString(), expected.contents);
+
+      Future<ProcessResult> runAot(
+        List<String> options, {
+        int exitCode = 0,
+      }) async {
+        final result = await Process.run(runtime, [
+          snapshot,
+          ...options,
+        ], workingDirectory: fixture.directory.path);
+        expect(
+          result.exitCode,
+          exitCode,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        return result;
+      }
+
+      final output = File(expected.path);
+      await output.setLastModified(DateTime.utc(2000));
+      final modified = await output.lastModified();
+      final cold = await runAot(['--incremental']);
+      expect(cold.stdout, contains('0 current, 1 regenerated'));
+      final warm = await runAot(['--incremental']);
+      expect(warm.stdout, contains('1 current, 0 regenerated'));
+      expect(await output.readAsString(), expected.contents);
+      expect(await output.lastModified(), modified);
+      await runAot(['--incremental', '--check'], exitCode: 64);
+
+      // Even a correctly sealed receipt is local optimization state, not the
+      // authority used by ordinary generation or --check.
+      final receiptFile = File(
+        p.join(
+          fixture.directory.path,
+          '.dart_tool/adele/contracts/freshness.json',
+        ),
+      );
+      final receipt =
+          jsonDecode(await receiptFile.readAsString()) as Map<String, dynamic>;
+      final contracts = receipt['contracts'] as Map<String, dynamic>;
+      final sourcePath = p.normalize(fixture.source.absolute.path);
+      final contract = contracts[sourcePath] as Map<String, dynamic>;
+      const forgedOutput = '// forged current output\n';
+      await output.writeAsString(forgedOutput);
+      contract['output'] = sha256.convert(utf8.encode(forgedOutput)).toString();
+      contract['seal'] = sha256
+          .convert(
+            utf8.encode(
+              jsonEncode([
+                receipt['version'],
+                sourcePath,
+                receipt['generator'],
+                contract['inputs'],
+                contract['output'],
+              ]),
+            ),
+          )
+          .toString();
+      await receiptFile.writeAsString(jsonEncode(receipt));
+      final forged = await runAot(['--incremental']);
+      expect(forged.stdout, contains('1 current, 0 regenerated'));
+      final forgedReceipt = await receiptFile.readAsBytes();
+      final rejected = await runAot(['--check'], exitCode: 1);
+      expect(rejected.stderr, contains('generated contract is stale'));
+      expect(await output.readAsString(), forgedOutput);
+      expect(await receiptFile.readAsBytes(), forgedReceipt);
+
+      await runAot([]);
+      expect(await output.readAsString(), expected.contents);
+      expect(await receiptFile.readAsBytes(), forgedReceipt);
+      await receiptFile.writeAsString('{corrupt receipt');
+      await runAot(['--check']);
+      await output.writeAsString(forgedOutput);
+      await runAot(['--check'], exitCode: 1);
+      expect(await output.readAsString(), forgedOutput);
+      expect(await receiptFile.readAsString(), '{corrupt receipt');
+      await runAot([]);
+      expect(await output.readAsString(), expected.contents);
+
+      final concurrent = await Future.wait([
+        runAot(['--incremental']),
+        runAot(['--incremental']),
+      ]);
+      expect(
+        concurrent.where(
+          (result) =>
+              result.stdout.toString().contains('0 current, 1 regenerated'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        concurrent.where(
+          (result) =>
+              result.stdout.toString().contains('1 current, 0 regenerated'),
+        ),
+        hasLength(1),
+      );
+      await runAot(['--check']);
+
+      final unconfigured = await Directory.systemTemp.createTemp(
+        'adele_codegen_unconfigured.',
+      );
+      addTearDown(() => unconfigured.delete(recursive: true));
+      final missingConfig = await Process.run(runtime, [
+        snapshot,
+        '--incremental',
+      ], workingDirectory: unconfigured.path);
+      expect(
+        missingConfig.exitCode,
+        64,
+        reason: '${missingConfig.stdout}\n${missingConfig.stderr}',
+      );
     },
     skip: !Platform.isLinux,
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 5)),
   );
 
   for (final (state, contents) in <(String, String?)>[
@@ -356,9 +470,13 @@ sources:
     ['--clean', '--source', 'fixture.dart'],
     ['--clean', '--source='],
     ['--clean', 'fixture.dart'],
+    ['--incremental', '--check'],
+    ['--incremental', '--clean'],
+    ['--incremental', '--source', 'fixture.dart'],
+    ['--incremental', '--source='],
   ]) {
     test(
-      'rejects conflicting CLI arguments $arguments before deletion',
+      'rejects conflicting CLI arguments $arguments before mutation',
       () async {
         final fixture = await _repositoryFixture();
         final output = await _write(
@@ -417,6 +535,15 @@ sources:
     final directory = await Directory.systemTemp.createTemp('adele_no_config.');
     addTearDown(() => directory.delete(recursive: true));
     await _runCli(directory, ['--clean'], exitCode: 64);
+  });
+
+  test('incremental requires the actual Linux AOT runtime', () async {
+    final fixture = await _repositoryFixture();
+    await _runCli(fixture.directory, ['--incremental'], exitCode: 64);
+    expect(
+      File(p.setExtension(fixture.source.path, '.g.dart')).existsSync(),
+      isFalse,
+    );
   });
 }
 
