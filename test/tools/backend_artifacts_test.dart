@@ -62,6 +62,36 @@ const String _sourceEditorFrontendHarness =
     'tool/compile_source_editor_frontend.dart';
 const String _diffViewerFrontendHarness =
     'tool/compile_diff_viewer_frontend.dart';
+const _backendStages = {
+  'backend-host-compilation': _hostEntrypoint,
+  'git-compilation': _gitEntrypoint,
+  'openai-compilation': _openaiEntrypoint,
+  'agents-md-compilation': _agentsMdEntrypoint,
+  'search-tools-compilation': _searchToolsEntrypoint,
+  'filesystem-tools-compilation': _filesystemToolsEntrypoint,
+  'command-tools-compilation': _commandToolsEntrypoint,
+  'chat-strategy-compilation': _chatEntrypoint,
+  'local-directory-project-compilation': _localDirectoryProjectEntrypoint,
+  'session-evaluator-compilation': _sessionEvaluatorEntrypoint,
+};
+const _frontendCompilations = {
+  'chat': _frontendHarness,
+  'filesystem': '$_toolFrontendHarness|filesystem',
+  'command': '$_toolFrontendHarness|command',
+  'openai': _openaiFrontendHarness,
+  'local-directory-project': _localDirectoryProjectFrontendHarness,
+  'task-browser': _taskBrowserFrontendHarness,
+  'terminal': _terminalFrontendHarness,
+  'source-editor': _sourceEditorFrontendHarness,
+  'diff-viewer': _diffViewerFrontendHarness,
+};
+const _sharedSource = 'packages/plugin_api/lib/shared.dart';
+const _frontendBridge = 'packages/ui/lib/fixture_bridge.dart';
+const _chatSource =
+    'plugins/chat_strategy/packages/frontend/lib/chat_strategy_frontend.dart';
+const _chatCompiler = 'app/tool/chat_frontend_compiler.dart';
+const _nativeSource = 'plugins/git/packages/backend/native/git_pty_helper.c';
+const _nativeHeader = 'native/include/fixture.h';
 
 void main() {
   late Directory root;
@@ -69,6 +99,9 @@ void main() {
   late File commands;
   late File generationArguments;
   late File generatedContract;
+  late File contractSource;
+  late File buildInputs;
+  late File sdkVersion;
   late File launchArguments;
   late File frontendArguments;
   late File frontendEnvironment;
@@ -80,6 +113,10 @@ void main() {
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
+      'tools/desktop_artifact_cache.dart',
+      'tools/desktop_build_inputs.dart',
+      'tools/desktop_build_inputs_worker.dart',
+      'tools/build_timing.dart',
       'tools/code_editor_dependency.dart',
       'tools/code_editor_smoke.dart',
       'tools/code_editor_smoke_support.dart',
@@ -142,12 +179,85 @@ void main() {
     final Directory flutterRoot = Directory('${root.path}/flutter sdk');
     sdkBin = Directory('${flutterRoot.path}/bin/cache/dart-sdk/bin')
       ..createSync(recursive: true);
-    commands = File('${root.path}/commands.txt');
-    generationArguments = File('${root.path}/generation-arguments.txt');
+    for (final path in [
+      'bin/cache/dart-sdk/bin/dartvm',
+      'bin/cache/dart-sdk/bin/snapshots/dartdev_aot.dart.snapshot',
+      'bin/cache/dart-sdk/bin/snapshots/gen_kernel_aot.dart.snapshot',
+      'bin/cache/dart-sdk/bin/utils/gen_snapshot',
+      'bin/cache/dart-sdk/lib/_internal/vm_platform_strong.dill',
+      'bin/cache/dart-sdk/lib/_internal/vm_platform_product.dill',
+      'bin/cache/dart-sdk/lib/_internal/vm_platform.dill',
+      'bin/cache/flutter_tools.snapshot',
+      'bin/cache/artifacts/engine/linux-x64/frontend_server_aot.dart.snapshot',
+      'bin/cache/artifacts/engine/linux-x64/flutter_tester',
+      'bin/cache/artifacts/engine/linux-x64/icudtl.dat',
+      'bin/cache/artifacts/engine/common/flutter_patched_sdk/platform_strong.dill',
+    ]) {
+      final file = File('${flutterRoot.path}/$path');
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('fixture SDK input $path\n');
+    }
+    final logs = Directory('${root.path}/logs')..createSync();
+    commands = File('${logs.path}/commands.txt');
+    generationArguments = File('${logs.path}/generation-arguments.txt');
     generatedContract = File('${root.path}/contract.g.dart');
-    launchArguments = File('${root.path}/launch-arguments.txt');
-    frontendArguments = File('${root.path}/frontend-arguments.txt');
-    frontendEnvironment = File('${root.path}/frontend-environment.txt');
+    contractSource = File('${root.path}/contract.dart')
+      ..writeAsStringSync('generated contracts\n');
+    final sourcePaths = <String>{
+      _sharedSource,
+      _frontendBridge,
+      _chatSource,
+      _chatCompiler,
+      _nativeHeader,
+      'native/ld',
+      'native/libc.so',
+      for (final kind in _frontendCompilations.keys)
+        'plugins/${kind.replaceAll('-', '_')}/packages/frontend/lib/fixture.dart',
+    };
+    for (final path in sourcePaths) {
+      final file = File('${root.path}/$path');
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('// fixture $path\n');
+    }
+    buildInputs = File('${root.path}/build-inputs.json')
+      ..writeAsStringSync(
+        jsonEncode({
+          for (final backend in _backendStages.entries)
+            backend.key: <String>[
+              '${root.path}/${backend.value}',
+              '${root.path}/$_sharedSource',
+              generatedContract.path,
+              '${root.path}/tools/desktop_build_inputs.dart',
+              '${root.path}/tools/desktop_build_inputs_worker.dart',
+            ]..sort(),
+          for (final frontend in _frontendCompilations.entries)
+            '${frontend.key}-frontend-compilation': <String>[
+              '${root.path}/app/${frontend.value.split('|').first}',
+              '${root.path}/plugins/${frontend.key.replaceAll('-', '_')}/packages/frontend/lib/fixture.dart',
+              '${root.path}/$_sharedSource',
+              '${root.path}/$_frontendBridge',
+              '${root.path}/tools/desktop_build_inputs.dart',
+              '${root.path}/tools/desktop_build_inputs_worker.dart',
+              if (frontend.key == 'chat') ...[
+                '${root.path}/$_chatSource',
+                '${root.path}/$_chatCompiler',
+                generatedContract.path,
+              ],
+            ]..sort(),
+        }),
+      );
+    sdkVersion = File('${root.path}/sdk-version.json')
+      ..writeAsStringSync(
+        jsonEncode({
+          'flutterRoot': flutterRoot.path,
+          'frameworkRevision': 'fixture-framework-1',
+          'engineRevision': 'fixture-engine-1',
+          'dartSdkVersion': 'fixture-dart-1',
+        }),
+      );
+    launchArguments = File('${logs.path}/launch-arguments.txt');
+    frontendArguments = File('${logs.path}/frontend-arguments.txt');
+    frontendEnvironment = File('${logs.path}/frontend-environment.txt');
     environment = <String, String>{
       'PATH': '${bin.path}:${Platform.environment['PATH']}',
       for (final suffix in [
@@ -179,14 +289,17 @@ if [ "\$1" = run ]; then
     exit 29
   fi
   if [ "\$3" = --check ]; then
-    if [ ! -f '${generatedContract.path}' ] || [ "\$(cat '${generatedContract.path}')" != 'generated contracts' ]; then
+    if [ ! -f '${generatedContract.path}' ] || ! cmp -s '${generatedContract.path}' '${contractSource.path}'; then
       printf 'contract outputs are missing or stale\n' >&2
       exit 31
     fi
   elif [ "\$3" = --clean ]; then
     rm -f '${generatedContract.path}'
   else
-    printf 'generated contracts\n' > '${generatedContract.path}'
+    cp '${contractSource.path}' '${generatedContract.path}'
+  fi
+  if [ -n "\$ADELE_TEST_MUTATE_TOOL_DURING_GENERATION" ]; then
+    printf '\n// changed while launcher was already loaded\n' >> "\$ADELE_TEST_MUTATE_TOOL_DURING_GENERATION"
   fi
   exit 0
 fi
@@ -194,7 +307,7 @@ fi
     _script(File('${bin.path}/flutter'), '''
 if [ "\$1" = "--version" ]; then
   printf 'inspect-sdk\n' >> '${commands.path}'
-  printf '%s\n' '${jsonEncode(<String, String>{'flutterRoot': flutterRoot.path})}'
+  cat '${sdkVersion.path}'
 elif [ "\$1" = pub ]; then
   test "\$PWD" = '${root.path}' || exit 98
   test -f '${root.path}/.adele/dependencies/code_forge/lib/code.dart' || exit 94
@@ -307,6 +420,26 @@ printf 'native fixture' > "\${10}/\${12}/release/libcode_forge.so"
     _script(File('${sdkBin.path}/dartaotruntime'), 'exit 99');
     _script(File('${bin.path}/cc'), '''
 test "\$PWD" = '${root.path}' || exit 98
+if [ "\$1" = --version ]; then
+  if [ "\$ADELE_TEST_FAIL_NATIVE_INSPECTION" = 1 ]; then
+    printf 'native probe stdout\n'
+    printf 'native probe stderr\n' >&2
+    exit 43
+  fi
+  printf 'fixture cc version 1\n'
+  exit 0
+fi
+case "\$1" in
+  -print-prog-name=*) printf '%s\n' '${root.path}/native/ld'; exit 0 ;;
+  -print-file-name=libc.so) printf '%s\n' '${root.path}/native/libc.so'; exit 0 ;;
+  -print-file-name=*) printf '%s\n' "\${1#*=}"; exit 0 ;;
+esac
+if [ "\$1" = -E ]; then
+  test "\$#" = 7 && test -f "\$7" || exit 97
+  printf '# 1 %s\n' '${jsonEncode('${root.path}/$_nativeHeader')}'
+  cat "\$7" '${root.path}/$_nativeHeader'
+  exit 0
+fi
 test "\$#" = 9 && test "\$7" = -o && test "\$9" = -lutil || exit 97
 test -f "\$6" || exit 96
 printf 'compile|git-pty-helper\n' >> '${commands.path}'
@@ -319,22 +452,47 @@ if [ "\$ADELE_TEST_PTY_ARTIFACT" != missing ]; then
     : > "\$8"
   else
     printf 'prepared native helper\n' > "\$8"
+    chmod +x "\$8"
   fi
 fi
 ''');
     _script(File('${sdkBin.path}/dart'), '''
+if [ "\$1" = '${root.path}/tools/desktop_build_inputs_worker.dart' ]; then
+  test "\$#" = 2 && test "\$2" = '${root.path}' || exit 97
+  test "\$PWD" = '${root.path}' && test -f '${generatedContract.path}' || exit 95
+  printf 'discover\n' >> '${logs.path}/discovery.txt'
+  if [ "\$ADELE_TEST_FAIL_DISCOVERY" = 1 ]; then exit 41; fi
+  cat '${buildInputs.path}'
+  exit 0
+fi
 ${generatorScript('sdk')}
 test "\$PWD" = '${root.path}' || exit 98
 test -f '${generatedContract.path}' || exit 95
 test "\$1" = compile && test "\$2" = aot-snapshot && test "\$4" = -o || exit 97
 test -f "\$3" || exit 96
 printf 'compile|%s\n' "\$3" >> '${commands.path}'
+if [ "\$ADELE_TEST_PAUSE_ENTRYPOINT" = "\$3" ]; then
+  touch '${logs.path}/compiler-ready'
+  attempts=0
+  while [ ! -f '${logs.path}/compiler-release' ]; do
+    attempts=\$((attempts + 1))
+    test "\$attempts" -lt 1000 || exit 90
+    sleep 0.02
+  done
+fi
+if [ -n "\$ADELE_TEST_MUTATE_SOURCE" ]; then
+  printf '\n// changed during compilation\n' >> "\$ADELE_TEST_MUTATE_SOURCE"
+fi
 if [ "\$ADELE_TEST_FAIL_ENTRYPOINT" = "\$3" ]; then
   printf 'snapshot compiler failed' >&2
   exit 17
 fi
 if [ "\$ADELE_TEST_OMIT_ARTIFACT" != "\$3" ]; then
-  printf 'snapshot %s\n' "\$3" > "\$5"
+  if [ "\$ADELE_TEST_EMPTY_ARTIFACT" = "\$3" ]; then
+    : > "\$5"
+  else
+    printf 'snapshot %s\n' "\$3" > "\$5"
+  fi
 fi
 printf 'compiled|%s\n' "\$3" >> '${commands.path}'
 ''');
@@ -384,10 +542,70 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       output
           .listSync(recursive: true)
           .whereType<File>()
-          .where((file) => file.path.endsWith('.json')),
+          .where((file) => !file.path.contains('/.staging/'))
+          .where(
+            (file) =>
+                file.path.endsWith('adele_plugin.installation.json') ||
+                file.path.endsWith('startup-arguments.json'),
+          ),
       isEmpty,
     );
   }
+
+  Map<String, String> launchDefines() => {
+    for (final argument in launchArguments.readAsLinesSync())
+      if (argument.startsWith('--dart-define='))
+        argument.substring('--dart-define='.length).split('=').first: argument
+            .substring(argument.indexOf('=', '--dart-define='.length) + 1),
+  };
+
+  List<String> compilations() => commands
+      .readAsLinesSync()
+      .where((line) => line.startsWith('compile|'))
+      .map((line) => line.substring('compile|'.length))
+      .toList();
+
+  void changeSource(String path) => File(
+    '${root.path}/$path',
+  ).writeAsStringSync('\n// changed input\n', mode: FileMode.append);
+
+  Future<Map<String, String>> prepare([
+    List<String> arguments = const ['run', 'linux'],
+  ]) async {
+    if (commands.existsSync()) commands.deleteSync();
+    final result = await invoke(arguments);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    return launchDefines();
+  }
+
+  List<File> publishedFiles() {
+    final cache = Directory('${root.path}/.dart_tool/adele/desktop-plugins');
+    return cache
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where(
+          (file) =>
+              !file.path.contains('/.staging/') &&
+              file.path.contains('/entry-'),
+        )
+        .toList();
+  }
+
+  Map<String, List<int>> retainedFiles() => {
+    for (final file in publishedFiles()) file.path: file.readAsBytesSync(),
+  };
+
+  void expectRetained(Map<String, List<int>> retained) {
+    for (final file in retained.entries) {
+      expect(File(file.key).readAsBytesSync(), file.value, reason: file.key);
+    }
+  }
+
+  File componentArtifact(String stage) => publishedFiles().singleWhere(
+    (file) =>
+        file.path.contains('/components/$stage/') &&
+        file.uri.pathSegments.last != 'receipt.json',
+  );
 
   test(
     'test-plan runs pre-bootstrap without generating, inspecting or compiling',
@@ -982,6 +1200,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       }
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
+      Map<String, String>? firstDefines;
       // Preparation must replace inherited inputs with this checkout's paths.
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
@@ -1001,53 +1220,56 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         <String>['build', 'linux'],
         <String>['build', 'linux', '--profile'],
       ]) {
+        final cold = outputDirectories.isEmpty;
         final ProcessResult result = await invoke(arguments);
         expect(result.exitCode, 0, reason: result.stderr.toString());
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           'generate|sdk',
-          'compile|$_hostEntrypoint',
-          'compiled|$_hostEntrypoint',
-          'compile|$_gitEntrypoint',
-          'compiled|$_gitEntrypoint',
-          'compile|$_openaiEntrypoint',
-          'compiled|$_openaiEntrypoint',
-          'compile|$_agentsMdEntrypoint',
-          'compiled|$_agentsMdEntrypoint',
-          'compile|$_searchToolsEntrypoint',
-          'compiled|$_searchToolsEntrypoint',
-          'compile|$_filesystemToolsEntrypoint',
-          'compiled|$_filesystemToolsEntrypoint',
-          'compile|$_commandToolsEntrypoint',
-          'compiled|$_commandToolsEntrypoint',
-          'compile|$_chatEntrypoint',
-          'compiled|$_chatEntrypoint',
-          'compile|$_localDirectoryProjectEntrypoint',
-          'compiled|$_localDirectoryProjectEntrypoint',
-          'compile|$_sessionEvaluatorEntrypoint',
-          'compiled|$_sessionEvaluatorEntrypoint',
-          'compile|git-pty-helper',
-          'compile|$_frontendHarness',
-          'compiled|$_frontendHarness',
-          'compile|$_toolFrontendHarness|filesystem',
-          'compiled|$_toolFrontendHarness|filesystem',
-          'compile|$_toolFrontendHarness|command',
-          'compiled|$_toolFrontendHarness|command',
-          'compile|$_openaiFrontendHarness',
-          'compiled|$_openaiFrontendHarness',
-          'compile|$_localDirectoryProjectFrontendHarness',
-          'compiled|$_localDirectoryProjectFrontendHarness',
-          'compile|$_taskBrowserFrontendHarness',
-          'compiled|$_taskBrowserFrontendHarness',
-          'compile|$_terminalFrontendHarness',
-          'compiled|$_terminalFrontendHarness',
-          'compile|$_sourceEditorFrontendHarness',
-          'compiled|$_sourceEditorFrontendHarness',
-          'compile|$_diffViewerFrontendHarness',
-          'compiled|$_diffViewerFrontendHarness',
+          if (cold) ...[
+            'compile|$_hostEntrypoint',
+            'compiled|$_hostEntrypoint',
+            'compile|$_gitEntrypoint',
+            'compiled|$_gitEntrypoint',
+            'compile|$_openaiEntrypoint',
+            'compiled|$_openaiEntrypoint',
+            'compile|$_agentsMdEntrypoint',
+            'compiled|$_agentsMdEntrypoint',
+            'compile|$_searchToolsEntrypoint',
+            'compiled|$_searchToolsEntrypoint',
+            'compile|$_filesystemToolsEntrypoint',
+            'compiled|$_filesystemToolsEntrypoint',
+            'compile|$_commandToolsEntrypoint',
+            'compiled|$_commandToolsEntrypoint',
+            'compile|$_chatEntrypoint',
+            'compiled|$_chatEntrypoint',
+            'compile|$_localDirectoryProjectEntrypoint',
+            'compiled|$_localDirectoryProjectEntrypoint',
+            'compile|$_sessionEvaluatorEntrypoint',
+            'compiled|$_sessionEvaluatorEntrypoint',
+            'compile|git-pty-helper',
+            'compile|$_frontendHarness',
+            'compiled|$_frontendHarness',
+            'compile|$_toolFrontendHarness|filesystem',
+            'compiled|$_toolFrontendHarness|filesystem',
+            'compile|$_toolFrontendHarness|command',
+            'compiled|$_toolFrontendHarness|command',
+            'compile|$_openaiFrontendHarness',
+            'compiled|$_openaiFrontendHarness',
+            'compile|$_localDirectoryProjectFrontendHarness',
+            'compiled|$_localDirectoryProjectFrontendHarness',
+            'compile|$_taskBrowserFrontendHarness',
+            'compiled|$_taskBrowserFrontendHarness',
+            'compile|$_terminalFrontendHarness',
+            'compiled|$_terminalFrontendHarness',
+            'compile|$_sourceEditorFrontendHarness',
+            'compiled|$_sourceEditorFrontendHarness',
+            'compile|$_diffViewerFrontendHarness',
+            'compiled|$_diffViewerFrontendHarness',
+          ],
           'flutter-launch',
         ]);
-        expect(result.stdout, contains('frontend compiler output'));
+        if (cold) expect(result.stdout, contains('frontend compiler output'));
         expectGenerationArguments();
         expect(frontendArguments.readAsLinesSync(), <String>[
           'test',
@@ -1075,6 +1297,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           );
         }
         expect(launched, hasLength(run ? 9 : 8));
+        if (firstDefines == null) {
+          firstDefines = defines;
+        } else {
+          expect(defines, firstDefines);
+        }
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -1138,20 +1365,22 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(filesystemTools.path, endsWith('/filesystem-tools/backend.aot'));
         expect(commandTools.path, endsWith('/command-tools/backend.aot'));
         expect(frontend.path, endsWith('/chat-strategy/frontend.evc'));
-        expect(frontendEnvironment.readAsLinesSync(), <String>[
-          root.path,
-          frontend.path,
-        ]);
+        final compileEnvironment = frontendEnvironment.readAsLinesSync();
+        expect(compileEnvironment.first, root.path);
+        expect(compileEnvironment.last, contains('/.staging/'));
+        expect(compileEnvironment.last, isNot(frontend.path));
+        expect(File(compileEnvironment.last).existsSync(), isFalse);
         expect(installations.uri.isAbsolute, isTrue);
-        expect(installations.parent.path, host.parent.path);
+        expect(installations.path, contains('/installations/'));
         expect(startupArguments.uri.isAbsolute, isTrue);
-        expect(startupArguments.parent.path, host.parent.path);
+        expect(startupArguments.path, contains('/startup/'));
+        expect(startupArguments.parent.path, isNot(host.parent.path));
         expect(jsonDecode(startupArguments.readAsStringSync()), {
           'dev.adele.openai': ['--chatgpt-only'],
           'dev.adele.plugin.git': gitStartupArguments(),
         });
         expect(
-          installations.listSync().map(
+          installations.listSync().whereType<Directory>().map(
             (entry) =>
                 entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           ),
@@ -1613,19 +1842,17 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .readAsStringSync();
         expect(
           host.parent.path,
-          startsWith('${root.path}/.dart_tool/adele/desktop-plugins/build-'),
+          startsWith(
+            '${root.path}/.dart_tool/adele/desktop-plugins/snapshots/',
+          ),
         );
-        expect(outputDirectories.add(host.parent.path), isTrue);
+        expect(outputDirectories.add(host.parent.path), cold);
         expect(
           host.parent.listSync().map(
             (entry) =>
                 entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           ),
-          unorderedEquals([
-            'host.aot',
-            'installations',
-            'startup-arguments.json',
-          ]),
+          unorderedEquals(['host.aot', 'installations', 'receipt.json']),
         );
         expect(host.readAsStringSync(), 'snapshot $_hostEntrypoint\n');
         expect(git.readAsStringSync(), 'snapshot $_gitEntrypoint\n');
@@ -1954,19 +2181,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           expect(result.stderr, contains(filename));
           expect(launchArguments.existsSync(), isFalse);
           expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
-          final builds = Directory(
-            '${root.path}/.dart_tool/adele/desktop-plugins',
-          );
-          for (final build in builds.listSync().whereType<Directory>()) {
-            expect(
-              File.fromUri(
-                build.uri.resolve(
-                  'installations/${declaration.installation}/adele_plugin.installation.json',
-                ),
-              ).existsSync(),
-              isFalse,
-            );
-          }
+          expectNoPublishedInstallations();
         },
       );
     }
@@ -2014,19 +2229,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     }
   }
 
-  const frontendCompilations = {
-    'chat': _frontendHarness,
-    'filesystem': '$_toolFrontendHarness|filesystem',
-    'command': '$_toolFrontendHarness|command',
-    'openai': _openaiFrontendHarness,
-    'local-directory-project': _localDirectoryProjectFrontendHarness,
-    'task-browser': _taskBrowserFrontendHarness,
-    'terminal': _terminalFrontendHarness,
-    'source-editor': _sourceEditorFrontendHarness,
-    'diff-viewer': _diffViewerFrontendHarness,
-  };
   for (final String command in <String>['run', 'build']) {
-    for (final kind in frontendCompilations.keys) {
+    for (final kind in _frontendCompilations.keys) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
           '$command never launches after $kind frontend $failure failure',
@@ -2048,8 +2252,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               expect(result.stderr, contains('frontend compiler failed'));
               expect(result.stderr, contains('failed with exit code 23'));
               expect(
-                File(frontendEnvironment.readAsLinesSync()[1]).lengthSync(),
-                greaterThan(0),
+                frontendEnvironment.readAsLinesSync()[1],
+                contains('/.staging/'),
               );
             } else {
               expect(result.stderr, contains('produced no non-empty artifact'));
@@ -2078,8 +2282,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compile|$_sessionEvaluatorEntrypoint',
               'compiled|$_sessionEvaluatorEntrypoint',
               'compile|git-pty-helper',
-              for (final frontend in frontendCompilations.entries.take(
-                frontendCompilations.keys.toList().indexOf(kind) + 1,
+              for (final frontend in _frontendCompilations.entries.take(
+                _frontendCompilations.keys.toList().indexOf(kind) + 1,
               )) ...[
                 'compile|${frontend.value}',
                 if (frontend.key != kind || failure != 'exit')
@@ -2094,23 +2298,643 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     }
   }
 
+  test('frontend failure never reuses a retained successful artifact', () async {
+    final ProcessResult first = await invoke(<String>['build', 'linux']);
+    expect(first.exitCode, 0, reason: first.stderr.toString());
+    final File previous = File(
+      '${launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']}/chat-strategy/frontend.evc',
+    );
+    changeSource(_chatSource);
+    launchArguments.deleteSync();
+    commands.deleteSync();
+
+    environment['ADELE_TEST_FRONTEND_ARTIFACT'] = 'missing';
+    final ProcessResult second = await invoke(<String>['run', 'linux']);
+    expect(second.exitCode, 1);
+    expect(second.stderr, contains('produced no non-empty artifact'));
+    expect(previous.readAsStringSync(), 'frontend bytecode\n');
+    expect(frontendEnvironment.readAsLinesSync()[1], isNot(previous.path));
+    expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+    expect(launchArguments.existsSync(), isFalse);
+  });
+
+  for (final mutation in [
+    (path: _gitEntrypoint, expected: [_gitEntrypoint]),
+    (path: _chatSource, expected: [_frontendHarness]),
+    (path: _chatCompiler, expected: [_frontendHarness]),
+    (path: _frontendBridge, expected: _frontendCompilations.values.toList()),
+    (
+      path: _sharedSource,
+      expected: [..._backendEntrypoints, ..._frontendCompilations.values],
+    ),
+    (
+      path: 'contract.dart',
+      expected: [..._backendEntrypoints, _frontendHarness],
+    ),
+    (path: _nativeSource, expected: ['git-pty-helper']),
+    (path: _nativeHeader, expected: ['git-pty-helper']),
+    (path: 'native/ld', expected: ['git-pty-helper']),
+    (path: 'native/libc.so', expected: ['git-pty-helper']),
+    (path: 'tools/git_pty_artifact.dart', expected: ['git-pty-helper']),
+    (
+      path: 'tools/frontend_artifacts.dart',
+      expected: _frontendCompilations.values.toList(),
+    ),
+    (
+      path: 'packages/plugin_builder/lib/src/development_plugin_builder.dart',
+      expected: _backendEntrypoints,
+    ),
+    (
+      path: 'tools/desktop_build_inputs_worker.dart',
+      expected: [..._backendEntrypoints, ..._frontendCompilations.values],
+    ),
+  ]) {
+    test(
+      'incremental preparation rebuilds only consumers of ${mutation.path}',
+      () async {
+        final before = await prepare();
+        expect(compilations(), hasLength(20));
+        final retained = retainedFiles();
+        changeSource(mutation.path);
+        final after = await prepare(['build', 'linux', '--release']);
+        expect(compilations(), unorderedEquals(mutation.expected));
+        expect(
+          after['ADELE_PLUGIN_INSTALLATION_ROOT'],
+          isNot(before['ADELE_PLUGIN_INSTALLATION_ROOT']),
+        );
+        expectRetained(retained);
+        final warm = await prepare();
+        expect(compilations(), isEmpty);
+        expect(warm, after);
+        expectRetained(retained);
+      },
+    );
+  }
+
+  test('touches and unrelated files retain all cached paths', () async {
+    final before = await prepare();
+    final retained = retainedFiles();
+    for (final path in [
+      _gitEntrypoint,
+      _chatSource,
+      _sharedSource,
+      _frontendBridge,
+      _nativeSource,
+    ]) {
+      File('${root.path}/$path').setLastModifiedSync(DateTime.utc(2000));
+    }
+    generatedContract.setLastModifiedSync(DateTime.utc(2000));
+    File('${sdkBin.path}/dart').setLastModifiedSync(DateTime.utc(2000));
+    File(
+      '${root.path}/unrelated.txt',
+    ).writeAsStringSync('not a compiler input');
+    File(
+      '${root.path}/app/unrelated.dart',
+    ).writeAsStringSync('// not in discovery');
+    expect(await prepare(['build', 'linux', '--profile']), before);
+    expect(compilations(), isEmpty);
+    expectRetained(retained);
+  });
+
   test(
-    'frontend failure never reuses a retained successful artifact',
+    'discovered source additions and removals invalidate their component',
     () async {
-      final ProcessResult first = await invoke(<String>['build', 'linux']);
-      expect(first.exitCode, 0, reason: first.stderr.toString());
-      final File previous = File(frontendEnvironment.readAsLinesSync()[1]);
+      final before = await prepare();
+      final retained = retainedFiles();
+      final added = File(
+        '${root.path}/plugins/source_editor/packages/frontend/lib/new_part.dart',
+      )..writeAsStringSync('const added = 1;\n');
+      final inputs =
+          (jsonDecode(buildInputs.readAsStringSync()) as Map<String, dynamic>)
+              .map(
+                (key, value) => MapEntry(key, (value as List).cast<String>()),
+              );
+      const stage = 'source-editor-frontend-compilation';
+      inputs[stage]!.add(added.path);
+      inputs[stage]!.sort();
+      buildInputs.writeAsStringSync(jsonEncode(inputs));
+      final withAddition = await prepare();
+      expect(compilations(), [_sourceEditorFrontendHarness]);
+      expect(withAddition, isNot(before));
+      final removed = inputs[stage]!.firstWhere(
+        (path) => path.endsWith('/fixture.dart'),
+      );
+      inputs[stage]!.remove(removed);
+      File(removed).deleteSync();
+      buildInputs.writeAsStringSync(jsonEncode(inputs));
+      final withRemoval = await prepare();
+      expect(compilations(), [_sourceEditorFrontendHarness]);
+      expect(withRemoval, isNot(withAddition));
+      expectRetained(retained);
+    },
+  );
+
+  for (final toolchain in [
+    'dart',
+    'dartaotruntime',
+    'machine',
+    'cc',
+    'dart-compiler',
+    'flutter-compiler',
+    'platform',
+    'platform-product',
+    'platform-jit',
+  ]) {
+    test(
+      '$toolchain identity changes invalidate matching cached artifacts',
+      () async {
+        await prepare();
+        final retained = retainedFiles();
+        if (toolchain == 'machine') {
+          final version =
+              jsonDecode(sdkVersion.readAsStringSync()) as Map<String, dynamic>;
+          version['engineRevision'] = 'fixture-engine-2';
+          sdkVersion.writeAsStringSync(jsonEncode(version));
+        } else {
+          final executable = File(switch (toolchain) {
+            'cc' => '${root.path}/bin/cc',
+            'dart-compiler' =>
+              '${sdkBin.path}/snapshots/gen_kernel_aot.dart.snapshot',
+            'flutter-compiler' =>
+              '${root.path}/flutter sdk/bin/cache/artifacts/engine/linux-x64/frontend_server_aot.dart.snapshot',
+            'platform' =>
+              '${sdkBin.parent.path}/lib/_internal/vm_platform_strong.dill',
+            'platform-product' =>
+              '${sdkBin.parent.path}/lib/_internal/vm_platform_product.dill',
+            'platform-jit' =>
+              '${sdkBin.parent.path}/lib/_internal/vm_platform.dill',
+            _ => '${sdkBin.path}/$toolchain',
+          });
+          executable.writeAsStringSync(
+            '\n# toolchain revision 2\n',
+            mode: FileMode.append,
+          );
+        }
+        await prepare();
+        expect(
+          compilations(),
+          unorderedEquals(
+            toolchain == 'cc'
+                ? ['git-pty-helper']
+                : [..._backendEntrypoints, ..._frontendCompilations.values],
+          ),
+        );
+        expectRetained(retained);
+      },
+    );
+  }
+
+  test(
+    'startup configuration changes neither compile nor replace snapshots',
+    () async {
+      final before = await prepare();
+      final retained = retainedFiles();
+      environment.addAll({
+        'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE':
+            '${root.path}/credential-reference.json',
+        'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'different-public-client',
+      });
+      final configured = await prepare();
+      expect(compilations(), isEmpty);
+      for (final key in [
+        'ADELE_BACKEND_HOST_ARTIFACT',
+        'ADELE_PLUGIN_INSTALLATION_ROOT',
+        'ADELE_DARTAOTRUNTIME_EXECUTABLE',
+      ]) {
+        expect(configured[key], before[key]);
+      }
+      expect(
+        configured['ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE'],
+        isNot(before['ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE']),
+      );
+      expect(readStartupArguments(), contains('different-public-client'));
+      expectRetained(retained);
+      final credential = File(
+        environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE']!,
+      )..writeAsStringSync('secret-rotated-credential');
+      environment['ADELE_OPENAI_CHATGPT_MODEL'] = 'not-a-build-input';
+      expect(await prepare(), configured);
+      expect(compilations(), isEmpty);
+      expect(
+        readStartupArguments(),
+        isNot(contains(credential.readAsStringSync())),
+      );
+      environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'] = '';
+      expect(await prepare(), before);
+      expect(compilations(), isEmpty);
+    },
+  );
+
+  for (final metadata in ['settings', 'records', 'descriptors']) {
+    test('$metadata changes republish metadata without compilation', () async {
+      final before = await prepare();
+      final retained = retainedFiles();
+      final file = File(
+        '${root.path}/${switch (metadata) {
+          'settings' => 'plugins/source_editor/settings.schema.json',
+          'records' => 'plugins/openai/records.schema.json',
+          _ => 'tools/stock_frontend_descriptors.dart',
+        }}',
+      );
+      file.writeAsStringSync(
+        file.readAsStringSync().replaceFirst(switch (metadata) {
+          'settings' => 'Enable Code Folding',
+          'records' => 'OpenAI API',
+          _ => 'Open Source...',
+        }, 'Revised metadata label'),
+      );
+      final after = await prepare();
+      expect(compilations(), isEmpty);
+      expect(
+        after['ADELE_PLUGIN_INSTALLATION_ROOT'],
+        isNot(before['ADELE_PLUGIN_INSTALLATION_ROOT']),
+      );
+      final catalog = await PreparedPluginCatalog.discover(
+        after['ADELE_PLUGIN_INSTALLATION_ROOT']!,
+      );
+      expect(catalog.issues, isEmpty);
+      final content = Directory(after['ADELE_PLUGIN_INSTALLATION_ROOT']!)
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.json'))
+          .map((file) => file.readAsStringSync())
+          .join();
+      expect(content, contains('Revised metadata label'));
+      expectRetained(retained);
+    });
+  }
+
+  for (final damage in ['missing', 'empty', 'corrupt']) {
+    test(
+      '$damage cached component is repaired in a new retained entry',
+      () async {
+        await prepare();
+        final old = componentArtifact('git-compilation');
+        if (damage == 'missing') {
+          old.deleteSync();
+        } else {
+          old.writeAsStringSync(
+            damage == 'empty' ? '' : 'corrupt cached bytes',
+          );
+        }
+        final retained = retainedFiles();
+        await prepare();
+        expect(compilations(), [_gitEntrypoint]);
+        final replacements = publishedFiles().where(
+          (file) =>
+              file.path.contains('/components/git-compilation/') &&
+              file.uri.pathSegments.last == 'backend.aot' &&
+              file.path != old.path,
+        );
+        expect(replacements, hasLength(1));
+        expect(
+          replacements.single.readAsStringSync(),
+          'snapshot $_gitEntrypoint\n',
+        );
+        expect(old.existsSync(), damage != 'missing');
+        expectRetained(retained);
+        await prepare();
+        expect(compilations(), isEmpty);
+      },
+    );
+  }
+
+  for (final damage in [
+    'missing-receipt',
+    'corrupt-receipt',
+    'wrong-digest',
+    'unlisted-output',
+  ]) {
+    test('$damage makes a component receipt non-reusable', () async {
+      await prepare();
+      final old = componentArtifact('chat-frontend-compilation');
+      final receipt = File('${old.parent.path}/receipt.json');
+      switch (damage) {
+        case 'missing-receipt':
+          receipt.deleteSync();
+        case 'corrupt-receipt':
+          receipt.writeAsStringSync('{incomplete');
+        case 'wrong-digest':
+          final data =
+              jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
+          (data['files'] as Map<String, dynamic>)['frontend.evc'] = {
+            'sha256': '0' * 64,
+            'executable': 0,
+          };
+          receipt.writeAsStringSync(jsonEncode(data));
+        case 'unlisted-output':
+          File(
+            '${old.parent.path}/unlisted',
+          ).writeAsStringSync('not inventoried');
+      }
+      final retained = retainedFiles();
+      await prepare();
+      expect(compilations(), [_frontendHarness]);
+      expectRetained(retained);
+      expect(
+        publishedFiles().where(
+          (file) =>
+              file.path.contains('/components/chat-frontend-compilation/') &&
+              file.uri.pathSegments.last == 'frontend.evc',
+        ),
+        hasLength(2),
+      );
+    });
+  }
+
+  for (final output in ['host', 'manifest', 'schema', 'startup']) {
+    test(
+      'corrupt $output republishes a complete entry without compiling',
+      () async {
+        final before = await prepare();
+        final old = File(switch (output) {
+          'host' => before['ADELE_BACKEND_HOST_ARTIFACT']!,
+          'startup' => before['ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE']!,
+          'schema' =>
+            '${before['ADELE_PLUGIN_INSTALLATION_ROOT']}/openai/records.schema.json',
+          _ =>
+            '${before['ADELE_PLUGIN_INSTALLATION_ROOT']}/git/adele_plugin.installation.json',
+        });
+        old.writeAsStringSync('corrupt published output');
+        final retained = retainedFiles();
+        final after = await prepare();
+        expect(compilations(), isEmpty);
+        final key = output == 'startup'
+            ? 'ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE'
+            : 'ADELE_PLUGIN_INSTALLATION_ROOT';
+        expect(after[key], isNot(before[key]));
+        final catalog = await PreparedPluginCatalog.discover(
+          after['ADELE_PLUGIN_INSTALLATION_ROOT']!,
+        );
+        expect(catalog.issues, isEmpty);
+        expect(jsonDecode(readStartupArguments()), isA<Map<String, dynamic>>());
+        expectRetained(retained);
+      },
+    );
+  }
+
+  for (final output in ['snapshot', 'startup']) {
+    test(
+      'self-consistent incomplete $output receipt is not a cache hit',
+      () async {
+        final before = await prepare();
+        final key = output == 'snapshot'
+            ? 'ADELE_BACKEND_HOST_ARTIFACT'
+            : 'ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE';
+        final artifact = File(before[key]!);
+        final receipt = File('${artifact.parent.path}/receipt.json');
+        final data =
+            jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
+        final files = data['files'] as Map<String, dynamic>;
+        final removed = files.remove(artifact.uri.pathSegments.last);
+        if (output == 'snapshot') {
+          artifact.deleteSync();
+        } else {
+          artifact.renameSync('${artifact.parent.path}/unexpected.json');
+          files['unexpected.json'] = removed;
+        }
+        receipt.writeAsStringSync(jsonEncode(data));
+        final retained = retainedFiles();
+        final after = await prepare();
+        expect(compilations(), isEmpty);
+        expect(after[key], isNot(artifact.path));
+        expect(
+          File(after['ADELE_BACKEND_HOST_ARTIFACT']!).readAsStringSync(),
+          'snapshot $_hostEntrypoint\n',
+        );
+        expect(jsonDecode(readStartupArguments()), isA<Map<String, dynamic>>());
+        expect(artifact.existsSync(), isFalse);
+        expectRetained(retained);
+      },
+    );
+  }
+
+  test(
+    'native executable mode damage rebuilds without overwriting old entry',
+    () async {
+      await prepare();
+      final helper = componentArtifact('git-pty-helper-compilation');
+      expect(Process.runSync('chmod', ['-x', helper.path]).exitCode, 0);
+      final retained = retainedFiles();
+      await prepare();
+      expect(compilations(), ['git-pty-helper']);
+      expect(helper.statSync().mode & 0x49, 0);
+      final replacement = publishedFiles().singleWhere(
+        (file) =>
+            file.path.contains('/components/git-pty-helper-compilation/') &&
+            file.uri.pathSegments.last == 'pty-helper' &&
+            file.path != helper.path,
+      );
+      expect(replacement.statSync().mode & 0x49, isNot(0));
+      expectRetained(retained);
+    },
+  );
+
+  test(
+    'published receipts inventory every file with its SHA256 digest',
+    () async {
+      await prepare();
+      final files = publishedFiles();
+      final receipts = files.where(
+        (file) => file.uri.pathSegments.last == 'receipt.json',
+      );
+      expect(receipts, hasLength(22));
+      for (final receipt in receipts) {
+        final decoded =
+            jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
+        expect(decoded['version'], 1);
+        expect(
+          decoded['identity'],
+          receipt.parent.parent.uri.pathSegments.lastWhere(
+            (part) => part.isNotEmpty,
+          ),
+        );
+        final inventory = decoded['files'] as Map<String, dynamic>;
+        final artifacts = receipt.parent
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((file) => file.path != receipt.path)
+            .toList();
+        expect(
+          inventory.keys,
+          unorderedEquals(
+            artifacts.map(
+              (file) => file.path.substring(receipt.parent.path.length + 1),
+            ),
+          ),
+        );
+        final sums = Process.runSync('sha256sum', [
+          '--zero',
+          '--',
+          ...artifacts.map((file) => file.path),
+        ]);
+        expect(sums.exitCode, 0, reason: '${sums.stderr}');
+        final records = sums.stdout.toString().split('\u0000')..removeLast();
+        for (var index = 0; index < artifacts.length; index++) {
+          final relative = artifacts[index].path.substring(
+            receipt.parent.path.length + 1,
+          );
+          expect(
+            inventory[relative]['sha256'],
+            records[index].substring(0, 64),
+          );
+          expect(artifacts[index].lengthSync(), greaterThan(0));
+        }
+      }
+    },
+  );
+
+  test(
+    'failed dirty backend rebuild cannot launch or mutate retained outputs',
+    () async {
+      final before = await prepare();
+      final retained = retainedFiles();
+      changeSource(_gitEntrypoint);
+      environment['ADELE_TEST_FAIL_ENTRYPOINT'] = _gitEntrypoint;
       launchArguments.deleteSync();
       commands.deleteSync();
-
-      environment['ADELE_TEST_FRONTEND_ARTIFACT'] = 'missing';
-      final ProcessResult second = await invoke(<String>['run', 'linux']);
-      expect(second.exitCode, 1);
-      expect(second.stderr, contains('produced no non-empty artifact'));
-      expect(previous.readAsStringSync(), 'frontend bytecode\n');
-      expect(frontendEnvironment.readAsLinesSync()[1], isNot(previous.path));
-      expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+      final failed = await invoke(['run', 'linux']);
+      expect(failed.exitCode, 17);
+      expect(compilations(), [_gitEntrypoint]);
       expect(launchArguments.existsSync(), isFalse);
+      expectRetained(retained);
+      expect(
+        publishedFiles().map((file) => file.path),
+        unorderedEquals(retained.keys),
+      );
+      environment.remove('ADELE_TEST_FAIL_ENTRYPOINT');
+      final recovered = await prepare();
+      expect(compilations(), [_gitEntrypoint]);
+      expect(recovered, isNot(before));
+      expectRetained(retained);
+    },
+  );
+
+  test('warm cache never masks native toolchain probe failures', () async {
+    await prepare();
+    final retained = retainedFiles();
+    environment['ADELE_TEST_FAIL_NATIVE_INSPECTION'] = '1';
+    launchArguments.deleteSync();
+    commands.deleteSync();
+    final failed = await invoke(['run', 'linux']);
+    expect(failed.exitCode, 43);
+    expect(failed.stdout, contains('native probe stdout'));
+    expect(failed.stderr, contains('native probe stderr'));
+    expect(
+      failed.stderr,
+      contains('toolchain inspection failed with exit code 43'),
+    );
+    expect(compilations(), isEmpty);
+    expect(launchArguments.existsSync(), isFalse);
+    expectRetained(retained);
+  });
+
+  test('warm cache never masks generation or discovery failures', () async {
+    await prepare();
+    final retained = retainedFiles();
+    for (final failure in ['GENERATION', 'DISCOVERY']) {
+      environment['ADELE_TEST_FAIL_$failure'] = '1';
+      if (launchArguments.existsSync()) launchArguments.deleteSync();
+      commands.deleteSync();
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, isNot(0));
+      expect(compilations(), isEmpty);
+      expect(launchArguments.existsSync(), isFalse);
+      expectRetained(retained);
+      environment.remove('ADELE_TEST_FAIL_$failure');
+    }
+    await prepare();
+    expect(compilations(), isEmpty);
+  });
+
+  test(
+    'source mutation during compilation prevents publication and launch',
+    () async {
+      environment['ADELE_TEST_MUTATE_SOURCE'] = '${root.path}/$_sharedSource';
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 1);
+      expect(
+        result.stderr,
+        contains('Build inputs changed during desktop preparation'),
+      );
+      expect(launchArguments.existsSync(), isFalse);
+      expect(publishedFiles(), isEmpty);
+      environment.remove('ADELE_TEST_MUTATE_SOURCE');
+      await prepare();
+      expect(compilations(), hasLength(20));
+    },
+  );
+
+  test(
+    'tool mutation during generation cannot cache the already-loaded implementation',
+    () async {
+      environment['ADELE_TEST_MUTATE_TOOL_DURING_GENERATION'] =
+          '${root.path}/packages/plugin_builder/lib/src/development_plugin_builder.dart';
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 1);
+      expect(
+        result.stderr,
+        contains('Build inputs changed during desktop preparation'),
+      );
+      expect(launchArguments.existsSync(), isFalse);
+      expect(publishedFiles(), isEmpty);
+    },
+  );
+
+  test(
+    'overlapping preparations serialize or reject without partial publication',
+    () async {
+      environment['ADELE_TEST_PAUSE_ENTRYPOINT'] = _hostEntrypoint;
+      final first = invoke(['run', 'linux']);
+      final ready = File('${root.path}/logs/compiler-ready');
+      final release = File('${root.path}/logs/compiler-release');
+      try {
+        final deadline = DateTime.now().add(const Duration(seconds: 15));
+        while (!ready.existsSync() && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        expect(
+          ready.existsSync(),
+          isTrue,
+          reason: 'First compiler did not reach barrier.',
+        );
+        expect(launchArguments.existsSync(), isFalse);
+        expect(publishedFiles(), isEmpty);
+        environment.remove('ADELE_TEST_PAUSE_ENTRYPOINT');
+        final second = invoke(['build', 'linux']);
+        await Future.any<void>([
+          second.then((_) {}),
+          Future<void>.delayed(const Duration(seconds: 3)),
+        ]);
+        expect(launchArguments.existsSync(), isFalse);
+        expect(publishedFiles(), isEmpty);
+        release.writeAsStringSync('release');
+        final results = await Future.wait([first, second]);
+        expect(results.first.exitCode, 0, reason: '${results.first.stderr}');
+        if (results.last.exitCode != 0) {
+          expect(
+            results.last.stderr.toString().toLowerCase(),
+            anyOf(
+              contains('lease'),
+              contains('lock'),
+              contains('active'),
+              contains('busy'),
+            ),
+          );
+        }
+        expect(compilations(), hasLength(20));
+        final catalog = await PreparedPluginCatalog.discover(
+          launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,
+        );
+        expect(catalog.issues, isEmpty);
+        expect(catalog.installations, hasLength(13));
+        final stable = launchDefines();
+        expect(await prepare(), stable);
+        expect(compilations(), isEmpty);
+      } finally {
+        release.writeAsStringSync('release');
+        await first;
+      }
     },
   );
 
@@ -2125,6 +2949,17 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   });
 
   for (final entrypoint in [_hostEntrypoint, _sessionEvaluatorEntrypoint]) {
+    test(
+      'compiler success with empty $entrypoint artifact blocks launch',
+      () async {
+        environment['ADELE_TEST_EMPTY_ARTIFACT'] = entrypoint;
+        final result = await invoke(['run', 'linux']);
+        expect(result.exitCode, 1);
+        expect(result.stderr, contains('produced no non-empty artifact'));
+        expect(launchArguments.existsSync(), isFalse);
+        expectNoPublishedInstallations();
+      },
+    );
     test(
       'compiler success without $entrypoint artifact blocks launch',
       () async {

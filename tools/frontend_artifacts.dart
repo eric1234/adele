@@ -3,11 +3,14 @@ import 'dart:io';
 // Keep the launcher import graph SDK-only so test-plan works before bootstrap.
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
+import 'desktop_artifact_cache.dart';
 
 Future<Map<String, File>> prepareDesktopFrontendArtifacts({
   required Directory repositoryRoot,
   required String flutterExecutable,
   required Directory installationRoot,
+  required DesktopArtifactCache cache,
+  required Future<String> Function(String stage, Object options) identity,
 }) async {
   final Directory root = repositoryRoot.absolute;
   final Directory app = Directory.fromUri(root.uri.resolve('app/'));
@@ -91,61 +94,74 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_diff_viewer_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
-    stdout.writeln('==> $stage');
-    final ProcessResult result;
-    try {
-      result = await Process.run(
-        flutterExecutable,
-        arguments,
-        workingDirectory: app.path,
-        environment: <String, String>{
-          'ADELE_REPOSITORY_ROOT': root.path,
-          if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
-          if (openai) 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
-          if (taskBrowser) 'ADELE_TASK_BROWSER_FRONTEND_OUTPUT': artifact.path,
-          if (terminal) 'ADELE_TERMINAL_FRONTEND_OUTPUT': artifact.path,
-          if (sourceEditor)
-            'ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT': artifact.path,
-          if (diffViewer) 'ADELE_DIFF_VIEWER_FRONTEND_OUTPUT': artifact.path,
-          if (localDirectoryProject)
-            'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
-          if (!chat &&
-              !openai &&
-              !localDirectoryProject &&
-              !taskBrowser &&
-              !terminal &&
-              !sourceEditor &&
-              !diffViewer) ...{
-            'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
-            'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
-          },
-        },
-      );
-    } on ProcessException catch (error) {
-      throw PluginBuildFailure('$stage could not start: $error');
-    }
-    final PluginBuildDiagnostic diagnostic = PluginBuildDiagnostic(
-      stage: stage,
-      command: <String>[flutterExecutable, ...arguments],
-      workingDirectory: app.path,
-      exitCode: result.exitCode,
-      stdoutText: result.stdout.toString(),
-      stderrText: result.stderr.toString(),
+    final prepared = await cache.component(
+      name: stage,
+      identity: await identity(stage, {
+        'arguments': arguments,
+        'frontend': frontend.name,
+      }),
+      filename: 'frontend.evc',
+      build: (artifact) async {
+        final ProcessResult result;
+        try {
+          result = await Process.run(
+            flutterExecutable,
+            arguments,
+            workingDirectory: app.path,
+            environment: <String, String>{
+              'ADELE_REPOSITORY_ROOT': root.path,
+              if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
+              if (openai)
+                'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
+              if (taskBrowser)
+                'ADELE_TASK_BROWSER_FRONTEND_OUTPUT': artifact.path,
+              if (terminal) 'ADELE_TERMINAL_FRONTEND_OUTPUT': artifact.path,
+              if (sourceEditor)
+                'ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT': artifact.path,
+              if (diffViewer)
+                'ADELE_DIFF_VIEWER_FRONTEND_OUTPUT': artifact.path,
+              if (localDirectoryProject)
+                'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
+              if (!chat &&
+                  !openai &&
+                  !localDirectoryProject &&
+                  !taskBrowser &&
+                  !terminal &&
+                  !sourceEditor &&
+                  !diffViewer) ...{
+                'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
+                'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
+              },
+            },
+          );
+        } on ProcessException catch (error) {
+          throw PluginBuildFailure('$stage could not start: $error');
+        }
+        final PluginBuildDiagnostic diagnostic = PluginBuildDiagnostic(
+          stage: stage,
+          command: <String>[flutterExecutable, ...arguments],
+          workingDirectory: app.path,
+          exitCode: result.exitCode,
+          stdoutText: result.stdout.toString(),
+          stderrText: result.stderr.toString(),
+        );
+        stdout.write(diagnostic.stdoutText);
+        stderr.write(diagnostic.stderrText);
+        if (result.exitCode != 0) {
+          throw PluginBuildFailure(
+            '$stage failed with exit code ${result.exitCode}.',
+            diagnostic: diagnostic,
+          );
+        }
+        if (!await artifact.exists() || await artifact.length() == 0) {
+          throw PluginBuildFailure(
+            '$stage produced no non-empty artifact: ${artifact.path}',
+            diagnostic: diagnostic,
+          );
+        }
+      },
     );
-    stdout.write(diagnostic.stdoutText);
-    stderr.write(diagnostic.stderrText);
-    if (result.exitCode != 0) {
-      throw PluginBuildFailure(
-        '$stage failed with exit code ${result.exitCode}.',
-        diagnostic: diagnostic,
-      );
-    }
-    if (!await artifact.exists() || await artifact.length() == 0) {
-      throw PluginBuildFailure(
-        '$stage produced no non-empty artifact: ${artifact.path}',
-        diagnostic: diagnostic,
-      );
-    }
+    await prepared.copy(artifact.path);
     artifacts[frontend.pluginId] = artifact;
   }
   return artifacts;

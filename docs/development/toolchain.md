@@ -236,9 +236,10 @@ Preparation requires Linux x64, `cc` with C11 support, libc development headers 
 x64 with the exact integrated Dart/Flutter pin above. The focused
 job-control test additionally needs Bash. `tools/git_pty_artifact.dart` reproducibly
 invokes `cc -std=c11 -O2 -Wall -Wextra -Werror ... -lutil`.
-`tools/backend_artifacts.dart` prepares `git/pty-helper` under the installation root
-before publishing the installation and supplies its absolute path as `--pty-helper=...` through the
-existing generic startup-argv file. Activation never compiles or downloads it.
+`tools/backend_artifacts.dart` prepares or reuses `git/pty-helper` under the
+installation root before publishing the installation and supplies its absolute
+path as `--pty-helper=...` through the existing generic startup-argv file.
+Activation never compiles or downloads it.
 Direct test/development callers prepare the helper explicitly; omitting it leaves
 terminals unavailable without disabling other Git plugin operations.
 
@@ -278,7 +279,9 @@ ordinary IDE analysis and direct Dart/Flutter compilation ready to use.
 
 `tools/adele.dart` regenerates before analysis and before starting test workers.
 Linux desktop preparation regenerates once with the selected Flutter SDK's Dart
-before any backend AOT or frontend harness compilation. Other desktop build/run
+before dependency discovery or any backend AOT or frontend harness compilation,
+even when all compiled components can be reused from the checkout cache. Generation
+failures stop preparation; cached output is not a fallback. Other desktop build/run
 commands and development smoke generate before launching Flutter. The SDK-only
 `app/bin/adele_self_host.dart` launcher generates before starting its native CLI
 consumer, which in turn compiles the self-hosting AOT artifacts. Low-level snapshot
@@ -315,14 +318,16 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher compiles the shared host, stock backend AOT artifacts, and stock frontend
-EVCs before launching or building Flutter, using the selected SDK. The source
+launcher prepares or reuses the shared host, stock backend AOT artifacts, and stock
+frontend EVCs before launching or building Flutter, using the selected SDK. The source
 inventory and installation assembly live in
 [`tools/backend_artifacts.dart`](../../tools/backend_artifacts.dart), with frontend
 compiler selection in [`tools/frontend_artifacts.dart`](../../tools/frontend_artifacts.dart)
 and build-side descriptor metadata in
 [`tools/stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart).
-Prepared installations share one fresh root; the host snapshot is beside it.
+Prepared installations share one immutable, content-identified snapshot root; the
+host snapshot is beside it. Unchanged inputs reuse that root and the deployment
+paths rather than allocating a fresh `build-*` directory for every invocation.
 Backend-only, frontend-only, and combined installations use the same catalog.
 Ordinary Linux `run` and `build` commands also prepare the trusted development-only
 Session Evaluator as `session-evaluator/backend.aot`, with semantic identity
@@ -446,30 +451,116 @@ safe Chat activity without rich activity frontend activation are separate regres
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is
-a source-checkout stand-in that enables a bounded installed-component startup
-snapshot, not an installer, profile manager, artifact cache, or portable production
-package. Operational preparation inputs and invocations live in
+a source-checkout stand-in with a local compilation cache and a bounded
+installed-component startup snapshot, not an installer, profile manager, runtime
+cache, or portable production package. Operational preparation inputs and
+invocations live in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 
 ## Artifact identity and invalidation
 
-A compiled artifact is valid only for its source and build context. Future
-cache keys and provenance must include enough toolchain identity to prevent an
-artifact built by an incompatible Flutter or Dart SDK from being reused.
-Changing Flutter, its framework revision, Dart, eval/compiler dependencies,
-target platform, architecture, build mode, or relevant build inputs may require
-recompilation.
+The Linux checkout launcher uses
+[`tools/desktop_artifact_cache.dart`](../../tools/desktop_artifact_cache.dart) under
+`.dart_tool/adele/desktop-plugins/`. The shared host, each stock backend AOT, each
+stock frontend EVC, and the Git PTY helper are separate cache components. Linux
+`run` and `build`, including debug/profile/release app modes, share these components:
+their plugin compiler arguments do not vary with the app mode. A hit avoids that
+component's compilation, not SDK inspection, contract generation, input discovery,
+output verification, or installation assembly.
 
-Artifacts should normally be reusable by multiple profiles and configured
-capability instances when source and build context are identical. Profiles do
-not inherently own compiled artifacts.
+### Input identities
 
-The general plugin-artifact cache format, compatibility checks, provenance record,
-and invalidation algorithm remain deferred beyond the implemented development
-compilation pipeline. The native editor's source verification and per-input native
-test build directory above are a specific dependency workflow, not that general
-cache design.
+AOT/EVC identities use SHA-256 over ordered input paths and content hashes, compiler
+arguments and frontend selection, relevant preparation implementation, platform/ABI,
+and the selected SDK identity. SDK context includes Flutter's machine-version
+report and the paths/content hashes of the resolved Flutter executable, bundled
+Dart, matched `dartaotruntime`, compiler snapshots and binaries, platform kernels,
+and the Flutter test engine. Generated parts are fingerprinted after current
+generation. Timestamps are not persistent cache keys: touching unchanged input
+between invocations does not itself require recompilation. Hashing uses Linux
+`sha256sum`, already required by CodeForge source preparation.
+
+After generation, the selected Dart runs the analyzer-based
+[`desktop_build_inputs_worker.dart`](../../tools/desktop_build_inputs_worker.dart)
+through an SDK-only launcher coordinator. The worker resolves package URIs from
+package-config JSON and follows imports, exports, parts, and every conditional
+directive alternative, rather than traversing pubspec dependency/dev-dependency
+lists. Inputs include each backend's own `bin/` and `lib/` trees, each frontend's
+own `lib/` and optional `assets/` trees, owning manifests/configuration and declared
+assets, and explicit dynamic source-map seeds for the stock frontend harnesses:
+frontend source, public UI stubs, and generated-client contract declarations.
+Membership changes in those trees are inputs too. Compiler helpers and imported
+app-native bridges contribute their transitive file dependencies.
+
+This deliberately avoids one whole-repository or whole-source-plugin key, but is
+not symbol-level precision. Common workspace lock/package configuration, generator
+configuration and discovery implementation can invalidate multiple components.
+Native bridge declarations share libraries with runtime implementation, so their
+transitive imports can conservatively invalidate frontends even when interpreted
+output would be unchanged. Shared frontend helpers and own source trees can also
+broaden invalidation. Stock dynamic input declarations must be maintained alongside
+the corresponding `app/tool` compiler helpers; the worker does not infer arbitrary
+runtime `File` reads or automatically discover every third-party plugin layout.
+
+The Git PTY helper has its own native identity in
+[`git_pty_artifact.dart`](../../tools/git_pty_artifact.dart): C source and preparation
+implementation, compiler/options/platform, selected compiler and subordinate tool
+binaries, reported startup objects/libraries, compiler version, relevant compiler
+environment, and preprocessed source covering selected macros and system headers.
+Native inspection/preprocessing still runs on a hit; it does not generate machine
+code. Public plugin startup configuration is not a compilation input.
+
+### Publication and lifetime
+
+An exclusive checkout preparation lease covers generation through publication.
+Missing components compile into private `.staging/` directories; installation
+assembly also uses private staging, including on a fully cached invocation.
+Before publishing pending components or the snapshot, preparation rediscovers the
+dependency graph and compares input contents, file/parent-directory stats, and the
+native identity with their initial observations. This race fence rejects detected
+mid-preparation changes, including membership changes and edit-and-restore cases;
+stat information is not part of the reusable identity. Generation, discovery,
+compiler, or validation failure is fatal, with no fallback to older incompatible
+artifacts.
+
+Entries under `components/<stage>/<identity>/entry-*/` and
+`snapshots/<identity>/entry-*/` are immutable published generations with
+`receipt.json` inventories. Reuse verifies output contents and executable bits;
+missing, empty, linked, or damaged output/receipts cause a miss. Repair publishes a
+new generation rather than overwriting a path captured by an existing application
+or bundle. Snapshot identity includes component identities and the assembled files,
+including installation descriptors and copied declaration schemas. Unchanged
+assembly reuses the same host and installation paths.
+
+Startup arguments are separate content-identified JSON under
+`startup/<identity>/entry-*/`. Changing OpenAI's public credential-file reference or
+options can select a new startup JSON path without recompiling components or
+changing an otherwise identical snapshot; credential contents are not fingerprinted
+or copied. Unchanged snapshot and startup inputs keep the generic deployment defines
+stable. Git's prepared helper path is supplied through that same startup JSON.
+
+There is no desktop `current.json` pointer, automatic garbage collection, installer,
+or runtime caching. Published entries and failed staging are retained. The narrow
+reference `DevelopmentPluginBuilder` still has its separate development pointer;
+it does not define this checkout cache. Artifacts and defines remain checkout-local
+absolute paths and depend on the referenced SDK's lifetime. Moving the checkout,
+deleting retained outputs, or removing/changing that SDK can invalidate existing
+bundles. This is not portable release packaging or a general third-party artifact
+cache; that broader format, provenance, compatibility and distribution policy remain
+deferred. Profiles and configured capability instances do not inherently own
+compiled artifacts when source and build context are identical.
+
+### Diagnostics
+
+Stage diagnostics report elapsed time and status, including component `cached`,
+`rebuilt`, or `failed` results, CodeForge source preparation, SDK inspection,
+generation, dependency discovery, installation assembly, desktop preparation, the
+Flutter command, and launcher total. `flutter-run` and its enclosing launcher total
+include the application's lifetime until the Flutter process exits; they are not
+startup-to-first-frame measurements. Use preparation/component stages to distinguish
+cache work from the subsequent app build/run. The native editor's own source and
+native-test preparation workflow above remains separate from this cache.
 
 ## No SDK vendoring
 
