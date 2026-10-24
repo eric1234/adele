@@ -197,6 +197,55 @@ part 'public.g.dart';
   );
 
   test(
+    'real AOT worker matches the in-process collector through the coordinator',
+    () async {
+      final output = File.fromUri(root.uri.resolve('discovery worker.aot'));
+      final compilation = await Process.run(Platform.resolvedExecutable, [
+        'compile',
+        'aot-snapshot',
+        '--packages=$packageConfig',
+        worker.path,
+        '-o',
+        output.path,
+      ]);
+      expect(
+        compilation.exitCode,
+        0,
+        reason: '${compilation.stdout}\n${compilation.stderr}',
+      );
+      final runtime = File.fromUri(
+        File(Platform.resolvedExecutable).parent.uri.resolve(
+          Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
+        ),
+      );
+      expect(
+        await discoverDesktopBuildInputs(
+          repositoryRoot: root,
+          dartExecutable: runtime.path,
+          snapshot: output,
+        ),
+        await discover(),
+      );
+      File(absolute('packages/shared/lib/public.g.dart')).deleteSync();
+      await expectLater(
+        discoverDesktopBuildInputs(
+          repositoryRoot: root,
+          dartExecutable: runtime.path,
+          snapshot: output,
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('Missing build input file:'),
+          ),
+        ),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
     'maintained stock graph resolves after bootstrap and generation',
     () {
       final inputs = discovery.collectDesktopBuildInputs(Directory.current);

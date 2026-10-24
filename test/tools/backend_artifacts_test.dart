@@ -16,6 +16,23 @@ import 'code_editor_dependency_test.dart'
 
 const String _codegenEntrypoint =
     'packages/contract_codegen/bin/contract_codegen.dart';
+const String _workerEntrypoint = 'tools/desktop_build_inputs_worker.dart';
+const _toolStages = {
+  'contract-codegen-compilation': _codegenEntrypoint,
+  'desktop-inputs-compilation': _workerEntrypoint,
+};
+final _toolCompilationEvents = [
+  for (final entrypoint in [_codegenEntrypoint, _workerEntrypoint]) ...[
+    'compile|$entrypoint',
+    'compiled|$entrypoint',
+  ],
+];
+const _generatorSource = 'packages/contract_codegen/lib/generator.dart';
+const _analyzerSource =
+    r'external packages/analyzer/custom lib/escaped\ file.dart';
+const _yamlSource = 'external packages/yaml/lib/yaml.dart';
+const _transitiveSource = 'external packages/collection/lib/collection.dart';
+const _unusedDevSource = 'external packages/unused_test/lib/test.dart';
 const String _hostEntrypoint =
     'packages/plugin_backend_host/bin/adele_backend_host.dart';
 const String _gitEntrypoint =
@@ -109,13 +126,14 @@ void main() {
 
   setUp(() async {
     root = Directory.systemTemp.createTempSync('adele launcher ');
-    // Copy only the SDK-only launcher graph, with no pubspec/package config.
+    // Copy the SDK-only launcher graph; the worker is never source-executed.
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
       'tools/desktop_artifact_cache.dart',
       'tools/desktop_build_inputs.dart',
       'tools/desktop_build_inputs_worker.dart',
+      'tools/desktop_tool_artifacts.dart',
       'tools/build_timing.dart',
       'tools/code_editor_dependency.dart',
       'tools/code_editor_smoke.dart',
@@ -169,6 +187,102 @@ void main() {
       source.parent.createSync(recursive: true);
       source.writeAsStringSync('void main() {}');
     }
+    final packages = {
+      'adele_workspace': (
+        path: '.',
+        packageUri: 'lib/',
+        dependencies: <String>[],
+        devDependencies: ['analyzer', 'yaml'],
+      ),
+      'contract_codegen': (
+        path: 'packages/contract_codegen',
+        packageUri: 'lib/',
+        dependencies: ['analyzer'],
+        devDependencies: ['unused_test'],
+      ),
+      'analyzer': (
+        path: 'external packages/analyzer',
+        packageUri: 'custom lib/',
+        dependencies: ['collection'],
+        devDependencies: ['unused_test'],
+      ),
+      'yaml': (
+        path: 'external packages/yaml',
+        packageUri: 'lib/',
+        dependencies: <String>[],
+        devDependencies: <String>[],
+      ),
+      'collection': (
+        path: 'external packages/collection',
+        packageUri: 'lib/',
+        dependencies: <String>[],
+        devDependencies: <String>[],
+      ),
+      'unused_test': (
+        path: 'external packages/unused_test',
+        packageUri: 'lib/',
+        dependencies: <String>[],
+        devDependencies: <String>[],
+      ),
+    };
+    for (final package in packages.entries) {
+      final manifest = File('${root.path}/${package.value.path}/pubspec.yaml');
+      manifest.parent.createSync(recursive: true);
+      manifest.writeAsStringSync('''
+name: ${package.key}
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+${package.value.dependencies.map((name) => '  $name: any').join('\n')}
+dev_dependencies:
+${package.value.devDependencies.map((name) => '  $name: any').join('\n')}
+''');
+    }
+    for (final path in [
+      _generatorSource,
+      _analyzerSource,
+      _yamlSource,
+      _transitiveSource,
+      _unusedDevSource,
+    ]) {
+      final source = File('${root.path}/$path');
+      source.parent.createSync(recursive: true);
+      source.writeAsStringSync('// fixture tool input\n');
+    }
+    File('${root.path}/pubspec.lock').writeAsStringSync('packages: {}\n');
+    final packageConfig = File('${root.path}/.dart_tool/package_config.json');
+    packageConfig.parent.createSync(recursive: true);
+    packageConfig.writeAsStringSync(
+      jsonEncode({
+        'configVersion': 2,
+        'packages': [
+          for (final package in packages.entries)
+            {
+              'name': package.key,
+              'rootUri': Directory(
+                '${root.path}/${package.value.path}',
+              ).uri.toString(),
+              'packageUri': Uri(path: package.value.packageUri).toString(),
+              'languageVersion': '3.10',
+            },
+        ],
+      }),
+    );
+    File('${root.path}/.dart_tool/package_graph.json').writeAsStringSync(
+      jsonEncode({
+        'configVersion': 1,
+        'roots': ['adele_workspace', 'contract_codegen'],
+        'packages': [
+          for (final package in packages.entries)
+            {
+              'name': package.key,
+              'version': '1.0.0',
+              'dependencies': package.value.dependencies,
+              'devDependencies': package.value.devDependencies,
+            },
+        ],
+      }),
+    );
     for (final path in <String>{
       ...tooling.analysisTargets.map((target) => target.path),
       ...tooling.testTargets.map((target) => target.path),
@@ -200,7 +314,8 @@ void main() {
     final logs = Directory('${root.path}/logs')..createSync();
     commands = File('${logs.path}/commands.txt');
     generationArguments = File('${logs.path}/generation-arguments.txt');
-    generatedContract = File('${root.path}/contract.g.dart');
+    generatedContract = File('${root.path}/contracts/contract.g.dart');
+    generatedContract.parent.createSync();
     contractSource = File('${root.path}/contract.dart')
       ..writeAsStringSync('generated contracts\n');
     final sourcePaths = <String>{
@@ -271,7 +386,7 @@ void main() {
       ])
         'ADELE_OPENAI_CHATGPT_$suffix': '',
     };
-    String generatorScript(String sdk) =>
+    String generatorScript(String sdk, {bool aot = false}) =>
         '''
 if [ "\$1" = run ]; then
   test "\$PWD" = '${root.path}' || exit 98
@@ -282,7 +397,7 @@ if [ "\$1" = run ]; then
     test "\$#" = 2 || exit 96
   fi
   printf 'generate|$sdk%s\n' "\${3:+|\$3}" >> '${commands.path}'
-  printf '%s\n' "\$@" > '${generationArguments.path}'
+  ${aot ? 'printf \'%s\\n\' "\$snapshot"' : 'printf \'%s\\n\' "\$@"'} > '${generationArguments.path}'
   printf 'contract generator output\n'
   if [ "\$ADELE_TEST_FAIL_GENERATION" = 1 ]; then
     printf 'contract generator failed\n' >&2
@@ -417,7 +532,34 @@ if [ "\$ADELE_TEST_FAIL_CODEFORGE_NATIVE" = 1 ]; then exit 35; fi
 mkdir -p "\${10}/\${12}/release"
 printf 'native fixture' > "\${10}/\${12}/release/libcode_forge.so"
 ''');
-    _script(File('${sdkBin.path}/dartaotruntime'), 'exit 99');
+    _script(File('${bin.path}/dartaotruntime'), 'exit 99');
+    _script(File('${sdkBin.path}/dartaotruntime'), '''
+test "\$PWD" = '${root.path}' || exit 98
+test -f "\$1" || exit 96
+snapshot="\$1"
+kind=\$(cat "\$snapshot")
+shift
+if [ "\$kind" = 'snapshot $_workerEntrypoint' ]; then
+  test "\$#" = 1 && test "\$1" = '${root.path}' || exit 97
+  test -f '${generatedContract.path}' || exit 95
+  printf 'discover|aot\n' >> '${logs.path}/discovery.txt'
+  printf '%s\n' "\$snapshot" "\$@" >> '${logs.path}/discovery-arguments.txt'
+  if [ "\$ADELE_TEST_FAIL_DISCOVERY" = 1 ]; then
+    printf 'discovery worker failed\n' >&2
+    exit 41
+  fi
+  if [ -n "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY" ] && [ "\$(wc -l < '${logs.path}/discovery.txt')" -eq 2 ]; then
+    printf '\n// changed during discovery\n' >> "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY"
+  fi
+  cat '${buildInputs.path}'
+  exit 0
+fi
+test "\$kind" = 'snapshot $_codegenEntrypoint' || exit 94
+test "\$#" = 0 || exit 97
+set -- run '$_codegenEntrypoint'
+${generatorScript('aot', aot: true)}
+exit 99
+''');
     _script(File('${bin.path}/cc'), '''
 test "\$PWD" = '${root.path}' || exit 98
 if [ "\$1" = --version ]; then
@@ -456,22 +598,27 @@ if [ "\$ADELE_TEST_PTY_ARTIFACT" != missing ]; then
   fi
 fi
 ''');
+    const escapeDepfile = r'''
+depfile_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/ /\\ /g'; }
+''';
     _script(File('${sdkBin.path}/dart'), '''
-if [ "\$1" = '${root.path}/tools/desktop_build_inputs_worker.dart' ]; then
-  test "\$#" = 2 && test "\$2" = '${root.path}' || exit 97
-  test "\$PWD" = '${root.path}' && test -f '${generatedContract.path}' || exit 95
-  printf 'discover\n' >> '${logs.path}/discovery.txt'
-  if [ "\$ADELE_TEST_FAIL_DISCOVERY" = 1 ]; then exit 41; fi
-  cat '${buildInputs.path}'
-  exit 0
-fi
-${generatorScript('sdk')}
+$escapeDepfile
 test "\$PWD" = '${root.path}' || exit 98
-test -f '${generatedContract.path}' || exit 95
 test "\$1" = compile && test "\$2" = aot-snapshot && test "\$4" = -o || exit 97
 test -f "\$3" || exit 96
-printf 'compile|%s\n' "\$3" >> '${commands.path}'
-if [ "\$ADELE_TEST_PAUSE_ENTRYPOINT" = "\$3" ]; then
+entrypoint="\${3#${root.path}/}"
+tool=0
+case "\$entrypoint" in
+  '$_codegenEntrypoint'|'$_workerEntrypoint')
+    tool=1
+    test "\$#" = 9 && test "\$6" = --depfile || exit 97
+    test "\$8" = --packages && test "\$9" = '${packageConfig.path}' || exit 97
+    test "\$(dirname "\$5")" != "\$(dirname "\$7")" || exit 94
+    ;;
+  *) test "\$#" = 5 && test -f '${generatedContract.path}' || exit 95 ;;
+esac
+printf 'compile|%s\n' "\$entrypoint" >> '${commands.path}'
+if [ "\$ADELE_TEST_PAUSE_ENTRYPOINT" = "\$entrypoint" ]; then
   touch '${logs.path}/compiler-ready'
   attempts=0
   while [ ! -f '${logs.path}/compiler-release' ]; do
@@ -480,21 +627,38 @@ if [ "\$ADELE_TEST_PAUSE_ENTRYPOINT" = "\$3" ]; then
     sleep 0.02
   done
 fi
-if [ -n "\$ADELE_TEST_MUTATE_SOURCE" ]; then
+if [ "\$tool" = 0 ] && [ -n "\$ADELE_TEST_MUTATE_SOURCE" ]; then
   printf '\n// changed during compilation\n' >> "\$ADELE_TEST_MUTATE_SOURCE"
 fi
-if [ "\$ADELE_TEST_FAIL_ENTRYPOINT" = "\$3" ]; then
+if [ "\$ADELE_TEST_FAIL_ENTRYPOINT" = "\$entrypoint" ]; then
   printf 'snapshot compiler failed' >&2
   exit 17
 fi
-if [ "\$ADELE_TEST_OMIT_ARTIFACT" != "\$3" ]; then
-  if [ "\$ADELE_TEST_EMPTY_ARTIFACT" = "\$3" ]; then
+if [ "\$ADELE_TEST_OMIT_ARTIFACT" != "\$entrypoint" ]; then
+  if [ "\$ADELE_TEST_EMPTY_ARTIFACT" = "\$entrypoint" ]; then
     : > "\$5"
   else
-    printf 'snapshot %s\n' "\$3" > "\$5"
+    printf 'snapshot %s\n' "\$entrypoint" > "\$5"
   fi
 fi
-printf 'compiled|%s\n' "\$3" >> '${commands.path}'
+if [ "\$tool" = 1 ] && [ "\$ADELE_TEST_TOOL_DEPFILE" != missing ]; then
+  if [ "\$ADELE_TEST_TOOL_DEPFILE" = empty ]; then
+    : > "\$7"
+  else
+    depfile_escape "\$5" > "\$7"
+    printf ': ' >> "\$7"
+    if [ "\$entrypoint" = '$_codegenEntrypoint' ]; then
+      printf '%s' '${_depfileEscape('${root.path}/$_codegenEntrypoint')}' >> "\$7"
+    else
+      printf '%s' '${_depfileEscape('${root.path}/$_workerEntrypoint')}' >> "\$7"
+    fi
+    printf ' %s %s\n' '${_depfileEscape(packageConfig.path)}' '${_depfileEscape('${root.path}/$_analyzerSource')}' >> "\$7"
+    if [ "\$ADELE_TEST_TOOL_DEPFILE" = undeclared ]; then
+      printf ' %s\n' '${_depfileEscape('${root.path}/$_unusedDevSource')}' >> "\$7"
+    fi
+  fi
+fi
+printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
 ''');
   });
   tearDown(() => root.deleteSync(recursive: true));
@@ -506,7 +670,20 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     environment: environment,
   );
 
-  void expectGenerationArguments([List<String> options = const []]) {
+  void expectGenerationArguments([
+    List<String> options = const [],
+    bool aot = false,
+  ]) {
+    if (aot) {
+      final arguments = generationArguments.readAsLinesSync();
+      expect(arguments, hasLength(1));
+      expect(
+        arguments.single,
+        startsWith('${root.path}/.dart_tool/adele/desktop-plugins/'),
+      );
+      expect(arguments.single, endsWith('/tool.aot'));
+      return;
+    }
     expect(generationArguments.readAsLinesSync(), [
       'run',
       _codegenEntrypoint,
@@ -563,7 +740,21 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       .readAsLinesSync()
       .where((line) => line.startsWith('compile|'))
       .map((line) => line.substring('compile|'.length))
+      .where((entrypoint) => !_toolStages.containsValue(entrypoint))
       .toList();
+
+  List<String> toolCompilations() => commands
+      .readAsLinesSync()
+      .where((line) => line.startsWith('compile|'))
+      .map((line) => line.substring('compile|'.length))
+      .where(_toolStages.containsValue)
+      .toList();
+
+  void removeBootstrapMetadata() {
+    Directory('${root.path}/.dart_tool').deleteSync(recursive: true);
+    File('${root.path}/pubspec.yaml').deleteSync();
+    File('${root.path}/pubspec.lock').deleteSync();
+  }
 
   void changeSource(String path) => File(
     '${root.path}/$path',
@@ -608,8 +799,233 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   );
 
   test(
+    'cold and warm desktop runs execute AOT generation once and discovery twice',
+    () async {
+      Map<String, String>? before;
+      for (final cold in [true, false]) {
+        final after = await prepare();
+        expect(toolCompilations(), cold ? _toolStages.values : isEmpty);
+        expect(compilations(), hasLength(cold ? 20 : 0));
+        expect(
+          commands.readAsLinesSync().where(
+            (line) => line.startsWith('generate|'),
+          ),
+          ['generate|aot'],
+        );
+        expectGenerationArguments([], true);
+        expect(
+          File('${root.path}/logs/discovery.txt').readAsLinesSync(),
+          List.filled(cold ? 2 : 4, 'discover|aot'),
+        );
+        final discoveryArguments = File(
+          '${root.path}/logs/discovery-arguments.txt',
+        ).readAsLinesSync();
+        for (var index = 0; index < discoveryArguments.length; index += 2) {
+          expect(
+            discoveryArguments[index],
+            startsWith('${root.path}/.dart_tool/adele/desktop-plugins/'),
+          );
+          expect(discoveryArguments[index], endsWith('/tool.aot'));
+          expect(discoveryArguments[index + 1], root.path);
+        }
+        for (final stage in _toolStages.keys) {
+          final artifact = componentArtifact(stage);
+          expect(artifact.uri.pathSegments.last, 'tool.aot');
+          expect(
+            artifact.parent.listSync().map(
+              (file) => file.uri.pathSegments.last,
+            ),
+            unorderedEquals(['tool.aot', 'receipt.json']),
+          );
+        }
+        if (before != null) expect(after, before);
+        before = after;
+      }
+    },
+  );
+
+  for (final mutation in [
+    (path: _generatorSource, expected: _codegenEntrypoint),
+    (path: 'tools/test_runner.dart', expected: _workerEntrypoint),
+  ]) {
+    test(
+      'tool-only ${mutation.path} change preserves plugin installations',
+      () async {
+        final before = await prepare();
+        final retained = retainedFiles();
+        changeSource(mutation.path);
+        expect(await prepare(), before);
+        expect(toolCompilations(), [mutation.expected]);
+        expect(compilations(), isEmpty);
+        expectRetained(retained);
+        expect(await prepare(), before);
+        expect(toolCompilations(), isEmpty);
+        expect(compilations(), isEmpty);
+      },
+    );
+  }
+
+  for (final tool in _toolStages.entries) {
+    for (final damage in [
+      'missing-artifact',
+      'corrupt-artifact',
+      'missing-receipt',
+      'corrupt-receipt',
+    ]) {
+      test(
+        '$damage ${tool.key} is repaired without replacing installations',
+        () async {
+          final before = await prepare();
+          final old = componentArtifact(tool.key);
+          final damaged = damage.endsWith('receipt')
+              ? File('${old.parent.path}/receipt.json')
+              : old;
+          if (damage.startsWith('missing')) {
+            damaged.deleteSync();
+          } else {
+            damaged.writeAsStringSync('corrupt cached tool');
+          }
+          final retained = retainedFiles();
+          expect(await prepare(), before);
+          expect(toolCompilations(), [tool.value]);
+          expect(compilations(), isEmpty);
+          expectRetained(retained);
+          final replacements = publishedFiles().where(
+            (file) =>
+                file.path.contains('/components/${tool.key}/') &&
+                file.uri.pathSegments.last == 'tool.aot' &&
+                file.path != old.path,
+          );
+          expect(replacements, hasLength(1));
+          expect(
+            replacements.single.readAsStringSync(),
+            'snapshot ${tool.value}\n',
+          );
+          expect(await prepare(), before);
+          expect(toolCompilations(), isEmpty);
+          expect(compilations(), isEmpty);
+        },
+      );
+    }
+
+    for (final failure in ['exit', 'missing', 'empty']) {
+      test(
+        '${tool.key} $failure compile failure prevents generation and publication',
+        () async {
+          environment[switch (failure) {
+                'exit' => 'ADELE_TEST_FAIL_ENTRYPOINT',
+                'missing' => 'ADELE_TEST_OMIT_ARTIFACT',
+                _ => 'ADELE_TEST_EMPTY_ARTIFACT',
+              }] =
+              tool.value;
+          final result = await invoke(['run', 'linux']);
+          expect(result.exitCode, failure == 'exit' ? 17 : 1);
+          expect(result.stderr, contains(tool.key));
+          expect(
+            result.stderr,
+            contains(
+              failure == 'exit' ? 'snapshot compiler failed' : 'produced no',
+            ),
+          );
+          expect(compilations(), isEmpty);
+          expect(generationArguments.existsSync(), isFalse);
+          expect(launchArguments.existsSync(), isFalse);
+          expect(publishedFiles(), isEmpty);
+        },
+      );
+    }
+
+    for (final invalidation in ['source', 'receipt']) {
+      test(
+        '${tool.key} failed $invalidation rebuild never falls back to retained AOT',
+        () async {
+          final before = await prepare();
+          if (invalidation == 'source') {
+            changeSource(
+              tool.value == _codegenEntrypoint
+                  ? _generatorSource
+                  : 'tools/test_runner.dart',
+            );
+          } else {
+            File(
+              '${componentArtifact(tool.key).parent.path}/receipt.json',
+            ).writeAsStringSync('{invalid');
+          }
+          final retained = retainedFiles();
+          environment['ADELE_TEST_FAIL_ENTRYPOINT'] = tool.value;
+          commands.deleteSync();
+          launchArguments.deleteSync();
+          final failed = await invoke(['run', 'linux']);
+          expect(failed.exitCode, 17);
+          expect(toolCompilations(), [tool.value]);
+          expect(compilations(), isEmpty);
+          expect(
+            commands.readAsLinesSync().where(
+              (line) => line.startsWith('generate|'),
+            ),
+            isEmpty,
+          );
+          expect(launchArguments.existsSync(), isFalse);
+          expectRetained(retained);
+          expect(
+            publishedFiles().map((file) => file.path),
+            unorderedEquals(retained.keys),
+          );
+          environment.remove('ADELE_TEST_FAIL_ENTRYPOINT');
+          expect(await prepare(), before);
+          expect(toolCompilations(), [tool.value]);
+          expect(compilations(), isEmpty);
+        },
+      );
+    }
+  }
+
+  for (final failure in ['missing', 'empty', 'undeclared']) {
+    test('$failure tool compiler depfile blocks publication', () async {
+      environment['ADELE_TEST_TOOL_DEPFILE'] = failure;
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, isNot(0));
+      expect(
+        result.stderr,
+        contains(
+          failure == 'undeclared'
+              ? 'Uncovered build tool compiler input'
+              : failure == 'empty'
+              ? 'Invalid build tool compiler depfile'
+              : 'tool.d',
+        ),
+      );
+      expect(toolCompilations(), [_codegenEntrypoint]);
+      expect(compilations(), isEmpty);
+      expect(generationArguments.existsSync(), isFalse);
+      expect(launchArguments.existsSync(), isFalse);
+      expect(publishedFiles(), isEmpty);
+    });
+  }
+
+  for (final phase in ['plugin compilation', 'final discovery']) {
+    test('tool source mutation during $phase blocks all publication', () async {
+      environment[phase == 'plugin compilation'
+              ? 'ADELE_TEST_MUTATE_SOURCE'
+              : 'ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY'] =
+          '${root.path}/$_generatorSource';
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 1);
+      expect(
+        result.stderr,
+        contains(
+          'Build tool inputs or artifacts changed during desktop preparation',
+        ),
+      );
+      expect(launchArguments.existsSync(), isFalse);
+      expect(publishedFiles(), isEmpty);
+    });
+  }
+
+  test(
     'test-plan runs pre-bootstrap without generating, inspecting or compiling',
     () async {
+      removeBootstrapMetadata();
       final ProcessResult result = await invoke(<String>[
         'test-plan',
         '--json',
@@ -653,6 +1069,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   });
 
   test('unknown commands remain SDK-only', () async {
+    removeBootstrapMetadata();
     // Unknown commands must not prepare dependencies or invoke external tools.
     environment['PATH'] = '${root.path}/no-external-tools';
     final unknown = await invoke(['not-a-command']);
@@ -911,11 +1328,16 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(commands.readAsLinesSync(), [
           if (arguments.first == 'bootstrap') ...['pub-get', 'workspace-list'],
           if (arguments.contains('linux')) 'inspect-sdk',
+          if (arguments.contains('linux') && arguments.first != 'smoke')
+            ..._toolCompilationEvents,
           arguments.contains('linux') && arguments.first != 'smoke'
-              ? 'generate|sdk'
+              ? 'generate|aot'
               : 'generate|path',
         ]);
-        expectGenerationArguments();
+        expectGenerationArguments(
+          [],
+          arguments.contains('linux') && arguments.first != 'smoke',
+        );
         expect(result.stdout, isNot(contains('START test:')));
         expect(generatedContract.readAsStringSync(), 'retained contract');
         expect(launchArguments.existsSync(), isFalse);
@@ -1225,7 +1647,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 0, reason: result.stderr.toString());
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
-          'generate|sdk',
+          if (cold) ..._toolCompilationEvents,
+          'generate|aot',
           if (cold) ...[
             'compile|$_hostEntrypoint',
             'compiled|$_hostEntrypoint',
@@ -1270,7 +1693,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'flutter-launch',
         ]);
         if (cold) expect(result.stdout, contains('frontend compiler output'));
-        expectGenerationArguments();
+        expectGenerationArguments([], true);
         expect(frontendArguments.readAsLinesSync(), <String>[
           'test',
           '--no-pub',
@@ -2215,7 +2638,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         }
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
-          'generate|sdk',
+          ..._toolCompilationEvents,
+          'generate|aot',
           for (final entrypoint in _backendEntrypoints.take(
             _backendEntrypoints.indexOf(failedEntrypoint) + 1,
           )) ...[
@@ -2260,7 +2684,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             }
             expect(commands.readAsLinesSync(), <String>[
               'inspect-sdk',
-              'generate|sdk',
+              ..._toolCompilationEvents,
+              'generate|aot',
               'compile|$_hostEntrypoint',
               'compiled|$_hostEntrypoint',
               'compile|$_gitEntrypoint',
@@ -2354,10 +2779,20 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       () async {
         final before = await prepare();
         expect(compilations(), hasLength(20));
+        expect(toolCompilations(), _toolStages.values);
         final retained = retainedFiles();
         changeSource(mutation.path);
         final after = await prepare(['build', 'linux', '--release']);
         expect(compilations(), unorderedEquals(mutation.expected));
+        expect(
+          toolCompilations(),
+          mutation.path.startsWith('tools/')
+              ? [_workerEntrypoint]
+              : mutation.path ==
+                    'packages/plugin_builder/lib/src/development_plugin_builder.dart'
+              ? _toolStages.values
+              : isEmpty,
+        );
         expect(
           after['ADELE_PLUGIN_INSTALLATION_ROOT'],
           isNot(before['ADELE_PLUGIN_INSTALLATION_ROOT']),
@@ -2365,6 +2800,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expectRetained(retained);
         final warm = await prepare();
         expect(compilations(), isEmpty);
+        expect(toolCompilations(), isEmpty);
         expect(warm, after);
         expectRetained(retained);
       },
@@ -2380,6 +2816,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       _sharedSource,
       _frontendBridge,
       _nativeSource,
+      _generatorSource,
+      _analyzerSource,
+      _workerEntrypoint,
     ]) {
       File('${root.path}/$path').setLastModifiedSync(DateTime.utc(2000));
     }
@@ -2393,6 +2832,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     ).writeAsStringSync('// not in discovery');
     expect(await prepare(['build', 'linux', '--profile']), before);
     expect(compilations(), isEmpty);
+    expect(toolCompilations(), isEmpty);
     expectRetained(retained);
   });
 
@@ -2415,6 +2855,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       buildInputs.writeAsStringSync(jsonEncode(inputs));
       final withAddition = await prepare();
       expect(compilations(), [_sourceEditorFrontendHarness]);
+      expect(toolCompilations(), isEmpty);
       expect(withAddition, isNot(before));
       final removed = inputs[stage]!.firstWhere(
         (path) => path.endsWith('/fixture.dart'),
@@ -2424,6 +2865,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       buildInputs.writeAsStringSync(jsonEncode(inputs));
       final withRemoval = await prepare();
       expect(compilations(), [_sourceEditorFrontendHarness]);
+      expect(toolCompilations(), isEmpty);
       expect(withRemoval, isNot(withAddition));
       expectRetained(retained);
     },
@@ -2479,6 +2921,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 : [..._backendEntrypoints, ..._frontendCompilations.values],
           ),
         );
+        expect(
+          toolCompilations(),
+          toolchain == 'cc' ? isEmpty : _toolStages.values,
+        );
         expectRetained(retained);
       },
     );
@@ -2526,42 +2972,49 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   for (final metadata in ['settings', 'records', 'descriptors']) {
-    test('$metadata changes republish metadata without compilation', () async {
-      final before = await prepare();
-      final retained = retainedFiles();
-      final file = File(
-        '${root.path}/${switch (metadata) {
-          'settings' => 'plugins/source_editor/settings.schema.json',
-          'records' => 'plugins/openai/records.schema.json',
-          _ => 'tools/stock_frontend_descriptors.dart',
-        }}',
-      );
-      file.writeAsStringSync(
-        file.readAsStringSync().replaceFirst(switch (metadata) {
-          'settings' => 'Enable Code Folding',
-          'records' => 'OpenAI API',
-          _ => 'Open Source...',
-        }, 'Revised metadata label'),
-      );
-      final after = await prepare();
-      expect(compilations(), isEmpty);
-      expect(
-        after['ADELE_PLUGIN_INSTALLATION_ROOT'],
-        isNot(before['ADELE_PLUGIN_INSTALLATION_ROOT']),
-      );
-      final catalog = await PreparedPluginCatalog.discover(
-        after['ADELE_PLUGIN_INSTALLATION_ROOT']!,
-      );
-      expect(catalog.issues, isEmpty);
-      final content = Directory(after['ADELE_PLUGIN_INSTALLATION_ROOT']!)
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((file) => file.path.endsWith('.json'))
-          .map((file) => file.readAsStringSync())
-          .join();
-      expect(content, contains('Revised metadata label'));
-      expectRetained(retained);
-    });
+    test(
+      '$metadata changes republish metadata without plugin compilation',
+      () async {
+        final before = await prepare();
+        final retained = retainedFiles();
+        final file = File(
+          '${root.path}/${switch (metadata) {
+            'settings' => 'plugins/source_editor/settings.schema.json',
+            'records' => 'plugins/openai/records.schema.json',
+            _ => 'tools/stock_frontend_descriptors.dart',
+          }}',
+        );
+        file.writeAsStringSync(
+          file.readAsStringSync().replaceFirst(switch (metadata) {
+            'settings' => 'Enable Code Folding',
+            'records' => 'OpenAI API',
+            _ => 'Open Source...',
+          }, 'Revised metadata label'),
+        );
+        final after = await prepare();
+        expect(compilations(), isEmpty);
+        expect(
+          toolCompilations(),
+          metadata == 'descriptors' ? [_workerEntrypoint] : isEmpty,
+        );
+        expect(
+          after['ADELE_PLUGIN_INSTALLATION_ROOT'],
+          isNot(before['ADELE_PLUGIN_INSTALLATION_ROOT']),
+        );
+        final catalog = await PreparedPluginCatalog.discover(
+          after['ADELE_PLUGIN_INSTALLATION_ROOT']!,
+        );
+        expect(catalog.issues, isEmpty);
+        final content = Directory(after['ADELE_PLUGIN_INSTALLATION_ROOT']!)
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((file) => file.path.endsWith('.json'))
+            .map((file) => file.readAsStringSync())
+            .join();
+        expect(content, contains('Revised metadata label'));
+        expectRetained(retained);
+      },
+    );
   }
 
   for (final damage in ['missing', 'empty', 'corrupt']) {
@@ -2738,7 +3191,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(22));
+      expect(receipts, hasLength(24));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
@@ -2837,14 +3290,29 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       if (launchArguments.existsSync()) launchArguments.deleteSync();
       commands.deleteSync();
       final result = await invoke(['run', 'linux']);
-      expect(result.exitCode, isNot(0));
+      expect(result.exitCode, failure == 'GENERATION' ? 29 : 1);
+      expect(
+        result.stderr,
+        contains(
+          failure == 'GENERATION'
+              ? 'contract generator failed'
+              : 'discovery worker failed',
+        ),
+      );
       expect(compilations(), isEmpty);
+      expect(toolCompilations(), isEmpty);
+      expect(commands.readAsLinesSync(), ['inspect-sdk', 'generate|aot']);
       expect(launchArguments.existsSync(), isFalse);
       expectRetained(retained);
+      expect(
+        publishedFiles().map((file) => file.path),
+        unorderedEquals(retained.keys),
+      );
       environment.remove('ADELE_TEST_FAIL_$failure');
     }
     await prepare();
     expect(compilations(), isEmpty);
+    expect(toolCompilations(), isEmpty);
   });
 
   test(
@@ -2874,7 +3342,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(result.exitCode, 1);
       expect(
         result.stderr,
-        contains('Build inputs changed during desktop preparation'),
+        contains(
+          'Build tool inputs or artifacts changed during desktop preparation',
+        ),
       );
       expect(launchArguments.existsSync(), isFalse);
       expect(publishedFiles(), isEmpty);
@@ -2884,7 +3354,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   test(
     'overlapping preparations serialize or reject without partial publication',
     () async {
-      environment['ADELE_TEST_PAUSE_ENTRYPOINT'] = _hostEntrypoint;
+      environment['ADELE_TEST_PAUSE_ENTRYPOINT'] = _codegenEntrypoint;
       final first = invoke(['run', 'linux']);
       final ready = File('${root.path}/logs/compiler-ready');
       final release = File('${root.path}/logs/compiler-release');
@@ -2900,6 +3370,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         );
         expect(launchArguments.existsSync(), isFalse);
         expect(publishedFiles(), isEmpty);
+        expect(toolCompilations(), [_codegenEntrypoint]);
+        expect(compilations(), isEmpty);
         environment.remove('ADELE_TEST_PAUSE_ENTRYPOINT');
         final second = invoke(['build', 'linux']);
         await Future.any<void>([
@@ -2908,6 +3380,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ]);
         expect(launchArguments.existsSync(), isFalse);
         expect(publishedFiles(), isEmpty);
+        expect(toolCompilations(), [_codegenEntrypoint]);
         release.writeAsStringSync('release');
         final results = await Future.wait([first, second]);
         expect(results.first.exitCode, 0, reason: '${results.first.stderr}');
@@ -2923,6 +3396,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           );
         }
         expect(compilations(), hasLength(20));
+        expect(toolCompilations(), _toolStages.values);
         final catalog = await PreparedPluginCatalog.discover(
           launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,
         );
@@ -2931,6 +3405,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final stable = launchDefines();
         expect(await prepare(), stable);
         expect(compilations(), isEmpty);
+        expect(toolCompilations(), isEmpty);
       } finally {
         release.writeAsStringSync('release');
         await first;
@@ -2969,7 +3444,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.stderr, contains('produced no artifact'));
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
-          'generate|sdk',
+          ..._toolCompilationEvents,
+          'generate|aot',
           for (final compiled in _backendEntrypoints.take(
             _backendEntrypoints.indexOf(entrypoint) + 1,
           )) ...['compile|$compiled', 'compiled|$compiled'],
@@ -2985,3 +3461,6 @@ void _script(File file, String body) {
   file.writeAsStringSync('#!/bin/sh\n$body\n');
   Process.runSync('chmod', <String>['+x', file.path]);
 }
+
+String _depfileEscape(String path) =>
+    path.replaceAll(r'\', r'\\').replaceAll(' ', r'\ ');

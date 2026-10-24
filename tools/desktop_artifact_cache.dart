@@ -26,13 +26,19 @@ final class DesktopArtifactCache {
     required String identity,
     required String filename,
     required Future<void> Function(File output) build,
+    void Function(String sha256)? onValidated,
   }) async {
     final timer = Stopwatch()..start();
     var status = 'failed';
     try {
       componentIdentities[name] = identity;
       final bucket = 'components/$name';
-      final cached = await _lookup(bucket, identity, artifact: filename);
+      final cached = await _lookup(
+        bucket,
+        identity,
+        artifact: filename,
+        onValidated: onValidated,
+      );
       if (cached != null &&
           await File.fromUri(cached.uri.resolve(filename)).exists()) {
         status = 'cached';
@@ -44,7 +50,8 @@ final class DesktopArtifactCache {
       if (!await artifact.exists() || await artifact.length() == 0) {
         throw PluginBuildFailure('$name produced no non-empty artifact.');
       }
-      await _seal(output, identity);
+      final files = await _seal(output, identity);
+      onValidated?.call((files[filename] as Map)['sha256'] as String);
       // Do not publish even a component until the caller rechecks the complete
       // input graph. New imports during compilation must not poison this key.
       _pending.add((stage: output, bucket: bucket, identity: identity));
@@ -115,7 +122,7 @@ final class DesktopArtifactCache {
     return _publish(stage, bucket, identity);
   }
 
-  Future<void> _seal(
+  Future<Map<String, Object>> _seal(
     Directory stage,
     String identity, {
     Map<String, Object>? expectedFiles,
@@ -134,6 +141,7 @@ final class DesktopArtifactCache {
       jsonEncode({'version': 1, 'identity': identity, 'files': files}),
       flush: true,
     );
+    return files;
   }
 
   Future<Directory?> _lookup(
@@ -141,6 +149,7 @@ final class DesktopArtifactCache {
     String identity, {
     Map<String, Object>? expectedFiles,
     String? artifact,
+    void Function(String sha256)? onValidated,
   }) async {
     final parent = Directory.fromUri(root.uri.resolve('$bucket/$identity/'));
     if (!await parent.exists()) return null;
@@ -167,6 +176,7 @@ final class DesktopArtifactCache {
         }
         if (jsonEncode(await _inventory(entry)) ==
             jsonEncode(receipt['files'])) {
+          onValidated?.call((files[artifact] as Map)['sha256'] as String);
           return entry;
         }
       } on FileSystemException {

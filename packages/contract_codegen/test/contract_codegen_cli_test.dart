@@ -27,6 +27,60 @@ void main() {
     expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
   });
 
+  test(
+    'matched AOT runtime preserves CLI output and diagnostics',
+    () async {
+      final snapshot = p.join(p.dirname(_cliSnapshot), 'contract_codegen.aot');
+      final compilation = await Process.run(Platform.resolvedExecutable, [
+        'compile',
+        'aot-snapshot',
+        p.join(
+          repositoryRoot().path,
+          'packages/contract_codegen/bin/contract_codegen.dart',
+        ),
+        '-o',
+        snapshot,
+      ], workingDirectory: repositoryRoot().path);
+      expect(
+        compilation.exitCode,
+        0,
+        reason: '${compilation.stdout}\n${compilation.stderr}',
+      );
+      final runtime = p.join(
+        p.dirname(Platform.resolvedExecutable),
+        'dartaotruntime',
+      );
+      final fixture = await _repositoryFixture();
+      final expected = await const ContractGenerator().generate(fixture.source);
+      for (final options in <List<String>>[
+        ['--check'],
+        ['--unknown'],
+        [
+          '--source',
+          p.relative(fixture.source.path, from: fixture.directory.path),
+        ],
+        ['--check'],
+      ]) {
+        // Run AOT first so both check invocations observe the same missing/current
+        // state, and native SDK inference must come from the matched runtime.
+        final aot = await Process.run(runtime, [
+          snapshot,
+          ...options,
+        ], workingDirectory: fixture.directory.path);
+        final source = await Process.run(Platform.resolvedExecutable, [
+          _cliSnapshot,
+          ...options,
+        ], workingDirectory: fixture.directory.path);
+        expect(aot.exitCode, source.exitCode);
+        expect(aot.stdout, source.stdout);
+        expect(aot.stderr, source.stderr);
+      }
+      expect(await File(expected.path).readAsString(), expected.contents);
+    },
+    skip: !Platform.isLinux,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
   for (final (state, contents) in <(String, String?)>[
     ('missing', null),
     ('stale', "part of 'old.dart';\nclass Future<T> {}\n"),

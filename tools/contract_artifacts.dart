@@ -8,11 +8,15 @@ Future<void> runContractCodegen({
   required Directory repositoryRoot,
   String dartExecutable = 'dart',
   List<String> options = const <String>[],
+  File? snapshot,
 }) async {
   const stage = 'contract-generation';
   final arguments = <String>[
-    'run',
-    'packages/contract_codegen/bin/contract_codegen.dart',
+    if (snapshot == null) ...[
+      'run',
+      'packages/contract_codegen/bin/contract_codegen.dart',
+    ] else
+      snapshot.path,
     ...options,
   ];
   stdout.writeln('==> $stage${options.isEmpty ? '' : ' ${options.join(' ')}'}');
