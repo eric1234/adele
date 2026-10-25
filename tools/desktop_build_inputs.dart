@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'build_timing.dart';
+
 /// Discovers component inputs after bootstrap and contract generation.
 ///
 /// Keep this coordinator SDK-only: the launcher must load before bootstrap.
@@ -15,11 +17,14 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
   );
   final ProcessResult result;
   try {
-    result = await Process.run(
-      dartExecutable,
-      [snapshot?.path ?? worker.path, root.path],
-      workingDirectory: root.path,
-      runInShell: Platform.isWindows,
+    result = await timeBuildStage(
+      'dependency-worker',
+      () => Process.run(
+        dartExecutable,
+        [snapshot?.path ?? worker.path, root.path],
+        workingDirectory: root.path,
+        runInShell: Platform.isWindows,
+      ),
     );
   } on ProcessException catch (error) {
     throw StateError('Desktop build input discovery could not start: $error');
@@ -30,6 +35,7 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
       '${result.stderr}',
     );
   }
+  final validationTimer = Stopwatch()..start();
   final Object? decoded;
   try {
     decoded = jsonDecode(result.stdout.toString());
@@ -40,6 +46,9 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
     throw StateError('Desktop build input discovery returned no stage map.');
   }
   final inputs = <String, List<String>>{};
+  // Shared dependencies occur in many stages. Validate each path once in this
+  // response, never reuse observations across the two discovery invocations.
+  final validated = <String>{};
   for (final entry in decoded.entries) {
     final value = entry.value;
     if (entry.key.isEmpty || value is! List || value.isEmpty) {
@@ -50,7 +59,7 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
       if (path is! String ||
           path.isEmpty ||
           !File(path).isAbsolute ||
-          !await File(path).exists()) {
+          (validated.add(path) && !await File(path).exists())) {
         throw StateError(
           'Desktop build input must be an existing absolute file '
           '(${entry.key}): $path',
@@ -60,5 +69,6 @@ Future<Map<String, List<String>>> discoverDesktopBuildInputs({
     }
     inputs[entry.key] = paths.toList()..sort();
   }
+  reportBuildTiming('dependency-result-validation', validationTimer);
   return inputs;
 }

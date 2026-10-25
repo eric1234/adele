@@ -246,9 +246,16 @@ part 'public.g.dart';
   );
 
   test(
-    'maintained stock graph resolves after bootstrap and generation',
-    () {
+    'maintained stock graph matches coordinator after bootstrap and generation',
+    () async {
       final inputs = discovery.collectDesktopBuildInputs(Directory.current);
+      expect(
+        await discoverDesktopBuildInputs(
+          repositoryRoot: Directory.current,
+          dartExecutable: Platform.resolvedExecutable,
+        ),
+        inputs,
+      );
       expect(inputs, hasLength(19));
       for (final entry in inputs.entries) {
         if (entry.key.contains('-frontend-')) {
@@ -420,8 +427,12 @@ part 'missing_part.dart';
   test(
     'own source and asset additions/removals change only owning stage lists',
     () async {
+      final empty = Directory(
+        absolute('plugins/git/packages/backend/lib/empty'),
+      )..createSync();
       final before = await discover();
       final backend = write('plugins/git/packages/backend/bin/extra.dart');
+      final nested = write('${empty.path}/nested/extra.dart');
       final frontend = write('plugins/openai/packages/frontend/lib/extra.dart');
       final asset = write(
         'plugins/openai/packages/frontend/assets/nested/icon.png',
@@ -430,7 +441,7 @@ part 'missing_part.dart';
       final after = await discover();
       for (final stage in before.keys) {
         final additions = switch (stage) {
-          'git-compilation' => [backend.path],
+          'git-compilation' => [backend.path, nested.path],
           'openai-frontend-compilation' => [frontend.path, asset.path],
           _ => <String>[],
         };
@@ -440,11 +451,25 @@ part 'missing_part.dart';
         );
       }
       backend.deleteSync();
+      empty.deleteSync(recursive: true);
       frontend.deleteSync();
       asset.deleteSync();
       expect(await discover(), before);
     },
   );
+
+  test('rediscovery follows new imports and optional configuration', () async {
+    final before = await discover();
+    final imported = write('external package/sources/added.dart');
+    final config = write('plugins/git/packages/backend/build.yaml', '{}\n');
+    write('external package/sources/leaf.dart', "import 'added.dart';\n");
+    final after = await discover();
+    expect(before['git-compilation'], isNot(contains(imported.path)));
+    expect(after['git-compilation'], containsAll([imported.path, config.path]));
+    config.deleteSync();
+    write('external package/sources/leaf.dart');
+    expect(await discover(), before);
+  });
 
   test(
     'includes declared assets and fonts outside the conventional assets tree',
@@ -555,7 +580,7 @@ flutter:
   );
 
   test(
-    'SDK-only coordinator calls the selected worker once and validates paths',
+    'SDK-only coordinator validates unique paths once per response, not across discoveries',
     () async {
       final first = absolute('pubspec.yaml');
       final second = absolute('pubspec.lock');
@@ -570,28 +595,57 @@ void main(List<String> arguments) {
   );
   stdout.write(${jsonEncode(jsonEncode({
         'stage': [first, second, first],
+        'shared': [first, second],
       }))});
 }
 ''');
-      final inputs = await discoverDesktopBuildInputs(
-        repositoryRoot: root,
-        dartExecutable: Platform.resolvedExecutable,
+      final checks = <String, int>{};
+      final files = {
+        for (final path in [
+          first,
+          second,
+          absolute('tools/desktop_build_inputs_worker.dart'),
+        ])
+          path: File(path),
+      };
+      Future<Map<String, List<String>>> coordinated() => IOOverrides.runZoned(
+        () => discoverDesktopBuildInputs(
+          repositoryRoot: root,
+          dartExecutable: Platform.resolvedExecutable,
+        ),
+        createFile: (path) => _CountingFile(files[path]!, checks),
       );
+      final inputs = await coordinated();
       expect(inputs, {
         'stage': [second, first]..sort(),
+        'shared': [second, first]..sort(),
       });
+      expect(checks, {first: 1, second: 1});
       final invocations = File(calls).readAsLinesSync();
       expect(invocations, hasLength(1));
       expect(jsonDecode(invocations.single), {
         'arguments': [root.path],
         'cwd': root.path,
       });
-      final coordinator = parseString(
-        content: File('tools/desktop_build_inputs.dart').readAsStringSync(),
-      ).unit;
-      for (final directive
-          in coordinator.directives.whereType<UriBasedDirective>()) {
-        expect(directive.uri.stringValue, startsWith('dart:'));
+      expect(await coordinated(), inputs);
+      expect(checks, {first: 2, second: 2});
+      File(second).deleteSync();
+      await expectLater(coordinated(), throwsStateError);
+      expect(checks, {first: 3, second: 3});
+      for (final path in [
+        'tools/desktop_build_inputs.dart',
+        'tools/build_timing.dart',
+      ]) {
+        final unit = parseString(content: File(path).readAsStringSync()).unit;
+        for (final directive
+            in unit.directives.whereType<UriBasedDirective>()) {
+          final uri = directive.uri.stringValue;
+          if (path.endsWith('desktop_build_inputs.dart') &&
+              uri == 'build_timing.dart') {
+            continue;
+          }
+          expect(uri, startsWith('dart:'));
+        }
       }
     },
   );
@@ -648,4 +702,26 @@ void main() {
       );
     },
   );
+}
+
+class _CountingFile implements File {
+  _CountingFile(this.file, this.checks);
+
+  final File file;
+  final Map<String, int> checks;
+
+  @override
+  String get path => file.path;
+
+  @override
+  bool get isAbsolute => file.isAbsolute;
+
+  @override
+  Future<bool> exists() {
+    checks.update(path, (count) => count + 1, ifAbsent: () => 1);
+    return file.exists();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

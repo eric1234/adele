@@ -535,6 +535,7 @@ printf 'native fixture' > "\${10}/\${12}/release/libcode_forge.so"
     _script(File('${bin.path}/dartaotruntime'), 'exit 99');
     _script(File('${sdkBin.path}/dartaotruntime'), '''
 test "\$PWD" = '${root.path}' || exit 98
+printf '%s\n' "\$1" >> '${logs.path}/aot-executions.txt'
 test -f "\$1" || exit 96
 snapshot="\$1"
 kind=\$(cat "\$snapshot")
@@ -548,8 +549,13 @@ if [ "\$kind" = 'snapshot $_workerEntrypoint' ]; then
     printf 'discovery worker failed\n' >&2
     exit 41
   fi
-  if [ -n "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY" ] && [ "\$(wc -l < '${logs.path}/discovery.txt')" -eq 2 ]; then
-    printf '\n// changed during discovery\n' >> "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY"
+  if [ "\$(wc -l < '${logs.path}/discovery.txt')" -eq 2 ]; then
+    if [ -n "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY" ]; then
+      printf '\n// changed during discovery\n' >> "\$ADELE_TEST_MUTATE_TOOL_DURING_DISCOVERY"
+    fi
+    if [ -n "\$ADELE_TEST_FINAL_DISCOVERY_HOOK" ]; then
+      "\$ADELE_TEST_FINAL_DISCOVERY_HOOK" || exit \$?
+    fi
   fi
   cat '${buildInputs.path}'
   exit 0
@@ -628,6 +634,9 @@ if [ "\$ADELE_TEST_PAUSE_ENTRYPOINT" = "\$entrypoint" ]; then
 fi
 if [ "\$tool" = 0 ] && [ -n "\$ADELE_TEST_MUTATE_SOURCE" ]; then
   printf '\n// changed during compilation\n' >> "\$ADELE_TEST_MUTATE_SOURCE"
+fi
+if [ "\$tool" = 0 ] && [ -n "\$ADELE_TEST_COMPILE_HOOK" ]; then
+  "\$ADELE_TEST_COMPILE_HOOK" || exit \$?
 fi
 if [ "\$ADELE_TEST_FAIL_ENTRYPOINT" = "\$entrypoint" ]; then
   printf 'snapshot compiler failed' >&2
@@ -1053,6 +1062,262 @@ Future<void> main() async {
       expect(publishedFiles(), isEmpty);
     });
   }
+
+  for (final mutation in [
+    'tool source edit-restore',
+    'new tool file in empty directory',
+    'tool source removal',
+    'watched empty directory removal',
+    'optional override create-delete',
+    'optional override removal',
+    'package configuration edit',
+    'generated output edit',
+    'native header edit',
+    'shared input edit-restore',
+    'shared input removal',
+  ]) {
+    test(
+      'final discovery $mutation rejects warm preparation without publication',
+      () async {
+        final source = File(
+          '${root.path}/${mutation == 'shared input edit-restore' ? _sharedSource : _generatorSource}',
+        );
+        final empty = Directory('${source.parent.path}/empty')..createSync();
+        final added = File('${empty.path}/new.dart');
+        final override = File(
+          '${root.path}/packages/contract_codegen/pubspec_overrides.yaml',
+        );
+        if (mutation == 'optional override removal') {
+          override.writeAsStringSync('dependency_overrides: {}\n');
+        }
+        await prepare();
+        final retained = retainedFiles();
+        final original = source.readAsBytesSync();
+        final hook = File('${root.path}/logs/final-discovery-hook');
+        final mutationScript = switch (mutation) {
+          'tool source edit-restore' || 'shared input edit-restore' =>
+            '''
+cp '${source.path}' '${root.path}/logs/original-source'
+printf '\\n// transient edit\\n' >> '${source.path}'
+cp '${root.path}/logs/original-source' '${source.path}'
+TZ=UTC touch -m -t 200001010000 '${source.path}'
+''',
+          'new tool file in empty directory' =>
+            "printf '// new tool input\\n' > '${added.path}'",
+          'tool source removal' => "rm '${source.path}'",
+          'watched empty directory removal' => "rmdir '${empty.path}'",
+          'optional override create-delete' =>
+            '''
+printf 'dependency_overrides: {}\\n' > '${override.path}'
+rm '${override.path}'
+TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
+''',
+          'optional override removal' => "rm '${override.path}'",
+          'package configuration edit' =>
+            "printf '\\n' >> '${root.path}/.dart_tool/package_config.json'",
+          'generated output edit' =>
+            "printf '// changed output\\n' >> '${generatedContract.path}'",
+          'shared input removal' => "rm '${root.path}/$_sharedSource'",
+          _ => "printf '// changed header\\n' >> '${root.path}/$_nativeHeader'",
+        };
+        _script(hook, 'set -e\n$mutationScript');
+        environment['ADELE_TEST_FINAL_DISCOVERY_HOOK'] = hook.path;
+        final discoveries = File('${root.path}/logs/discovery.txt')
+          ..writeAsStringSync('');
+        commands.deleteSync();
+        launchArguments.deleteSync();
+
+        final result = await invoke(['run', 'linux']);
+        expect(
+          result.exitCode,
+          1,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(
+          result.stderr,
+          contains(switch (mutation) {
+            'shared input removal' =>
+              'Desktop build input must be an existing absolute file',
+            'generated output edit' ||
+            'native header edit' ||
+            'shared input edit-restore' =>
+              'Build inputs changed during desktop preparation',
+            _ =>
+              'Build tool inputs or artifacts changed during desktop preparation',
+          }),
+        );
+        expect(discoveries.readAsLinesSync(), ['discover|aot', 'discover|aot']);
+        expect(toolCompilations(), isEmpty);
+        expect(compilations(), isEmpty);
+        expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+        expect(launchArguments.existsSync(), isFalse);
+        expectRetained(retained);
+        expect(
+          publishedFiles().map((file) => file.path),
+          unorderedEquals(retained.keys),
+        );
+        if (mutation.endsWith('edit-restore')) {
+          expect(source.readAsBytesSync(), original);
+          expect(source.lastModifiedSync().toUtc(), DateTime.utc(2000));
+        } else if (mutation == 'optional override create-delete') {
+          expect(override.existsSync(), isFalse);
+          expect(
+            override.parent.statSync().modified.toUtc(),
+            DateTime.utc(2000),
+          );
+        }
+      },
+    );
+  }
+
+  for (final damage in ['corrupt', 'missing']) {
+    test(
+      '$damage selected discovery artifact during compilation is rejected before second execution',
+      () async {
+        await prepare();
+        final discovery = componentArtifact('desktop-inputs-compilation');
+        final generator = componentArtifact('contract-codegen-compilation');
+        final retained = retainedFiles()..remove(discovery.path);
+        changeSource(_gitEntrypoint);
+        final hook = File('${root.path}/logs/compile-hook');
+        _script(
+          hook,
+          damage == 'missing'
+              ? "rm '${discovery.path}'"
+              : "printf 'corrupt selected AOT\\n' > '${discovery.path}'",
+        );
+        environment['ADELE_TEST_COMPILE_HOOK'] = hook.path;
+        final executions = File('${root.path}/logs/aot-executions.txt')
+          ..writeAsStringSync('');
+        final discoveries = File('${root.path}/logs/discovery.txt')
+          ..writeAsStringSync('');
+        commands.deleteSync();
+        launchArguments.deleteSync();
+
+        final result = await invoke(['run', 'linux']);
+        expect(
+          result.exitCode,
+          1,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(
+          result.stderr,
+          contains(
+            damage == 'missing'
+                ? 'Unable to fingerprint build inputs'
+                : 'Build tool inputs or artifacts changed during desktop preparation',
+          ),
+        );
+        // Record runtime entry before it can reject missing/corrupt snapshots.
+        expect(executions.readAsLinesSync(), [generator.path, discovery.path]);
+        expect(discoveries.readAsLinesSync(), ['discover|aot']);
+        expect(toolCompilations(), isEmpty);
+        expect(compilations(), [_gitEntrypoint]);
+        expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+        expect(launchArguments.existsSync(), isFalse);
+        expectRetained(retained);
+        expect(
+          publishedFiles().map((file) => file.path),
+          unorderedEquals([
+            ...retained.keys,
+            if (damage != 'missing') discovery.path,
+          ]),
+        );
+      },
+    );
+  }
+
+  for (final change in ['added', 'removed']) {
+    test(
+      'final discovery rejects $change graph inputs even when files are unchanged',
+      () async {
+        final extra = File('${root.path}/plugins/source_editor/extra.dart')
+          ..writeAsStringSync('// additional graph input\n');
+        await prepare();
+        final retained = retainedFiles();
+        final inputs =
+            (jsonDecode(buildInputs.readAsStringSync()) as Map<String, dynamic>)
+                .map(
+                  (key, value) => MapEntry(key, (value as List).cast<String>()),
+                );
+        final paths = inputs['source-editor-frontend-compilation']!;
+        if (change == 'added') {
+          paths.add(extra.path);
+          paths.sort();
+        } else {
+          expect(paths.remove('${root.path}/$_sharedSource'), isTrue);
+        }
+        final finalInputs = File('${root.path}/logs/final-build-inputs.json')
+          ..writeAsStringSync(jsonEncode(inputs));
+        final hook = File('${root.path}/logs/final-discovery-hook');
+        _script(hook, "cp '${finalInputs.path}' '${buildInputs.path}'");
+        environment['ADELE_TEST_FINAL_DISCOVERY_HOOK'] = hook.path;
+        final discoveries = File('${root.path}/logs/discovery.txt')
+          ..writeAsStringSync('');
+        commands.deleteSync();
+        launchArguments.deleteSync();
+
+        final result = await invoke(['run', 'linux']);
+        expect(
+          result.exitCode,
+          1,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(
+          result.stderr,
+          contains('Build inputs changed during desktop preparation'),
+        );
+        expect(discoveries.readAsLinesSync(), ['discover|aot', 'discover|aot']);
+        expect(toolCompilations(), isEmpty);
+        expect(compilations(), isEmpty);
+        expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+        expect(launchArguments.existsSync(), isFalse);
+        expectRetained(retained);
+        expect(
+          publishedFiles().map((file) => file.path),
+          unorderedEquals(retained.keys),
+        );
+      },
+    );
+  }
+
+  test(
+    'changed selected runtime is rejected before final discovery execution',
+    () async {
+      await prepare();
+      final retained = retainedFiles();
+      changeSource(_gitEntrypoint);
+      final marker = File('${root.path}/logs/changed-runtime-executed');
+      final replacement = File('${root.path}/logs/replacement-runtime');
+      _script(replacement, "touch '${marker.path}'\nexit 97");
+      final hook = File('${root.path}/logs/compile-hook');
+      _script(hook, "cp '${replacement.path}' '${sdkBin.path}/dartaotruntime'");
+      environment['ADELE_TEST_COMPILE_HOOK'] = hook.path;
+      final discoveries = File('${root.path}/logs/discovery.txt')
+        ..writeAsStringSync('');
+      commands.deleteSync();
+      launchArguments.deleteSync();
+
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 1, reason: '${result.stdout}\n${result.stderr}');
+      expect(
+        result.stderr,
+        contains(
+          'Build tool inputs or artifacts changed during desktop preparation',
+        ),
+      );
+      expect(marker.existsSync(), isFalse);
+      expect(discoveries.readAsLinesSync(), ['discover|aot']);
+      expect(toolCompilations(), isEmpty);
+      expect(compilations(), [_gitEntrypoint]);
+      expect(launchArguments.existsSync(), isFalse);
+      expectRetained(retained);
+      expect(
+        publishedFiles().map((file) => file.path),
+        unorderedEquals(retained.keys),
+      );
+    },
+  );
 
   test(
     'test-plan runs pre-bootstrap without generating, inspecting or compiling',
@@ -3389,9 +3654,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(result.exitCode, 1);
       expect(
         result.stderr,
-        contains(
-          'Build tool inputs or artifacts changed during desktop preparation',
-        ),
+        contains('Build inputs changed during desktop preparation'),
       );
       expect(launchArguments.existsSync(), isFalse);
       expect(publishedFiles(), isEmpty);

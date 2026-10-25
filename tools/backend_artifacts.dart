@@ -137,6 +137,7 @@ Future<List<String>> _prepareDesktopPlugins({
       repositoryRoot: repositoryRoot,
       cache: cache,
       dartExecutable: dart.path,
+      runtimeExecutable: runtime.path,
       sdkFiles: sdkFiles,
       sdkVersion: version,
     ),
@@ -431,36 +432,55 @@ Future<List<String>> _prepareDesktopPlugins({
   // must not be published under the graph observed before compilation.
   assemblyTimer.stop();
   await timeBuildStage('build-input-revalidation', () async {
-    await tools.validate();
-    final finalInputs = await discoverDesktopBuildInputs(
-      repositoryRoot: repositoryRoot,
-      dartExecutable: runtime.path,
-      snapshot: tools.discovery,
+    // Discovery executes the sealed AOT, not its live source. Check executable
+    // artifacts before use; the full tool-input fence below spans discovery too.
+    await timeBuildStage('revalidation-tools-before', tools.validateArtifacts);
+    final finalInputs = await timeBuildStage(
+      'revalidation-discovery',
+      () => discoverDesktopBuildInputs(
+        repositoryRoot: repositoryRoot,
+        dartExecutable: runtime.path,
+        snapshot: tools.discovery,
+      ),
     );
-    if (jsonEncode(toolStats) !=
-            jsonEncode(await desktopPreparationToolStats(repositoryRoot)) ||
-        jsonEncode(inputs) != jsonEncode(finalInputs) ||
-        jsonEncode(initialStats) !=
-            jsonEncode(await buildInputStats(allPaths)) ||
-        jsonEncode(initialHashes) !=
-            jsonEncode(await hashBuildFiles(allPaths)) ||
-        (nativeIdentity != null &&
-            (jsonEncode(nativeStats) !=
-                    jsonEncode(
-                      await buildInputStats([
-                        ...nativeIdentity['inputFiles'] as List<String>,
-                        for (final path
-                            in nativeIdentity['inputFiles'] as List<String>)
-                          File(path).parent.path,
-                      ]),
-                    ) ||
-                jsonEncode(nativeIdentity) !=
-                    jsonEncode(await gitPtyBuildIdentity(repositoryRoot))))) {
+    if (await timeBuildStage(
+          'revalidation-metadata',
+          () async =>
+              jsonEncode(toolStats) !=
+                  jsonEncode(
+                    await desktopPreparationToolStats(repositoryRoot),
+                  ) ||
+              jsonEncode(inputs) != jsonEncode(finalInputs) ||
+              jsonEncode(initialStats) !=
+                  jsonEncode(await buildInputStats(allPaths)),
+        ) ||
+        await timeBuildStage(
+          'revalidation-content',
+          () async =>
+              jsonEncode(initialHashes) !=
+              jsonEncode(await hashBuildFiles(allPaths)),
+        ) ||
+        await timeBuildStage(
+          'revalidation-native',
+          () async =>
+              nativeIdentity != null &&
+              (jsonEncode(nativeStats) !=
+                      jsonEncode(
+                        await buildInputStats([
+                          ...nativeIdentity['inputFiles'] as List<String>,
+                          for (final path
+                              in nativeIdentity['inputFiles'] as List<String>)
+                            File(path).parent.path,
+                        ]),
+                      ) ||
+                  jsonEncode(nativeIdentity) !=
+                      jsonEncode(await gitPtyBuildIdentity(repositoryRoot))),
+        )) {
       throw const PluginBuildFailure(
         'Build inputs changed during desktop preparation. Retry.',
       );
     }
-    await tools.validate();
+    await timeBuildStage('revalidation-tools-after', tools.validate);
   });
   assemblyTimer.start();
   await tools.cache.publishComponents();

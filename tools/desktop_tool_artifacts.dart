@@ -40,19 +40,27 @@ final class DesktopToolArtifacts {
     required Directory repositoryRoot,
     required DesktopArtifactCache cache,
     required String dartExecutable,
+    required String runtimeExecutable,
     required List<String> sdkFiles,
     required Object sdkVersion,
   }) async {
     final root = repositoryRoot.absolute;
-    final inputs = await _ToolInputs.capture(root, sdkFiles);
+    final selectedSdkFiles = {...sdkFiles, runtimeExecutable}.toList();
+    final inputs = await _ToolInputs.capture(root, selectedSdkFiles);
     final prepared = DesktopToolArtifacts._(
       root,
       // Same cache/lease/publication machinery, separate component identities:
       // developer-tool changes must not churn installation/deployment paths.
       DesktopArtifactCache(cache.root),
-      sdkFiles,
+      selectedSdkFiles,
       inputs,
     );
+    // The runtime is executed along with the snapshots. Preserve its original
+    // content/stat fence even when a caller only validates executable artifacts.
+    prepared._artifactHashes[runtimeExecutable] =
+        inputs.hashes[runtimeExecutable]!;
+    prepared._artifactStats[runtimeExecutable] =
+        inputs.stats[runtimeExecutable]!;
     for (final tool in _tools.entries) {
       final options = [
         'compile',
