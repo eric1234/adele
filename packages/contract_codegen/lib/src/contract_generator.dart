@@ -13,6 +13,8 @@ import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:dart_style/dart_style.dart';
 import 'package:path/path.dart' as p;
 
+import 'contract_inputs.dart';
+
 part 'eval_client_emitter.dart';
 
 final class ContractDiagnostic implements Exception {
@@ -137,49 +139,55 @@ final class ContractGenerator {
   /// Explicit SDK location for build-time callers running in a Flutter engine.
   final String? sdkPath;
 
-  Future<ContractModel> _resolve(File source) async {
+  Future<ContractModel> _resolve(File source, {ContractInputs? inputs}) async {
     final File absolute = File(p.normalize(source.absolute.path));
     // Generated declarations are outputs, never inputs to schema resolution.
     // Overlay only the exact sibling; authored part directives still validate.
-    final resources = OverlayResourceProvider(PhysicalResourceProvider.INSTANCE)
-      ..setOverlay(
-        p.setExtension(absolute.path, '.g.dart'),
-        content:
-            'part of ${DartContractEmitter()._literal(p.basename(absolute.path))};\n',
-        modificationStamp: 0,
-      );
+    final resources =
+        OverlayResourceProvider(
+          inputs?.resources ?? PhysicalResourceProvider.INSTANCE,
+        )..setOverlay(
+          p.setExtension(absolute.path, '.g.dart'),
+          content:
+              'part of ${DartContractEmitter()._literal(p.basename(absolute.path))};\n',
+          modificationStamp: 0,
+        );
     final AnalysisContextCollection collection = AnalysisContextCollection(
       includedPaths: <String>[absolute.path],
       resourceProvider: resources,
       sdkPath: sdkPath,
     );
-    final SomeResolvedUnitResult result = await collection
-        .contextFor(absolute.path)
-        .currentSession
-        .getResolvedUnit(absolute.path);
-    if (result is! ResolvedUnitResult) {
-      throw ContractDiagnostic(
-        'Could not resolve contract source.',
-        absolute.path,
-        1,
-        1,
-      );
+    try {
+      final context = collection.contextFor(absolute.path);
+      inputs?.discover(context, absolute.path);
+      final SomeResolvedUnitResult result = await context.currentSession
+          .getResolvedUnit(absolute.path);
+      if (result is! ResolvedUnitResult) {
+        throw ContractDiagnostic(
+          'Could not resolve contract source.',
+          absolute.path,
+          1,
+          1,
+        );
+      }
+      // Prefer precise schema diagnostics, then reject remaining authored errors.
+      final ContractModel model = _Extractor(result).extract();
+      final Diagnostic? error = result.diagnostics
+          .where((Diagnostic value) => value.severity == Severity.error)
+          .firstOrNull;
+      if (error != null) {
+        final location = result.lineInfo.getLocation(error.offset);
+        throw ContractDiagnostic(
+          error.message,
+          absolute.path,
+          location.lineNumber,
+          location.columnNumber,
+        );
+      }
+      return model;
+    } finally {
+      await collection.dispose();
     }
-    // Prefer precise schema diagnostics, then reject remaining authored errors.
-    final ContractModel model = _Extractor(result).extract();
-    final Diagnostic? error = result.diagnostics
-        .where((Diagnostic value) => value.severity == Severity.error)
-        .firstOrNull;
-    if (error != null) {
-      final location = result.lineInfo.getLocation(error.offset);
-      throw ContractDiagnostic(
-        error.message,
-        absolute.path,
-        location.lineNumber,
-        location.columnNumber,
-      );
-    }
-    return model;
   }
 
   /// A standalone, client-only wire view for interpreted frontends. Native
@@ -192,9 +200,12 @@ final class ContractGenerator {
     ).format(_EvalClientEmitter().emit(model), uri: source.uri);
   }
 
-  Future<ContractGeneratedFile> generate(File source) async {
+  Future<ContractGeneratedFile> generate(
+    File source, {
+    ContractInputs? inputs,
+  }) async {
     final File absolute = source.absolute;
-    final ContractModel model = await _resolve(source);
+    final ContractModel model = await _resolve(source, inputs: inputs);
     final String unformatted = DartContractEmitter().emit(model);
     final String formatted = DartFormatter(
       languageVersion: DartFormatter.latestLanguageVersion,

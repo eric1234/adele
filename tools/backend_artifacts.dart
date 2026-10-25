@@ -44,6 +44,7 @@ Future<List<String>> prepareDesktopPluginDefines({
   required String flutterExecutable,
   Map<String, String>? environment,
   Map<String, Object>? initialToolStats,
+  bool incrementalContracts = false,
 }) => timeBuildStage(
   'desktop-preparation',
   () => withDesktopArtifactCache(
@@ -54,6 +55,7 @@ Future<List<String>> prepareDesktopPluginDefines({
       environment: environment,
       cache: cache,
       initialToolStats: initialToolStats,
+      incrementalContracts: incrementalContracts,
     ),
   ),
 );
@@ -64,6 +66,7 @@ Future<List<String>> _prepareDesktopPlugins({
   required Map<String, String>? environment,
   required DesktopArtifactCache cache,
   required Map<String, Object>? initialToolStats,
+  required bool incrementalContracts,
 }) async {
   final toolStats =
       initialToolStats ?? await desktopPreparationToolStats(repositoryRoot);
@@ -144,6 +147,7 @@ Future<List<String>> _prepareDesktopPlugins({
       repositoryRoot: repositoryRoot,
       dartExecutable: runtime.path,
       snapshot: tools.generator,
+      options: [if (incrementalContracts) '--incremental'],
     ),
   );
   final inputs = await timeBuildStage('dependency-discovery', () async {

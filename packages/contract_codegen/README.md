@@ -28,8 +28,10 @@ options to the package CLI. Native `.g.dart` siblings are ignored local artifact
 not committed source. Keep each authored `part '<source-basename>.g.dart';`
 declaration and add an exact ignore entry when configuring a new output.
 `dart tools/adele.dart bootstrap` resolves dependencies and materializes these
-parts for IDEs and direct Dart/Flutter commands. Maintained analysis, test, and
-build/run commands regenerate them before compiling consumers.
+parts for IDEs and direct Dart/Flutter commands. Maintained analysis and test
+commands regenerate them before compiling consumers. Linux development `run`
+and `build` validate every configured contract and regenerate stale ones as
+described below; other build/run paths retain full generation.
 
 Output is formatted, deterministic, and atomically replaced only when its contents
 change. `generate --check` compares the current local files with freshly generated
@@ -48,6 +50,54 @@ dart run contract_codegen --source path/to/contract.dart
 dart run contract_codegen --clean
 ```
 
+## Incremental Linux preparation
+
+Maintained Linux `run` and `build` invoke the prepared AOT generator with
+`--incremental`. This internal opt-in requires Linux's matched `dartaotruntime`
+and the repository inventory; it cannot be combined with `--source`, `--check`,
+or `--clean`. Ordinary generation, bootstrap, analysis, tests, editor smoke, and
+`generate --check` do not consult freshness records. In particular, checking
+always performs fresh semantic resolution and emission, even after an incremental hit.
+
+Successful native generation can publish a checkout-local receipt in
+`.dart_tool/adele/contracts/freshness.json`. Each source has an independently
+sealed input record and output SHA-256 digest. Reuse requires matching generator
+snapshot/runtime contents and runtime identity, workspace resolution metadata,
+all recorded analyzer inputs and resolution probes, and the actual nonempty
+output bytes. Inventory additions/removals do not discard unrelated source
+receipts. Timestamps are only invocation-local race evidence, never freshness keys.
+
+The input recorder wraps the authoritative analyzer's resource provider, including
+file reads, negative/type probes, canonical paths, and directory inventories. This
+captures the selected package configuration, language settings, recursive analyzer
+options includes, SDK metadata and Flutter's embedded SDK mappings. A syntactic
+walk through that same context's URI resolver follows imports, exports, parts,
+documentation imports, and every conditional alternative transitively, including
+implicit core/async libraries. It is not a second semantic validator. Only the
+target's exact generated sibling is overlaid/excluded; other libraries' generated
+parts remain real inputs. If publication changes such an input, affected contracts
+are regenerated until the generated dependencies settle, with a bounded failure
+rather than an indefinite loop.
+
+Missing or damaged receipts/outputs regenerate through `ContractGenerator`.
+Unsupported or ambiguous dependency discovery uses full generation without
+publishing a reusable receipt. Observed input changes fail preparation; old output
+is never substituted for a failed regeneration. Inputs, output bytes, and tool
+identity are rechecked before atomic receipt publication. The launcher retains its
+preparation lease, and a local generation lock serializes direct incremental AOT
+invocations. Output replacement remains atomic per file, and unchanged bytes are
+not rewritten. These are local build records, not authenticated remote artifacts.
+Plugin input discovery and final build revalidation still run after generation.
+
+The concise `contract-generation` diagnostic reports current/regenerated contract
+counts and elapsed validation/generation time. Counts are per configured source;
+a generated dependency change can require more than one resolution of an affected
+source. Deleting the receipt is safe and makes the next incremental invocation
+perform full generation. Cleanup retains the receipt, but missing output digests
+prevent reuse afterward.
+
+## Cleanup
+
 `clean-contracts` forwards to `--clean`. Cleanup finds `contract_codegen.yaml`
 from the current directory or its ancestors and scans only the repository's
 `packages/` and `plugins/` trees. It never follows file or directory symlinks and
@@ -61,6 +111,8 @@ Unmarked legacy orphans are deliberately retained. Cleanup does not remove
 arbitrary `.g.dart` files, authored files, Dart/Flutter caches, or eval projections.
 It works with an empty configured source list, is safe to repeat, and cannot be
 combined with `--check` or `--source`. Regeneration recreates configured outputs.
+
+## Generation semantics
 
 Frontend build tooling can call `ContractGenerator.generateEvalClient` to derive
 a client-only wire view from the same annotated contract. This bounded projection

@@ -392,12 +392,12 @@ if [ "\$1" = run ]; then
   test "\$PWD" = '${root.path}' || exit 98
   test "\$2" = '$_codegenEntrypoint' && test -f "\$2" || exit 97
   if [ "\$#" = 3 ]; then
-    test "\$3" = --check || test "\$3" = --clean || exit 96
+    test "\$3" = --check || test "\$3" = --clean${aot ? ' || test "\$3" = --incremental' : ''} || exit 96
   else
     test "\$#" = 2 || exit 96
   fi
   printf 'generate|$sdk%s\n' "\${3:+|\$3}" >> '${commands.path}'
-  ${aot ? 'printf \'%s\\n\' "\$snapshot"' : 'printf \'%s\\n\' "\$@"'} > '${generationArguments.path}'
+  ${aot ? '{ printf \'%s\\n\' "\$snapshot"; if [ "\$#" = 3 ]; then printf \'%s\\n\' "\$3"; fi; }' : 'printf \'%s\\n\' "\$@"'} > '${generationArguments.path}'
   printf 'contract generator output\n'
   if [ "\$ADELE_TEST_FAIL_GENERATION" = 1 ]; then
     printf 'contract generator failed\n' >&2
@@ -555,8 +555,7 @@ if [ "\$kind" = 'snapshot $_workerEntrypoint' ]; then
   exit 0
 fi
 test "\$kind" = 'snapshot $_codegenEntrypoint' || exit 94
-test "\$#" = 0 || exit 97
-set -- run '$_codegenEntrypoint'
+set -- run '$_codegenEntrypoint' "\$@"
 ${generatorScript('aot', aot: true)}
 exit 99
 ''');
@@ -676,12 +675,13 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
   ]) {
     if (aot) {
       final arguments = generationArguments.readAsLinesSync();
-      expect(arguments, hasLength(1));
+      expect(arguments, hasLength(1 + options.length));
       expect(
-        arguments.single,
+        arguments.first,
         startsWith('${root.path}/.dart_tool/adele/desktop-plugins/'),
       );
-      expect(arguments.single, endsWith('/tool.aot'));
+      expect(arguments.first, endsWith('/tool.aot'));
+      expect(arguments.skip(1), options);
       return;
     }
     expect(generationArguments.readAsLinesSync(), [
@@ -799,7 +799,7 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
   );
 
   test(
-    'cold and warm desktop runs execute AOT generation once and discovery twice',
+    'cold and warm desktop runs execute incremental AOT generation once and discovery twice',
     () async {
       Map<String, String>? before;
       for (final cold in [true, false]) {
@@ -810,9 +810,9 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
           commands.readAsLinesSync().where(
             (line) => line.startsWith('generate|'),
           ),
-          ['generate|aot'],
+          ['generate|aot|--incremental'],
         );
-        expectGenerationArguments([], true);
+        expectGenerationArguments(['--incremental'], true);
         expect(
           File('${root.path}/logs/discovery.txt').readAsLinesSync(),
           List.filled(cold ? 2 : 4, 'discover|aot'),
@@ -843,6 +843,38 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
       }
     },
   );
+
+  test('desktop preparation defaults to full AOT generation', () async {
+    final entrypoint = File('${root.path}/tools/prepare-default.dart')
+      ..writeAsStringSync('''
+import 'dart:io';
+import 'backend_artifacts.dart';
+
+Future<void> main() async {
+  await prepareDesktopPluginDefines(
+    repositoryRoot: Directory.current,
+    flutterExecutable: '${root.path}/bin/flutter',
+  );
+}
+''');
+    final result = await Process.run(
+      Platform.resolvedExecutable,
+      [entrypoint.path],
+      workingDirectory: root.path,
+      environment: environment,
+    );
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect(
+      commands.readAsLinesSync().where((line) => line.startsWith('generate|')),
+      ['generate|aot'],
+    );
+    expectGenerationArguments([], true);
+    expect(File('${root.path}/logs/discovery.txt').readAsLinesSync(), [
+      'discover|aot',
+      'discover|aot',
+    ]);
+    expect(launchArguments.existsSync(), isFalse);
+  });
 
   for (final mutation in [
     (path: _generatorSource, expected: _codegenEntrypoint),
@@ -1306,6 +1338,8 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
     test(
       '${arguments.join(' ')} stops consumers on generation failure',
       () async {
+        final incremental =
+            arguments.contains('linux') && arguments.first != 'smoke';
         environment['ADELE_TEST_FAIL_GENERATION'] = '1';
         // Even retained output must not let consumers bypass failed generation.
         generatedContract.writeAsStringSync('retained contract');
@@ -1328,16 +1362,12 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
         expect(commands.readAsLinesSync(), [
           if (arguments.first == 'bootstrap') ...['pub-get', 'workspace-list'],
           if (arguments.contains('linux')) 'inspect-sdk',
-          if (arguments.contains('linux') && arguments.first != 'smoke')
-            ..._toolCompilationEvents,
-          arguments.contains('linux') && arguments.first != 'smoke'
-              ? 'generate|aot'
-              : 'generate|path',
+          if (incremental) ..._toolCompilationEvents,
+          incremental ? 'generate|aot|--incremental' : 'generate|path',
         ]);
-        expectGenerationArguments(
-          [],
-          arguments.contains('linux') && arguments.first != 'smoke',
-        );
+        expectGenerationArguments([
+          if (incremental) '--incremental',
+        ], incremental);
         expect(result.stdout, isNot(contains('START test:')));
         expect(generatedContract.readAsStringSync(), 'retained contract');
         expect(launchArguments.existsSync(), isFalse);
@@ -1648,7 +1678,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           if (cold) ..._toolCompilationEvents,
-          'generate|aot',
+          'generate|aot|--incremental',
           if (cold) ...[
             'compile|$_hostEntrypoint',
             'compiled|$_hostEntrypoint',
@@ -1693,7 +1723,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'flutter-launch',
         ]);
         if (cold) expect(result.stdout, contains('frontend compiler output'));
-        expectGenerationArguments([], true);
+        expectGenerationArguments(['--incremental'], true);
         expect(frontendArguments.readAsLinesSync(), <String>[
           'test',
           '--no-pub',
@@ -2639,7 +2669,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           ..._toolCompilationEvents,
-          'generate|aot',
+          'generate|aot|--incremental',
           for (final entrypoint in _backendEntrypoints.take(
             _backendEntrypoints.indexOf(failedEntrypoint) + 1,
           )) ...[
@@ -2685,7 +2715,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             expect(commands.readAsLinesSync(), <String>[
               'inspect-sdk',
               ..._toolCompilationEvents,
-              'generate|aot',
+              'generate|aot|--incremental',
               'compile|$_hostEntrypoint',
               'compiled|$_hostEntrypoint',
               'compile|$_gitEntrypoint',
@@ -3282,38 +3312,55 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     expectRetained(retained);
   });
 
-  test('warm cache never masks generation or discovery failures', () async {
-    await prepare();
-    final retained = retainedFiles();
-    for (final failure in ['GENERATION', 'DISCOVERY']) {
-      environment['ADELE_TEST_FAIL_$failure'] = '1';
-      if (launchArguments.existsSync()) launchArguments.deleteSync();
-      commands.deleteSync();
-      final result = await invoke(['run', 'linux']);
-      expect(result.exitCode, failure == 'GENERATION' ? 29 : 1);
-      expect(
-        result.stderr,
-        contains(
-          failure == 'GENERATION'
-              ? 'contract generator failed'
-              : 'discovery worker failed',
-        ),
-      );
-      expect(compilations(), isEmpty);
-      expect(toolCompilations(), isEmpty);
-      expect(commands.readAsLinesSync(), ['inspect-sdk', 'generate|aot']);
-      expect(launchArguments.existsSync(), isFalse);
-      expectRetained(retained);
-      expect(
-        publishedFiles().map((file) => file.path),
-        unorderedEquals(retained.keys),
-      );
-      environment.remove('ADELE_TEST_FAIL_$failure');
-    }
-    await prepare();
-    expect(compilations(), isEmpty);
-    expect(toolCompilations(), isEmpty);
-  });
+  for (final command in ['run', 'build']) {
+    test(
+      '$command warm cache never masks incremental generation or discovery failures',
+      () async {
+        await prepare();
+        final retained = retainedFiles();
+        final discoveries = File('${root.path}/logs/discovery.txt');
+        frontendArguments.deleteSync();
+        for (final failure in ['GENERATION', 'DISCOVERY']) {
+          final previousDiscoveries = discoveries.readAsLinesSync();
+          environment['ADELE_TEST_FAIL_$failure'] = '1';
+          if (launchArguments.existsSync()) launchArguments.deleteSync();
+          commands.deleteSync();
+          final result = await invoke([command, 'linux']);
+          expect(result.exitCode, failure == 'GENERATION' ? 29 : 1);
+          expect(
+            result.stderr,
+            contains(
+              failure == 'GENERATION'
+                  ? 'contract generator failed'
+                  : 'discovery worker failed',
+            ),
+          );
+          expect(compilations(), isEmpty);
+          expect(toolCompilations(), isEmpty);
+          expect(commands.readAsLinesSync(), [
+            'inspect-sdk',
+            'generate|aot|--incremental',
+          ]);
+          expectGenerationArguments(['--incremental'], true);
+          expect(discoveries.readAsLinesSync(), [
+            ...previousDiscoveries,
+            if (failure == 'DISCOVERY') 'discover|aot',
+          ]);
+          expect(launchArguments.existsSync(), isFalse);
+          expect(frontendArguments.existsSync(), isFalse);
+          expectRetained(retained);
+          expect(
+            publishedFiles().map((file) => file.path),
+            unorderedEquals(retained.keys),
+          );
+          environment.remove('ADELE_TEST_FAIL_$failure');
+        }
+        await prepare([command, 'linux']);
+        expect(compilations(), isEmpty);
+        expect(toolCompilations(), isEmpty);
+      },
+    );
+  }
 
   test(
     'source mutation during compilation prevents publication and launch',
@@ -3445,7 +3492,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           ..._toolCompilationEvents,
-          'generate|aot',
+          'generate|aot|--incremental',
           for (final compiled in _backendEntrypoints.take(
             _backendEntrypoints.indexOf(entrypoint) + 1,
           )) ...['compile|$compiled', 'compiled|$compiled'],

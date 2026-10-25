@@ -49,7 +49,7 @@ These are available operations, not a checklist to run for every edit.
 | --- | --- |
 | `bootstrap` | Prepares/verifies pinned CodeForge source before `flutter pub get`, verifies that `dart pub workspace list` succeeds, then materializes configured ignored native contract parts. No Rust compilation. |
 | `format --check` | Checks repository Dart formatting without rewriting files; formatting differences fail. |
-| `generate --check` | Verifies current local generated siblings without writing; missing or stale output fails. |
+| `generate --check` | Fresh semantic generation compares current local siblings without writing or consulting incremental receipts; missing or stale output fails. |
 | `analyze` | Prepares/verifies CodeForge source, regenerates current contracts, then analyzes repository tools, tool tests, and maintained Dart/Flutter analysis targets with fatal infos. |
 | `test` | Prepares/verifies CodeForge source and regenerates contracts before workers; selecting any target declaring `nativeCodeEditor` builds one shared pinned native editor test library and supplies the loader environment only to those targets. |
 | `check` | Runs `generate --check`, then format check, then analysis, then tests, stopping between phases on failure. |
@@ -60,6 +60,16 @@ deliberately exposes missing/stale local output before later analysis or testing
 could regenerate it. See
 [generated contract artifacts](toolchain.md#generated-contract-artifacts) for
 generation inputs, ignored outputs, freshness, and cleanup semantics.
+
+Incremental native generation belongs to `contract_codegen`; launcher routing,
+preparation leases, and failure-before-launch belong to `adele_tools`. The generator
+suite includes a clone of the actual configured source inventory, not only small
+schema fixtures. After changing freshness behavior, run the owning tests and an
+authoritative `generate --check` after a warm Linux preparation. Performance evidence
+should compare consecutive unchanged builds with the same pinned toolchain and
+separate cold receipt construction from warm validation; a reported cache hit alone
+does not establish launch savings. Run controlled measurements without concurrent
+pub resolution or source writers, which intentionally trip the mutation fences.
 
 ## Maintained test targets
 

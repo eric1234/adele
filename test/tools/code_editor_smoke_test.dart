@@ -301,6 +301,7 @@ CODEFORGE_PROBE_COMPLETE
       ).readAsStringSync();
       expect(runner, contains('bool workspace = false'));
       expect(runner, contains('await prepareDesktopPluginDefines('));
+      expect(runner, isNot(contains('incrementalContracts:')));
       expect(
         runner,
         contains('flutterExecutable: \'\$flutterRoot/bin/flutter\''),
