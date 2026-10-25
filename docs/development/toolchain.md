@@ -520,7 +520,13 @@ rather than publishing an incompletely keyed executable. Bootstrap after changin
 dependency declarations/resolution. Imports outside the tooling and resolved package
 library trees require an explicit scope change. Depfiles are not reused to skip
 discovery. Tool input membership, contents and race observations are rechecked before
-use and publication, as are artifact contents. The tools share the existing lease,
+first use and before publication. Executable artifact contents and stats, including
+the selected `dartaotruntime`, are also validated immediately before each discovery
+invocation. Final revalidation performs
+one full tool-input recapture after rediscovery and the component/native checks,
+comparing against the original observations; it does not repeat that source scan
+before rediscovery. Changed tool sources still prevent publication, even if the
+already-prepared worker finishes first. The tools share the existing lease,
 receipt validation, staging, immutable publication and retention below. Missing or
 damaged snapshots rebuild; compilation or execution failure never falls back to an
 old tool or bypasses generation/discovery.
@@ -551,6 +557,12 @@ assets, and explicit dynamic source-map seeds for the stock frontend harnesses:
 frontend source, public UI stubs, and generated-client contract declarations.
 Membership changes in those trees are inputs too. Compiler helpers and imported
 app-native bridges contribute their transitive file dependencies.
+
+The coordinator validates each distinct returned file path once per worker response,
+including paths shared by multiple components. This deduplication is local to that
+response: both complete discovery passes still execute and validate their results
+independently. No dependency graph or file-existence evidence is cached across
+passes or launches.
 
 This deliberately avoids one whole-repository or whole-source-plugin key, but is
 not symbol-level precision. Common workspace lock/package configuration, generator
@@ -620,6 +632,12 @@ enclosing launcher total include the application's lifetime until the Flutter pr
 startup-to-first-frame measurements. Use preparation/component stages to distinguish
 cache work from the subsequent app build/run. The native editor's own source and
 native-test preparation workflow above remains separate from this cache.
+
+Final `build-input-revalidation` reports its tool-artifact precheck, rediscovery,
+metadata comparison, source/SDK content hashing, native identity reinspection, and
+full tool-input postcheck separately. Discovery also reports worker execution and
+coordinator result-validation time. These subphases are nested within the enclosing
+stage durations; do not add them to those totals a second time.
 
 ## No SDK vendoring
 

@@ -71,6 +71,16 @@ separate cold receipt construction from warm validation; a reported cache hit al
 does not establish launch savings. Run controlled measurements without concurrent
 pub resolution or source writers, which intentionally trip the mutation fences.
 
+For desktop preparation/revalidation changes, run the focused
+`backend_artifacts_test.dart`, `desktop_build_inputs_test.dart`, and
+`desktop_tool_artifacts_test.dart` files under `test/tools/`, then the maintained
+`adele_tools` target. The discovery suite compares the real bootstrapped repository
+graph through the worker/coordinator boundary. Compare several serial warm builds
+with all tool/plugin components cached; separate worker execution, response
+validation, and the final input-fence subphases from Flutter build time. A launcher
+`run` total includes application lifetime; readiness/first-frame measurements need
+an explicit runtime observation rather than that total.
+
 ## Maintained test targets
 
 `dart tools/adele.dart test` runs all maintained targets with bounded package-level

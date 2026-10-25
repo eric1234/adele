@@ -18,6 +18,7 @@ void main() {
   late Directory root;
   late Directory external;
   late File compiler;
+  late File runtime;
   late File calls;
   late File hook;
   late File extraDependency;
@@ -108,6 +109,7 @@ void main() {
     repositoryRoot: root,
     cache: cache,
     dartExecutable: compiler.path,
+    runtimeExecutable: runtime.path,
     sdkFiles: [compiler.path, sdk.path],
     sdkVersion: sdkVersion,
   );
@@ -130,6 +132,8 @@ void main() {
     root = Directory.fromUri(sandbox.uri.resolve('repo/'))..createSync();
     external = Directory.fromUri(sandbox.uri.resolve('external package/'));
     compiler = File.fromUri(sandbox.uri.resolve('fake compiler'));
+    runtime = File.fromUri(sandbox.uri.resolve('fake runtime'))
+      ..writeAsStringSync('pinned runtime');
     calls = File.fromUri(sandbox.uri.resolve('calls'));
     hook = File.fromUri(sandbox.uri.resolve('compiler hook'));
     extraDependency = File.fromUri(sandbox.uri.resolve('extra dependency'));
@@ -507,6 +511,8 @@ ${restore ? '''  printf 'snapshot:packages/contract_codegen/bin/contract_codegen
     'membership',
     'artifact',
     'artifact edit and restore',
+    'runtime',
+    'runtime edit and restore',
   ]) {
     test('final validation fences $mutation changes after prepare', () async {
       await withDesktopArtifactCache(root, (cache) async {
@@ -540,6 +546,19 @@ ${restore ? '''  printf 'snapshot:packages/contract_codegen/bin/contract_codegen
             artifact.writeAsStringSync('tampered artifact');
             artifact.writeAsStringSync(original);
             artifact.setLastModifiedSync(DateTime.utc(2000));
+          case 'runtime':
+            runtime.writeAsStringSync('changed runtime');
+          case 'runtime edit and restore':
+            final original = runtime.readAsStringSync();
+            runtime.writeAsStringSync('changed runtime');
+            runtime.writeAsStringSync(original);
+            runtime.setLastModifiedSync(DateTime.utc(2000));
+        }
+        if (mutation.startsWith('runtime')) {
+          await expectLater(
+            tools.validateArtifacts(),
+            throwsA(_failure('changed during desktop preparation')),
+          );
         }
         await expectLater(
           tools.validate(),
