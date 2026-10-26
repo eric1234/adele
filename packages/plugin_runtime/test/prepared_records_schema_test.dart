@@ -201,6 +201,7 @@ void main() {
       expect(type.collectionLabel, 'Providers');
       expect(type.label, 'API');
       expect(type.description, 'Type\nprose');
+      expect(type.displayField, isNull);
       expect(type.fields.map((field) => field.id.value), [
         'text',
         'mode',
@@ -247,6 +248,78 @@ void main() {
   );
 
   test(
+    'display metadata is optional and captures a declared string field',
+    () async {
+      final directory = await install(
+        'plugin',
+        schema: _schema([
+          _type(id: 'org.example.plugin.legacy'),
+          {
+            ..._type(),
+            'displayField': 'title',
+            'fields': [
+              _field(id: 'enabled', type: 'boolean'),
+              {..._field(id: 'title'), 'required': true},
+            ],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final type = catalog.records.definition(
+        RecordTypeId('org.example.plugin.api'),
+      );
+      expect(type.displayField, RecordFieldId('title'));
+      expect(type.fields.map((field) => field.id.value), ['enabled', 'title']);
+      expect(catalog.records.definitions.last.displayField, isNull);
+      expect(type.validate(ConfigurationRecordId('work'), {'title': ''}), {
+        'title': '',
+      });
+      await File.fromUri(
+        directory.uri.resolve('records.schema.json'),
+      ).writeAsString('{}');
+      expect(
+        catalog.records.definitions.first.displayField,
+        RecordFieldId('title'),
+      );
+    },
+  );
+
+  test(
+    'real OpenAI schema declares its display-name without executable code',
+    () async {
+      var repository = Directory.current;
+      while (!File.fromUri(
+        repository.uri.resolve('tools/adele.dart'),
+      ).existsSync()) {
+        if (repository.parent.path == repository.path) {
+          throw StateError('Repository root not found.');
+        }
+        repository = repository.parent;
+      }
+      final source = await File.fromUri(
+        repository.uri.resolve('plugins/openai/records.schema.json'),
+      ).readAsString();
+      await install(
+        'openai',
+        id: 'dev.adele.openai',
+        schema: jsonDecode(source),
+        components: {},
+        settings: false,
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final type = catalog.records.definitions.single;
+      expect(type.id, RecordTypeId('dev.adele.openai.api-key'));
+      expect(type.displayField, RecordFieldId('display-name'));
+      expect(
+        type.validate(ConfigurationRecordId('work'), {'display-name': 'Work'}),
+        {'display-name': 'Work'},
+      );
+    },
+  );
+
+  test(
     'descriptions retain arbitrary text unlike single-line labels',
     () async {
       final descriptions = ['', '  ', 'Line\n\tprose\u0000\u2028\u2029'];
@@ -286,7 +359,10 @@ void main() {
         {
           ..._type(),
           'collection': id,
-          'fields': [_field(id: id)],
+          'displayField': id,
+          'fields': [
+            {..._field(id: id), 'required': true},
+          ],
         },
       ]),
     );
@@ -294,6 +370,7 @@ void main() {
     expect(catalog.issues, isEmpty);
     expect(catalog.records.definitions.single.collection.value, id);
     expect(catalog.records.definitions.single.fields.single.id.value, id);
+    expect(catalog.records.definitions.single.displayField, RecordFieldId(id));
   });
 
   for (final value in [-9223372036854775808, 9223372036854775807]) {
@@ -501,6 +578,50 @@ void main() {
         '$field $text': {..._type(), field: text},
     'description null': {..._type(), 'description': null},
     'description object': {..._type(), 'description': <String, Object?>{}},
+    for (final displayField in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      ' display-name',
+      'Display-name',
+      'display.name',
+      'x' * 65,
+      'missing',
+    ])
+      'displayField ${jsonEncode(displayField)}': {
+        ..._type(),
+        'displayField': displayField,
+        'fields': [
+          {..._field(), 'required': true},
+        ],
+      },
+    'displayField with no fields': {
+      ..._type(),
+      'displayField': 'display-name',
+      'fields': <Object?>[],
+    },
+    'displayField optional string': {
+      ..._type(),
+      'displayField': 'display-name',
+    },
+    for (final kind in ['boolean', 'integer', 'enum'])
+      'displayField $kind': {
+        ..._type(),
+        'displayField': 'display-name',
+        'fields': [
+          {
+            ..._field(type: kind),
+            'required': true,
+            if (kind == 'enum')
+              'options': [
+                {'value': 'name'},
+              ],
+          },
+        ],
+      },
     for (final fields in <Object?>[null, false, {}, 'fields'])
       'fields $fields': {..._type(), 'fields': fields},
     'duplicate fields': {
@@ -527,6 +648,7 @@ void main() {
       'owner',
       'nullable',
       'secret',
+      'displayField',
       'validate',
       'unknown',
       'minimum',

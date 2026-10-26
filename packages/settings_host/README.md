@@ -39,7 +39,12 @@ assert(reset.resolve<int>(id).source == SettingValueSource.defaultValue);
 The catalog in this example must declare `id` as an integer accepting `5000`.
 Operations are synchronous. Preserve CFG2's **one owning host isolate per process**
 coordination and route work off the desktop UI isolate; constructing several
-independent writer isolates is not supported. No application consumer is wired here.
+independent writer isolates is not supported. The desktop's
+[`GlobalSettingsService`](../../app/lib/core/global_settings_service.dart) leases
+one retained worker for scalar settings and records, shared across application
+owners. Its asynchronous request loop awaits each complete operation before
+admitting the next, including record scans. Closing an owner fences new requests
+and drains admitted operations; the last lease awaits worker exit.
 
 `GlobalSettingsSnapshot` is an immutable pending document plus its last loaded or
 saved whole-document baseline. Edits do not touch disk. `exists` describes that
@@ -151,9 +156,12 @@ directory scan. On Linux the scan waits behind any ordinary writer using the
 existing stable shared lock, then runs synchronously without exposing transaction
 staging in either collection or configuration-root entries. The actual reads and
 transactions remain synchronous on the owning host isolate; no additional actor
-is created. Future desktop editing must route these operations through the
-established serialized host I/O owner,
-not construct a writer in the UI isolate alongside the Settings worker.
+is created. Desktop collection loading and creation route through the established
+Settings worker using this adapter and the same underlying store as scalar
+settings, never a second UI-isolate writer. The service exposes immutable known
+values and filename/record-ID diagnostic messages, not documents or conditional
+baselines. It preserves whole-operation errors, including
+`ConfigurationConflictException` for occupied identities, without retry or merge.
 
 `enumerate` returns immutable filename-sorted `records` and `diagnostics`. A bad
 file does not hide healthy siblings. Each diagnostic retains the filename,
@@ -226,3 +234,8 @@ public semantic target `adele_settings` needs no Rust/native preparation.
 maintained stock preparation helper, discovers it without executable startup, and
 exercises independent records using real native TOML and conditional persistence.
 A test-only job declaration covers Boolean, bounded integer and enum reuse.
+The desktop's
+[`global_settings_service_test.dart`](../../app/test/core/global_settings_service_test.dart)
+covers worker-side record loading/creation, immutable presentation results,
+malformed siblings, native persistence, cross-owner scalar/record serialization,
+and shutdown fencing/draining using the existing process-lock fixture.

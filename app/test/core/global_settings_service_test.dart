@@ -7,7 +7,9 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -64,10 +66,14 @@ void main() {
   late GlobalSettingsService service;
   late File file;
 
-  GlobalSettingsService createOwner({SettingsCatalog? settings}) {
+  GlobalSettingsService createOwner({
+    SettingsCatalog? settings,
+    RecordCatalog? records,
+  }) {
     final result = GlobalSettingsService(
       catalog: settings ?? catalog,
       roots: roots,
+      records: records,
     );
     addTearDown(result.close);
     return result;
@@ -576,6 +582,452 @@ void main() {
       expect(target.readAsStringSync(), '"${enabled.value}" = false\n');
     });
   }, skip: !Platform.isLinux);
+
+  group('configuration records', () {
+    final collection = RecordCollectionId('jobs');
+    final type = RecordTypeId('${owner.value}.job');
+    final first = ConfigurationRecordId('first');
+    final second = ConfigurationRecordId('second');
+    final records = RecordCatalog([
+      RecordTypeDefinition(
+        id: type,
+        owner: PluginId(owner.value),
+        collection: collection,
+        collectionLabel: 'Jobs',
+        label: 'Job',
+        fields: [
+          RecordFieldDefinition(
+            id: RecordFieldId('name'),
+            label: 'Name',
+            type: const StringSettingType(),
+            required: true,
+          ),
+          RecordFieldDefinition(
+            id: RecordFieldId('enabled'),
+            label: 'Enabled',
+            type: const BooleanSettingType(),
+            required: false,
+          ),
+          RecordFieldDefinition(
+            id: RecordFieldId('count'),
+            label: 'Count',
+            type: IntegerSettingType(minimum: 0, maximum: 10),
+            required: false,
+          ),
+          RecordFieldDefinition(
+            id: RecordFieldId('mode'),
+            label: 'Mode',
+            type: EnumSettingType([
+              SettingEnumOption('brief'),
+              SettingEnumOption('detailed'),
+            ]),
+            required: false,
+          ),
+        ],
+      ),
+    ]);
+    late GlobalSettingsService recordService;
+
+    setUp(() => recordService = createOwner(records: records));
+
+    File recordFile(ConfigurationRecordId id) =>
+        File('${recordService.collectionPath(collection)}/${id.value}.toml');
+
+    String recordSource(String values, {RecordTypeId? recordType}) =>
+        'recordVersion = 1\nrecordType = "${recordType ?? type}"\n\n'
+        '[values]\n$values';
+
+    void seedRecord(ConfigurationRecordId id, String source) {
+      recordFile(id).parent.createSync(recursive: true);
+      recordFile(id).writeAsStringSync(source);
+    }
+
+    test(
+      'empty declarations and absent collections create no artifacts',
+      () async {
+        expect(service.records.definitions, isEmpty);
+        expect(recordService.records, same(records));
+        expect(
+          recordService.collectionPath(collection),
+          '${roots.configurationRoot}/jobs',
+        );
+        await expectLater(service.loadRecords(collection), throwsArgumentError);
+        // I/O overrides stay in this isolate. The real worker must do the scan.
+        final view = await IOOverrides.runZoned(
+          () => recordService.loadRecords(collection),
+          createFile: (_) => throw StateError('File access on the UI isolate.'),
+          createDirectory: (_) =>
+              throw StateError('Directory access on the UI isolate.'),
+        );
+        expect(view.records, isEmpty);
+        expect(view.diagnostics, isEmpty);
+        expect(() => view.records.clear(), throwsUnsupportedError);
+        expect(() => view.diagnostics.clear(), throwsUnsupportedError);
+        expect(temporary.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'malformed siblings retain attributable diagnostics and bytes',
+      () async {
+        seedRecord(first, recordSource('name = "Healthy"\nunknown = [1, 2]\n'));
+        final sources = <String, List<int>>{
+          'Bad.toml': utf8.encode(recordSource('name = "Bad ID"\n')),
+          'broken.toml': utf8.encode('invalid = ['),
+          'invalid-utf8.toml': [0xff],
+          'invalid-value.toml': utf8.encode(recordSource('name = true\n')),
+          'missing-name.toml': utf8.encode(recordSource('enabled = false\n')),
+          'notes.txt': utf8.encode('not a record'),
+          'unknown.toml': utf8.encode(
+            recordSource(
+              'name = "Unavailable"\n',
+              recordType: RecordTypeId('dev.absent.job'),
+            ),
+          ),
+        };
+        for (final entry in sources.entries) {
+          File(
+            '${recordFile(first).parent.path}/${entry.key}',
+          ).writeAsBytesSync(entry.value);
+        }
+        final healthyBytes = recordFile(first).readAsBytesSync();
+        final view = await recordService.loadRecords(collection);
+        expect(view.records.single.id, first);
+        expect(view.records.single.type, type);
+        expect(view.records.single.values, {'name': 'Healthy'});
+        expect(
+          () => view.records.single.values.clear(),
+          throwsUnsupportedError,
+        );
+        expect(view.diagnostics.map((item) => item.fileName), sources.keys);
+        expect(view.diagnostics[0].recordId, isNull);
+        expect(view.diagnostics[1].recordId, ConfigurationRecordId('broken'));
+        expect(view.diagnostics[1].message, contains('TomlException(parse)'));
+        expect(view.diagnostics[2].message, contains('FormatException'));
+        expect(view.diagnostics[3].message, contains('InvalidRecordValue'));
+        expect(
+          view.diagnostics[4].message,
+          contains('Required field is missing'),
+        );
+        expect(view.diagnostics[5].recordId, isNull);
+        expect(view.diagnostics[6].message, contains('RecordTypeNotFound'));
+        for (final entry in sources.entries) {
+          expect(
+            File(
+              '${recordFile(first).parent.path}/${entry.key}',
+            ).readAsBytesSync(),
+            entry.value,
+          );
+        }
+        expect(recordFile(first).readAsBytesSync(), healthyBytes);
+        expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'host revalidates unknown types and invalid fields without writing',
+      () async {
+        await expectLater(
+          recordService.createRecord(RecordTypeId('dev.absent.job'), first, {
+            'name': 'Unknown',
+          }),
+          throwsA(isA<RecordTypeNotFound>()),
+        );
+        for (final values in <Map<String, Object?>>[
+          {},
+          {'name': null},
+          {'name': true},
+          {'name': 'Name', 'enabled': 'true'},
+          {'name': 'Name', 'count': -1},
+          {'name': 'Name', 'mode': 'unknown'},
+        ]) {
+          await expectLater(
+            recordService.createRecord(type, first, values),
+            throwsA(
+              isA<InvalidRecordValue>()
+                  .having((error) => error.collection, 'collection', collection)
+                  .having((error) => error.recordId, 'record ID', first),
+            ),
+          );
+        }
+        await expectLater(
+          recordService.createRecord(type, first, {
+            'name': 'Name',
+            'unknown': 1,
+          }),
+          throwsA(isA<ConfigurationRecordFormatException>()),
+        );
+        for (final invalid in ['../escape', 'Bad', 'con', 'trailing.']) {
+          expect(
+            () => recordService.createRecord(
+              type,
+              ConfigurationRecordId(invalid),
+              {'name': 'Name'},
+            ),
+            throwsFormatException,
+          );
+        }
+        expect((await recordService.loadRecords(collection)).records, isEmpty);
+        expect(temporary.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'collection scan failures reject rather than replacing a valid view',
+      () async {
+        seedRecord(first, recordSource('name = "Retained"\n'));
+        final before = await recordService.loadRecords(collection);
+        recordFile(first).parent.deleteSync(recursive: true);
+        final obstruction = File(recordService.collectionPath(collection))
+          ..writeAsStringSync('not a directory');
+        await expectLater(
+          recordService.loadRecords(collection),
+          throwsA(isA<FileSystemException>()),
+        );
+        expect(before.records.single.values, {'name': 'Retained'});
+        expect(obstruction.readAsStringSync(), 'not a directory');
+        obstruction.deleteSync();
+        seedRecord(first, recordSource('name = "Reloaded"\n'));
+        expect(
+          (await recordService.loadRecords(collection)).records.single.values,
+          {'name': 'Reloaded'},
+        );
+        expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'native creation snapshots input and persists all scalar types off UI',
+      () async {
+        seed(
+          '# scalar and unknown content stay untouched\nunrelated = [1, 2]\n',
+        );
+        final scalarBytes = file.readAsBytesSync();
+        final values = <String, Object?>{
+          'name': '',
+          'enabled': false,
+          'count': 0,
+          'mode': 'detailed',
+        };
+        final creating = IOOverrides.runZoned(
+          () => recordService.createRecord(type, first, values),
+          createFile: (_) => throw StateError('File access on the UI isolate.'),
+          createDirectory: (_) =>
+              throw StateError('Directory access on the UI isolate.'),
+        );
+        values['name'] = 'Changed after admission';
+        final created = await creating;
+        expect(created.id, first);
+        expect(created.type, type);
+        expect(created.values, {
+          'name': '',
+          'enabled': false,
+          'count': 0,
+          'mode': 'detailed',
+        });
+        expect(() => created.values['name'] = 'Edited', throwsUnsupportedError);
+        final firstBytes = recordFile(first).readAsBytesSync();
+        final other = await recordService.createRecord(type, second, {
+          'name': 'Second\nline',
+        });
+        expect(other.values, {'name': 'Second\nline'});
+        expect(recordFile(first).readAsBytesSync(), firstBytes);
+        await recordService.close();
+        await service.close();
+        expect(IsolateNameServer.lookupPortByName(workerName), isNull);
+        final reopened = createOwner(records: records);
+        final loaded = await reopened.loadRecords(collection);
+        expect(loaded.records.map((record) => record.id), [first, second]);
+        expect(loaded.records.first.values, created.values);
+        expect(loaded.records.last.values, other.values);
+        expect(loaded.diagnostics, isEmpty);
+        expect(file.readAsBytesSync(), scalarBytes);
+        expect(recordFile(first).readAsBytesSync(), firstBytes);
+        expect(Directory(roots.localDataRoot).existsSync(), isFalse);
+        expect(Directory(roots.cacheRoot).existsSync(), isFalse);
+        expect(recordFile(first).parent.listSync(), hasLength(2));
+      },
+      skip: !Platform.isLinux,
+    );
+
+    test(
+      'duplicate IDs preserve valid, malformed and unknown-type occupants',
+      () async {
+        final unknown = ConfigurationRecordId('unknown');
+        seedRecord(first, recordSource('name = "Original"\n'));
+        seedRecord(second, 'malformed = [');
+        seedRecord(
+          unknown,
+          recordSource(
+            'name = "Unavailable"\n',
+            recordType: RecordTypeId('dev.absent.job'),
+          ),
+        );
+        for (final id in [first, second, unknown]) {
+          final bytes = recordFile(id).readAsBytesSync();
+          await expectLater(
+            recordService.createRecord(type, id, {'name': 'Replacement'}),
+            throwsA(
+              isA<ConfigurationConflictException>().having(
+                (error) => error.path,
+                'path',
+                recordFile(id).path,
+              ),
+            ),
+          );
+          expect(recordFile(id).readAsBytesSync(), bytes);
+        }
+        final view = await recordService.loadRecords(collection);
+        expect(view.records.single.values, {'name': 'Original'});
+        expect(view.diagnostics.map((item) => item.recordId), [
+          second,
+          unknown,
+        ]);
+        expect(file.existsSync(), isFalse);
+      },
+      skip: !Platform.isLinux,
+    );
+
+    test(
+      'separate owners serialize record and scalar requests and preserve baselines',
+      () async {
+        final other = createOwner(records: records);
+        final initial = await service.load();
+        final stale = await other.load();
+        final port = IsolateNameServer.lookupPortByName(workerName);
+        final completions = <String>[];
+        final creating = recordService
+            .createRecord(type, first, {'name': 'First'})
+            .then((value) {
+              completions.add('create');
+              return value;
+            });
+        final saving = service.save(initial, enabled, true).then((value) {
+          completions.add('save');
+          return value;
+        });
+        final listing = other.loadRecords(collection).then((value) {
+          completions.add('list');
+          return value;
+        });
+        expect((await creating).id, first);
+        final saved = await saving;
+        expectValue(saved, enabled, true, SettingValueSource.global);
+        expect((await listing).records.single.id, first);
+        expect(completions, ['create', 'save', 'list']);
+        expect(IsolateNameServer.lookupPortByName(workerName), port);
+        await expectLater(
+          other.save(stale, limit, 8),
+          throwsA(isA<ConfigurationConflictException>()),
+        );
+        await expectLater(service.loadRecords(collection), throwsArgumentError);
+        expectValue(
+          await service.reset(saved, enabled),
+          enabled,
+          false,
+          SettingValueSource.defaultValue,
+        );
+        await recordService.close();
+        final refreshed = await other.load();
+        await other.loadRecords(collection);
+        expect(
+          (await other.createRecord(type, second, {'name': 'Second'})).id,
+          second,
+        );
+        // Successful record reads/creates do not revoke a scalar edit baseline.
+        expectValue(
+          await other.save(refreshed, limit, 8),
+          limit,
+          8,
+          SettingValueSource.global,
+        );
+        expect(IsolateNameServer.lookupPortByName(workerName), port);
+      },
+      skip: !Platform.isLinux,
+    );
+
+    test(
+      'close fences and drains lock-blocked records plus another owner scalar save',
+      () async {
+        final initial = await service.load();
+        final lock = File(
+          '${roots.localStateRoot}/configuration/settings.lock',
+        );
+        lock.parent.createSync(recursive: true);
+        final helper = File(
+          'test/support/settings_lock.dart',
+        ).copySync('${temporary.path}/settings_lock.dart');
+        final process = await Process.start(
+          '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart',
+          [helper.path, lock.path],
+          workingDirectory: temporary.path,
+        );
+        addTearDown(() async {
+          process.kill();
+          await process.exitCode;
+        });
+        final stderr = process.stderr.transform(utf8.decoder).join();
+        expect(
+          await process.stdout
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())
+              .first,
+          'locked',
+        );
+        final creating = recordService.createRecord(type, first, {
+          'name': 'Drained',
+        });
+        final saving = service.save(initial, enabled, true);
+        final listing = recordService.loadRecords(collection);
+        final recordClosing = recordService.close();
+        final scalarClosing = service.close();
+        expect(recordService.close(), same(recordClosing));
+        var closed = false;
+        final closing = Future.wait([
+          recordClosing,
+          scalarClosing,
+        ]).then((_) => closed = true);
+        await expectLater(
+          recordService.loadRecords(collection),
+          throwsStateError,
+        );
+        await expectLater(
+          recordService.createRecord(type, second, {'name': 'Late'}),
+          throwsStateError,
+        );
+        await expectLater(recordService.load(), throwsStateError);
+        await expectLater(service.save(initial, limit, 8), throwsStateError);
+        // The existing process-lock fixture gates real native I/O, not a fake store.
+        await Future<void>.delayed(Duration.zero);
+        expect(closed, isFalse);
+        expect(file.existsSync(), isFalse);
+        expect(recordFile(first).existsSync(), isFalse);
+        expect(IsolateNameServer.lookupPortByName(workerName), isNotNull);
+        process.stdin.writeln('release');
+        await process.stdin.flush();
+        expect(await process.exitCode, 0, reason: await stderr);
+        expect((await creating).values, {'name': 'Drained'});
+        expectValue(await saving, enabled, true, SettingValueSource.global);
+        expect((await listing).records.single.id, first);
+        await closing;
+        expect(closed, isTrue);
+        expect(IsolateNameServer.lookupPortByName(workerName), isNull);
+        expect(recordFile(second).existsSync(), isFalse);
+        final successor = createOwner(records: records);
+        expect(
+          (await successor.loadRecords(collection)).records.single.id,
+          first,
+        );
+        expectValue(
+          await successor.load(),
+          enabled,
+          true,
+          SettingValueSource.global,
+        );
+      },
+      skip: !Platform.isLinux,
+    );
+  });
 
   test(
     'prepared snapshots reuse exact declarations and captured service values without discovery',

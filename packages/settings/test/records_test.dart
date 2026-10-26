@@ -146,8 +146,81 @@ void main() {
       expect(a.required, isFalse);
       expect(() => _type(fields: [z, z]), throwsArgumentError);
       expect(_type().fields, isEmpty);
+      expect(type.displayField, isNull);
+      expect(_type().displayField, isNull);
     },
   );
+
+  test(
+    'display field references a required string without changing values',
+    () {
+      final name = _field('title', const StringSettingType(), required: true);
+      final fields = <RecordFieldDefinition<Object>>[
+        _field('enabled', const BooleanSettingType()),
+        name,
+      ];
+      final type = _type(fields: fields, displayField: RecordFieldId('title'));
+      fields.clear();
+      expect(type.displayField, name.id);
+      expect(type.fields.map((field) => field.id.value), ['enabled', 'title']);
+      for (final value in ['', 'Work', '  ', 'Two\nlines\u0000']) {
+        expect(type.validate(_record, {'title': value}), {'title': value});
+      }
+      expect(
+        () => type.validate(_record, {}),
+        throwsA(_invalid('title', 'Required field is missing.')),
+      );
+      expect(
+        () => type.validate(_record, {'title': null}),
+        throwsA(_invalid('title', 'Expected a string.')),
+      );
+    },
+  );
+
+  test('display field must reference a declared field', () {
+    for (final fields in <List<RecordFieldDefinition<Object>>>[
+      [],
+      [_field('other', const StringSettingType(), required: true)],
+    ]) {
+      expect(
+        () => _type(fields: fields, displayField: RecordFieldId('title')),
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.name,
+            'name',
+            'displayField',
+          ),
+        ),
+      );
+    }
+  });
+
+  test('display field rejects optional strings and other scalar types', () {
+    for (final scalar in <SettingType<Object>>[
+      const StringSettingType(),
+      const BooleanSettingType(),
+      IntegerSettingType(),
+      EnumSettingType([SettingEnumOption('name')]),
+    ]) {
+      for (final required in [false, true]) {
+        if (required && scalar is StringSettingType) continue;
+        expect(
+          () => _type(
+            fields: [_field('title', scalar, required: required)],
+            displayField: RecordFieldId('title'),
+          ),
+          throwsA(
+            isA<ArgumentError>().having(
+              (error) => error.name,
+              'name',
+              'displayField',
+            ),
+          ),
+          reason: '${scalar.runtimeType}, required=$required',
+        );
+      }
+    }
+  });
 
   test(
     'labels reuse presentation rules; description remains optional prose',
@@ -412,6 +485,7 @@ RecordTypeDefinition _type({
   String collectionLabel = 'Providers',
   String label = '  API  ',
   Iterable<RecordFieldDefinition<Object>> fields = const [],
+  RecordFieldId? displayField,
 }) => RecordTypeDefinition(
   id: RecordTypeId(id),
   owner: PluginId(owner),
@@ -420,4 +494,5 @@ RecordTypeDefinition _type({
   label: label,
   description: 'Type\nexplanation',
   fields: fields,
+  displayField: displayField,
 );

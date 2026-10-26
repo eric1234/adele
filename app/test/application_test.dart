@@ -22,6 +22,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -38,6 +39,211 @@ import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
+  testWidgets(
+    'Global Settings creates and reloads stock provider records before a Project without runtime activation',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1100, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const sourceId = 'dev.adele.source-editor';
+      const folding = '$sourceId.enable-folding';
+      const openai = 'dev.adele.openai';
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-provider-settings-application-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final roots = _configurationRoots(directory);
+      for (final (id, label) in [(sourceId, 'Source'), (openai, 'OpenAI')]) {
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory.current.parent,
+          installationDirectory: Directory('${directory.path}/installed/$id'),
+          pluginId: id,
+          displayName: label,
+        );
+      }
+      final settingsFile = File('${roots.configurationRoot}/settings.toml');
+      await settingsFile.parent.create(recursive: true);
+      const originalSettings =
+          '# Ordinary Source preferences remain separate from records.\n'
+          '"$folding" = true # retain\n'
+          '"dev.unavailable.preference" = [1, 2]\n';
+      await settingsFile.writeAsString(originalSettings);
+      final runtime = NativeAdeleRuntime();
+      addTearDown(runtime.close);
+      try {
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: roots,
+            readChatGptConfiguration: () => null,
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: '${directory.path}/installed',
+              dartaotruntimeExecutable: '${directory.path}/absent-runtime',
+              hostArtifactPath: '${directory.path}/absent-host.aot',
+            ),
+          ),
+        );
+        await starting;
+        await tester.pumpAndSettle();
+        final catalog = runtime.plugins.catalog!;
+        expect(catalog.issues, isEmpty);
+        expect(catalog.settings.definitions.single.id.value, folding);
+        expect(catalog.records.definitions.single.id.value, '$openai.api-key');
+        for (final installation in catalog.installations) {
+          expect(installation.backendArtifactUri, isNull);
+          expect(installation.frontend, isNull);
+        }
+        final shell = tester.element(find.byType(AdeleShell));
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(runtime.plugins.host, isNull);
+        expect(runtime.plugins.backends, isEmpty);
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(runtime.extensions.discover(mainContentContributions), isEmpty);
+
+        Future<void> openSettings() async {
+          await tester.tap(find.byKey(const ValueKey('settings-button')));
+          await _settingsUntil(
+            tester,
+            () => find
+                .byKey(const ValueKey('setting-input-$folding'))
+                .evaluate()
+                .isNotEmpty,
+          );
+          expect(
+            tester
+                .widget<Switch>(
+                  find.byKey(const ValueKey('setting-input-$folding')),
+                )
+                .value,
+            isTrue,
+          );
+          expect(find.text('Effective value: true'), findsOneWidget);
+          await _settingsSection(tester, 'Providers');
+          await _settingsUntil(
+            tester,
+            () => find
+                .byKey(const ValueKey('records-add-providers'))
+                .evaluate()
+                .isNotEmpty,
+          );
+        }
+
+        await openSettings();
+        expect(
+          find.text('${roots.configurationRoot}/providers'),
+          findsOneWidget,
+        );
+        expect(
+          await Directory('${roots.configurationRoot}/providers').exists(),
+          isFalse,
+        );
+        for (final (id, name) in [
+          ('work-openai', 'Work OpenAI'),
+          ('personal-openai', 'Personal OpenAI'),
+        ]) {
+          await _createProviderRecord(tester, id, name);
+          final contents = await File(
+            '${roots.configurationRoot}/providers/$id.toml',
+          ).readAsString();
+          expect(contents, contains('recordVersion = 1'));
+          expect(contents, contains('recordType = "$openai.api-key"'));
+          expect(contents, contains('[values]'));
+          expect(contents, contains('display-name = "$name"'));
+          expect(contents, isNot(contains('endpoint')));
+          expect(contents, isNot(contains('credential')));
+          expect(await settingsFile.readAsString(), originalSettings);
+        }
+        expect(
+          find.byKey(const ValueKey('record-providers-work-openai')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('record-providers-personal-openai')),
+          findsOneWidget,
+        );
+        final work = File(
+          '${roots.configurationRoot}/providers/work-openai.toml',
+        );
+        final personal = File(
+          '${roots.configurationRoot}/providers/personal-openai.toml',
+        );
+        final personalBytes = await personal.readAsBytes();
+        final providers = await work.parent.list().toList();
+        expect(
+          providers.map((file) => file.uri.pathSegments.last),
+          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
+        );
+        final firstDialog = tester.element(find.byType(GlobalSettingsDialog));
+        await tester.tap(find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        expect(firstDialog.mounted, isFalse);
+        expect(tester.element(find.byType(AdeleShell)), same(shell));
+
+        // A manual edit distinguishes a fresh disk load from a cached UI list.
+        final edited = (await work.readAsString()).replaceFirst(
+          'Work OpenAI',
+          'Work OpenAI from disk',
+        );
+        await work.writeAsString(edited);
+        await openSettings();
+        await _settingsUntil(
+          tester,
+          () => find.text('Work OpenAI from disk').evaluate().isNotEmpty,
+        );
+        expect(find.text('Personal OpenAI'), findsOneWidget);
+        expect(
+          tester.element(find.byType(GlobalSettingsDialog)),
+          isNot(same(firstDialog)),
+        );
+        final reloaded = edited.replaceFirst(
+          'Work OpenAI from disk',
+          'Work OpenAI reloaded',
+        );
+        await work.writeAsString(reloaded);
+        await tester.pump();
+        expect(find.text('Work OpenAI from disk'), findsOneWidget);
+        await tester.tap(
+          find.byKey(const ValueKey('records-reload-providers')),
+        );
+        await _settingsUntil(
+          tester,
+          () => find.text('Work OpenAI reloaded').evaluate().isNotEmpty,
+        );
+        expect(await work.readAsString(), reloaded);
+        expect(await personal.readAsBytes(), personalBytes);
+        await _settingsSection(tester, 'Preferences');
+        expect(
+          tester
+              .widget<Switch>(
+                find.byKey(const ValueKey('setting-input-$folding')),
+              )
+              .value,
+          isTrue,
+        );
+        expect(find.text('Effective value: true'), findsOneWidget);
+        expect(await settingsFile.readAsString(), originalSettings);
+        await tester.tap(find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(find.byType(MainContentHost), findsNothing);
+        expect(runtime.plugins.host, isNull);
+        expect(runtime.plugins.backends, isEmpty);
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(await Directory(roots.localDataRoot).exists(), isFalse);
+        expect(await Directory(roots.cacheRoot).exists(), isFalse);
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+    skip: !Platform.isLinux,
+  );
+
   testWidgets(
     'Global Settings opens before a Project with no plugins and fences the Command Palette shortcut',
     (tester) => tester.runAsync(() async {
@@ -287,24 +493,32 @@ void main() {
         addTearDown(() => directory.delete(recursive: true));
         final roots = _configurationRoots(directory);
         final installed = Directory('${directory.path}/installed/source');
+        final openai = Directory('${directory.path}/installed/openai');
         await publishStockPluginInstallation(
           repositoryRoot: Directory.current.parent,
           installationDirectory: installed,
           pluginId: owner,
           displayName: 'Source',
         );
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory.current.parent,
+          installationDirectory: openai,
+          pluginId: 'dev.adele.openai',
+          displayName: 'OpenAI',
+        );
+        final affected = recordFailure ? openai : installed;
         final manifestFile = File(
-          '${installed.path}/adele_plugin.installation.json',
+          '${affected.path}/adele_plugin.installation.json',
         );
         final manifest =
             jsonDecode(await manifestFile.readAsString())
                 as Map<String, dynamic>;
         if (recordFailure) {
-          manifest['recordsSchema'] = 'records.schema.json';
+          final schema = File('${openai.path}/records.schema.json');
           if (failure == 'malformed records') {
-            await File(
-              '${installed.path}/records.schema.json',
-            ).writeAsString('{}');
+            await schema.writeAsString('{}');
+          } else {
+            await schema.delete();
           }
         } else if (scalarFailure) {
           await File(
@@ -339,7 +553,7 @@ void main() {
           await tester.pumpAndSettle();
           final catalog = runtime.plugins.catalog!;
           final issue = catalog.issues.single;
-          expect(issue.installationDirectory.path, installed.path);
+          expect(issue.installationDirectory.path, affected.path);
           expect(issue.isRecordsSchemaIssue, recordFailure);
           expect(issue.isSettingsSchemaIssue, scalarFailure);
           expect(
@@ -350,16 +564,23 @@ void main() {
                       : PreparedPluginComponent.backend
                 : isNull,
           );
-          expect(catalog.installations, hasLength(installationFailure ? 0 : 1));
+          expect(catalog.installations, hasLength(installationFailure ? 1 : 2));
           expect(
             catalog.settings.definitions.map((value) => value.id.value),
             hasSettings ? [setting] : isEmpty,
           );
           if (!installationFailure) {
-            expect(catalog.installations.single.recordsSchema, isNull);
-            expect(catalog.installations.single.backendArtifactUri, isNull);
-            expect(catalog.installations.single.frontend, isNull);
+            final source = catalog.installations.singleWhere(
+              (value) => value.metadata.id.value == owner,
+            );
+            expect(source.recordsSchema, isNull);
+            expect(source.backendArtifactUri, isNull);
+            expect(source.frontend, isNull);
           }
+          expect(
+            catalog.records.definitions.map((value) => value.id.value),
+            recordFailure ? isEmpty : ['dev.adele.openai.api-key'],
+          );
           expect(runtime.plugins.state, ApplicationPluginState.ready);
           expect(runtime.plugins.host, isNull);
           expect(runtime.plugins.backends, isEmpty);
@@ -393,6 +614,18 @@ void main() {
                 ? ['${issue.installationDirectory.path}: ${issue.message}']
                 : isEmpty,
           );
+          expect(
+            dialog.recordDeclarationIssues!(),
+            recordFailure || installationFailure
+                ? ['${issue.installationDirectory.path}: ${issue.message}']
+                : isEmpty,
+          );
+          expect(
+            find.textContaining('Record declarations unavailable'),
+            findsNothing,
+            reason:
+                'Record diagnostics belong to record management, not Preferences.',
+          );
 
           if (hasSettings) {
             final input = find.byKey(const ValueKey('setting-input-$setting'));
@@ -416,6 +649,42 @@ void main() {
               );
             }
           }
+          if (recordFailure || installationFailure) {
+            await _settingsSection(tester, 'Record diagnostics');
+            expect(
+              find.textContaining('Record declarations unavailable'),
+              findsOneWidget,
+            );
+            expect(find.textContaining(issue.message), findsOneWidget);
+            expect(
+              find.textContaining('Setting declarations unavailable'),
+              findsNothing,
+            );
+          }
+          if (!recordFailure) {
+            await _settingsSection(tester, 'Providers');
+            await _settingsUntil(
+              tester,
+              () => find
+                  .byKey(const ValueKey('records-add-providers'))
+                  .evaluate()
+                  .isNotEmpty,
+            );
+            if (Platform.isLinux) {
+              await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
+              expect(
+                await File(
+                  '${roots.configurationRoot}/providers/work-openai.toml',
+                ).readAsString(),
+                contains('display-name = "Work OpenAI"'),
+              );
+            }
+          } else {
+            expect(
+              await Directory('${roots.configurationRoot}/providers').exists(),
+              isFalse,
+            );
+          }
           // Routing never consumes or deletes the original catalog diagnostic.
           expect(runtime.plugins.catalog, same(catalog));
           expect(catalog.issues.single, same(issue));
@@ -429,6 +698,206 @@ void main() {
           await runtime.close();
         }
       }),
+    );
+  }
+
+  for (final recordsConflict in [false, true]) {
+    testWidgets(
+      'Global Settings isolates ${recordsConflict ? 'record collection label' : 'scalar ID'} aggregation conflicts',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1100, 1000));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        const sourceId = 'dev.adele.source-editor';
+        const folding = '$sourceId.enable-folding';
+        final directory = await Directory.systemTemp.createTemp(
+          'adele-settings-aggregation-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final roots = _configurationRoots(directory);
+        final source = Directory('${directory.path}/installed/source');
+        final openai = Directory('${directory.path}/installed/openai');
+        for (final (installed, id, label) in [
+          (source, sourceId, 'Source'),
+          (openai, 'dev.adele.openai', 'OpenAI'),
+        ]) {
+          await publishStockPluginInstallation(
+            repositoryRoot: Directory.current.parent,
+            installationDirectory: installed,
+            pluginId: id,
+            displayName: label,
+          );
+        }
+        if (recordsConflict) {
+          final manifestFile = File(
+            '${source.path}/adele_plugin.installation.json',
+          );
+          final manifest =
+              jsonDecode(await manifestFile.readAsString())
+                  as Map<String, dynamic>;
+          manifest['recordsSchema'] = 'records.schema.json';
+          final schema =
+              jsonDecode(
+                    await File(
+                      '${openai.path}/records.schema.json',
+                    ).readAsString(),
+                  )
+                  as Map<String, dynamic>;
+          final type =
+              (schema['recordTypes'] as List).single as Map<String, dynamic>;
+          type['id'] = '$sourceId.provider';
+          type['collectionLabel'] = 'Conflicting provider label';
+          await File(
+            '${source.path}/records.schema.json',
+          ).writeAsString(jsonEncode(schema));
+          await manifestFile.writeAsString(jsonEncode(manifest));
+        } else {
+          // The stock setting is legal beneath either owner namespace. Both
+          // installations remain valid; only cross-installation aggregation fails.
+          final duplicate = await Directory(
+            '${directory.path}/installed/duplicate',
+          ).create();
+          final manifest =
+              jsonDecode(
+                    await File(
+                      '${source.path}/adele_plugin.installation.json',
+                    ).readAsString(),
+                  )
+                  as Map<String, dynamic>;
+          (manifest['metadata'] as Map<String, dynamic>)['id'] = 'dev.adele';
+          await File(
+            '${duplicate.path}/adele_plugin.installation.json',
+          ).writeAsString(jsonEncode(manifest));
+          await File(
+            '${source.path}/settings.schema.json',
+          ).copy('${duplicate.path}/settings.schema.json');
+        }
+        final runtime = NativeAdeleRuntime();
+        addTearDown(runtime.close);
+        try {
+          late Future<void> starting;
+          await tester.pumpWidget(
+            AdeleApplication(
+              createRuntime: () => runtime,
+              configurationRoots: roots,
+              readChatGptConfiguration: () => null,
+              bootstrapPlugins: (plugins) => starting = plugins.start(
+                installationRoot: '${directory.path}/installed',
+              ),
+            ),
+          );
+          await starting;
+          await tester.pumpAndSettle();
+          final catalog = runtime.plugins.catalog!;
+          expect(catalog.issues, isEmpty);
+          if (recordsConflict) {
+            expect(
+              () => catalog.records,
+              throwsA(isA<ConflictingRecordCollectionLabel>()),
+            );
+            expect(catalog.settings.definitions.single.id.value, folding);
+          } else {
+            expect(() => catalog.settings, throwsA(isA<DuplicateSettingId>()));
+            expect(
+              catalog.records.definitions.single.id.value,
+              'dev.adele.openai.api-key',
+            );
+          }
+          expect(runtime.plugins.state, ApplicationPluginState.ready);
+          expect(runtime.plugins.host, isNull);
+          await tester.tap(find.byKey(const ValueKey('settings-button')));
+          await _settingsUntil(
+            tester,
+            () => find
+                .byKey(const ValueKey('settings-section'))
+                .evaluate()
+                .isNotEmpty,
+          );
+          final dialog = tester.widget<GlobalSettingsDialog>(
+            find.byType(GlobalSettingsDialog),
+          );
+          expect(
+            dialog.declarationIssues!(),
+            recordsConflict ? isEmpty : hasLength(1),
+          );
+          expect(
+            dialog.recordDeclarationIssues!(),
+            recordsConflict ? hasLength(1) : isEmpty,
+          );
+          if (recordsConflict) {
+            expect(
+              find.textContaining('ConflictingRecordCollectionLabel'),
+              findsNothing,
+            );
+            await _settingsSection(tester, 'Record diagnostics');
+            expect(
+              find.textContaining('ConflictingRecordCollectionLabel'),
+              findsOneWidget,
+            );
+            await _settingsSection(tester, 'Preferences');
+            final input = find.byKey(const ValueKey('setting-input-$folding'));
+            await _settingsUntil(tester, () => input.evaluate().isNotEmpty);
+            expect(tester.widget<Switch>(input).value, isFalse);
+            await tester.ensureVisible(input);
+            await tester.tap(input);
+            final save = find.byKey(const ValueKey('setting-save-$folding'));
+            await tester.ensureVisible(save);
+            await tester.tap(save);
+            await _settingsUntil(
+              tester,
+              () => find.text('Effective value: true').evaluate().isNotEmpty,
+            );
+            expect(
+              await File(
+                '${roots.configurationRoot}/settings.toml',
+              ).readAsString(),
+              contains('"$folding" = true'),
+            );
+            expect(
+              await Directory('${roots.configurationRoot}/providers').exists(),
+              isFalse,
+            );
+          } else {
+            expect(find.textContaining('DuplicateSettingId'), findsOneWidget);
+            expect(
+              find.byKey(const ValueKey('setting-input-$folding')),
+              findsNothing,
+            );
+            await _settingsSection(tester, 'Providers');
+            await _settingsUntil(
+              tester,
+              () => find
+                  .byKey(const ValueKey('records-add-providers'))
+                  .evaluate()
+                  .isNotEmpty,
+            );
+            await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
+            expect(
+              await File('${roots.configurationRoot}/settings.toml').exists(),
+              isFalse,
+            );
+            expect(
+              await File(
+                '${roots.configurationRoot}/providers/work-openai.toml',
+              ).readAsString(),
+              contains('display-name = "Work OpenAI"'),
+            );
+          }
+          expect(find.text('No Project is open'), findsOneWidget);
+          expect(
+            runtime.registry.providersFor(modelProviderCapability),
+            isEmpty,
+          );
+          expect(tester.takeException(), isNull);
+          expect(
+            await tester.binding.handleRequestAppExit(),
+            AppExitResponse.exit,
+          );
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await runtime.close();
+        }
+      }),
+      skip: !Platform.isLinux,
     );
   }
 
@@ -1196,7 +1665,9 @@ PlatformStorageRoots _configurationRoots(Directory directory) =>
 
 Future<void> _settingsUntil(WidgetTester tester, bool Function() ready) async {
   final clock = Stopwatch()..start();
-  while (!ready()) {
+  await tester.pump();
+  while (!ready() ||
+      find.byType(LinearProgressIndicator).evaluate().isNotEmpty) {
     if (clock.elapsed >= const Duration(seconds: 10)) {
       fail('Timed out waiting for Global Settings.');
     }
@@ -1204,6 +1675,48 @@ Future<void> _settingsUntil(WidgetTester tester, bool Function() ready) async {
     await tester.pump();
   }
   await tester.pumpAndSettle();
+}
+
+Future<void> _settingsSection(WidgetTester tester, String label) async {
+  await tester.tap(find.byKey(const ValueKey('settings-section')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
+  await _settingsUntil(tester, () => true);
+}
+
+Future<void> _createProviderRecord(
+  WidgetTester tester,
+  String id,
+  String name,
+) async {
+  final add = find.byKey(const ValueKey('records-add-providers'));
+  await _settingsUntil(
+    tester,
+    () => tester.widget<FilledButton>(add).onPressed != null,
+  );
+  await tester.ensureVisible(add);
+  await tester.tap(add);
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byKey(const ValueKey('record-id-providers')), id);
+  final presence = find.byKey(
+    const ValueKey('record-presence-providers-display-name'),
+  );
+  await tester.ensureVisible(presence);
+  await tester.tap(presence);
+  await tester.pumpAndSettle();
+  await tester.enterText(
+    find.byKey(const ValueKey('record-input-providers-display-name')),
+    name,
+  );
+  await tester.pump();
+  final create = find.byKey(const ValueKey('record-create-providers'));
+  await tester.ensureVisible(create);
+  await tester.tap(create);
+  await _settingsUntil(
+    tester,
+    () => find.byKey(ValueKey('record-providers-$id')).evaluate().isNotEmpty,
+  );
+  expect(find.text(name), findsOneWidget);
 }
 
 final class _EnvironmentChannel implements AdeleRequestChannel {

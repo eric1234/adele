@@ -17,13 +17,16 @@ base class GlobalSettingsService {
   GlobalSettingsService({
     required this.catalog,
     required PlatformStorageRoots roots,
-  }) : _roots = roots,
+    RecordCatalog? records,
+  }) : records = records ?? RecordCatalog([]),
+       _roots = roots,
        filePath = Directory(
          roots.configurationRoot,
        ).uri.resolve('settings.toml').toFilePath(),
        _worker = _SettingsWorker.acquire();
 
   final SettingsCatalog catalog;
+  final RecordCatalog records;
   final String filePath;
   final PlatformStorageRoots _roots;
   final _SettingsWorker _worker;
@@ -33,22 +36,61 @@ base class GlobalSettingsService {
   Future<void>? _closing;
 
   /// A failed load invalidates this owner's previous edit baseline.
-  Future<GlobalSettingsView> load() => _enqueue(_Operation.load);
+  Future<GlobalSettingsView> load() => _enqueueSettings(_Operation.load);
 
   Future<GlobalSettingsView> save(
     GlobalSettingsView expected,
     SettingId id,
     Object value,
-  ) => _enqueue(_Operation.save, expected: expected, id: id, value: value);
+  ) => _enqueueSettings(
+    _Operation.save,
+    expected: expected,
+    id: id,
+    value: value,
+  );
 
   Future<GlobalSettingsView> reset(GlobalSettingsView expected, SettingId id) =>
-      _enqueue(_Operation.reset, expected: expected, id: id);
+      _enqueueSettings(_Operation.reset, expected: expected, id: id);
 
-  Future<GlobalSettingsView> _enqueue(
+  Future<RecordCollectionView> loadRecords(RecordCollectionId collection) =>
+      _enqueue(_Operation.loadRecords, collection: collection);
+
+  Future<RecordView> createRecord(
+    RecordTypeId type,
+    ConfigurationRecordId id,
+    Map<String, Object?> values,
+  ) => _enqueue(
+    _Operation.createRecord,
+    recordType: type,
+    recordId: id,
+    recordValues: Map.unmodifiable(values),
+  );
+
+  String collectionPath(RecordCollectionId collection) => Directory(
+    _roots.configurationRoot,
+  ).uri.resolve(collection.value).toFilePath();
+
+  Future<GlobalSettingsView> _enqueueSettings(
     _Operation operation, {
     GlobalSettingsView? expected,
     SettingId? id,
     Object? value,
+  }) => _enqueue<_Values>(
+    operation,
+    expected: expected,
+    id: id,
+    value: value,
+  ).then((loaded) => GlobalSettingsView._(catalog, _identity, loaded));
+
+  Future<T> _enqueue<T>(
+    _Operation operation, {
+    GlobalSettingsView? expected,
+    SettingId? id,
+    Object? value,
+    RecordCollectionId? collection,
+    RecordTypeId? recordType,
+    ConfigurationRecordId? recordId,
+    Map<String, Object?>? recordValues,
   }) {
     if (_closing != null) {
       return Future.error(StateError('The settings service is closed.'));
@@ -59,20 +101,23 @@ base class GlobalSettingsService {
       );
     }
     final result = _pending.then((_) async {
-      final loaded =
-          await _worker.request(
-                _Request(
-                  owner: _owner,
-                  operation: operation,
-                  catalog: catalog,
-                  roots: _roots,
-                  revision: expected?._revision,
-                  setting: id,
-                  value: value,
-                ),
-              )
-              as _Values;
-      return GlobalSettingsView._(catalog, _identity, loaded);
+      return await _worker.request(
+            _Request(
+              owner: _owner,
+              operation: operation,
+              catalog: catalog,
+              records: records,
+              roots: _roots,
+              revision: expected?._revision,
+              setting: id,
+              value: value,
+              collection: collection,
+              recordType: recordType,
+              recordId: recordId,
+              recordValues: recordValues,
+            ),
+          )
+          as T;
     });
     _pending = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
@@ -102,26 +147,70 @@ final class GlobalSettingsView {
   final int _revision;
 }
 
-enum _Operation { load, save, reset, release }
+/// Immutable presentation data with no record document or edit baseline.
+final class RecordCollectionView {
+  RecordCollectionView._(ConfigurationRecordEnumeration result)
+    : records = List.unmodifiable(result.records.map(RecordView._)),
+      diagnostics = List.unmodifiable(
+        result.diagnostics.map(RecordDiagnosticView._),
+      );
+
+  final List<RecordView> records;
+  final List<RecordDiagnosticView> diagnostics;
+}
+
+final class RecordView {
+  RecordView._(ConfigurationRecordSnapshot record)
+    : id = record.id,
+      type = record.type.id,
+      values = Map.unmodifiable(record.values);
+
+  final ConfigurationRecordId id;
+  final RecordTypeId type;
+  final Map<String, Object> values;
+}
+
+final class RecordDiagnosticView {
+  RecordDiagnosticView._(ConfigurationRecordDiagnostic diagnostic)
+    : fileName = diagnostic.fileName,
+      recordId = diagnostic.recordId,
+      message = diagnostic.error.toString();
+
+  final String fileName;
+  final ConfigurationRecordId? recordId;
+  final String message;
+}
+
+enum _Operation { load, save, reset, loadRecords, createRecord, release }
 
 final class _Request {
   const _Request({
     required this.owner,
     required this.operation,
     this.catalog,
+    this.records,
     this.roots,
     this.revision,
     this.setting,
     this.value,
+    this.collection,
+    this.recordType,
+    this.recordId,
+    this.recordValues,
   });
 
   final int owner;
   final _Operation operation;
   final SettingsCatalog? catalog;
+  final RecordCatalog? records;
   final PlatformStorageRoots? roots;
   final int? revision;
   final SettingId? setting;
   final Object? value;
+  final RecordCollectionId? collection;
+  final RecordTypeId? recordType;
+  final ConfigurationRecordId? recordId;
+  final Map<String, Object?>? recordValues;
 }
 
 final class _Values {
@@ -286,13 +375,42 @@ final class _SettingsOwner {
     : store = GlobalSettingsStore(
         store: ConfigurationStore(request.roots!),
         catalog: request.catalog!,
-      );
+      ) {
+    records = ConfigurationRecordStore(
+      store: store.store,
+      catalog: request.records!,
+    );
+  }
 
   final GlobalSettingsStore store;
+  late final ConfigurationRecordStore records;
   GlobalSettingsSnapshot? baseline;
   int revision = 0;
 
-  _Values apply(_Request request) {
+  Future<Object> apply(_Request request) async {
+    switch (request.operation) {
+      case _Operation.loadRecords:
+        return RecordCollectionView._(
+          await records.enumerate(request.collection!),
+        );
+      case _Operation.createRecord:
+        return RecordView._(
+          await records.create(
+            request.recordType!,
+            request.recordId!,
+            request.recordValues!,
+          ),
+        );
+      case _Operation.load:
+      case _Operation.save:
+      case _Operation.reset:
+        return _applySettings(request);
+      case _Operation.release:
+        throw StateError('Release must remove the owner.');
+    }
+  }
+
+  _Values _applySettings(_Request request) {
     final GlobalSettingsSnapshot saved;
     if (request.operation == _Operation.load) {
       baseline = null;
@@ -323,11 +441,13 @@ final class _SettingsOwner {
   }
 }
 
-void _settingsWorkerMain(SendPort reply) {
+Future<void> _settingsWorkerMain(SendPort reply) async {
   final requests = ReceivePort();
   final owners = <int, _SettingsOwner>{};
   reply.send(requests.sendPort);
-  requests.listen((Object? message) {
+  // Await the entire operation across all owners, including asynchronous scans.
+  // An async listen callback would admit overlapping record and scalar work.
+  await for (final message in requests) {
     if (message == null) {
       requests.close();
       return;
@@ -339,7 +459,7 @@ void _settingsWorkerMain(SendPort reply) {
         owners.remove(request.owner);
         result = null;
       } else {
-        result = owners
+        result = await owners
             .putIfAbsent(request.owner, () => _SettingsOwner(request))
             .apply(request);
       }
@@ -347,5 +467,5 @@ void _settingsWorkerMain(SendPort reply) {
     } on Object catch (error, stack) {
       reply.send((id, null, error, stack));
     }
-  });
+  }
 }

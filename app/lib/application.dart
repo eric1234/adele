@@ -37,6 +37,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -130,6 +131,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   DialogRoute<ResolvedCommand>? _palette;
   DialogRoute<void>? _settingsDialog;
   GlobalSettingsService? _settings;
+  Object? _settingsCatalogFailure;
+  Object? _recordsCatalogFailure;
   PlatformStorageRoots? _configurationRoots;
   Object? _configurationLocationError;
   bool _preparingExit = false;
@@ -384,8 +387,28 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         '${_bootstrapError ?? _runtime.plugins.failure ?? 'Startup is not complete; try Reload.'}',
       );
     }
+    // Reject a failed domain's entire aggregate without hiding the other domain.
+    // The dialog reports these failures separately from per-installation issues.
+    SettingsCatalog settings;
+    RecordCatalog records;
+    try {
+      settings = catalog.settings;
+    } on DuplicateSettingId catch (error) {
+      _settingsCatalogFailure = error;
+      settings = SettingsCatalog([]);
+    }
+    try {
+      records = catalog.records;
+    } on DuplicateRecordTypeId catch (error) {
+      _recordsCatalogFailure = error;
+      records = RecordCatalog([]);
+    } on ConflictingRecordCollectionLabel catch (error) {
+      _recordsCatalogFailure = error;
+      records = RecordCatalog([]);
+    }
     return _settings = GlobalSettingsService(
-      catalog: catalog.settings,
+      catalog: settings,
+      records: records,
       roots: _configurationRoots!,
     );
   }
@@ -419,11 +442,23 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       builder: (_) => GlobalSettingsDialog(
         service: _settingsService,
         declarationIssues: () => [
+          if (_settingsCatalogFailure case final failure?)
+            'Scalar catalog aggregation failed: $failure',
           for (final issue
               in _runtime.plugins.catalog?.issues ??
                   <PreparedPluginCatalogIssue>[])
             if (issue.isSettingsSchemaIssue ||
                 (issue.component == null && !issue.isRecordsSchemaIssue))
+              '${issue.installationDirectory.path}: ${issue.message}',
+        ],
+        recordDeclarationIssues: () => [
+          if (_recordsCatalogFailure case final failure?)
+            'Record catalog aggregation failed: $failure',
+          for (final issue
+              in _runtime.plugins.catalog?.issues ??
+                  <PreparedPluginCatalogIssue>[])
+            if (issue.isRecordsSchemaIssue ||
+                (issue.component == null && !issue.isSettingsSchemaIssue))
               '${issue.installationDirectory.path}: ${issue.message}',
         ],
       ),

@@ -273,24 +273,42 @@ Project is open, in Task Browser, or over an active Session. It uses the existin
 application Navigator's dialog route without replacing Main Content or changing
 workbench ownership. Missing or failed plugin frontends do not remove Settings.
 The dialog uses the startup-discovered prepared catalog, not executable plugin UI
-or a second installation scan. Declaration metadata supplies categories, sections,
-labels, descriptions, scalar controls, and search terms.
+or a second installation scan. Preferences is the default view; declared record
+collections appear alongside it using their catalog labels. Switching views retains
+scalar controls and unsaved scalar/record drafts, with hidden controls excluded from
+keyboard focus. Declaration metadata supplies categories, sections, labels,
+descriptions, scalar controls, and search terms.
 
 The dialog loads current persisted configuration on each opening, independently
 of the immutable frontend startup snapshot. Effective values and Default/Global
 provenance remain visible while drafts are edited. Save is deliberate and per
 setting; Reset removes an override instead of copying its default. Text input
 does not write on each keystroke, enum labels are not serialized, and ordinary
-strings accept multiple lines. Reload discards drafts and reads the current file.
+strings accept multiple lines. Preferences Reload discards scalar drafts and reads
+the current file.
 Conflicts require this explicit reload rather than automatic merge or retry.
 Other failures also require Reload to confirm disk state; a cleanup or lost-response
 failure can follow publication and is not reported as proof that nothing was saved.
 
+Collection views list valid records in stable ID order, show declared display titles
+(or ID fallback), and expose read-only declared values, type and immutable identity.
+Malformed or unavailable records remain attributable filename diagnostics alongside
+healthy siblings. Collection Reload reads disk without discarding a creation draft;
+directory-wide failures are not empty collections. Add selects a declared type and
+generates its fields, with explicit stable-ID entry and presence distinct from false,
+zero, or empty strings. Shared scalar controls and `RecordTypeDefinition.validate`
+provide generic validation; the worker validates again before R1 persistence.
+Duplicate IDs, including malformed or unknown-type occupants, are never overwritten.
+Successful Create clears the committed draft and shows the persisted record.
+
 `GlobalSettingsService` keeps native TOML operations and conditional persistence
 off the UI isolate. Main-isolate service owners lease one serial worker, with an
 ownership guard against independent Flutter-engine writers. Each owner retains
-its own whole-document baseline. Closing the dialog does not cancel a transaction;
-application shutdown fences and drains admitted requests before releasing its lease.
+its own scalar whole-document baseline. Awaited record scans/creates and scalar
+operations settle serially across all owners; record presentation values never
+carry native documents or persistence baselines. Closing the dialog does not cancel
+a transaction. Application shutdown fences and drains admitted requests before
+releasing its lease.
 `AdeleApplication.configurationRoots` injects the same temporary config/state roots
 for startup and editing tests. See the
 [canonical configuration ownership](../docs/architecture/profiles-and-configuration.md#configuration-persistence)
@@ -299,10 +317,17 @@ for process coordination and Linux-versus-other-platform write limits.
 Malformed TOML and inaccessible files display diagnostics and the file path without
 being overwritten. Invalid scalar overrides are not defaulted; Reset can recover
 them through the existing settings API. Unsupported structures require manual repair
-and Reload. Missing/invalid prepared schemas remain visible diagnostics, and duplicate
-declarations fail aggregation. Repairing installation declarations requires restart.
-No Profiles, scope selector, runtime restart command, or live editor reconfiguration
-is implemented.
+and Reload. Scalar and record declaration failures appear in their respective areas
+without hiding a healthy independent catalog; installation-wide issues appear in
+both. Missing/invalid schemas remain visible, and duplicate declarations or conflicting
+collection labels reject aggregation. Repairing declarations requires restart.
+
+All configuration still uses one global layer. Existing-record editing and deletion
+are deferred to R2b. Provider records are nonsecret definitions, not consumed by the
+runtime: creation does not request credentials, authenticate, activate a provider,
+change Chat, or alter temporary environment-variable startup. Restart guidance applies
+to scalar settings, not record activation. Profiles, scopes, credentials, OAuth,
+runtime restart commands, and live editor reconfiguration remain unimplemented.
 
 ### Prepared Capability access
 
