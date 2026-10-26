@@ -119,12 +119,13 @@ discovery of every package containing tests.
 | `--jobs N` | Positive integer controlling concurrent target processes; `--jobs=N` also works. Cannot be combined with `--target`. An explicit value may exceed the default of two. |
 | `--target NAME` | Runs exactly one named maintained target. Unknown names fail; `--target=NAME` also works, including with `--ci`. |
 | `--ci` | Valid only with `--target`. Applies that target's CI runner arguments/concurrency policy. It is not a generic credential/environment scrub. |
-| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--target adele_desktop --ci`, with `N` from 1 through 4. Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
+| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--ci` and either `--target adele_desktop` (1 through 4) or `--target git_backend` (1 through 7). Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
 runs each matrix entry with `test --target NAME --ci` after independent bootstrap,
-adding `--shard N` for the four desktop entries. Each gets an independent runner
-and the desktop target's normal native preparation and setup metadata. Shards are
+adding `--shard N` for the four desktop and seven Git backend entries. Each gets an
+independent runner and its target's normal preparation and setup metadata. All Git
+and desktop shards retain the Linux PTY prerequisites. Shards are
 emitted first to encourage early scheduling, not to guarantee runner launch order.
 The local two-process default does not limit CI matrix parallelism. The aggregate
 `test` gate requires every matrix entry to pass; `fail-fast: false` lets other
@@ -134,21 +135,46 @@ Desktop shards recursively discover `*_test.dart` files under `app/test/`, inclu
 nested directories, using Flutter's file discovery convention. Sorted paths relative
 to `app/`, with `/` separators, are assigned by unsigned 32-bit FNV-1a of their UTF-8
 bytes modulo four. Every file belongs to exactly one shard; new files are included
-automatically without moving existing paths between shards. No duration inventory
-or separately maintained test lists are used. Empty partitions fail rather than
-falling back to full-suite execution. Normal test annotations, skips, environment
-gates, timeouts, and assertions remain in effect.
+automatically without moving existing paths between shards. Desktop assignment uses
+no duration inventory or separately maintained test lists.
+
+Git backend shards recursively discover `*_test.dart` under
+`plugins/git/packages/backend/test/`, including new nested suites automatically;
+support files without that suffix are ignored. Only Git uses cost-aware
+longest-processing-time-first (LPT) whole-file assignment. The small
+`ciTestFileCosts` map on its target in `tools/adele.dart` contains relative cost
+hints derived from GitHub CI measurements in approximate ten-second units, not a
+discovery allowlist, timeouts, or exact duration promises. An unlisted file has
+cost **1**. Files are considered by descending cost, then ascending
+package-relative path; each goes to the least-loaded shard, with the lower 1-based
+shard id breaking load ties. Identical files and hints produce identical assignments
+regardless of filesystem discovery order. Adding files or updating hints may
+rebalance Git assignments. CI still uses one test worker per Git shard.
+
+For both targets, every discovered file belongs to exactly one nonempty shard.
+Empty partitions fail before preparation rather than falling back to full-suite
+execution. Normal test annotations, skips, environment gates, timeouts, and
+assertions remain in effect.
 
 To reproduce a single CI selection locally:
 
 ```sh
 dart tools/adele.dart test --target adele_desktop --ci --shard 1
+dart tools/adele.dart test --target git_backend --ci --shard 1
 ```
 
 Logs list the shard identity, selected file count and paths before preparation,
 then the existing START/PASS/FAIL and elapsed-time summary. Omitting `--shard`
-still runs the complete desktop suite, with or without `--ci`. The ordinary
-`test` and `check` commands retain one logical desktop target, not four extra runs.
+still runs the complete selected target, with or without `--ci`. Unsharded Git CI
+retains one worker; non-CI Git retains the normal Dart worker default. The ordinary
+`test` and `check` commands retain one logical target each for desktop and Git,
+not extra shard runs. Other targets' shard and concurrency policies are unchanged.
+
+The full-suite local Git command is unchanged:
+
+```sh
+dart tools/adele.dart test --target git_backend
+```
 
 Single-plugin interpreted frontend integration belongs to the owning frontend
 package even when it uses the private desktop host as test infrastructure.

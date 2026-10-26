@@ -170,6 +170,26 @@ const List<TestTarget> testTargets = <TestTarget>[
     executable: 'dart',
     arguments: <String>['test', '--timeout', '4m'],
     ciTestConcurrency: 1,
+    ciShards: 7,
+    // Rounded 10-second allocation hints from GitHub run 40231647341, with
+    // review cases regrouped by suite. Not a discovery allowlist or timeouts.
+    // New *_test.dart files are included automatically with cost 1 (~10s).
+    ciTestFileCosts: <String, int>{
+      'test/backend_host_integration_test.dart': 2,
+      'test/buffered_process_test.dart': 3,
+      'test/git_hunk_apply_feasibility_test.dart': 3,
+      'test/git_portable_review_approval_test.dart': 17,
+      'test/git_portable_review_deletion_safety_test.dart': 13,
+      'test/git_portable_review_deletion_transitions_test.dart': 13,
+      'test/git_portable_review_layer_safety_test.dart': 19,
+      'test/git_portable_review_layer_transitions_test.dart': 6,
+      'test/git_portable_review_new_file_test.dart': 15,
+      'test/git_portable_review_tracked_file_test.dart': 6,
+      'test/git_portable_unstaged_snapshot_test.dart': 13,
+      'test/git_worktree_environment_provider_test.dart': 3,
+      'test/pty_host_test.dart': 2,
+      'test/terminal_resources_test.dart': 2,
+    },
   ),
   TestTarget(
     name: 'filesystem_tools_plugin',
@@ -1057,6 +1077,7 @@ Future<int> _runTests(TestOptions options) async {
       : partitionTestFiles(
           Directory(targets.single.path),
           targets.single.ciShards,
+          costs: targets.single.ciTestFileCosts,
         )[options.shard! - 1];
   final String? shardLabel = options.shard == null
       ? null
