@@ -835,17 +835,32 @@ final class _ResponsesNormalizer {
       );
     }
     final String type = decoded['type']! as String;
-    // Codex can attach safety notifications to any event, not only metadata.
-    // Fail closed even on malformed markers; never expose their payloads.
     final Object? metadata = decoded['metadata'];
-    if (decoded.containsKey('safety_buffering') ||
-        (type == 'response.metadata' &&
-            metadata is Map<String, Object?> &&
-            metadata['type'] == 'safety_buffering')) {
-      throw const _OpenAiResponseException(
-        'unsupported_safety_metadata',
-        'OpenAI safety-buffering metadata is not supported.',
-      );
+    // Codex status notifications are separate from the underlying event. Validate
+    // both locations without treating either as output, routing, or retry authority.
+    for (final Object? safety in <Object?>[
+      decoded['safety_buffering'],
+      if (type == 'response.metadata' &&
+          metadata is Map<String, Object?> &&
+          metadata['type'] == 'safety_buffering')
+        metadata,
+    ]) {
+      if (safety == null || safety == false) continue;
+      if (safety is! Map<String, Object?> ||
+          safety['use_cases'] is! List<Object?> ||
+          !(safety['use_cases']! as List<Object?>).every(
+            (value) => value is String,
+          ) ||
+          safety['reasons'] is! List<Object?> ||
+          !(safety['reasons']! as List<Object?>).every(
+            (value) => value is String,
+          ) ||
+          (safety['retry_model'] != null && safety['retry_model'] is! String)) {
+        throw const _OpenAiResponseException(
+          'invalid_safety_metadata',
+          'OpenAI safety-buffering metadata has an invalid shape.',
+        );
+      }
     }
     switch (type) {
       case 'response.metadata':
@@ -855,7 +870,9 @@ final class _ResponsesNormalizer {
             'OpenAI response metadata has an invalid shape.',
           );
         }
-        if (metadata is Map<String, Object?> && metadata.containsKey('type')) {
+        if (metadata is Map<String, Object?> &&
+            metadata.containsKey('type') &&
+            metadata['type'] != 'safety_buffering') {
           throw const _OpenAiResponseException(
             'unsupported_response_metadata',
             'Typed OpenAI response metadata is not supported.',
