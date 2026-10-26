@@ -1002,6 +1002,7 @@ RecordTypeDefinition _recordTypeDefinition(
     'label',
     'description',
     'fields',
+    'displayField',
   });
   final fields = definition['fields'];
   if (fields is! List<Object?> ||
@@ -1044,6 +1045,11 @@ RecordTypeDefinition _recordTypeDefinition(
       for (var index = 0; index < fields.length; index++)
         _recordFieldDefinition(fields[index], '$label.fields[$index]'),
     ],
+    displayField: definition.containsKey('displayField')
+        ? RecordFieldId(
+            _text(definition['displayField'], '$label.displayField'),
+          )
+        : null,
   );
 }
 

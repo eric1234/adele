@@ -6,9 +6,10 @@ Implementation status: Declarative ordinary scalar settings, immutable catalogs,
 default/global resolution, conditional global TOML persistence, and prepared-plugin
 declaration discovery are implemented, with an application-owned Global Settings
 dialog. Desktop Main Content frontends read owner-scoped startup values; Source
-Editor folding is the first scalar consumer. Headless declarative configuration
-records share scalar validation and conditional persistence; the OpenAI plugin
-declares the first nonsecret provider record. Profiles remain unimplemented.
+Editor folding is the first scalar consumer. Declarative configuration records
+share scalar validation and conditional persistence and are browsable and creatable
+in Global Settings; the OpenAI plugin declares the first nonsecret provider record.
+Existing-record editing/deletion UI, runtime consumption and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -144,7 +145,7 @@ persistence; plugins own data-only declarations. The OpenAI plugin's
 `dev.adele.openai.api-key` declaration is the first real type, not host-embedded
 provider logic. It can exist with no credentials or running backend.
 
-Collections group compatible types for later presentation. Collection identity
+Collections group compatible types for generic presentation. Collection identity
 (`providers`), record-type identity (`dev.adele.openai.api-key`) and record identity
 (`work-openai`) are distinct. A record ID is unique within its collection across
 all types and independent of its display name. Type IDs use the shared public-ID
@@ -161,6 +162,12 @@ validation primitive. Required values must be explicit; optional absence stays
 distinct from false, zero and empty strings. There are no field defaults, explicit
 nulls, nested values, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
+
+A type may declare one `displayField` referencing a required string field. Discovery
+validates that reference; omission preserves existing declarations. Presentation uses
+the declared value when usable and otherwise the stable record ID, never a host
+field-name convention. This metadata does not change identity or require nonblank
+strings: required still means presence.
 
 Prepared installations optionally reference `recordsSchema`, separately versioned
 from scalar schemas and independent of executable activation. Discovery extends
@@ -180,13 +187,24 @@ Stale update/delete and no-op writes fail explicitly and require deliberate relo
 Enumeration retains healthy records alongside attributable bad-file diagnostics;
 directory-wide failures remain errors. Aliased identities never select a winner.
 
-This is headless infrastructure, with no record Settings UI or provider activation.
+Global Settings discovers these collections from the captured prepared catalog,
+lists valid records and attributable diagnostics, and creates records with generic
+forms. Existing records expose only read-only declared values, type and ID. New
+records have explicit stable IDs and no inferred defaults; controls preserve absence
+separately from false, zero and empty strings. Collection reload is deliberate and
+reads current disk without discarding an unsaved creation draft. Duplicate IDs never
+overwrite an occupant, including an invalid or unknown-type record. An unconfirmed
+creation requires Reload to establish persisted state before another attempt.
+Existing-record editing, conditional updates and deletion confirmation in the UI
+are deferred to R2b; the headless CRUD boundary remains available internally.
+
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
-strings, not an API key or credential reference. Existing OpenAI authentication
-behavior is unchanged. Future Profiles may contain the same kinds of collections,
-but no Profile identity, ordered record composition or merge rules exist yet.
-Future record UI must use the established host-owned serialized I/O boundary, not
-create another writer isolate or persistence service.
+strings, not an API key or credential reference. These definitions are not consumed
+by the runtime, including after restart. Existing OpenAI authentication, Chat
+selection and startup behavior are unchanged. Future Profiles may contain the same
+kinds of collections, but no Profile identity, ordered record composition or merge
+rules exist yet. Record UI uses the established host-owned serialized I/O boundary,
+not another writer isolate or persistence service.
 
 ## Shared context, distinct composition
 
@@ -265,6 +283,12 @@ multiline string, and enumeration controls edit drafts; enum labels are presenta
 only and stable values are persisted. Effective values and Default/Global provenance
 remain separate from unsaved drafts. Search filters labels, descriptions, categories,
 sections, and IDs without discarding hidden drafts.
+
+Preferences remains the default view. Record collection navigation is supplied by
+`RecordCatalog.collectionLabel`; a collection may contain multiple plugins' types.
+Navigation retains scalar controls and creation drafts while excluding hidden
+controls from keyboard focus. Scalar and record schema/aggregation failures remain
+independent; genuine installation-wide diagnostics are represented in both areas.
 
 Each setting has explicit Save and Reset actions. Save validates through its
 definition and creates an explicit Global override, even when equal to the default.
@@ -425,10 +449,13 @@ preservation limits. The adapter remains synchronous on the owning host isolate.
 Desktop [`GlobalSettingsService`](../../app/lib/core/global_settings_service.dart)
 leases one retained worker from the Flutter root isolate; all application owners
 share its serialized store operations, including owners with separate editing
-baselines. Independent root-isolate writers are rejected rather than relying on
+baselines. Awaited record enumeration and creation settle before the next worker
+request, including requests from another owner; asynchronous handlers do not run
+independently. Independent root-isolate writers are rejected rather than relying on
 same-process filesystem locks. Only immutable scalar results, provenance, errors,
-and opaque view revisions cross back to presentation. Stores and whole-document
-baselines remain in the worker. Startup and Settings use the same captured storage
+opaque scalar view revisions, and record IDs/types/declared values/diagnostics cross
+back to presentation. Stores and whole-document baselines remain in the worker.
+Startup and Settings use the same captured storage
 roots; tests inject temporary roots at application composition.
 
 Closing the dialog only disposes presentation, not the service or an admitted
@@ -543,8 +570,9 @@ Implemented foundations and current limits:
   asynchronous configuration owner, with current persisted provenance, per-setting
   save/reset, explicit reload, and non-destructive error/conflict handling.
 - Plugin-declared records support generic validation and headless independent-file
-  CRUD in the same global layer. OpenAI supplies a nonsecret API-key provider
-  configuration declaration, not runtime activation or authentication.
+  CRUD in the same global layer, with browsing and creation in Global Settings.
+  Existing-record editing/deletion UI remains deferred to R2b. OpenAI supplies a
+  nonsecret API-key provider declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
@@ -557,8 +585,8 @@ Implemented foundations and current limits:
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
 Not implemented: Profile manager/persistence, profile-aware activation,
-configured-instance management UI,
-profile-aware provider routing, or production workbench-state persistence.
+configured-provider activation/authentication, profile-aware provider routing,
+or production workbench-state persistence.
 
 ## Deferred decisions
 

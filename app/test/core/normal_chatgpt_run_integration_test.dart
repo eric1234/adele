@@ -406,6 +406,11 @@ void main() {
 
         retainedAcrossSettings();
         await openSettings();
+        final settingsElement = tester.element(
+          find.byType(GlobalSettingsDialog),
+        );
+        final settingsState = tester.state(find.byType(GlobalSettingsDialog));
+        final settingsRoute = ModalRoute.of(settingsElement)!;
         retainedAcrossSettings();
         if (Platform.isLinux) {
           await _terminalTap(
@@ -440,6 +445,41 @@ void main() {
           savedFolding = true;
           retainedAcrossSettings();
         }
+        await _providerRecordDraft(tester, 'work-openai', 'Work OpenAI draft');
+        final recordName = find.byKey(
+          const ValueKey('record-input-providers-display-name'),
+        );
+        final recordNameElement = tester.element(recordName);
+        final recordNameController = tester
+            .widget<TextField>(recordName)
+            .controller!;
+        retainedAcrossSettings();
+        await _settingsSection(tester, 'Preferences');
+        retainedAcrossSettings();
+        await _settingsSection(tester, 'Providers');
+        expect(tester.element(recordName), same(recordNameElement));
+        expect(
+          tester.widget<TextField>(recordName).controller,
+          same(recordNameController),
+        );
+        expect(recordNameController.text, 'Work OpenAI draft');
+        expect(
+          tester.element(find.byType(GlobalSettingsDialog)),
+          same(settingsElement),
+        );
+        expect(
+          tester.state(find.byType(GlobalSettingsDialog)),
+          same(settingsState),
+        );
+        expect(ModalRoute.of(settingsElement), same(settingsRoute));
+        expect(settingsRoute.isCurrent, isTrue);
+        expect(
+          await Directory(
+            '${fixture.configurationRoots.configurationRoot}/providers',
+          ).exists(),
+          isFalse,
+        );
+        retainedAcrossSettings();
         await _terminalTap(tester, find.byTooltip('Close Settings'));
         expect(find.byType(GlobalSettingsDialog), findsNothing);
         expect(find.byType(AlertDialog), findsNothing);
@@ -851,9 +891,13 @@ void main() {
           '${fixture.configurationRoots.configurationRoot}/settings.toml',
         );
         final settings = find.byType(GlobalSettingsDialog);
-        final search = find.byKey(const ValueKey('settings-search'));
+        final search = find.byKey(
+          const ValueKey('settings-search'),
+          skipOffstage: false,
+        );
         final folding = find.byKey(
           const ValueKey('setting-input-$_foldingSetting'),
+          skipOffstage: false,
         );
         Future<void> openSettings() async {
           await _terminalTap(
@@ -876,7 +920,8 @@ void main() {
         final settingsRoute = ModalRoute.of(settingsElement)!;
         final searchInput = find.descendant(
           of: search,
-          matching: find.byType(EditableText),
+          matching: find.byType(EditableText, skipOffstage: false),
+          skipOffstage: false,
         );
         final searchElement = tester.element(searchInput);
         final searchState = tester.state<EditableTextState>(searchInput);
@@ -885,12 +930,38 @@ void main() {
             .controller;
         final searchValue = searchController.value;
         final foldingElement = tester.element(folding);
+        await _providerRecordDraft(tester, 'work-openai', 'Work OpenAI draft');
+        final recordsDirectory = Directory(
+          '${fixture.configurationRoots.configurationRoot}/providers',
+        );
+        final recordInputs = [
+          for (final key in [
+            'record-id-providers',
+            'record-input-providers-display-name',
+          ])
+            find.descendant(
+              of: find.byKey(ValueKey(key), skipOffstage: false),
+              matching: find.byType(EditableText, skipOffstage: false),
+              skipOffstage: false,
+            ),
+        ];
+        final recordDrafts = [
+          for (final input in recordInputs)
+            (
+              input: input,
+              element: tester.element(input),
+              state: tester.state(input),
+              controller: tester.widget<EditableText>(input).controller,
+              value: tester.widget<EditableText>(input).controller.value,
+            ),
+        ];
         const settingsWorkerName = 'dev.adele.global-settings-owner';
         final settingsWorker = IsolateNameServer.lookupPortByName(
           settingsWorkerName,
         );
         expect(settingsWorker, isNotNull);
         expect(await settingsFile.exists(), isFalse);
+        expect(await recordsDirectory.exists(), isFalse);
 
         void expectRetainedSettings() {
           expect(settingsElement.mounted, isTrue);
@@ -908,6 +979,29 @@ void main() {
           expect(searchController.value, searchValue);
           expect(tester.element(folding), same(foldingElement));
           expect(tester.widget<Switch>(folding).value, isTrue);
+          expect(
+            find.byKey(const ValueKey('record-id-providers')),
+            findsOneWidget,
+          );
+          expect(
+            tester
+                .widget<CheckboxListTile>(
+                  find.byKey(
+                    const ValueKey('record-presence-providers-display-name'),
+                  ),
+                )
+                .value,
+            isTrue,
+          );
+          for (final draft in recordDrafts) {
+            expect(tester.element(draft.input), same(draft.element));
+            expect(tester.state(draft.input), same(draft.state));
+            expect(
+              tester.widget<EditableText>(draft.input).controller,
+              same(draft.controller),
+            );
+            expect(draft.controller.value, draft.value);
+          }
           expect(
             IsolateNameServer.lookupPortByName(settingsWorkerName),
             settingsWorker,
@@ -936,6 +1030,7 @@ void main() {
         expectRetainedSettings();
         expect(settingsRoute.isCurrent, isTrue);
         expect(await settingsFile.exists(), isFalse);
+        expect(await recordsDirectory.exists(), isFalse);
         expect(runtime.plugins.state, ApplicationPluginState.ready);
         expect(connection.isClosed, isFalse);
         expect(owner.isDisposed, isFalse);
@@ -979,6 +1074,7 @@ void main() {
         expectRetainedSettings();
         expect(settingsRoute.isCurrent, isTrue);
         expect(await settingsFile.exists(), isFalse);
+        expect(await recordsDirectory.exists(), isFalse);
         expect(runtime.plugins.state, ApplicationPluginState.ready);
         expect(connection.isClosed, isFalse);
         expect(owner.isDisposed, isFalse);
@@ -987,13 +1083,24 @@ void main() {
 
         // Cancellation leaves the original Settings editors usable, not restored
         // from persisted values in a replacement dialog.
+        await tester.enterText(
+          find.byKey(const ValueKey('record-id-providers')),
+          'personal-openai',
+        );
+        await tester.enterText(
+          find.byKey(const ValueKey('record-id-providers')),
+          'work-openai',
+        );
+        await _settingsSection(tester, 'Preferences');
         await tester.enterText(search, 'Source');
         await _terminalTap(tester, folding);
         expect(tester.widget<Switch>(folding).value, isFalse);
         await tester.enterText(search, 'folding');
         await _terminalTap(tester, folding);
+        await _settingsSection(tester, 'Providers');
         expectRetainedSettings();
         expect(await settingsFile.exists(), isFalse);
+        expect(await recordsDirectory.exists(), isFalse);
         await _terminalTap(tester, find.byTooltip('Close Settings'));
         expect(settingsElement.mounted, isFalse);
 
@@ -1094,6 +1201,7 @@ void main() {
         expect(acceptedSettingsRoute.isActive, isFalse);
         expect(IsolateNameServer.lookupPortByName(settingsWorkerName), isNull);
         expect(await settingsFile.exists(), isFalse);
+        expect(await recordsDirectory.exists(), isFalse);
         expect(connection.isClosed, isTrue);
         await tester.pumpWidget(const SizedBox.shrink());
 
@@ -6042,7 +6150,7 @@ final class _PreparedProduct {
       _sourceEditorPluginId,
     ]) {
       final installed = await Directory('${root.path}/$id').create();
-      if (id == _sourceEditorPluginId) continue;
+      if (id == _sourceEditorPluginId || id == _openAiPluginId) continue;
       await File(
         '${installed.path}/adele_plugin.installation.json',
       ).writeAsString(
@@ -6087,6 +6195,14 @@ final class _PreparedProduct {
     );
     await File('${root.path}/$_openAiPluginId/frontend.evc').writeAsBytes(
       await compileOpenAiActivityFrontend(repositoryRoot: repository),
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: Directory('${root.path}/$_openAiPluginId'),
+      pluginId: _openAiPluginId,
+      displayName: 'OpenAI',
+      backend: true,
+      frontend: true,
     );
     for (final (id, frontend) in [
       (_filesystemPluginId, ToolInspectionFrontend.filesystem),
@@ -6542,6 +6658,38 @@ Future<void> _terminalTap(WidgetTester tester, Finder target) async {
   await tester.tap(target);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 350));
+}
+
+Future<void> _settingsSection(WidgetTester tester, String label) async {
+  await _terminalTap(tester, find.byKey(const ValueKey('settings-section')));
+  await _terminalTap(tester, find.text(label).last);
+}
+
+Future<void> _providerRecordDraft(
+  WidgetTester tester,
+  String id,
+  String name,
+) async {
+  await _settingsSection(tester, 'Providers');
+  final add = find.byKey(const ValueKey('records-add-providers'));
+  await _terminalUntil(
+    tester,
+    () =>
+        add.evaluate().isNotEmpty &&
+        tester.widget<FilledButton>(add).onPressed != null,
+    'record collection is ready for creation',
+  );
+  await _terminalTap(tester, add);
+  await tester.enterText(find.byKey(const ValueKey('record-id-providers')), id);
+  await _terminalTap(
+    tester,
+    find.byKey(const ValueKey('record-presence-providers-display-name')),
+  );
+  await tester.enterText(
+    find.byKey(const ValueKey('record-input-providers-display-name')),
+    name,
+  );
+  await tester.pump();
 }
 
 Future<void> _newTerminal(WidgetTester tester) async {

@@ -7,6 +7,7 @@
       "collectionLabel": "Providers",
       "label": "OpenAI API",
       "description": "An OpenAI API-key provider configuration.",
+      "displayField": "display-name",
       "fields": [
         {
           "id": "display-name",

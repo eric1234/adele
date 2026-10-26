@@ -120,6 +120,7 @@ final class RecordTypeDefinition {
     required this.label,
     this.description,
     required Iterable<RecordFieldDefinition<Object>> fields,
+    this.displayField,
   }) : fields = List.unmodifiable(fields) {
     if (!id.value.startsWith('${owner.value}.')) {
       throw ArgumentError.value(id, 'id', 'Must be within owner $owner.');
@@ -136,6 +137,19 @@ final class RecordTypeDefinition {
         );
       }
     }
+    if (displayField != null &&
+        !this.fields.any(
+          (field) =>
+              field.id == displayField &&
+              field.required &&
+              field.type is StringSettingType,
+        )) {
+      throw ArgumentError.value(
+        displayField,
+        'displayField',
+        'Must reference a declared required StringSettingType field.',
+      );
+    }
   }
 
   final RecordTypeId id;
@@ -145,6 +159,11 @@ final class RecordTypeDefinition {
   final String label;
   final String? description;
   final List<RecordFieldDefinition<Object>> fields;
+
+  /// Optional display-name source, referencing a required ordinary string field.
+  ///
+  /// This does not change record identity or constrain the field's string values.
+  final RecordFieldId? displayField;
 
   /// Validates known fields and returns an immutable projection in field order.
   ///

@@ -175,6 +175,7 @@ versioned envelope:
       "collectionLabel": "Providers",
       "label": "Example API",
       "description": "A named API configuration.",
+      "displayField": "display-name",
       "fields": [
         {
           "id": "display-name",
@@ -195,7 +196,13 @@ versioned envelope:
 ```
 
 Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
-`fields`; `description` is optional. Each field requires `id`, `label`, `type`, and
+`fields`; `description` and `displayField` are optional. When present,
+`displayField` is a local field ID referencing a declared required `string` field,
+not an enum. The public record constructor validates that reference during
+discovery; an invalid reference rejects the whole record schema. Omission preserves
+existing declarations with no designated display field, allowing presentation to
+fall back to record identity. The metadata adds no string-value constraints and
+does not change record identity. Each field requires `id`, `label`, `type`, and
 an explicit Boolean `required`; `description` is optional. Field arrays retain
 authored order. Empty `recordTypes` and `fields` arrays are valid. `type` is exactly
 `boolean`, `integer`, `string`, or `enum`, reusing settings' scalar constructors.

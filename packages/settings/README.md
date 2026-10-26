@@ -104,6 +104,13 @@ descriptions are optional prose. Fields are copied, immutable, duplicate-free,
 and retain declaration order. Empty field lists are valid. Ownership is declaration
 consistency, not activation or proof of trust.
 
+Optional `displayField: RecordFieldId?` identifies a declared required
+`StringSettingType` field for record display names. Construction rejects missing,
+optional, or other scalar-type references, including enum fields. Omission is null
+and makes no display-field assumption; presentation can fall back to the record ID.
+This metadata neither changes record identity nor adds string-value constraints:
+empty and multiline values remain ordinary strings.
+
 `type.validate(recordId, Map<String, Object?> values)` validates known fields and
 returns an immutable `Map<String, Object>` in declaration order. Required absence
 fails; optional absence remains absent; explicit null and wrong scalar values
