@@ -117,13 +117,13 @@ final class ConfigurationRecordStore {
     _checkCatalog(expected);
     final validated = _validateDesired(expected.type, expected.id, values);
     var document = expected.document;
-    for (final field in expected.type.fields) {
-      final path = ['values', field.id.value];
-      document = validated.containsKey(field.id.value)
-          ? document.setScalar(path, validated[field.id.value]!)
-          : document.removeScalar(path);
-    }
     try {
+      for (final field in expected.type.fields) {
+        final path = ['values', field.id.value];
+        document = validated.containsKey(field.id.value)
+            ? document.setScalar(path, validated[field.id.value]!)
+            : document.removeScalar(path);
+      }
       document.requireTable(['values']);
     } on TomlException catch (error) {
       // Removing the last dotted key can discard an implicit parent. Do not
@@ -132,7 +132,8 @@ final class ConfigurationRecordStore {
         expected.collection,
         expected.id,
         null,
-        'The edit must retain a regular [values] table: ${error.message}',
+        'The edit must preserve supported scalar structure and a regular '
+        '[values] table: ${error.message}',
       );
     }
     await _checkIdentity(expected.collection, expected.id);

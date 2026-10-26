@@ -114,6 +114,820 @@ void main() {
     await _loaded(tester);
   }
 
+  Future<void> seed(String id, {String? caption}) async {
+    await service.createRecord(
+      _job,
+      ConfigurationRecordId(id),
+      _values(caption: caption ?? 'Title $id'),
+    );
+  }
+
+  Future<void> save(WidgetTester tester, String id) async {
+    await _tap(tester, _key('record-save-jobs-$id'));
+    await _loaded(tester);
+  }
+
+  testWidgets(
+    'existing scalar edits validate presence and preserve immutable identity and unknown data',
+    (tester) => tester.runAsync(() async {
+      await seed('original');
+      final original = file('original');
+      final withUnknownValues = original.readAsStringSync().replaceFirst(
+        '[values]',
+        '# Header comment\nunknown-header = "retain"\n[values]\n'
+            '# Value comment\nunknown-value = [1, 2]\noptional-text = "remove"',
+      );
+      original.writeAsStringSync(
+        '$withUnknownValues\n[unknown-table]\nflag = true\n',
+      );
+      final before = original.readAsBytesSync();
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'original');
+      expect(find.text('Collection: jobs'), findsOneWidget);
+      expect(find.text('Record ID: original'), findsOneWidget);
+      expect(find.text('Record type: $_job'), findsOneWidget);
+      expect(_key('record-id-jobs-original'), findsNothing);
+      expect(_key('record-type-jobs-original'), findsNothing);
+      await save(tester, 'original');
+      expect(original.readAsBytesSync(), before);
+      await _tap(tester, _key('record-edit-jobs-original'));
+      await _enter(
+        tester,
+        _editInput('original', 'caption'),
+        'Renamed\nSecond line',
+      );
+      await _choose(tester, _editInput('original', 'enabled'), 'True');
+      for (final invalid in ['', '1.5', '-1', '3', '9223372036854775808']) {
+        await _enter(tester, _editInput('original', 'count'), invalid);
+        expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
+        expect(
+          tester
+              .widget<TextField>(_editInput('original', 'count'))
+              .decoration!
+              .errorText,
+          isNotNull,
+        );
+      }
+      await _enter(tester, _editInput('original', 'count'), '2');
+      await _choose(tester, _editInput('original', 'mode'), 'Expanded label');
+      await _tap(tester, _editPresence('original', 'caption'));
+      expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
+      await _tap(tester, _editPresence('original', 'caption'));
+      await _tap(tester, _editPresence('original', 'optional-text'));
+      for (final field in ['optional-bool', 'optional-int', 'optional-enum']) {
+        await _tap(tester, _editPresence('original', field));
+      }
+      expect(
+        tester
+            .widget<DropdownButton<bool>>(
+              _editInput('original', 'optional-bool'),
+            )
+            .value,
+        isNull,
+      );
+      expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
+      await _choose(tester, _editInput('original', 'optional-bool'), 'False');
+      await _enter(tester, _editInput('original', 'optional-int'), '0');
+      await _choose(
+        tester,
+        _editInput('original', 'optional-enum'),
+        'Compact label',
+      );
+      await save(tester, 'original');
+      expect(find.text('Renamed\nSecond line'), findsOneWidget);
+      expect(find.text('Optional text: Not provided'), findsOneWidget);
+      expect(find.text('Optional boolean: false'), findsOneWidget);
+      expect(find.text('Optional integer: 0'), findsOneWidget);
+      expect(find.text('Optional enumeration: compact'), findsOneWidget);
+      expect(service.recordLoads, 1);
+      final changed = original.readAsStringSync();
+      for (final preserved in [
+        '# Header comment',
+        'unknown-header = "retain"',
+        '# Value comment',
+        'unknown-value = [1, 2]',
+        '[unknown-table]\nflag = true',
+      ]) {
+        expect(changed, contains(preserved));
+      }
+      expect(changed, isNot(contains('optional-text')));
+      expect(changed, isNot(contains('Expanded label')));
+      await _tap(tester, _key('record-edit-jobs-original'));
+      await _enter(tester, _editInput('original', 'caption'), '');
+      await _tap(tester, _editPresence('original', 'optional-text'));
+      await save(tester, 'original');
+      expect(find.text('original'), findsOneWidget);
+      expect(find.text('Optional text: (empty string)'), findsOneWidget);
+      final saved = (await service.loadRecords(_collection)).records.single;
+      expect(saved.id, ConfigurationRecordId('original'));
+      expect(saved.type, _job);
+      expect(saved.collection, _collection);
+      expect(saved.values, {
+        'caption': '',
+        'enabled': true,
+        'count': 2,
+        'mode': 'expanded',
+        'optional-text': '',
+        'optional-bool': false,
+        'optional-int': 0,
+        'optional-enum': 'compact',
+      });
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'existing drafts survive collapse and navigation with hidden focus excluded and local Cancel',
+    (tester) => tester.runAsync(() async {
+      await seed('first');
+      await seed('second');
+      await mount(tester);
+      await _enter(
+        tester,
+        _key('setting-input-$_preference'),
+        'Preference draft',
+      );
+      await openRecords(tester);
+      await _edit(tester, 'first');
+      await _enter(tester, _editInput('first', 'caption'), 'First draft');
+      final element = tester.element(_editInput('first', 'caption'));
+      final controller = tester
+          .widget<TextField>(_editInput('first', 'caption'))
+          .controller!;
+      final staleSave = tester
+          .widget<ButtonStyleButton>(_key('record-save-jobs-first'))
+          .onPressed!;
+      await _expand(tester, 'first');
+      await tester.pumpAndSettle();
+      expect(_editInput('first', 'caption'), findsNothing);
+      await _expectNoFocus(tester, [
+        'record-input-jobs-first',
+        'record-presence-jobs-first',
+      ]);
+      await _edit(tester, 'second');
+      await _enter(tester, _editInput('second', 'caption'), 'Second draft');
+      await add(tester, 'creation-draft');
+      await _include(tester, 'caption');
+      await _enter(tester, _input('caption'), 'Creation draft');
+      await _section(tester, 'Preferences');
+      await _expectNoFocus(tester, ['record-', 'records-']);
+      expect(
+        tester
+            .widget<TextField>(_key('setting-input-$_preference'))
+            .controller!
+            .text,
+        'Preference draft',
+      );
+      await openRecords(tester);
+      await _expand(tester, 'first');
+      expect(tester.element(_editInput('first', 'caption')), same(element));
+      expect(
+        tester.widget<TextField>(_editInput('first', 'caption')).controller,
+        same(controller),
+      );
+      expect(controller.text, 'First draft');
+      await _tap(tester, _key('record-cancel-jobs-second'));
+      expect(controller.text, 'First draft');
+      expect(
+        tester.widget<TextField>(_input('caption')).controller!.text,
+        'Creation draft',
+      );
+      expect(file('second').readAsStringSync(), contains('Title second'));
+      await _tap(tester, _key('record-cancel-jobs-first'));
+      await _tap(tester, _key('record-edit-jobs-first'));
+      staleSave();
+      await tester.pump();
+      expect(service.updates, 0);
+      expect(
+        tester
+            .widget<TextField>(_editInput('first', 'caption'))
+            .controller!
+            .text,
+        'Title first',
+      );
+      expect(service.recordLoads, 1);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'create update and delete keep independent existing drafts and handles usable',
+    (tester) => tester.runAsync(() async {
+      for (final id in ['first', 'second', 'third']) {
+        await seed(id);
+      }
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'first');
+      await _enter(tester, _editInput('first', 'caption'), 'Saved first');
+      await _edit(tester, 'second');
+      await _enter(tester, _editInput('second', 'caption'), 'Saved second');
+      final second = tester
+          .widget<TextField>(_editInput('second', 'caption'))
+          .controller;
+      await add(tester, 'new-note');
+      await _choose(tester, _key('record-type-jobs'), 'Note');
+      await _enter(tester, _key('record-id-jobs'), 'new-note');
+      await create(tester);
+      expect(service.recordLoads, 1);
+      expect(
+        tester.widget<TextField>(_editInput('second', 'caption')).controller,
+        same(second),
+      );
+      await save(tester, 'first');
+      await _expand(tester, 'third');
+      await _tap(tester, _key('record-delete-jobs-third'));
+      await _tap(tester, _key('record-delete-confirm-jobs-third'));
+      await _loaded(tester);
+      expect(file('third').existsSync(), isFalse);
+      expect(
+        tester.widget<TextField>(_editInput('second', 'caption')).controller,
+        same(second),
+      );
+      await save(tester, 'second');
+      expect(file('second').readAsStringSync(), contains('Saved second'));
+      expect(file('first').readAsStringSync(), contains('Saved first'));
+      expect(service.recordLoads, 1);
+      expect(service.updates, 2);
+      expect(service.deletes, 1);
+      expect(find.textContaining('Not saved:'), findsNothing);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'worker validation failure is correctable without Reload or optimistic display',
+    (tester) => tester.runAsync(() async {
+      await seed('correctable');
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'correctable');
+      await _enter(
+        tester,
+        _editInput('correctable', 'caption'),
+        'Corrected title',
+      );
+      service.rejectNextUpdate = true;
+      await save(tester, 'correctable');
+      expect(
+        find.textContaining('Not saved: correct the values.'),
+        findsOneWidget,
+      );
+      expect(_enabled(tester, _key('record-save-jobs-correctable')), isTrue);
+      expect(find.text('Title correctable'), findsOneWidget);
+      expect(
+        file('correctable').readAsStringSync(),
+        contains('Title correctable'),
+      );
+      await save(tester, 'correctable');
+      expect(find.text('Corrected title'), findsOneWidget);
+      expect(service.recordLoads, 1);
+      expect(service.updates, 2);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'Create cannot replace a still-listed identity and draft after external deletion',
+    (tester) => tester.runAsync(() async {
+      await seed('reused');
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'reused');
+      await _enter(
+        tester,
+        _editInput('reused', 'caption'),
+        'Existing dirty draft',
+      );
+      final existing = tester
+          .widget<TextField>(_editInput('reused', 'caption'))
+          .controller;
+      file('reused').deleteSync();
+      await add(tester, 'reused');
+      await _choose(tester, _key('record-type-jobs'), 'Note');
+      await _enter(tester, _key('record-id-jobs'), 'reused');
+      await create(tester);
+      expect(service.creates, 1); // Only the original seed was admitted.
+      expect(file('reused').existsSync(), isFalse);
+      expect(_key('record-jobs-reused'), findsOneWidget);
+      expect(find.textContaining('no write was attempted'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(_editInput('reused', 'caption')).controller,
+        same(existing),
+      );
+      expect(existing!.text, 'Existing dirty draft');
+      await _tap(tester, _key('records-reload-jobs'));
+      await _tap(tester, _key('records-reload-confirm-jobs'));
+      await _loaded(tester);
+      expect(_key('record-jobs-reused'), findsNothing);
+      expect(
+        tester.widget<TextField>(_key('record-id-jobs')).controller!.text,
+        'reused',
+      );
+      await create(tester);
+      expect(_key('record-jobs-reused'), findsOneWidget);
+      expect(
+        file('reused').readAsStringSync(),
+        contains('recordType = "$_note"'),
+      );
+      expect(service.creates, 2);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  for (final deleting in [false, true]) {
+    testWidgets(
+      '${deleting ? 'delete' : 'no-op update'} conflict fences only the captured record until Reload',
+      (tester) => tester.runAsync(() async {
+        await seed('conflict');
+        await seed('independent');
+        await mount(tester);
+        await openRecords(tester);
+        await _edit(tester, 'conflict');
+        final staleSave = tester
+            .widget<ButtonStyleButton>(_key('record-save-jobs-conflict'))
+            .onPressed!;
+        file('conflict').writeAsStringSync(
+          file(
+            'conflict',
+          ).readAsStringSync().replaceFirst('Title conflict', 'External value'),
+        );
+        final external = file('conflict').readAsBytesSync();
+        if (deleting) {
+          await _tap(tester, _key('record-delete-jobs-conflict'));
+          await _tap(tester, _key('record-delete-confirm-jobs-conflict'));
+          await _loaded(tester);
+        } else {
+          await save(tester, 'conflict');
+        }
+        expect(
+          find.textContaining(
+            'Not ${deleting ? 'deleted' : 'saved'}: this record changed on disk.',
+          ),
+          findsOneWidget,
+        );
+        expect(file('conflict').readAsBytesSync(), external);
+        expect(_enabled(tester, _key('record-save-jobs-conflict')), isFalse);
+        expect(_enabled(tester, _key('record-delete-jobs-conflict')), isFalse);
+        staleSave();
+        await tester.pump();
+        expect(service.updates, deleting ? 0 : 1);
+        await _edit(tester, 'independent');
+        await _enter(
+          tester,
+          _editInput('independent', 'caption'),
+          'Independent change',
+        );
+        await save(tester, 'independent');
+        expect(
+          file('independent').readAsStringSync(),
+          contains('Independent change'),
+        );
+        await _tap(tester, _key('record-cancel-jobs-conflict'));
+        expect(_enabled(tester, _key('record-edit-jobs-conflict')), isFalse);
+        expect(_enabled(tester, _key('record-delete-jobs-conflict')), isFalse);
+        await _tap(tester, _key('records-reload-jobs'));
+        await _loaded(tester);
+        expect(find.text('External value'), findsOneWidget);
+        expect(_enabled(tester, _key('record-edit-jobs-conflict')), isTrue);
+        staleSave();
+        await tester.pump();
+        expect(service.updates, deleting ? 1 : 2);
+        await unmount(tester);
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'Reload confirms dirty existing drafts and retains all controls and lists on read failure',
+    (tester) => tester.runAsync(() async {
+      await seed('first');
+      await seed('second');
+      await mount(tester);
+      await _enter(
+        tester,
+        _key('setting-input-$_preference'),
+        'Unrelated preference',
+      );
+      await openRecords(tester);
+      for (final id in ['first', 'second']) {
+        await _edit(tester, id);
+        await _enter(tester, _editInput(id, 'caption'), 'Draft $id');
+      }
+      final first = tester
+          .widget<TextField>(_editInput('first', 'caption'))
+          .controller;
+      final second = tester
+          .widget<TextField>(_editInput('second', 'caption'))
+          .controller;
+      final staleSave = tester
+          .widget<ButtonStyleButton>(_key('record-save-jobs-first'))
+          .onPressed!;
+      await add(tester, 'creation');
+      await _include(tester, 'caption');
+      await _enter(tester, _input('caption'), 'Creation retained');
+      final creation = tester.widget<TextField>(_input('caption')).controller;
+      await _tap(tester, _key('records-reload-jobs'));
+      expect(find.text('Reload jobs?'), findsOneWidget);
+      await _tap(tester, _key('records-reload-cancel-jobs'));
+      await _loaded(tester);
+      expect(service.recordLoads, 1);
+      service.failNextLoad = true;
+      await _tap(tester, _key('records-reload-jobs'));
+      await _tap(tester, _key('records-reload-confirm-jobs'));
+      await _loaded(tester);
+      expect(find.textContaining('Could not load records'), findsOneWidget);
+      expect(_key('record-jobs-first'), findsOneWidget);
+      expect(_key('record-jobs-second'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(_editInput('first', 'caption')).controller,
+        same(first),
+      );
+      expect(
+        tester.widget<TextField>(_editInput('second', 'caption')).controller,
+        same(second),
+      );
+      expect(first!.text, 'Draft first');
+      expect(second!.text, 'Draft second');
+      expect(
+        tester.widget<TextField>(_input('caption')).controller,
+        same(creation),
+      );
+      expect(_enabled(tester, _key('record-save-jobs-first')), isFalse);
+      staleSave();
+      await tester.pump();
+      expect(service.updates, 0);
+      await _tap(tester, _key('records-reload-jobs'));
+      await _tap(tester, _key('records-reload-confirm-jobs'));
+      await _loaded(tester);
+      expect(_editInput('first', 'caption'), findsNothing);
+      expect(_editInput('second', 'caption'), findsNothing);
+      expect(
+        tester.widget<TextField>(_input('caption')).controller,
+        same(creation),
+      );
+      expect(creation!.text, 'Creation retained');
+      await _tap(tester, _key('record-edit-jobs-first'));
+      staleSave();
+      await tester.pump();
+      expect(service.updates, 0);
+      expect(
+        tester
+            .widget<TextField>(_editInput('first', 'caption'))
+            .controller!
+            .text,
+        'Title first',
+      );
+      await _section(tester, 'Preferences');
+      expect(
+        tester
+            .widget<TextField>(_key('setting-input-$_preference'))
+            .controller!
+            .text,
+        'Unrelated preference',
+      );
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'Delete confirms exact identity with safe Cancel autofocus and modal-only Escape',
+    (tester) => tester.runAsync(() async {
+      await seed('target', caption: 'Same title');
+      await seed('sibling', caption: 'Same title');
+      file('target').writeAsStringSync(
+        '${file('target').readAsStringSync()}\nunknown = [1, 2]\n',
+      );
+      final sibling = file('sibling').readAsBytesSync();
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'target');
+      await _enter(
+        tester,
+        _editInput('target', 'caption'),
+        'Unsaved renamed title',
+      );
+      final remove = tester
+          .widget<ButtonStyleButton>(_key('record-delete-jobs-target'))
+          .onPressed!;
+      final reload = tester
+          .widget<ButtonStyleButton>(_key('records-reload-jobs'))
+          .onPressed!;
+      remove();
+      remove();
+      reload();
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      final confirmation = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.textContaining('Title: Same title'),
+      );
+      expect(confirmation, findsOneWidget);
+      final message = tester.widget<Text>(confirmation).data!;
+      for (final exact in [
+        'Record ID: target',
+        'Record type: $_job',
+        'Collection: jobs',
+        'entire record file',
+        'unknown data',
+      ]) {
+        expect(message, contains(exact));
+      }
+      expect(message, isNot(contains('Unsaved renamed title')));
+      expect(
+        tester
+            .widget<TextButton>(_key('record-delete-cancel-jobs-target'))
+            .autofocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _loaded(tester);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(service.deletes, 0);
+      expect(file('target').existsSync(), isTrue);
+      await _tap(tester, _key('record-delete-jobs-target'));
+      await tester.pumpAndSettle();
+      final staleConfirm = tester
+          .widget<ButtonStyleButton>(_key('record-delete-confirm-jobs-target'))
+          .onPressed!;
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _loaded(tester);
+      expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+      staleConfirm();
+      await tester.pump();
+      expect(service.deletes, 0);
+      expect(
+        tester
+            .widget<TextField>(_editInput('target', 'caption'))
+            .controller!
+            .text,
+        'Unsaved renamed title',
+      );
+      await _tap(tester, _key('record-delete-jobs-target'));
+      await tester.pumpAndSettle();
+      final confirm = tester
+          .widget<ButtonStyleButton>(_key('record-delete-confirm-jobs-target'))
+          .onPressed!;
+      final gate = Completer<void>();
+      service.gate = gate.future;
+      try {
+        confirm();
+        confirm();
+        remove();
+        reload();
+        await tester.pump();
+        expect(service.deletes, 1);
+        expect(service.recordLoads, 1);
+        expect(file('target').existsSync(), isTrue);
+        expect(_key('record-jobs-target'), findsOneWidget);
+      } finally {
+        service.gate = null;
+        gate.complete();
+      }
+      await _loaded(tester);
+      expect(file('target').existsSync(), isFalse);
+      expect(_key('record-jobs-target'), findsNothing);
+      expect(file('sibling').readAsBytesSync(), sibling);
+      expect(find.text('Deleted target.'), findsOneWidget);
+      remove();
+      confirm();
+      await tester.pump();
+      expect(service.deletes, 1);
+      expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  for (final deleting in [false, true]) {
+    for (final published in [false, true]) {
+      testWidgets(
+        'unconfirmed ${published ? 'published' : 'failed'} ${deleting ? 'deletion' : 'update'} retains draft and fences only that record',
+        (tester) => tester.runAsync(() async {
+          await seed('uncertain');
+          await seed('independent');
+          await mount(tester);
+          await openRecords(tester);
+          await _edit(tester, 'uncertain');
+          await _enter(
+            tester,
+            _editInput('uncertain', 'caption'),
+            'Uncertain draft',
+          );
+          final staleSave = tester
+              .widget<ButtonStyleButton>(_key('record-save-jobs-uncertain'))
+              .onPressed!;
+          service.failMutation = !published;
+          service.loseUpdateAcknowledgement = published && !deleting;
+          service.loseDeleteAcknowledgement = published && deleting;
+          if (deleting) {
+            await _tap(tester, _key('record-delete-jobs-uncertain'));
+            await _tap(tester, _key('record-delete-confirm-jobs-uncertain'));
+            await _loaded(tester);
+          } else {
+            await save(tester, 'uncertain');
+          }
+          expect(
+            find.textContaining(
+              'Could not confirm ${deleting ? 'deletion' : 'save'}.',
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.textContaining('operation may have been published'),
+            findsOneWidget,
+          );
+          expect(find.text('Title uncertain'), findsOneWidget);
+          expect(_key('record-jobs-uncertain'), findsOneWidget);
+          expect(
+            tester
+                .widget<TextField>(_editInput('uncertain', 'caption'))
+                .controller!
+                .text,
+            'Uncertain draft',
+          );
+          expect(_enabled(tester, _key('record-save-jobs-uncertain')), isFalse);
+          expect(
+            _enabled(tester, _key('record-delete-jobs-uncertain')),
+            isFalse,
+          );
+          expect(file('uncertain').existsSync(), !(deleting && published));
+          if (!deleting) {
+            expect(
+              file('uncertain').readAsStringSync(),
+              contains(published ? 'Uncertain draft' : 'Title uncertain'),
+            );
+          }
+          staleSave();
+          await tester.pump();
+          expect(service.updates, deleting ? 0 : 1);
+          service.failMutation = false;
+          service.loseUpdateAcknowledgement = false;
+          service.loseDeleteAcknowledgement = false;
+          await _edit(tester, 'independent');
+          await _enter(
+            tester,
+            _editInput('independent', 'caption'),
+            'Independent saved',
+          );
+          await save(tester, 'independent');
+          await _tap(tester, _key('records-reload-jobs'));
+          await _tap(tester, _key('records-reload-confirm-jobs'));
+          await _loaded(tester);
+          expect(_editInput('uncertain', 'caption'), findsNothing);
+          expect(
+            _key('record-jobs-uncertain'),
+            deleting && published ? findsNothing : findsOneWidget,
+          );
+          expect(
+            find.text(
+              published && !deleting ? 'Uncertain draft' : 'Title uncertain',
+            ),
+            deleting && published ? findsNothing : findsOneWidget,
+          );
+          expect(find.text('Independent saved'), findsOneWidget);
+          await unmount(tester);
+        }),
+        skip: !Platform.isLinux,
+      );
+    }
+  }
+
+  testWidgets(
+    'captured update callbacks are synchronously admitted once and old views stay fenced',
+    (tester) => tester.runAsync(() async {
+      await seed('single');
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'single');
+      await _enter(tester, _editInput('single', 'caption'), 'New title');
+      final commit = tester
+          .widget<ButtonStyleButton>(_key('record-save-jobs-single'))
+          .onPressed!;
+      final remove = tester
+          .widget<ButtonStyleButton>(_key('record-delete-jobs-single'))
+          .onPressed!;
+      final reload = tester
+          .widget<ButtonStyleButton>(_key('records-reload-jobs'))
+          .onPressed!;
+      final gate = Completer<void>();
+      service.gate = gate.future;
+      try {
+        commit();
+        commit();
+        remove();
+        reload();
+        await tester.pump();
+        expect(service.updates, 1);
+        expect(service.deletes, 0);
+        expect(service.recordLoads, 1);
+        expect(file('single').readAsStringSync(), contains('Title single'));
+        expect(find.text('Title single'), findsOneWidget);
+        expect(find.byType(AlertDialog), findsNothing);
+      } finally {
+        service.gate = null;
+        gate.complete();
+      }
+      await _loaded(tester);
+      await _tap(tester, _key('record-edit-jobs-single'));
+      commit();
+      remove();
+      await tester.pump();
+      expect(service.updates, 1);
+      expect(service.deletes, 0);
+      expect(find.byType(AlertDialog), findsNothing);
+      final currentCommit = tester
+          .widget<ButtonStyleButton>(_key('record-save-jobs-single'))
+          .onPressed!;
+      final currentDelete = tester
+          .widget<ButtonStyleButton>(_key('record-delete-jobs-single'))
+          .onPressed!;
+      Navigator.of(tester.element(find.byType(GlobalSettingsDialog))).pop();
+      await tester.pumpAndSettle();
+      currentCommit();
+      currentDelete();
+      reload();
+      await tester.pump();
+      expect(service.updates, 1);
+      expect(service.deletes, 0);
+      expect(service.recordLoads, 1);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  for (final deleting in [false, true]) {
+    testWidgets(
+      'dialog close does not cancel admitted ${deleting ? 'delete' : 'update'}',
+      (tester) => tester.runAsync(() async {
+        await seed('after-close');
+        await mount(tester);
+        await openRecords(tester);
+        await _edit(tester, 'after-close');
+        await _enter(
+          tester,
+          _editInput('after-close', 'caption'),
+          'Saved after close',
+        );
+        if (deleting) {
+          await _tap(tester, _key('record-delete-jobs-after-close'));
+          await tester.pumpAndSettle();
+        }
+        final gate = Completer<void>();
+        service.gate = gate.future;
+        try {
+          tester
+              .widget<ButtonStyleButton>(
+                _key(
+                  deleting
+                      ? 'record-delete-confirm-jobs-after-close'
+                      : 'record-save-jobs-after-close',
+                ),
+              )
+              .onPressed!();
+          await tester.pump();
+          Navigator.of(tester.element(find.byType(GlobalSettingsDialog))).pop();
+          await tester.pumpAndSettle();
+        } finally {
+          service.gate = null;
+          gate.complete();
+        }
+        await _until(
+          tester,
+          () => deleting
+              ? !file('after-close').existsSync()
+              : file(
+                  'after-close',
+                ).readAsStringSync().contains('Saved after close'),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.text('Open settings'));
+        await tester.pump();
+        await _until(tester, () => _enabled(tester, _key('settings-reload')));
+        await openRecords(tester);
+        expect(
+          _key('record-jobs-after-close'),
+          deleting ? findsNothing : findsOneWidget,
+        );
+        expect(
+          find.text('Saved after close'),
+          deleting ? findsNothing : findsOneWidget,
+        );
+        await unmount(tester);
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
+
   testWidgets(
     'all scalar forms require explicit presence and persist exact values',
     (tester) {
@@ -418,7 +1232,9 @@ void main() {
         expect(find.text('Count: 0'), findsOneWidget);
         expect(find.text('Optional text: Not provided'), findsOneWidget);
         expect(find.text('Save'), findsNothing);
-        expect(find.text('Delete'), findsNothing);
+        expect(_enabled(tester, _key('record-edit-jobs-with-title')), isTrue);
+        expect(_enabled(tester, _key('record-delete-jobs-with-title')), isTrue);
+        expect(find.text('Collection: jobs'), findsOneWidget);
         expect(find.text('Reset'), findsNothing);
         file('with-title').writeAsStringSync(
           file(
@@ -633,7 +1449,7 @@ void main() {
   }
 
   testWidgets(
-    'confirmed actual persisted view survives a failed listing refresh',
+    'confirmed creation uses its returned view without a handle-revoking refresh',
     (tester) {
       return tester.runAsync(() async {
         await mount(tester);
@@ -641,15 +1457,20 @@ void main() {
         await add(tester, 'requested-id');
         await fillRequired(tester, caption: 'Requested title');
         service.returnDifferentPersistedRecord = true;
-        service.failRefreshAfterCreate = true;
+        service.failNextLoad = true;
         await create(tester);
         expect(find.text('Created actual-id.'), findsOneWidget);
         expect(find.text('Actual persisted title'), findsOneWidget);
-        expect(find.textContaining('record was created, but'), findsOneWidget);
+        expect(service.recordLoads, 1);
         expect(find.textContaining('Could not confirm creation'), findsNothing);
         expect(_key('record-jobs-actual-id'), findsOneWidget);
         expect(file('actual-id').existsSync(), isTrue);
         expect(file('requested-id').existsSync(), isFalse);
+        expect(_enabled(tester, _key('records-add-jobs')), isTrue);
+        await _tap(tester, _key('records-reload-jobs'));
+        await _loaded(tester);
+        expect(find.textContaining('Could not load records'), findsOneWidget);
+        expect(find.text('Actual persisted title'), findsOneWidget);
         expect(_enabled(tester, _key('records-add-jobs')), isFalse);
         await _tap(tester, _key('records-reload-jobs'));
         await _loaded(tester);
@@ -713,7 +1534,7 @@ void main() {
           createGate.complete();
         }
         await _loaded(tester);
-        expect(service.recordLoads, 3);
+        expect(service.recordLoads, 2);
         expect(service.creates, 1);
         expect(file('single').existsSync(), isTrue);
         await unmount(tester);
@@ -892,8 +1713,13 @@ final class _ControlledService extends GlobalSettingsService {
   int scalarLoads = 0;
   int recordLoads = 0;
   int creates = 0;
+  int updates = 0;
+  int deletes = 0;
   bool loseAcknowledgement = false;
-  bool failRefreshAfterCreate = false;
+  bool loseUpdateAcknowledgement = false;
+  bool loseDeleteAcknowledgement = false;
+  bool failMutation = false;
+  bool rejectNextUpdate = false;
   bool failNextLoad = false;
   bool returnDifferentPersistedRecord = false;
 
@@ -934,14 +1760,70 @@ final class _ControlledService extends GlobalSettingsService {
     if (loseAcknowledgement) {
       throw const FileSystemException('Creation acknowledgement lost');
     }
-    if (failRefreshAfterCreate) failNextLoad = true;
     return saved;
+  }
+
+  @override
+  Future<RecordView> updateRecord(
+    RecordView expected,
+    Map<String, Object?> values,
+  ) async {
+    updates++;
+    await gate;
+    if (rejectNextUpdate) {
+      rejectNextUpdate = false;
+      // The real worker rejects this before persistence and retains its handle.
+      return super.updateRecord(expected, {...values, 'count': -1});
+    }
+    if (failMutation) {
+      throw const FileSystemException('Controlled update failure');
+    }
+    final saved = await super.updateRecord(expected, values);
+    if (loseUpdateAcknowledgement) {
+      throw const FileSystemException('Update acknowledgement lost');
+    }
+    return saved;
+  }
+
+  @override
+  Future<void> deleteRecord(RecordView expected) async {
+    deletes++;
+    await gate;
+    if (failMutation) {
+      throw const FileSystemException('Controlled delete failure');
+    }
+    await super.deleteRecord(expected);
+    if (loseDeleteAcknowledgement) {
+      throw const FileSystemException('Delete acknowledgement lost');
+    }
   }
 }
 
 Finder _key(String value) => find.byKey(ValueKey(value));
 Finder _input(String field) => _key('record-input-jobs-$field');
 Finder _presence(String field) => _key('record-presence-jobs-$field');
+Finder _editInput(String id, String field) =>
+    _key('record-input-jobs-$id-$field');
+Finder _editPresence(String id, String field) =>
+    _key('record-presence-jobs-$id-$field');
+
+Future<void> _expand(WidgetTester tester, String id) async {
+  await _tap(
+    tester,
+    find
+        .descendant(
+          of: _key('record-jobs-$id'),
+          matching: find.byType(ListTile),
+        )
+        .first,
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> _edit(WidgetTester tester, String id) async {
+  await _expand(tester, id);
+  await _tap(tester, _key('record-edit-jobs-$id'));
+}
 
 Future<void> _tap(WidgetTester tester, Finder finder) async {
   await tester.ensureVisible(finder);

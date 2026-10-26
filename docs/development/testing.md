@@ -332,7 +332,11 @@ with actual native persistence, temporary roots, separate owner baselines, seria
 rapid operations, shutdown fencing/draining, load/save failures, and unchanged CFG2
 conflicts. Record operations share that worker: tests cover off-UI I/O, cross-owner
 scalar/record ordering, immutable presentation results, malformed siblings, duplicate
-occupants, scan failures, and lock-gated shutdown draining.
+occupants, scan failures, and lock-gated shutdown draining. Record edit/delete coverage
+checks owner-bound revisions, Reload and mutation retirement, fresh saved handles,
+independent-record baselines, stale no-ops, out-of-band writes, and correctable
+pre-write validation. Update/delete operations use the same native store and lock
+fixtures as scalar requests, not a replacement persistence engine.
 `app/test/global_settings_dialog_test.dart` covers scalar controls,
 category/section organization, validation, search, provenance, empty/invalid catalogs,
 per-setting save/reset, explicit reload, and real Source schema persistence. A
@@ -343,30 +347,36 @@ test-only service subclass injects a lost acknowledgement after actual native
 publication to verify conservative error reporting and mandatory Reload.
 
 `app/test/record_settings_dialog_test.dart` covers generic collection navigation,
-read-only details, display-title fallback, multi-type forms, explicit field presence,
-all scalar types, validation, retained drafts/focus, narrow layout, reentrant admission,
-failure recovery and confirmed persistence without a plugin executable. The existing
-application suite publishes the actual OpenAI and Source schemas through maintained
-tooling and creates two records before any Project, inspects native TOML, and reopens
-and reloads after external disk changes. It checks unchanged scalar values and no
+details, display-title fallback, shared create/edit multi-type forms, explicit field
+presence, all scalar types, validation, retained drafts/focus (including collapsed
+editors), narrow layout, reentrant admission, exact-record delete confirmation,
+conflict/uncertain-outcome recovery, and confirmed persistence without a plugin
+executable. The existing application suite publishes the actual OpenAI and Source
+schemas through maintained
+tooling and manages two records before any Project: create, display-name edit with
+stable filename, optional endpoint insertion/removal, unknown/comment preservation,
+independent sibling bytes, canceled/confirmed deletion, reopening, and explicit
+Reload after disk changes. It also saves ordinary scalar Settings and checks no
 provider activation, alongside independent schema and catalog-aggregation failures.
+Pipe-gated locks verify accepted application exit drains admitted record updates and
+deletes before releasing the settings worker.
 
 Application entry, modal/Command Palette isolation, unavailable frontend recovery,
 and captured storage roots are covered in `app/test/application_test.dart`. The
 normal Source case in `app/test/core/normal_chatgpt_run_integration_test.dart` opens
 Settings in no-Project, Task Browser, and active Session states, saves through the
 real prepared schema and host store, and checks retained native/document/workbench
-identities and startup-only folding for later editors. Record drafts and the original
-Settings route also survive navigation and rejected application-exit preflights.
-This requires the existing
-native editor preparation, not a new target. All new app test files are discovered
+identities and startup-only folding for later editors. Creation and existing-record
+edit drafts and the original Settings route also survive navigation and rejected
+application-exit preflights. This requires the existing native editor preparation,
+not a new target. All new app test files are discovered
 by the existing desktop shard registry; no production dummy settings are installed.
 
 From `app/`, after bootstrap and native prerequisites:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/core/global_settings_service_test.dart test/global_settings_dialog_test.dart test/record_settings_dialog_test.dart test/application_test.dart test/prepared_settings_test.dart
-flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --plain-name 'normal Source Editor retains Environment documents without Chat, a model or a Run'
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart --name 'normal Source Editor (retains Environment|and generic Review exit Cancel)'
 ```
 
 For package-specific analysis, run `dart analyze --fatal-infos` in each package.
