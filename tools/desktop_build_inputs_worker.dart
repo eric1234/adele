@@ -57,6 +57,8 @@ const _backends = <String, String>{
       'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
   'session-evaluator-compilation':
       'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
+  'diff-viewer-compilation':
+      'plugins/diff_viewer/packages/backend/bin/diff_viewer_backend.dart',
 };
 
 // Stock compiler source-map inputs are dynamic File reads, not Dart imports.

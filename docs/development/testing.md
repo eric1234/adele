@@ -488,6 +488,7 @@ bootstrap/current generation, select affected targets from the repository root:
 
 ```sh
 dart tools/adele.dart test --target diff_viewer_contract
+dart tools/adele.dart test --target diff_viewer_backend
 dart tools/adele.dart test --target diff_viewer_frontend
 dart tools/adele.dart test --target source_editor_frontend
 dart tools/adele.dart test --target adele_ui
@@ -496,6 +497,18 @@ dart tools/adele.dart test --target git_backend --ci
 dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
 dart tools/adele.dart generate --check
 ```
+
+The draft contract suite exercises generated native/eval anchored comments,
+typed enums, bounds, exact text, and failure reconstruction. The maintained
+`diff_viewer_backend` target uses test-owned real SQLite for transactional draft
+CRUD, concurrency, rollback, bounded snapshots, corruption and uncertain outcomes.
+`app/test/core/durable_review_draft_integration_test.dart` owns actual Diff AOT and
+generated-client access through canonical Project storage: durable close/reopen,
+volatile Project lifetime, backend replacement, lost acknowledgements, retirement,
+and Project-close fencing. It needs no source materialization or Run. Run it from
+`app/` with `flutter test --no-pub --concurrency 1 test/core/durable_review_draft_integration_test.dart`.
+The [Diff README](../../plugins/diff_viewer/README.md#pending-comments) owns the
+schema, limits, and semantics; timing output is diagnostic, not a CI threshold.
 
 The owning [Diff frontend suite](../../plugins/diff_viewer/packages/frontend/test/diff_viewer_frontend_test.dart)
 compiles real EVC and covers default/switching scopes, separate committed/staged/unstaged/conflict

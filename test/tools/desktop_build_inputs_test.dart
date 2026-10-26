@@ -27,6 +27,8 @@ const _backends = {
       'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
   'session-evaluator':
       'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart',
+  'diff-viewer':
+      'plugins/diff_viewer/packages/backend/bin/diff_viewer_backend.dart',
 };
 
 const _frontends = {
@@ -256,7 +258,7 @@ part 'public.g.dart';
         ),
         inputs,
       );
-      expect(inputs, hasLength(19));
+      expect(inputs, hasLength(20));
       for (final entry in inputs.entries) {
         if (entry.key.contains('-frontend-')) {
           expect(
@@ -280,7 +282,7 @@ part 'public.g.dart';
   );
 
   test(
-    'returns all 19 stages with sorted existing inputs and discovery identity',
+    'returns all 20 stages with sorted existing inputs and discovery identity',
     () async {
       final inputs = await discover();
       expect(

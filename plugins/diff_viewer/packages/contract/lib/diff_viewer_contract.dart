@@ -4,6 +4,8 @@ library;
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 
+export 'review_draft.dart';
+
 part 'diff_viewer_contract.g.dart';
 
 final capabilities.CapabilityKey changeSetSourceCapability =

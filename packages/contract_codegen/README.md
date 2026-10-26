@@ -116,11 +116,22 @@ combined with `--check` or `--source`. Regeneration recreates configured outputs
 
 Frontend build tooling can call `ContractGenerator.generateEvalClient` to derive
 a client-only wire view from the same annotated contract. This bounded projection
-supports unary and server-streaming methods, scalar/nullable values, JSON maps,
-lists, value DTOs, and strict field validation using syntax supported by the pinned evaluator. Unsupported
-contract shapes fail generation; there is no native plugin-specific codec fallback.
+supports unary and server-streaming methods, scalar/nullable values, simple enums,
+JSON maps, lists, value DTOs, and strict field validation using syntax supported
+by the pinned evaluator. Unsupported contract shapes fail generation; there is no
+native plugin-specific codec fallback.
 The projection is generated during EVC compilation rather than maintained as a
 second contract source or hand-written application adapter.
+
+Simple enums project to real Dart enum declarations, including typed DTO fields,
+nullable enums and enum lists. Generated codecs map constants to their declared
+string names, matching native transport, and reject unknown names and non-string
+wire values. The pin does not implement `Enum.name` or `EnumType.values`, so the
+projection relies on typed constants and equality rather than those APIs or
+ordinal encoding. Choose between constants with ordinary assignments/`if`, since
+`dart_eval` 0.8.5 misboxes enum-valued conditional expressions. Enhanced enums
+(members, constructor arguments, type parameters, mixins or interfaces), `Uri`, and `ResourceRef` remain
+explicitly unsupported in the eval projection; native transport is unchanged.
 
 Generated eval DTO constructors copy nonnullable list fields into private
 unmodifiable storage after the pin's typed-argument boxing. Their typed getters

@@ -746,6 +746,12 @@ behavior to [Terminal](../../plugins/terminal/README.md) and
 
 ### Activity Inspection
 
+Inspection is intended as a general host for plugin-contributed inspectable
+content. The currently implemented activity-specific targets below are one source
+of that content, not the defining identity of Inspection. Future structured review
+feedback must not be encoded as a model output, tool proposal, or synthetic Run
+activity merely to fit those targets.
+
 Tool Inspection observes one canonical Session/Run/tool-invocation occurrence.
 Those immutable identities distinguish repeated aliases or provider call IDs and
 remain factual data for both live and historical activity, not execution handles
@@ -838,6 +844,40 @@ resources, and workbench/window state are distinct concerns, not one generic sta
 object. See the [product model](product-model.md) and
 [profiles and configuration](profiles-and-configuration.md) for their ownership
 and persistence boundaries.
+
+### Diff participation
+
+Diff owns pending review-comment identities, immutable source anchors, and
+Session-associated draft persistence. There is no core Review identity. Its
+generated draft service uses the exact backend generation's Project-storage grant,
+not an executable Capability or Run. The host validates the canonical Session's
+open Project and owns storage transactions; Diff owns its relational schema,
+bounded collection, ordering, validation, and optimistic edit versions.
+
+Anchors retain the originating Environment identity as data, relative path,
+comparison layer and side, inclusive line range, opaque read-only comparison
+identity, captured source context, and displayed hunk/line coordinates. A single
+line is a range with equal endpoints. These records do not grant source access or
+materialize an Environment, and storage does not independently certify their
+content against a filesystem or Git revision. Approval eligibility revisions are
+not universal comment-location identities.
+
+Durable Projects retain comments across backend replacement and Project reopen.
+Explicitly volatile Projects use host-owned temporary storage for their live
+Project lifetime; a durable-storage failure never selects temporary or memory
+backing. Navigation changes presentation, not the records' Session or Environment
+association. Unacknowledged mutations may have committed and are reconciled by a
+fresh authoritative snapshot, never automatic replay.
+
+Pending comments are not submitted feedback, Chat history, Run activity, or Git
+approval state. Approval remains owned by the existing handler and Git index.
+Future feedback acceptance belongs to a compatible Session strategy; compact
+occurrence presentation belongs to that strategy, while rich content belongs in
+general Inspection hosting with plugin-owned interpretation. Neither a generic
+Session-input framework nor new Inspection targets are introduced by draft
+storage. The stock Diff frontend remains independent of the draft backend until
+its explicit editing workflow is connected. Exact contract, limits, schema, and
+failure semantics belong to the [Diff map](../../plugins/diff_viewer/README.md#pending-comments).
 
 ### Command Tools participation
 

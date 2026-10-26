@@ -53,6 +53,8 @@ const String _localDirectoryProjectEntrypoint =
     'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart';
 const String _sessionEvaluatorEntrypoint =
     'plugins/session_evaluator/packages/backend/bin/session_evaluator_backend.dart';
+const String _diffViewerEntrypoint =
+    'plugins/diff_viewer/packages/backend/bin/diff_viewer_backend.dart';
 const _backendEntrypoints = [
   _hostEntrypoint,
   _gitEntrypoint,
@@ -64,6 +66,7 @@ const _backendEntrypoints = [
   _chatEntrypoint,
   _localDirectoryProjectEntrypoint,
   _sessionEvaluatorEntrypoint,
+  _diffViewerEntrypoint,
 ];
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
@@ -90,6 +93,7 @@ const _backendStages = {
   'chat-strategy-compilation': _chatEntrypoint,
   'local-directory-project-compilation': _localDirectoryProjectEntrypoint,
   'session-evaluator-compilation': _sessionEvaluatorEntrypoint,
+  'diff-viewer-compilation': _diffViewerEntrypoint,
 };
 const _frontendCompilations = {
   'chat': _frontendHarness,
@@ -814,7 +818,7 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
       for (final cold in [true, false]) {
         final after = await prepare();
         expect(toolCompilations(), cold ? _toolStages.values : isEmpty);
-        expect(compilations(), hasLength(cold ? 20 : 0));
+        expect(compilations(), hasLength(cold ? 21 : 0));
         expect(
           commands.readAsLinesSync().where(
             (line) => line.startsWith('generate|'),
@@ -1895,6 +1899,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     () async {
       for (final path in [
         _sessionEvaluatorEntrypoint,
+        _diffViewerEntrypoint,
         _localDirectoryProjectEntrypoint,
         'plugins/local_directory_project/packages/backend/lib/local_directory_project_backend.dart',
         'plugins/local_directory_project/packages/frontend/lib/local_directory_project_frontend.dart',
@@ -1965,6 +1970,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'compiled|$_localDirectoryProjectEntrypoint',
             'compile|$_sessionEvaluatorEntrypoint',
             'compiled|$_sessionEvaluatorEntrypoint',
+            'compile|$_diffViewerEntrypoint',
+            'compiled|$_diffViewerEntrypoint',
             'compile|git-pty-helper',
             'compile|$_frontendHarness',
             'compiled|$_frontendHarness',
@@ -2190,7 +2197,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             directory: 'diff-viewer',
             id: 'dev.adele.diff-viewer',
             name: 'Diff',
-            backend: false,
+            backend: true,
           ),
           (
             directory: 'session-evaluator',
@@ -2273,7 +2280,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(9),
+          hasLength(10),
         );
         expect(
           catalog.installations.where(
@@ -2319,7 +2326,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           (installation) =>
               installation.metadata.id.value == 'dev.adele.diff-viewer',
         );
-        expect(diff.backendArtifactUri, isNull);
+        expect(
+          diff.backendArtifactUri,
+          installations.uri.resolve('diff-viewer/backend.aot'),
+        );
+        expect(
+          File.fromUri(diff.backendArtifactUri!).readAsStringSync(),
+          'snapshot $_diffViewerEntrypoint\n',
+        );
+        expect(diff.backendConsumedCapabilities, isEmpty);
         expect(diff.frontend!.extensions, isEmpty);
         expect(
           diff.frontend!.artifactUri,
@@ -2681,7 +2696,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 8 : 9),
+          hasLength(missing == PreparedPluginComponent.backend ? 9 : 10),
         );
         expect(
           catalog.installations.where(
@@ -3001,6 +3016,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_localDirectoryProjectEntrypoint',
               'compile|$_sessionEvaluatorEntrypoint',
               'compiled|$_sessionEvaluatorEntrypoint',
+              'compile|$_diffViewerEntrypoint',
+              'compiled|$_diffViewerEntrypoint',
               'compile|git-pty-helper',
               for (final frontend in _frontendCompilations.entries.take(
                 _frontendCompilations.keys.toList().indexOf(kind) + 1,
@@ -3073,7 +3090,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       'incremental preparation rebuilds only consumers of ${mutation.path}',
       () async {
         final before = await prepare();
-        expect(compilations(), hasLength(20));
+        expect(compilations(), hasLength(21));
         expect(toolCompilations(), _toolStages.values);
         final retained = retainedFiles();
         changeSource(mutation.path);
@@ -3486,7 +3503,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(24));
+      expect(receipts, hasLength(25));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
@@ -3641,7 +3658,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(publishedFiles(), isEmpty);
       environment.remove('ADELE_TEST_MUTATE_SOURCE');
       await prepare();
-      expect(compilations(), hasLength(20));
+      expect(compilations(), hasLength(21));
     },
   );
 
@@ -3705,7 +3722,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             ),
           );
         }
-        expect(compilations(), hasLength(20));
+        expect(compilations(), hasLength(21));
         expect(toolCompilations(), _toolStages.values);
         final catalog = await PreparedPluginCatalog.discover(
           launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,

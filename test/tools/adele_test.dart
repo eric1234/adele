@@ -1741,9 +1741,9 @@ void main() {
     );
 
     test(
-      'discovers Diff contract and frontend-only contextual presentation',
+      'discovers Diff storage backend and independent contextual presentation',
       () {
-        for (final component in ['contract', 'frontend']) {
+        for (final component in ['contract', 'backend', 'frontend']) {
           final name = 'diff_viewer_$component';
           final path = 'plugins/diff_viewer/packages/$component';
           final target = lookupTestTarget(name);
@@ -1769,10 +1769,6 @@ void main() {
             isNotEmpty,
           );
         }
-        expect(
-          Directory('plugins/diff_viewer/packages/backend').existsSync(),
-          isFalse,
-        );
         final manifest =
             loadYaml(
                   File(
@@ -1900,6 +1896,7 @@ void main() {
       'command_tools_plugin',
       'command_tools_contract',
       'diff_viewer_contract',
+      'diff_viewer_backend',
       'openai_contract',
     ]) {
       expect(
@@ -2254,6 +2251,7 @@ void main() {
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
         'terminal_frontend|flutter|plugins/terminal/packages/frontend|test',
         'diff_viewer_contract|dart|plugins/diff_viewer/packages/contract|test',
+        'diff_viewer_backend|dart|plugins/diff_viewer/packages/backend|test',
         'diff_viewer_frontend|flutter|plugins/diff_viewer/packages/frontend|test',
         'source_editor_frontend|flutter|plugins/source_editor/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',

@@ -323,6 +323,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'diff_viewer_backend',
+    path: 'plugins/diff_viewer/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'diff_viewer_frontend',
     path: 'plugins/diff_viewer/packages/frontend',
     executable: 'flutter',
@@ -550,6 +556,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
   (
     name: 'diff_viewer_contract',
     path: 'plugins/diff_viewer/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'diff_viewer_backend',
+    path: 'plugins/diff_viewer/packages/backend',
     flutter: false,
   ),
   (
