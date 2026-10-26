@@ -11,6 +11,7 @@ final class TestTarget {
     this.testConcurrency,
     this.ciTestConcurrency,
     this.ciShards = 1,
+    this.ciTestFileCosts,
     this.linuxDesktopDeps = false,
     this.nativeCodeEditor = false,
     this.nativeToml = false,
@@ -19,6 +20,7 @@ final class TestTarget {
   final List<String> arguments;
   final int? ciTestConcurrency;
   final int ciShards;
+  final Map<String, int>? ciTestFileCosts;
   final String executable;
   final bool linuxDesktopDeps;
   final bool nativeCodeEditor;
@@ -42,12 +44,21 @@ final class TestTarget {
   }
 }
 
-/// Matches Flutter's recursive test/ discovery, returning sorted, package-relative
-/// paths with '/' separators. Hashing paths keeps existing assignments stable when
-/// files are added; it deliberately does not use Dart's unspecified String hash.
-List<List<String>> partitionTestFiles(Directory packageRoot, int shardCount) {
+/// Matches Flutter's recursive test/ discovery, returning package-relative
+/// paths with '/' separators. Without [costs], FNV-1a keeps existing assignments
+/// stable when files are added. With costs, longest-processing-time-first (LPT)
+/// assigns whole files by descending cost, then path, to the least-loaded shard
+/// (lowest shard id breaks ties). Unlisted files cost 1; hints never filter files.
+List<List<String>> partitionTestFiles(
+  Directory packageRoot,
+  int shardCount, {
+  Map<String, int>? costs,
+}) {
   if (shardCount < 1) {
     throw ArgumentError.value(shardCount, 'shardCount', 'must be positive');
+  }
+  if (costs != null && costs.values.any((cost) => cost < 1)) {
+    throw ArgumentError.value(costs, 'costs', 'must be positive');
   }
   final root = packageRoot.absolute;
   final files =
@@ -67,13 +78,29 @@ List<List<String>> partitionTestFiles(Directory packageRoot, int shardCount) {
           .toList()
         ..sort();
   final shards = List.generate(shardCount, (_) => <String>[]);
-  for (final path in files) {
-    // FNV-1a, unsigned 32-bit, over the UTF-8 package-relative path.
-    var hash = 0x811c9dc5;
-    for (final byte in utf8.encode(path)) {
-      hash = ((hash ^ byte) * 0x01000193) & 0xffffffff;
+  if (costs == null) {
+    for (final path in files) {
+      // FNV-1a, unsigned 32-bit, over the UTF-8 package-relative path.
+      var hash = 0x811c9dc5;
+      for (final byte in utf8.encode(path)) {
+        hash = ((hash ^ byte) * 0x01000193) & 0xffffffff;
+      }
+      shards[hash % shardCount].add(path);
     }
-    shards[hash % shardCount].add(path);
+  } else {
+    files.sort((left, right) {
+      final byCost = (costs[right] ?? 1).compareTo(costs[left] ?? 1);
+      return byCost != 0 ? byCost : left.compareTo(right);
+    });
+    final loads = List.filled(shardCount, 0);
+    for (final path in files) {
+      var selected = 0;
+      for (var index = 1; index < shardCount; index++) {
+        if (loads[index] < loads[selected]) selected = index;
+      }
+      shards[selected].add(path);
+      loads[selected] += costs[path] ?? 1;
+    }
   }
   for (var index = 0; index < shards.length; index++) {
     if (shards[index].isEmpty) {

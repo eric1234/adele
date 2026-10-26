@@ -190,21 +190,23 @@ void main() {
       expect(parseTestOptions(['--ci', '--target=adele_tools']).ci, isTrue);
     });
 
-    test('accepts each 1-based desktop shard in either option form', () {
-      for (var shard = 1; shard <= 4; shard++) {
-        for (final option in [
-          ['--shard', '$shard'],
-          ['--shard=$shard'],
-        ]) {
-          final options = parseTestOptions([
-            ...option,
-            '--ci',
-            '--target=adele_desktop',
-          ]);
-          expect(options.target, 'adele_desktop');
-          expect(options.ci, isTrue);
-          expect(options.jobs, 1);
-          expect(options.shard, shard);
+    test('accepts each 1-based desktop and Git shard in either form', () {
+      for (final (name, count) in [('adele_desktop', 4), ('git_backend', 7)]) {
+        for (var shard = 1; shard <= count; shard++) {
+          for (final option in [
+            ['--shard', '$shard'],
+            ['--shard=$shard'],
+          ]) {
+            final options = parseTestOptions([
+              ...option,
+              '--ci',
+              '--target=$name',
+            ]);
+            expect(options.target, name);
+            expect(options.ci, isTrue);
+            expect(options.jobs, 1);
+            expect(options.shard, shard);
+          }
         }
       }
       expect(parseTestOptions([]).shard, isNull);
@@ -227,26 +229,29 @@ void main() {
       ['--other'],
       ['--shard', '1'],
       ['--target=adele_desktop', '--shard=1'],
+      ['--target=git_backend', '--shard=1'],
+      ['--target=adele_desktop', '--ci', '--shard=5'],
+      ['--target=git_backend', '--ci', '--shard=8'],
       ['--target=adele_tools', '--ci', '--shard=1'],
       ['--target=missing', '--ci', '--shard=1'],
       ['--jobs=2', '--ci', '--shard=1'],
-      for (final shard in [
-        ['--shard'],
-        ['--shard='],
-        ['--shard', '--ci'],
-        ['--shard', '0'],
-        ['--shard=-1'],
-        ['--shard=5'],
-        ['--shard=01'],
-        ['--shard=1/4'],
-        ['--shard=1.0'],
-        ['--shard=one'],
-        ['--shard=9999999999999999999999999'],
-        ['--shard=1', '--shard=2'],
-        ['--shard', '1', '--shard=1'],
-        ['--shard=1', '--shard', '1'],
-      ])
-        ['--target=adele_desktop', '--ci', ...shard],
+      for (final name in ['adele_desktop', 'git_backend'])
+        for (final shard in [
+          ['--shard'],
+          ['--shard='],
+          ['--shard', '--ci'],
+          ['--shard', '0'],
+          ['--shard=-1'],
+          ['--shard=01'],
+          ['--shard=1/4'],
+          ['--shard=1.0'],
+          ['--shard=one'],
+          ['--shard=9999999999999999999999999'],
+          ['--shard=1', '--shard=2'],
+          ['--shard', '1', '--shard=1'],
+          ['--shard=1', '--shard', '1'],
+        ])
+          ['--target=$name', '--ci', ...shard],
       for (final target in [
         ['--target', 'adele_tools'],
         ['--target=adele_tools'],
@@ -369,7 +374,7 @@ void main() {
     );
 
     test(
-      'expands only desktop into four early CI entries with setup metadata',
+      'expands only Git into seven and desktop into four early CI entries',
       () {
         final Map<String, Object?> plan =
             jsonDecode(testPlanJson())! as Map<String, Object?>;
@@ -384,11 +389,13 @@ void main() {
           testTargets.map((target) => target.name).toSet(),
           hasLength(testTargets.length),
         );
-        expect(include, hasLength(testTargets.length + 3));
+        expect(include, hasLength(testTargets.length + 9));
         expect(names, <String>[
+          for (var shard = 1; shard <= 7; shard++) 'git_backend',
           for (var shard = 1; shard <= 4; shard++) 'adele_desktop',
           for (final TestTarget target in testTargets)
-            if (target.name != 'adele_desktop') target.name,
+            if (target.name != 'adele_desktop' && target.name != 'git_backend')
+              target.name,
         ]);
         expect(names.toSet(), hasLength(testTargets.length));
         expect(
@@ -399,16 +406,21 @@ void main() {
           final selected = entries
               .where((entry) => entry['name'] == target.name)
               .toList();
-          final desktop = target.name == 'adele_desktop';
-          expect(selected, hasLength(desktop ? 4 : 1));
-          expect(target.ciShards, desktop ? 4 : 1);
+          final count = switch (target.name) {
+            'adele_desktop' => 4,
+            'git_backend' => 7,
+            _ => 1,
+          };
+          expect(selected, hasLength(count));
+          expect(target.ciShards, count);
+          expect(target.ciTestFileCosts != null, target.name == 'git_backend');
           for (var index = 0; index < selected.length; index++) {
             final entry = selected[index];
             expect(
               entry['displayName'],
-              desktop ? 'adele_desktop (${index + 1}/4)' : target.name,
+              count > 1 ? '${target.name} (${index + 1}/$count)' : target.name,
             );
-            expect(entry['shard'], desktop ? index + 1 : null);
+            expect(entry['shard'], count > 1 ? index + 1 : null);
             expect(entry['shardCount'], target.ciShards);
             expect(entry['linuxDesktopDeps'], target.linuxDesktopDeps);
             expect(entry['nativeCodeEditor'], target.nativeCodeEditor);
@@ -591,12 +603,14 @@ void main() {
           )['if'],
           r'${{ matrix.linuxDesktopDeps }}',
         );
+        final pty = steps.singleWhere(
+          (step) => step['name'] == 'Install Linux PTY test prerequisites',
+        );
         expect(
-          steps.singleWhere(
-            (step) => step['name'] == 'Install Linux PTY test prerequisites',
-          )['if'],
+          pty['if'],
           r"${{ matrix.name == 'git_backend' || matrix.name == 'adele_desktop' }}",
         );
+        expect(pty['run'], contains('apt-get install -y gcc libc6-dev'));
         final run = steps.singleWhere(
           (step) => step['name'] == 'Run test target',
         );
@@ -605,26 +619,37 @@ void main() {
           'TEST_TARGET': r'${{ matrix.name }}',
           'TEST_SHARD': r'${{ matrix.shard }}',
         });
-        // Execute the actual workflow shell with a failing stand-in for Dart.
-        for (final shard in ['', '1', '2', '3', '4']) {
-          final result = await Process.run(
-            'bash',
-            [
-              '-e',
-              '-c',
-              'dart() { printf "%s\\n" "\$@"; return 7; }\n${run['run']}',
-            ],
-            environment: {'TEST_TARGET': 'adele_desktop', 'TEST_SHARD': shard},
-          );
-          expect(result.exitCode, 7);
-          expect((result.stdout as String).trim().split('\n'), [
-            'tools/adele.dart',
-            'test',
-            '--target',
-            'adele_desktop',
-            '--ci',
-            if (shard.isNotEmpty) ...['--shard', shard],
-          ]);
+        // Execute the actual workflow shell with a stand-in for Dart.
+        final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
+        final entries = (plan['include']! as List<Object?>)
+            .cast<Map<String, Object?>>();
+        for (final entry in [
+          ...entries,
+          {'name': 'adele_desktop', 'shard': null},
+          {'name': 'git_backend', 'shard': null},
+        ]) {
+          final name = entry['name']! as String;
+          final shard = entry['shard']?.toString() ?? '';
+          for (final exitCode in [0, 7]) {
+            final result = await Process.run(
+              'bash',
+              [
+                '-e',
+                '-c',
+                'dart() { printf "%s\\n" "\$@"; return $exitCode; }\n${run['run']}',
+              ],
+              environment: {'TEST_TARGET': name, 'TEST_SHARD': shard},
+            );
+            expect(result.exitCode, exitCode, reason: '$name shard $shard');
+            expect((result.stdout as String).trim().split('\n'), [
+              'tools/adele.dart',
+              'test',
+              '--target',
+              name,
+              '--ci',
+              if (shard.isNotEmpty) ...['--shard', shard],
+            ]);
+          }
         }
         final gate = jobs['test'] as YamlMap;
         expect(gate['if'], 'always()');
@@ -745,41 +770,156 @@ void main() {
           : false,
     );
 
+    test('cost-aware LPT resolves file and load ties deterministically', () {
+      const costs = {
+        'test/z_test.dart': 6,
+        'test/b_test.dart': 4,
+        'test/a_test.dart': 4,
+        'test/c_test.dart': 2,
+        'test/not_discovered_test.dart': 100,
+      };
+      final paths = [
+        'test/z_test.dart',
+        'test/b_test.dart',
+        'test/a_test.dart',
+        'test/c_test.dart',
+        'test/nested/d_test.dart',
+        'test/nested/e_test.dart',
+      ];
+      for (final path in paths) {
+        addFile(path);
+      }
+      addFile('test/support/review_support.dart');
+      addFile('tool/outside_test.dart');
+      Directory('${fixture.path}/test/directory_test.dart').createSync();
+      final shards = partitionTestFiles(fixture, 3, costs: costs);
+      expect(shards, [
+        ['test/z_test.dart'],
+        ['test/a_test.dart', 'test/c_test.dart'],
+        [
+          'test/b_test.dart',
+          'test/nested/d_test.dart',
+          'test/nested/e_test.dart',
+        ],
+      ]);
+      final selected = shards.expand((files) => files).toList();
+      expect(selected, unorderedEquals(paths));
+      expect(selected.toSet(), hasLength(paths.length));
+      expect(shards, everyElement(isNotEmpty));
+
+      // Neither discovery order, absolute checkout path nor map order is policy.
+      final copy = Directory.systemTemp.createTempSync('adele-cost-shards-');
+      addTearDown(() => copy.deleteSync(recursive: true));
+      for (final path in paths.reversed) {
+        final file = File('${copy.path}/$path');
+        file.parent.createSync(recursive: true);
+        file.writeAsStringSync('');
+      }
+      expect(
+        partitionTestFiles(
+          copy,
+          3,
+          costs: Map.fromEntries(costs.entries.toList().reversed),
+        ),
+        shards,
+      );
+      const added = 'test/new/deep/automatic_test.dart';
+      addFile(added);
+      expect(partitionTestFiles(fixture, 3, costs: costs), [
+        ['test/z_test.dart', added],
+        ['test/a_test.dart', 'test/c_test.dart'],
+        [
+          'test/b_test.dart',
+          'test/nested/d_test.dart',
+          'test/nested/e_test.dart',
+        ],
+      ]);
+    });
+
+    test('empty cost hints use cost 1 rather than hash assignment', () {
+      for (final path in ['d', 'b', 'c', 'a']) {
+        addFile('test/${path}_test.dart');
+      }
+      expect(partitionTestFiles(fixture, 3, costs: {}), [
+        ['test/a_test.dart', 'test/d_test.dart'],
+        ['test/b_test.dart'],
+        ['test/c_test.dart'],
+      ]);
+    });
+
     test(
       'rejects invalid counts, missing discovery roots and empty shards',
       () {
-        expect(() => partitionTestFiles(fixture, 0), throwsArgumentError);
-        expect(() => partitionTestFiles(fixture, -1), throwsArgumentError);
-        expect(
-          () => partitionTestFiles(Directory('${fixture.path}/missing'), 4),
-          throwsA(isA<FileSystemException>()),
-        );
-        expect(() => partitionTestFiles(fixture, 4), throwsStateError);
+        for (final costs in [null, <String, int>{}]) {
+          expect(
+            () => partitionTestFiles(fixture, 0, costs: costs),
+            throwsArgumentError,
+          );
+          expect(
+            () => partitionTestFiles(fixture, -1, costs: costs),
+            throwsArgumentError,
+          );
+          expect(
+            () => partitionTestFiles(
+              Directory('${fixture.path}/missing'),
+              4,
+              costs: costs,
+            ),
+            throwsA(isA<FileSystemException>()),
+          );
+          expect(
+            () => partitionTestFiles(fixture, 4, costs: costs),
+            throwsStateError,
+          );
+        }
         addFile('test/only_test.dart');
-        expect(() => partitionTestFiles(fixture, 4), throwsStateError);
-        expect(
-          () => lookupTestTarget(
-            'adele_desktop',
-          ).argumentsFor(ci: true, testFiles: []),
-          throwsArgumentError,
-        );
+        for (final costs in [null, <String, int>{}]) {
+          expect(
+            () => partitionTestFiles(fixture, 4, costs: costs),
+            throwsStateError,
+          );
+        }
+        for (final cost in [0, -1]) {
+          expect(
+            () => partitionTestFiles(
+              fixture,
+              1,
+              costs: {'test/only_test.dart': cost},
+            ),
+            throwsArgumentError,
+          );
+        }
+        for (final name in ['adele_desktop', 'git_backend']) {
+          expect(
+            () => lookupTestTarget(name).argumentsFor(ci: true, testFiles: []),
+            throwsArgumentError,
+          );
+        }
       },
     );
 
-    test('CLI refuses an empty partition before native preparation', () async {
-      Directory('${fixture.path}/app/test').createSync(recursive: true);
-      final result = await Process.run(Platform.resolvedExecutable, [
-        File('tools/adele.dart').absolute.path,
-        'test',
-        '--target=adele_desktop',
-        '--ci',
-        '--shard=1',
-      ], workingDirectory: fixture.path);
-      expect(result.exitCode, 1);
-      expect(result.stderr, contains('Test shard 1/4 is empty'));
-      expect(result.stdout, isEmpty);
-      expect(Directory('${fixture.path}/.adele').existsSync(), isFalse);
-    });
+    for (final name in ['adele_desktop', 'git_backend']) {
+      test('CLI refuses an empty $name shard before preparation', () async {
+        final target = lookupTestTarget(name);
+        Directory(
+          '${fixture.path}/${target.path}/test',
+        ).createSync(recursive: true);
+        final result = await Process.run(Platform.resolvedExecutable, [
+          File('tools/adele.dart').absolute.path,
+          'test',
+          '--target=$name',
+          '--ci',
+          '--shard=1',
+        ], workingDirectory: fixture.path);
+        expect(result.exitCode, 1);
+        expect(
+          result.stderr,
+          contains('Test shard 1/${target.ciShards} is empty'),
+        );
+        expect(result.stdout, isEmpty);
+        expect(Directory('${fixture.path}/.adele').existsSync(), isFalse);
+      });
+    }
 
     test(
       'actual checkout partitions cover every file and separate expensive suites',
@@ -832,6 +972,63 @@ void main() {
         }
       },
     );
+
+    test('Git checkout shards cover all suites once with unchanged argv', () {
+      final target = lookupTestTarget('git_backend');
+      final shards = partitionTestFiles(
+        Directory(target.path),
+        target.ciShards,
+        costs: target.ciTestFileCosts,
+      );
+      final expected = Directory('${target.path}/test')
+          .listSync(recursive: true, followLinks: false)
+          .where(
+            (file) =>
+                file.path.endsWith('_test.dart') &&
+                FileSystemEntity.isFileSync(file.path),
+          )
+          .map(
+            (file) => file.path
+                .replaceAll(Platform.pathSeparator, '/')
+                .substring('${target.path}/'.length),
+          )
+          .toList();
+      final selected = shards.expand((files) => files).toList();
+      expect(shards, hasLength(7));
+      expect(shards, everyElement(isNotEmpty));
+      expect(selected, unorderedEquals(expected));
+      expect(selected.toSet(), hasLength(expected.length));
+      expect(
+        partitionTestFiles(
+          Directory(target.path),
+          target.ciShards,
+          costs: target.ciTestFileCosts,
+        ),
+        shards,
+      );
+      for (final files in shards) {
+        expect(target.argumentsFor(ci: true, testFiles: files), [
+          'test',
+          '--timeout',
+          '4m',
+          '--concurrency',
+          '1',
+          ...files,
+        ]);
+      }
+      expect(target.argumentsFor(), ['test', '--timeout', '4m']);
+      expect(target.argumentsFor(ci: true), [
+        'test',
+        '--timeout',
+        '4m',
+        '--concurrency',
+        '1',
+      ]);
+      expect(target.ciTestConcurrency, 1);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.nativeCodeEditor, isFalse);
+      expect(target.nativeToml, isFalse);
+    });
 
     test(
       'selected file argv and test process failures reach the runner summary',
