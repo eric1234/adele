@@ -310,11 +310,361 @@ void main() {
         );
       }
 
-      // Keep the strict default: only the exact keepalive type is newly ignored.
+      for (final bool withOutput in <bool>[false, true]) {
+        for (final String ending in <String>[
+          'completed',
+          'failed',
+          'incomplete',
+          'error',
+          'eof',
+        ]) {
+          test(
+            '$profile metadata with output=$withOutput preserves $ending',
+            () async {
+              final Map<String, Object?> message = _message(
+                'msg_metadata',
+                'Authoritative text.',
+              );
+              final Map<String, Object?> call = <String, Object?>{
+                'type': 'function_call',
+                'id': 'fc_metadata',
+                'call_id': 'call_metadata',
+                'name': 'inspect_resource',
+                'arguments': '{"resource":"test"}',
+                'status': 'completed',
+              };
+              final List<Map<String, Object?>> requests =
+                  <Map<String, Object?>>[];
+              final _FakeServer server = await _FakeServer.start((
+                request,
+              ) async {
+                expect(
+                  request.headers.value(HttpHeaders.authorizationHeader),
+                  chatGpt ? 'Bearer summary-access' : 'Bearer fake-openai-key',
+                );
+                expect(
+                  request.headers.value('ChatGPT-Account-ID'),
+                  chatGpt ? 'summary-account' : null,
+                );
+                expect(request.headers.value('x-codex-turn-state'), isNull);
+                requests.add(await _jsonBody(request));
+                request.response.headers.set('x-request-id', 'req_metadata');
+                if (requests.length > 1) {
+                  _sse(request.response, _completed('resp_replay'));
+                  await request.response.close();
+                  return;
+                }
+                _sse(request.response, <String, Object?>{
+                  'type': 'response.metadata',
+                });
+                _sse(request.response, <String, Object?>{
+                  'type': 'response.metadata',
+                  'metadata': null,
+                });
+                for (final Object? moderation in <Object?>[
+                  null,
+                  'PRIVATE-METADATA',
+                  <Object?>[],
+                ]) {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.metadata',
+                    'metadata': <String, Object?>{
+                      'openai_chatgpt_moderation_metadata': moderation,
+                    },
+                  });
+                }
+                _sse(request.response, _responseMetadata());
+                if (withOutput) {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.output_text.delta',
+                    'item_id': 'msg_metadata',
+                    'delta': 'Streaming ',
+                  });
+                  _sse(request.response, _responseMetadata());
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.output_text.delta',
+                    'item_id': 'msg_metadata',
+                    'delta': 'observation.',
+                  });
+                  _sse(request.response, _outputDone(message));
+                  _sse(request.response, _responseMetadata());
+                  _sse(request.response, _outputDone(call));
+                  _sse(request.response, _responseMetadata());
+                }
+                if (ending == 'error') {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'error',
+                    'code': 'test_failure',
+                    'message': 'Test failure.',
+                  });
+                } else if (ending != 'eof') {
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.$ending',
+                    'response': _response(
+                      'resp_metadata',
+                      extra: <String, Object?>{
+                        'incomplete_details': <String, Object?>{
+                          'reason': 'content_filter',
+                        },
+                        'error': <String, Object?>{
+                          'code': 'test_failure',
+                          'message': 'Test failure.',
+                        },
+                      },
+                    ),
+                  });
+                }
+                await request.response.close();
+              });
+              addTearDown(server.close);
+              final OpenAiModelProvider provider = await _testProvider(
+                server,
+                chatGpt: chatGpt,
+              );
+              final List<ModelProviderEvent> events = await provider
+                  .invoke(_request())
+                  .toList();
+              expect(
+                events.map((event) => event.kind),
+                <ModelProviderEventKind>[
+                  if (withOutput) ...<ModelProviderEventKind>[
+                    ModelProviderEventKind.observation,
+                    ModelProviderEventKind.observation,
+                    ModelProviderEventKind.output,
+                    ModelProviderEventKind.output,
+                  ],
+                  ModelProviderEventKind.terminal,
+                ],
+              );
+              final List<ModelProviderOutput> outputs = events
+                  .map((event) => event.output)
+                  .whereType<ModelProviderOutput>()
+                  .toList();
+              if (withOutput) {
+                expect(
+                  events.take(2).map((event) => event.observation!.textDelta),
+                  <String>['Streaming ', 'observation.'],
+                );
+                expect(outputs.first.kind, ModelProviderOutputKind.text);
+                expect(outputs.first.text, 'Authoritative text.');
+                expect(outputs.last.kind, ModelProviderOutputKind.toolProposal);
+                expect(outputs.last.toolProposal!.callId, 'call_metadata');
+                expect(outputs.last.toolProposal!.name, 'inspect_resource');
+                expect(outputs.last.toolProposal!.arguments, <String, Object?>{
+                  'resource': 'test',
+                });
+              }
+              expect(
+                outputs.map((output) => output.nativeMetadata),
+                everyElement(isNull),
+              );
+              expect(
+                outputs.map((output) => output.nativePresentation),
+                everyElement(isNull),
+              );
+              final ModelProviderTerminal terminal = events.last.terminal!;
+              expect(terminal.settlement, switch (ending) {
+                'completed' => ModelProviderSettlement.completed,
+                'incomplete' => ModelProviderSettlement.incomplete,
+                _ => ModelProviderSettlement.failed,
+              });
+              expect(terminal.requestId, 'req_metadata');
+              expect(terminal.nativeState, isNull);
+              expect(terminal.affinityState, isNull);
+              expect(terminal.failure?.providerCode, switch (ending) {
+                'eof' => 'missing_terminal',
+                'failed' || 'error' => 'test_failure',
+                _ => null,
+              });
+              expect(terminal.failure?.kind, switch (ending) {
+                'eof' => ModelProviderFailureKind.malformedResponse,
+                'failed' || 'error' => ModelProviderFailureKind.providerFailure,
+                _ => null,
+              });
+              if (ending == 'incomplete') {
+                expect(
+                  terminal.incompleteReason,
+                  ModelProviderIncompleteReason.other,
+                );
+                expect(terminal.providerStopReason, 'content_filter');
+              }
+              if (ending != 'eof' && ending != 'error') {
+                expect(terminal.responseId, 'resp_metadata');
+                expect(terminal.effectiveModel, 'test-model-effective');
+                expect(terminal.usage!.inputTokens, 11);
+                expect(terminal.usage!.providerDetails, <String, Object?>{
+                  'totalTokens': 18,
+                  'reasoningTokens': 2,
+                });
+              }
+              if (ending == 'completed') {
+                await provider
+                    .invoke(
+                      _request(
+                        input: <ModelProviderInput>[
+                          _userInput(),
+                          ...outputs.map(_replay),
+                        ],
+                      ),
+                    )
+                    .toList();
+                expect(
+                  (requests.last['input']! as List<Object?>).skip(1),
+                  withOutput ? <Object?>[message, call] : isEmpty,
+                );
+              }
+              expect(requests, hasLength(ending == 'completed' ? 2 : 1));
+              expect(jsonEncode(requests), isNot(contains('PRIVATE-METADATA')));
+            },
+          );
+        }
+      }
+
+      for (final (String label, Map<String, Object?> event, String code)
+          in <(String, Map<String, Object?>, String)>[
+            for (final Object? safety in <Object?>[
+              <String, Object?>{
+                'use_cases': <String>['cyber'],
+                'reasons': <String>['PRIVATE-METADATA'],
+                'retry_model': 'PRIVATE-METADATA',
+              },
+              <String, Object?>{},
+              null,
+              false,
+            ])
+              (
+                'top-level safety $safety',
+                <String, Object?>{
+                  'type': 'response.metadata',
+                  'safety_buffering': safety,
+                },
+                'unsupported_safety_metadata',
+              ),
+            for (final Map<String, Object?> safety in <Map<String, Object?>>[
+              <String, Object?>{
+                'type': 'safety_buffering',
+                'use_cases': <String>['cyber'],
+                'reasons': <String>['PRIVATE-METADATA'],
+                'retry_model': null,
+              },
+              <String, Object?>{'type': 'safety_buffering'},
+            ])
+              (
+                'typed safety $safety',
+                <String, Object?>{
+                  'type': 'response.metadata',
+                  'metadata': safety,
+                },
+                'unsupported_safety_metadata',
+              ),
+            for (final String type in <String>[
+              'response.output_text.delta',
+              'response.completed',
+            ])
+              (
+                'safety on $type',
+                <String, Object?>{
+                  'type': type,
+                  'delta': 'Must not publish.',
+                  'response': _response('resp_safety'),
+                  'safety_buffering': <String, Object?>{
+                    'use_cases': <String>[],
+                    'reasons': <String>[],
+                  },
+                },
+                'unsupported_safety_metadata',
+              ),
+            (
+              'contradictory safety',
+              <String, Object?>{
+                'type': 'response.metadata',
+                'safety_buffering': null,
+                'metadata': <String, Object?>{'type': 'safety_buffering'},
+              },
+              'unsupported_safety_metadata',
+            ),
+            for (final Object? type in <Object?>['PRIVATE-METADATA', null, 42])
+              (
+                'unknown metadata type $type',
+                <String, Object?>{
+                  'type': 'response.metadata',
+                  'metadata': <String, Object?>{'type': type},
+                },
+                'unsupported_response_metadata',
+              ),
+            (
+              'malformed metadata',
+              <String, Object?>{
+                'type': 'response.metadata',
+                'metadata': 'PRIVATE-METADATA',
+              },
+              'invalid_response_metadata',
+            ),
+            for (final String type in <String>[
+              'future_item',
+              'web_search_call',
+              'file_search_call',
+              'computer_call',
+              'code_interpreter_call',
+              'custom_tool_call',
+              'mcp_call',
+            ])
+              (
+                'authoritative $type',
+                _outputDone(<String, Object?>{'type': type}),
+                type == 'future_item'
+                    ? 'unsupported_output_item'
+                    : 'provider_hosted_tool_output',
+              ),
+            (
+              'malformed function call',
+              _outputDone(<String, Object?>{'type': 'function_call'}),
+              'missing_call_id',
+            ),
+          ]) {
+        test('$profile metadata preserves rejection of $label', () async {
+          final _FakeServer server = await _FakeServer.start((request) async {
+            await request.drain<void>();
+            _sse(request.response, _responseMetadata());
+            _sse(request.response, event);
+            _sse(
+              request.response,
+              _outputDone(_message('unreachable', 'Must not publish.')),
+            );
+            _sse(request.response, _completed('unreachable'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final ModelProviderEvent result =
+              (await provider.invoke(_request()).toList()).single;
+          expect(result.kind, ModelProviderEventKind.terminal);
+          final ModelProviderTerminal terminal = result.terminal!;
+          expect(terminal.settlement, ModelProviderSettlement.failed);
+          expect(
+            terminal.failure!.kind,
+            ModelProviderFailureKind.malformedResponse,
+          );
+          expect(terminal.failure!.providerCode, code);
+          expect(
+            terminal.failure!.providerMessage,
+            isNot(contains('PRIVATE-METADATA')),
+          );
+          expect(terminal.failure!.providerDetails, isEmpty);
+          expect(terminal.nativeState, isNull);
+          expect(terminal.affinityState, isNull);
+        });
+      }
+
+      // Exact sideband recognition must not relax the strict default.
       for (final String type in <String>[
         'test.unknown-event',
         'keepalive.extra',
         'test.keepalive',
+        'response.metadata.extra',
       ]) {
         test('$profile rejects unknown top-level event $type', () async {
           int requests = 0;
@@ -634,10 +984,12 @@ void main() {
                 bodies.length <= 2 ? 'first-token' : 'later-token',
               );
             }
+            _sse(request.response, _responseMetadata());
             _sse(
               request.response,
               _outputDone(_reasoning('rs_affinity', 'opaque-replay')),
             );
+            _sse(request.response, _responseMetadata());
             _sse(request.response, _completed('resp_affinity'));
             await request.response.close();
           });
@@ -4227,6 +4579,31 @@ Map<String, Object?> _reasoning(
       <String, Object?>{'type': 'summary_text', 'text': text},
   ],
   'encrypted_content': encrypted,
+};
+
+Map<String, Object?> _responseMetadata() => <String, Object?>{
+  'type': 'response.metadata',
+  'sequence_number': 1,
+  'response_id': 'PRIVATE-METADATA-response',
+  'headers': <String, Object?>{
+    'OpenAI-Model': <String>['PRIVATE-METADATA-model'],
+    'X-Codex-Turn-State': 'PRIVATE-METADATA-token',
+    'ChatGPT-Account-ID': 'PRIVATE-METADATA-account',
+    'Authorization': 'Bearer PRIVATE-METADATA-credential',
+  },
+  'response': <String, Object?>{
+    'id': 'PRIVATE-METADATA-response',
+    'model': 'PRIVATE-METADATA-model',
+    'usage': <String, Object?>{'input_tokens': 999},
+    'output': <Object?>[_message('PRIVATE-METADATA-item', 'Must not publish.')],
+  },
+  'metadata': <String, Object?>{
+    'openai_verification_recommendation': <String>['trusted_access_for_cyber'],
+    'openai_chatgpt_moderation_metadata': <String, Object?>{
+      'presentation': 'inline',
+    },
+    'unknown': 'PRIVATE-METADATA',
+  },
 };
 
 Map<String, Object?> _completed(String id) => <String, Object?>{

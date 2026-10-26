@@ -65,6 +65,41 @@ Existing `store: false`, `stream: true`, `parallel_tool_calls: true`, and
 `include: ['reasoning.encrypted_content']` remain in place. Parallel tool calls
 permit multiple proposals in one response, not concurrent ADELE tool execution.
 
+## Response Metadata Compatibility
+
+Both profiles explicitly accept `response.metadata` as nonterminal sideband, not
+as model output, a tool proposal, or a replay item. Informational response fields,
+reported-model/routing headers, account-verification recommendations
+(`openai_verification_recommendation`), and opaque moderation/presentation data
+(`openai_chatgpt_moderation_metadata`) are discarded without forwarding their
+contents to model context, Run history, UI diagnostics, or logs. They do not change
+authentication, the requested model, or affinity. Terminal metadata still comes
+from the explicit terminal; completed output items remain authoritative.
+
+This decision follows first-party Codex's
+[Responses parser](https://github.com/openai/codex/blob/cfc11bfab31c6885ec8213ece435fc3347eda7a4/codex-rs/codex-api/src/sse/responses.rs)
+and its consumers. Verification is advisory account-access guidance, not an
+authorization grant; moderation metadata is presentation sideband, not a substitute
+for refusal, failure, or incomplete settlement. SSE turn state comes from the HTTP
+header, unlike Codex's WebSocket metadata-header capture.
+
+Safety-buffering notifications are deliberately unsupported: a top-level
+`safety_buffering` field on any event, or `response.metadata` with
+`metadata.type == 'safety_buffering'`, fails with `unsupported_safety_metadata`.
+Codex uses these for waiting-status UI and optionally confirmed retry on a different
+model, not client-side output/tool buffering. ADELE implements neither behavior.
+Presence-based rejection includes malformed, null, and false safety markers and
+is intentionally stricter than Codex's permissive parsing. Other `metadata.type`
+variants are rejected as `unsupported_response_metadata`; non-null, non-object
+metadata is rejected as `invalid_response_metadata`. Diagnostics are fixed text,
+never payload values. Untyped informational keys are not interpreted; this is not
+a guarantee of support for future metadata directives or other unknown events.
+
+The existing strict authoritative-event/item validation, hosted-tool rejection,
+streaming observations, explicit terminals, EOF-before-terminal failure, and
+cancellation/retirement paths remain in place. No retry, model switch, desktop
+error-presentation change, or provider-neutral contract change is introduced.
+
 ## Session Routing, Run State, And Cache Usage
 
 For the experimental ChatGPT profile, a supplied `ModelProviderRequest.affinity`
@@ -191,6 +226,10 @@ Backend affinity tests use local fake HTTP/OAuth endpoints to check first-token
 retention, scope/model/endpoint/account isolation, auth recovery, cancellation and
 failure settlement, redaction, unchanged bodies/replay, and nullable cache usage
 across both profiles and semantic settlements. They do not assert real cache hits.
+Metadata fixtures cover both profiles before/between/after output, explicit
+terminals and premature EOF, unsupported safety/typed payloads, and unchanged
+strict output validation and replay. The normal Chat AOT fixture also includes
+metadata without changing its expected history, tool approvals, or HTTP affinity.
 
 Local fake endpoints and temporary fake credentials require no live account or
 API key. Existing opt-in live smokes remain separate and do not establish summary

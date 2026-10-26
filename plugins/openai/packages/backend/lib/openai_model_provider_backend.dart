@@ -835,7 +835,34 @@ final class _ResponsesNormalizer {
       );
     }
     final String type = decoded['type']! as String;
+    // Codex can attach safety notifications to any event, not only metadata.
+    // Fail closed even on malformed markers; never expose their payloads.
+    final Object? metadata = decoded['metadata'];
+    if (decoded.containsKey('safety_buffering') ||
+        (type == 'response.metadata' &&
+            metadata is Map<String, Object?> &&
+            metadata['type'] == 'safety_buffering')) {
+      throw const _OpenAiResponseException(
+        'unsupported_safety_metadata',
+        'OpenAI safety-buffering metadata is not supported.',
+      );
+    }
     switch (type) {
+      case 'response.metadata':
+        if (metadata != null && metadata is! Map<String, Object?>) {
+          throw const _OpenAiResponseException(
+            'invalid_response_metadata',
+            'OpenAI response metadata has an invalid shape.',
+          );
+        }
+        if (metadata is Map<String, Object?> && metadata.containsKey('type')) {
+          throw const _OpenAiResponseException(
+            'unsupported_response_metadata',
+            'Typed OpenAI response metadata is not supported.',
+          );
+        }
+        // Informational sideband is neither output nor terminal/affinity state.
+        return;
       case 'keepalive':
       case 'response.created':
       case 'response.in_progress':

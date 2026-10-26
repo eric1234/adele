@@ -3975,6 +3975,21 @@ void main() {
                 fail('Unexpected model invocation ${outbound.length}.');
             }
             _sse(request.response, {
+              'type': 'response.metadata',
+              'headers': {
+                'x-codex-turn-state': 'f3g-private-metadata-token',
+                'ChatGPT-Account-ID': 'f3g-private-metadata-account',
+              },
+              'metadata': {
+                'openai_verification_recommendation': [
+                  'trusted_access_for_cyber',
+                ],
+                'openai_chatgpt_moderation_metadata': {
+                  'presentation': 'inline',
+                },
+              },
+            });
+            _sse(request.response, {
               'type': 'response.completed',
               'response': {
                 'id': 'f3g-${outbound.length}',
@@ -4306,6 +4321,8 @@ void main() {
           expect(evidence.contains(headers.id), isFalse);
         }
         expect(evidence.contains('f3g-turn-state-'), isFalse);
+        expect(evidence.contains('f3g-private-metadata-'), isFalse);
+        expect(jsonEncode(outbound), isNot(contains('f3g-private-metadata-')));
         expect(retainedActivity.tools.map((tool) => tool.alias), [
           'read_file',
           'apply_patch',
