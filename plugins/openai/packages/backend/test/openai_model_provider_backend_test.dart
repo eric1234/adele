@@ -310,6 +310,81 @@ void main() {
         );
       }
 
+      for (final (String label, Map<String, Object?> fields)
+          in <(String, Map<String, Object?>)>[
+            ('absent', <String, Object?>{}),
+            ('null', <String, Object?>{'safety_buffering': null}),
+            ('false', <String, Object?>{'safety_buffering': false}),
+            (
+              'empty lists and absent retry',
+              <String, Object?>{
+                'safety_buffering': <String, Object?>{
+                  'use_cases': <String>[],
+                  'reasons': <String>[],
+                },
+              },
+            ),
+            (
+              'null retry',
+              <String, Object?>{
+                'safety_buffering': <String, Object?>{
+                  ..._safetyBuffering(),
+                  'retry_model': null,
+                },
+              },
+            ),
+            (
+              'active',
+              <String, Object?>{'safety_buffering': _safetyBuffering()},
+            ),
+          ]) {
+        test('$profile safety $label preserves ordinary events', () async {
+          var requests = 0;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests++;
+            await request.drain<void>();
+            _sse(request.response, <String, Object?>{
+              'type': 'response.created',
+              ...fields,
+            });
+            _sse(request.response, <String, Object?>{
+              'type': 'response.output_text.delta',
+              'delta': 'Streaming.',
+              ...fields,
+            });
+            _sse(request.response, <String, Object?>{
+              ..._outputDone(_message('msg_safety', 'Authoritative.')),
+              ...fields,
+            });
+            _sse(request.response, <String, Object?>{
+              ..._completed('resp_safety'),
+              ...fields,
+            });
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final events = await provider.invoke(_request()).toList();
+          expect(requests, 1);
+          expect(events.map((event) => event.kind), <ModelProviderEventKind>[
+            ModelProviderEventKind.observation,
+            ModelProviderEventKind.output,
+            ModelProviderEventKind.terminal,
+          ]);
+          expect(events.first.observation!.textDelta, 'Streaming.');
+          expect(events[1].output!.text, 'Authoritative.');
+          expect(
+            events.last.terminal!.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect(events.last.terminal!.responseId, 'resp_safety');
+          expect(events.last.terminal!.failure, isNull);
+        });
+      }
+
       for (final bool withOutput in <bool>[false, true]) {
         for (final String ending in <String>[
           'completed',
@@ -319,7 +394,7 @@ void main() {
           'eof',
         ]) {
           test(
-            '$profile metadata with output=$withOutput preserves $ending',
+            '$profile metadata and safety buffering with output=$withOutput preserves $ending',
             () async {
               final Map<String, Object?> message = _message(
                 'msg_metadata',
@@ -374,11 +449,36 @@ void main() {
                   });
                 }
                 _sse(request.response, _responseMetadata());
+                // Both forms are sideband, even with inactive top-level markers.
+                for (final Object? marker in <Object?>[
+                  null,
+                  false,
+                  _safetyBuffering(),
+                ]) {
+                  _sse(request.response, <String, Object?>{
+                    ..._responseMetadata(),
+                    'safety_buffering': marker,
+                    'metadata': <String, Object?>{
+                      'type': 'safety_buffering',
+                      ..._safetyBuffering(),
+                      'retry_model': null,
+                    },
+                  });
+                }
+                _sse(request.response, <String, Object?>{
+                  'type': 'response.metadata',
+                  'metadata': <String, Object?>{
+                    'type': 'safety_buffering',
+                    'use_cases': <String>[],
+                    'reasons': <String>[],
+                  },
+                });
                 if (withOutput) {
                   _sse(request.response, <String, Object?>{
                     'type': 'response.output_text.delta',
                     'item_id': 'msg_metadata',
                     'delta': 'Streaming ',
+                    'safety_buffering': _safetyBuffering(),
                   });
                   _sse(request.response, _responseMetadata());
                   _sse(request.response, <String, Object?>{
@@ -386,20 +486,36 @@ void main() {
                     'item_id': 'msg_metadata',
                     'delta': 'observation.',
                   });
+                  _sse(request.response, <String, Object?>{
+                    'type': 'response.metadata',
+                    'metadata': <String, Object?>{
+                      'type': 'safety_buffering',
+                      ..._safetyBuffering(),
+                    },
+                  });
                   _sse(request.response, _outputDone(message));
                   _sse(request.response, _responseMetadata());
-                  _sse(request.response, _outputDone(call));
+                  _sse(request.response, <String, Object?>{
+                    ..._outputDone(call),
+                    'safety_buffering': _safetyBuffering(),
+                  });
                   _sse(request.response, _responseMetadata());
                 }
+                _sse(request.response, <String, Object?>{
+                  ..._responseMetadata(),
+                  'safety_buffering': _safetyBuffering(),
+                });
                 if (ending == 'error') {
                   _sse(request.response, <String, Object?>{
                     'type': 'error',
                     'code': 'test_failure',
                     'message': 'Test failure.',
+                    'safety_buffering': _safetyBuffering(),
                   });
                 } else if (ending != 'eof') {
                   _sse(request.response, <String, Object?>{
                     'type': 'response.$ending',
+                    'safety_buffering': _safetyBuffering(),
                     'response': _response(
                       'resp_metadata',
                       extra: <String, Object?>{
@@ -471,6 +587,13 @@ void main() {
               expect(terminal.requestId, 'req_metadata');
               expect(terminal.nativeState, isNull);
               expect(terminal.affinityState, isNull);
+              expect(terminal.failure?.providerMessage, switch (ending) {
+                'eof' =>
+                  'The OpenAI response ended before a semantic terminal.',
+                'failed' || 'error' => 'Test failure.',
+                _ => null,
+              });
+              expect(terminal.failure?.providerDetails, anyOf(isNull, isEmpty));
               expect(terminal.failure?.providerCode, switch (ending) {
                 'eof' => 'missing_terminal',
                 'failed' || 'error' => 'test_failure',
@@ -515,6 +638,10 @@ void main() {
               }
               expect(requests, hasLength(ending == 'completed' ? 2 : 1));
               expect(jsonEncode(requests), isNot(contains('PRIVATE-METADATA')));
+              expect(
+                requests.map((body) => body['model']),
+                everyElement('test-model'),
+              );
             },
           );
         }
@@ -522,67 +649,75 @@ void main() {
 
       for (final (String label, Map<String, Object?> event, String code)
           in <(String, Map<String, Object?>, String)>[
-            for (final Object? safety in <Object?>[
-              <String, Object?>{
-                'use_cases': <String>['cyber'],
-                'reasons': <String>['PRIVATE-METADATA'],
-                'retry_model': 'PRIVATE-METADATA',
-              },
+            for (final Object safety in <Object>[
+              true,
+              42,
+              'PRIVATE-METADATA',
+              <Object?>[],
               <String, Object?>{},
-              null,
-              false,
+              <String, Object?>{'use_cases': <String>[]},
+              <String, Object?>{'reasons': <String>[]},
+              for (final String key in <String>['use_cases', 'reasons'])
+                for (final Object? value in <Object?>[
+                  null,
+                  false,
+                  'PRIVATE-METADATA',
+                  <String, Object?>{},
+                  <Object?>['PRIVATE-METADATA', 42],
+                  <Object?>[null],
+                ])
+                  <String, Object?>{..._safetyBuffering(), key: value},
+              for (final Object value in <Object>[
+                true,
+                42,
+                <String>[],
+                <String, Object?>{},
+              ])
+                <String, Object?>{..._safetyBuffering(), 'retry_model': value},
             ])
-              (
-                'top-level safety $safety',
-                <String, Object?>{
-                  'type': 'response.metadata',
-                  'safety_buffering': safety,
-                },
-                'unsupported_safety_metadata',
-              ),
-            for (final Map<String, Object?> safety in <Map<String, Object?>>[
-              <String, Object?>{
-                'type': 'safety_buffering',
-                'use_cases': <String>['cyber'],
-                'reasons': <String>['PRIVATE-METADATA'],
-                'retry_model': null,
-              },
-              <String, Object?>{'type': 'safety_buffering'},
-            ])
-              (
-                'typed safety $safety',
-                <String, Object?>{
-                  'type': 'response.metadata',
-                  'metadata': safety,
-                },
-                'unsupported_safety_metadata',
-              ),
-            for (final String type in <String>[
-              'response.output_text.delta',
-              'response.completed',
-            ])
-              (
-                'safety on $type',
-                <String, Object?>{
-                  'type': type,
-                  'delta': 'Must not publish.',
-                  'response': _response('resp_safety'),
-                  'safety_buffering': <String, Object?>{
-                    'use_cases': <String>[],
-                    'reasons': <String>[],
+              for (final String type in <String>[
+                'response.metadata',
+                'response.output_text.delta',
+                'response.completed',
+              ])
+                (
+                  'malformed safety $safety on $type',
+                  <String, Object?>{
+                    'type': type,
+                    'delta': 'Must not publish.',
+                    'response': _response('resp_safety'),
+                    'safety_buffering': safety,
                   },
-                },
-                'unsupported_safety_metadata',
-              ),
-            (
-              'contradictory safety',
-              <String, Object?>{
-                'type': 'response.metadata',
-                'safety_buffering': null,
-                'metadata': <String, Object?>{'type': 'safety_buffering'},
-              },
-              'unsupported_safety_metadata',
-            ),
+                  'invalid_safety_metadata',
+                ),
+            for (final Map<String, Object?> safety in <Map<String, Object?>>[
+              <String, Object?>{},
+              <String, Object?>{'use_cases': <String>[]},
+              <String, Object?>{'reasons': <String>[]},
+              for (final String key in <String>[
+                'use_cases',
+                'reasons',
+                'retry_model',
+              ])
+                <String, Object?>{..._safetyBuffering(), key: 42},
+            ])
+              for (final Object? marker in <Object?>[
+                null,
+                false,
+                _safetyBuffering(),
+              ])
+                (
+                  'malformed typed safety $safety with marker $marker',
+                  <String, Object?>{
+                    'type': 'response.metadata',
+                    'safety_buffering': marker,
+                    'metadata': <String, Object?>{
+                      'type': 'safety_buffering',
+                      ...safety,
+                    },
+                  },
+                  'invalid_safety_metadata',
+                ),
             for (final Object? type in <Object?>['PRIVATE-METADATA', null, 42])
               (
                 'unknown metadata type $type',
@@ -626,7 +761,10 @@ void main() {
           final _FakeServer server = await _FakeServer.start((request) async {
             await request.drain<void>();
             _sse(request.response, _responseMetadata());
-            _sse(request.response, event);
+            _sse(request.response, <String, Object?>{
+              'safety_buffering': _safetyBuffering(),
+              ...event,
+            });
             _sse(
               request.response,
               _outputDone(_message('unreachable', 'Must not publish.')),
@@ -649,6 +787,12 @@ void main() {
             ModelProviderFailureKind.malformedResponse,
           );
           expect(terminal.failure!.providerCode, code);
+          if (code == 'invalid_safety_metadata') {
+            expect(
+              terminal.failure!.providerMessage,
+              'OpenAI safety-buffering metadata has an invalid shape.',
+            );
+          }
           expect(
             terminal.failure!.providerMessage,
             isNot(contains('PRIVATE-METADATA')),
@@ -675,7 +819,10 @@ void main() {
               request.response,
               _outputDone(_message('msg_before', 'Ready.')),
             );
-            _sse(request.response, <String, Object?>{'type': type});
+            _sse(request.response, <String, Object?>{
+              'type': type,
+              'safety_buffering': _safetyBuffering(),
+            });
             _sse(request.response, _completed('resp_after'));
             await request.response.close();
           });
@@ -4579,6 +4726,18 @@ Map<String, Object?> _reasoning(
       <String, Object?>{'type': 'summary_text', 'text': text},
   ],
   'encrypted_content': encrypted,
+};
+
+Map<String, Object?> _safetyBuffering() => <String, Object?>{
+  'use_cases': <String>['PRIVATE-METADATA-use-case'],
+  'reasons': <String>['PRIVATE-METADATA-reason'],
+  'retry_model': 'PRIVATE-METADATA-model',
+  // Informational extensions need not match an exact object-key allowlist.
+  'account_id': 'PRIVATE-METADATA-account',
+  'headers': <String, Object?>{
+    'x-codex-turn-state': 'PRIVATE-METADATA-token',
+    'Authorization': 'Bearer PRIVATE-METADATA-credential',
+  },
 };
 
 Map<String, Object?> _responseMetadata() => <String, Object?>{

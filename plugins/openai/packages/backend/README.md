@@ -83,17 +83,34 @@ authorization grant; moderation metadata is presentation sideband, not a substit
 for refusal, failure, or incomplete settlement. SSE turn state comes from the HTTP
 header, unlike Codex's WebSocket metadata-header capture.
 
-Safety-buffering notifications are deliberately unsupported: a top-level
-`safety_buffering` field on any event, or `response.metadata` with
-`metadata.type == 'safety_buffering'`, fails with `unsupported_safety_metadata`.
-Codex uses these for waiting-status UI and optionally confirmed retry on a different
-model, not client-side output/tool buffering. ADELE implements neither behavior.
-Presence-based rejection includes malformed, null, and false safety markers and
-is intentionally stricter than Codex's permissive parsing. Other `metadata.type`
-variants are rejected as `unsupported_response_metadata`; non-null, non-object
-metadata is rejected as `invalid_response_metadata`. Diagnostics are fixed text,
-never payload values. Untyped informational keys are not interpreted; this is not
-a guarantee of support for future metadata directives or other unknown events.
+Safety-buffering status is also nonauthoritative. An absent, null, or false
+top-level `safety_buffering` marker is inactive and does not interrupt processing.
+Active notifications are recognized as either a top-level `safety_buffering`
+object on any supported event or a `response.metadata` event whose `metadata`
+object has `type == 'safety_buffering'`. Both forms require `use_cases` and
+`reasons` arrays containing only strings (including empty arrays), and accept an
+absent, null, or string `retry_model`. Additional informational fields are allowed
+but never interpreted or forwarded. The
+[Codex structure](https://github.com/openai/codex/blob/cfc11bfab31c6885ec8213ece435fc3347eda7a4/codex-rs/codex-api/src/common.rs)
+and parser separate these notifications from the underlying response event:
+text deltas, completed items, and explicit terminals still process normally.
+
+ADELE discards valid notification payloads without creating output, proposals,
+replay items, or artificial terminals, and without changing affinity, account
+routing, authentication, or model selection. Codex uses them for waiting-status UI
+and optionally confirmed retry on another model, not client-side output/tool
+buffering. ADELE currently offers neither a dedicated waiting-status interface nor
+optional model-retry controls, and never automatically retries or switches models
+because of this metadata.
+
+Malformed active payloads fail with fixed `invalid_safety_metadata` diagnostics.
+Unlike Codex's permissive parsing, ADELE validates both locations independently:
+an inactive or valid top-level marker cannot hide malformed typed safety metadata.
+Other `metadata.type` variants are rejected as `unsupported_response_metadata`;
+non-null, non-object metadata is rejected as `invalid_response_metadata`.
+Diagnostics never include notification payload values. Untyped informational keys
+are not interpreted; this is not a guarantee of support for future metadata
+directives or other unknown events.
 
 The existing strict authoritative-event/item validation, hosted-tool rejection,
 streaming observations, explicit terminals, EOF-before-terminal failure, and
@@ -226,10 +243,11 @@ Backend affinity tests use local fake HTTP/OAuth endpoints to check first-token
 retention, scope/model/endpoint/account isolation, auth recovery, cancellation and
 failure settlement, redaction, unchanged bodies/replay, and nullable cache usage
 across both profiles and semantic settlements. They do not assert real cache hits.
-Metadata fixtures cover both profiles before/between/after output, explicit
-terminals and premature EOF, unsupported safety/typed payloads, and unchanged
-strict output validation and replay. The normal Chat AOT fixture also includes
-metadata without changing its expected history, tool approvals, or HTTP affinity.
+Metadata fixtures cover both profiles before/between/after output, inactive and
+valid active safety-buffering forms, explicit terminals and premature EOF,
+malformed safety and unknown typed payloads, and unchanged strict output validation
+and replay. The normal Chat AOT fixture also includes safety-buffering notifications
+without changing its expected history, tool approvals, or HTTP affinity.
 
 Local fake endpoints and temporary fake credentials require no live account or
 API key. Existing opt-in live smokes remain separate and do not establish summary

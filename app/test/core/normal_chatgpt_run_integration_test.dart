@@ -3818,6 +3818,13 @@ void main() {
         final outbound = <Map<String, Object?>>[];
         final affinityHeaders = <({String id, String? state})>[];
         final endpointFailures = <(Object, StackTrace)>[];
+        const safetyBuffering = <String, Object?>{
+          'use_cases': ['f3g-private-metadata-use-case'],
+          'reasons': ['f3g-private-metadata-reason'],
+          'retry_model': 'f3g-private-metadata-model',
+          'account_id': 'f3g-private-metadata-account',
+          'headers': {'x-codex-turn-state': 'f3g-private-metadata-token'},
+        };
         void expectSameJson(String label, Object? previous, Object? next) {
           final previousJson = jsonEncode(previous);
           final nextJson = jsonEncode(next);
@@ -3960,6 +3967,14 @@ void main() {
               'event-stream',
               charset: 'utf-8',
             );
+            _sse(request.response, {
+              'type': 'response.created',
+              'safety_buffering': false,
+            });
+            _sse(request.response, {
+              'type': 'response.metadata',
+              'safety_buffering': safetyBuffering,
+            });
             switch (outbound.length) {
               case 1:
                 expect(body['input'], [_userInput(_initialPrompt)]);
@@ -4005,6 +4020,11 @@ void main() {
                   ],
                 };
                 _output(request.response, _reasoningItem());
+                _sse(request.response, {
+                  'type': 'response.metadata',
+                  'safety_buffering': null,
+                  'metadata': {'type': 'safety_buffering', ...safetyBuffering},
+                });
                 _output(
                   request.response,
                   _message('batch-purpose', _narration),
@@ -4089,6 +4109,8 @@ void main() {
                 'ChatGPT-Account-ID': 'f3g-private-metadata-account',
               },
               'metadata': {
+                'type': 'safety_buffering',
+                ...safetyBuffering,
                 'openai_verification_recommendation': [
                   'trusted_access_for_cyber',
                 ],
@@ -4099,6 +4121,7 @@ void main() {
             });
             _sse(request.response, {
               'type': 'response.completed',
+              'safety_buffering': safetyBuffering,
               'response': {
                 'id': 'f3g-${outbound.length}',
                 'model': 'gpt-6-astra',
