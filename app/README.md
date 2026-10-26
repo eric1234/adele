@@ -291,23 +291,39 @@ Other failures also require Reload to confirm disk state; a cleanup or lost-resp
 failure can follow publication and is not reported as proof that nothing was saved.
 
 Collection views list valid records in stable ID order, show declared display titles
-(or ID fallback), and expose read-only declared values, type and immutable identity.
+(or ID fallback), and offer generic Edit and Delete actions. Collection, record ID,
+and record type remain visible and immutable; changing a display name never renames
+the file. Creation and editing share declaration-generated field controls, explicit
+presence handling, and `RecordTypeDefinition.validate`; the worker and host adapter
+validate again before persistence. Absent fields remain distinct from false, zero,
+and empty strings, with no inferred defaults. Edits preserve unknown data and comments
+within the native document API's limits.
 Malformed or unavailable records remain attributable filename diagnostics alongside
-healthy siblings. Collection Reload reads disk without discarding a creation draft;
-directory-wide failures are not empty collections. Add selects a declared type and
-generates its fields, with explicit stable-ID entry and presence distinct from false,
-zero, or empty strings. Shared scalar controls and `RecordTypeDefinition.validate`
-provide generic validation; the worker validates again before R1 persistence.
+healthy siblings, without Edit/Delete actions. Each existing record has a separate
+draft retained through details collapse and section navigation. Cancel editing
+discards only that draft. Collection Reload confirms discarding dirty existing-record
+drafts, keeps creation drafts, and replaces the list and edit baselines only on a
+successful read. A failed read retains the prior display and drafts with an actionable
+diagnostic, not an empty collection.
 Duplicate IDs, including malformed or unknown-type occupants, are never overwritten.
-Successful Create clears the committed draft and shows the persisted record.
+Create and Save publish presented values only after worker acknowledgement. Delete
+requires a safe-default modal identifying the exact record and explaining that its
+entire configuration file, including unknown data, will be removed. Confirmed deletion
+removes only that record and its draft. No automatic collection refresh invalidates
+unrelated edits. Conflicts and uncertain update/delete outcomes retain drafts and fence
+that record until explicit Reload; no retry or field merging occurs. Known pre-write
+validation failures remain correctable without Reload.
 
 `GlobalSettingsService` keeps native TOML operations and conditional persistence
 off the UI isolate. Main-isolate service owners lease one serial worker, with an
 ownership guard against independent Flutter-engine writers. Each owner retains
-its own scalar whole-document baseline. Awaited record scans/creates and scalar
-operations settle serially across all owners; record presentation values never
-carry native documents or persistence baselines. Closing the dialog does not cancel
-a transaction. Application shutdown fences and drains admitted requests before
+its own scalar whole-document baseline and per-record snapshots. Immutable record
+views carry private owner-bound revision handles, not native documents or persistence
+baselines. Handles identify one collection, record ID, type, and observed revision;
+Reload revokes the affected collection's handles, update replaces only its record's
+handle, and deletion retires it. Awaited record CRUD and scalar operations settle
+serially across all owners. Closing the dialog does not cancel a transaction.
+Application shutdown fences and drains admitted requests before
 releasing its lease.
 `AdeleApplication.configurationRoots` injects the same temporary config/state roots
 for startup and editing tests. See the
@@ -322,10 +338,10 @@ without hiding a healthy independent catalog; installation-wide issues appear in
 both. Missing/invalid schemas remain visible, and duplicate declarations or conflicting
 collection labels reject aggregation. Repairing declarations requires restart.
 
-All configuration still uses one global layer. Existing-record editing and deletion
-are deferred to R2b. Provider records are nonsecret definitions, not consumed by the
-runtime: creation does not request credentials, authenticate, activate a provider,
-change Chat, or alter temporary environment-variable startup. Restart guidance applies
+All configuration still uses one global layer. Provider records are nonsecret
+definitions, not consumed by the runtime: creating, editing, or deleting them does
+not request credentials, authenticate, activate a provider, change Chat, or alter
+temporary environment-variable startup. Restart guidance applies
 to scalar settings, not record activation. Profiles, scopes, credentials, OAuth,
 runtime restart commands, and live editor reconfiguration remain unimplemented.
 

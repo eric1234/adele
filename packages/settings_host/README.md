@@ -124,6 +124,13 @@ persisted keys, tables and comments are retained by the native scalar editor. A
 snapshot cannot change its record type, collection or ID. Delete removes just that
 file, not credentials, other records, a mask or a cascading exclusion.
 
+Desired-field validation happens before document edits or filesystem access.
+Unknown desired keys produce `ConfigurationRecordFormatException`; invalid known
+values and unsupported document edits produce `InvalidRecordValue` before writing.
+These known prewrite failures leave the snapshot usable for a corrected update.
+Do not infer prewrite safety from `ConfigurationRecordFormatException` alone:
+filesystem alias checks use the same exception and remain a separate failure.
+
 ### File Format
 
 For example, `providers/work-openai.toml` contains:
@@ -147,7 +154,9 @@ the file or silently substituting defaults. The shared public scalar validator o
 type, integer-bound and enum checks; there is no endpoint/provider-specific logic.
 Use an explicit `[values]` table for optional-only records: removing the last
 dotted key can discard its implicit parent in the native editor. Such an update
-fails before saving rather than publishing a record without the required table.
+fails with `InvalidRecordValue` before saving, including when a later field edit
+encounters the missing parent. It never repairs the structure or publishes a
+record without the required table.
 
 ### Enumeration and Safety
 

@@ -693,6 +693,7 @@ void main() {
         final healthyBytes = recordFile(first).readAsBytesSync();
         final view = await recordService.loadRecords(collection);
         expect(view.records.single.id, first);
+        expect(view.records.single.collection, collection);
         expect(view.records.single.type, type);
         expect(view.records.single.values, {'name': 'Healthy'});
         expect(
@@ -818,6 +819,7 @@ void main() {
         values['name'] = 'Changed after admission';
         final created = await creating;
         expect(created.id, first);
+        expect(created.collection, collection);
         expect(created.type, type);
         expect(created.values, {
           'name': '',
@@ -887,6 +889,514 @@ void main() {
       },
       skip: !Platform.isLinux,
     );
+
+    group('record revisions', () {
+      Future<void> expectRetired(
+        GlobalSettingsService owner,
+        RecordView expected,
+      ) async {
+        final conflict = throwsA(
+          isA<ConfigurationConflictException>().having(
+            (error) => error.path,
+            'record path',
+            '${owner.collectionPath(expected.collection)}/${expected.id}.toml',
+          ),
+        );
+        await expectLater(
+          owner.updateRecord(expected, expected.values),
+          conflict,
+        );
+        await expectLater(owner.deleteRecord(expected), conflict);
+      }
+
+      test(
+        'update snapshots input off UI and delete preserves unrelated content',
+        () async {
+          seed('unrelated = [1, 2] # scalar\n');
+          final scalarBytes = file.readAsBytesSync();
+          seedRecord(
+            first,
+            '# header\n${recordSource('name = "Before" # name\nenabled = true\ncount = 9\nmode = "brief"\nunknown = [1, 2] # unknown\n')}\n[future]\nflag = true\n',
+          );
+          seedRecord(second, recordSource('name = "Sibling"\n'));
+          final siblingBytes = recordFile(second).readAsBytesSync();
+          final before = (await recordService.loadRecords(
+            collection,
+          )).records.first;
+          final desired = <String, Object?>{
+            'name': 'After\nline',
+            'enabled': false,
+            'count': 0,
+            'mode': 'detailed',
+          };
+          final updating = IOOverrides.runZoned(
+            () => recordService.updateRecord(before, desired),
+            createFile: (_) =>
+                throw StateError('File access on the UI isolate.'),
+            createDirectory: (_) =>
+                throw StateError('Directory access on the UI isolate.'),
+          );
+          desired['name'] = 'Changed after admission';
+          final saved = await updating;
+          expect(saved.collection, collection);
+          expect(saved.id, first);
+          expect(saved.type, type);
+          expect(saved.values, {
+            'name': 'After\nline',
+            'enabled': false,
+            'count': 0,
+            'mode': 'detailed',
+          });
+          expect(before.values['name'], 'Before');
+          expect(() => saved.values.clear(), throwsUnsupportedError);
+          final minimal = await recordService.updateRecord(saved, {'name': ''});
+          expect(minimal.values, {'name': ''});
+          final source = recordFile(first).readAsStringSync();
+          expect(source, contains('# header'));
+          expect(source, contains('unknown = [1, 2] # unknown'));
+          expect(source, contains('[future]\nflag = true'));
+          for (final optional in ['enabled', 'count', 'mode']) {
+            expect(source, isNot(contains('$optional =')));
+          }
+          await IOOverrides.runZoned(
+            () => recordService.deleteRecord(minimal),
+            createFile: (_) =>
+                throw StateError('File access on the UI isolate.'),
+            createDirectory: (_) =>
+                throw StateError('Directory access on the UI isolate.'),
+          );
+          expect(recordFile(first).existsSync(), isFalse);
+          expect(recordFile(second).readAsBytesSync(), siblingBytes);
+          expect(file.readAsBytesSync(), scalarBytes);
+          expect(Directory(roots.localDataRoot).existsSync(), isFalse);
+          expect(Directory(roots.cacheRoot).existsSync(), isFalse);
+        },
+      );
+
+      test(
+        'views reject another owner with the same catalog and roots',
+        () async {
+          final other = createOwner(records: records);
+          final created = await recordService.createRecord(type, first, {
+            'name': 'Created',
+          });
+          final loaded = (await other.loadRecords(collection)).records.single;
+          await expectLater(
+            other.updateRecord(created, {'name': 'Wrong owner'}),
+            throwsArgumentError,
+          );
+          await expectLater(other.deleteRecord(created), throwsArgumentError);
+          await expectLater(
+            recordService.updateRecord(loaded, loaded.values),
+            throwsArgumentError,
+          );
+          await expectLater(
+            recordService.deleteRecord(loaded),
+            throwsArgumentError,
+          );
+          // Rejection cannot retire either owner's usable baseline.
+          await other.updateRecord(loaded, loaded.values);
+          await recordService.deleteRecord(created);
+          expect(recordFile(first).existsSync(), isFalse);
+        },
+      );
+
+      for (final noOp in [false, true]) {
+        test(
+          'successful update (no-op: $noOp) retires only its old revision',
+          () async {
+            final before = await recordService.createRecord(type, first, {
+              'name': 'Before',
+            });
+            final bytes = recordFile(first).readAsBytesSync();
+            final modified = DateTime.utc(2001);
+            recordFile(first).setLastModifiedSync(modified);
+            final saved = await recordService.updateRecord(
+              before,
+              noOp ? before.values : {'name': 'Saved'},
+            );
+            expect(saved, isNot(same(before)));
+            if (noOp) {
+              expect(recordFile(first).readAsBytesSync(), bytes);
+              expect(recordFile(first).lastModifiedSync().toUtc(), modified);
+            }
+            await expectRetired(recordService, before);
+            final fresh = await recordService.updateRecord(saved, {
+              'name': 'Fresh',
+            });
+            await expectRetired(recordService, saved);
+            await recordService.deleteRecord(fresh);
+            await expectRetired(recordService, fresh);
+            final recreated = await recordService.createRecord(
+              type,
+              first,
+              before.values,
+            );
+            // Even restoring the original bytes cannot revive a deleted revision.
+            await expectRetired(recordService, before);
+            await expectRetired(recordService, fresh);
+            await recordService.deleteRecord(recreated);
+          },
+        );
+      }
+
+      for (final outcome in ['unchanged', 'missing', 'diagnostic', 'failed']) {
+        test(
+          'collection reload ($outcome) revokes only that collection',
+          () async {
+            final archive = RecordCollectionId('archive');
+            final archiveType = RecordTypeId('${owner.value}.archived');
+            final multi = createOwner(
+              records: RecordCatalog([
+                ...records.definitions,
+                RecordTypeDefinition(
+                  id: archiveType,
+                  owner: PluginId(owner.value),
+                  collection: archive,
+                  collectionLabel: 'Archive',
+                  label: 'Archived',
+                  fields: records.definitions.single.fields,
+                ),
+              ]),
+            );
+            final original = recordSource('name = "Before"\n');
+            seedRecord(first, original);
+            final before = (await multi.loadRecords(collection)).records.single;
+            // Same ID in another collection must have a separate revision/baseline.
+            final other = await multi.createRecord(archiveType, first, {
+              'name': 'Other',
+            });
+            final archiveFile = File(
+              '${multi.collectionPath(archive)}/$first.toml',
+            );
+            final archiveBytes = archiveFile.readAsBytesSync();
+            if (outcome == 'missing') recordFile(first).deleteSync();
+            if (outcome == 'diagnostic') {
+              recordFile(first).writeAsStringSync('invalid = [');
+            }
+            if (outcome == 'failed') {
+              recordFile(first).parent.deleteSync(recursive: true);
+              File(
+                multi.collectionPath(collection),
+              ).writeAsStringSync('obstruction');
+            }
+            RecordView? reloaded;
+            if (outcome == 'failed') {
+              await expectLater(
+                multi.loadRecords(collection),
+                throwsA(isA<FileSystemException>()),
+              );
+              File(multi.collectionPath(collection)).deleteSync();
+            } else {
+              final view = await multi.loadRecords(collection);
+              if (outcome == 'unchanged') {
+                reloaded = view.records.single;
+              } else {
+                expect(view.records, isEmpty);
+                expect(
+                  view.diagnostics,
+                  outcome == 'diagnostic' ? hasLength(1) : isEmpty,
+                );
+              }
+            }
+            seedRecord(first, original);
+            await expectRetired(multi, before);
+            expect(archiveFile.readAsBytesSync(), archiveBytes);
+            await multi.updateRecord(other, {'name': 'Still usable'});
+            reloaded ??= (await multi.loadRecords(collection)).records.single;
+            await multi.deleteRecord(reloaded);
+            expect(recordFile(first).existsSync(), isFalse);
+            expect(archiveFile.existsSync(), isTrue);
+          },
+        );
+      }
+
+      test(
+        'records and scalar settings retain independent edit baselines',
+        () async {
+          seedRecord(first, recordSource('name = "First"\n'));
+          seedRecord(second, recordSource('name = "Second"\n'));
+          final loaded = await recordService.loadRecords(collection);
+          final firstSaved = await recordService.updateRecord(
+            loaded.records.first,
+            {'name': 'Changed first'},
+          );
+          var scalar = await recordService.load();
+          final secondSaved = await recordService.updateRecord(
+            loaded.records.last,
+            {'name': 'Changed second'},
+          );
+          scalar = await recordService.save(scalar, enabled, true);
+          await recordService.deleteRecord(firstSaved);
+          final fresh = await recordService.updateRecord(secondSaved, {
+            'name': 'Fresh second',
+          });
+          await recordService.reset(scalar, enabled);
+          await recordService.deleteRecord(fresh);
+          expect(
+            (await recordService.loadRecords(collection)).records,
+            isEmpty,
+          );
+        },
+      );
+
+      for (final operation in ['update', 'noop', 'delete']) {
+        test(
+          'external $operation conflict retires the handle without retry',
+          () async {
+            final original = recordSource('name = "Before"\n');
+            seedRecord(first, original);
+            seedRecord(second, recordSource('name = "Independent"\n'));
+            final loaded = await recordService.loadRecords(collection);
+            final before = loaded.records.first;
+            final external = '$original# external edit\n';
+            recordFile(first).writeAsStringSync(external);
+            await expectLater(
+              operation == 'delete'
+                  ? recordService.deleteRecord(before)
+                  : recordService.updateRecord(
+                      before,
+                      operation == 'noop'
+                          ? before.values
+                          : {'name': 'Not published'},
+                    ),
+              throwsA(isA<ConfigurationConflictException>()),
+            );
+            expect(recordFile(first).readAsStringSync(), external);
+            expect(before.values, {'name': 'Before'});
+            recordFile(first).writeAsStringSync(original);
+            await expectRetired(recordService, before);
+            await recordService.updateRecord(loaded.records.last, {
+              'name': 'Still usable',
+            });
+            final fresh = (await recordService.loadRecords(
+              collection,
+            )).records.first;
+            await recordService.deleteRecord(fresh);
+          },
+        );
+      }
+
+      test(
+        'external removal never recreates a record through update',
+        () async {
+          final original = recordSource('name = "Before"\n');
+          seedRecord(first, original);
+          final before = (await recordService.loadRecords(
+            collection,
+          )).records.single;
+          recordFile(first).deleteSync();
+          await expectLater(
+            recordService.updateRecord(before, {'name': 'Not recreated'}),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+          expect(recordFile(first).existsSync(), isFalse);
+          seedRecord(first, original);
+          await expectRetired(recordService, before);
+          final fresh = (await recordService.loadRecords(
+            collection,
+          )).records.single;
+          await recordService.deleteRecord(fresh);
+        },
+      );
+
+      test(
+        'duplicate creation conflict also retires the targeted baseline',
+        () async {
+          final before = await recordService.createRecord(type, first, {
+            'name': 'Before',
+          });
+          final bytes = recordFile(first).readAsBytesSync();
+          await expectLater(
+            recordService.createRecord(type, first, {
+              'name': 'Not overwritten',
+            }),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+          expect(recordFile(first).readAsBytesSync(), bytes);
+          await expectRetired(recordService, before);
+          final fresh = (await recordService.loadRecords(
+            collection,
+          )).records.single;
+          await recordService.deleteRecord(fresh);
+        },
+      );
+
+      test(
+        'cross-owner winner is not merged or retried by the losing owner',
+        () async {
+          seedRecord(first, recordSource('name = "Before"\n'));
+          final other = createOwner(records: records);
+          final winner = (await recordService.loadRecords(
+            collection,
+          )).records.single;
+          final loser = (await other.loadRecords(collection)).records.single;
+          final winning = recordService.updateRecord(winner, {
+            'name': 'Winner',
+          });
+          final losing = expectLater(
+            other.updateRecord(loser, {'name': 'Loser', 'enabled': true}),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+          final saved = await winning;
+          await losing;
+          final winnerBytes = recordFile(first).readAsBytesSync();
+          await expectRetired(other, loser);
+          expect(recordFile(first).readAsBytesSync(), winnerBytes);
+          expect(saved.values, {'name': 'Winner'});
+          await recordService.deleteRecord(saved);
+          final recreated = await other.createRecord(type, first, {
+            'name': 'Recreated',
+          });
+          await expectRetired(other, loser);
+          await expectRetired(recordService, saved);
+          await other.deleteRecord(recreated);
+        },
+      );
+
+      test(
+        'worker validation precedes I/O and preserves a usable handle',
+        () async {
+          seedRecord(first, recordSource('name = "Before"\n'));
+          final before = (await recordService.loadRecords(
+            collection,
+          )).records.single;
+          final original = recordFile(first).readAsBytesSync();
+          final obstruction = File(roots.localStateRoot)
+            ..writeAsStringSync('not a directory');
+          for (final invalid in <Map<String, Object?>>[
+            {},
+            {'name': null},
+            {'name': true},
+            {'name': 'Name', 'enabled': 'true'},
+            {'name': 'Name', 'count': -1},
+            {'name': 'Name', 'mode': 'unknown'},
+          ]) {
+            await expectLater(
+              recordService.updateRecord(before, invalid),
+              throwsA(
+                isA<InvalidRecordValue>()
+                    .having(
+                      (error) => error.collection,
+                      'collection',
+                      collection,
+                    )
+                    .having((error) => error.recordId, 'record ID', first),
+              ),
+            );
+            expect(recordFile(first).readAsBytesSync(), original);
+          }
+          final unknown = {'name': 'Name', 'unknown': true};
+          final unknownField = throwsA(
+            isA<ConfigurationRecordFormatException>()
+                .having((error) => error.collection, 'collection', collection)
+                .having((error) => error.recordId, 'record ID', first)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  'Cannot edit undeclared field "unknown".',
+                ),
+          );
+          await expectLater(
+            recordService.updateRecord(before, unknown),
+            unknownField,
+          );
+          await expectLater(
+            recordService.createRecord(type, first, unknown),
+            unknownField,
+          );
+          expect(recordFile(first).readAsBytesSync(), original);
+          obstruction.deleteSync();
+          final saved = await recordService.updateRecord(before, {
+            'name': 'Valid',
+          });
+          await recordService.deleteRecord(saved);
+        },
+      );
+
+      for (final fieldCount in [1, 2]) {
+        test(
+          'R1 dotted $fieldCount-field structural validation preserves the handle',
+          () async {
+            final optional = RecordTypeId('${owner.value}.optional');
+            final optionalService = createOwner(
+              records: RecordCatalog([
+                RecordTypeDefinition(
+                  id: optional,
+                  owner: PluginId(owner.value),
+                  collection: collection,
+                  collectionLabel: 'Jobs',
+                  label: 'Optional',
+                  fields: [
+                    for (final field in ['a', 'b'].take(fieldCount))
+                      RecordFieldDefinition(
+                        id: RecordFieldId(field),
+                        label: field,
+                        type: const StringSettingType(),
+                        required: false,
+                      ),
+                  ],
+                ),
+              ]),
+            );
+            seedRecord(
+              first,
+              'recordVersion = 1\nrecordType = "$optional"\nvalues.a = "Before"\n',
+            );
+            final before = (await optionalService.loadRecords(
+              collection,
+            )).records.single;
+            final original = recordFile(first).readAsBytesSync();
+            await expectLater(
+              optionalService.updateRecord(before, {}),
+              throwsA(isA<InvalidRecordValue>()),
+            );
+            expect(recordFile(first).readAsBytesSync(), original);
+            final saved = await optionalService.updateRecord(before, {
+              'a': 'Valid',
+            });
+            expect(saved.values, {'a': 'Valid'});
+            await optionalService.deleteRecord(saved);
+          },
+        );
+      }
+
+      for (final operation in ['update', 'delete', 'alias']) {
+        test(
+          '$operation failure conservatively retires only its baseline',
+          () async {
+            seedRecord(first, recordSource('name = "Before"\n'));
+            seedRecord(second, recordSource('name = "Independent"\n'));
+            final loaded = await recordService.loadRecords(collection);
+            final before = loaded.records.first;
+            final original = recordFile(first).readAsBytesSync();
+            final obstruction = File(
+              operation == 'alias'
+                  ? '${recordFile(first).parent.path}/FIRST.toml'
+                  : roots.localStateRoot,
+            )..writeAsStringSync('obstruction');
+            await expectLater(
+              operation == 'delete'
+                  ? recordService.deleteRecord(before)
+                  : recordService.updateRecord(before, {
+                      'name': 'Not confirmed',
+                    }),
+              operation == 'alias'
+                  ? throwsA(isA<ConfigurationRecordFormatException>())
+                  : throwsA(isA<FileSystemException>()),
+            );
+            expect(recordFile(first).readAsBytesSync(), original);
+            obstruction.deleteSync();
+            await expectRetired(recordService, before);
+            await recordService.deleteRecord(loaded.records.last);
+            final fresh = (await recordService.loadRecords(
+              collection,
+            )).records.single;
+            await recordService.deleteRecord(fresh);
+          },
+        );
+      }
+    }, skip: !Platform.isLinux);
 
     test(
       'separate owners serialize record and scalar requests and preserve baselines',
@@ -1027,6 +1537,126 @@ void main() {
       },
       skip: !Platform.isLinux,
     );
+
+    for (final deleting in [false, true]) {
+      test(
+        'close drains a lock-blocked ${deleting ? 'delete' : 'update'} and serial scalar/record work',
+        () async {
+          seedRecord(first, recordSource('name = "Before"\n'));
+          seedRecord(second, recordSource('name = "Second"\n'));
+          final loaded = await recordService.loadRecords(collection);
+          final initial = await service.load();
+          final original = recordFile(first).readAsBytesSync();
+          final lock = File(
+            '${roots.localStateRoot}/configuration/settings.lock',
+          );
+          lock.parent.createSync(recursive: true);
+          final helper = File(
+            'test/support/settings_lock.dart',
+          ).copySync('${temporary.path}/settings_lock.dart');
+          final process = await Process.start(
+            '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart',
+            [helper.path, lock.path],
+            workingDirectory: temporary.path,
+          );
+          addTearDown(() async {
+            process.kill();
+            await process.exitCode;
+          });
+          final stderr = process.stderr.transform(utf8.decoder).join();
+          expect(
+            await process.stdout
+                .transform(utf8.decoder)
+                .transform(const LineSplitter())
+                .first,
+            'locked',
+          );
+          final completions = <String>[];
+          final mutation =
+              (deleting
+                      ? recordService
+                            .deleteRecord(loaded.records.first)
+                            .then((_) => null)
+                      : recordService.updateRecord(loaded.records.first, {
+                          'name': 'Drained',
+                        }))
+                  .then((value) {
+                    completions.add('mutation');
+                    return value;
+                  });
+          final saving = service.save(initial, enabled, true).then((value) {
+            completions.add('scalar');
+            return value;
+          });
+          final removing = recordService.deleteRecord(loaded.records.last).then(
+            (_) {
+              completions.add('delete-second');
+            },
+          );
+          final listing = recordService.loadRecords(collection).then((value) {
+            completions.add('list');
+            return value;
+          });
+          final recordClosing = recordService.close();
+          final scalarClosing = service.close();
+          expect(recordService.close(), same(recordClosing));
+          var closed = false;
+          final closing = Future.wait([
+            recordClosing,
+            scalarClosing,
+          ]).then((_) => closed = true);
+          await expectLater(
+            recordService.updateRecord(loaded.records.first, {'name': 'Late'}),
+            throwsStateError,
+          );
+          await expectLater(
+            recordService.deleteRecord(loaded.records.last),
+            throwsStateError,
+          );
+          await expectLater(
+            recordService.loadRecords(collection),
+            throwsStateError,
+          );
+          await expectLater(service.save(initial, limit, 8), throwsStateError);
+          // Pipe-gated native lock ownership, not a timing threshold, prevents
+          // any of these admitted writes from completing before release.
+          await Future<void>.delayed(Duration.zero);
+          expect(completions, isEmpty);
+          expect(closed, isFalse);
+          expect(recordFile(first).readAsBytesSync(), original);
+          expect(recordFile(second).existsSync(), isTrue);
+          expect(file.existsSync(), isFalse);
+          expect(IsolateNameServer.lookupPortByName(workerName), isNotNull);
+          process.stdin.writeln('release');
+          await process.stdin.flush();
+          expect(await process.exitCode, 0, reason: await stderr);
+          final changed = await mutation;
+          if (deleting) {
+            expect(changed, isNull);
+          } else {
+            expect(changed!.values, {'name': 'Drained'});
+          }
+          expectValue(await saving, enabled, true, SettingValueSource.global);
+          await removing;
+          final listed = await listing;
+          expect(listed.records, deleting ? isEmpty : hasLength(1));
+          expect(completions, ['mutation', 'scalar', 'delete-second', 'list']);
+          await closing;
+          expect(closed, isTrue);
+          expect(IsolateNameServer.lookupPortByName(workerName), isNull);
+          expect(recordFile(first).existsSync(), !deleting);
+          expect(recordFile(second).existsSync(), isFalse);
+          final successor = createOwner(records: records);
+          final fresh = await successor.loadRecords(collection);
+          if (deleting) {
+            expect(fresh.records, isEmpty);
+          } else {
+            expect(fresh.records.single.values, {'name': 'Drained'});
+          }
+        },
+        skip: !Platform.isLinux,
+      );
+    }
   });
 
   test(

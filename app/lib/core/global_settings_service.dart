@@ -52,19 +52,39 @@ base class GlobalSettingsService {
   Future<GlobalSettingsView> reset(GlobalSettingsView expected, SettingId id) =>
       _enqueueSettings(_Operation.reset, expected: expected, id: id);
 
+  /// Deliberately revokes this owner's older handles in the collection, even if
+  /// enumeration fails. Other collections retain their independent baselines.
   Future<RecordCollectionView> loadRecords(RecordCollectionId collection) =>
-      _enqueue(_Operation.loadRecords, collection: collection);
+      _enqueue<_RecordCollectionValues>(
+        _Operation.loadRecords,
+        collection: collection,
+      ).then((loaded) => RecordCollectionView._(_identity, loaded));
 
   Future<RecordView> createRecord(
     RecordTypeId type,
     ConfigurationRecordId id,
     Map<String, Object?> values,
-  ) => _enqueue(
+  ) => _enqueue<_RecordValues>(
     _Operation.createRecord,
     recordType: type,
     recordId: id,
     recordValues: Map.unmodifiable(values),
-  );
+  ).then((saved) => RecordView._(_identity, saved));
+
+  /// Replaces the complete known-field set using this owner's exact revision.
+  /// A successful no-op also returns a fresh handle.
+  Future<RecordView> updateRecord(
+    RecordView expected,
+    Map<String, Object?> values,
+  ) => _enqueue<_RecordValues>(
+    _Operation.updateRecord,
+    expectedRecord: expected,
+    recordValues: Map.unmodifiable(values),
+  ).then((saved) => RecordView._(_identity, saved));
+
+  /// Conditionally deletes the record and retires its edit handle.
+  Future<void> deleteRecord(RecordView expected) =>
+      _enqueue<void>(_Operation.deleteRecord, expectedRecord: expected);
 
   String collectionPath(RecordCollectionId collection) => Directory(
     _roots.configurationRoot,
@@ -85,6 +105,7 @@ base class GlobalSettingsService {
   Future<T> _enqueue<T>(
     _Operation operation, {
     GlobalSettingsView? expected,
+    RecordView? expectedRecord,
     SettingId? id,
     Object? value,
     RecordCollectionId? collection,
@@ -95,7 +116,9 @@ base class GlobalSettingsService {
     if (_closing != null) {
       return Future.error(StateError('The settings service is closed.'));
     }
-    if (expected != null && !identical(expected._owner, _identity)) {
+    if ((expected != null && !identical(expected._owner, _identity)) ||
+        (expectedRecord != null &&
+            !identical(expectedRecord._owner, _identity))) {
       return Future.error(
         ArgumentError('The view belongs to another settings owner.'),
       );
@@ -108,12 +131,12 @@ base class GlobalSettingsService {
               catalog: catalog,
               records: records,
               roots: _roots,
-              revision: expected?._revision,
+              revision: expected?._revision ?? expectedRecord?._revision,
               setting: id,
               value: value,
-              collection: collection,
-              recordType: recordType,
-              recordId: recordId,
+              collection: collection ?? expectedRecord?.collection,
+              recordType: recordType ?? expectedRecord?.type,
+              recordId: recordId ?? expectedRecord?.id,
               recordValues: recordValues,
             ),
           )
@@ -149,25 +172,31 @@ final class GlobalSettingsView {
 
 /// Immutable presentation data with no record document or edit baseline.
 final class RecordCollectionView {
-  RecordCollectionView._(ConfigurationRecordEnumeration result)
-    : records = List.unmodifiable(result.records.map(RecordView._)),
-      diagnostics = List.unmodifiable(
-        result.diagnostics.map(RecordDiagnosticView._),
-      );
+  RecordCollectionView._(Object owner, _RecordCollectionValues result)
+    : records = List.unmodifiable(
+        result.records.map((record) => RecordView._(owner, record)),
+      ),
+      diagnostics = List.unmodifiable(result.diagnostics);
 
   final List<RecordView> records;
   final List<RecordDiagnosticView> diagnostics;
 }
 
+/// Immutable display values and an owner-scoped handle, never a native snapshot.
 final class RecordView {
-  RecordView._(ConfigurationRecordSnapshot record)
-    : id = record.id,
-      type = record.type.id,
+  RecordView._(this._owner, _RecordValues record)
+    : _revision = record.revision,
+      collection = record.collection,
+      id = record.id,
+      type = record.type,
       values = Map.unmodifiable(record.values);
 
+  final RecordCollectionId collection;
   final ConfigurationRecordId id;
   final RecordTypeId type;
   final Map<String, Object> values;
+  final Object _owner;
+  final int _revision;
 }
 
 final class RecordDiagnosticView {
@@ -181,7 +210,16 @@ final class RecordDiagnosticView {
   final String message;
 }
 
-enum _Operation { load, save, reset, loadRecords, createRecord, release }
+enum _Operation {
+  load,
+  save,
+  reset,
+  loadRecords,
+  createRecord,
+  updateRecord,
+  deleteRecord,
+  release,
+}
 
 final class _Request {
   const _Request({
@@ -219,6 +257,27 @@ final class _Values {
   final int revision;
   final Map<SettingId, ResolvedSetting<Object>> values;
   final Map<SettingId, Object> failures;
+}
+
+final class _RecordValues {
+  _RecordValues(this.revision, ConfigurationRecordSnapshot record)
+    : collection = record.collection,
+      id = record.id,
+      type = record.type.id,
+      values = Map.unmodifiable(record.values);
+
+  final int revision;
+  final RecordCollectionId collection;
+  final ConfigurationRecordId id;
+  final RecordTypeId type;
+  final Map<String, Object> values;
+}
+
+final class _RecordCollectionValues {
+  _RecordCollectionValues(this.records, this.diagnostics);
+
+  final List<_RecordValues> records;
+  final List<RecordDiagnosticView> diagnostics;
 }
 
 /// The lease registry is main-isolate-only: Dart's Unix locks do not serialize
@@ -386,21 +445,79 @@ final class _SettingsOwner {
   late final ConfigurationRecordStore records;
   GlobalSettingsSnapshot? baseline;
   int revision = 0;
+  final recordBaselines =
+      <
+        (RecordCollectionId, ConfigurationRecordId),
+        (int, ConfigurationRecordSnapshot)
+      >{};
+  int recordRevision = 0;
 
-  Future<Object> apply(_Request request) async {
+  Future<Object?> apply(_Request request) async {
     switch (request.operation) {
       case _Operation.loadRecords:
-        return RecordCollectionView._(
-          await records.enumerate(request.collection!),
+        recordBaselines.removeWhere((key, _) => key.$1 == request.collection);
+        final loaded = await records.enumerate(request.collection!);
+        return _RecordCollectionValues(
+          loaded.records.map(_publishRecord).toList(),
+          loaded.diagnostics.map(RecordDiagnosticView._).toList(),
         );
       case _Operation.createRecord:
-        return RecordView._(
-          await records.create(
-            request.recordType!,
-            request.recordId!,
+        final type = records.catalog.definition(request.recordType!);
+        _validateRecordValues(type, request.recordId!, request.recordValues!);
+        try {
+          return _publishRecord(
+            await records.create(
+              type.id,
+              request.recordId!,
+              request.recordValues!,
+            ),
+          );
+        } on InvalidRecordValue {
+          rethrow;
+        } on Object {
+          recordBaselines.remove((type.collection, request.recordId!));
+          rethrow;
+        }
+      case _Operation.updateRecord:
+      case _Operation.deleteRecord:
+        final key = (request.collection!, request.recordId!);
+        final current = recordBaselines[key];
+        if (current == null ||
+            current.$1 != request.revision ||
+            current.$2.type.id != request.recordType) {
+          // Reject an old request without retiring a newer successful revision.
+          throw ConfigurationConflictException(
+            store.store
+                .recordFile(collectionId: key.$1.value, recordId: key.$2.value)
+                .filePath,
+          );
+        }
+        final expected = current.$2;
+        if (request.operation == _Operation.updateRecord) {
+          _validateRecordValues(
+            expected.type,
+            expected.id,
             request.recordValues!,
-          ),
-        );
+          );
+        }
+        try {
+          if (request.operation == _Operation.deleteRecord) {
+            await records.delete(expected);
+            recordBaselines.remove(key);
+            return null;
+          }
+          return _publishRecord(
+            await records.update(expected, request.recordValues!),
+          );
+        } on InvalidRecordValue {
+          // R1 also validates edits, including document shape, before writing.
+          rethrow;
+        } on Object {
+          // An unconfirmed transaction can have persisted. Only Reload may
+          // establish a usable baseline after a conflict or uncertain failure.
+          recordBaselines.remove(key);
+          rethrow;
+        }
       case _Operation.load:
       case _Operation.save:
       case _Operation.reset:
@@ -408,6 +525,30 @@ final class _SettingsOwner {
       case _Operation.release:
         throw StateError('Release must remove the owner.');
     }
+  }
+
+  _RecordValues _publishRecord(ConfigurationRecordSnapshot record) {
+    final revision = ++recordRevision;
+    recordBaselines[(record.collection, record.id)] = (revision, record);
+    return _RecordValues(revision, record);
+  }
+
+  void _validateRecordValues(
+    RecordTypeDefinition type,
+    ConfigurationRecordId id,
+    Map<String, Object?> values,
+  ) {
+    final known = {for (final field in type.fields) field.id.value};
+    for (final key in values.keys) {
+      if (!known.contains(key)) {
+        throw ConfigurationRecordFormatException(
+          type.collection,
+          id,
+          'Cannot edit undeclared field "$key".',
+        );
+      }
+    }
+    type.validate(id, values);
   }
 
   _Values _applySettings(_Request request) {

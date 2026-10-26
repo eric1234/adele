@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' show AppExitResponse;
+import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
@@ -40,7 +41,7 @@ import 'support/project_provider.dart';
 
 void main() {
   testWidgets(
-    'Global Settings creates and reloads stock provider records before a Project without runtime activation',
+    'Global Settings creates edits deletes and reloads stock provider records before a Project without runtime activation',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1100, 1000));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -173,19 +174,111 @@ void main() {
           providers.map((file) => file.uri.pathSegments.last),
           unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
         );
+        // Retain unrecognized content instead of adopting it into the form.
+        const unknown =
+            '# Retain this comment and unknown field.\nfuture = [1, 2]\n';
+        await work.writeAsString('${await work.readAsString()}$unknown');
+        await _settingsAction(tester, 'records-reload-providers');
+        await _settingsUntil(tester, () => true);
+        await _editProviderRecord(tester, 'work-openai');
+        expect(find.text('Record ID: work-openai'), findsOneWidget);
+        expect(find.text('Record type: $openai.api-key'), findsOneWidget);
+        expect(find.text('Collection: providers'), findsOneWidget);
+        final workName = find.byKey(
+          const ValueKey('record-input-providers-work-openai-display-name'),
+        );
+        expect(
+          tester.widget<TextField>(workName).controller!.text,
+          'Work OpenAI',
+        );
+        await tester.enterText(workName, 'Work OpenAI renamed');
+        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsUntil(tester, () => workName.evaluate().isEmpty);
+        expect(find.text('Work OpenAI renamed'), findsOneWidget);
+        expect(
+          await work.readAsString(),
+          contains('display-name = "Work OpenAI renamed"'),
+        );
+        expect(await work.readAsString(), contains(unknown));
+        expect(await personal.readAsBytes(), personalBytes);
+        expect(
+          (await work.parent.list().toList()).map(
+            (file) => file.uri.pathSegments.last,
+          ),
+          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
+        );
+
+        await _editProviderRecord(tester, 'work-openai');
+        await _settingsAction(
+          tester,
+          'record-presence-providers-work-openai-endpoint',
+        );
+        await tester.enterText(
+          find.byKey(
+            const ValueKey('record-input-providers-work-openai-endpoint'),
+          ),
+          'https://example.invalid/v1',
+        );
+        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsUntil(tester, () => workName.evaluate().isEmpty);
+        expect(
+          await work.readAsString(),
+          contains('endpoint = "https://example.invalid/v1"'),
+        );
+        await _editProviderRecord(tester, 'work-openai');
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(
+                  const ValueKey('record-input-providers-work-openai-endpoint'),
+                ),
+              )
+              .controller!
+              .text,
+          'https://example.invalid/v1',
+        );
+        await _settingsAction(
+          tester,
+          'record-presence-providers-work-openai-endpoint',
+        );
+        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsUntil(tester, () => workName.evaluate().isEmpty);
+        expect(await work.readAsString(), isNot(contains('endpoint')));
+        expect(await work.readAsString(), contains(unknown));
+        expect(await personal.readAsBytes(), personalBytes);
         final firstDialog = tester.element(find.byType(GlobalSettingsDialog));
         await tester.tap(find.byTooltip('Close Settings'));
         await tester.pumpAndSettle();
         expect(firstDialog.mounted, isFalse);
         expect(tester.element(find.byType(AdeleShell)), same(shell));
 
-        // A manual edit distinguishes a fresh disk load from a cached UI list.
+        await openSettings();
+        await _settingsUntil(
+          tester,
+          () => find.text('Work OpenAI renamed').evaluate().isNotEmpty,
+        );
+        await _editProviderRecord(tester, 'work-openai');
+        expect(
+          tester
+              .widget<CheckboxListTile>(
+                find.byKey(
+                  const ValueKey(
+                    'record-presence-providers-work-openai-endpoint',
+                  ),
+                ),
+              )
+              .value,
+          isFalse,
+        );
+        await _settingsAction(tester, 'record-cancel-providers-work-openai');
+
+        // A manual edit distinguishes deliberate Reload from a cached UI list.
         final edited = (await work.readAsString()).replaceFirst(
-          'Work OpenAI',
+          'Work OpenAI renamed',
           'Work OpenAI from disk',
         );
         await work.writeAsString(edited);
-        await openSettings();
+        await _settingsAction(tester, 'records-reload-providers');
         await _settingsUntil(
           tester,
           () => find.text('Work OpenAI from disk').evaluate().isNotEmpty,
@@ -211,6 +304,59 @@ void main() {
         );
         expect(await work.readAsString(), reloaded);
         expect(await personal.readAsBytes(), personalBytes);
+
+        await _expandProviderRecord(tester, 'personal-openai');
+        await _settingsAction(
+          tester,
+          'record-delete-providers-personal-openai',
+        );
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.textContaining('Personal OpenAI'), findsWidgets);
+        expect(find.textContaining('personal-openai'), findsWidgets);
+        expect(find.textContaining('$openai.api-key'), findsWidgets);
+        await _settingsAction(
+          tester,
+          'record-delete-cancel-providers-personal-openai',
+        );
+        expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+        expect(await personal.readAsBytes(), personalBytes);
+        await _settingsAction(
+          tester,
+          'record-delete-providers-personal-openai',
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+        expect(await personal.readAsBytes(), personalBytes);
+        await _settingsAction(
+          tester,
+          'record-delete-providers-personal-openai',
+        );
+        await _settingsAction(
+          tester,
+          'record-delete-confirm-providers-personal-openai',
+        );
+        await _settingsUntil(
+          tester,
+          () => find
+              .byKey(const ValueKey('record-providers-personal-openai'))
+              .evaluate()
+              .isEmpty,
+        );
+        expect(await personal.exists(), isFalse);
+        expect(await work.readAsString(), reloaded);
+        await tester.tap(find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        await openSettings();
+        await _settingsUntil(
+          tester,
+          () => find.text('Work OpenAI reloaded').evaluate().isNotEmpty,
+        );
+        expect(
+          find.byKey(const ValueKey('record-providers-personal-openai')),
+          findsNothing,
+        );
         await _settingsSection(tester, 'Preferences');
         expect(
           tester
@@ -222,6 +368,18 @@ void main() {
         );
         expect(find.text('Effective value: true'), findsOneWidget);
         expect(await settingsFile.readAsString(), originalSettings);
+        await _settingsAction(tester, 'setting-input-$folding');
+        await _settingsAction(tester, 'setting-save-$folding');
+        await _settingsUntil(
+          tester,
+          () => find.text('Effective value: false').evaluate().isNotEmpty,
+        );
+        expect(
+          await settingsFile.readAsString(),
+          originalSettings.replaceFirst('true', 'false'),
+        );
+        expect(await work.readAsString(), reloaded);
+        expect(await personal.exists(), isFalse);
         await tester.tap(find.byTooltip('Close Settings'));
         await tester.pumpAndSettle();
         expect(find.text('No Project is open'), findsOneWidget);
@@ -243,6 +401,177 @@ void main() {
     }),
     skip: !Platform.isLinux,
   );
+
+  for (final deleting in [false, true]) {
+    testWidgets(
+      'accepted application exit drains an admitted record ${deleting ? 'delete' : 'update'}',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1100, 1000));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final directory = await Directory.systemTemp.createTemp(
+          'adele-record-exit-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final roots = _configurationRoots(directory);
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory.current.parent,
+          installationDirectory: Directory(
+            '${directory.path}/installed/openai',
+          ),
+          pluginId: 'dev.adele.openai',
+          displayName: 'OpenAI',
+        );
+        final runtime = NativeAdeleRuntime();
+        addTearDown(runtime.close);
+        final fenced = Completer<void>();
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            configurationRoots: roots,
+            readChatGptConfiguration: () => null,
+            attachSessionContext: (_) =>
+                () => fenced.complete(),
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: '${directory.path}/installed',
+              dartaotruntimeExecutable: '${directory.path}/absent-runtime',
+              hostArtifactPath: '${directory.path}/absent-host.aot',
+            ),
+          ),
+        );
+        await starting;
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('settings-button')));
+        await _settingsUntil(
+          tester,
+          () => find
+              .text('No settings are available from installed plugins.')
+              .evaluate()
+              .isNotEmpty,
+        );
+        final service = await tester
+            .widget<GlobalSettingsDialog>(find.byType(GlobalSettingsDialog))
+            .service();
+        final initial = await service.createRecord(
+          RecordTypeId('dev.adele.openai.api-key'),
+          ConfigurationRecordId('work-openai'),
+          {'display-name': 'Work'},
+        );
+        await _settingsSection(tester, 'Providers');
+        if (deleting) {
+          await _expandProviderRecord(tester, 'work-openai');
+          await _settingsAction(tester, 'record-delete-providers-work-openai');
+        } else {
+          await _editProviderRecord(tester, 'work-openai');
+          await tester.enterText(
+            find.byKey(
+              const ValueKey('record-input-providers-work-openai-display-name'),
+            ),
+            'Saved while exiting',
+          );
+          await tester.pump();
+        }
+        final action = tester
+            .widget<ButtonStyleButton>(
+              find.byKey(
+                ValueKey(
+                  deleting
+                      ? 'record-delete-confirm-providers-work-openai'
+                      : 'record-save-providers-work-openai',
+                ),
+              ),
+            )
+            .onPressed!;
+        final file = File(
+          '${roots.configurationRoot}/providers/work-openai.toml',
+        );
+        final original = await file.readAsBytes();
+        final lock = File(ConfigurationStore(roots).lockPath);
+        await lock.parent.create(recursive: true);
+        final helper = await File(
+          'test/support/settings_lock.dart',
+        ).copy('${directory.path}/settings_lock.dart');
+        final process = await Process.start(
+          '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart',
+          [helper.path, lock.path],
+          workingDirectory: directory.path,
+        );
+        final lines = StreamIterator(
+          process.stdout
+              .transform(utf8.decoder)
+              .transform(const LineSplitter()),
+        );
+        final errors = process.stderr.transform(utf8.decoder).join();
+        try {
+          expect(
+            await lines.moveNext().timeout(const Duration(seconds: 15)),
+            isTrue,
+          );
+          expect(lines.current, 'locked');
+          action();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          await _settingsUntil(
+            tester,
+            () =>
+                find.byType(LinearProgressIndicator).evaluate().isNotEmpty &&
+                find.byType(AlertDialog).evaluate().isEmpty,
+            waitForOperation: false,
+          );
+          var exited = false;
+          final exiting = tester.binding.handleRequestAppExit().then((value) {
+            exited = true;
+            return value;
+          });
+          await fenced.future.timeout(const Duration(seconds: 10));
+          expect(exited, isFalse);
+          expect(await file.readAsBytes(), original);
+          await expectLater(service.deleteRecord(initial), throwsStateError);
+          await expectLater(
+            service.updateRecord(initial, {'display-name': 'Too late'}),
+            throwsStateError,
+          );
+          expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+          process.stdin.writeln('release');
+          await process.stdin.close();
+          expect(
+            await process.exitCode.timeout(const Duration(seconds: 10)),
+            0,
+            reason: await errors,
+          );
+          expect(
+            await exiting.timeout(const Duration(seconds: 10)),
+            AppExitResponse.exit,
+          );
+          await tester.pumpAndSettle();
+          expect(find.byType(GlobalSettingsDialog), findsNothing);
+          expect(
+            IsolateNameServer.lookupPortByName(
+              'dev.adele.global-settings-owner',
+            ),
+            isNull,
+          );
+          if (deleting) {
+            expect(await file.exists(), isFalse);
+          } else {
+            expect(
+              await file.readAsString(),
+              contains('display-name = "Saved while exiting"'),
+            );
+          }
+          expect(tester.takeException(), isNull);
+        } finally {
+          process.kill();
+          await process.exitCode;
+          await lines.cancel();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await service.close();
+          await runtime.close();
+        }
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
 
   testWidgets(
     'Global Settings opens before a Project with no plugins and fences the Command Palette shortcut',
@@ -1663,18 +1992,23 @@ PlatformStorageRoots _configurationRoots(Directory directory) =>
       cacheRoot: '${directory.path}/cache',
     );
 
-Future<void> _settingsUntil(WidgetTester tester, bool Function() ready) async {
+Future<void> _settingsUntil(
+  WidgetTester tester,
+  bool Function() ready, {
+  bool waitForOperation = true,
+}) async {
   final clock = Stopwatch()..start();
   await tester.pump();
   while (!ready() ||
-      find.byType(LinearProgressIndicator).evaluate().isNotEmpty) {
+      (waitForOperation &&
+          find.byType(LinearProgressIndicator).evaluate().isNotEmpty)) {
     if (clock.elapsed >= const Duration(seconds: 10)) {
       fail('Timed out waiting for Global Settings.');
     }
     await Future<void>.delayed(Duration.zero);
     await tester.pump();
   }
-  await tester.pumpAndSettle();
+  if (waitForOperation) await tester.pumpAndSettle();
 }
 
 Future<void> _settingsSection(WidgetTester tester, String label) async {
@@ -1682,6 +2016,33 @@ Future<void> _settingsSection(WidgetTester tester, String label) async {
   await tester.pumpAndSettle();
   await tester.tap(find.text(label).last);
   await _settingsUntil(tester, () => true);
+}
+
+Future<void> _settingsAction(WidgetTester tester, String key) async {
+  final action = find.byKey(ValueKey(key));
+  await tester.ensureVisible(action);
+  await tester.tap(action);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+Future<void> _expandProviderRecord(WidgetTester tester, String id) async {
+  if (find.byKey(ValueKey('record-edit-providers-$id')).evaluate().isNotEmpty) {
+    return;
+  }
+  final row = find.descendant(
+    of: find.byKey(ValueKey('record-providers-$id')),
+    matching: find.byType(ExpansionTile),
+  );
+  final title = find.descendant(of: row, matching: find.byType(Text)).first;
+  await tester.ensureVisible(title);
+  await tester.tap(title);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _editProviderRecord(WidgetTester tester, String id) async {
+  await _expandProviderRecord(tester, id);
+  await _settingsAction(tester, 'record-edit-providers-$id');
 }
 
 Future<void> _createProviderRecord(

@@ -7,9 +7,10 @@ default/global resolution, conditional global TOML persistence, and prepared-plu
 declaration discovery are implemented, with an application-owned Global Settings
 dialog. Desktop Main Content frontends read owner-scoped startup values; Source
 Editor folding is the first scalar consumer. Declarative configuration records
-share scalar validation and conditional persistence and are browsable and creatable
+share scalar validation and conditional persistence and are browsable and manageable
 in Global Settings; the OpenAI plugin declares the first nonsecret provider record.
-Existing-record editing/deletion UI, runtime consumption and Profiles remain unimplemented.
+Creation, editing, and confirmed deletion are implemented; runtime consumption,
+authentication, and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -188,15 +189,31 @@ Enumeration retains healthy records alongside attributable bad-file diagnostics;
 directory-wide failures remain errors. Aliased identities never select a winner.
 
 Global Settings discovers these collections from the captured prepared catalog,
-lists valid records and attributable diagnostics, and creates records with generic
-forms. Existing records expose only read-only declared values, type and ID. New
-records have explicit stable IDs and no inferred defaults; controls preserve absence
-separately from false, zero and empty strings. Collection reload is deliberate and
-reads current disk without discarding an unsaved creation draft. Duplicate IDs never
-overwrite an occupant, including an invalid or unknown-type record. An unconfirmed
-creation requires Reload to establish persisted state before another attempt.
-Existing-record editing, conditional updates and deletion confirmation in the UI
-are deferred to R2b; the headless CRUD boundary remains available internally.
+lists valid records and attributable diagnostics, and creates and edits records with
+shared declaration-generated forms. Collection, record ID and type are immutable
+when editing; display-name changes do not change filenames. New records have explicit
+stable IDs and no inferred defaults; controls preserve absence separately from false,
+zero and empty strings. Editing initializes only declared values and their presence,
+not controls for unknown persisted content. Duplicate IDs never overwrite an occupant,
+including an invalid or unknown-type record. Malformed entries have no mutation UI.
+
+Each existing record has a separate draft retained through details collapse and
+ordinary Settings navigation; Cancel editing discards only that record's draft.
+Save presents confirmed worker results, with no optimistic replacement or automatic
+refresh of unrelated baselines. Delete requires explicit modal confirmation of the
+exact record's title, stable identity, and entire-file removal, including unknown data.
+Cancel or dismissal does not write. Confirmed deletion removes only that record and
+its draft. Conflicts or uncertain update/delete outcomes fence the affected record,
+retaining unsaved values for inspection without retry or automatic merging. Known
+pre-write validation failures remain correctable. Unconfirmed creation requires
+collection Reload before another creation attempt.
+
+Collection Reload is deliberate, confirms discarding dirty existing-record drafts,
+and keeps creation drafts and other sections intact. A successful read replaces the
+collection's edit baselines and clears stale drafts; a failed read retains the last
+displayed records and drafts with diagnostics, while fencing old handles. No failed
+read is presented as an empty collection. Closing the whole dialog discards drafts;
+canceled application exit preserves the original dialog and its drafts.
 
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
 strings, not an API key or credential reference. These definitions are not consumed
@@ -286,7 +303,7 @@ sections, and IDs without discarding hidden drafts.
 
 Preferences remains the default view. Record collection navigation is supplied by
 `RecordCatalog.collectionLabel`; a collection may contain multiple plugins' types.
-Navigation retains scalar controls and creation drafts while excluding hidden
+Navigation retains scalar controls and record drafts while excluding hidden
 controls from keyboard focus. Scalar and record schema/aggregation failures remain
 independent; genuine installation-wide diagnostics are represented in both areas.
 
@@ -449,14 +466,25 @@ preservation limits. The adapter remains synchronous on the owning host isolate.
 Desktop [`GlobalSettingsService`](../../app/lib/core/global_settings_service.dart)
 leases one retained worker from the Flutter root isolate; all application owners
 share its serialized store operations, including owners with separate editing
-baselines. Awaited record enumeration and creation settle before the next worker
+baselines. Awaited record enumeration and mutations settle before the next worker
 request, including requests from another owner; asynchronous handlers do not run
 independently. Independent root-isolate writers are rejected rather than relying on
 same-process filesystem locks. Only immutable scalar results, provenance, errors,
-opaque scalar view revisions, and record IDs/types/declared values/diagnostics cross
-back to presentation. Stores and whole-document baselines remain in the worker.
-Startup and Settings use the same captured storage
-roots; tests inject temporary roots at application composition.
+opaque view revisions, and record IDs/types/declared values/diagnostics cross
+back to presentation. Stores, native documents, and conditional baselines remain in
+the worker. Each owner retains independent snapshots keyed by collection and record
+ID. A record view binds its private handle to that service owner, collection, ID,
+type, and a specific loaded or saved revision. Callers cannot substitute another
+record's baseline or acquire filesystem authority. Creation and successful updates
+(including no-ops) issue fresh handles; deletion retires the handle. Deliberate Reload
+revokes older handles for the affected collection, including on read failure.
+Conflicts and uncertain persistence failures retire the affected baseline until Reload,
+without invalidating independent records. A rejected stale request cannot revoke a
+newer successful revision. The store's existence/byte comparison still detects
+external or competing-owner writes, including stale no-op edits; there is no retry
+with fresh data.
+Startup and Settings use the same captured storage roots; tests inject temporary
+roots at application composition.
 
 Closing the dialog only disposes presentation, not the service or an admitted
 transaction. Application shutdown fences new requests, drains admitted work, and
@@ -570,9 +598,9 @@ Implemented foundations and current limits:
   asynchronous configuration owner, with current persisted provenance, per-setting
   save/reset, explicit reload, and non-destructive error/conflict handling.
 - Plugin-declared records support generic validation and headless independent-file
-  CRUD in the same global layer, with browsing and creation in Global Settings.
-  Existing-record editing/deletion UI remains deferred to R2b. OpenAI supplies a
-  nonsecret API-key provider declaration, not runtime activation or authentication.
+  CRUD in the same global layer, with browsing, creation, editing, and confirmed
+  deletion in Global Settings. OpenAI supplies a nonsecret API-key provider
+  declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.

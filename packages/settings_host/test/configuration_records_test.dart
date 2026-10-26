@@ -987,43 +987,48 @@ void main() {
       expect((await generic.load(providers, work)).type.id, otherType.id);
     });
 
-    test(
-      'removing an implicit values table never publishes an invalid record',
-      () async {
-        final type = RecordTypeDefinition(
-          id: RecordTypeId('dev.example.optional.type'),
-          owner: PluginId('dev.example.optional'),
-          collection: providers,
-          collectionLabel: 'Providers',
-          label: 'Optional values',
-          fields: [
-            RecordFieldDefinition(
-              id: RecordFieldId('text'),
-              label: 'Text',
-              type: const StringSettingType(),
-              required: false,
-            ),
-          ],
-        );
-        final generic = ConfigurationRecordStore(
-          store: persistence,
-          catalog: RecordCatalog([type]),
-        );
-        const original =
-            'recordVersion = 1\nrecordType = "dev.example.optional.type"\nvalues.text = "value"\n';
-        seed(work, original);
-        final loaded = await generic.load(providers, work);
-        await expectLater(
-          generic.update(loaded, {}),
-          throwsA(isA<InvalidRecordValue>()),
-        );
-        expect(file(work).readAsStringSync(), original);
-        expect((await generic.load(providers, work)).values, loaded.values);
-        seed(work, source('text = "value"\n', type: type.id.value));
-        final explicit = await generic.load(providers, work);
-        await generic.update(explicit, {});
-        expect((await generic.load(providers, work)).values, isEmpty);
-      },
-    );
+    for (final fieldCount in [1, 2]) {
+      test(
+        'removing a dotted $fieldCount-field values table is correctable prewrite validation',
+        () async {
+          final type = RecordTypeDefinition(
+            id: RecordTypeId('dev.example.optional.type'),
+            owner: PluginId('dev.example.optional'),
+            collection: providers,
+            collectionLabel: 'Providers',
+            label: 'Optional values',
+            fields: [
+              for (final field in ['a', 'b'].take(fieldCount))
+                RecordFieldDefinition(
+                  id: RecordFieldId(field),
+                  label: field,
+                  type: const StringSettingType(),
+                  required: false,
+                ),
+            ],
+          );
+          final generic = ConfigurationRecordStore(
+            store: persistence,
+            catalog: RecordCatalog([type]),
+          );
+          const original =
+              'recordVersion = 1\nrecordType = "dev.example.optional.type"\nvalues.a = "value"\n';
+          seed(work, original);
+          final loaded = await generic.load(providers, work);
+          await expectLater(
+            generic.update(loaded, {}),
+            throwsA(isA<InvalidRecordValue>()),
+          );
+          expect(file(work).readAsStringSync(), original);
+          final corrected = await generic.update(loaded, {'a': 'Corrected'});
+          expect(corrected.values, {'a': 'Corrected'});
+          expect(loaded.values, {'a': 'value'});
+          seed(work, source('a = "value"\n', type: type.id.value));
+          final explicit = await generic.load(providers, work);
+          await generic.update(explicit, {});
+          expect((await generic.load(providers, work)).values, isEmpty);
+        },
+      );
+    }
   }, skip: !Platform.isLinux);
 }
