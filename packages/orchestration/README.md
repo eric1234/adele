@@ -40,6 +40,69 @@ Retiring the registration makes both operations throw the generic
 `StaleExtensionBinding` without wrapping it. A fresh resolution is needed after
 replacement; old bindings never silently retarget the new contribution.
 
+## Session Feedback
+
+`session_feedback.dart` defines a narrow strategy-compatible input boundary,
+separate from execution. `OrchestrationStrategyContribution.feedbackTarget` is an
+optional factory over a host-captured canonical `Session`; no second provider or
+extension registry is introduced. The returned `SessionFeedbackTarget` exposes
+only `accept(submission)` and `lookup(submissionId)`, without a recipient selector.
+An absent factory is unsupported input, not permission to look for another strategy.
+
+The immutable contract includes:
+
+| Value | Meaning |
+| --- | --- |
+| `SessionFeedbackSubmission` | Stable submission ID, recognized `codeReview` kind, and nonempty ordered immutable comments. No Session, Project, strategy, backend or Run selector. |
+| `SessionFeedbackComment` | Original comment identity, optimistic version, creation sequence, exact user text, and anchor. Sequence gaps are retained. |
+| `SessionFeedbackAnchor` | Environment provenance, relative path, captured comparison layer/side/identity, inclusive line range, original excerpt, and hunk/line display coordinates. No filesystem or approval authority. |
+| `SessionFeedbackReceipt` | Submission ID, accepted Session ID, and strategy-owned occurrence ID. Identical deliveries return the same identities. |
+| `SessionFeedbackRecord` | Receipt plus the full structured immutable accepted submission, returned by bounded lookup. |
+
+`encodeSessionFeedbackSubmission` defines complete canonical JSON with fixed field
+order, enum names, ordered comments, and exact unnormalized strings. Equality uses
+the whole encoded payload, including the submission ID; it is not a text similarity
+or content-based deduplication rule. `decodeSessionFeedbackSubmission` validates
+the exact field set and reconstructs all invariants for durable reads.
+
+`SessionFeedbackLimits` retains the pending-review per-field semantics: at most
+128 comments, 8192 UTF-16 code units per comment, 4096 per path/excerpt, 256 per
+identity, and at most 1000 lines in a range. Paths are relative and exclude empty,
+dot, parent and `.git` components, drive prefixes, backslashes and NUL. Malformed
+Unicode is rejected; meaningful Unicode, CRLF and missing final newlines survive.
+Canonical UTF-8 content is capped at 128 KiB, and the strategy's complete model
+projection at 144 KiB. Strategies must additionally validate their actual encoded
+relational rows and responses. No truncation is allowed.
+
+`RemoteSessionFeedbackService` supplies generated native accept/lookup transport.
+Its Session and route arguments are host-derived adapter metadata, not fields in
+the consumer payload. The existing remote strategy exposure optionally declares
+the supported `feedbackServiceId` and reuses its exact `routeId`, configuration
+context and backend generation. An arbitrary callable backend with the same
+service does not become eligible. No execution host invocation is opened.
+
+Application `CapturedSessionFeedbackTarget.capture` validates canonical object
+identity, open lifecycle, optional originating-attachment validation, permanent
+strategy identity and unique exact registration. It never materializes execution
+or resolves model/tool/Environment access. Old targets remain stale after
+replacement; explicit fresh capture is required for reconciliation. Existing native
+Run owners retain lifecycle occupancy through materialization and drained close,
+independently of backend lifetime. While occupied, the host only reads and compares
+an existing receipt; it never sends a new acceptance to a replacement backend.
+
+`SessionFeedbackFailure` uses safe declared codes for invalid/oversized data,
+missing or ambiguous targets, unsupported strategies, busy Sessions, content
+conflicts, stale bindings, storage failure and uncertain outcomes. Failed writes
+are not automatically replayed. Lookup returning a record proves acceptance;
+failed lookup is never translated to absence. A null lookup is only a read of
+current authoritative state, not proof that an outstanding mutation cannot commit.
+
+Stock Chat retains its normal execution claim and Draft Request behavior. Future
+Diff submission will allocate a durable identity, use presentation-bound host
+admission, reconcile uncertain acceptance, and separately request a normal Run.
+There is no Submit Review UI or pending-comment clearing in this boundary.
+See [acceptance semantics](../../docs/architecture/execution-model.md#session-feedback-acceptance).
+
 ## Materialization And Execution
 
 `ResolvedOrchestrationStrategy.materialize(context)` invokes the retained

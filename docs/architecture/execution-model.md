@@ -98,6 +98,63 @@ separations remain relevant, not its historical history/context API.
 
 ## Strategy sequencing and host mechanics
 
+### Session feedback acceptance
+
+A compatible strategy may accept structured Session input independently of a Run.
+The public `adele_orchestration` feedback contract currently supports one immutable
+code-review batch: ordered comments with their exact text, original source anchors,
+Environment provenance, and caller-retained submission identity. It is not an
+arbitrary-payload message bus or a core Review identity. Diff owns pending comments
+and future batch construction; core owns the canonical recipient Session and its
+permanent strategy binding; the compatible strategy owns accepted occurrences.
+
+The native host captures an actual canonical Session and the exact uniquely
+resolved strategy contribution, including its optional feedback target. Matching a
+backend service ID alone does not establish compatibility. Admission revalidates
+the canonical Session, open lifecycle, attachment eligibility, and exact binding.
+Retirement cannot retarget a captured operation. A fresh explicit capture may use
+a replacement generation to reconcile durable data. Future interpreted consumers
+receive only presentation-bound operations, not Session/backend selectors or
+channels. The native capture seam does not grant interpreted access by itself.
+
+Acceptance records one semantic input occurrence and a stable receipt; it does not
+materialize an execution or Environment, invoke models/tools, alter Git approval,
+modify files, or require a mounted frontend. Scheduling remains a separate explicit
+operation on the existing Session execution owner. Scheduling failure does not
+erase accepted input or authorize another occurrence.
+
+Within a Session, a submission ID identifies the entire intended immutable batch.
+An exact repeat returns the original occurrence; reusing the ID with any different
+canonical content fails. Different IDs remain distinct even when their comments
+are identical. The accepting strategy atomically retains the occurrence, complete
+structured payload, receipt relationship, and counters. Human-facing compact
+presentation and future rich Inspection must not reconstruct accepted feedback by
+parsing model-facing prose.
+
+An unacknowledged mutation is uncertain, not rejected or automatically retried.
+Explicit lookup uses the original submission identity, and a retained receipt is
+positive acceptance evidence. Read failure is not absence; absence observed while
+the original mutation is still outstanding is not proof of rollback. Recovery
+never migrates the admitted call to a replacement generation.
+
+Stock Chat uses its existing Session mutation/execution claim. The existing native
+`SessionOrchestrationRun` additionally retains lifecycle occupancy from immediately
+before materialization until its drained close; backend retirement does not release
+that host-owned lifetime. A new batch while occupied or claimed is rejected without
+queuing. The host uses read-only lookup for accepted duplicates during occupancy,
+so receipt reconciliation remains available even after backend replacement while
+an old Run is waiting. Acceptance preserves Draft Request and records no
+assistant entry or Run association. A later normal Run associates and consumes the
+accepted user occurrence through unchanged Chat sequencing. This occupancy observes
+the existing Run owner; it neither schedules execution nor replaces the controller's
+admission, exact-pin rules, or Chat's mutation claim.
+
+See the [public feedback API](../../packages/orchestration/README.md#session-feedback)
+and [Chat persistence](../../plugins/chat_strategy/packages/backend/README.md)
+for concrete contracts, bounds, and storage policy.
+
+### Execution sequencing
+
 The strategy decides what its Session state means, what input to project for
 inference, when to invoke the model, how to interpret semantic turns, and whether
 to continue with tool results or complete/fail its work. It decides which semantic

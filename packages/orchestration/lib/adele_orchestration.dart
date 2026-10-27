@@ -6,6 +6,7 @@ import 'dart:async';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 
+import 'session_feedback.dart';
 import 'src/model.dart';
 import 'src/run.dart';
 import 'src/tool.dart';
@@ -26,6 +27,7 @@ export 'package:adele_model_tool/adele_model_tool.dart'
 export 'package:adele_product/adele_product.dart'
     show OrchestrationStrategyId, RunId, SessionId, Session;
 
+export 'session_feedback.dart';
 export 'src/activity.dart';
 export 'src/context.dart';
 export 'src/model.dart';
@@ -43,6 +45,7 @@ final class OrchestrationStrategyContribution {
     required this.strategyId,
     required this.materialize,
     this.displayName,
+    this.feedbackTarget,
   });
 
   final OrchestrationStrategyId strategyId;
@@ -50,6 +53,10 @@ final class OrchestrationStrategyContribution {
   /// Optional human-readable label, independent of frontend availability.
   /// Consumers use [strategyId] when no label is supplied.
   final String? displayName;
+
+  /// Opt-in Session feedback, captured without materializing an execution.
+  /// The host supplies the canonical Session and retains this exact registration.
+  final SessionFeedbackTarget Function(Session)? feedbackTarget;
 
   /// Constructs an execution without starting Run or model/tool work. The host
   /// keeps execution disabled until the application enters the returned execution.

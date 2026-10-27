@@ -1,19 +1,23 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
+import 'package:adele_desktop/core/session_feedback_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,6 +106,388 @@ void main() {
     );
     return backends;
   }
+
+  test(
+    'host-mediated review acceptance survives replacement and reopen without starting a Run',
+    () async {
+      final source = await _source();
+      final original = await start(MonotonicProductIdSource(seed: 'feedback'));
+      final generationA = await original.activate(_chatPluginId);
+      final runtime = original.runtime;
+      final product = await _createSession(runtime, source);
+      final session = product.session;
+      final other = runtime.lifecycle.createSession(
+        taskId: product.task.id,
+        strategyId: chatStrategyId,
+      );
+      final chatA = _chatClient(generationA.connection);
+      await chatA.setDraftRequest(session.id.value, _draftRequest);
+      final submission = _feedback(product.environment.id.value, 'review-1');
+      final target = CapturedSessionFeedbackTarget.capture(
+        lifecycle: runtime.lifecycle,
+        session: session,
+      );
+      final otherTarget = CapturedSessionFeedbackTarget.capture(
+        lifecycle: runtime.lifecycle,
+        session: other,
+      );
+      final coreBefore = _inspect(source, _coreRows);
+      final worktree = Directory.fromUri(
+        source.uri.resolve(
+          product.environment.providerState!['worktreeRelativePath']! as String,
+        ),
+      );
+      final indexBefore = await _git(worktree, ['ls-files', '--stage']);
+      final diffBefore = await _git(worktree, ['diff', '--binary', 'HEAD']);
+      final fileBefore = await File(
+        '${worktree.path}/baseline.txt',
+      ).readAsBytes();
+      expect(await target.lookup(submission.submissionId), isNull);
+
+      final receipts = await Future.wait([
+        target.accept(submission),
+        target.accept(submission),
+      ]);
+      final receipt = receipts.first;
+      expect(receipts.map((value) => value.occurrenceId), [
+        'entry-0',
+        'entry-0',
+      ]);
+      expect(receipt.sessionId, session.id.value);
+      expect(receipt.submissionId, submission.submissionId);
+      final record = (await target.lookup(submission.submissionId))!;
+      expect(record.receipt.occurrenceId, receipt.occurrenceId);
+      expect(
+        encodeSessionFeedbackSubmission(record.submission),
+        encodeSessionFeedbackSubmission(submission),
+      );
+      final accepted = await chatA.snapshot(session.id.value);
+      expect(accepted.entries, hasLength(1));
+      expect(accepted.entries.single.id, receipt.occurrenceId);
+      expect(accepted.entries.single.role, 'user');
+      expect(accepted.entries.single.runId, isNull);
+      expect(accepted.draftRequest, _draftRequest);
+      for (final comment in submission.comments) {
+        expect(
+          accepted.entries.single.content,
+          contains(jsonEncode(comment.text)),
+        );
+        expect(
+          accepted.entries.single.content,
+          contains(jsonEncode(comment.anchor.sourceExcerpt)),
+        );
+      }
+      final stored = _inspect(source, _feedbackRows).single;
+      expect(stored['session_id'], session.id.value);
+      expect(stored['submission_id'], submission.submissionId);
+      expect(stored['entry_id'], receipt.occurrenceId);
+      expect(
+        stored['canonical_payload'],
+        encodeSessionFeedbackSubmission(submission),
+      );
+      expect(await otherTarget.lookup(submission.submissionId), isNull);
+      expect((await chatA.snapshot(other.id.value)).entries, isEmpty);
+      expect(runtime.store.runsForSession(session.id), isEmpty);
+      expect(runtime.lifecycle.runActivitiesForSession(session.id), isEmpty);
+      expect(_inspect(source, _coreRows), coreBefore);
+      expect(await _git(worktree, ['ls-files', '--stage']), indexBefore);
+      expect(await _git(worktree, ['diff', '--binary', 'HEAD']), diffBefore);
+      expect(
+        await File('${worktree.path}/baseline.txt').readAsBytes(),
+        fileBefore,
+      );
+      await expectLater(
+        target.accept(
+          _feedback(product.environment.id.value, 'review-1', changed: true),
+        ),
+        _feedbackFailure('submission_conflict'),
+      );
+      expect(
+        _snapshot(await chatA.snapshot(session.id.value)),
+        _snapshot(accepted),
+      );
+
+      await generationA.close();
+      final generationB = await original.activate(_chatPluginId);
+      await expectLater(
+        target.accept(submission),
+        _feedbackFailure('stale_target'),
+      );
+      final replacement = CapturedSessionFeedbackTarget.capture(
+        lifecycle: runtime.lifecycle,
+        session: session,
+      );
+      expect(
+        (await replacement.lookup('review-1'))!.receipt.occurrenceId,
+        receipt.occurrenceId,
+      );
+      expect(
+        (await replacement.accept(submission)).occurrenceId,
+        receipt.occurrenceId,
+      );
+      expect(
+        _snapshot(
+          await _chatClient(generationB.connection).snapshot(session.id.value),
+        ),
+        _snapshot(accepted),
+      );
+      await original.close();
+
+      final ids = _NoAllocationIds();
+      final fresh = await start(ids);
+      await fresh.runtime.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: fresh.runtime.lifecycle.resolveProjectProvider(
+          _projectProviderId,
+        ),
+      );
+      final restoredSession = fresh.runtime.store.session(session.id)!;
+      final generationC = await fresh.activate(_chatPluginId);
+      final reopened = CapturedSessionFeedbackTarget.capture(
+        lifecycle: fresh.runtime.lifecycle,
+        session: restoredSession,
+      );
+      final restored = (await reopened.lookup('review-1'))!;
+      expect(restored.receipt.occurrenceId, receipt.occurrenceId);
+      expect(
+        encodeSessionFeedbackSubmission(restored.submission),
+        encodeSessionFeedbackSubmission(submission),
+      );
+      expect(fresh.runtime.store.runsForSession(session.id), isEmpty);
+      expect(ids.calls, 0);
+      expect(
+        fresh.runtime.lifecycle.environmentRuntime.currentMaterialization(
+          product.environment.id,
+        ),
+        isNull,
+      );
+      expect(_inspect(source, _feedbackRows), [stored]);
+      final chatC = _chatClient(generationC.connection);
+      final model = _Model(
+        await chatC.snapshot(session.id.value),
+        'Addressed captured review.',
+      );
+      final run = await _createRun(
+        fresh.runtime,
+        session.id,
+        'review-run',
+        model,
+      );
+      expect(model.calls, 0);
+      expect(run.run.state, RunState.created);
+      // Materialization uses the existing claim and associates the same occurrence.
+      expect(
+        (await chatC.snapshot(session.id.value)).entries.single.runId,
+        'review-run',
+      );
+      await expectLater(
+        reopened.accept(
+          _feedback(product.environment.id.value, 'new-while-busy'),
+        ),
+        _feedbackFailure('session_busy'),
+      );
+      expect(
+        (await reopened.lookup('review-1'))!.receipt.occurrenceId,
+        receipt.occurrenceId,
+      );
+      expect(
+        (await reopened.accept(submission)).occurrenceId,
+        receipt.occurrenceId,
+      );
+      await run.start();
+      expect(run.run.state, RunState.completed);
+      expect(model.calls, 1);
+      final afterRun = await chatC.snapshot(session.id.value);
+      expect(afterRun.entries.map((entry) => entry.role), [
+        'user',
+        'assistant',
+      ]);
+      expect(afterRun.entries.first.id, receipt.occurrenceId);
+      expect(afterRun.entries.first.runId, 'review-run');
+      expect(afterRun.draftRequest, _draftRequest);
+      expect(_inspect(source, _feedbackRows), [stored]);
+      expect(await _git(worktree, ['ls-files', '--stage']), indexBefore);
+      expect(await _git(worktree, ['diff', '--binary', 'HEAD']), diffBefore);
+      expect(
+        await File('${worktree.path}/baseline.txt').readAsBytes(),
+        fileBefore,
+      );
+      await fresh.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'retired waiting Run still fences new feedback on a fresh backend',
+    () async {
+      final source = await _source();
+      final backends = await start(
+        MonotonicProductIdSource(seed: 'feedback-busy'),
+      );
+      final generationA = await backends.activate(_chatPluginId);
+      final product = await _createSession(backends.runtime, source);
+      final submission = _feedback(product.environment.id.value, 'before-run');
+      final first = CapturedSessionFeedbackTarget.capture(
+        lifecycle: backends.runtime.lifecycle,
+        session: product.session,
+      );
+      final receipt = await first.accept(submission);
+      final run = await createSessionOrchestrationRun(
+        lifecycle: backends.runtime.lifecycle,
+        sessionId: product.session.id,
+        runId: RunId('retired-waiting'),
+        contextComposer: backends.runtime.contextComposer,
+        model: _ReviewWaitingModel(),
+        toolCatalog: ToolCatalog()
+          ..register(
+            ToolRegistration(
+              definition: ToolDefinition(
+                id: ToolId('test.feedback'),
+                description: 'Must not execute',
+              ),
+              modelDefinition: ModelToolDefinition(
+                alias: 'wait',
+                description: 'Wait for approval',
+                argumentsSchema: const {},
+              ),
+              executable: _NeverExecutedTool(),
+            ),
+          ),
+        policy: const _Ask(),
+      );
+      addTearDown(run.close);
+      await run.start();
+      expect(run.run.state, RunState.waiting);
+      await generationA.close();
+      await backends.activate(_chatPluginId);
+      final replacement = CapturedSessionFeedbackTarget.capture(
+        lifecycle: backends.runtime.lifecycle,
+        session: product.session,
+      );
+      expect(run.run.state, RunState.waiting);
+      expect(
+        backends.runtime.lifecycle.hasSessionExecution(product.session),
+        isTrue,
+      );
+      expect(
+        (await replacement.lookup(
+          submission.submissionId,
+        ))!.receipt.occurrenceId,
+        receipt.occurrenceId,
+      );
+      expect(
+        (await replacement.accept(submission)).occurrenceId,
+        receipt.occurrenceId,
+      );
+      await expectLater(
+        replacement.accept(
+          _feedback(product.environment.id.value, 'before-run', changed: true),
+        ),
+        _feedbackFailure('submission_conflict'),
+      );
+      final next = _feedback(product.environment.id.value, 'after-run');
+      await expectLater(
+        replacement.accept(next),
+        _feedbackFailure('session_busy'),
+      );
+      expect(await replacement.lookup(next.submissionId), isNull);
+      expect(_inspect(source, _feedbackRows), hasLength(1));
+      await run.close();
+      expect(
+        backends.runtime.lifecycle.hasSessionExecution(product.session),
+        isFalse,
+      );
+      expect((await replacement.accept(next)).occurrenceId, 'entry-1');
+      expect(
+        backends.runtime.store.runsForSession(product.session.id),
+        isEmpty,
+      );
+      await backends.close();
+    },
+  );
+
+  test(
+    'lost acceptance acknowledgement reconciles actual committed SQL without replay',
+    () async {
+      final source = await _source();
+      final backends = await start(
+        MonotonicProductIdSource(seed: 'feedback-ack'),
+      );
+      late _LostFeedbackAcknowledgement fault;
+      final generation = await backends.activate(
+        _chatPluginId,
+        interceptStorage: (dispatcher) =>
+            fault = _LostFeedbackAcknowledgement(dispatcher),
+      );
+      final product = await _createSession(backends.runtime, source);
+      final chat = _chatClient(generation.connection);
+      await chat.setDraftRequest(product.session.id.value, _draftRequest);
+      final target = CapturedSessionFeedbackTarget.capture(
+        lifecycle: backends.runtime.lifecycle,
+        session: product.session,
+      );
+      final submission = _feedback(product.environment.id.value, 'lost-ack');
+      await expectLater(
+        target.accept(submission),
+        _feedbackFailure('outcome_uncertain'),
+      );
+      expect(fault.commits, 1);
+      expect(_inspect(source, _feedbackRows), hasLength(1));
+      final record = (await target.lookup(submission.submissionId))!;
+      expect(record.receipt.occurrenceId, 'entry-0');
+      expect(
+        encodeSessionFeedbackSubmission(record.submission),
+        encodeSessionFeedbackSubmission(submission),
+      );
+      expect(fault.commits, 1);
+      await generation.close();
+      final replacement = await backends.activate(_chatPluginId);
+      final fresh = CapturedSessionFeedbackTarget.capture(
+        lifecycle: backends.runtime.lifecycle,
+        session: product.session,
+      );
+      expect(
+        (await fresh.lookup(submission.submissionId))!.receipt.occurrenceId,
+        record.receipt.occurrenceId,
+      );
+      final snapshot = await _chatClient(
+        replacement.connection,
+      ).snapshot(product.session.id.value);
+      expect(snapshot.entries, hasLength(1));
+      expect(snapshot.entries.single.id, record.receipt.occurrenceId);
+      expect(snapshot.draftRequest, _draftRequest);
+      expect(
+        backends.runtime.store.runsForSession(product.session.id),
+        isEmpty,
+      );
+      // Failure after the candidate entry INSERT rolls back the entire batch.
+      final rowsBefore = _inspect(source, _chatRows);
+      final receiptsBefore = _inspect(source, _feedbackRows);
+      _inspect(
+        source,
+        (database) => database.execute('''
+        CREATE TRIGGER reject_feedback BEFORE INSERT ON adele_chat_feedback_submissions
+        BEGIN SELECT RAISE(ABORT, 'private-feedback-storage-failure'); END;
+      '''),
+      );
+      final rejected = _feedback(product.environment.id.value, 'rollback');
+      await expectLater(
+        fresh.accept(rejected),
+        _feedbackFailure('outcome_uncertain'),
+      );
+      expect(await fresh.lookup(rejected.submissionId), isNull);
+      expect(_inspect(source, _chatRows), rowsBefore);
+      expect(_inspect(source, _feedbackRows), receiptsBefore);
+      _inspect(
+        source,
+        (database) => database.execute('DROP TRIGGER reject_feedback'),
+      );
+      // New explicit acceptance after authoritative reconciliation, not replay
+      // performed automatically by the target.
+      expect((await fresh.accept(rejected)).occurrenceId, 'entry-1');
+      await backends.close();
+    },
+  );
 
   test(
     'durable Chat history and draft survive generation replacement and restart, then submit once',
@@ -793,12 +1179,22 @@ final class _RuntimeBackends {
   final activations = <PluginBackendActivation>[];
   Future<void>? _closing;
 
-  Future<PluginBackendActivation> activate(String pluginId) async {
+  Future<PluginBackendActivation> activate(
+    String pluginId, {
+    AdeleBackendDispatcher Function(AdeleBackendDispatcher)? interceptStorage,
+  }) async {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: File('${artifacts.path}/$pluginId.aot').uri,
-      createInfrastructureServices: (connection) =>
-          projectStorageServices(runtime.lifecycle, connection),
+      createInfrastructureServices: (connection) {
+        final services = projectStorageServices(runtime.lifecycle, connection);
+        if (interceptStorage != null) {
+          services[projectStorageServiceId] = interceptStorage(
+            services[projectStorageServiceId]!,
+          );
+        }
+        return services;
+      },
     );
     final activation = await PluginBackendActivation.registerAdvertised(
       connection: connection,
@@ -920,6 +1316,52 @@ final class _NoTools implements ToolPolicy {
   );
 }
 
+final class _ReviewWaitingModel implements ModelPort {
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    yield ModelOutputItemCompleted(
+      invocationId: request.invocationId,
+      item: ModelToolProposalOutput(
+        ProviderToolProposal(
+          providerCallId: 'wait-1',
+          alias: 'wait',
+          arguments: const {},
+        ),
+      ),
+    );
+    yield ModelInvocationSettledEvent(invocationId: request.invocationId);
+  }
+}
+
+final class _NeverExecutedTool implements ToolExecutable {
+  @override
+  void validateBinding() {}
+  @override
+  CanonicalToolArguments validateAndNormalize(Map<String, Object?> arguments) =>
+      CanonicalToolArguments(arguments);
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async => EffectDescription(
+    effects: const [ToolEffect.sourceMutation],
+    targets: const [],
+    summary: 'Approval fixture',
+  );
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) =>
+      throw StateError('Feedback acceptance cannot approve or execute a tool.');
+}
+
+final class _Ask implements ToolPolicy {
+  const _Ask();
+  @override
+  ToolPolicyDecision evaluate(ToolPolicyInput input) => ToolPolicyDecision.ask;
+}
+
 Map<String, Object?> _snapshot(ChatSessionSnapshot snapshot) => {
   'instructions': snapshot.instructions,
   'maxModelInvocations': snapshot.maxModelInvocations,
@@ -985,6 +1427,11 @@ Map<String, Object?> _chatRows(Database database) => {
   ),
 };
 
+List<Map<String, Object?>> _feedbackRows(Database database) => _rows(
+  database,
+  'SELECT * FROM adele_chat_feedback_submissions ORDER BY session_id, submission_id',
+);
+
 void _expectSchema(Database database) {
   expect(
     database
@@ -1029,9 +1476,93 @@ void _expectSchema(Database database) {
       'adele_execution_rejected_proposals',
       'adele_chat_sessions',
       'adele_chat_entries',
+      'adele_chat_feedback_submissions',
       'adele_git_task_anchors',
     ]),
   );
+}
+
+Matcher _feedbackFailure(String code) => throwsA(
+  isA<SessionFeedbackFailure>().having((failure) => failure.code, 'code', code),
+);
+
+SessionFeedbackSubmission _feedback(
+  String environmentId,
+  String id, {
+  bool changed = false,
+}) => SessionFeedbackSubmission(
+  submissionId: id,
+  kind: SessionFeedbackKind.codeReview,
+  comments: [
+    for (var index = 0; index < 3; index++)
+      SessionFeedbackComment(
+        id: 'comment-$index',
+        version: index + 1,
+        sequence: index * 2 + 1,
+        text: index == 0 && changed
+            ? 'Changed feedback.'
+            : 'Feedback $index: preserve \u03bb and \u{1f680}.\r\nExact body.',
+        anchor: SessionFeedbackAnchor(
+          environmentId: environmentId,
+          relativePath: 'baseline.txt',
+          layer: SessionFeedbackComparisonLayer.values[index],
+          side: index == 1
+              ? SessionFeedbackComparisonSide.oldSide
+              : SessionFeedbackComparisonSide.newSide,
+          startLine: 1,
+          endLine: index == 2 ? 3 : 1,
+          comparisonIdentity: 'captured-comparison-$index',
+          sourceExcerpt: index == 0
+              ? 'captured\r\nsource\r\n'
+              : 'captured \u03bb without newline',
+          hunkIndex: index,
+          lineIndex: 0,
+        ),
+      ),
+  ],
+);
+
+/// Drops only the first successful submission transaction acknowledgement,
+/// after the real generation-scoped host dispatcher has committed SQLite.
+final class _LostFeedbackAcknowledgement implements AdeleBackendDispatcher {
+  _LostFeedbackAcknowledgement(this.delegate);
+  final AdeleBackendDispatcher delegate;
+  int commits = 0;
+
+  Map<String, Object?> _response(
+    Map<Object?, Object?> request,
+    Map<String, Object?> response,
+  ) {
+    if (response['ok'] == true &&
+        request['method'] == projectStorageServiceTransactionForSessionId &&
+        jsonEncode(request).contains('adele_chat_feedback_submissions')) {
+      commits++;
+      if (commits == 1) {
+        return {
+          ...response,
+          'ok': false,
+          'error': {
+            'code': 'acknowledgement_lost',
+            'message': 'Injected lost acknowledgement.',
+          },
+        };
+      }
+    }
+    return response;
+  }
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async =>
+      _response(request, await delegate.dispatch(request));
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?>) send,
+  ) => delegate.handle(command, (event) => send(_response(command, event)));
+
+  @override
+  Future<void> close() => delegate.close();
 }
 
 final class _NoAllocationIds implements ProductIdSource {

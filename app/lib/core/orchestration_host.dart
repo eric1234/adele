@@ -40,31 +40,48 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
     toolCatalog: toolCatalog,
     policy: policy,
   ).._executionEnabled = false;
-  final OrchestrationExecution execution = await binding.materialize(
-    OrchestrationStrategyHostContext(session: session, host: host),
-  );
+  final releaseSessionExecution = lifecycle.retainSessionExecution(session);
   try {
-    lifecycle.validateResolvedStrategy(session.strategyId, binding);
-  } on Object {
+    final OrchestrationExecution execution = await binding.materialize(
+      OrchestrationStrategyHostContext(session: session, host: host),
+    );
     try {
-      await execution.close();
+      lifecycle.validateResolvedStrategy(session.strategyId, binding);
     } on Object {
-      // Preserve canonical ownership failure over cleanup failure.
+      try {
+        await execution.close();
+      } on Object {
+        // Preserve canonical ownership failure over cleanup failure.
+      }
+      rethrow;
     }
+    return SessionOrchestrationRun._(
+      host,
+      execution,
+      lifecycle,
+      releaseSessionExecution,
+    );
+  } on Object {
+    releaseSessionExecution();
     rethrow;
   }
-  return SessionOrchestrationRun._(host, execution, lifecycle);
 }
 
 /// Application inspection surface; none of these kernel objects reach plugins.
 /// Owns execution release on terminal settlement or explicit close. Automatic
 /// release preserves Run results; explicit close reports any cleanup failure.
 final class SessionOrchestrationRun implements OrchestrationExecution {
-  SessionOrchestrationRun._(this._host, this._execution, this._lifecycle);
+  SessionOrchestrationRun._(
+    this._host,
+    this._execution,
+    this._lifecycle,
+    this._releaseSessionExecution,
+  );
 
   final KernelOrchestrationHost _host;
   OrchestrationExecution? _execution;
   final ProductLifecycleCoordinator _lifecycle;
+  final void Function() _releaseSessionExecution;
   bool _busy = false;
   bool _closed = false;
   bool _terminalRecordAttempted = false;
@@ -208,6 +225,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
         } finally {
           // Retained evidence may outlive settlement, not the backend execution.
           _execution = null;
+          _releaseSessionExecution();
         }
       }
     });

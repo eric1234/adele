@@ -27,6 +27,7 @@ final class ChatTestStorage implements ProjectStorageService {
   Object? failure;
   Future<void> Function()? beforeDurability;
   Future<void> Function()? beforeTransaction;
+  Future<void> Function()? afterCommit;
 
   void _check(String sessionId) {
     if (failure case final error?) throw error;
@@ -119,6 +120,8 @@ final class ChatTestStorage implements ProjectStorageService {
       database.execute('ROLLBACK');
       rethrow;
     }
+    // Deliberately outside the rollback handler: the write is already durable.
+    await afterCommit?.call();
   }
 
   void close() => database.close();

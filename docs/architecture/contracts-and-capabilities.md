@@ -269,6 +269,18 @@ management are not established by these live routes. See
 [profiles and configuration](profiles-and-configuration.md), and
 [`capabilities`](../../packages/capabilities/README.md).
 
+### Strategy-compatible Session input
+
+The existing orchestration strategy exposure can explicitly opt into the supported
+generated Session-feedback service. Compatibility belongs to that exact strategy
+registration and its route, not to arbitrary service presence or plugin identity.
+The adapter retains its configuration context and backend generation and validates
+them through admission and settlement. The requesting consumer receives only a
+Session-bound semantic target, never an arbitrary backend channel or authority
+token. Feedback uses generation-scoped storage, not an execution host invocation.
+See [Session feedback acceptance](execution-model.md#session-feedback-acceptance)
+for identity, receipts, uncertainty and the separation from Run scheduling.
+
 ### Remote Commands
 
 Context-free backend Commands reuse `AdeleExtensionExposure` in backend readiness,
