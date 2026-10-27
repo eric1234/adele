@@ -321,11 +321,38 @@ multi-file transactions, conditional create/delete and cross-process coordinatio
 `app/test/prepared_settings_test.dart` loads the real Source declaration with
 temporary configuration roots and checks native persistence/provenance, explicit
 invalid overrides, unknown/comment preservation, stale-save conflicts, exact-owner
-access, and frontend failure isolation. The Source frontend target exercises the
-compiled Source operation and rendered CodeForge folding option with retained
-controller/text/undo and document identity. These tests never write user roots.
+access and installation projection, and frontend failure isolation. The Source
+frontend target exercises the compiled Source operation and rendered CodeForge
+folding option with retained controller/text/undo and document identity. These
+tests never write user roots.
 Configuration is a startup snapshot, not a live update test: edit the file and
 restart for new values; existing native owners are not reconstructed.
+
+For backend settings delivery, use the maintained `adele_plugin_backend_support`,
+`plugin_runtime`, and `plugin_backend_host` targets for immutable scalar reads,
+pre-start copying/validation, and actual shared-host AOT delivery. Application
+ownership and failure isolation belong to `app/test/prepared_settings_test.dart`
+and `app/test/core/application_plugin_bootstrap_test.dart`. Check that foreign
+installations cannot acquire another owner's values, invalid known overrides do
+not silently default, settings-free components survive unrelated failures, and
+missing required consumed values fail explicitly. Schema discovery failure remains
+distinct from executable failure.
+
+Chat's declaration and bounded execution belong to `chat_strategy_contract` and
+`chat_strategy_backend`; real prepared application composition and durable reopen
+belong to `app/test/core/durable_chat_session_integration_test.dart`. Validate
+declared defaults and nondefault budgets across startup and new Runs, retained
+Run limits through continuations/approval waits, and the absence of budgets from
+Session snapshots and SQL. Native `ChatStrategyPlugin` and
+`ChatRemoteOrchestrationBackend` fixtures require an explicit positive
+`maxModelInvocations`; direct AOT fixtures inject it through
+`PluginBackendHost.startPlugin(settings: ...)`, never `configureSession`.
+Prepared-catalog fixtures should publish the authoritative Chat schema through
+the maintained stock helper and inject `PreparedSettingsSnapshot.resolve` or
+temporary configuration roots. Do not let tests inherit real user overrides or
+reproduce the schema default as an implicit fixture fallback. Developer topology
+tests likewise supply their explicit budget at backend start and check report
+provenance against the actual topology; see [self-hosting](self-hosting.md#execution-topology).
 
 `app/test/core/global_settings_service_test.dart` exercises the retained I/O worker
 with actual native persistence, temporary roots, separate owner baselines, serialized

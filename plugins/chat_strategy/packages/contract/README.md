@@ -5,8 +5,11 @@ backend and frontend. The production ADELE application does not import it.
 
 It owns the plugin/strategy identities, `ChatEntryId` occurrence identity,
 immutable canonical `ChatEntry` and `ChatSessionSnapshot` values, and
-`ChatSessionService`. `ChatSessionSnapshot` contains `entries`, `instructions`,
-`maxModelInvocations`, and the required `String draftRequest`. The current Draft
+`ChatSessionService`. It also exports the String `chatMaxModelInvocationsSettingId`
+for explicit backend setting injection; its declaration belongs to the plugin's
+[`settings.schema.json`](../../settings.schema.json), not Session state.
+`ChatSessionSnapshot` contains `entries`, `instructions`,
+and the required `String draftRequest`. The current Draft
 Request representation is exact plain text, not a rich document model.
 
 `ChatEntry` requires `id`, `role`, `content`, and nullable `String? runId`. The
@@ -18,7 +21,8 @@ the [backend map](../backend/README.md); frontend lookup uses the generic public
 Session execution bridge rather than a Chat history/evidence service.
 
 The service supports snapshot, direct `appendUserMessage`, atomic
-instruction/invocation-budget configuration, and two distinct draft operations:
+instruction replacement through `configureSession(sessionId, instructions)`, and
+two distinct draft operations:
 
 - `setDraftRequest(sessionId, content)` replaces the draft exactly; empty and
   whitespace-only strings are valid intermediate editing states.

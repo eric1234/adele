@@ -5,12 +5,13 @@ Role: Canonical architecture
 Implementation status: Declarative ordinary scalar settings, immutable catalogs,
 default/global resolution, conditional global TOML persistence, and prepared-plugin
 declaration discovery are implemented, with an application-owned Global Settings
-dialog. Desktop Main Content frontends read owner-scoped startup values; Source
-Editor folding is the first scalar consumer. Declarative configuration records
+dialog. Desktop Main Content frontends and AOT backends receive owner-scoped values
+from one shared startup snapshot; Source Editor folding and Chat's per-Run model
+invocation limit consume scalar settings. Declarative configuration records
 share scalar validation and conditional persistence and are browsable and manageable
 in Global Settings; the OpenAI plugin declares the first nonsecret provider record.
-Creation, editing, and confirmed deletion are implemented; runtime consumption,
-authentication, and Profiles remain unimplemented.
+Record creation, editing, and confirmed deletion are implemented; runtime record
+consumption, authentication, and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -122,19 +123,28 @@ record model is supplied by this scalar contract.
 Prepared installations can supply optional, data-only JSON declarations before
 executable components start. The installation's `PluginId` supplies declaration
 ownership; schema contents cannot select an owner. The catalog reuses the scalar
-contract rather than establishing another validation engine. Schema failure is
-isolated from backend/frontend availability, and cross-installation setting-ID
+contract rather than establishing another validation engine. Schema discovery
+diagnoses failures independently of executable components; a consumer that requires
+an undeclared setting still fails explicitly. Cross-installation setting-ID
 collisions fail catalog aggregation explicitly. See [plugin layout](plugin-layout.md#prepared-installation-snapshot)
 and the [runtime schema owner](../../packages/plugin_runtime/README.md#prepared-catalog).
 
-The desktop captures default/global resolution once at frontend startup, with
-synchronous store/document operations in its shared host I/O worker. Prepared
-Main Content receives read-only scalar access bound to its exact owning installation
-and validated declarations, including finite operations before panes are published.
-Invalid known values fail the owning frontend, not a silent default or a backend
-startup dependency. No Profile filtering, live notification, mutation API, or
-backend settings delivery is implied. The [application boundary](../../app/README.md#prepared-settings)
-owns startup and failure details.
+The desktop captures default/global resolution once for independently activated
+frontends and backends, with synchronous store/document operations in its shared
+host I/O worker. Access is bound to the exact owning prepared installation and its
+validated declarations, not a namespace-prefix match. Prepared Main Content uses
+read-only scalar access, including finite operations before panes are published.
+Backend startup receives a copied immutable map of only its installation's resolved
+values through public backend support, not a settings service or persistence API.
+
+Invalid known values fail each owning component's activation, never silently
+defaulting or disabling unrelated healthy components. Whole-file load and catalog
+aggregation failures affect components with declarations; settings-free components
+remain usable. Malformed schemas remain independent discovery issues, but a backend
+consuming a missing required value fails before readiness. No Profile filtering,
+cross-plugin settings access, live notification, or plugin mutation API is supplied.
+The [application boundary](../../app/README.md#prepared-settings)
+owns startup projection and failure details.
 
 ## Declarative Configuration Records
 
@@ -313,9 +323,9 @@ Reset removes a supported scalar override instead of writing a default. The dial
 loads current disk contents when opened; Reload deliberately replaces the editing
 snapshot and discards drafts. These snapshots are separate from startup consumer
 values. Opening or dismissing Settings does not navigate a Session or reconstruct
-its workbench. Saved changes require restarting ADELE, including for Source editors
-opened later in the same application; no live notification or reconfiguration is
-implemented.
+its workbench. Saved changes require restarting ADELE, including for later Chat
+Runs and Source editors opened in the same application; no live notification or
+reconfiguration is implemented.
 
 Malformed TOML and I/O failures prevent editing, rather than becoming an empty
 document. Invalid known overrides have no displayed effective value and can be
@@ -498,8 +508,9 @@ hosts/tests; it is not an additional application writer.
 The implemented [per-Project SQLite store](product-model.md#project-storage)
 persists the core product graph through Sessions and their semantic Environment
 associations. Plugins can retain Session-associated relational state through
-`adele_project_storage`; Chat's history, instructions, invocation budget, and
-entry counter are domain state, not a settings cascade. This is not the general
+`adele_project_storage`; Chat's history, instructions, Draft Request, and entry
+counter are domain state, not a settings cascade. Its model invocation limit is
+ordinary global configuration, not Session state. This is not the general
 configuration store, a remembered Profile stack, configured-provider/credential
 store, or workbench persistence. Owner-keyed SQL migrations do not establish a
 setting migration API or change the human-readable configuration boundary.
@@ -531,6 +542,26 @@ Stability does not keep retired executable bindings alive or authorize silent
 replacement. The [execution model](execution-model.md#generation-bound-execution)
 owns executable snapshot and binding lifetimes; inference/context composition is
 not another settings cascade.
+
+### Chat invocation budget
+
+Chat declares `dev.adele.plugin.chat-strategy.max-model-invocations` in its
+authoritative [`settings.schema.json`](../../plugins/chat_strategy/settings.schema.json).
+It is an integer setting with default `40`, minimum `1`, and no declared maximum
+beyond the scalar type's range, presented under **Agents / Execution**. Only the
+declared default and optional global override participate; there is no Session or
+Run override layer.
+
+The Chat backend requires the resolved startup value and captures it when
+materializing each Run. Continuations and approval resume retain that capture.
+Changing global Settings neither mutates active Runs nor changes later Runs on the
+same application startup snapshot; restarting ADELE applies saved values. The
+limit is absent from Chat Session state, public snapshots, and relational storage;
+`configureSession` changes instructions only. Native fixtures supply an explicit
+positive constructor value, and standalone AOT hosts inject a value at backend
+startup rather than changing a Session. The [execution model](execution-model.md#strategy-sequencing-and-host-mechanics)
+owns sequencing and exhaustion semantics; [self-hosting](../development/self-hosting.md#execution-topology)
+owns the developer runner's explicit budget path.
 
 ## Workbench and window state
 
@@ -590,10 +621,11 @@ Implemented foundations and current limits:
   plugin activation or Flutter. Only default/global resolution is implemented.
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Prepared installation schemas expose scalar declarations independently of code
-  startup. Owner-scoped desktop Main Content reads use a startup snapshot; Source
-  Editor applies folding availability at native editor construction. Settings-file
-  changes require an application restart, and retained documents are not recreated
-  or live-updated to change folding.
+  startup. Owner-scoped desktop Main Content reads and backend bootstrap values
+  share one startup snapshot. Source Editor applies folding at native construction;
+  Chat captures its backend-configured invocation limit per Run. Settings-file
+  changes require an application restart, not mutation of retained documents or
+  execution state.
 - The host-owned Global Settings dialog edits those declarations through the shared
   asynchronous configuration owner, with current persisted provenance, per-setting
   save/reset, explicit reload, and non-destructive error/conflict handling.

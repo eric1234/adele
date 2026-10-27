@@ -7,7 +7,8 @@ import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 
 /// Canonical lifecycle for execution fixtures that do not access an Environment.
 final class ChatTestTopology {
-  ChatTestTopology(SessionId sessionId) {
+  ChatTestTopology(SessionId sessionId, {required int maxModelInvocations})
+    : chat = ChatStrategyPlugin(maxModelInvocations: maxModelInvocations) {
     final ExtensionRegistry extensions = ExtensionRegistry();
     contextComposer = InferenceContextComposer(extensions);
     _activation = chat.activate(extensions);
@@ -42,7 +43,7 @@ final class ChatTestTopology {
     );
   }
 
-  final ChatStrategyPlugin chat = ChatStrategyPlugin();
+  final ChatStrategyPlugin chat;
   late final ChatSessionBackend chatSession = ChatSessionBackend(chat.sessions);
   ResolvedOrchestrationStrategy get resolvedStrategy =>
       lifecycle.resolveSessionStrategy(session.id);

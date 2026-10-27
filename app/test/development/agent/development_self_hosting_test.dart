@@ -211,12 +211,28 @@ void main() {
             },
           );
       DevelopmentSelfHostingRetainedState? retainedState;
+      for (final invalidBudget in [0, -1]) {
+        await expectLater(
+          DevelopmentSelfHostingTopology.start(
+            artifacts: artifacts,
+            projectSource: git.project,
+            hostEnvironment: configuration.hostEnvironment,
+            identity: 'invalid-budget',
+            taskTitle: 'Reject invalid topology budget',
+            maxModelInvocations: invalidBudget,
+            onTaskEstablished: (_) =>
+                fail('Invalid budget must not create a Task.'),
+          ),
+          throwsArgumentError,
+        );
+      }
       final topology = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,
         projectSource: git.project,
         hostEnvironment: configuration.hostEnvironment,
         identity: 'remote-context',
         taskTitle: 'Explicit backend composition',
+        maxModelInvocations: 1,
         onTaskEstablished: (state) => retainedState = state,
       );
       addTearDown(topology.close);
@@ -407,7 +423,6 @@ void main() {
           requests,
         ),
         catalog: topology.catalog,
-        maxModelInvocations: 1,
       );
       expect(result.succeeded, isTrue);
       expect(result.sessionSnapshot.entries.map((entry) => entry.role), [
@@ -415,7 +430,7 @@ void main() {
         'assistant',
       ]);
       expect(result.sessionSnapshot.instructions, 'Respond.');
-      expect(result.sessionSnapshot.maxModelInvocations, 1);
+      expect(topology.maxModelInvocations, 1);
       expect(requests.single.context.sourceResults.single.sourceId, source.id);
       expect(requests.single.instructions, contains(guidance));
       expect(requests.single.instructions, isNot(contains('Project guidance')));
@@ -488,7 +503,6 @@ void main() {
           requests,
         ),
         catalog: withoutCommand,
-        maxModelInvocations: 2,
       );
       expect(followUp.succeeded, isTrue);
       expect(outbound, hasLength(2));
@@ -523,7 +537,6 @@ void main() {
         instructions: 'Use a tool.',
         model: _AlwaysProposalModel(),
         catalog: withoutCommand,
-        maxModelInvocations: 1,
       );
       expect(limited.exitCode, 1);
       expect(limited.run.failure, isA<RemoteStrategyFailure>());
@@ -555,6 +568,7 @@ void main() {
       final replacementConnection = await topology.host.startPlugin(
         pluginId: chatStrategyPluginId.value,
         artifactUri: artifacts.chatStrategyArtifact.uri,
+        settings: {chatMaxModelInvocationsSettingId: 1},
         createInfrastructureServices: (connection) =>
             projectStorageServices(topology.lifecycle, connection),
       );
@@ -590,7 +604,6 @@ void main() {
           instructions: 'Must not configure the replacement.',
           model: const _FinalModel(),
           catalog: withoutCommand,
-          maxModelInvocations: 1,
         ),
         throwsA(isA<StaleExtensionBinding>()),
       );
@@ -620,6 +633,7 @@ void main() {
         hostEnvironment: const {},
         identity: 'remote-reduced',
         taskTitle: 'Search without Command Tools',
+        maxModelInvocations: 8,
         includeCommandTools: false,
       );
       addTearDown(reduced.close);
@@ -672,6 +686,7 @@ void main() {
           hostEnvironment: const {},
           identity: 'missing-command',
           taskTitle: 'Missing Command must fail without fallback',
+          maxModelInvocations: 8,
           onTaskEstablished: (_) =>
               fail('Must fail before establishing a Task.'),
         ),
@@ -685,6 +700,7 @@ void main() {
           hostEnvironment: const {},
           identity: 'missing-chat',
           taskTitle: 'Missing Chat must fail without fallback',
+          maxModelInvocations: 8,
           includeCommandTools: false,
           onTaskEstablished: (_) => fail('Chat must start before the Task.'),
         ),
@@ -1028,6 +1044,7 @@ void main() {
   test('successive Runs retain Chat state for the canonical Session', () async {
     final ChatTestTopology topology = ChatTestTopology(
       SessionId('session-retained'),
+      maxModelInvocations: 1,
     );
     addTearDown(topology.close);
     final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
@@ -1044,7 +1061,6 @@ void main() {
           instructions: 'First instructions.',
           model: model,
           catalog: ToolCatalog(),
-          maxModelInvocations: 1,
         );
     final ChatSessionSnapshot firstSnapshot = first.sessionSnapshot;
     final DevelopmentSelfHostingRunResult second =
@@ -1059,7 +1075,6 @@ void main() {
           instructions: 'Second instructions.',
           model: model,
           catalog: ToolCatalog(),
-          maxModelInvocations: 2,
         );
 
     expect(first.run.state, RunState.completed);
@@ -1081,7 +1096,7 @@ void main() {
       ),
       <String>['First request.', 'Complete.', 'Second request.'],
     );
-    expect(second.sessionSnapshot.maxModelInvocations, 2);
+    expect(second.sessionSnapshot.instructions, 'Second instructions.');
     expect(
       topology.lifecycle.store.session(topology.session.id),
       same(topology.session),
@@ -1094,6 +1109,7 @@ void main() {
     () async {
       final ChatTestTopology topology = ChatTestTopology(
         SessionId('session-run-responses'),
+        maxModelInvocations: 1,
       );
       addTearDown(topology.close);
       Future<DevelopmentSelfHostingRunResult> execute(
@@ -1110,7 +1126,6 @@ void main() {
         instructions: 'Respond.',
         model: model,
         catalog: _catalog(<String>['read_file']),
-        maxModelInvocations: 1,
       );
       Map<String, Object?> summary(DevelopmentSelfHostingRunResult result) =>
           developmentSelfHostingSummaryJson(
@@ -2437,7 +2452,10 @@ Future<DevelopmentSelfHostingRunResult> _executeRun({
   required ToolCatalog catalog,
   required int maxModelInvocations,
 }) {
-  final ChatTestTopology topology = ChatTestTopology(sessionId);
+  final ChatTestTopology topology = ChatTestTopology(
+    sessionId,
+    maxModelInvocations: maxModelInvocations,
+  );
   addTearDown(topology.close);
   return executeDevelopmentSelfHostingRun(
     identity: identity,
@@ -2450,7 +2468,6 @@ Future<DevelopmentSelfHostingRunResult> _executeRun({
     instructions: instructions,
     model: model,
     catalog: catalog,
-    maxModelInvocations: maxModelInvocations,
   );
 }
 

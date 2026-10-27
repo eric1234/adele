@@ -63,7 +63,9 @@ final class DevelopmentSelfHostingEvidenceContext {
   final String providerId;
   final String configuredContext;
   final String? selectedModel;
-  final int maxModelInvocations;
+
+  /// The configured topology budget, absent when startup did not complete.
+  final int? maxModelInvocations;
   final String? promptFileHash;
   final String? instructionsFileHash;
   final DateTime startedAt;

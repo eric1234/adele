@@ -75,6 +75,118 @@ void main() {
   };
 
   test(
+    'AOT settings are isolated snapshots for exact backend generations',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final source = <String, Object>{
+        'count': 9007199254740993,
+        'enabled': true,
+        'label': 'generation A',
+      };
+      final starting = host.startPlugin(
+        pluginId: 'settings-owner',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['settings'],
+        settings: source,
+      );
+      source
+        ..['count'] = 23
+        ..['enabled'] = false
+        ..['label'] = 'generation B';
+      final first = await starting;
+      final peer = await host.startPlugin(
+        pluginId: 'settings-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['settings'],
+        settings: {'count': -7, 'peerOnly': 'private'},
+      );
+      final unrelated = await host.startPlugin(
+        pluginId: 'settings-unrelated',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      expect(await first.request('settings', {}), {
+        'count': 9007199254740993,
+        'enabled': true,
+        'label': 'generation A',
+      });
+      expect(await peer.request('settings', {}), {
+        'count': -7,
+        'peerOnly': 'private',
+      });
+      expect(await unrelated.request('settings', {}), isEmpty);
+      expect(await unrelated.request('ping', {}), {'alive': true});
+      await first.close();
+      final replacement = await host.startPlugin(
+        pluginId: 'settings-owner',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['settings'],
+        settings: source,
+      );
+      source.clear();
+      expect(await replacement.request('settings', {}), {
+        'count': 23,
+        'enabled': false,
+        'label': 'generation B',
+      });
+      await expectLater(
+        first.request('settings', {}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      await first.close();
+      expect(await peer.request('settings', {}), {
+        'count': -7,
+        'peerOnly': 'private',
+      });
+      expect((await replacement.request('settings', {}) as Map)['count'], 23);
+    },
+  );
+
+  test(
+    'AOT settings read failures isolate startup and allow a corrected retry',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final peer = await host.startPlugin(
+        pluginId: 'settings-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['settings'],
+        settings: {'count': 31},
+      );
+      for (final settings in <Map<String, Object>>[
+        {},
+        {'count': 'wrong type'},
+      ]) {
+        await expectLater(
+          host.startPlugin(
+            pluginId: 'settings-invalid',
+            artifactUri: pluginArtifact.uri,
+            arguments: ['settings'],
+            settings: settings,
+          ),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (error) => error.code,
+              'code',
+              'host_command_failed',
+            ),
+          ),
+        );
+        expect(host.isClosed, isFalse);
+        expect(await peer.request('settings', {}), {'count': 31});
+      }
+      final corrected = await host.startPlugin(
+        pluginId: 'settings-invalid',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['settings'],
+        settings: {'count': 42},
+      );
+      expect(await corrected.request('settings', {}), {'count': 42});
+    },
+  );
+
+  test(
     'nested reverse streams preserve order, credit, allowlists and failures',
     () async {
       final host = await _startHost(dartaotruntime, hostArtifact);
@@ -203,6 +315,7 @@ void main() {
           'kind': 'startPlugin',
           'requestId': 1,
           'pluginId': 'missing-token',
+          'settings': <String, Object>{},
           'generation': 'generation',
           'defaultConfigurationContext': 'default',
           'artifactUri': pluginKernel.uri.toString(),
@@ -249,6 +362,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'contextual',
+        'settings': <String, Object>{},
         'generation': 'generation',
         'hostInfrastructureContext': 'infrastructure',
         'defaultConfigurationContext': 'default',
@@ -1223,6 +1337,7 @@ void main() {
           'kind': 'startPlugin',
           'requestId': 1,
           'pluginId': 'captured',
+          'settings': <String, Object>{},
           'generation': generation,
           'hostInfrastructureContext': 'infrastructure-$generation',
           'defaultConfigurationContext': 'default',
@@ -1533,6 +1648,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-startup-mode',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -1649,6 +1765,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'send-failure',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2429,6 +2546,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-credit',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2519,6 +2637,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'double-send-failure',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2530,6 +2649,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 2,
         'pluginId': 'healthy-peer',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-peer-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2647,6 +2767,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 30,
       'pluginId': 'cancel-forwarding',
+      'settings': <String, Object>{},
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
@@ -2714,6 +2835,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 40,
         'pluginId': 'ingress-cancel',
+        'settings': <String, Object>{},
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2791,6 +2913,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 50,
       'pluginId': 'pre-admission-cancel',
+      'settings': <String, Object>{},
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
@@ -2892,6 +3015,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 60,
       'pluginId': 'discard-cancel',
+      'settings': <String, Object>{},
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',

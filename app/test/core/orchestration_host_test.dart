@@ -599,7 +599,9 @@ void main() {
     'opaque snapshots reject cross-run, forged, wrong-turn and duplicate proposals',
     () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       addTearDown(chat.activate(extensions).close);
       final OrchestrationTestLifecycle topology =
           await OrchestrationTestLifecycle.create(
@@ -812,7 +814,9 @@ void main() {
         value: _RetiringContribution(executable),
       );
       final SessionId sessionId = SessionId('session-in-flight-retirement');
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       addTearDown(chat.activate(extensions).close);
       final OrchestrationTestLifecycle topology =
           await OrchestrationTestLifecycle.create(extensions, sessionId);
@@ -2298,7 +2302,9 @@ void main() {
     'canonical Session stored strategy selects the contribution without fallback',
     () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       addTearDown(chat.activate(extensions).close);
       final OrchestrationStrategyId selectedId = OrchestrationStrategyId(
         'dev.adele.strategy.selected',
@@ -2537,7 +2543,9 @@ void main() {
       'canonical Run rejects ${ambiguous ? 'ambiguous' : 'unavailable'} stored strategy without fallback',
       () async {
         final ExtensionRegistry extensions = ExtensionRegistry();
-        final ChatStrategyPlugin chat = ChatStrategyPlugin();
+        final ChatStrategyPlugin chat = ChatStrategyPlugin(
+          maxModelInvocations: 8,
+        );
         addTearDown(chat.activate(extensions).close);
         final OrchestrationStrategyId selectedId = OrchestrationStrategyId(
           'dev.adele.strategy.selected',
@@ -2642,7 +2650,10 @@ void main() {
     () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ChatSessionStore sessions = ChatSessionStore();
-      final ChatStrategyPlugin chatA = ChatStrategyPlugin(sessions: sessions);
+      final ChatStrategyPlugin chatA = ChatStrategyPlugin(
+        sessions: sessions,
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration generationA = chatA.activate(extensions);
       addTearDown(generationA.close);
       final OrchestrationTestLifecycle topology =
@@ -2690,7 +2701,10 @@ void main() {
       );
 
       await generationA.close();
-      final ChatStrategyPlugin chatB = ChatStrategyPlugin(sessions: sessions);
+      final ChatStrategyPlugin chatB = ChatStrategyPlugin(
+        sessions: sessions,
+        maxModelInvocations: 8,
+      );
       // Observe the real plugin materializer, without substituting its execution.
       final ExtensionRegistry activationRegistryB = ExtensionRegistry();
       addTearDown(chatB.activate(activationRegistryB).close);
@@ -2799,7 +2813,9 @@ void main() {
       'Chat retirement during in-flight ${duringModel ? 'model' : 'tool'} work fails at the next host boundary',
       () async {
         final ExtensionRegistry extensions = ExtensionRegistry();
-        final ChatStrategyPlugin chat = ChatStrategyPlugin();
+        final ChatStrategyPlugin chat = ChatStrategyPlugin(
+          maxModelInvocations: 8,
+        );
         final ExtensionRegistration generation = chat.activate(extensions);
         addTearDown(generation.close);
         final OrchestrationTestLifecycle topology =
@@ -3230,7 +3246,9 @@ final class _BatchFixture {
       failure: modelFailure,
     );
     final ExtensionRegistry extensions = ExtensionRegistry();
-    final ChatStrategyPlugin chat = ChatStrategyPlugin();
+    final ChatStrategyPlugin chat = ChatStrategyPlugin(
+      maxModelInvocations: maxModelInvocations,
+    );
     addTearDown(chat.activate(extensions).close);
     final OrchestrationTestLifecycle topology =
         await OrchestrationTestLifecycle.create(
@@ -3239,7 +3257,6 @@ final class _BatchFixture {
         );
     final Session productSession = topology.createSession(chatStrategyId);
     final ChatSessionState session = chat.sessions.obtain(productSession.id)
-      ..maxModelInvocations = maxModelInvocations
       ..appendUserMessage('Perform steps.');
     final SessionOrchestrationRun strategy =
         await createSessionOrchestrationRun(
@@ -3445,7 +3462,9 @@ Future<_StrategyFixture> _fixture(
   List<ToolProgress> progress = const <ToolProgress>[],
 }) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
-  final ChatStrategyPlugin chat = ChatStrategyPlugin();
+  final ChatStrategyPlugin chat = ChatStrategyPlugin(
+    maxModelInvocations: maxModelInvocations,
+  );
   final ExtensionRegistration strategyRegistration = chat.activate(extensions);
   addTearDown(strategyRegistration.close);
   final OrchestrationTestLifecycle topology =
@@ -3456,7 +3475,6 @@ Future<_StrategyFixture> _fixture(
   final Session session = topology.createSession(chatStrategyId);
   final ChatSessionState history = chat.sessions.obtain(session.id)
     ..instructions = instructions
-    ..maxModelInvocations = maxModelInvocations
     ..appendUserMessage('Inspect.');
   final _Model model = _Model(
     alias: modelAlias,

@@ -832,8 +832,9 @@ Future<_Fixture> _fixture() async {
   );
   addTearDown(registration.close);
   final ExtensionRegistry extensions = ExtensionRegistry();
-  final ExtensionRegistration strategyActivation = ChatStrategyPlugin()
-      .activate(extensions);
+  final ExtensionRegistration strategyActivation = ChatStrategyPlugin(
+    maxModelInvocations: 8,
+  ).activate(extensions);
   addTearDown(strategyActivation.close);
   final InMemoryProductStore store = InMemoryProductStore();
   final ProductLifecycleCoordinator lifecycle = ProductLifecycleCoordinator(

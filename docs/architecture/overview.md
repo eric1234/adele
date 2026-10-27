@@ -159,8 +159,10 @@ state nor grant execution or approval authority.
 
 ## Configuration and persistence
 
-Profiles and general configuration are accepted architecture but largely
-unimplemented. Project identity/source, Tasks, Environment records/provider-state
+Global declarative scalar settings and configuration records are implemented;
+Profiles remain accepted architecture ahead of implementation. Installed backends
+and frontends consume their own immutable startup settings, independently of
+component availability. Project identity/source, Tasks, Environment records/provider-state
 snapshots, Sessions, their semantic Environment associations, terminal Run records,
 and terminal public activity use host-owned per-Project SQLite with provider-selected
 backing. Product and execution have separate schema owners and restore paths.

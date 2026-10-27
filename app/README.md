@@ -18,6 +18,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | --- | --- |
 | Construction of the shared `AdeleRuntime` and its registries/store/coordinators | Generic Extension Point semantics: [plugin system](../docs/architecture/plugin-system.md), [plugin API](../packages/plugin_api/README.md). |
 | Normal prepared backend bootstrap and window-owned frontend activation | Source preparation/build semantics: [plugin layout](../docs/architecture/plugin-layout.md), [plugin builder](../packages/plugin_builder/README.md); backend hosting: [plugin runtime](../packages/plugin_runtime/README.md). |
+| Shared startup settings projection and Global Settings I/O/UI | Scalar/record semantics: [settings](../packages/settings/README.md); configuration ownership and apply boundaries: [profiles and configuration](../docs/architecture/profiles-and-configuration.md). |
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git](../plugins/git/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
@@ -94,9 +95,10 @@ backend connection without importing stock plugins.
 
 Normal startup consumes prepared artifacts, never plugin source. Backend and
 frontend availability are independent, but both owners consume the same catalog
-snapshot. Missing plugin functionality remains unavailable without app-native
-stock substitutes. Backend registrations enter the same generic registries used
-by lifecycle and execution composition; installation presence alone grants none.
+and resolved settings snapshots. Missing plugin functionality remains unavailable
+without app-native stock substitutes. Backend registrations enter the same generic
+registries used by lifecycle and execution composition; installation presence alone
+grants none.
 
 ### Normal backend startup
 
@@ -109,6 +111,9 @@ settle without a child process, including with frontend-only installations.
 The bootstrap accepts generic deployment locations and an optional PluginId-to-argv
 file. It forwards opaque arguments with `startupArgumentsOnly: true`; neither the
 bootstrap nor shared host interprets provider credentials or stock configuration.
+Separately, it projects declared scalar values from the shared
+[startup settings snapshot](#prepared-settings) and passes them to each
+`startPlugin(settings: ...)` call before that backend advertises readiness.
 Ready advertisements are adapted by `PluginBackendActivation.registerAdvertised`
 and `createRemoteExtensionAdapters` into existing registries, not an app-specific
 stock activation table.
@@ -231,36 +236,50 @@ concrete frontend behavior belongs to each plugin.
 
 ### Prepared settings
 
-[`PreparedSettingsSnapshot`](lib/frontend/prepared_settings.dart) assembles the
+[`PreparedSettingsSnapshot`](lib/core/prepared_settings.dart) assembles the
 catalog's validated declarations and resolves them through `GlobalSettingsStore`
-once before frontend activation. Normal application startup uses
+for both independently activated frontends and backends.
+`ApplicationPluginBootstrap.settingsForCatalog` memoizes the resolution for the
+exact discovered catalog. `AdeleApplication` configures its loader before startup
+and gives the same accessor to `ApplicationFrontendBootstrap`; frontend activation
+does not depend on backend readiness. Normal application startup uses
 [`GlobalSettingsService`](lib/core/global_settings_service.dart), the same retained
 I/O owner as the Settings dialog, with roots captured at application mount. Only
 immutable scalar results, provenance, and errors return to the UI isolate. No store
 reads occur in widget builds or bridge calls. Startup with no declarations does not
-read configuration. Backend startup does not wait for settings or acquire a
-settings dependency. The standalone read-only loader remains available to isolated
-hosts/tests using a short-lived isolate.
+read configuration. The standalone read-only `load` uses a short-lived isolate;
+`resolve(catalog, globalOverrides: ...)` supports explicit default/override
+resolution for isolated hosts and fixtures without reading user configuration.
 
 The host binds `readPluginSetting` in the public contribution bridge to the exact
 prepared installation and its validated declarations, not a caller-supplied owner
 or a namespace-prefix guess. Main Content initialization, input/pane presentations,
 and fresh finite operations receive the same startup values with their existing
-liveness checks. Other presentation roles and backend AOT settings delivery are not
-implemented. The bridge exports no paths, TOML, mutation, credentials, or other
-owners' settings.
+liveness checks. Other presentation roles have no settings bridge. For backends,
+`valuesForInstallation` validates the exact installation and projects only its
+declared values. `PluginBackendHost.startPlugin(settings: ...)` copies the scalar
+map for that generation, and plugin code reads it with public
+`AdeleBackendSettings.fromBootstrap`. The delivery paths export no filesystem
+paths, TOML, mutation, credentials, or other owners' settings. There is no backend
+settings RPC or subscription; declaration/default/override semantics remain in the
+existing Settings resolver rather than the transport.
 
-Invalid known overrides fail the owning frontend activation and retain an
-attributable error in `InstalledFrontendActivation.failure`. Whole-file load or
-catalog aggregation failures remain errors for frontends declaring settings;
-settings-free frontends and independently started backends remain usable. An invalid
-schema is a settings-specific catalog issue, not a reason to disable a valid
-executable component; attempting to read an undeclared setting still fails.
+Invalid known overrides fail each owning component's activation and retain an
+attributable error in `InstalledFrontendActivation.failure` or
+`InstalledBackendActivation.failure`; healthy unrelated components remain usable.
+Whole-file load or catalog aggregation failures remain errors for components
+declaring settings, without disabling settings-free frontends or backends. An
+invalid schema is a settings-specific catalog issue, not an automatic executable
+failure. A backend that consumes a missing required setting still fails explicitly
+before readiness; a frontend read of an undeclared setting also fails.
 Startup never creates or rewrites `settings.toml` or materializes defaults.
 
 Consumer configuration is captured at startup, without watching or live refresh.
 Edit global `settings.toml` manually or through Global Settings and restart ADELE
-to apply changes, including to subsequently opened Source editors.
+to apply changes, including to later Chat Runs and subsequently opened Source
+editors. For Chat, use **Agents / Execution / Maximum Model Invocations per Run**;
+its [declaration and Run boundary](../docs/architecture/profiles-and-configuration.md#chat-invocation-budget)
+are plugin-owned, not Session configuration or an application hardcoded default.
 See [configuration architecture](../docs/architecture/profiles-and-configuration.md)
 for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
 for declaration ownership, bounds, and diagnostics.
@@ -280,7 +299,7 @@ keyboard focus. Declaration metadata supplies categories, sections, labels,
 descriptions, scalar controls, and search terms.
 
 The dialog loads current persisted configuration on each opening, independently
-of the immutable frontend startup snapshot. Effective values and Default/Global
+of the immutable shared startup snapshot. Effective values and Default/Global
 provenance remain visible while drafts are edited. Save is deliberate and per
 setting; Reset removes an override instead of copying its default. Text input
 does not write on each keystroke, enum labels are not serialized, and ordinary
@@ -1499,7 +1518,7 @@ for value limits and security qualifications, and
 ### Normal Chat interaction
 
 With its prepared contributions available, Chat is the current stock Session.
-The Chat backend owns conversation state/history, Draft Request, configuration,
+The Chat backend owns conversation state/history, Draft Request, Session instructions,
 and strategy sequencing; its interpreted frontend owns history/composer
 presentation and activity grouping.
 The app owns generic scheduling, Run hosting, provider/tool/context composition,
@@ -1507,7 +1526,7 @@ execution status, policy, and approvals, not a second Chat implementation. Chat'
 contributed pane places the native status controls through the public bridge;
 the application does not wrap Chat in a privileged strategy surface.
 
-The backend lazily loads initialized durable Chat history/configuration/draft
+The backend lazily loads initialized durable Chat history/instructions/draft
 through the shared storage service; Project opening does not hydrate Chat. The host
 Run can already be completed when plugin history storage fails; the
 [terminal retention rules](../docs/architecture/execution-model.md#terminal-run-retention)
@@ -1515,6 +1534,12 @@ preserve that outcome while surfacing the error. Generation-local
 cache, durable state, and transport-uncertainty boundaries live in
 [plugin persistence](../docs/architecture/plugin-system.md#chat-participation)
 and the [Chat README](../plugins/chat_strategy/README.md).
+
+The invocation limit instead comes from [prepared startup settings](#prepared-settings)
+and is captured by Chat for each Run. Session snapshots and SQL do not retain it;
+`configureSession` updates instructions only. Changing Settings does not alter
+active or later Runs in the same application startup, and does not change host
+policy or approval behavior.
 
 The current Draft Request is plain text. Chat's prepared frontend restores it and
 sequentially saves coalesced edits through its own backend service. Send flushes
@@ -1677,6 +1702,8 @@ headless entrypoints. Runner, topology, and report owners live under
 [`tool/self_hosting/`](tool/self_hosting/), deliberately outside `app/lib` because
 they know concrete plugins. They reuse application/core runtime composition and
 normal remote execution boundaries, not desktop frontend composition.
+The topology injects an explicit invocation budget at Chat backend startup and
+reports that configured value; Session configuration remains instructions-only.
 
 This legacy workflow remains separate from desktop evaluation handoff preparation;
 the desktop Command does not launch it. See
@@ -1709,16 +1736,17 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 Project identity/source, Tasks, Environment semantic records, and provider-state
 snapshots, Sessions, semantic Environment associations, terminal Run records, and
 terminal public activity snapshots are durable; initialized Chat conversation,
-configuration, plain-text Draft Request, and user-entry Run associations are
+instructions, plain-text Draft Request, and user-entry Run associations are
 plugin-owned durable state. Environment materialization remains lazy
 and runtime-only.
 Active/waiting Runs, claims, approval restart, live bindings, and native continuation
 recovery are not persisted. Rich Draft Request documents, conversation forks,
 and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
-active Runs per Session. Automatic selection/resume, general settings,
-Profiles, configured-provider/credential management, and workbench persistence
-remain absent.
+active Runs per Session. Global scalar settings and nonsecret configuration records
+are implemented, with startup-only scalar delivery to frontends and backends.
+Automatic selection/resume, Profiles, configured-provider/credential management,
+and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.
 Intended UX belongs to
@@ -1738,6 +1766,7 @@ repository-wide deferred-feature ledger here.
 | Prepared console and retained terminal content | [`lib/frontend/prepared_console_host.dart`](lib/frontend/prepared_console_host.dart), [`lib/frontend/environment_terminal_bridge.dart`](lib/frontend/environment_terminal_bridge.dart), [`lib/terminal/terminal_console_content.dart`](lib/terminal/terminal_console_content.dart) |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
+| Shared startup settings and configuration I/O | [`lib/core/prepared_settings.dart`](lib/core/prepared_settings.dart): `PreparedSettingsSnapshot`; [`lib/core/global_settings_service.dart`](lib/core/global_settings_service.dart): `GlobalSettingsService` |
 | Backend Capability mediation | [`lib/core/backend_capability_host.dart`](lib/core/backend_capability_host.dart): `BackendCapabilityHost` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Task Browser projection/actions | [`lib/frontend/window_task_browser_source.dart`](lib/frontend/window_task_browser_source.dart), [`lib/frontend/task_browser_bridge.dart`](lib/frontend/task_browser_bridge.dart): `WindowTaskBrowserSource`, `TaskBrowserSource`, `TaskBrowserBridge` |

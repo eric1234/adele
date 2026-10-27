@@ -151,9 +151,10 @@ inputs, and bundles the resulting dynamic library as a Dart code asset. Rust
 source, manifests, and `Cargo.lock` are committed; generated libraries are not.
 Loading never substitutes a Dart parser. CI's `nativeToml` target metadata selects
 the compiler prerequisite independently of `nativeCodeEditor`. The desktop now
-consumes the Settings host at frontend startup, so its tests and frontend targets
-with a development dependency on the desktop require native TOML as well. This
-does not add Rust to standalone semantic Settings or prepared-catalog parsing.
+consumes the Settings host for shared frontend/backend startup values, so its tests
+and frontend targets with a development dependency on the desktop require native
+TOML as well. This does not add Rust to standalone semantic Settings or
+prepared-catalog parsing.
 
 The host-only [`adele_configuration_store`](../../packages/configuration_store/README.md)
 uses that same transitive hook and compiler requirement, not another native build.
@@ -171,6 +172,11 @@ cli`, still preview on this pin. Maintained backend AOT compilation remains root
 at the repository's dependency-free launcher package and imports no Settings host
 or TOML implementation. Do not move those commands to the app's native-hook graph
 or infer native-asset delivery from successful snapshot compilation.
+
+Backend settings use the generic `PluginBackendHost.startPlugin(settings: ...)`
+bootstrap map and public `AdeleBackendSettings` reader. Resolution and native TOML
+remain host-side; independently compiled backends receive copied scalar values, not
+native assets or a dependency on the Settings host.
 
 `toml_edit` and the private JSON bridge have exact direct Cargo pins and a committed
 transitive lock. See the package's [native notices](../../packages/toml_document/third_party_notices.txt)
@@ -428,17 +434,19 @@ and the same remote Chat backend, not an in-process strategy fallback.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
-`backend.aot` and `frontend.evc`. The same stock publication helper copies the
-Source Editor's authoritative `settings.schema.json` and OpenAI's authoritative
-`records.schema.json` byte-for-byte, referencing them through the independent
-installation-level `settingsSchema` and `recordsSchema` fields. Schema metadata is
-available without backend/frontend activation or authentication; the OpenAI record
+`backend.aot` and `frontend.evc`. The same stock publication helper copies
+Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
+authoritative `records.schema.json` byte-for-byte, referencing them through the
+independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
+metadata is available without backend/frontend activation or authentication; the OpenAI record
 declaration contains no credential fields and does not change runtime startup
-configuration. Global user values remain in TOML, not generated installation
-artifacts. Runtime receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared
-runtime/host paths, and the temporary generic
-`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend or frontend artifact
-defines or source paths. Installed manifests are distinct from the draft
+configuration. Global scalar values remain in TOML, not generated installation
+artifacts or the startup-argv file. Application startup resolves them from prepared
+declarations for both frontends and backends; changing a user override requires
+application restart, not plugin recompilation. Runtime receives
+`ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the temporary
+generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend or frontend
+artifact defines or source paths. Installed manifests are distinct from the draft
 `adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
 to it. See [`../architecture/plugin-layout.md`](../architecture/plugin-layout.md#prepared-installation-snapshot).
 

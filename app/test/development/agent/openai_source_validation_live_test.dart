@@ -12,11 +12,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'source_coding_live_test_support.dart';
 import 'source_read_evidence_test_support.dart';
 
-const String _originalFragment = '  int _maxModelInvocations = 8;';
-const String _replacementFragment = '  int _maxModelInvocations = 9;';
+const String _originalFragment = '"default": 40';
+const String _replacementFragment = '"default": 41';
 const String _validationPrompt =
-    'Read plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart. '
-    'Change the default maxModelInvocations assignment from 8 to 9 using '
+    'Read plugins/chat_strategy/settings.schema.json. '
+    'Change the declared default for dev.adele.plugin.chat-strategy.max-model-invocations from 40 to 41 using '
     'apply_patch. Use the exact opaque Revision returned by read_file as '
     'expectedRevision. Supply an ordered edits array of {search, replace} '
     'objects. After the patch succeeds, validate the Task worktree '
@@ -692,12 +692,14 @@ bool _reportsCompletedChange(String answer) {
     'updated',
     'made',
     'completed',
-    'set to 9',
-    'now 9',
-    'now defaults to 9',
+    'set to 41',
+    'now 41',
+    'now defaults to 41',
   ].any(answer.contains);
   return completion &&
-      ((answer.contains('maxmodelinvocations') && answer.contains('9')) ||
+      (((answer.contains('maxmodelinvocations') ||
+                  answer.contains('max model invocations')) &&
+              answer.contains('41')) ||
           answer.contains('source change') ||
           answer.contains('requested change') ||
           answer.contains('change was made') ||

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "dev.adele.plugin.chat-strategy.max-model-invocations",
+      "type": "integer",
+      "default": 40,
+      "minimum": 1,
+      "label": "Maximum Model Invocations per Run",
+      "category": "Agents",
+      "section": "Execution"
+    }
+  ]
+}

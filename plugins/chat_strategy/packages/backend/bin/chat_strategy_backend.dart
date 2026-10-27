@@ -39,6 +39,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   );
   final orchestration = ChatRemoteOrchestrationBackend(
     sessions: sessions,
+    maxModelInvocations: AdeleBackendSettings.fromBootstrap(
+      bootstrapMessage,
+    ).read<int>(chatMaxModelInvocationsSettingId),
     hostChannel: (context) => hostRequests.bind(
       hostInvocationContext: context,
       serviceId: remoteOrchestrationHostServiceId,

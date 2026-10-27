@@ -37,7 +37,6 @@ void main() {
     expect(state.snapshot().entries, isEmpty);
     expect(state.draftRequest, '');
     expect((await snapshot).draftRequest, '');
-    expect(state.maxModelInvocations, 8);
     expect(storage.schemaChecks, 1);
     expect(storage.transactions, 1);
     expect(
@@ -45,14 +44,12 @@ void main() {
       {
         'session_id': 'session',
         'instructions': chatDefaultInstructions,
-        'max_model_invocations': 8,
         'next_entry': 0,
         'draft_request': '',
       },
     );
     expect(() => store.obtain(SessionId('session')), throwsStateError);
     expect(() => state.instructions = 'Bypass.', throwsStateError);
-    expect(() => state.maxModelInvocations = 2, throwsStateError);
     expect(() => state.appendUserMessage('Bypass.'), throwsStateError);
   });
 
@@ -63,7 +60,7 @@ void main() {
       const content = '  Raw\r\n\t\u0000message';
       const draft = '  Raw\r\n\t\u0000draft\u00e9\u{1f600}  ';
       await service.setDraftRequest('session', draft);
-      await service.configureSession('session', instructions, 3);
+      await service.configureSession('session', instructions);
       expect(
         (await service.appendUserMessage('session', content)).id,
         'entry-0',
@@ -71,7 +68,6 @@ void main() {
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
       expect(snapshot.instructions, instructions);
-      expect(snapshot.maxModelInvocations, 3);
       expect(snapshot.entries.single.content, content);
       expect(snapshot.entries.single.role, 'user');
       expect(snapshot.draftRequest, draft);
@@ -79,12 +75,11 @@ void main() {
         (await reloaded.appendUserMessage('session', content)).id,
         'entry-1',
       );
-      await reloaded.configureSession('session', '', 1);
+      await reloaded.configureSession('session', '');
       final again = await ChatSessionBackend(
         ChatSessionStore(storage: storage),
       ).snapshot('session');
       expect(again.instructions, '');
-      expect(again.maxModelInvocations, 1);
       expect(again.entries.map((entry) => entry.id), ['entry-0', 'entry-1']);
       expect(again.draftRequest, draft);
       final submitted = await reloaded.submitDraftRequest('session');
@@ -148,7 +143,7 @@ void main() {
           return gate.future;
         };
         final writing = configure
-            ? service.configureSession('session', 'Both fields.', 2)
+            ? service.configureSession('session', 'New instructions.')
             : service.appendUserMessage('session', 'Accepted.');
         var returned = false;
         final completed = writing.then((_) => returned = true);
@@ -156,7 +151,6 @@ void main() {
         expect(returned, isFalse);
         final pending = await peer.snapshot('session');
         expect(pending.instructions, before.instructions);
-        expect(pending.maxModelInvocations, before.maxModelInvocations);
         expect(pending.entries, isEmpty);
         expect(pending.draftRequest, before.draftRequest);
         expect(
@@ -166,10 +160,7 @@ void main() {
           0,
         );
         await expectLater(peer.appendUserMessage('session', 'Blocked.'), _busy);
-        await expectLater(
-          peer.configureSession('session', 'Blocked.', 5),
-          _busy,
-        );
+        await expectLater(peer.configureSession('session', 'Blocked.'), _busy);
         await expectLater(peer.setDraftRequest('session', ''), _busy);
         await expectLater(peer.submitDraftRequest('session'), _busy);
         gate.complete();
@@ -177,16 +168,14 @@ void main() {
         final after = await peer.snapshot('session');
         expect(
           after.instructions,
-          configure ? 'Both fields.' : before.instructions,
+          configure ? 'New instructions.' : before.instructions,
         );
-        expect(after.maxModelInvocations, configure ? 2 : 8);
         expect(after.entries.length, configure ? 0 : 1);
         expect(after.draftRequest, before.draftRequest);
         final reloaded = await ChatSessionBackend(
           ChatSessionStore(storage: storage),
         ).snapshot('session');
         expect(reloaded.instructions, after.instructions);
-        expect(reloaded.maxModelInvocations, after.maxModelInvocations);
         expect(reloaded.draftRequest, before.draftRequest);
         expect(
           reloaded.entries.map((e) => e.id),
@@ -205,6 +194,7 @@ void main() {
         await service.snapshot('other');
         final backend = ChatRemoteOrchestrationBackend(
           sessions: store,
+          maxModelInvocations: 8,
           hostChannel: (_) => throw StateError('No execution expected.'),
         );
         final entered = Completer<void>();
@@ -246,7 +236,7 @@ void main() {
         await expectLater(peer.setDraftRequest('session', ''), _busy);
         await expectLater(peer.submitDraftRequest('session'), _busy);
         await expectLater(peer.appendUserMessage('session', 'Blocked.'), _busy);
-        await expectLater(peer.configureSession('session', '', 1), _busy);
+        await expectLater(peer.configureSession('session', ''), _busy);
         await expectLater(
           backend.materialize(
             chatStrategyRouteId,
@@ -375,18 +365,17 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
   );
 
   test(
-    'configuration failure preserves both fields without translating storage errors',
+    'configuration failure preserves instructions without translating storage errors',
     () async {
       final before = await service.snapshot('session');
       final error = ArgumentError('Storage unavailable.');
       storage.failure = error;
       await expectLater(
-        service.configureSession('session', 'Not accepted.', 2),
+        service.configureSession('session', 'Not accepted.'),
         throwsA(same(error)),
       );
       final after = await service.snapshot('session');
       expect(after.instructions, before.instructions);
-      expect(after.maxModelInvocations, before.maxModelInvocations);
       expect(storage.transactions, 2);
     },
   );
@@ -399,14 +388,14 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
         final stale = ChatSessionBackend(ChatSessionStore(storage: storage));
         await stale.snapshot('session');
         if (change == 'configuration') {
-          await service.configureSession('session', 'New configuration.', 2);
+          await service.configureSession('session', 'New configuration.');
         } else if (change == 'counter') {
           await service.appendUserMessage('session', 'New occurrence.');
         } else {
           await service.setDraftRequest('session', 'New draft.');
         }
         await expectLater(
-          stale.configureSession('session', 'Stale.', 4),
+          stale.configureSession('session', 'Stale.'),
           throwsStateError,
         );
         await expectLater(
@@ -423,7 +412,6 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
         );
         final unchanged = await stale.snapshot('session');
         expect(unchanged.instructions, chatDefaultInstructions);
-        expect(unchanged.maxModelInvocations, 8);
         expect(unchanged.entries, isEmpty);
         expect(unchanged.draftRequest, 'Original draft.');
         final actual = await ChatSessionBackend(
@@ -476,7 +464,7 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
     final service = ChatSessionBackend(ChatSessionStore(storage: volatile));
     expect((await service.snapshot('session')).draftRequest, '');
     await service.setDraftRequest('session', '  Volatile draft.\r\n');
-    await service.configureSession('session', 'Volatile.', 2);
+    await service.configureSession('session', 'Volatile.');
     expect(
       (await service.appendUserMessage('session', 'Prompt.')).id,
       'entry-0',
@@ -498,7 +486,6 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
   });
 
   for (final corruption in <String, String>{
-    'budget': 'UPDATE adele_chat_sessions SET max_model_invocations = 0',
     'counter negative': 'UPDATE adele_chat_sessions SET next_entry = -1',
     'counter mismatch': 'UPDATE adele_chat_sessions SET next_entry = 3',
     'role': "UPDATE adele_chat_entries SET role = 'tool'",
@@ -608,11 +595,12 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
         await staleService.snapshot('session');
         final staleBackend = ChatRemoteOrchestrationBackend(
           sessions: staleStore,
+          maxModelInvocations: 8,
           hostChannel: (_) => throw StateError('No execution expected.'),
         );
         addTearDown(staleBackend.close);
         if (change == 'configuration') {
-          await service.configureSession('session', 'Replacement.', 2);
+          await service.configureSession('session', 'Replacement.');
         } else if (change == 'counter') {
           await service.appendUserMessage('session', 'New latest.');
         } else if (change == 'draft') {
@@ -620,6 +608,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
         } else {
           final current = ChatRemoteOrchestrationBackend(
             sessions: store,
+            maxModelInvocations: 8,
             hostChannel: (_) => throw StateError('No execution expected.'),
           );
           addTearDown(current.close);
@@ -673,6 +662,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
       await service.appendUserMessage('session', content);
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No execution expected.'),
       );
       addTearDown(backend.close);
@@ -770,7 +760,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
         storage.database.execute('PRAGMA foreign_keys = OFF');
         storage.database.execute('''
 CREATE TABLE corrupt_sessions (
-  session_id, instructions, max_model_invocations, next_entry, draft_request
+  session_id, instructions, next_entry, draft_request
 );
 INSERT INTO corrupt_sessions SELECT * FROM adele_chat_sessions;
 DROP TABLE adele_chat_sessions;
@@ -937,7 +927,6 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
               ? {
                   'session_id': 'session',
                   'instructions': value,
-                  'max_model_invocations': 8,
                   'next_entry': 0,
                   'draft_request': '',
                 }
@@ -956,7 +945,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
           expect(_rowBytes(row(content)), relationalQueryByteLimit);
           expect(_rowBytes(row('$content!')), relationalQueryByteLimit + 1);
           if (configure) {
-            await service.configureSession('session', content, 8);
+            await service.configureSession('session', content);
           } else {
             expect(
               (await service.appendUserMessage('session', content)).id,
@@ -966,11 +955,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
           final writes = storage.transactions;
           if (configure) {
             await expectLater(
-              service.configureSession('session', '$content!', 8),
-              throwsStateError,
-            );
-            await expectLater(
-              service.configureSession('session', content, 10),
+              service.configureSession('session', '$content!'),
               throwsStateError,
             );
           } else {
@@ -985,7 +970,6 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
             ChatSessionBackend(ChatSessionStore(storage: storage)),
           ]) {
             final unchanged = await reader.snapshot('session');
-            expect(unchanged.maxModelInvocations, 8);
             expect(
               unchanged.instructions,
               configure ? content : chatDefaultInstructions,
@@ -994,7 +978,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
             if (!configure) expect(unchanged.entries.single.content, content);
           }
           // Rejection must release the claim and leave the next occurrence unused.
-          await service.configureSession('session', 'Short.', 8);
+          await service.configureSession('session', 'Short.');
           expect(
             (await service.appendUserMessage('session', 'Next.')).id,
             configure ? 'entry-0' : 'entry-1',
@@ -1016,11 +1000,10 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
               _rowBytes({
                 'session_id': 'session',
                 'instructions': '',
-                'max_model_invocations': 8,
                 'next_entry': 9,
                 'draft_request': '',
               }));
-      await service.configureSession('session', instructions, 8);
+      await service.configureSession('session', instructions);
       final writes = storage.transactions;
       await expectLater(
         service.appendUserMessage('session', 'Small but unpersistable.'),
@@ -1033,7 +1016,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
       ).snapshot('session');
       expect(reloaded.entries, hasLength(9));
       expect(reloaded.instructions, instructions);
-      await service.configureSession('session', 'Short.', 8);
+      await service.configureSession('session', 'Short.');
       expect(
         (await service.appendUserMessage('session', 'Next.')).id,
         'entry-9',
@@ -1074,7 +1057,6 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
         Map<String, Object?> row(String draft) => {
           'session_id': 'session',
           'instructions': chatDefaultInstructions,
-          'max_model_invocations': 8,
           'next_entry': 0,
           'draft_request': draft,
         };
@@ -1094,7 +1076,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
         );
         // Configuration replacement must charge the retained draft as well.
         await expectLater(
-          service.configureSession('session', '$chatDefaultInstructions!', 8),
+          service.configureSession('session', '$chatDefaultInstructions!'),
           throwsStateError,
         );
         expect(storage.transactions, writes);
@@ -1138,7 +1120,6 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
               _rowBytes({
                 'session_id': 'session',
                 'instructions': chatDefaultInstructions,
-                'max_model_invocations': 8,
                 'next_entry': 9,
                 'draft_request': '',
               }));
@@ -1207,7 +1188,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
         final store = ChatSessionStore(storage: hostVolatile ? volatile : null);
         final service = ChatSessionBackend(store);
         final content = 'x' * relationalQueryByteLimit;
-        await service.configureSession('session', content, 8);
+        await service.configureSession('session', content);
         expect(
           (await service.appendUserMessage('session', content)).id,
           'entry-0',

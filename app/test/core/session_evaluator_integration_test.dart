@@ -12,6 +12,7 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/window_session_context.dart';
@@ -106,6 +107,9 @@ void main() {
     ApplicationPluginBootstrap bootstrap,
     Directory root,
   ) async {
+    bootstrap.configureSettingsLoader(
+      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+    );
     await bootstrap.start(
       installationRoot: root.path,
       dartaotruntimeExecutable: aotRuntime,
@@ -334,7 +338,7 @@ void main() {
 
   test('exports exact retained Chat and Run evidence, isolates Sessions, and '
       'does not retarget a retired generated route', () async {
-    await chat.configureSession(session.id.value, _instructions, 4);
+    await chat.configureSession(session.id.value, _instructions);
     await chat.appendUserMessage(session.id.value, '  First question.\n');
     final first = await createRun(
       session,
@@ -388,7 +392,6 @@ void main() {
     expect(conversation['status'], 'available');
     expect(conversation['configuration'], {
       'instructions': _instructions,
-      'max_model_invocations': 4,
       'next_entry': 4,
     });
     expect(
@@ -545,11 +548,7 @@ void main() {
     final initialized = _inspect(source, _snapshot);
     expect((await collect(session))['conversation'], {
       'status': 'available',
-      'configuration': {
-        'instructions': empty.instructions,
-        'max_model_invocations': empty.maxModelInvocations,
-        'next_entry': 0,
-      },
+      'configuration': {'instructions': empty.instructions, 'next_entry': 0},
       'entries': <Object?>[],
     });
     expect(_inspect(source, _snapshot), initialized);
@@ -919,7 +918,7 @@ void main() {
         late Map<String, Object?> expected;
         late SessionOrchestrationRun denied;
         await tester.runAsync(() async {
-          await chat.configureSession(session.id.value, _instructions, 4);
+          await chat.configureSession(session.id.value, _instructions);
           await chat.appendUserMessage(session.id.value, '  Exact question.\n');
           final catalog = await buildModelToolCatalogForSession(
             sessionId: session.id,
@@ -1903,6 +1902,9 @@ void main() {
             await File(
               '${broken.path}/$_evaluatorPlugin/backend.aot',
             ).writeAsString('invalid evaluator artifact');
+            fresh.plugins.configureSettingsLoader(
+              (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+            );
             await fresh.plugins.start(
               installationRoot: broken.path,
               dartaotruntimeExecutable: aotRuntime,
@@ -2100,12 +2102,18 @@ Future<Directory> _install(
     await File(
       '${artifacts.path}/$plugin.aot',
     ).copy('${directory.path}/backend.aot');
+    if (plugin == _chatPlugin) {
+      await File(
+        '${Directory.current.parent.path}/plugins/chat_strategy/settings.schema.json',
+      ).copy('${directory.path}/settings.schema.json');
+    }
     await File(
       '${directory.path}/adele_plugin.installation.json',
     ).writeAsString(
       jsonEncode({
         'manifestVersion': 1,
         'metadata': {'id': plugin, 'version': '1', 'displayName': plugin},
+        if (plugin == _chatPlugin) 'settingsSchema': 'settings.schema.json',
         'components': {
           'backend': {'artifact': 'backend.aot'},
         },
