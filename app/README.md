@@ -587,6 +587,21 @@ and the [Linux profile/manual entrypoint](../docs/development/testing.md#integra
 Those procedures are not pass claims; earlier investigation results do not
 establish human checks of this integrated path or macOS/Windows execution.
 
+### Native rich-editor dependency
+
+The app privately depends on patched AppFlowy Editor 6.2.0. Source preparation,
+the dependency compatibility patches, licensing, and recovery commands belong to
+the [toolchain policy](../docs/development/toolchain.md#native-rich-editor-dependency).
+[`appflowy_editor_smoke_test.dart`](test/appflowy_editor_smoke_test.dart) mounts the
+real localized editor, sends Flutter text input and Backspace, and releases focus
+before unmounting and disposing editor state. Focus loss while mounted lets
+AppFlowy close its text-input client; disposing editor state alone does not.
+The test is discovered by the normal desktop test target.
+
+There is no production rich-editor adapter or evaluated bridge yet. Chat still
+uses its existing composer; Markdown fidelity and plugin-facing ownership are
+not established by dependency resolution or this native smoke.
+
 ### Native terminal surface
 
 [`NativeTerminalSurface`](lib/terminal/native_terminal_surface.dart) is an

@@ -1,0 +1,31 @@
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -14,6 +14,5 @@
+ dependencies:
+   collection: "^1.18.0"
+-  device_info_plus: "^11.0.0"
+   diff_match_patch: "^0.4.1"
+   file_picker: ^10.2.0
+   flutter:
+diff --git a/lib/src/editor/toolbar/mobile/utils/keyboard_height_observer.dart b/lib/src/editor/toolbar/mobile/utils/keyboard_height_observer.dart
+--- a/lib/src/editor/toolbar/mobile/utils/keyboard_height_observer.dart
++++ b/lib/src/editor/toolbar/mobile/utils/keyboard_height_observer.dart
+@@ -1,3 +1,2 @@
+ import 'package:appflowy_editor/src/editor/util/platform_extension.dart';
+-import 'package:device_info_plus/device_info_plus.dart';
+ import 'package:keyboard_height_plugin/keyboard_height_plugin.dart';
+@@ -7,13 +6,6 @@
+ // the KeyboardHeightPlugin only accepts one listener, so we need to create a
+ //  singleton class to manage the multiple listeners.
+ class KeyboardHeightObserver {
+-  static int androidSDKVersion = -1;
+-
+   KeyboardHeightObserver._() {
+-    if (PlatformExtension.isAndroid && androidSDKVersion == -1) {
+-      DeviceInfoPlugin().androidInfo.then(
+-            (value) => androidSDKVersion = value.version.sdkInt,
+-          );
+-    }
+     _keyboardHeightPlugin.onKeyboardHeightChanged((height) {
+       notify(height);

@@ -27,6 +27,7 @@ dependencies:
   adele_settings: ^0.1.0
   adele_settings_host: ^0.1.0
   adele_ui: ^0.1.0
+  appflowy_editor: 6.2.0
   code_forge: 10.14.0
   crypto: ^3.0.6
   dart_eval: 0.8.5
