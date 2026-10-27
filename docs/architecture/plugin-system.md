@@ -587,8 +587,14 @@ privileged presentation role. Neither is granted by default. The binder validate
 the exact contribution, canonical Session, and any controller's captured strategy
 binding. Requested backend access must belong to the exact prepared installation;
 owning-backend affinity additionally requires the actual strategy registration's
-origin, not matching IDs. Declared affinity alone is insufficient; missing or
-incompatible services fail the requesting pane rather than selecting a substitute.
+origin, not matching IDs. Declared affinity alone is insufficient; missing required
+services or incompatible affinity fail the requesting pane rather than selecting
+a substitute. A separate optional service request may preserve the pane with inert
+access when its sibling backend is unavailable. It captures the same exact
+installation, configuration context, and generation (including absence), never
+retargets, and does not weaken required grants. Retirement fences new operations
+and late publication, not already-admitted backend effects. Service health remains
+an operation outcome, not a metadata promise.
 `PreparedSessionServices` binds these existing services; it is not a renderer
 resolver or execution owner.
 

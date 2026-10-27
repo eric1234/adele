@@ -2346,6 +2346,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             diff.frontend!.presentations.single
                 as PreparedMainContentPresentation;
         expect(diffDescriptor.canRequestSourceDisplay, isTrue);
+        expect(diffDescriptor.backendServices, isEmpty);
+        expect(diffDescriptor.optionalBackendServices, ['diff.reviewDraft']);
         expect(
           catalog.installations
               .where(
@@ -2465,6 +2467,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(sourceDescriptor.nativeCodeEditor, isTrue);
         expect(sourceDescriptor.environmentTextFiles, isTrue);
         expect(sourceDescriptor.backendServices, isEmpty);
+        expect(sourceDescriptor.optionalBackendServices, isEmpty);
         expect(sourceDescriptor.sessionExecution, isFalse);
         expect(
           sourceDescriptor.strategyAffinity,

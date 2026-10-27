@@ -211,8 +211,9 @@ volatile Project's host-owned temporary backing survives backend replacement onl
 while that Project remains open. Failed durable backing never switches to temporary
 storage. Schema checks are idempotent under the existing host coordinator. Plain
 Unstaged and Uncommitted requests never initialize this schema. Eligible review
-targets obtain captured Session and Environment identity through the existing
-process grant solely to bind their opaque revisions; they do not query Task anchors.
+targets and commentable comparisons obtain captured Session and Environment
+identity through the existing process grant solely to bind their opaque snapshot
+identities; they do not query Task anchors.
 
 The Task adapter includes identity, schema and SQL latency in the thirty-second
 deadline. Before publishing it rereads the association and anchor, requires unchanged
@@ -489,6 +490,50 @@ strict v2 state, restoration without baseline objects, and no restore-time repla
 The application stock lifecycle and Diff/Git integration suites cover atomic
 initialization with real Project SQL, backend replacement/reopen/moves, and stock
 Diff's process-only grants without changing generic read/sibling contracts.
+
+### Comment Comparison Identity
+
+`ChangedFile.commentComparisonIdentity` is a required nullable snapshot field for
+read-only comment anchoring. Git certifies verified regular UTF-8 text comparisons
+with displayed source lines in all three layers, including Committed. It is
+independent of hunk/file/layer approval eligibility: partially staged additions,
+deletions, and literal tab/newline filenames can have comment identities without
+approval revisions. Empty additions/deletions have no source lines and no comment
+identity. Binary, invalid UTF-8, oversized, conflicted, unsupported, and unsafe
+entries remain uncertified. Paths outside the draft contract's canonical path
+bounds, including backslashes and drive-qualified names, also remain uncertified;
+they are never normalized into a different comment location.
+Unstaged deletions additionally require an already captured safe working-absence
+proof; an inventory deletion alone does not establish absence through an unsafe
+ancestor. This can remain unavailable even when the old text is displayed, and
+does not require final complete-file approval eligibility. Staged and Committed
+deletions instead use their captured immutable object membership, not working paths.
+
+The distinct `git-comment-comparison-v1` domain hashes the operation's captured
+Session/Environment association, discovered repository and selected source scope,
+comparison layer, literal path/change kind, explicit old/new source roles,
+per-side modes and full SHA-1/SHA-256 blob identities (or absence), and every
+displayed hunk coordinate, line kind, exact text and final-newline marker. Both
+object and working comparisons verify parsed hunks against their exact bounded
+captured bytes before certification. CRLF and no-final-newline content are not
+normalized. All fields are unambiguously JSON-framed before SHA-256 hashing.
+
+An unchanged comparison retains its identity across refresh and inspection scopes.
+Changed relevant content, displayed layout, layer, Session, Environment, repository
+or source scope produces a different identity. Whole-tree commit IDs, unrelated
+index entries, other working files, stat timestamps and approval revisions are
+deliberately excluded: an unrelated commit or approval cannot make this file's
+unchanged source comparison outdated. Returning to the exact original comparison
+can restore its identity; this is location matching, not a monotonic revision or
+mutation precondition. The value is neither authority nor an approval token.
+
+Certification reuses captured comparison evidence and one shared authorized
+identity observation with review revision generation. It adds no Git subprocess,
+repository scan, storage query, clean-file work, or new inspection allowance.
+`git_comment_comparison_identity_test.dart` covers native production snapshots,
+per-layer/association/scope separation, SHA-1/SHA-256, partial staging,
+additions/deletions, literal paths, byte preservation, unsupported entries, exact
+hunk verification, stable unrelated changes, and unchanged process batching.
 
 ## ReviewApprovalHandler
 

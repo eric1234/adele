@@ -152,6 +152,7 @@ final class _PortableSnapshot {
   final Set<String> parentPaths = {};
   int parentPathText = 0;
   int? additionOidWidth;
+  AuthorizedEnvironmentIdentity? capturedIdentity;
   _ReviewObservation? reviewObservation;
   bool closed = false;
   bool mutationAttempted = false;
@@ -357,8 +358,8 @@ final class _PortableSnapshot {
         retain(await inspect(path, entry, deleted, killed), files);
       }
     }
-    // Review revisions are preconditions, never invocation authority. Capture
-    // identity only for actionable text; clean scans retain their batched cost.
+    // Review revisions are preconditions, never invocation authority. Reuse the
+    // comment capture where present; clean scans retain their batched cost.
     final hunkCandidates = <ChangedFile>{};
     final fileCandidates = <ChangedFile>{};
     for (final file in [...staged, ...files]) {
@@ -423,7 +424,7 @@ final class _PortableSnapshot {
     }
     if (candidates.isNotEmpty && reviewHead != null) {
       checkOpen();
-      final identity = await processes.capturedIdentity();
+      final identity = capturedIdentity ??= await processes.capturedIdentity();
       checkOpen();
       final reviewIndex = repository!.prefix.isEmpty
           ? inventory.index
@@ -517,6 +518,7 @@ final class _PortableSnapshot {
           final file = layer[i];
           if (!candidates.contains(file)) continue;
           layer[i] = ChangedFile(
+            commentComparisonIdentity: file.commentComparisonIdentity,
             fileReviewRevision: fileCandidates.contains(file)
                 ? _reviewRevision(
                     this,
@@ -539,6 +541,38 @@ final class _PortableSnapshot {
           );
         }
       }
+    }
+    // ls-files can report a deletion through an unsafe ancestor. Certify that
+    // working-side absence only when the existing inspection proved it, without
+    // introducing comment-specific probes or requiring an approval revision.
+    for (var i = 0; i < files.length; i++) {
+      final file = files[i];
+      if (file.changeKind != 'deleted' ||
+          !workingAbsences.containsKey(file.relativePath)) {
+        continue;
+      }
+      final entry = entries[file.relativePath]!;
+      files[i] = ChangedFile(
+        relativePath: file.relativePath,
+        changeKind: file.changeKind,
+        contentStatus: file.contentStatus,
+        detail: file.detail,
+        reviewRevision: file.reviewRevision,
+        fileReviewRevision: file.fileReviewRevision,
+        commentComparisonIdentity: await commentIdentity(
+          path: file.relativePath,
+          kind: file.changeKind,
+          layer: 'unstaged',
+          oldSource: 'index',
+          newSource: 'working',
+          oldMode: entry.oldMode,
+          oldOid: entry.oid,
+          newMode: null,
+          newOid: null,
+          hunks: file.hunks,
+        ),
+        hunks: file.hunks,
+      );
     }
     await verifyMetadata(observed.keys.toList());
     for (final entry in workingAbsences.entries) {
@@ -617,9 +651,9 @@ final class _PortableSnapshot {
       );
     }
     // Count every appearance of a path and escaped text across all layers.
-    // Include both optional opaque review revisions in the fixed DTO allowance.
+    // Include both approval revisions and the comment identity in the allowance.
     presentationBytes +=
-        640 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
+        768 + 6 * (file.relativePath.length + (file.detail?.length ?? 0));
     for (final hunk in file.hunks) {
       presentationBytes += 128;
       for (final line in hunk.lines) {
@@ -853,6 +887,7 @@ done
       String detail, {
       String kind = 'unsupported',
     }) => ChangedFile(
+      commentComparisonIdentity: null,
       fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
@@ -1029,9 +1064,7 @@ done
       requireIndex: false,
     );
     lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
-    if (missing && _applyReviewHunks(old, hunks, reverse: false).isNotEmpty) {
-      throw _malformed();
-    }
+    verifyGitPatchContent(hunks, _decodeContent(old), _decodeContent(current));
     if (patch.exitCode == 0 && kind == 'modified') throw _changed();
     if (kind == 'modified' &&
         state != null &&
@@ -1048,6 +1081,20 @@ done
       reviewableWorkingPaths.add(path);
     }
     return ChangedFile(
+      commentComparisonIdentity: missing
+          ? null
+          : await commentIdentity(
+              path: path,
+              kind: kind,
+              layer: 'unstaged',
+              oldSource: 'index',
+              newSource: 'working',
+              oldMode: entry.oid.isEmpty ? null : entry.oldMode,
+              oldOid: entry.oid.isEmpty ? null : entry.oid,
+              newMode: state!.executable ? '100755' : '100644',
+              newOid: workingOids[path],
+              hunks: hunks,
+            ),
       fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
@@ -1147,6 +1194,7 @@ done
         ? 'typeChanged'
         : 'modified';
     ChangedFile placeholder(String status, String detail) => ChangedFile(
+      commentComparisonIdentity: null,
       fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
@@ -1239,64 +1287,20 @@ done
     }
     final hunks = parseGitPatch(text, maximumLines: limits.lines - lineCount);
     lineCount += hunks.fold<int>(0, (sum, hunk) => sum + hunk.lines.length);
-    // Attribute identity to the inventory, not quoted patch-header filenames.
-    // Reconstruct the exact captured new-side bytes so a valid but incomplete
-    // hunk prefix cannot be published as a successful object comparison.
-    final oldText = _decodeContent(left);
-    final oldLines = oldText.isEmpty ? <String>[] : oldText.split('\n');
-    if (oldText.endsWith('\n')) oldLines.removeLast();
-    final newText = _decodeContent(right);
-    final newLines = newText.isEmpty ? <String>[] : newText.split('\n');
-    if (newText.endsWith('\n')) newLines.removeLast();
-    final rebuilt = StringBuffer();
-    var oldOffset = 0;
-    var newOffset = 0;
-    for (final hunk in hunks) {
-      final start = hunk.oldStart - (hunk.oldCount == 0 ? 0 : 1);
-      if (start < oldOffset || start > oldLines.length) throw _malformed();
-      while (oldOffset < start) {
-        rebuilt.write(oldLines[oldOffset++]);
-        if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
-          rebuilt.write('\n');
-        }
-        newOffset++;
-      }
-      if (hunk.newStart - (hunk.newCount == 0 ? 0 : 1) != newOffset) {
-        throw _malformed();
-      }
-      for (final line in hunk.lines) {
-        if (line.kind != 'addition') {
-          if (oldOffset >= oldLines.length ||
-              oldLines[oldOffset] != line.text ||
-              line.noNewline !=
-                  (oldOffset == oldLines.length - 1 &&
-                      !oldText.endsWith('\n'))) {
-            throw _malformed();
-          }
-          oldOffset++;
-        }
-        if (line.kind != 'deletion') {
-          if (newOffset >= newLines.length ||
-              newLines[newOffset] != line.text ||
-              line.noNewline !=
-                  (newOffset == newLines.length - 1 &&
-                      !newText.endsWith('\n'))) {
-            throw _malformed();
-          }
-          rebuilt.write(line.text);
-          if (!line.noNewline) rebuilt.write('\n');
-          newOffset++;
-        }
-      }
-    }
-    while (oldOffset < oldLines.length) {
-      rebuilt.write(oldLines[oldOffset++]);
-      if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
-        rebuilt.write('\n');
-      }
-    }
-    if (rebuilt.toString() != newText) throw _malformed();
+    verifyGitPatchContent(hunks, _decodeContent(left), _decodeContent(right));
     return ChangedFile(
+      commentComparisonIdentity: await commentIdentity(
+        path: path,
+        kind: kind,
+        layer: currentCommit == null ? 'staged' : 'committed',
+        oldSource: currentCommit == null ? 'head' : 'baseline',
+        newSource: currentCommit == null ? 'index' : 'head',
+        oldMode: old?.oldMode,
+        oldOid: old?.oid,
+        newMode: current?.oldMode,
+        newOid: current?.oid,
+        hunks: hunks,
+      ),
       fileReviewRevision: null,
       relativePath: path,
       reviewRevision: null,
@@ -1305,6 +1309,61 @@ done
       detail: null,
       hunks: hunks,
     );
+  }
+
+  Future<String?> commentIdentity({
+    required String path,
+    required String kind,
+    required String layer,
+    required String oldSource,
+    required String newSource,
+    required String? oldMode,
+    required String? oldOid,
+    required String? newMode,
+    required String? newOid,
+    required List<DiffHunk> hunks,
+  }) async {
+    if (!hunks.any((hunk) => hunk.lines.isNotEmpty) ||
+        path.length > ReviewDraftLimits.maxPathLength ||
+        path.contains('\\') ||
+        RegExp(r'^[A-Za-z]:').hasMatch(path)) {
+      return null;
+    }
+    checkOpen();
+    final identity = capturedIdentity ??= await processes.capturedIdentity();
+    checkOpen();
+    const domain = 'git-comment-comparison-v1';
+    final repo = repository!;
+    // Only the selected comparison's source objects belong here, not whole-tree
+    // commits, index inventory, approval state, or unrelated working metadata.
+    final digest = sha256.convert(
+      utf8.encode(
+        jsonEncode([
+          domain,
+          identity.sessionId,
+          identity.environmentId,
+          repo.root,
+          repo.worktree,
+          repo.directory,
+          repo.prefix,
+          layer,
+          path,
+          kind,
+          ['old', oldSource, oldMode, oldOid],
+          ['new', newSource, newMode, newOid],
+          for (final hunk in hunks)
+            [
+              hunk.oldStart,
+              hunk.oldCount,
+              hunk.newStart,
+              hunk.newCount,
+              for (final line in hunk.lines)
+                [line.kind, line.text, line.noNewline],
+            ],
+        ]),
+      ),
+    );
+    return '$domain:$digest';
   }
 
   Future<({String commit, String reference})> readHead() async {

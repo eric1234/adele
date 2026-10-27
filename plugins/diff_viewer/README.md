@@ -3,9 +3,10 @@
 Diff Viewer is a stock plugin with a shared, pure-Dart public contract, an
 independent pending-comment storage backend, and one `Diff` Main Content pane for
 any canonical Session, at order 200 between stock Chat and Source. It does not
-require Chat, a strategy frontend, or a Run. The current pane does not acquire the
-draft backend: missing or failed comment storage leaves change snapshots, review
-approval, and Source navigation available through their existing providers.
+require Chat, a strategy frontend, or a Run. The pane acquires its draft service
+through an optional, exact-owning-backend grant: missing or failed comment storage
+leaves change snapshots, review approval, and Source navigation available through
+their existing providers.
 
 ## Ownership
 
@@ -194,8 +195,15 @@ empty/absolute/drive-qualified paths, backslashes, NUL, empty, dot, parent, and
 The comparison identity is authored read-only source-location data, independent
 of `reviewRevision`, `fileReviewRevision`, and `layerReviewRevision`. The backend
 does not verify it against current files, read source, invoke Git, or materialize
-an Environment. The production Git snapshot engine does not yet produce comment
-comparison identities. Editing never changes the original anchor, including its
+an Environment. Stock Git certifies supported text comparisons with the required
+nullable `ChangedFile.commentComparisonIdentity`, including Committed comparisons
+and read-only comparisons that have no approval action. Identity uses captured
+Session/Environment and repository/source scope, the layer, literal path and
+change kind, relevant source/object identities, and exact displayed hunk/line
+evidence in a separate digest domain. It is not a whole-repository revision:
+unrelated file changes do not invalidate a comment. Binary, oversized, conflicted,
+unsupported or unverified comparisons and comparisons without source lines do
+not advertise comment eligibility. Editing never changes the original anchor, including its
 captured excerpt, when working files or selected Session/Environment change.
 Environment IDs are retained data, not source-read or execution authority; there
 is no absolute checkout path, Project selector, storage owner, or database path in
@@ -274,12 +282,67 @@ keep ordinary feedback cheap without a retained history cache.
 
 Pending comments are not submitted feedback, Chat entries, model outputs, tool
 proposals, Run activity, or Git approval state. Saving/deleting a comment never
-approves, unapproves, discards, or reverts source. Comment buttons, editors,
-indicators, optional frontend backend access, source comparison identity capture,
-and the editing/navigation workflow remain the next frontend slice. Submit Review,
-compatible strategy acceptance, compact strategy occurrences, and plugin-owned
-content in general Inspection remain separate later work. There is no universal
-Session-input or Inspection framework in this service.
+approves, unapproves, discards, or reverts source. Submit Review, compatible strategy
+acceptance, compact strategy occurrences, and plugin-owned content in general
+Inspection remain separate later work. There is no universal Session-input or
+Inspection framework in this service.
+
+### Comment Workflow
+
+Each eligible source line offers a compact **Comment** action. An addition anchors
+the new side, a deletion the old side, and context the new side only when that side
+exists. Numeric hunk ranges and actual line kinds determine source positions, never
+the rendered label. The anchor retains the captured Environment, original path,
+typed layer/side, equal inclusive line endpoints, comparison identity, exact line
+excerpt, and zero-based hunk/line indices. CRLF and missing-final-newline semantics
+are preserved. Lines whose exact excerpt or coordinates exceed the draft bounds
+have no actionable control; excerpts are never truncated to make them eligible.
+
+One inline editor's controller belongs to the pane rather than a lazy row. The
+editor, controls and comparison share a scrollable list so Save/Cancel remain
+reachable in short panes; explicit selection reveals the editor at the top.
+Selection does not write. **Save comment** creates or updates through the generated draft client;
+**Cancel editing** explicitly discards the local draft. Refresh, scope switching,
+scrolling and rebuilding retain the controller and text. The pinned evaluated
+TextField supports only this slice's single-line editing. Existing multiline
+comments remain fully readable and deletable, but cannot be edited through a lossy
+single-line control. No saved text or line breaks are normalized or truncated.
+
+**Pending review comments** shows the complete backend collection in creation
+sequence, including comments outside the selected scope or on a now-clean Diff.
+Items retain their original location and excerpt, full text, and **Edit**/**Delete**
+controls. Editing sends the original ID and version and cannot change the anchor.
+Duplicate comments on the same line remain distinct records. A confirmed mutation
+applies the backend's authoritative returned comment or confirmed deletion, never
+optimistic editor text. Loading comments requires no Git snapshot or index write;
+**Reload comments** reads only the draft, while **Refresh** reads both independently.
+
+Location status is **Current location** only when Environment, path, layer, side,
+comparison identity, hunk/line coordinates, source line range and exact excerpt all
+match. **Outside current scope / not inspected** covers scope exclusion, failed
+snapshots and uncertified working/index comparisons, including unresolved paths
+reported in a separate Conflicts group. Working conflicts do not mask independently
+certified Committed history. **Outdated location** requires positive
+changed-comparison evidence or absence from a successfully inspected scope. Scope
+switching or Git read failure alone never proves obsolescence. Comments are never
+re-anchored and remain inspectable, editable and deletable when outdated.
+
+The optional owning-backend grant captures the exact installation, configuration
+context and generation. Missing/failed storage produces an inert channel, not an
+empty authoritative draft or local-only replacement. Reads fail independently of
+Git; the pane retains any last confirmed collection and disables comment mutations
+until a successful explicit read. Retired channels never retarget another backend
+with the same PluginId. A pane-local write gate prevents duplicate comment writes
+and overlapping comment/approval mutations without changing Git's approval gate.
+
+Failed or uncertain writes show **Comment change not confirmed. Reload comments
+before trying again.** The editor text is retained but its mutation selection is
+invalidated; a fresh snapshot and explicit reselection are required. There is no
+automatic retry or text/location deduplication: an unacknowledged create may already
+have committed. Unsaved text or a pending write refuses Session departure with an
+explicit save/cancel instruction. Disposal and presentation retirement fence late
+publication, not already admitted backend effects. Remounts read saved state from
+the backend, including after durable Project close/reopen.
 
 ## Presentation
 
@@ -289,9 +352,11 @@ does not duplicate it. The descriptor declares `environmentBufferedProcessCapabi
 for both `adele.diff.change-set-source` v1 and `adele.diff.review-approval` v1,
 separately, and `canRequestSourceDisplay` for pane-only requests
 through the public source-display point. There is no context-free capability
-grant, own-backend service, direct file access, process, terminal, editor, or
+grant, direct file access, process, terminal, editor, or
 execution grant. The host grants buffered-process access only to the selected
 Capability backend for each invocation, never to the interpreted pane.
+The independent `optionalBackendServices: ['diff.reviewDraft']` declaration grants
+only its own draft service and never makes the whole Diff presentation require it.
 
 The mounted pane initially selects **Unstaged changes**. A minimal selector also
 offers **Uncommitted changes** and **Task / Branch** without persisting a preference.
@@ -397,7 +462,7 @@ through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
 There is no automatic refresh watcher, addition/deletion hunk approval,
-discard/revert, editing within Diff, commit, review feedback submission, or
+discard/revert, source editing within Diff, commit, review feedback submission, or
 side-by-side mode. Addition/deletion review is bounded complete-file
 approval, not general staging of arbitrary untracked content or unsupported deletions.
 
@@ -409,10 +474,11 @@ is `app/tool/compile_diff_viewer_frontend.dart`, selected by the maintained
 frontend artifact builder using `ADELE_DIFF_VIEWER_FRONTEND_OUTPUT`. Stock
 descriptors and installation publication live in `tools/`. The same stock
 installation independently prepares `diff-viewer/backend.aot` from
-`packages/backend/bin/diff_viewer_backend.dart`; it adds no provider advertisement
-or frontend service grant. The separate draft declaration has its own generated
-native part and evaluable DTO/client projection, without changing the current
-pane's compiled UI or contract projection.
+`packages/backend/bin/diff_viewer_backend.dart`; it adds no provider advertisement.
+The compiler consumes separate generated eval projections for the snapshot and
+draft declarations, including the actual draft client, DTOs, comparison enums and
+normal owning-backend channel. UI limits project the authoritative scalar bounds,
+not handwritten DTOs or a separate codec.
 
 Run the maintained targets from the repository root with the
 [pinned toolchain](../../docs/development/toolchain.md):

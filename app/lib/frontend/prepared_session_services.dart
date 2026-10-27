@@ -106,22 +106,40 @@ final class PreparedSessionServices {
     }
 
     OwningBackendChannel? backend;
-    if (owning || descriptor.backendServices.isNotEmpty) {
+    final requiresBackend = owning || descriptor.backendServices.isNotEmpty;
+    if (requiresBackend) {
       final owner = backends.backendForInstallation(installation);
       if (owner == null) throw StateError('The owning backend is unavailable.');
       backend = owner.openChannel(
-        backendServices: descriptor.backendServices,
+        backendServices: [
+          ...descriptor.backendServices,
+          ...descriptor.optionalBackendServices,
+        ],
         strategyAffinity: descriptor.strategyAffinity,
         strategyBinding: strategy?.binding,
         validatePresentation: validateView,
       );
+    } else if (descriptor.optionalBackendServices.isNotEmpty) {
+      // Capture once, including absence. Optional access never participates in
+      // pane/execution readiness and never re-resolves after failure/retirement.
+      try {
+        backend = backends
+            .backendForInstallation(installation)
+            ?.openChannel(
+              backendServices: descriptor.optionalBackendServices,
+              strategyAffinity: descriptor.strategyAffinity,
+              validatePresentation: validateView,
+            );
+      } on Object {
+        backend = null;
+      }
     }
     if (descriptor.sessionExecution) {
       controller ??= controllerForSession(session, owning ? strategy : null);
     }
     void validate() {
       validateView();
-      backend?.validate();
+      if (requiresBackend) backend?.validate();
       if (controller != null && (descriptor.sessionExecution || owning)) {
         final owner = controller;
         if (owner.isClosed || !identical(owner.session, session)) {
@@ -162,7 +180,9 @@ final class PreparedSessionServices {
           isActive: available,
         ),
       if (backend != null)
-        OwningBackendBridge.channel(backend, validateBinding: validate),
+        OwningBackendBridge.channel(backend, validateBinding: validate)
+      else if (descriptor.optionalBackendServices.isNotEmpty)
+        OwningBackendBridge(channels: const {}, validateBinding: validate),
     ]);
   }
 }

@@ -158,6 +158,7 @@ const _frontends =
         ui: [
           'environment_capability_bridge.dart',
           'main_content_bridge.dart',
+          'owning_backend_bridge.dart',
           'session_presentation_lifecycle_bridge.dart',
         ],
         contract: 'diff_viewer',

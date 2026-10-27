@@ -522,6 +522,7 @@ final class ProcessSpy implements AuthorizedEnvironmentBufferedProcessService {
   final Directory home;
   String sessionId = 'review-session';
   String environmentId = 'selected-review-environment';
+  int identityCalls = 0;
   final requests = <EnvironmentBufferedProcessRequest>[];
   final _active = <Process>{};
   ProcessIntercept? intercept;
@@ -530,11 +531,13 @@ final class ProcessSpy implements AuthorizedEnvironmentBufferedProcessService {
       requests.where(isWrite);
 
   @override
-  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async =>
-      AuthorizedEnvironmentIdentity(
-        sessionId: sessionId,
-        environmentId: environmentId,
-      );
+  Future<AuthorizedEnvironmentIdentity> capturedIdentity() async {
+    identityCalls++;
+    return AuthorizedEnvironmentIdentity(
+      sessionId: sessionId,
+      environmentId: environmentId,
+    );
+  }
 
   @override
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(

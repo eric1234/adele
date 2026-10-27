@@ -7,6 +7,7 @@ import 'package:adele_desktop/frontend/backend_invocation_bridge.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
 import 'package:adele_desktop/frontend/environment_capability_diagnostics.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
+import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
@@ -28,6 +29,7 @@ void main() {
   late SessionPresentationLifecycleBridge lifecycle;
   late ExtensionRegistry sourceRegistry;
   late _Source source;
+  late _DraftBackend draft;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('diff-viewer-eval-');
@@ -45,10 +47,12 @@ void main() {
     lifecycle = SessionPresentationLifecycleBridge(isActive: () => true);
     sourceRegistry = ExtensionRegistry();
     source = _Source();
+    draft = _DraftBackend();
   });
   tearDown(() async {
     frontend.invalidate();
     await port.close();
+    await draft.close();
   });
 
   ExtensionRegistration registerSource({String id = 'test.source'}) {
@@ -61,7 +65,14 @@ void main() {
     return registration;
   }
 
-  Future<void> mount(WidgetTester tester, {Key? key}) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    Key? key,
+    bool withDraft = false,
+    String sessionId = 'canonical',
+    String environmentId = 'canonical-environment',
+  }) async {
+    final capturedDraft = draft;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -71,7 +82,10 @@ void main() {
             entrypoint: 'buildDiffPane',
             createBridge: () => PreparedFrontendBridges([
               MainContentBridge(
-                context: const {'sessionId': 'canonical'},
+                context: {
+                  'sessionId': sessionId,
+                  'environmentKey': environmentId,
+                },
                 isActive: () => true,
                 resolveSourceDisplay: DisplaySourceFileResolver(
                   sourceRegistry,
@@ -79,6 +93,14 @@ void main() {
               ),
               lifecycle,
               port,
+              OwningBackendBridge(
+                channels: {if (withDraft) reviewDraftServiceId: capturedDraft},
+                validateBinding: () {
+                  if (!capturedDraft.active) {
+                    throw StateError('private retired draft backend');
+                  }
+                },
+              ),
             ]),
           ),
         ),
@@ -86,6 +108,12 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    expect(
+      find.text('Refresh'),
+      findsOneWidget,
+      reason:
+          'Initial presentation: ${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).toList()}; snapshot calls=${port.methods}; draft calls=${draft.methods}',
+    );
   }
 
   void setLayerReview({
@@ -117,6 +145,1811 @@ void main() {
       uncommitted: port.service.uncommitted,
     );
   }
+
+  group('pending review comments', () {
+    Future<void> mountComments(
+      WidgetTester tester, {
+      Size size = const Size(1100, 1800),
+    }) async {
+      await tester.binding.setSurfaceSize(size);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await mount(tester, withDraft: true);
+    }
+
+    Future<void> save(WidgetTester tester, String text) async {
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.enterText(find.byType(TextField), text);
+      await tester.tap(find.widgetWithText(TextButton, 'Save comment'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+
+    Future<void> remountComments(WidgetTester tester, String sessionId) async {
+      await tester.pumpWidget(const SizedBox());
+      final previousPort = port;
+      addTearDown(previousPort.close);
+      port = _Port();
+      port.service.value = _commentSnapshot();
+      lifecycle = SessionPresentationLifecycleBridge(isActive: () => true);
+      await mount(tester, withDraft: true, sessionId: sessionId);
+    }
+
+    Finder paneScroll() => find
+        .descendant(
+          of: find.byType(ListView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+
+    Future<void> reveal(
+      WidgetTester tester,
+      Finder target, {
+      double delta = 200,
+    }) async {
+      await tester.scrollUntilVisible(target, delta, scrollable: paneScroll());
+      await tester.pumpAndSettle();
+      expect(target.hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+
+    for (final line in [
+      ('shared context', ReviewComparisonSide.newSide, 20, 0),
+      ('removed line', ReviewComparisonSide.oldSide, 11, 1),
+      ('added line', ReviewComparisonSide.newSide, 21, 2),
+    ]) {
+      testWidgets(
+        'captures exact ${line.$1} single-line anchor without approval',
+        (tester) async {
+          port.service.value = _commentSnapshot();
+          await mountComments(tester);
+          expect(
+            find.widgetWithText(TextButton, 'Comment'),
+            findsNWidgets(3),
+            reason:
+                'Visible: ${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).toList()}; draft=${draft.methods}; snapshots=${draft.snapshots}',
+          );
+          expect(find.text(r'\ No newline at end of file'), findsOneWidget);
+          expect(port.reviewResolutions, 0);
+          await tester.tap(_lineComment(line.$1));
+          await tester.pumpAndSettle();
+          await save(tester, '  exact \u03bb feedback  ');
+          final created = draft.creates.single;
+          expect(created.sessionId, 'canonical');
+          expect(created.text, '  exact \u03bb feedback  ');
+          final anchor = created.anchor;
+          expect(anchor.environmentId, 'canonical-environment');
+          expect(anchor.relativePath, 'dir/notes [deleted] "two words".txt');
+          expect(anchor.layer, ReviewComparisonLayer.unstaged);
+          expect(anchor.side, line.$2);
+          expect(anchor.startLine, line.$3);
+          expect(anchor.endLine, line.$3);
+          expect(anchor.hunkIndex, 0);
+          expect(anchor.lineIndex, line.$4);
+          expect(anchor.sourceExcerpt, line.$4 == 2 ? line.$1 : '${line.$1}\n');
+          expect(anchor.comparisonIdentity, 'comparison:original');
+          expect(draft.methods, [
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceCreateCommentId,
+          ]);
+          expect(draft.payloads.first, {'sessionId': 'canonical'});
+          expect(find.text('Pending review comments (1)'), findsOneWidget);
+          expect(find.text('  exact \u03bb feedback  '), findsOneWidget);
+          expect(port.review.operations, isEmpty);
+          expect(source.paths, isEmpty);
+        },
+      );
+    }
+
+    for (final (kind, noNewline) in [
+      ('added', false),
+      ('added', true),
+      ('deleted', false),
+      ('deleted', true),
+    ]) {
+      testWidgets(
+        '$kind zero opposite side captures CRLF noNewline=$noNewline excerpt unchanged',
+        (tester) async {
+          final addition = kind == 'added';
+          port.service.value = _commentSnapshot(
+            changeKind: kind,
+            hunks: [
+              DiffHunk(
+                oldStart: addition ? 0 : 1,
+                oldCount: addition ? 0 : 1,
+                newStart: addition ? 1 : 0,
+                newCount: addition ? 1 : 0,
+                lines: [
+                  DiffLine(
+                    kind: addition ? 'addition' : 'deletion',
+                    text: 'exact CRLF\r',
+                    noNewline: noNewline,
+                  ),
+                ],
+              ),
+            ],
+          );
+          await mountComments(tester);
+          expect(find.widgetWithText(TextButton, 'Comment'), findsOneWidget);
+          await tester.tap(_lineComment('exact CRLF'));
+          await tester.pumpAndSettle();
+          await save(tester, 'line ending feedback');
+          final anchor = draft.creates.single.anchor;
+          expect(anchor.startLine, 1);
+          expect(anchor.endLine, 1);
+          expect(
+            anchor.side,
+            addition
+                ? ReviewComparisonSide.newSide
+                : ReviewComparisonSide.oldSide,
+          );
+          expect(
+            anchor.sourceExcerpt,
+            noNewline ? 'exact CRLF\r' : 'exact CRLF\r\n',
+          );
+          expect(anchor.lineIndex, 0);
+          expect(
+            find.text(r'\ No newline at end of file'),
+            noNewline ? findsOneWidget : findsNothing,
+          );
+        },
+      );
+    }
+
+    testWidgets(
+      'coordinates remain original across hunks and no-newline display rows',
+      (tester) async {
+        port.service.value = _commentSnapshot(
+          hunks: [
+            DiffHunk(
+              oldStart: 1,
+              oldCount: 0,
+              newStart: 1,
+              newCount: 1,
+              lines: const [
+                DiffLine(kind: 'addition', text: 'first hunk', noNewline: true),
+              ],
+            ),
+            DiffHunk(
+              oldStart: 80,
+              oldCount: 1,
+              newStart: 91,
+              newCount: 2,
+              lines: const [
+                DiffLine(
+                  kind: 'context',
+                  text: 'second context',
+                  noNewline: true,
+                ),
+                DiffLine(
+                  kind: 'addition',
+                  text: 'second addition',
+                  noNewline: false,
+                ),
+              ],
+            ),
+          ],
+        );
+        await mountComments(tester);
+        await tester.tap(_lineComment('second addition'));
+        await tester.pumpAndSettle();
+        await save(tester, 'second hunk feedback');
+        final anchor = draft.creates.single.anchor;
+        expect(anchor.hunkIndex, 1);
+        expect(anchor.lineIndex, 1);
+        expect(anchor.startLine, 92);
+        expect(anchor.sourceExcerpt, 'second addition\n');
+      },
+    );
+
+    testWidgets(
+      'inclusive maximum line and excerpt bounds remain commentable',
+      (tester) async {
+        final excerpt = 'x' * ReviewDraftLimits.maxExcerptLength;
+        port.service.value = _commentSnapshot(
+          hunks: [
+            DiffHunk(
+              oldStart: 0,
+              oldCount: 0,
+              newStart: ReviewDraftLimits.maxLine,
+              newCount: 1,
+              lines: [
+                DiffLine(kind: 'addition', text: excerpt, noNewline: true),
+              ],
+            ),
+          ],
+        );
+        await mountComments(tester);
+        await tester.tap(find.widgetWithText(TextButton, 'Comment'));
+        await tester.pumpAndSettle();
+        await save(tester, 'at bounds');
+        expect(
+          draft.creates.single.anchor.startLine,
+          ReviewDraftLimits.maxLine,
+        );
+        expect(draft.creates.single.anchor.sourceExcerpt, excerpt);
+      },
+    );
+
+    testWidgets(
+      'unsafe anchor bounds withhold comments without breaking readable diff',
+      (tester) async {
+        await mountComments(tester);
+        for (final entry in [
+          (0, 'zero line'),
+          (ReviewDraftLimits.maxLine + 1, 'overflow line'),
+          (1, 'x' * (ReviewDraftLimits.maxExcerptLength + 1)),
+        ]) {
+          port.service.value = _commentSnapshot(
+            hunks: [
+              DiffHunk(
+                oldStart: 0,
+                oldCount: 0,
+                newStart: entry.$1,
+                newCount: 1,
+                lines: [
+                  DiffLine(kind: 'addition', text: entry.$2, noNewline: false),
+                ],
+              ),
+            ],
+          );
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(find.widgetWithText(TextButton, 'Comment'), findsNothing);
+          expect(find.textContaining(entry.$2), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        }
+        expect(draft.creates, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'comment eligibility requires certified text independently of approval',
+      (tester) async {
+        await mountComments(tester);
+        for (final entry in [
+          ('modified', 'text', null),
+          ('modified', 'binary', 'comparison'),
+          ('modified', 'oversized', 'comparison'),
+          ('modified', 'unsupported', 'comparison'),
+          ('conflicted', 'text', 'comparison'),
+          ('unsupported', 'text', 'comparison'),
+        ]) {
+          port.service.value = _commentSnapshot(
+            changeKind: entry.$1,
+            contentStatus: entry.$2,
+            identity: entry.$3,
+          );
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(
+            find.widgetWithText(TextButton, 'Comment'),
+            findsNothing,
+            reason: '$entry',
+          );
+          expect(find.textContaining('[${entry.$1}]'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        }
+        expect(draft.creates, isEmpty);
+        expect(port.review.operations, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'invalid paths and comparison identities never become comment selections',
+      (tester) async {
+        await mountComments(tester);
+        for (final path in [
+          '',
+          '/absolute.txt',
+          'a/../b',
+          '.git/config',
+          r'a\b',
+          'C:drive.txt',
+          'a//b',
+          'bad\u0000path',
+          'x' * (ReviewDraftLimits.maxPathLength + 1),
+        ]) {
+          port.service.value = _commentSnapshot(path: path);
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(
+            find.widgetWithText(TextButton, 'Comment'),
+            findsNothing,
+            reason: path,
+          );
+          expect(tester.takeException(), isNull);
+        }
+        for (final identity in [
+          '',
+          ' ',
+          'bad\nidentity',
+          '\u03bb',
+          'x' * (ReviewDraftLimits.maxComparisonIdentityLength + 1),
+        ]) {
+          port.service.value = _commentSnapshot(identity: identity);
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(
+            find.widgetWithText(TextButton, 'Comment'),
+            findsNothing,
+            reason: identity,
+          );
+          expect(tester.takeException(), isNull);
+        }
+        expect(draft.creates, isEmpty);
+      },
+    );
+
+    for (final layer in ReviewComparisonLayer.values) {
+      testWidgets(
+        '${layer.name} comments retain their own comparison and typed layer',
+        (tester) async {
+          port.service.task = _task(
+            committed: _commentSnapshot(identity: 'committed:comparison'),
+            uncommitted: _uncommitted(
+              staged: _commentSnapshot(identity: 'staged:comparison'),
+              unstaged: _commentSnapshot(identity: 'unstaged:comparison'),
+              conflicts: _commentSnapshot(
+                identity: 'conflict:never-comment',
+              ).files,
+            ),
+          );
+          await mountComments(tester);
+          await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+          await tester.pumpAndSettle();
+          expect(find.widgetWithText(TextButton, 'Comment'), findsNWidgets(9));
+          final index = layer == ReviewComparisonLayer.committed
+              ? 0
+              : layer == ReviewComparisonLayer.staged
+              ? 3
+              : 6;
+          await tester.tap(
+            find.widgetWithText(TextButton, 'Comment').at(index + 2),
+          );
+          await tester.pumpAndSettle();
+          await save(tester, '${layer.name} feedback');
+          expect(draft.creates.single.anchor.layer, layer);
+          expect(
+            draft.creates.single.anchor.comparisonIdentity,
+            '${layer.name}:comparison',
+          );
+          expect(port.reviewResolutions, 0);
+          expect(source.paths, isEmpty);
+        },
+      );
+    }
+
+    testWidgets(
+      'same and different locations create distinct comments in authoritative order',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        await mountComments(tester);
+        for (final entry in [
+          ('added line', 'same text'),
+          ('added line', 'same text'),
+          ('removed line', 'different location'),
+        ]) {
+          await tester.tap(_lineComment(entry.$1));
+          await tester.pumpAndSettle();
+          await save(tester, entry.$2);
+        }
+        expect(draft.comments().map((comment) => comment.id), [
+          'authoritative-101',
+          'authoritative-102',
+          'authoritative-103',
+        ]);
+        expect(draft.comments().map((comment) => comment.sequence), [
+          101,
+          102,
+          103,
+        ]);
+        expect(find.text('same text'), findsNWidgets(2));
+        expect(find.text('different location'), findsOneWidget);
+        expect(find.text('Pending review comments (3)'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('same text').last).dy,
+          lessThan(tester.getTopLeft(find.text('different location')).dy),
+        );
+        expect(draft.snapshots, ['canonical']);
+        expect(port.service.calls, 1);
+      },
+    );
+
+    testWidgets(
+      'create update and delete consume authoritative response without refetch or optimistic IDs',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.authoritativeText = 'server-created body';
+        await mountComments(tester);
+        await tester.tap(_lineComment('added line'));
+        await tester.pumpAndSettle();
+        await save(tester, 'submitted body');
+        expect(find.text('server-created body'), findsOneWidget);
+        await tester.tap(_savedCommentAction('server-created body', 'Edit'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'server-created body',
+        );
+        draft.authoritativeText = 'server-updated body';
+        await save(tester, 'edited body');
+        expect(draft.updates.single, (
+          sessionId: 'canonical',
+          id: 'authoritative-101',
+          version: 1,
+          text: 'edited body',
+        ));
+        expect(find.text('server-updated body'), findsOneWidget);
+        expect(find.text('server-created body'), findsNothing);
+        await tester.tap(_savedCommentAction('server-updated body', 'Delete'));
+        await tester.pumpAndSettle();
+        expect(draft.deletes.single, (
+          sessionId: 'canonical',
+          id: 'authoritative-101',
+          version: 2,
+        ));
+        expect(find.text('Pending review comments (0)'), findsOneWidget);
+        expect(find.text('server-updated body'), findsNothing);
+        expect(draft.snapshots, ['canonical']);
+        expect(port.service.calls, 1);
+        expect(port.review.operations, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'editing a middle comment preserves anchor ID sequence and sibling order',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().addAll([
+          _comment(id: 'a', text: 'first', sequence: 1),
+          _comment(id: 'b', text: 'middle', sequence: 2),
+          _comment(id: 'c', text: 'last', sequence: 3),
+        ]);
+        final original = draft.comments()[1];
+        await mountComments(tester);
+        await tester.tap(_savedCommentAction('middle', 'Edit'));
+        await tester.pumpAndSettle();
+        await save(tester, 'edited middle');
+        expect(draft.comments().map((comment) => comment.id), ['a', 'b', 'c']);
+        expect(draft.comments()[1].anchor, same(original.anchor));
+        expect(draft.comments()[1].sequence, original.sequence);
+        expect(draft.comments()[1].version, 4);
+        expect(
+          tester.getTopLeft(find.text('first')).dy,
+          lessThan(tester.getTopLeft(find.text('edited middle')).dy),
+        );
+        expect(
+          tester.getTopLeft(find.text('edited middle')).dy,
+          lessThan(tester.getTopLeft(find.text('last')).dy),
+        );
+        await tester.tap(_savedCommentAction('edited middle', 'Delete'));
+        await tester.pumpAndSettle();
+        expect(draft.comments().map((comment) => comment.id), ['a', 'c']);
+        expect(find.text('Pending review comments (2)'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'one retained editor survives refresh scope changes and lazy row disposal',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        await mountComments(tester);
+        await tester.tap(_lineComment('added line'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'retained unsaved text');
+        final controller = tester
+            .widget<TextField>(find.byType(TextField))
+            .controller;
+        final listKey = tester.widget<ListView>(find.byType(ListView)).key;
+        port.service.value = _commentSnapshot(
+          identity: 'comparison:new',
+          hunks: [
+            DiffHunk(
+              oldStart: 0,
+              oldCount: 0,
+              newStart: 1,
+              newCount: 250,
+              lines: [
+                for (var index = 0; index < 250; index++)
+                  DiffLine(
+                    kind: 'addition',
+                    text: 'lazy line $index',
+                    noNewline: false,
+                  ),
+              ],
+            ),
+          ],
+        );
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(tester.widget<ListView>(find.byType(ListView)).key, listKey);
+        FocusManager.instance.primaryFocus?.unfocus();
+        await tester.pumpAndSettle();
+        await tester.drag(find.byType(ListView).first, const Offset(0, -5000));
+        await tester.pumpAndSettle();
+        expect(find.byType(TextField), findsNothing);
+        expect(controller!.text, 'retained unsaved text');
+        await reveal(tester, find.byType(TextField), delta: -500);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller,
+          same(controller),
+        );
+        expect(controller.text, 'retained unsaved text');
+        await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+        await tester.pumpAndSettle();
+        expect(tester.widget<ListView>(find.byType(ListView)).key, listKey);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller,
+          same(controller),
+        );
+        expect(controller.text, 'retained unsaved text');
+        await save(tester, controller.text);
+        expect(
+          draft.creates.single.anchor.comparisonIdentity,
+          'comparison:original',
+        );
+        expect(draft.creates.single.anchor.startLine, 21);
+        expect(draft.creates.single.anchor.sourceExcerpt, 'added line');
+        expect(draft.snapshots, List.filled(3, 'canonical'));
+      },
+    );
+
+    testWidgets(
+      'unsaved text refuses departure and another selection until explicit cancel',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().add(_comment());
+        await mountComments(tester);
+        final otherLine = tester.widget<TextButton>(
+          _lineComment('removed line'),
+        );
+        await tester.tap(_lineComment('added line'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'do not discard');
+        otherLine.onPressed!();
+        await tester.pumpAndSettle();
+        expect(find.byType(TextField), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'do not discard',
+        );
+        await expectLater(lifecycle.prepareToDeactivate(), throwsStateError);
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Save or cancel the comment before leaving this Session.'),
+          findsOneWidget,
+        );
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'do not discard',
+        );
+        expect(draft.creates, isEmpty);
+        await tester.tap(find.widgetWithText(TextButton, 'Cancel editing'));
+        await tester.pumpAndSettle();
+        expect(find.byType(TextField), findsNothing);
+        expect(find.text('saved feedback'), findsOneWidget);
+        await lifecycle.prepareToDeactivate();
+        expect(draft.creates, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'empty whitespace and overlong comment text never start a mutation',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        await mountComments(tester);
+        await tester.tap(_lineComment('added line'));
+        await tester.pumpAndSettle();
+        for (final text in [
+          '',
+          '  \t  ',
+          'x' * (ReviewDraftLimits.maxTextLength + 1),
+        ]) {
+          await tester.enterText(find.byType(TextField), text);
+          final buttons = find.widgetWithText(TextButton, 'Save comment');
+          if (buttons.evaluate().isNotEmpty) {
+            tester.widget<TextButton>(buttons).onPressed?.call();
+          }
+          await tester.pumpAndSettle();
+          expect(draft.creates, isEmpty);
+          expect(tester.takeException(), isNull);
+        }
+        await save(tester, 'corrected feedback');
+        expect(draft.creates.single.text, 'corrected feedback');
+      },
+    );
+
+    testWidgets(
+      'existing multiline body remains fully inspectable and cannot be overwritten',
+      (tester) async {
+        final body =
+            'first line\r\n  second line\n${List.generate(40, (index) => 'line $index').join('\n')}\nlast line';
+        port.service.value = _commentSnapshot();
+        draft.comments().add(_comment(text: body));
+        await mountComments(tester);
+        expect(find.text(body), findsOneWidget);
+        final edit = _savedCommentAction(body, 'Edit');
+        final hasEditor = edit.evaluate().isNotEmpty;
+        if (hasEditor) {
+          await tester.tap(edit);
+          await tester.pumpAndSettle();
+        }
+        expect(find.byType(TextField), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Save comment'), findsNothing);
+        expect(find.text(body), findsWidgets);
+        for (final text in tester.widgetList<Text>(find.text(body))) {
+          expect(text.maxLines, isNull);
+        }
+        if (hasEditor) {
+          final inspection = find
+              .ancestor(
+                of: find.text(body).first,
+                matching: find.byType(SingleChildScrollView),
+              )
+              .first;
+          await tester.drag(inspection, const Offset(0, -400));
+          await tester.pumpAndSettle();
+          final scrollable = find.descendant(
+            of: inspection,
+            matching: find.byType(Scrollable),
+          );
+          expect(
+            tester.state<ScrollableState>(scrollable).position.pixels,
+            greaterThan(0),
+          );
+        }
+        expect(draft.updates, isEmpty);
+        expect(draft.comments().single.text, body);
+        final cancel = find.widgetWithText(TextButton, 'Cancel editing');
+        if (cancel.evaluate().isNotEmpty) {
+          await tester.tap(cancel);
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(_savedCommentAction(body, 'Delete'));
+        await tester.pumpAndSettle();
+        expect(draft.deletes.single.id, 'saved-1');
+        expect(find.text('Pending review comments (0)'), findsOneWidget);
+      },
+    );
+
+    for (final operation in ['create', 'update', 'delete']) {
+      testWidgets(
+        'pending $operation blocks duplicate mutations and departure, not reads or Source',
+        (tester) async {
+          registerSource();
+          port.service.value = _commentSnapshot();
+          draft.comments().add(_comment());
+          await mountComments(tester);
+          final reload = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, 'Reload comments'),
+          );
+          final otherDelete = tester.widget<TextButton>(
+            _savedCommentAction('saved feedback', 'Delete'),
+          );
+          final gate = draft.holdMutation();
+          late TextButton action;
+          if (operation == 'delete') {
+            action = tester.widget<TextButton>(
+              _savedCommentAction('saved feedback', 'Delete'),
+            );
+          } else {
+            await tester.tap(
+              operation == 'create'
+                  ? _lineComment('added line')
+                  : _savedCommentAction('saved feedback', 'Edit'),
+            );
+            await tester.pumpAndSettle();
+            await tester.enterText(find.byType(TextField), 'pending body');
+            action = tester.widget<TextButton>(
+              find.widgetWithText(TextButton, 'Save comment'),
+            );
+          }
+          action.onPressed!();
+          action.onPressed!();
+          reload.onPressed!();
+          otherDelete.onPressed!();
+          await tester.pumpAndSettle();
+          expect(
+            draft.creates.length + draft.updates.length + draft.deletes.length,
+            1,
+          );
+          expect(find.text('Pending review comments (1)'), findsOneWidget);
+          expect(
+            find.text('pending body'),
+            operation == 'delete' ? findsNothing : findsWidgets,
+          );
+          await expectLater(lifecycle.prepareToDeactivate(), throwsStateError);
+          await tester.pumpAndSettle();
+          expect(
+            find.text(
+              'Save or cancel the comment before leaving this Session.',
+            ),
+            findsOneWidget,
+          );
+          await tester.tap(find.text('Open in Source'));
+          await tester.pumpAndSettle();
+          expect(source.paths, ['dir/notes [deleted] "two words".txt']);
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(port.service.calls, 2);
+          expect(draft.snapshots, ['canonical']);
+          action.onPressed!();
+          await tester.pumpAndSettle();
+          expect(
+            draft.creates.length + draft.updates.length + draft.deletes.length,
+            1,
+          );
+          gate.complete();
+          await tester.pumpAndSettle();
+          expect(
+            find.text(
+              'Pending review comments (${operation == 'create'
+                  ? 2
+                  : operation == 'delete'
+                  ? 0
+                  : 1})',
+            ),
+            findsOneWidget,
+          );
+          expect(draft.snapshots, ['canonical']);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final operation in ['create', 'update', 'delete']) {
+      testWidgets(
+        'uncertain $operation requires explicit reload and never replays a stale callback',
+        (tester) async {
+          port.service.value = _commentSnapshot();
+          draft.comments().add(_comment());
+          await mountComments(tester);
+          draft.afterMutationFailure = const ReviewDraftFailure(
+            code: 'outcome_uncertain',
+            message: 'private lost acknowledgement',
+          );
+          late TextButton old;
+          if (operation == 'delete') {
+            old = tester.widget<TextButton>(
+              _savedCommentAction('saved feedback', 'Delete'),
+            );
+          } else {
+            await tester.tap(
+              operation == 'create'
+                  ? _lineComment('added line')
+                  : _savedCommentAction('saved feedback', 'Edit'),
+            );
+            await tester.pumpAndSettle();
+            await tester.enterText(find.byType(TextField), 'unconfirmed body');
+            old = tester.widget<TextButton>(
+              find.widgetWithText(TextButton, 'Save comment'),
+            );
+          }
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          expect(
+            find.text(
+              'Comment change not confirmed. Reload comments before trying again.',
+            ),
+            findsOneWidget,
+          );
+          expect(find.textContaining('private'), findsNothing);
+          expect(draft.snapshots, ['canonical']);
+          expect(find.text('Pending review comments (1)'), findsOneWidget);
+          old.onPressed!();
+          // Refresh explicitly rereads both sources, never replays the mutation.
+          await tester.tap(find.text('Refresh'));
+          await tester.pumpAndSettle();
+          expect(
+            draft.creates.length + draft.updates.length + draft.deletes.length,
+            1,
+          );
+          expect(draft.snapshots, List.filled(2, 'canonical'));
+          if (operation != 'delete') {
+            expect(
+              tester.widget<TextField>(find.byType(TextField)).controller!.text,
+              'unconfirmed body',
+            );
+          }
+          draft.afterMutationFailure = null;
+          await tester.tap(find.widgetWithText(TextButton, 'Reload comments'));
+          await tester.pumpAndSettle();
+          expect(draft.snapshots, List.filled(3, 'canonical'));
+          expect(
+            find.text(
+              'Pending review comments (${operation == 'create'
+                  ? 2
+                  : operation == 'delete'
+                  ? 0
+                  : 1})',
+            ),
+            findsOneWidget,
+          );
+          old.onPressed!();
+          await tester.pumpAndSettle();
+          expect(
+            draft.creates.length + draft.updates.length + draft.deletes.length,
+            1,
+          );
+          if (operation != 'delete') {
+            expect(
+              tester.widget<TextField>(find.byType(TextField)).controller!.text,
+              'unconfirmed body',
+            );
+            final saveButton = find.widgetWithText(TextButton, 'Save comment');
+            if (saveButton.evaluate().isNotEmpty) {
+              tester.widget<TextButton>(saveButton).onPressed?.call();
+            }
+            await tester.pumpAndSettle();
+            expect(
+              draft.creates.length +
+                  draft.updates.length +
+                  draft.deletes.length,
+              1,
+            );
+            await tester.tap(find.widgetWithText(TextButton, 'Cancel editing'));
+            await tester.pumpAndSettle();
+            await tester.tap(_savedCommentAction('unconfirmed body', 'Edit'));
+            await tester.pumpAndSettle();
+            await save(tester, 'explicit fresh edit');
+            expect(draft.updates.last.version, operation == 'create' ? 1 : 4);
+            expect(draft.comments().last.text, 'explicit fresh edit');
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'stale update preserves unsaved text through failed and successful explicit reload',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().add(_comment());
+        await mountComments(tester);
+        await tester.tap(_savedCommentAction('saved feedback', 'Edit'));
+        await tester.pumpAndSettle();
+        draft.comments()[0] = _comment(text: 'external change', version: 9);
+        await save(tester, 'local unsaved edit');
+        expect(draft.updates.single.version, 3);
+        expect(
+          find.text(
+            'Comment change not confirmed. Reload comments before trying again.',
+          ),
+          findsOneWidget,
+        );
+        draft.snapshotFailure = StateError('private snapshot failure');
+        await tester.tap(find.text('Reload comments'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'local unsaved edit',
+        );
+        expect(draft.updates, hasLength(1));
+        draft.snapshotFailure = null;
+        await tester.tap(find.text('Reload comments'));
+        await tester.pumpAndSettle();
+        expect(find.text('external change'), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'local unsaved edit',
+        );
+        expect(draft.updates, hasLength(1));
+        await tester.tap(find.text('Cancel editing'));
+        await tester.pumpAndSettle();
+        await tester.tap(_savedCommentAction('external change', 'Edit'));
+        await tester.pumpAndSettle();
+        await save(tester, 'fresh explicit edit');
+        expect(draft.updates.last.version, 9);
+        expect(draft.comments().single.version, 10);
+      },
+    );
+
+    testWidgets(
+      'current outside and outdated labels never rewrite the retained anchor',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().addAll([
+          _comment(text: 'current comment'),
+          _comment(
+            id: 'outside',
+            text: 'outside comment',
+            sequence: 2,
+            anchor: _commentAnchor(layer: ReviewComparisonLayer.committed),
+          ),
+          _comment(
+            id: 'outdated',
+            text: 'outdated comment',
+            sequence: 3,
+            anchor: _commentAnchor(identity: 'comparison:older'),
+          ),
+        ]);
+        await mountComments(tester);
+        expect(find.text('Current location'), findsOneWidget);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsOneWidget,
+        );
+        expect(find.text('Outdated location'), findsOneWidget);
+        port.service.task = _task(
+          committed: _commentSnapshot(),
+          uncommitted: _uncommitted(
+            unstaged: _commentSnapshot(identity: 'comparison:newer'),
+          ),
+        );
+        await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+        await tester.pumpAndSettle();
+        expect(find.text('Current location'), findsOneWidget);
+        expect(find.text('Outdated location'), findsNWidgets(2));
+        expect(
+          draft.comments().first.anchor.comparisonIdentity,
+          'comparison:original',
+        );
+        expect(
+          draft.comments().last.anchor.comparisonIdentity,
+          'comparison:older',
+        );
+        expect(draft.updates, isEmpty);
+        expect(draft.snapshots, List.filled(2, 'canonical'));
+      },
+    );
+
+    for (final layer in ReviewComparisonLayer.values) {
+      testWidgets(
+        '${layer.name} scope classification separates working conflicts from inspected history',
+        (tester) async {
+          final conflict = _commentSnapshot(
+            identity: null,
+            changeKind: 'conflicted',
+            contentStatus: 'unsupported',
+            hunks: [],
+          );
+          port.service.value = conflict;
+          port.service.uncommitted = _uncommitted(conflicts: conflict.files);
+          port.service.task = _task(uncommitted: port.service.uncommitted);
+          final saved = _comment(
+            text: 'conflicted location feedback',
+            anchor: _commentAnchor(layer: layer),
+          );
+          draft.comments().addAll([
+            saved,
+            _comment(
+              id: 'missing-path',
+              text: 'genuinely missing location',
+              sequence: 2,
+              anchor: _commentAnchor(layer: layer, path: 'missing.txt'),
+            ),
+          ]);
+          await mountComments(tester);
+          final conflictedCard = find
+              .ancestor(
+                of: find.text(saved.text),
+                matching: find.byType(Column),
+              )
+              .first;
+          for (final scope in [
+            'Unstaged changes',
+            'Uncommitted changes',
+            'Task / Branch',
+            'Unstaged changes',
+          ]) {
+            await tester.tap(find.widgetWithText(TextButton, scope));
+            await tester.pumpAndSettle();
+            final committedInspected =
+                layer == ReviewComparisonLayer.committed &&
+                scope == 'Task / Branch';
+            expect(
+              find.descendant(
+                of: conflictedCard,
+                matching: find.text('Outside current scope / not inspected'),
+              ),
+              committedInspected ? findsNothing : findsOneWidget,
+            );
+            expect(
+              find.descendant(
+                of: conflictedCard,
+                matching: find.text('Outdated location'),
+              ),
+              committedInspected ? findsOneWidget : findsNothing,
+            );
+            expect(find.widgetWithText(TextButton, 'Comment'), findsNothing);
+            if (scope == 'Task / Branch') {
+              // Working conflicts cannot mask either inspected missing history
+              // or the unrelated missing path in an ordinary comparison.
+              expect(
+                find.text('Outdated location'),
+                findsNWidgets(committedInspected ? 2 : 1),
+              );
+            }
+            expect(tester.takeException(), isNull);
+          }
+          final original = _commentSnapshot();
+          port.service.task = _task(
+            committed: original,
+            uncommitted: _uncommitted(staged: original, unstaged: original),
+          );
+          await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+          await tester.pumpAndSettle();
+          expect(
+            find.descendant(
+              of: conflictedCard,
+              matching: find.text('Current location'),
+            ),
+            findsOneWidget,
+          );
+          expect(find.text('Outdated location'), findsOneWidget);
+          expect(draft.comments().first, same(saved));
+          expect(
+            draft.comments().first.anchor.comparisonIdentity,
+            'comparison:original',
+          );
+          expect(draft.creates, isEmpty);
+          expect(draft.updates, isEmpty);
+          expect(draft.deletes, isEmpty);
+        },
+      );
+    }
+
+    testWidgets(
+      'certified committed history remains commentable beside a same-path working conflict',
+      (tester) async {
+        final conflict = _commentSnapshot(
+          identity: null,
+          changeKind: 'conflicted',
+          contentStatus: 'unsupported',
+          hunks: [],
+        );
+        port.service.value = conflict;
+        port.service.uncommitted = _uncommitted(conflicts: conflict.files);
+        port.service.task = _task(
+          committed: _commentSnapshot(),
+          uncommitted: port.service.uncommitted,
+        );
+        final original = _comment(
+          text: 'saved committed feedback',
+          anchor: _commentAnchor(layer: ReviewComparisonLayer.committed),
+        );
+        draft.comments().add(original);
+        await mountComments(tester);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsOneWidget,
+        );
+        await tester.tap(find.widgetWithText(TextButton, 'Task / Branch'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('[conflicted]'), findsOneWidget);
+        expect(find.text('Current location'), findsOneWidget);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsNothing,
+        );
+        expect(find.text('Outdated location'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Comment'), findsNWidgets(3));
+        await tester.tap(_lineComment('added line'));
+        await tester.pumpAndSettle();
+        expect(find.text('Current location'), findsNWidgets(2));
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsNothing,
+        );
+        await save(tester, 'new committed feedback');
+        final created = draft.creates.single;
+        expect(created.sessionId, 'canonical');
+        expect(created.text, 'new committed feedback');
+        expect(created.anchor.environmentId, 'canonical-environment');
+        expect(created.anchor.relativePath, original.anchor.relativePath);
+        expect(created.anchor.layer, ReviewComparisonLayer.committed);
+        expect(created.anchor.side, ReviewComparisonSide.newSide);
+        expect(created.anchor.startLine, 21);
+        expect(created.anchor.endLine, 21);
+        expect(created.anchor.hunkIndex, 0);
+        expect(created.anchor.lineIndex, 2);
+        expect(created.anchor.sourceExcerpt, 'added line');
+        expect(created.anchor.comparisonIdentity, 'comparison:original');
+        expect(draft.comments().map((comment) => comment.id), [
+          'saved-1',
+          'authoritative-101',
+        ]);
+        expect(draft.comments().map((comment) => comment.version), [3, 1]);
+        expect(find.text('Pending review comments (2)'), findsOneWidget);
+        expect(find.text('Current location'), findsNWidgets(2));
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsNothing,
+        );
+        expect(draft.snapshots, List.filled(2, 'canonical'));
+
+        port.service.task = _task(
+          committed: _commentSnapshot(identity: 'comparison:committed-changed'),
+          uncommitted: port.service.uncommitted,
+        );
+        await tester.tap(find.text('Refresh'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('[conflicted]'), findsOneWidget);
+        expect(find.text('Outdated location'), findsNWidgets(2));
+        expect(find.text('Current location'), findsNothing);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsNothing,
+        );
+        expect(find.text('saved committed feedback'), findsOneWidget);
+        expect(find.text('new committed feedback'), findsOneWidget);
+        expect(draft.comments().first, same(original));
+        expect(draft.comments().last.anchor, same(created.anchor));
+        expect(draft.updates, isEmpty);
+        expect(draft.deletes, isEmpty);
+
+        await tester.tap(
+          _savedCommentAction('saved committed feedback', 'Edit'),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Outdated location'), findsNWidgets(3));
+        await save(tester, 'edited historical feedback');
+        expect(draft.updates.single, (
+          sessionId: 'canonical',
+          id: original.id,
+          version: original.version,
+          text: 'edited historical feedback',
+        ));
+        expect(draft.comments().first.anchor, same(original.anchor));
+        expect(draft.comments().first.version, 4);
+        expect(draft.comments().first.sequence, original.sequence);
+        expect(draft.comments().last.anchor, same(created.anchor));
+        expect(
+          draft.comments().every(
+            (comment) =>
+                comment.anchor.comparisonIdentity == 'comparison:original',
+          ),
+          isTrue,
+        );
+        expect(find.text('Outdated location'), findsNWidgets(2));
+        expect(find.text('edited historical feedback'), findsOneWidget);
+        expect(draft.creates, hasLength(1));
+        expect(draft.deletes, isEmpty);
+        expect(draft.snapshots, List.filled(3, 'canonical'));
+        expect(port.review.operations, isEmpty);
+        expect(source.paths, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'stored old-side context is current while unsupported ranges stay inspectable',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().addAll([
+          _comment(
+            text: 'old context feedback',
+            anchor: _commentAnchor(
+              side: ReviewComparisonSide.oldSide,
+              startLine: 10,
+              lineIndex: 0,
+              excerpt: 'shared context\n',
+            ),
+          ),
+          _comment(
+            id: 'range',
+            text: 'range feedback',
+            sequence: 2,
+            anchor: _commentAnchor(
+              startLine: 20,
+              endLine: 21,
+              lineIndex: 0,
+              excerpt: 'shared context\nadded line',
+            ),
+          ),
+        ]);
+        await mountComments(tester);
+        expect(find.text('Current location'), findsOneWidget);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsOneWidget,
+        );
+        expect(find.text('Outdated location'), findsNothing);
+        expect(find.text('shared context\nadded line'), findsOneWidget);
+        await tester.tap(_savedCommentAction('old context feedback', 'Edit'));
+        await tester.pumpAndSettle();
+        await save(tester, 'body edit only');
+        expect(
+          draft.comments().first.anchor.side,
+          ReviewComparisonSide.oldSide,
+        );
+        expect(draft.comments().first.anchor.startLine, 10);
+        expect(draft.comments().last.anchor.endLine, 21);
+      },
+    );
+
+    testWidgets(
+      'uninspected and other-Environment locations remain inspectable and editable without reanchoring',
+      (tester) async {
+        port.service.value = _commentSnapshot(identity: null);
+        draft.comments().addAll([
+          _comment(text: 'uninspected feedback'),
+          _comment(
+            id: 'other-environment',
+            text: 'other Environment feedback',
+            sequence: 2,
+            anchor: _commentAnchor(environmentId: 'other-environment'),
+          ),
+        ]);
+        await mountComments(tester);
+        expect(
+          find.text('Outside current scope / not inspected'),
+          findsNWidgets(2),
+        );
+        expect(find.text('Outdated location'), findsNothing);
+        await tester.tap(
+          _savedCommentAction('other Environment feedback', 'Edit'),
+        );
+        await tester.pumpAndSettle();
+        await save(tester, 'body-only change');
+        final saved = draft.comments().last;
+        expect(saved.anchor.environmentId, 'other-environment');
+        expect(saved.anchor.comparisonIdentity, 'comparison:original');
+        expect(saved.anchor.sourceExcerpt, 'added line');
+        expect(draft.updates.single.sessionId, 'canonical');
+        expect(port.review.operations, isEmpty);
+        expect(source.paths, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'latest explicit reload wins and a foreign Session snapshot is never rendered',
+      (tester) async {
+        port.service.value = _commentSnapshot();
+        draft.comments().add(_comment());
+        await mountComments(tester);
+        final older = draft.holdSnapshot();
+        await tester.tap(find.text('Reload comments'));
+        await tester.pumpAndSettle();
+        draft.comments()[0] = _comment(text: 'fresh snapshot', version: 8);
+        await tester.tap(find.text('Reload comments'));
+        await tester.pumpAndSettle();
+        expect(find.text('fresh snapshot'), findsOneWidget);
+        older.complete(
+          ReviewDraftSnapshot(
+            sessionId: 'canonical',
+            comments: [_comment(text: 'late old snapshot')],
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('fresh snapshot'), findsOneWidget);
+        expect(find.text('late old snapshot'), findsNothing);
+        final foreign = draft.holdSnapshot();
+        await tester.tap(find.text('Reload comments'));
+        await tester.pumpAndSettle();
+        foreign.complete(
+          ReviewDraftSnapshot(
+            sessionId: 'foreign-session',
+            comments: [_comment(text: 'foreign feedback')],
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('foreign feedback'), findsNothing);
+        expect(find.text('fresh snapshot'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Edit'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Comment'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'Git approval preserves unsaved comment while pending comment blocks Git writes',
+      (tester) async {
+        port.service.value = _reviewSnapshot(
+          hunks: 1,
+          commentIdentity: 'independent:comment',
+        );
+        await mountComments(tester);
+        await tester.tap(_lineComment('new-0'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'independent feedback');
+        final controller = tester
+            .widget<TextField>(find.byType(TextField))
+            .controller;
+        final approvalGate = Completer<void>();
+        addTearDown(() {
+          if (!approvalGate.isCompleted) approvalGate.complete();
+        });
+        port.review.pending = approvalGate.future;
+        final oldSave = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Save comment'),
+        );
+        await tester.tap(find.text('Approve'));
+        await tester.pumpAndSettle();
+        oldSave.onPressed!();
+        await tester.pumpAndSettle();
+        expect(draft.creates, isEmpty);
+        expect(controller!.text, 'independent feedback');
+        approvalGate.complete();
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller,
+          same(controller),
+        );
+        expect(draft.snapshots, List.filled(2, 'canonical'));
+        final oldApprove = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Approve'),
+        );
+        final commentGate = draft.holdMutation();
+        await save(tester, controller.text);
+        oldApprove.onPressed!();
+        await tester.pumpAndSettle();
+        expect(port.review.operations, ['approve']);
+        commentGate.complete();
+        await tester.pumpAndSettle();
+        expect(
+          draft.creates.single.anchor.comparisonIdentity,
+          'independent:comment',
+        );
+        expect(draft.snapshots, List.filled(2, 'canonical'));
+        expect(port.review.operations, ['approve']);
+      },
+    );
+
+    testWidgets('comment controls and retained editor fit narrow panes', (
+      tester,
+    ) async {
+      port.service.value = _commentSnapshot();
+      draft.comments().add(_comment());
+      await mountComments(tester);
+      await tester.tap(_lineComment('added line'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'narrow feedback');
+      for (final width in [320.0, 480.0, 900.0]) {
+        await tester.binding.setSurfaceSize(Size(width, 1400));
+        await tester.pumpAndSettle();
+        for (final button in tester.widgetList<TextButton>(
+          find.byType(TextButton),
+        )) {
+          final rect = tester.getRect(find.byWidget(button));
+          expect(rect.left, greaterThanOrEqualTo(0));
+          expect(rect.right, lessThanOrEqualTo(width));
+        }
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'narrow feedback',
+        );
+        expect(tester.takeException(), isNull, reason: 'width=$width');
+      }
+      await save(tester, 'narrow feedback');
+      expect(draft.creates.single.text, 'narrow feedback');
+    });
+
+    for (final height in [400.0, 277.0]) {
+      testWidgets(
+        '320x$height pane keeps virtualized draft and exposes Save and Cancel by scrolling',
+        (tester) async {
+          port.service.value = _commentSnapshot(
+            hunks: [
+              DiffHunk(
+                oldStart: 0,
+                oldCount: 0,
+                newStart: 1,
+                newCount: 250,
+                lines: [
+                  for (var index = 0; index < 250; index++)
+                    DiffLine(
+                      kind: 'addition',
+                      text: 'short-pane line $index',
+                      noNewline: false,
+                    ),
+                ],
+              ),
+            ],
+          );
+          port.service.task = _task(
+            uncommitted: _uncommitted(unstaged: port.service.value),
+          );
+          await mountComments(tester, size: Size(320, height));
+          final originalKey = tester
+              .widget<ListView>(find.byType(ListView))
+              .key;
+          await reveal(tester, find.textContaining('short-pane line 80'));
+          await tester.tap(_lineComment('short-pane line 80'));
+          await tester.pumpAndSettle();
+          final editorKey = tester.widget<ListView>(find.byType(ListView)).key;
+          expect(editorKey, isNot(originalKey));
+          expect(
+            tester.state<ScrollableState>(paneScroll()).position.pixels,
+            0,
+          );
+          await reveal(tester, find.byType(TextField));
+          await tester.enterText(
+            find.byType(TextField),
+            'short-pane unsaved feedback',
+          );
+          final controller = tester
+              .widget<TextField>(find.byType(TextField))
+              .controller!;
+          FocusManager.instance.primaryFocus?.unfocus();
+          await tester.pumpAndSettle();
+          await tester.drag(find.byType(ListView), const Offset(0, -2500));
+          await tester.pumpAndSettle();
+          expect(find.byType(TextField), findsNothing);
+          expect(controller.text, 'short-pane unsaved feedback');
+          expect(tester.widget<ListView>(find.byType(ListView)).key, editorKey);
+          await reveal(tester, find.byType(TextField), delta: -200);
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller,
+            same(controller),
+          );
+
+          for (final action in ['Refresh', 'Task / Branch']) {
+            await reveal(tester, find.widgetWithText(TextButton, action));
+            final position = tester
+                .state<ScrollableState>(paneScroll())
+                .position;
+            await tester.tap(find.widgetWithText(TextButton, action));
+            await tester.pumpAndSettle();
+            expect(
+              tester.widget<ListView>(find.byType(ListView)).key,
+              editorKey,
+            );
+            expect(
+              tester.state<ScrollableState>(paneScroll()).position,
+              same(position),
+            );
+            await reveal(tester, find.byType(TextField), delta: -200);
+            expect(
+              tester.widget<TextField>(find.byType(TextField)).controller,
+              same(controller),
+            );
+            expect(controller.text, 'short-pane unsaved feedback');
+          }
+          await reveal(tester, find.widgetWithText(TextButton, 'Save comment'));
+          final saveRect = tester.getRect(
+            find.widgetWithText(TextButton, 'Save comment'),
+          );
+          expect(saveRect.top, greaterThanOrEqualTo(0));
+          expect(saveRect.bottom, lessThanOrEqualTo(height));
+          await tester.tap(find.widgetWithText(TextButton, 'Save comment'));
+          await tester.pumpAndSettle();
+          expect(draft.creates.single.text, 'short-pane unsaved feedback');
+          expect(draft.creates.single.anchor.startLine, 81);
+          expect(draft.creates.single.anchor.lineIndex, 80);
+          expect(
+            draft.creates.single.anchor.sourceExcerpt,
+            'short-pane line 80\n',
+          );
+          expect(
+            draft.creates.single.anchor.layer,
+            ReviewComparisonLayer.unstaged,
+          );
+          expect(
+            draft.creates.single.anchor.comparisonIdentity,
+            'comparison:original',
+          );
+          expect(
+            tester.widget<ListView>(find.byType(ListView)).key,
+            isNot(editorKey),
+          );
+          expect(
+            tester.state<ScrollableState>(paneScroll()).position.pixels,
+            0,
+          );
+          await reveal(tester, find.text('short-pane unsaved feedback'));
+
+          await reveal(tester, find.widgetWithText(TextButton, 'Edit'));
+          await tester.tap(find.widgetWithText(TextButton, 'Edit'));
+          await tester.pumpAndSettle();
+          final cancelKey = tester.widget<ListView>(find.byType(ListView)).key;
+          await reveal(tester, find.byType(TextField));
+          await tester.enterText(
+            find.byType(TextField),
+            'discard only this edit',
+          );
+          await reveal(
+            tester,
+            find.widgetWithText(TextButton, 'Cancel editing'),
+          );
+          final cancelRect = tester.getRect(
+            find.widgetWithText(TextButton, 'Cancel editing'),
+          );
+          expect(cancelRect.top, greaterThanOrEqualTo(0));
+          expect(cancelRect.bottom, lessThanOrEqualTo(height));
+          await tester.tap(find.widgetWithText(TextButton, 'Cancel editing'));
+          await tester.pumpAndSettle();
+          expect(
+            tester.widget<ListView>(find.byType(ListView)).key,
+            isNot(cancelKey),
+          );
+          expect(
+            tester.state<ScrollableState>(paneScroll()).position.pixels,
+            0,
+          );
+          expect(find.byType(TextField), findsNothing);
+          expect(draft.comments().single.text, 'short-pane unsaved feedback');
+          expect(draft.creates, hasLength(1));
+          expect(draft.updates, isEmpty);
+          expect(draft.deletes, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+
+      testWidgets(
+        '320x$height pane exposes validation pending and uncertain recovery without losing input',
+        (tester) async {
+          port.service.value = _commentSnapshot();
+          draft.comments().add(_comment());
+          await mountComments(tester, size: Size(320, height));
+          await reveal(tester, find.widgetWithText(TextButton, 'Edit'));
+          await tester.tap(find.widgetWithText(TextButton, 'Edit'));
+          await tester.pumpAndSettle();
+          final editorKey = tester.widget<ListView>(find.byType(ListView)).key;
+          await reveal(tester, find.byType(TextField));
+          final controller = tester
+              .widget<TextField>(find.byType(TextField))
+              .controller!;
+          await tester.enterText(find.byType(TextField), '   ');
+          await reveal(tester, find.widgetWithText(TextButton, 'Save comment'));
+          await tester.tap(find.widgetWithText(TextButton, 'Save comment'));
+          await tester.pumpAndSettle();
+          await reveal(
+            tester,
+            find.textContaining('Enter a nonblank single-line comment'),
+          );
+          expect(tester.widget<ListView>(find.byType(ListView)).key, editorKey);
+          expect(draft.updates, isEmpty);
+          await reveal(tester, find.byType(TextField), delta: -200);
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller,
+            same(controller),
+          );
+          await tester.enterText(
+            find.byType(TextField),
+            'short-pane local feedback',
+          );
+          FocusManager.instance.primaryFocus?.unfocus();
+          await tester.pumpAndSettle();
+          await reveal(tester, find.widgetWithText(TextButton, 'Save comment'));
+          final oldSave = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, 'Save comment'),
+          );
+          final gate = draft.holdMutation();
+          draft.afterMutationFailure = StateError('private lost response');
+          await tester.tap(find.widgetWithText(TextButton, 'Save comment'));
+          await tester.pumpAndSettle();
+          await reveal(tester, find.text('Saving comment...'));
+          expect(
+            find.widgetWithText(TextButton, 'Cancel editing'),
+            findsNothing,
+          );
+          expect(draft.updates, hasLength(1));
+          await expectLater(lifecycle.prepareToDeactivate(), throwsStateError);
+          await tester.pumpAndSettle();
+          await reveal(
+            tester,
+            find.text(
+              'Save or cancel the comment before leaving this Session.',
+            ),
+          );
+          gate.complete();
+          await tester.pumpAndSettle();
+          final invalidKey = tester.widget<ListView>(find.byType(ListView)).key;
+          expect(invalidKey, isNot(editorKey));
+          expect(
+            tester.state<ScrollableState>(paneScroll()).position.pixels,
+            0,
+          );
+          expect(controller.text, 'short-pane local feedback');
+          await reveal(
+            tester,
+            find.text(
+              'Selection invalidated. Reload comments, then cancel and select a comment again. Your text is retained.',
+            ),
+          );
+          await reveal(
+            tester,
+            find.text(
+              'Comment change not confirmed. Reload comments before trying again.',
+            ),
+          );
+          oldSave.onPressed!();
+          await tester.pumpAndSettle();
+          expect(draft.updates, hasLength(1));
+
+          draft.afterMutationFailure = null;
+          draft.snapshotFailure = StateError('private read failure');
+          await reveal(
+            tester,
+            find.widgetWithText(TextButton, 'Reload comments'),
+          );
+          await tester.tap(find.widgetWithText(TextButton, 'Reload comments'));
+          await tester.pumpAndSettle();
+          await reveal(
+            tester,
+            find.text(
+              'Comment storage unavailable. Reload comments to try again.',
+            ),
+            delta: -200,
+          );
+          expect(
+            tester.widget<ListView>(find.byType(ListView)).key,
+            invalidKey,
+          );
+          expect(controller.text, 'short-pane local feedback');
+          draft.snapshotFailure = null;
+          await reveal(
+            tester,
+            find.widgetWithText(TextButton, 'Reload comments'),
+          );
+          await tester.tap(find.widgetWithText(TextButton, 'Reload comments'));
+          await tester.pumpAndSettle();
+          expect(
+            tester.widget<ListView>(find.byType(ListView)).key,
+            invalidKey,
+          );
+          await reveal(tester, find.byType(TextField), delta: -200);
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller,
+            same(controller),
+          );
+          expect(controller.text, 'short-pane local feedback');
+          expect(find.widgetWithText(TextButton, 'Save comment'), findsNothing);
+          oldSave.onPressed!();
+          await tester.pumpAndSettle();
+          expect(draft.updates, hasLength(1));
+          await reveal(
+            tester,
+            find.widgetWithText(TextButton, 'Cancel editing'),
+          );
+          await tester.tap(find.widgetWithText(TextButton, 'Cancel editing'));
+          await tester.pumpAndSettle();
+          await reveal(tester, find.widgetWithText(TextButton, 'Edit'));
+          await tester.tap(find.widgetWithText(TextButton, 'Edit'));
+          await tester.pumpAndSettle();
+          await reveal(tester, find.byType(TextField));
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller!.text,
+            'short-pane local feedback',
+          );
+          await tester.enterText(
+            find.byType(TextField),
+            'explicitly confirmed edit',
+          );
+          draft.authoritativeText = 'server-confirmed short-pane edit';
+          await reveal(tester, find.widgetWithText(TextButton, 'Save comment'));
+          await tester.tap(find.widgetWithText(TextButton, 'Save comment'));
+          await tester.pumpAndSettle();
+          await reveal(tester, find.text('server-confirmed short-pane edit'));
+          expect(draft.updates.map((update) => update.version), [3, 4]);
+          expect(draft.comments().single.version, 5);
+          expect(draft.updates.last.text, 'explicitly confirmed edit');
+          expect(draft.snapshots, List.filled(3, 'canonical'));
+          expect(draft.creates, isEmpty);
+          expect(draft.deletes, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final unavailable in ['missing', 'failed']) {
+      testWidgets(
+        '$unavailable draft service leaves Git approval and Source independent',
+        (tester) async {
+          registerSource();
+          port.service.value = _reviewSnapshot(
+            hunks: 1,
+            commentIdentity: 'comment:eligible',
+          );
+          if (unavailable == 'failed') {
+            draft.snapshotFailure = StateError('private storage failure');
+          }
+          await tester.binding.setSurfaceSize(const Size(1000, 1600));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await mount(tester, withDraft: unavailable != 'missing');
+          expect(find.text('Approve'), findsOneWidget);
+          expect(find.widgetWithText(TextButton, 'Comment'), findsNothing);
+          expect(find.textContaining('private'), findsNothing);
+          await tester.tap(find.text('Approve'));
+          await tester.pumpAndSettle();
+          expect(port.review.operations, ['approve']);
+          await tester.tap(find.text('Open in Source'));
+          await tester.pumpAndSettle();
+          expect(source.paths, ['review.txt']);
+          expect(draft.creates, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final admitted in [false, true]) {
+      testWidgets(
+        'backend retirement fences ${admitted ? 'late' : 'new'} mutation without hiding diff',
+        (tester) async {
+          registerSource();
+          port.service.value = _commentSnapshot();
+          await mountComments(tester);
+          await tester.tap(_lineComment('added line'));
+          await tester.pumpAndSettle();
+          await tester.enterText(find.byType(TextField), 'retired body');
+          final old = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, 'Save comment'),
+          );
+          final gate = admitted ? draft.holdMutation() : null;
+          if (admitted) {
+            old.onPressed!();
+            await tester.pumpAndSettle();
+          }
+          draft.active = false;
+          if (admitted) {
+            gate!.complete();
+          } else {
+            old.onPressed!();
+          }
+          await tester.pumpAndSettle();
+          expect(draft.creates, hasLength(admitted ? 1 : 0));
+          expect(find.text('Pending review comments (0)'), findsOneWidget);
+          expect(
+            find.text(
+              'Comment change not confirmed. Reload comments before trying again.',
+            ),
+            findsOneWidget,
+          );
+          expect(find.textContaining('[modified]'), findsOneWidget);
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller!.text,
+            'retired body',
+          );
+          old.onPressed!();
+          await tester.tap(find.text('Open in Source'));
+          await tester.pumpAndSettle();
+          expect(source.paths, ['dir/notes [deleted] "two words".txt']);
+          expect(draft.creates, hasLength(admitted ? 1 : 0));
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final pending in ['snapshot', 'mutation']) {
+      testWidgets(
+        'Session isolation fences late $pending and remount rehydrates saved state',
+        (tester) async {
+          port.service.value = _commentSnapshot();
+          draft
+              .comments('other-session')
+              .add(_comment(text: 'other Session feedback'));
+          final snapshotGate = pending == 'snapshot'
+              ? draft.holdSnapshot()
+              : null;
+          await mountComments(tester);
+          Completer<void>? mutationGate;
+          if (pending == 'mutation') {
+            await tester.tap(_lineComment('added line'));
+            await tester.pumpAndSettle();
+            mutationGate = draft.holdMutation();
+            await save(tester, 'canonical late feedback');
+          }
+          await remountComments(tester, 'other-session');
+          expect(find.text('other Session feedback'), findsOneWidget);
+          if (snapshotGate != null) {
+            snapshotGate.complete(
+              ReviewDraftSnapshot(
+                sessionId: 'canonical',
+                comments: [_comment(text: 'canonical late snapshot')],
+              ),
+            );
+          } else {
+            mutationGate!.complete();
+          }
+          await tester.pumpAndSettle();
+          expect(find.text('other Session feedback'), findsOneWidget);
+          expect(find.text('canonical late feedback'), findsNothing);
+          expect(find.text('canonical late snapshot'), findsNothing);
+          expect(find.text('Pending review comments (1)'), findsOneWidget);
+          expect(draft.updates, isEmpty);
+          expect(draft.deletes, isEmpty);
+          await remountComments(tester, 'canonical');
+          if (pending == 'mutation') {
+            expect(find.text('canonical late feedback'), findsOneWidget);
+            expect(draft.creates.single.sessionId, 'canonical');
+          }
+          expect(find.text('other Session feedback'), findsNothing);
+          expect(draft.snapshots, ['canonical', 'other-session', 'canonical']);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  });
 
   group('whole-layer review', () {
     Future<void> mountReview(
@@ -1296,7 +3129,8 @@ void main() {
           await tester.tap(find.widgetWithText(TextButton, scope));
           await tester.pumpAndSettle();
           for (final width in [320.0, 480.0, 900.0]) {
-            await tester.binding.setSurfaceSize(Size(width, 900));
+            // Keep both lazy layers mounted below the comments toolbar.
+            await tester.binding.setSurfaceSize(Size(width, 1400));
             await tester.pumpAndSettle();
             for (final label in [
               'Approve',
@@ -2323,6 +4157,7 @@ void main() {
               detail: null,
               reviewRevision: null,
               fileReviewRevision: null,
+              commentComparisonIdentity: null,
               hunks: [],
             ),
           ],
@@ -2561,6 +4396,7 @@ void main() {
             'detail': null,
             'reviewRevision': null,
             'fileReviewRevision': null,
+            'commentComparisonIdentity': null,
             'hunks': [
               {
                 'oldStart': 1,
@@ -2745,6 +4581,7 @@ void main() {
               detail: 'Not displayed: $status',
               reviewRevision: null,
               fileReviewRevision: null,
+              commentComparisonIdentity: null,
               hunks: [],
             ),
         ],
@@ -2769,6 +4606,7 @@ void main() {
             detail: null,
             reviewRevision: null,
             fileReviewRevision: null,
+            commentComparisonIdentity: null,
             hunks: [
               DiffHunk(
                 oldStart: 0,
@@ -3643,6 +5481,7 @@ ChangeSetSnapshot _reviewSnapshot({
   String? revision = 'opaque:revision',
   String? fileRevision,
   String? layerRevision,
+  String? commentIdentity,
   String changeKind = 'modified',
   String contentStatus = 'text',
   int hunks = 2,
@@ -3656,6 +5495,7 @@ ChangeSetSnapshot _reviewSnapshot({
       detail: null,
       reviewRevision: revision,
       fileReviewRevision: fileRevision,
+      commentComparisonIdentity: commentIdentity,
       hunks: [
         for (var index = 0; index < hunks; index++)
           DiffHunk(
@@ -3695,6 +5535,7 @@ ChangeSetSnapshot _snapshot({
   String path = 'notes.txt',
   String before = 'before',
   String after = 'after',
+  String? commentIdentity,
 }) => ChangeSetSnapshot(
   layerReviewRevision: null,
   files: [
@@ -3705,6 +5546,7 @@ ChangeSetSnapshot _snapshot({
       detail: null,
       reviewRevision: null,
       fileReviewRevision: null,
+      commentComparisonIdentity: commentIdentity,
       hunks: [
         DiffHunk(
           oldStart: 3,
@@ -3739,6 +5581,7 @@ ChangedFile _conflict() => ChangedFile(
   detail: 'Unmerged index entries.',
   reviewRevision: null,
   fileReviewRevision: null,
+  commentComparisonIdentity: null,
   hunks: [],
 );
 
@@ -3750,6 +5593,271 @@ TaskChangeSetSnapshot _task({
       committed ?? ChangeSetSnapshot(files: [], layerReviewRevision: null),
   uncommitted: uncommitted ?? _uncommitted(),
 );
+
+ChangeSetSnapshot _commentSnapshot({
+  String path = 'dir/notes [deleted] "two words".txt',
+  String? identity = 'comparison:original',
+  String changeKind = 'modified',
+  String contentStatus = 'text',
+  List<DiffHunk>? hunks,
+}) => ChangeSetSnapshot(
+  layerReviewRevision: null,
+  files: [
+    ChangedFile(
+      relativePath: path,
+      changeKind: changeKind,
+      contentStatus: contentStatus,
+      detail: null,
+      reviewRevision: null,
+      fileReviewRevision: null,
+      commentComparisonIdentity: identity,
+      hunks:
+          hunks ??
+          [
+            DiffHunk(
+              oldStart: 10,
+              oldCount: 2,
+              newStart: 20,
+              newCount: 2,
+              lines: const [
+                DiffLine(
+                  kind: 'context',
+                  text: 'shared context',
+                  noNewline: false,
+                ),
+                DiffLine(
+                  kind: 'deletion',
+                  text: 'removed line',
+                  noNewline: false,
+                ),
+                DiffLine(kind: 'addition', text: 'added line', noNewline: true),
+              ],
+            ),
+          ],
+    ),
+  ],
+);
+
+ReviewCommentAnchor _commentAnchor({
+  String environmentId = 'canonical-environment',
+  String path = 'dir/notes [deleted] "two words".txt',
+  ReviewComparisonLayer layer = ReviewComparisonLayer.unstaged,
+  ReviewComparisonSide side = ReviewComparisonSide.newSide,
+  int startLine = 21,
+  int? endLine,
+  int lineIndex = 2,
+  String identity = 'comparison:original',
+  String excerpt = 'added line',
+}) => ReviewCommentAnchor(
+  environmentId: environmentId,
+  relativePath: path,
+  layer: layer,
+  side: side,
+  startLine: startLine,
+  endLine: endLine ?? startLine,
+  comparisonIdentity: identity,
+  sourceExcerpt: excerpt,
+  hunkIndex: 0,
+  lineIndex: lineIndex,
+);
+
+PendingReviewComment _comment({
+  String id = 'saved-1',
+  String text = 'saved feedback',
+  int version = 3,
+  int sequence = 1,
+  ReviewCommentAnchor? anchor,
+}) => PendingReviewComment(
+  id: id,
+  anchor: anchor ?? _commentAnchor(),
+  text: text,
+  version: version,
+  sequence: sequence,
+);
+
+Finder _lineComment(String excerpt) => find.descendant(
+  of: find
+      .ancestor(of: find.textContaining(excerpt), matching: find.byType(Row))
+      .first,
+  matching: find.widgetWithText(TextButton, 'Comment'),
+);
+
+Finder _savedCommentAction(String text, String action) => find.descendant(
+  of: find.ancestor(of: find.text(text), matching: find.byType(Column)).first,
+  matching: find.widgetWithText(TextButton, action),
+);
+
+// Only native service behavior is substituted. The mounted EVC uses the actual
+// generated client, generated native dispatcher and production owning bridge.
+class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
+  final _sessions = <String, List<PendingReviewComment>>{};
+  final snapshots = <String>[];
+  final creates =
+      <({String sessionId, ReviewCommentAnchor anchor, String text})>[];
+  final updates = <({String sessionId, String id, int version, String text})>[];
+  final deletes = <({String sessionId, String id, int version})>[];
+  final methods = <String>[];
+  final payloads = <Map<String, Object?>>[];
+  final _gates = <Completer<void>>[];
+  final _snapshotGates = <Completer<ReviewDraftSnapshot>>[];
+  final _sequences = <String, int>{};
+  late final dispatcher = ReviewDraftServiceDispatcher(this, concurrent: true);
+  bool active = true;
+  Object? snapshotFailure;
+  Object? mutationFailure;
+  Object? afterMutationFailure;
+  String? authoritativeText;
+  Future<void>? _pendingMutation;
+  Future<ReviewDraftSnapshot>? _pendingSnapshot;
+
+  List<PendingReviewComment> comments([String sessionId = 'canonical']) =>
+      _sessions.putIfAbsent(sessionId, () => []);
+
+  Completer<void> holdMutation() {
+    final gate = Completer<void>();
+    _gates.add(gate);
+    _pendingMutation = gate.future;
+    return gate;
+  }
+
+  Completer<ReviewDraftSnapshot> holdSnapshot() {
+    final gate = Completer<ReviewDraftSnapshot>();
+    _snapshotGates.add(gate);
+    _pendingSnapshot = gate.future;
+    return gate;
+  }
+
+  @override
+  Future<ReviewDraftSnapshot> snapshot(String sessionId) async {
+    snapshots.add(sessionId);
+    final pending = _pendingSnapshot;
+    _pendingSnapshot = null;
+    if (pending != null) return pending;
+    if (snapshotFailure != null) throw snapshotFailure!;
+    return ReviewDraftSnapshot(
+      sessionId: sessionId,
+      comments: comments(sessionId),
+    );
+  }
+
+  Future<void> _admit() async {
+    final pending = _pendingMutation;
+    _pendingMutation = null;
+    if (pending != null) await pending;
+    if (mutationFailure != null) throw mutationFailure!;
+  }
+
+  @override
+  Future<PendingReviewComment> createComment(
+    String sessionId,
+    ReviewCommentAnchor anchor,
+    String text,
+  ) async {
+    creates.add((sessionId: sessionId, anchor: anchor, text: text));
+    await _admit();
+    final sequence = (_sequences[sessionId] ?? 100) + 1;
+    _sequences[sessionId] = sequence;
+    final result = _comment(
+      id: 'authoritative-$sequence',
+      anchor: anchor,
+      text: authoritativeText ?? text,
+      version: 1,
+      sequence: sequence,
+    );
+    comments(sessionId).add(result);
+    if (afterMutationFailure != null) throw afterMutationFailure!;
+    return result;
+  }
+
+  @override
+  Future<PendingReviewComment> updateComment(
+    String sessionId,
+    String commentId,
+    int expectedVersion,
+    String text,
+  ) async {
+    updates.add((
+      sessionId: sessionId,
+      id: commentId,
+      version: expectedVersion,
+      text: text,
+    ));
+    await _admit();
+    final entries = comments(sessionId);
+    final index = entries.indexWhere((comment) => comment.id == commentId);
+    if (index < 0 || entries[index].version != expectedVersion) {
+      throw const ReviewDraftFailure(
+        code: 'stale_comment',
+        message: 'private stale comment',
+      );
+    }
+    final previous = entries[index];
+    final result = _comment(
+      id: previous.id,
+      anchor: previous.anchor,
+      text: authoritativeText ?? text,
+      version: previous.version + 1,
+      sequence: previous.sequence,
+    );
+    entries[index] = result;
+    if (afterMutationFailure != null) throw afterMutationFailure!;
+    return result;
+  }
+
+  @override
+  Future<void> deleteComment(
+    String sessionId,
+    String commentId,
+    int expectedVersion,
+  ) async {
+    deletes.add((
+      sessionId: sessionId,
+      id: commentId,
+      version: expectedVersion,
+    ));
+    await _admit();
+    final entries = comments(sessionId);
+    final index = entries.indexWhere((comment) => comment.id == commentId);
+    if (index < 0 || entries[index].version != expectedVersion) {
+      throw const ReviewDraftFailure(
+        code: 'stale_comment',
+        message: 'private stale comment',
+      );
+    }
+    entries.removeAt(index);
+    if (afterMutationFailure != null) throw afterMutationFailure!;
+  }
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    methods.add(method);
+    payloads.add(payload);
+    final result = await dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': methods.length,
+      'method': method,
+      'payload': payload,
+    });
+    if (result['ok'] != true) {
+      throw StateError('private draft failure: ${result['error']}');
+    }
+    return result['payload'];
+  }
+
+  Future<void> close() async {
+    for (final gate in _gates) {
+      if (!gate.isCompleted) gate.complete();
+    }
+    for (final gate in _snapshotGates) {
+      if (!gate.isCompleted) {
+        gate.complete(
+          ReviewDraftSnapshot(sessionId: 'canonical', comments: []),
+        );
+      }
+    }
+    await dispatcher.close();
+  }
+}
 
 class _Service implements ChangeSetSourceService {
   ChangeSetSnapshot value = ChangeSetSnapshot(

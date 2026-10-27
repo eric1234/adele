@@ -356,7 +356,7 @@ no authority and captured targets never migrate to replacement registrations.
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
 integer `order`, `library`, `initialize`, and `entrypoint`. Optional
 `sessionExecution` defaults to false, `backendServices` is a duplicate-free
-service-ID allowlist defaulting to empty, and `strategyAffinity` is `independent`
+required service-ID allowlist defaulting to empty, and `strategyAffinity` is `independent`
 by default or `owningBackend`. There is no strategy selector, role-level `displayName`, or
 stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
 and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
@@ -372,6 +372,7 @@ Additional Main Content fields are explicit opt-ins:
 
 | Field | Meaning / default |
 | --- | --- |
+| `optionalBackendServices` | Empty by default; immutable service-ID allowlist, duplicate-free and disjoint from `backendServices`. Requests pane-only access to the exact sibling backend without making its availability a pane prerequisite. Uses the same service-ID validation and is rejected on other roles and behavioral extensions. |
 | `capabilities` | Empty by default; immutable, duplicate-free `CapabilityKey` allowlist for context-free calls, encoded as `[{"id": "org.example.read", "majorVersion": 1}]`. Each entry accepts only those fields and uses the public Capability identity and positive-integer major-version validation. Different majors of the same ID are distinct keys. |
 | `environmentReadCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist, with the same encoding and strict validation as `capabilities`. Requests pane-only contextual unary calls with an operation-scoped Environment read grant; it does not enable context-free access or any other Environment service. |
 | `environmentBufferedProcessCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist with the same strict validation. Requests pane-only semantic Capability calls with buffered-process authority, also requiring the selected provider's explicit opt-in. It grants no direct EVC process API or read authority. |
@@ -425,7 +426,13 @@ Requested services are pane-scoped and require an actual host binder, exact live
 registration/installation ownership, and validation of any captured execution
 controller and owning-backend strategy origin. Metadata alone grants no authority.
 Missing required services fail that pane without blocking independent groups or
-canonical navigation. Optional native bindings and short-lived initialization
+canonical navigation. Optional backend access instead captures the same exact
+installation/context/generation or remains inert when the backend is missing or
+failed. It does not weaken required services or owning-backend affinity, resolve a
+strategy by itself, or retry against a later generation. The public owning-backend
+channel and safe settlement are unchanged; a declared route does not establish
+service health, which only a successful semantic operation can establish.
+Optional native bindings and short-lived initialization
 belong to the [application host](../../app/README.md#grouped-main-content), while the public
 [UI contract](../ui/README.md#grouped-main-content) owns collection operations.
 

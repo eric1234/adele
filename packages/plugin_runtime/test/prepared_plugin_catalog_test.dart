@@ -514,6 +514,7 @@ void main() {
       expect(session.initialize, _session['initialize']);
       expect(session.sessionExecution, isFalse);
       expect(session.backendServices, isEmpty);
+      expect(session.optionalBackendServices, isEmpty);
       expect(session.capabilities, isEmpty);
       expect(session.environmentReadCapabilities, isEmpty);
       expect(session.environmentBufferedProcessCapabilities, isEmpty);
@@ -1082,6 +1083,7 @@ void main() {
                 entrypoint: 'buildPane',
                 sessionExecution: true,
                 backendServices: ['org.example.session'],
+                optionalBackendServices: ['org.example.optional'],
                 capabilities: [contextFree, contextual.first],
                 environmentReadCapabilities: contextual,
                 environmentBufferedProcessCapabilities: [contextual.first],
@@ -1109,6 +1111,9 @@ void main() {
           'order': populated ? -10 : 200,
           'sessionExecution': populated,
           'backendServices': populated ? ['org.example.session'] : <String>[],
+          'optionalBackendServices': populated
+              ? ['org.example.optional']
+              : <String>[],
           'capabilities': populated
               ? [
                   {'id': contextFree.id.value, 'majorVersion': 1},
@@ -1166,6 +1171,7 @@ void main() {
           (json['environmentReadCapabilities']! as List).clear();
           (json['environmentBufferedProcessCapabilities']! as List).clear();
           (json['backendServices']! as List).clear();
+          (json['optionalBackendServices']! as List).clear();
           (json['actions']! as List).clear();
           (json['operations']! as Map).clear();
           expect(descriptor.capabilities, hasLength(2));
@@ -1175,6 +1181,7 @@ void main() {
             hasLength(1),
           );
           expect(descriptor.backendServices, hasLength(1));
+          expect(descriptor.optionalBackendServices, hasLength(1));
           expect(descriptor.actions, hasLength(1));
           expect(descriptor.operations, mainContentOperations);
         }
@@ -2344,6 +2351,7 @@ void main() {
       'displayName',
       'projectProviderId',
       'backendServices',
+      'optionalBackendServices',
       'strategyAffinity',
       'sessionExecution',
       'hostAdapter',
@@ -2584,6 +2592,7 @@ void main() {
       'consoleExtensionId',
       'projectProviderId',
       'backendServices',
+      'optionalBackendServices',
       'strategyAffinity',
       'sessionExecution',
       'retainedData',
@@ -2735,6 +2744,7 @@ void main() {
       'displayName',
       'projectProviderId',
       'backendServices',
+      'optionalBackendServices',
       'strategyAffinity',
       'sessionExecution',
       'hostAdapter',
@@ -2837,6 +2847,7 @@ void main() {
                     'strategyAffinity': affinity.name,
                     'sessionExecution': true,
                     'backendServices': ['history.v1', 'testService'],
+                    'optionalBackendServices': ['draft.v1'],
                   },
                 ],
               ),
@@ -2851,6 +2862,7 @@ void main() {
         expect(descriptor.sessionExecution, isTrue);
         expect(descriptor.strategyAffinity, affinity);
         expect(descriptor.backendServices, ['history.v1', 'testService']);
+        expect(descriptor.optionalBackendServices, ['draft.v1']);
       },
     );
   }
@@ -2858,15 +2870,18 @@ void main() {
   test(
     'Main Content constructor snapshots and validates the service allowlist',
     () {
-      PreparedMainContentPresentation descriptor(List<String> services) =>
-          PreparedMainContentPresentation(
-            extensionId: ExtensionId(_session['extensionId']! as String),
-            order: 100,
-            initialize: _session['initialize']! as String,
-            library: _session['library']! as String,
-            entrypoint: _session['entrypoint']! as String,
-            backendServices: services,
-          );
+      PreparedMainContentPresentation descriptor(
+        List<String> services, [
+        List<String> optionalServices = const [],
+      ]) => PreparedMainContentPresentation(
+        extensionId: ExtensionId(_session['extensionId']! as String),
+        order: 100,
+        initialize: _session['initialize']! as String,
+        library: _session['library']! as String,
+        entrypoint: _session['entrypoint']! as String,
+        backendServices: services,
+        optionalBackendServices: optionalServices,
+      );
       final services = ['history.v1'];
       final prepared = descriptor(services);
       services.clear();
@@ -2877,6 +2892,20 @@ void main() {
       );
       expect(() => descriptor(['a', 'a']), throwsFormatException);
       expect(() => descriptor(['not a service']), throwsFormatException);
+      final optionalServices = ['draft.v1'];
+      final optional = descriptor([], optionalServices);
+      optionalServices.clear();
+      expect(optional.optionalBackendServices, ['draft.v1']);
+      expect(optional.backendServices, isEmpty);
+      expect(optional.sessionExecution, isFalse);
+      expect(optional.strategyAffinity, PreparedStrategyAffinity.independent);
+      expect(
+        () => optional.optionalBackendServices.clear(),
+        throwsUnsupportedError,
+      );
+      expect(() => descriptor([], ['a', 'a']), throwsFormatException);
+      expect(() => descriptor([], ['not a service']), throwsFormatException);
+      expect(() => descriptor(['a'], ['a']), throwsFormatException);
     },
   );
 
@@ -3133,7 +3162,23 @@ void main() {
       ['path/service'],
       ['a..b'],
     ])
-      'invalid backendServices $value': {..._session, 'backendServices': value},
+      for (final field in ['backendServices', 'optionalBackendServices'])
+        'invalid $field $value': {..._session, field: value},
+    'overlapping required and optional backend services': {
+      ..._session,
+      'backendServices': ['same.service'],
+      'optionalBackendServices': ['same.service'],
+    },
+    for (final descriptor in [
+      _console,
+      browser,
+      _toolActivity,
+      _modelNativeActivity,
+    ])
+      '${descriptor['role']} optional backend services': {
+        ...descriptor,
+        'optionalBackendServices': <String>[],
+      },
     'foreign tool field': {..._toolActivity, 'presentationKind': 'kind'},
     'foreign native field': {..._modelNativeActivity, 'hostAdapter': 'adapter'},
     for (final descriptor in [_session, _toolActivity, _modelNativeActivity])

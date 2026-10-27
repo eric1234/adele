@@ -1,5 +1,6 @@
 import 'package:adele_ui/environment_capability_bridge.dart';
 import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter/material.dart';
@@ -36,12 +37,51 @@ class DiffPaneState extends State<DiffPane> {
   String reviewMessage = '';
   bool sourcePending = false;
   String sourceMessage = '';
+  String sessionId = '';
+  String environmentId = '';
+  final ReviewDraftServiceClient draftClient = ReviewDraftServiceClient(
+    OwningBackendRequestChannel(reviewDraftServiceId),
+  );
+  TextEditingController editor = TextEditingController();
+  List<PendingReviewComment> comments = [];
+  bool commentsLoaded = false;
+  String commentStatus = 'loading';
+  String commentMessage = '';
+  bool commentPending = false;
+  int commentRevision = 0;
+  int editorRevision = 0;
+  // The evaluator pin requires explicit null initializers for boxed fields.
+  // ignore: avoid_init_to_null
+  ReviewCommentAnchor? editorAnchor = null;
+  // ignore: avoid_init_to_null
+  PendingReviewComment? editingComment = null;
+  String originalText = '';
+  bool editorInvalid = false;
+  bool editorMultiline = false;
+  Map<int, ReviewCommentAnchor> lineAnchors = {};
+  Map<String, List<ChangedFile>> inspected = {};
   Future<bool> Function() departure = () async => true;
 
   @override
   void initState() {
     super.initState();
+    final context = readMainContentContext();
+    final session = context['sessionId'];
+    final environment = context['environmentKey'];
+    if (session is String) sessionId = session;
+    if (environment is String) environmentId = environment;
     departure = () async {
+      if (commentPending ||
+          (editorAnchor != null && editor.text != originalText)) {
+        setState(() {
+          commentMessage =
+              'Save or cancel the comment before leaving this Session.';
+        });
+        return false;
+      }
+      commentRevision++;
+      editorRevision++;
+      commentStatus = 'unavailable';
       abandon();
       // Another pane can refuse departure. This pane stays refreshable then.
       setState(() {
@@ -56,6 +96,8 @@ class DiffPaneState extends State<DiffPane> {
 
   void abandon() {
     revision++;
+    lineAnchors = {};
+    inspected = {};
     sourceMessage = '';
     reviewMessage = '';
     invalidateReview();
@@ -82,6 +124,7 @@ class DiffPaneState extends State<DiffPane> {
 
   void refresh() async {
     if (disposed) return;
+    reloadComments();
     final canReview = !reviewPending;
     abandon();
     final captured = revision;
@@ -228,6 +271,7 @@ class DiffPaneState extends State<DiffPane> {
     List<ChangedFile> files,
     String layer,
   ) {
+    inspected[layer] = files;
     for (final file in files) {
       final List<String> header = [
         'file',
@@ -287,22 +331,59 @@ class DiffPaneState extends State<DiffPane> {
           'hunk',
           '@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@',
         ]);
-        int oldLine = hunk.oldStart;
-        int newLine = hunk.newStart;
-        for (final line in hunk.lines) {
+        // Arithmetic materializes primitive counters from evaluated DTO fields.
+        int oldLine = hunk.oldStart + 0;
+        int newLine = hunk.newStart + 0;
+        int oldRemaining = hunk.oldCount + 0;
+        int newRemaining = hunk.newCount + 0;
+        for (int lineIndex = 0; lineIndex < hunk.lines.length; lineIndex++) {
+          final line = hunk.lines[lineIndex];
           String oldNumber = '';
           String newNumber = '';
           String prefix = ' ';
-          if (line.kind != 'addition') {
+          final int oldPosition = oldLine;
+          final int newPosition = newLine;
+          final hasOld =
+              (line.kind == 'deletion' || line.kind == 'context') &&
+              oldRemaining > 0 &&
+              oldLine > 0;
+          final hasNew =
+              (line.kind == 'addition' || line.kind == 'context') &&
+              newRemaining > 0 &&
+              newLine > 0;
+          if (hasOld) {
             oldNumber = '$oldLine';
             oldLine++;
+            oldRemaining--;
           }
-          if (line.kind != 'deletion') {
+          if (hasNew) {
             newNumber = '$newLine';
             newLine++;
+            newRemaining--;
           }
           if (line.kind == 'addition') prefix = '+';
           if (line.kind == 'deletion') prefix = '-';
+          ReviewCommentAnchor? anchor;
+          if (line.kind == 'deletion') {
+            anchor = anchorForLine(
+              file,
+              layer,
+              hunkIndex,
+              lineIndex,
+              oldPosition,
+              hasOld,
+            );
+          } else {
+            anchor = anchorForLine(
+              file,
+              layer,
+              hunkIndex,
+              lineIndex,
+              newPosition,
+              hasNew,
+            );
+          }
+          if (anchor != null) lineAnchors[next.length] = anchor;
           next.add([
             line.kind,
             '${oldNumber.padLeft(4)} ${newNumber.padLeft(4)} $prefix${line.text}',
@@ -315,12 +396,478 @@ class DiffPaneState extends State<DiffPane> {
     }
   }
 
+  ReviewCommentAnchor? anchorForLine(
+    ChangedFile file,
+    String layer,
+    int hunkIndex,
+    int lineIndex,
+    int position,
+    bool sideExists,
+  ) {
+    final identity = file.commentComparisonIdentity;
+    if (!sideExists ||
+        environmentId == '' ||
+        environmentId.length > ReviewDraftLimits.maxIdentityLength ||
+        file.contentStatus != 'text' ||
+        file.changeKind == 'conflicted' ||
+        file.changeKind == 'unsupported' ||
+        layer == 'conflicts' ||
+        identity == null ||
+        identity.trim().isEmpty ||
+        identity.length > ReviewDraftLimits.maxComparisonIdentityLength ||
+        identity.codeUnits.any((unit) => unit < 32 || unit > 126) ||
+        hunkIndex > ReviewDraftLimits.maxHunkIndex ||
+        lineIndex > ReviewDraftLimits.maxLineIndex ||
+        position < 1 ||
+        position > ReviewDraftLimits.maxLine) {
+      return null;
+    }
+    final path = file.relativePath;
+    if (path.length > ReviewDraftLimits.maxPathLength ||
+        path.contains('\\') ||
+        path.codeUnits.any((unit) => unit == 0) ||
+        RegExp(r'^[A-Za-z]:').hasMatch(path) ||
+        path
+            .split('/')
+            .any(
+              (part) =>
+                  part == '' || part == '.' || part == '..' || part == '.git',
+            )) {
+      return null;
+    }
+    final line = file.hunks[hunkIndex].lines[lineIndex];
+    if (line.kind != 'addition' &&
+        line.kind != 'deletion' &&
+        line.kind != 'context') {
+      return null;
+    }
+    final excerpt = line.noNewline ? line.text : '${line.text}\n';
+    if (excerpt.length > ReviewDraftLimits.maxExcerptLength) {
+      return null;
+    }
+    ReviewComparisonLayer comparisonLayer = ReviewComparisonLayer.unstaged;
+    if (layer == 'staged') comparisonLayer = ReviewComparisonLayer.staged;
+    if (layer == 'committed') comparisonLayer = ReviewComparisonLayer.committed;
+    return ReviewCommentAnchor(
+      environmentId: environmentId,
+      relativePath: path,
+      layer: comparisonLayer,
+      side: line.kind == 'deletion'
+          ? ReviewComparisonSide.oldSide
+          : ReviewComparisonSide.newSide,
+      startLine: position,
+      endLine: position,
+      comparisonIdentity: identity,
+      sourceExcerpt: excerpt,
+      hunkIndex: hunkIndex,
+      lineIndex: lineIndex,
+    );
+  }
+
+  String layerName(ReviewComparisonLayer layer) {
+    if (layer == ReviewComparisonLayer.staged) return 'staged';
+    if (layer == ReviewComparisonLayer.committed) return 'committed';
+    return 'unstaged';
+  }
+
+  String locationLabel(ReviewCommentAnchor anchor) {
+    final side = anchor.side == ReviewComparisonSide.oldSide ? 'old' : 'new';
+    return '${anchor.relativePath} | ${layerName(anchor.layer)} | $side line ${anchor.startLine}';
+  }
+
+  String locationStatus(ReviewCommentAnchor anchor) {
+    final layer = layerName(anchor.layer);
+    if (anchor.environmentId != environmentId ||
+        (status != 'ready' && status != 'clean') ||
+        !inspected.containsKey(layer)) {
+      return 'Outside current scope / not inspected';
+    }
+    if (anchor.layer != ReviewComparisonLayer.committed &&
+        inspected.containsKey('conflicts')) {
+      for (final file in inspected['conflicts']!) {
+        if (file.relativePath == anchor.relativePath) {
+          return 'Outside current scope / not inspected';
+        }
+      }
+    }
+    final files = inspected[layer]!;
+    for (final file in files) {
+      if (file.relativePath == anchor.relativePath) {
+        // Incomplete evidence is not proof that the original source changed.
+        if (file.commentComparisonIdentity == null) {
+          return 'Outside current scope / not inspected';
+        }
+        if (file.commentComparisonIdentity != anchor.comparisonIdentity) {
+          return 'Outdated location';
+        }
+        if (anchor.startLine != anchor.endLine) {
+          return 'Outside current scope / not inspected';
+        }
+        if (anchor.hunkIndex < file.hunks.length) {
+          final hunk = file.hunks[anchor.hunkIndex];
+          final old = anchor.side == ReviewComparisonSide.oldSide;
+          int position = hunk.newStart + 0;
+          int remaining = hunk.newCount + 0;
+          if (old) {
+            position = hunk.oldStart + 0;
+            remaining = hunk.oldCount + 0;
+          }
+          for (int index = 0; index < hunk.lines.length; index++) {
+            final line = hunk.lines[index];
+            final onSide =
+                line.kind == 'context' ||
+                (old ? line.kind == 'deletion' : line.kind == 'addition');
+            if (index == anchor.lineIndex) {
+              final excerpt = line.noNewline ? line.text : '${line.text}\n';
+              if (onSide &&
+                  remaining > 0 &&
+                  position > 0 &&
+                  position == anchor.startLine &&
+                  excerpt == anchor.sourceExcerpt) {
+                return 'Current location';
+              }
+              return 'Outdated location';
+            }
+            if (onSide) {
+              position++;
+              remaining--;
+            }
+          }
+        }
+        return 'Outdated location';
+      }
+    }
+    // A successful complete scope with no original path proves its disappearance.
+    // An unsupported inventory placeholder instead leaves inspection incomplete.
+    for (final file in files) {
+      if (file.changeKind == 'unsupported') {
+        return 'Outside current scope / not inspected';
+      }
+    }
+    return 'Outdated location';
+  }
+
+  bool canMutateComments() =>
+      !disposed &&
+      commentStatus == 'ready' &&
+      !commentPending &&
+      !reviewPending;
+
+  void reloadComments() async {
+    if (disposed || commentPending) return;
+    commentRevision++;
+    final captured = commentRevision;
+    setState(() {
+      commentStatus = 'loading';
+    });
+    final result = await settleOwningBackendOperation(
+      draftClient.snapshot(sessionId),
+    );
+    if (disposed || captured != commentRevision) return;
+    if (result[0] != true) {
+      setState(() {
+        commentStatus = 'unavailable';
+        commentMessage =
+            'Comment storage unavailable. Reload comments to try again.';
+      });
+      return;
+    }
+    final snapshot = result[1] as ReviewDraftSnapshot;
+    if (snapshot.sessionId != sessionId) {
+      setState(() {
+        commentStatus = 'unavailable';
+        commentMessage =
+            'Comment storage unavailable. Reload comments to try again.';
+      });
+      return;
+    }
+    final selected = editingComment;
+    if (selected != null) {
+      bool matches = false;
+      for (final comment in snapshot.comments) {
+        if (comment.id == selected.id && comment.version == selected.version) {
+          matches = true;
+        }
+      }
+      if (!matches) editorInvalid = true;
+    }
+    setState(() {
+      comments = snapshot.comments;
+      commentsLoaded = true;
+      commentStatus = 'ready';
+      commentMessage = '';
+    });
+  }
+
+  void openComment(
+    ReviewCommentAnchor anchor,
+    PendingReviewComment? saved,
+    int captured,
+    int draftRevision,
+  ) {
+    if (!canMutateComments() ||
+        draftRevision != commentRevision ||
+        (saved == null && captured != revision)) {
+      return;
+    }
+    if (editorAnchor != null) {
+      // Reopening never replaces an active controller or its unsaved contents.
+      setState(() {
+        commentMessage = 'Save or cancel the open comment first.';
+      });
+      return;
+    }
+    final text = saved == null ? '' : saved.text;
+    // The pin's text setter falls through to an unsupported superclass setter.
+    // Replace only on explicit selection, never during refresh or row building.
+    editor.dispose();
+    editor = TextEditingController(text: text);
+    setState(() {
+      editorRevision++;
+      editorAnchor = anchor;
+      editingComment = saved;
+      originalText = text;
+      editorInvalid = false;
+      editorMultiline = text.contains('\n') || text.contains('\r');
+      commentMessage = '';
+    });
+  }
+
+  void cancelComment(int captured) {
+    if (disposed || commentPending || captured != editorRevision) return;
+    setState(() {
+      clearEditor();
+    });
+  }
+
+  void clearEditor() {
+    editorRevision++;
+    editorAnchor = null;
+    editingComment = null;
+    originalText = '';
+    editorInvalid = false;
+    editorMultiline = false;
+    editor.clear();
+    commentMessage = '';
+  }
+
+  void saveComment(int captured) async {
+    if (!canMutateComments() ||
+        editorAnchor == null ||
+        editorInvalid ||
+        editorMultiline ||
+        captured != editorRevision) {
+      return;
+    }
+    final text = editor.text;
+    if (text.trim().isEmpty ||
+        text.length > ReviewDraftLimits.maxTextLength ||
+        text.contains('\n') ||
+        text.contains('\r')) {
+      setState(() {
+        commentMessage =
+            'Enter a nonblank single-line comment (up to ${ReviewDraftLimits.maxTextLength} characters).';
+      });
+      return;
+    }
+    final selected = editingComment;
+    final anchor = editorAnchor!;
+    commentRevision++;
+    final operationRevision = commentRevision;
+    setState(() {
+      commentPending = true;
+      commentMessage = 'Saving comment...';
+    });
+    Future<PendingReviewComment> operation;
+    if (selected == null) {
+      operation = draftClient.createComment(sessionId, anchor, text);
+    } else {
+      operation = draftClient.updateComment(
+        sessionId,
+        selected.id,
+        selected.version,
+        text,
+      );
+    }
+    final result = await settleOwningBackendOperation(operation);
+    if (disposed || operationRevision != commentRevision) return;
+    if (result[0] != true) {
+      unconfirmedComment();
+      return;
+    }
+    final accepted = result[1] as PendingReviewComment;
+    final List<PendingReviewComment> next = [];
+    for (final comment in comments) {
+      next.add(comment.id == accepted.id ? accepted : comment);
+    }
+    if (selected == null) next.add(accepted);
+    setState(() {
+      comments = next;
+      commentPending = false;
+      clearEditor();
+    });
+  }
+
+  void deleteComment(PendingReviewComment selected, int captured) async {
+    if (!canMutateComments() || captured != commentRevision) return;
+    if (editorAnchor != null) {
+      setState(() {
+        commentMessage = 'Save or cancel the open comment first.';
+      });
+      return;
+    }
+    commentRevision++;
+    final operationRevision = commentRevision;
+    setState(() {
+      commentPending = true;
+      commentMessage = 'Deleting comment...';
+    });
+    final result = await settleOwningBackendOperation(
+      draftClient.deleteComment(sessionId, selected.id, selected.version),
+    );
+    if (disposed || operationRevision != commentRevision) return;
+    if (result[0] != true) {
+      unconfirmedComment();
+      return;
+    }
+    final List<PendingReviewComment> next = [];
+    for (final comment in comments) {
+      if (comment.id != selected.id) next.add(comment);
+    }
+    setState(() {
+      comments = next;
+      commentPending = false;
+      commentMessage = '';
+    });
+  }
+
+  void unconfirmedComment() {
+    setState(() {
+      commentPending = false;
+      commentStatus = 'uncertain';
+      editorInvalid = true;
+      editorRevision++;
+      commentMessage =
+          'Comment change not confirmed. Reload comments before trying again.';
+    });
+  }
+
+  Widget commentsToolbar() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Text(
+        commentsLoaded
+            ? 'Pending review comments (${comments.length})'
+            : 'Pending review comments',
+      ),
+      if (commentStatus == 'loading') Text('Loading comments...'),
+      if (commentsLoaded && commentStatus != 'ready')
+        Text('Showing last confirmed comments.'),
+      if (commentMessage != '') Text(commentMessage),
+      if (!commentPending)
+        TextButton(onPressed: reloadComments, child: Text('Reload comments')),
+    ],
+  );
+
+  Widget pendingComment(PendingReviewComment comment) {
+    final captured = commentRevision;
+    return Container(
+      padding: EdgeInsets.all(8),
+      color: Color(0x10888888),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(locationLabel(comment.anchor)),
+          Text(comment.text),
+          Text(locationStatus(comment.anchor)),
+          Text(
+            comment.anchor.sourceExcerpt,
+            style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+          if (canMutateComments())
+            Row(
+              children: [
+                TextButton(
+                  onPressed: () =>
+                      openComment(comment.anchor, comment, revision, captured),
+                  child: Text('Edit'),
+                ),
+                TextButton(
+                  onPressed: () => deleteComment(comment, captured),
+                  child: Text('Delete'),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget commentEditor() {
+    final captured = editorRevision;
+    final anchor = editorAnchor!;
+    return Container(
+      padding: EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 36,
+            child: SingleChildScrollView(child: Text(locationLabel(anchor))),
+          ),
+          Text(locationStatus(anchor)),
+          SizedBox(
+            height: 44,
+            child: SingleChildScrollView(
+              child: Text(
+                anchor.sourceExcerpt,
+                style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+          if (editorMultiline)
+            SizedBox(
+              height: 80,
+              child: SingleChildScrollView(child: Text(editor.text)),
+            ),
+          if (editorMultiline)
+            Text(
+              'Multiline comments are readable but cannot be edited in this version.',
+            ),
+          if (!editorMultiline) Text('Single-line comment'),
+          if (!editorMultiline)
+            TextField(controller: editor, enabled: !commentPending),
+          if (editorInvalid)
+            Text(
+              'Selection invalidated. Reload comments, then cancel and select a comment again. Your text is retained.',
+            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (canMutateComments() && !editorInvalid && !editorMultiline)
+                TextButton(
+                  onPressed: () => saveComment(captured),
+                  child: Text('Save comment'),
+                ),
+              if (!commentPending)
+                TextButton(
+                  onPressed: () => cancelComment(captured),
+                  child: Text('Cancel editing'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   void reviewChange(Object selection, bool unapprove, int captured) async {
     if (disposed ||
         captured != revision ||
         status != 'ready' ||
         reviewHandle == '' ||
-        reviewPending) {
+        reviewPending ||
+        commentPending) {
       return;
     }
     final selected = reviewHandle;
@@ -379,7 +926,7 @@ class DiffPaneState extends State<DiffPane> {
   }
 
   Widget reviewAction(Object selection, bool unapprove, int captured) {
-    if (reviewPending) return Text('');
+    if (reviewPending || commentPending) return Text('');
     if (!disposed && status == 'ready' && reviewHandle != '') {
       // The evaluator pin cannot reuse a branched primitive in a closure.
       if (unapprove) {
@@ -477,13 +1024,37 @@ class DiffPaneState extends State<DiffPane> {
   @override
   void dispose() {
     disposed = true;
+    commentRevision++;
+    editorRevision++;
+    editor.dispose();
     abandon();
     unregisterSessionPrepareToDeactivate(departure);
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) => ListView.builder(
+    // Explicit editor selection reveals it at the top. Ordinary rebuilds and
+    // refresh retain the list key and the state-owned text controller.
+    key: Key('diff-$editorRevision'),
+    itemCount:
+        1 + comments.length + rows.length + (editorAnchor != null ? 1 : 0),
+    itemBuilder: (BuildContext context, int index) {
+      if (editorAnchor != null) {
+        if (index == 0) return commentEditor();
+        return paneRow(index - 1);
+      }
+      return paneRow(index);
+    },
+  );
+
+  Widget paneRow(int index) {
+    if (index == 0) return controls();
+    if (index <= comments.length) return pendingComment(comments[index - 1]);
+    return diffRow(index - comments.length - 1);
+  }
+
+  Widget controls() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       Row(
@@ -536,7 +1107,8 @@ class DiffPaneState extends State<DiffPane> {
       if (!disposed &&
           status == 'ready' &&
           reviewHandle != '' &&
-          !reviewPending)
+          !reviewPending &&
+          !commentPending)
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -555,58 +1127,70 @@ class DiffPaneState extends State<DiffPane> {
         TextButton(onPressed: refresh, child: Text('Retry')),
       if (sourceMessage != '') Text(sourceMessage),
       if (reviewMessage != '') Text(reviewMessage),
-      Expanded(
-        flex: 1,
-        child: ListView.builder(
-          itemCount: rows.length,
-          // A typed native index keeps the evaluator's map keys boxed correctly.
-          itemBuilder: (BuildContext context, int index) {
-            final row = rows[index];
-            final captured = revision;
-            final approval = approvals[index];
-            final unapproval = unapprovals[index];
-            final fileApproval = fileApprovals[index];
-            final fileUnapproval = fileUnapprovals[index];
-            final label = Text(
-              row[1],
-              style: row[0] == 'section'
-                  ? TextStyle(fontSize: 14, fontWeight: FontWeight.bold)
-                  : TextStyle(fontFamily: 'monospace', fontSize: 12),
-            );
-            Color background = Colors.transparent;
-            if (row[0] == 'addition') background = Color(0x1822aa55);
-            if (row[0] == 'deletion') background = Color(0x18dd3344);
-            if (row[0] == 'file') background = Color(0x18888888);
-            if (row[0] == 'section') background = Color(0x28888888);
-            Widget content = label;
-            if (row.length > 2 ||
-                approval != null ||
-                unapproval != null ||
-                fileApproval != null ||
-                fileUnapproval != null) {
-              content = Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  label,
-                  if (fileApproval != null)
-                    reviewAction(fileApproval, false, captured),
-                  if (fileUnapproval != null)
-                    reviewAction(fileUnapproval, true, captured),
-                  if (row.length > 2) sourceAction(row[2], captured),
-                  if (approval != null) reviewAction(approval, false, captured),
-                  if (unapproval != null)
-                    reviewAction(unapproval, true, captured),
-                ],
-              );
-            }
-            return Container(
-              color: background,
-              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              child: content,
-            );
-          },
-        ),
-      ),
+      commentsToolbar(),
     ],
   );
+
+  // The call boundary boxes the calculated index for the pin's typed maps.
+  Widget diffRow(int rowIndex) {
+    final row = rows[rowIndex];
+    final captured = revision;
+    final approval = approvals[rowIndex];
+    final unapproval = unapprovals[rowIndex];
+    final fileApproval = fileApprovals[rowIndex];
+    final fileUnapproval = fileUnapprovals[rowIndex];
+    final anchor = lineAnchors[rowIndex];
+    final label = Text(
+      row[1],
+      style: row[0] == 'section'
+          ? TextStyle(fontSize: 14, fontWeight: FontWeight.bold)
+          : TextStyle(fontFamily: 'monospace', fontSize: 12),
+    );
+    Color background = Colors.transparent;
+    if (row[0] == 'addition') background = Color(0x1822aa55);
+    if (row[0] == 'deletion') background = Color(0x18dd3344);
+    if (row[0] == 'file') background = Color(0x18888888);
+    if (row[0] == 'section') background = Color(0x28888888);
+    Widget content = label;
+    if (anchor != null &&
+        canMutateComments() &&
+        comments.length < ReviewDraftLimits.maxComments) {
+      content = Row(
+        children: [
+          Expanded(flex: 1, child: label),
+          SizedBox(
+            height: 28,
+            child: TextButton(
+              onPressed: () =>
+                  openComment(anchor, null, captured, commentRevision),
+              child: Text('Comment'),
+            ),
+          ),
+        ],
+      );
+    }
+    if (row.length > 2 ||
+        approval != null ||
+        unapproval != null ||
+        fileApproval != null ||
+        fileUnapproval != null) {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          label,
+          if (fileApproval != null) reviewAction(fileApproval, false, captured),
+          if (fileUnapproval != null)
+            reviewAction(fileUnapproval, true, captured),
+          if (row.length > 2) sourceAction(row[2], captured),
+          if (approval != null) reviewAction(approval, false, captured),
+          if (unapproval != null) reviewAction(unapproval, true, captured),
+        ],
+      );
+    }
+    return Container(
+      color: background,
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: content,
+    );
+  }
 }

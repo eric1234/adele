@@ -41,6 +41,12 @@ void main() {
     expect(file.detail, isNull);
     expect(file.reviewRevision, 'opaque-review-revision');
     expect(file.fileReviewRevision, 'opaque-file-review-revision');
+    expect(file.commentComparisonIdentity, 'opaque-comment-comparison');
+    expect(
+      ((channel.response! as Map)['files'] as List)
+          .single['commentComparisonIdentity'],
+      'opaque-comment-comparison',
+    );
     final hunk = file.hunks.single;
     expect(
       [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -75,6 +81,7 @@ void main() {
       detail: null,
       reviewRevision: null,
       fileReviewRevision: null,
+      commentComparisonIdentity: null,
       hunks: hunks,
     );
     final files = [file];
@@ -134,6 +141,7 @@ void main() {
         expect(file.detail, isNull);
         expect(file.reviewRevision, 'opaque-review-revision');
         expect(file.fileReviewRevision, 'opaque-file-review-revision');
+        expect(file.commentComparisonIdentity, 'opaque-comment-comparison');
         final hunk = file.hunks.single;
         expect(
           [hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount],
@@ -159,6 +167,7 @@ void main() {
       expect(conflict.detail, 'Unmerged index entries.');
       expect(conflict.reviewRevision, isNull);
       expect(conflict.fileReviewRevision, isNull);
+      expect(conflict.commentComparisonIdentity, isNull);
       expect(conflict.hunks, isEmpty);
       expect(() => snapshot.conflicts.clear(), throwsUnsupportedError);
       expect(() => conflict.hunks.clear(), throwsUnsupportedError);
@@ -188,6 +197,7 @@ void main() {
         expect(file.changeKind, 'modified');
         expect(file.contentStatus, 'text');
         expect(file.detail, isNull);
+        expect(file.commentComparisonIdentity, 'opaque-comment-comparison');
         expect(
           file.reviewRevision,
           identical(layer, snapshot.committed)
@@ -220,18 +230,46 @@ void main() {
       final committedWire = (channel.response! as Map)['committed'] as Map;
       expect(committedWire.containsKey('layerReviewRevision'), isTrue);
       expect(committedWire['layerReviewRevision'], isNull);
+      expect(
+        (committedWire['files'] as List).single['commentComparisonIdentity'],
+        'opaque-comment-comparison',
+      );
       final conflict = snapshot.uncommitted.conflicts.single;
       expect(conflict.relativePath, 'conflict.txt');
       expect(conflict.changeKind, 'conflicted');
       expect(conflict.contentStatus, 'conflicted');
       expect(conflict.detail, 'Unmerged index entries.');
       expect(conflict.reviewRevision, isNull);
+      expect(conflict.commentComparisonIdentity, isNull);
       expect(conflict.hunks, isEmpty);
       expect(
         () => snapshot.uncommitted.conflicts.clear(),
         throwsUnsupportedError,
       );
       expect(() => conflict.hunks.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'nullable comment identity is preserved independently of approvals',
+    () async {
+      service.commentComparisonIdentity = null;
+      final snapshot = await client.snapshotTaskChanges();
+      for (final layer in [
+        snapshot.committed,
+        snapshot.uncommitted.staged,
+        snapshot.uncommitted.unstaged,
+      ]) {
+        expect(layer.files.single.commentComparisonIdentity, isNull);
+      }
+      expect(
+        snapshot.uncommitted.unstaged.files.single.reviewRevision,
+        isNotNull,
+      );
+      final wire = channel.response! as Map;
+      final file = ((wire['committed'] as Map)['files'] as List).single as Map;
+      expect(file.containsKey('commentComparisonIdentity'), isTrue);
+      expect(file['commentComparisonIdentity'], isNull);
     },
   );
 
@@ -338,6 +376,9 @@ void main() {
           {...file, 'reviewRevision': 1},
           {...file}..remove('fileReviewRevision'),
           {...file, 'fileReviewRevision': 1},
+          {...file}..remove('commentComparisonIdentity'),
+          for (final value in [false, 1, 1.5, <Object?>[], <String, Object?>{}])
+            {...file, 'commentComparisonIdentity': value},
         ])
           {
             ...snapshot,
@@ -575,7 +616,7 @@ String layer(ChangeSetSnapshot snapshot) {
   final file = snapshot.files[0];
   final hunk = file.hunks[0];
   final line = hunk.lines[2];
-  return '\${snapshot.layerReviewRevision ?? 'none'}|\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${file.fileReviewRevision ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
+  return '\${snapshot.layerReviewRevision ?? 'none'}|\${file.relativePath}|\${file.changeKind}|\${file.contentStatus}|\${file.detail ?? 'none'}|\${file.reviewRevision ?? 'none'}|\${file.fileReviewRevision ?? 'none'}|\${file.commentComparisonIdentity ?? 'none'}|\${hunk.oldStart},\${hunk.oldCount},\${hunk.newStart},\${hunk.newCount}|\${line.kind}|\${line.text}|\${line.noNewline}';
 }
 
 Future<String> run() async {
@@ -586,17 +627,18 @@ Future<String> run() async {
   final conflict = snapshot.conflicts[0];
   final lines = <DiffLine>[DiffLine(kind: 'addition', text: 'detached', noNewline: false)];
   final hunks = <DiffHunk>[DiffHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: 1, lines: lines)];
-  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: hunks)];
+  final files = <ChangedFile>[ChangedFile(relativePath: 'copy.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, commentComparisonIdentity: null, hunks: hunks)];
   final copy = UncommittedChangeSetSnapshot(staged: ChangeSetSnapshot(files: files, layerReviewRevision: null), unstaged: ChangeSetSnapshot(files: files, layerReviewRevision: null), conflicts: files);
   final taskCopy = TaskChangeSetSnapshot(committed: ChangeSetSnapshot(files: files, layerReviewRevision: null), uncommitted: copy);
   lines[0] = DiffLine(kind: 'addition', text: 'changed', noNewline: false);
   hunks[0] = DiffHunk(oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: <DiffLine>[]);
-  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, hunks: <DiffHunk>[]);
+  files[0] = ChangedFile(relativePath: 'changed.txt', changeKind: 'added', contentStatus: 'text', detail: null, reviewRevision: null, fileReviewRevision: null, commentComparisonIdentity: null, hunks: <DiffHunk>[]);
   if (copy.staged.files[0].hunks[0].lines[0].text != 'detached' ||
       copy.staged.layerReviewRevision != null || copy.unstaged.layerReviewRevision != null ||
       taskCopy.committed.layerReviewRevision != null ||
       copy.staged.files[0].reviewRevision != null || conflict.reviewRevision != null ||
       copy.staged.files[0].fileReviewRevision != null || conflict.fileReviewRevision != null ||
+      copy.staged.files[0].commentComparisonIdentity != null || conflict.commentComparisonIdentity != null ||
       copy.unstaged.files[0].relativePath != 'copy.txt' || copy.conflicts[0].relativePath != 'copy.txt' ||
       taskCopy.committed.files[0].hunks[0].lines[0].text != 'detached') {
     throw StateError('Mutable constructor inputs');
@@ -638,7 +680,7 @@ Future<TaskChangeSetSnapshot> decode(String wire) {
         'run',
       );
       const layer =
-          'opaque-layer-review-revision|dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|opaque-file-review-revision|2,2,2,2|addition|after\u{1f600}|true';
+          'opaque-layer-review-revision|dir/two words\t\u03bb.txt|modified|text|none|opaque-review-revision|opaque-file-review-revision|opaque-comment-comparison|2,2,2,2|addition|after\u{1f600}|true';
       final committedLayer = layer
           .replaceFirst('opaque-layer-review-revision|', 'none|')
           .replaceFirst(
@@ -756,6 +798,9 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
       {...file, 'reviewRevision': false},
       {...file}..remove('fileReviewRevision'),
       {...file, 'fileReviewRevision': false},
+      {...file}..remove('commentComparisonIdentity'),
+      for (final value in [false, 1, 1.5, <Object?>[], <String, Object?>{}])
+        {...file, 'commentComparisonIdentity': value},
       {...file, 'extra': true},
       {...file, 'hunks': 'patch'},
       {
@@ -795,6 +840,7 @@ Iterable<Object?> _invalidTaskWires(Map<String, dynamic> wire) sync* {
 class _Service implements ChangeSetSourceService {
   int calls = 0;
   Object? failure;
+  String? commentComparisonIdentity = 'opaque-comment-comparison';
   @override
   Future<ChangeSetSnapshot> snapshotUnstaged() async {
     calls++;
@@ -834,6 +880,7 @@ class _Service implements ChangeSetSourceService {
         detail: 'Unmerged index entries.',
         reviewRevision: null,
         fileReviewRevision: null,
+        commentComparisonIdentity: null,
         hunks: [],
       ),
     ],
@@ -854,6 +901,7 @@ class _Service implements ChangeSetSourceService {
           detail: null,
           reviewRevision: reviewRevision,
           fileReviewRevision: fileReviewRevision,
+          commentComparisonIdentity: commentComparisonIdentity,
           hunks: [
             DiffHunk(
               oldStart: 2,

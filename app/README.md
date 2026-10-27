@@ -1349,9 +1349,21 @@ explicit descriptor requests acquire these services, and only for an actual pane
 The binder validates exact contribution registration and metadata, canonical
 Session identity, and any retained controller's captured strategy. Requested backend
 access must belong to the exact prepared installation; owning-backend affinity
-additionally checks actual strategy registration origin. Missing services or a mismatched
+additionally checks actual strategy registration origin. Missing required services or a mismatched
 origin fail that pane locally; semantic IDs cannot select a replacement. Service
 defaults and metadata belong to the [catalog](../packages/plugin_runtime/README.md#prepared-catalog).
+
+`optionalBackendServices` uses the existing `OwningBackendBridge` without gating
+pane or execution readiness. The binder captures the exact installation's ready
+backend and default context once (or the validated strategy context when affinity
+already requires it). Missing/failed backends, including a missing native binder,
+provide an inert bridge; missing services and operation failures safely settle as
+`[false, null]`, not a substitute route or native diagnostic. Success remains
+`[true, value]`. A successful semantic read, not metadata or backend readiness,
+establishes usable service state. Captured absence and retired generations never
+retarget. Presentation/backend retirement fences new calls and late publication
+without rolling back already-admitted backend effects. Focused coverage belongs to
+[`prepared_session_services_test.dart`](test/prepared_session_services_test.dart).
 
 Navigation only looks up an existing execution owner. An explicit execution-service
 request reaches `SessionExecutionOwners.getOrCreate` after affinity capture:

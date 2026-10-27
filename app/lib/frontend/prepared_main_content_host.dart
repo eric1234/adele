@@ -20,6 +20,7 @@ import 'environment_access_bridge.dart';
 import 'environment_capability_access_bridge.dart';
 import 'environment_text_files.dart';
 import 'main_content_bridge.dart';
+import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_services.dart';
 import 'session_presentation_lifecycle_bridge.dart';
@@ -286,7 +287,9 @@ final class PreparedMainContentHost {
                       if (descriptor.sessionExecution ||
                           descriptor.backendServices.isNotEmpty ||
                           descriptor.strategyAffinity ==
-                              PreparedStrategyAffinity.owningBackend) {
+                              PreparedStrategyAffinity.owningBackend ||
+                          (descriptor.optionalBackendServices.isNotEmpty &&
+                              services != null)) {
                         if (services == null) {
                           throw StateError(
                             'Prepared Session services are unavailable.',
@@ -307,6 +310,21 @@ final class PreparedMainContentHost {
                             view,
                             session: access.session,
                             isActive: () => collection.isActive,
+                          ),
+                        );
+                      } else if (descriptor
+                          .optionalBackendServices
+                          .isNotEmpty) {
+                        acquired.add(
+                          OwningBackendBridge(
+                            channels: const {},
+                            validateBinding: () {
+                              if (!collection.isActive) {
+                                throw StateError(
+                                  'Main Content pane is retired.',
+                                );
+                              }
+                            },
                           ),
                         );
                       }
