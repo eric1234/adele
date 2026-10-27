@@ -257,6 +257,9 @@ Future<List<String>> _prepareDesktopPlugins({
   final File sessionEvaluator = File.fromUri(
     installations.uri.resolve('session-evaluator/backend.aot'),
   );
+  final File diffViewer = File.fromUri(
+    installations.uri.resolve('diff-viewer/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -318,6 +321,12 @@ Future<List<String>> _prepareDesktopPlugins({
           artifact: sessionEvaluator,
           stage: 'session-evaluator-compilation',
         ),
+        (
+          entrypoint:
+              'plugins/diff_viewer/packages/backend/bin/diff_viewer_backend.dart',
+          artifact: diffViewer,
+          stage: 'diff-viewer-compilation',
+        ),
       ]) {
     final prepared = await cache.component(
       name: target.stage,
@@ -375,7 +384,7 @@ Future<List<String>> _prepareDesktopPlugins({
   final assemblyTimer = Stopwatch()..start();
   // Publish each installation once, only after all components are prepared.
   for (final plugin in <({File? backend, String id, String displayName})>[
-    (backend: null, id: 'dev.adele.diff-viewer', displayName: 'Diff'),
+    (backend: diffViewer, id: 'dev.adele.diff-viewer', displayName: 'Diff'),
     (backend: null, id: 'dev.adele.source-editor', displayName: 'Source'),
     (backend: null, id: 'dev.adele.plugin.terminal', displayName: 'Terminal'),
     (

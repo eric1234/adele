@@ -94,9 +94,10 @@ final class FieldModel {
 }
 
 final class EnumModel {
-  const EnumModel(this.name, this.values);
+  const EnumModel(this.name, this.values, {required this.isSimple});
   final String name;
   final List<String> values;
+  final bool isSimple;
 }
 
 final class FailureModel {
@@ -327,6 +328,12 @@ final class _Extractor {
             declaration.constants
                 .map((EnumConstantDeclaration value) => value.name.lexeme)
                 .toList(growable: false),
+            isSimple:
+                declaration.members.isEmpty &&
+                declaration.typeParameters == null &&
+                declaration.withClause == null &&
+                declaration.implementsClause == null &&
+                declaration.constants.every((value) => value.arguments == null),
           ),
     ];
     values.sort((ValueModel a, ValueModel b) => a.id.compareTo(b.id));

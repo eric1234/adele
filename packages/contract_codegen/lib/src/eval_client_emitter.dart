@@ -17,7 +17,7 @@ class AdeleProtocolException implements Exception {
 }
 ''';
 
-/// Bounded to scalar, nullable, JSON, list and value transport.
+/// Bounded to scalar, enum, nullable, JSON, list and value transport.
 /// This is a generated wire view, not an alternate semantic implementation.
 final class _EvalClientEmitter {
   final DartContractEmitter _names = DartContractEmitter();
@@ -33,9 +33,7 @@ final class _EvalClientEmitter {
   }
 
   String _codec(TypeModel type) {
-    if (type.kind == TypeKind.uri ||
-        type.kind == TypeKind.enumeration ||
-        type.kind == TypeKind.external) {
+    if (type.kind == TypeKind.uri || type.kind == TypeKind.external) {
       throw UnsupportedError('Eval client does not support ${type.dart}.');
     }
     if (type.nullable) _codec(type.nonNullable);
@@ -45,15 +43,20 @@ final class _EvalClientEmitter {
   }
 
   String emit(ContractModel model) {
-    if (model.enums.isNotEmpty) {
-      throw UnsupportedError('Eval client does not support enums.');
-    }
     final out = StringBuffer('''
 // GENERATED CODE - DO NOT MODIFY BY HAND.
 // Client-only wire view; generated from the annotated native contract.
 import 'dart:async';
 import 'package:adele_contract/adele_contract.dart';
 ''');
+    for (final value in model.enums) {
+      if (!value.isSimple) {
+        throw UnsupportedError(
+          'Eval client does not support enhanced enum ${value.name}.',
+        );
+      }
+      out.writeln('enum ${value.name} { ${value.values.join(',')} }');
+    }
     for (final value in model.values) {
       out.writeln('class ${value.name} {');
       final lists = value.fields
@@ -126,6 +129,19 @@ import 'package:adele_contract/adele_contract.dart';
         out.writeln(
           "if (value is! Map<Object?, Object?>) throw AdeleProtocolException('Expected JSON map.'); return _evalJson(value, 0) as Map<String, Object?>;",
         );
+      } else if (type.kind == TypeKind.enumeration) {
+        final enumeration = model.enums.singleWhere((e) => e.name == type.dart);
+        out.writeln(
+          'if (value is! String) throw AdeleProtocolException(${_names._literal('Expected ${type.dart}.')});',
+        );
+        for (final constant in enumeration.values) {
+          out.writeln(
+            'if (value == ${_names._literal(constant)}) return ${type.dart}.$constant;',
+          );
+        }
+        out.writeln(
+          'throw AdeleProtocolException(${_names._literal('Unknown ${type.dart}: ')} + (value as String) + ${_names._literal('.')});',
+        );
       } else if (type.kind == TypeKind.value) {
         final value = model.values.singleWhere((v) => v.name == type.dart);
         out.writeln(
@@ -153,6 +169,7 @@ import 'package:adele_contract/adele_contract.dart';
       final encodedType = switch (type.kind) {
         TypeKind.value || TypeKind.map => 'Map<String, Object?>',
         TypeKind.list => 'List<Object?>',
+        TypeKind.enumeration => 'String',
         _ => type.nonNullable.dart,
       };
       out.writeln(
@@ -173,6 +190,18 @@ import 'package:adele_contract/adele_contract.dart';
         );
       } else if (type.kind == TypeKind.map) {
         out.writeln('return ${name}Decode(value);');
+      } else if (type.kind == TypeKind.enumeration) {
+        final enumeration = model.enums.singleWhere((e) => e.name == type.dart);
+        // The pin compiles enums, but not the SDK EnumName extension. Keep the
+        // native name-based wire representation without relying on that API.
+        for (final constant in enumeration.values) {
+          out.writeln(
+            'if (value == ${type.dart}.$constant) return ${_names._literal(constant)};',
+          );
+        }
+        out.writeln(
+          'throw AdeleProtocolException(${_names._literal('Expected ${type.dart}.')});',
+        );
       } else {
         if (type.kind == TypeKind.double_) {
           out.writeln(

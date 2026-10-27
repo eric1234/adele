@@ -254,12 +254,203 @@ Future<Snapshot> run(bool absent) {
   );
 
   test(
-    'eval client rejects unsupported shapes instead of weakening them',
+    'real EVC round trips typed enums using strict native wire names',
     () async {
-      final fixture = await createFixture(runtimeContract());
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+enum Mood { calm, busy }
+enum Side { oldSide, newSide }
+@AdeleValue('fixture.entry')
+final class Entry {
+  const Entry({required this.mood, required this.side, required this.optional,
+    required this.history});
+  final Mood mood;
+  final Side side;
+  final Mood? optional;
+  final List<Mood?> history;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('echo') Future<Entry> echo(Entry value);
+  @AdeleMethod('mood') Future<Mood> mood(Mood value);
+}
+''');
+      final output = await const ContractGenerator().generateEvalClient(
+        fixture.source,
+      );
+      expect(output, contains('enum Mood { calm, busy }'));
+      expect(output, contains('enum Side { oldSide, newSide }'));
+      expect(output, isNot(contains('.name')));
+      expect(output, isNot(contains('.index')));
+      expect(parseString(content: output).errors, isEmpty);
+      final compiler = Compiler()
+        ..entrypoints.addAll([
+          'package:adele_contract/adele_contract.dart',
+          'package:fixture/fixture.dart',
+          'package:runner/main.dart',
+        ]);
+      final program = compiler.compile({
+        'adele_contract': {'adele_contract.dart': evalContractSupportSource},
+        'fixture': {'fixture.dart': output},
+        'runner': {
+          'main.dart': r'''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:fixture/fixture.dart';
+class EchoChannel implements AdeleRequestChannel {
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    final map = payload['value'] as Map<String, Object?>;
+    final history = map['history'] as List<Object?>;
+    if (method != 'fixture.service.echo' ||
+        (map['mood'] != 'calm' && map['mood'] != 'busy') ||
+        (map['side'] != 'oldSide' && map['side'] != 'newSide') ||
+        (map['optional'] != null && map['optional'] != 'busy') ||
+        history[0] != 'calm' || history[1] != null || history[2] != 'busy') {
+      throw StateError('Changed enum wire representation');
+    }
+    return map;
+  }
+}
+class NativeChannel implements AdeleRequestChannel {
+  NativeChannel(this.response);
+  final Future<Object?> response;
+  Future<Object?> request(String method, Map<String, Object?> payload) {
+    if (method != 'fixture.service.mood' || payload['value'] != 'calm') {
+      throw StateError('Changed scalar enum request');
+    }
+    return response;
+  }
+}
+Future<String> read(Future<Object?> response) {
+  final FixtureServiceClient client = FixtureServiceClient(NativeChannel(response));
+  return client.mood(Mood.calm).then((Mood value) {
+    if (value == Mood.calm) return 'calm';
+    if (value == Mood.busy) return 'busy';
+    throw StateError('Not an enum constant');
+  });
+}
+Future<bool> run(bool absent) {
+  // The pin misboxes enum-valued conditional expressions; assignments work.
+  Mood mood = Mood.calm;
+  Side side = Side.oldSide;
+  Mood? optional = null;
+  if (!absent) {
+    mood = Mood.busy;
+    side = Side.newSide;
+    optional = Mood.busy;
+  }
+  final value = Entry(mood: mood, side: side, optional: optional,
+      history: <Mood?>[Mood.calm, null, Mood.busy]);
+  final FixtureServiceClient client = FixtureServiceClient(EchoChannel());
+  return client.echo(value).then((Entry decoded) {
+    return decoded.mood == mood && decoded.side == side &&
+        decoded.optional == optional && decoded.history.length == 3 &&
+        decoded.history[0] == Mood.calm && decoded.history[1] == null &&
+        decoded.history[2] == Mood.busy;
+  });
+}
+''',
+        },
+      });
+      for (final absent in [false, true]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        final result = await runtime.executeLib(
+          'package:runner/main.dart',
+          'run',
+          [absent],
+        );
+        expect((result as $Value).$reified, isTrue);
+      }
+      for (final name in ['calm', 'busy']) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        final result = await runtime.executeLib(
+          'package:runner/main.dart',
+          'read',
+          [$Future.wrap(Future<$Value>.value($String(name)))],
+        );
+        expect((result as $Value).$reified, name);
+      }
+      for (final (value, message) in <($Value, String)>[
+        ($String('unknown'), 'Unknown Mood: unknown.'),
+        ($String('Calm'), 'Unknown Mood: Calm.'),
+        ($String('oldSide'), 'Unknown Mood: oldSide.'),
+        ($int(0), 'Expected Mood.'),
+        ($bool(true), 'Expected Mood.'),
+        (const $null(), 'Expected Mood.'),
+        ($List.wrap(<$Value>[]), 'Expected Mood.'),
+        ($Map.wrap(<$Value, $Value>{}), 'Expected Mood.'),
+      ]) {
+        final runtime = Runtime(program.write().buffer.asByteData());
+        await expectLater(
+          runtime.executeLib('package:runner/main.dart', 'read', [
+            $Future.wrap(Future<$Value>.value(value)),
+          ]),
+          throwsA(
+            isA<$InstanceImpl>().having(
+              (error) => (error.values.single as $Value).$reified,
+              'protocol message',
+              message,
+            ),
+          ),
+        );
+      }
+    },
+  );
+
+  for (final type in ['Uri', 'ResourceRef']) {
+    test('eval client still rejects unsupported $type', () async {
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+${type == 'ResourceRef' ? "import 'package:adele_plugin_api/adele_plugin_api.dart';" : ''}
+part 'fixture.g.dart';
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('echo') Future<$type> echo($type value);
+}
+''');
       await expectLater(
         const ContractGenerator().generateEvalClient(fixture.source),
-        throwsUnsupportedError,
+        throwsA(
+          isA<UnsupportedError>().having(
+            (error) => error.message,
+            'message',
+            'Eval client does not support $type.',
+          ),
+        ),
+      );
+    });
+  }
+
+  test(
+    'eval client rejects enhanced enums instead of dropping behavior',
+    () async {
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+enum Mood {
+  calm(1), busy(2);
+  const Mood(this.level);
+  final int level;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('mood') Future<Mood> mood(Mood value);
+}
+''');
+      await expectLater(
+        const ContractGenerator().generateEvalClient(fixture.source),
+        throwsA(
+          isA<UnsupportedError>().having(
+            (error) => error.message,
+            'message',
+            'Eval client does not support enhanced enum Mood.',
+          ),
+        ),
+      );
+      // The eval restriction does not narrow native enum name transport.
+      expect(
+        (await const ContractGenerator().generate(fixture.source)).contents,
+        contains('Mood.calm'),
       );
     },
   );

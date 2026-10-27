@@ -62,6 +62,7 @@ void main() {
   late Directory installations;
   late Directory frontendOnly;
   late Directory approvalDenied;
+  late Directory failedDraftBackend;
   late File host;
   late String aotRuntime;
 
@@ -163,6 +164,27 @@ void main() {
       displayName: 'Source',
       frontend: true,
     );
+    failedDraftBackend = await Directory(
+      '${artifacts.path}/failed-draft-backend',
+    ).create();
+    for (final original in [git, source, diff]) {
+      final target = await Directory(
+        '${failedDraftBackend.path}/${original.uri.pathSegments.where((part) => part.isNotEmpty).last}',
+      ).create();
+      for (final file in original.listSync().whereType<File>()) {
+        await file.copy('${target.path}/${file.uri.pathSegments.last}');
+      }
+    }
+    final failedDiff = Directory('${failedDraftBackend.path}/diff');
+    await File('${failedDiff.path}/backend.aot').writeAsString('invalid AOT');
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: failedDiff,
+      pluginId: _diffPlugin,
+      displayName: 'Diff',
+      backend: true,
+      frontend: true,
+    );
   });
   tearDownAll(() => artifacts.delete(recursive: true));
 
@@ -180,12 +202,18 @@ void main() {
     WidgetTester tester, {
     Directory? catalog,
     bool approvalPresent = true,
+    String? expectedBackendFailure,
   }) async {
     tester.view.physicalSize = const Size(1600, 2000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.runAsync(() => fixture.start(catalog ?? installations));
+    await tester.runAsync(
+      () => fixture.start(
+        catalog ?? installations,
+        expectedBackendFailure: expectedBackendFailure,
+      ),
+    );
     if (!approvalPresent) {
       await tester.runAsync(
         () => fixture.backends.backends.single.retireProvider(
@@ -352,93 +380,102 @@ void main() {
     },
   );
 
-  testWidgets(
-    'stock Approve stages only the first nonprimary hunk and Unapprove restores that index portion',
-    (tester) async {
-      await tester.runAsync(() async {
-        await fixture.write(
-          _reviewPath,
-          _reviewContent(first: true, second: true),
+  for (final draftBackendFails in [false, true]) {
+    testWidgets(
+      'stock Approve and Unapprove remain independent with ${draftBackendFails ? 'failed' : 'absent'} draft backend',
+      (tester) async {
+        await tester.runAsync(() async {
+          await fixture.write(
+            _reviewPath,
+            _reviewContent(first: true, second: true),
+          );
+          await File(
+            '${fixture.primaryRoot.path}/$_reviewPath',
+          ).writeAsString('Primary Environment must remain untouched\n');
+        });
+        final before = (await tester.runAsync(fixture.reviewState))!;
+        await mount(
+          tester,
+          catalog: draftBackendFails ? failedDraftBackend : installations,
+          expectedBackendFailure: draftBackendFails ? _diffPlugin : null,
         );
-        await File(
-          '${fixture.primaryRoot.path}/$_reviewPath',
-        ).writeAsString('Primary Environment must remain untouched\n');
-      });
-      final before = (await tester.runAsync(fixture.reviewState))!;
-      await mount(tester);
-      await _visible(tester, '+Selected first change');
-      await _visible(tester, '+Selected second change');
-      await _reviewReady(tester, 'Approve', count: 2);
-      expect(find.textContaining('@@ -'), findsNWidgets(2));
-      expect(_reviewAction('Unapprove'), findsNothing);
-      final stale = tester
-          .widget<TextButton>(_reviewAction('Approve').first)
-          .onPressed!;
-      await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
-      await _waitFor(
-        tester,
-        () =>
-            find.textContaining('+Selected first change').evaluate().isEmpty &&
-            _reviewAction('Approve').evaluate().length == 1,
-      );
-      expect(find.textContaining('+Selected second change'), findsOneWidget);
-      await tester.runAsync(
-        () => fixture.expectReviewIndex(before, first: true),
-      );
-      expect(fixture.indexWrites, hasLength(1));
-      expect(
-        fixture.indexWrites.single['environmentId'],
-        fixture.additional.id.value,
-      );
-      final afterApprove = (await tester.runAsync(fixture.reviewState))!;
-      stale();
-      await tester.pump();
-      expect(await tester.runAsync(fixture.reviewState), afterApprove);
-      expect(fixture.indexWrites, hasLength(1));
+        await _visible(tester, '+Selected first change');
+        await _visible(tester, '+Selected second change');
+        await _reviewReady(tester, 'Approve', count: 2);
+        expect(find.textContaining('@@ -'), findsNWidgets(2));
+        expect(_reviewAction('Unapprove'), findsNothing);
+        final stale = tester
+            .widget<TextButton>(_reviewAction('Approve').first)
+            .onPressed!;
+        await tester.runAsync(() => tester.tap(_reviewAction('Approve').first));
+        await _waitFor(
+          tester,
+          () =>
+              find
+                  .textContaining('+Selected first change')
+                  .evaluate()
+                  .isEmpty &&
+              _reviewAction('Approve').evaluate().length == 1,
+        );
+        expect(find.textContaining('+Selected second change'), findsOneWidget);
+        await tester.runAsync(
+          () => fixture.expectReviewIndex(before, first: true),
+        );
+        expect(fixture.indexWrites, hasLength(1));
+        expect(
+          fixture.indexWrites.single['environmentId'],
+          fixture.additional.id.value,
+        );
+        final afterApprove = (await tester.runAsync(fixture.reviewState))!;
+        stale();
+        await tester.pump();
+        expect(await tester.runAsync(fixture.reviewState), afterApprove);
+        expect(fixture.indexWrites, hasLength(1));
 
-      await _selectScope(tester, 'Uncommitted changes');
-      await _reviewReady(tester, 'Unapprove');
-      await _reviewReady(tester, 'Approve');
-      final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
-      final unstagedY = tester
-          .getTopLeft(find.text('Unstaged changes').last)
-          .dy;
-      expect(
-        tester.getTopLeft(find.textContaining('+Selected first change')).dy,
-        greaterThan(stagedY),
-      );
-      expect(
-        tester.getTopLeft(find.textContaining('+Selected first change')).dy,
-        lessThan(unstagedY),
-      );
-      expect(
-        tester.getTopLeft(find.textContaining('+Selected second change')).dy,
-        greaterThan(unstagedY),
-      );
-      expect(find.text('$_reviewPath  [modified]'), findsNWidgets(2));
-      await tester.runAsync(() => tester.tap(_reviewAction('Unapprove')));
-      await _visible(tester, 'No staged changes');
-      await _reviewReady(tester, 'Approve', count: 2);
-      expect(_reviewAction('Unapprove'), findsNothing);
-      expect(find.textContaining('+Selected first change'), findsOneWidget);
-      expect(find.textContaining('+Selected second change'), findsOneWidget);
-      expect(await tester.runAsync(fixture.reviewState), before);
-      await tester.runAsync(() => fixture.expectReviewIndex(before));
-      expect(fixture.indexWrites, hasLength(2));
-      expect(fixture.reads, isEmpty);
-      expect(
-        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
-        isNull,
-      );
-      expect(
-        fixture.store.runsForSession(fixture.additionalSession.id),
-        isEmpty,
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-    skip: !Platform.isLinux,
-  );
+        await _selectScope(tester, 'Uncommitted changes');
+        await _reviewReady(tester, 'Unapprove');
+        await _reviewReady(tester, 'Approve');
+        final stagedY = tester.getTopLeft(find.text('Staged changes')).dy;
+        final unstagedY = tester
+            .getTopLeft(find.text('Unstaged changes').last)
+            .dy;
+        expect(
+          tester.getTopLeft(find.textContaining('+Selected first change')).dy,
+          greaterThan(stagedY),
+        );
+        expect(
+          tester.getTopLeft(find.textContaining('+Selected first change')).dy,
+          lessThan(unstagedY),
+        );
+        expect(
+          tester.getTopLeft(find.textContaining('+Selected second change')).dy,
+          greaterThan(unstagedY),
+        );
+        expect(find.text('$_reviewPath  [modified]'), findsNWidgets(2));
+        await tester.runAsync(() => tester.tap(_reviewAction('Unapprove')));
+        await _visible(tester, 'No staged changes');
+        await _reviewReady(tester, 'Approve', count: 2);
+        expect(_reviewAction('Unapprove'), findsNothing);
+        expect(find.textContaining('+Selected first change'), findsOneWidget);
+        expect(find.textContaining('+Selected second change'), findsOneWidget);
+        expect(await tester.runAsync(fixture.reviewState), before);
+        await tester.runAsync(() => fixture.expectReviewIndex(before));
+        expect(fixture.indexWrites, hasLength(2));
+        expect(fixture.reads, isEmpty);
+        expect(
+          fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+          isNull,
+        );
+        expect(
+          fixture.store.runsForSession(fixture.additionalSession.id),
+          isEmpty,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   testWidgets(
     'stock file review changes only the selected nonprimary index and refreshes Uncommitted and Task layers',
@@ -3766,7 +3803,10 @@ final class _Fixture {
     await file('b new + [file].txt').readAsString(),
   ];
 
-  Future<void> start(Directory catalog) async {
+  Future<void> start(
+    Directory catalog, {
+    String? expectedBackendFailure,
+  }) async {
     await backends.start(
       installationRoot: catalog.path,
       dartaotruntimeExecutable: launcher,
@@ -3776,10 +3816,21 @@ final class _Fixture {
     expect(backends.state, ApplicationPluginState.ready);
     expect(backends.failure, isNull);
     expect(backends.catalog!.issues, isEmpty);
+    if (expectedBackendFailure != null) {
+      expect(
+        backends.backends.where(
+          (backend) =>
+              backend.installation.metadata.id.value == expectedBackendFailure,
+        ),
+        hasLength(1),
+      );
+    }
     for (final backend in backends.backends) {
       expect(
         backend.state,
-        InstalledBackendState.active,
+        backend.installation.metadata.id.value == expectedBackendFailure
+            ? InstalledBackendState.failed
+            : InstalledBackendState.active,
         reason: '${backend.failure}',
       );
     }
