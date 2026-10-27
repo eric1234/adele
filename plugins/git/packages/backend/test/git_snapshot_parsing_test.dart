@@ -567,6 +567,84 @@ void main() {
     );
     expect(parseGitPatch('', requireIndex: false), isEmpty);
   });
+
+  test(
+    'comparison verifier preserves additions deletions CRLF and no newline',
+    () {
+      for (final (oldText, newText, content) in [
+        (
+          'old\r\n',
+          'new',
+          '@@ -1 +1 @@\n-old\r\n+new\n\\ No newline at end of file\n',
+        ),
+        ('', 'new\n', '@@ -0,0 +1 @@\n+new\n'),
+        ('old', '', '@@ -1 +0,0 @@\n-old\n\\ No newline at end of file\n'),
+        (
+          'same\nold\ntail\n',
+          'same\nnew\nextra\ntail\n',
+          '@@ -2 +2,2 @@\n-old\n+new\n+extra\n',
+        ),
+        (
+          'same\nold\nmid\nlast',
+          'same\nnew\nmid\nend',
+          '@@ -2 +2 @@\n-old\n+new\n@@ -4 +4 @@\n-last\n\\ No newline at end of file\n+end\n\\ No newline at end of file\n',
+        ),
+        ('\ufeffold\n', '\ufeffnew\n', '@@ -1 +1 @@\n-\ufeffold\n+\ufeffnew\n'),
+      ]) {
+        final hunks = parseGitPatch('$diff$paths$content', requireIndex: false);
+        expect(
+          () => verifyGitPatchContent(hunks, oldText, newText),
+          returnsNormally,
+        );
+      }
+      expect(() => verifyGitPatchContent([], '', ''), returnsNormally);
+      expect(
+        () => verifyGitPatchContent([], 'same\n', 'same\n'),
+        returnsNormally,
+      );
+    },
+  );
+
+  test(
+    'comparison verifier rejects validly parsed but false or incomplete evidence',
+    () {
+      const content = '@@ -2 +2 @@\n-old\n+new\n';
+      final hunks = parseGitPatch('$diff$paths$content', requireIndex: false);
+      for (final (oldText, newText) in [
+        ('same\nwrong\n', 'same\nnew\n'),
+        ('same\nold\n', 'same\nwrong\n'),
+        ('same\nold', 'same\nnew\n'),
+        ('same\nold\n', 'same\nnew'),
+        ('same\nold\nlast\n', 'same\nnew\nchanged outside hunk\n'),
+        ('same\nold\n', 'different context\nnew\n'),
+        ('old\n', 'new\n'),
+      ]) {
+        expect(
+          () => verifyGitPatchContent(hunks, oldText, newText),
+          throwsA(_code('invalid_git_output')),
+        );
+      }
+      for (final invalid in [
+        content.replaceFirst('+2', '+3'),
+        content.replaceFirst('-2', '-3'),
+        content.replaceFirst('+new\n', '+new\n\\ No newline at end of file\n'),
+        content.replaceFirst('-old\n', '-old\n\\ No newline at end of file\n'),
+      ]) {
+        final parsed = parseGitPatch(
+          '$diff$paths$invalid',
+          requireIndex: false,
+        );
+        expect(
+          () => verifyGitPatchContent(parsed, 'same\nold\n', 'same\nnew\n'),
+          throwsA(_code('invalid_git_output')),
+        );
+      }
+      expect(
+        () => verifyGitPatchContent([], 'old\n', 'new\n'),
+        throwsA(_code('invalid_git_output')),
+      );
+    },
+  );
 }
 
 String _treeRecord(

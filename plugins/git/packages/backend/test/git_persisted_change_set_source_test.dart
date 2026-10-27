@@ -152,7 +152,7 @@ void main() {
 
   for (final unstaged in [true, false]) {
     test(
-      '${unstaged ? 'Unstaged' : 'Uncommitted'} skips identity and storage',
+      '${unstaged ? 'Unstaged' : 'Uncommitted'} skips identity and storage before inspection',
       () async {
         processes.onIdentity = () async =>
             throw StateError('Identity is forbidden.');
@@ -257,7 +257,12 @@ void main() {
         expect(result.uncommitted.unstaged.files, isEmpty);
         expect(result.uncommitted.conflicts, isEmpty);
         expect(processes.requests, isNotEmpty);
-        expect(processes.identityCalls, 2);
+        // Adapter lookup, comparison certificate, then adapter publication fence.
+        expect(processes.identityCalls, 3);
+        expect(
+          result.committed.files.single.commentComparisonIdentity,
+          startsWith('git-comment-comparison-v1:'),
+        );
         expect(storage.calls, ['schema', 'query', 'schema', 'query']);
         expect(storage.sessions, everyElement(_identity.sessionId));
         expect(
@@ -322,7 +327,7 @@ void main() {
             };
           case 'identity':
             processes.onIdentity = () async {
-              if (processes.identityCalls == 2) await gate.hold();
+              if (processes.identityCalls == 3) await gate.hold();
               return _identity;
             };
         }
@@ -349,7 +354,7 @@ void main() {
           'schema',
           if (phase != 'schema') 'query',
         ]);
-        expect(processes.identityCalls, phase == 'identity' ? 2 : 1);
+        expect(processes.identityCalls, phase == 'identity' ? 3 : 2);
         await failed;
         expect(published, isFalse);
         final stoppedCalls = List<String>.of(storage.calls);
@@ -389,7 +394,7 @@ void main() {
         await gate.entered.future;
         final commandCount = processes.requests.length;
         expect(commandCount, greaterThan(0));
-        expect(processes.identityCalls, 1);
+        expect(processes.identityCalls, 2);
         storage.rows = [
           RelationalRow(
             values: {
@@ -409,7 +414,7 @@ void main() {
         gate.open();
         await failed;
         expect(processes.requests, hasLength(commandCount));
-        expect(processes.identityCalls, 1);
+        expect(processes.identityCalls, 2);
         expect(storage.calls, ['schema', 'query', 'schema', 'query']);
       });
     }
@@ -419,7 +424,7 @@ void main() {
         final gate = _Gate();
         addTearDown(gate.open);
         processes.onIdentity = () async {
-          if (processes.identityCalls == 1) return _identity;
+          if (processes.identityCalls < 3) return _identity;
           await gate.hold();
           if (change == 'revocation') throw _revoked();
           return AuthorizedEnvironmentIdentity(
@@ -447,9 +452,25 @@ void main() {
         gate.open();
         await failed;
         expect(processes.requests, hasLength(commandCount));
-        expect(processes.identityCalls, 2);
+        expect(processes.identityCalls, 3);
       });
     }
+
+    test(
+      'revocation during comment identity capture prevents publication',
+      () async {
+        processes.onIdentity = () async {
+          if (processes.identityCalls == 2) throw _revoked();
+          return _identity;
+        };
+        await expectLater(
+          source().snapshotTaskChanges(),
+          throwsA(_environmentRevoked()),
+        );
+        expect(processes.identityCalls, 2);
+        expect(storage.calls, ['schema', 'query']);
+      },
+    );
   });
 }
 

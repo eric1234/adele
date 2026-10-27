@@ -67,6 +67,7 @@ final class ChangedFile {
     required this.detail,
     required this.reviewRevision,
     required this.fileReviewRevision,
+    required this.commentComparisonIdentity,
     required List<DiffHunk> hunks,
   }) : hunks = List<DiffHunk>.unmodifiable(hunks);
 
@@ -88,6 +89,11 @@ final class ChangedFile {
   /// Opaque provider revision for the complete displayed file change.
   /// Null means complete-file review is unavailable, independently of hunk review.
   final String? fileReviewRevision;
+
+  /// Opaque provider-certified identity of this exact displayed comparison.
+  /// Read-only comment anchoring data, independent of approval and not authority.
+  /// Null means the provider cannot certify source lines for comments.
+  final String? commentComparisonIdentity;
   final List<DiffHunk> hunks;
 }
 

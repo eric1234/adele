@@ -283,6 +283,7 @@ final class PreparedMainContentPresentation
     required this.entrypoint,
     this.sessionExecution = false,
     Iterable<String> backendServices = const [],
+    Iterable<String> optionalBackendServices = const [],
     Iterable<CapabilityKey> capabilities = const [],
     Iterable<CapabilityKey> environmentReadCapabilities = const [],
     Iterable<CapabilityKey> environmentBufferedProcessCapabilities = const [],
@@ -297,6 +298,7 @@ final class PreparedMainContentPresentation
     this.environmentTextFiles = false,
     this.canRequestSourceDisplay = false,
   }) : backendServices = List.unmodifiable(backendServices),
+       optionalBackendServices = List.unmodifiable(optionalBackendServices),
        capabilities = List.unmodifiable(capabilities),
        environmentReadCapabilities = List.unmodifiable(
          environmentReadCapabilities,
@@ -315,6 +317,14 @@ final class PreparedMainContentPresentation
       if (!seen.add(service)) {
         throw const FormatException(
           'backendServices must not contain duplicates.',
+        );
+      }
+    }
+    for (final service in this.optionalBackendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'optionalBackendServices must be unique and disjoint from backendServices.',
         );
       }
     }
@@ -368,6 +378,10 @@ final class PreparedMainContentPresentation
   final String entrypoint;
   final bool sessionExecution;
   final List<String> backendServices;
+
+  /// Pane-only access to a captured sibling backend, without requiring readiness
+  /// for presentation. Absence never selects another installation or generation.
+  final List<String> optionalBackendServices;
   final List<CapabilityKey> capabilities;
 
   /// Pane-only contextual unary requests, separate from [capabilities].
@@ -402,6 +416,7 @@ final class PreparedMainContentPresentation
     'entrypoint': entrypoint,
     'sessionExecution': sessionExecution,
     'backendServices': [...backendServices],
+    'optionalBackendServices': [...optionalBackendServices],
     'capabilities': [
       for (final key in capabilities)
         {'id': key.id.value, 'majorVersion': key.majorVersion},
@@ -1369,6 +1384,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'entrypoint',
         'sessionExecution',
         'backendServices',
+        'optionalBackendServices',
         'capabilities',
         'environmentReadCapabilities',
         'environmentBufferedProcessCapabilities',
@@ -1399,6 +1415,15 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
       if (services is! List<Object?> ||
           services.any((item) => item is! String)) {
         throw FormatException('$label.backendServices must be a string array.');
+      }
+      final optionalServices = value.containsKey('optionalBackendServices')
+          ? value['optionalBackendServices']
+          : const <String>[];
+      if (optionalServices is! List<Object?> ||
+          optionalServices.any((item) => item is! String)) {
+        throw FormatException(
+          '$label.optionalBackendServices must be a string array.',
+        );
       }
       List<CapabilityKey> capabilityKeys(String field) => _capabilityKeys(
         value.containsKey(field) ? value[field] : const <Object?>[],
@@ -1460,6 +1485,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         sessionExecution: execution,
         backendServices: services.cast<String>(),
+        optionalBackendServices: optionalServices.cast<String>(),
         capabilities: capabilityKeys('capabilities'),
         environmentReadCapabilities: capabilityKeys(
           'environmentReadCapabilities',

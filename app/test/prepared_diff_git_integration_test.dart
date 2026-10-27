@@ -16,6 +16,7 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -63,6 +64,7 @@ void main() {
   late Directory frontendOnly;
   late Directory approvalDenied;
   late Directory failedDraftBackend;
+  late Directory withDraft;
   late File host;
   late String aotRuntime;
 
@@ -180,6 +182,32 @@ void main() {
     await publishStockPluginInstallation(
       repositoryRoot: repository,
       installationDirectory: failedDiff,
+      pluginId: _diffPlugin,
+      displayName: 'Diff',
+      backend: true,
+      frontend: true,
+    );
+    withDraft = await Directory('${artifacts.path}/with-draft').create();
+    for (final original in [git, source, diff]) {
+      final target = await Directory(
+        '${withDraft.path}/${original.uri.pathSegments.where((part) => part.isNotEmpty).last}',
+      ).create();
+      for (final file in original.listSync().whereType<File>()) {
+        await file.copy('${target.path}/${file.uri.pathSegments.last}');
+      }
+    }
+    final draft = Directory('${withDraft.path}/diff');
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint:
+          'plugins/diff_viewer/packages/backend/bin/diff_viewer_backend.dart',
+      artifact: File('${draft.path}/backend.aot'),
+      stage: 'prepared-diff-review-draft',
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: draft,
       pluginId: _diffPlugin,
       displayName: 'Diff',
       backend: true,
@@ -310,6 +338,7 @@ void main() {
       expect(descriptor['order'], 200);
       expect(descriptor['capabilities'], isNull);
       expect(descriptor['backendServices'], isNull);
+      expect(descriptor['optionalBackendServices'], [reviewDraftServiceId]);
       expect(descriptor['canRequestSourceDisplay'], isTrue);
       expect(descriptor['environmentReadCapabilities'], isNull);
       expect(descriptor['environmentBufferedProcessCapabilities'], [
@@ -402,6 +431,8 @@ void main() {
         await _visible(tester, '+Selected first change');
         await _visible(tester, '+Selected second change');
         await _reviewReady(tester, 'Approve', count: 2);
+        expect(_reviewAction('Comment'), findsNothing);
+        expect(_reviewAction('Save comment'), findsNothing);
         expect(find.textContaining('@@ -'), findsNWidgets(2));
         expect(_reviewAction('Unapprove'), findsNothing);
         final stale = tester
@@ -476,6 +507,443 @@ void main() {
       skip: !Platform.isLinux,
     );
   }
+
+  testWidgets(
+    'G7a2 compiled comments retain exact multi-file layered anchors and isolate Sessions without Git writes',
+    (tester) async {
+      const firstText = "  Review '\u03bb'; keep \u6771\u4eac and \u{1f642}  ";
+      const editedText = '  Edited e\u0301 and \u00e9; retain spaces  ';
+      await tester.runAsync(() async {
+        await fixture.write(
+          'a modified.txt',
+          'context before\nCommitted comment target\ncontext after\n',
+        );
+        await _git(fixture.additionalRoot, ['add', '--', 'a modified.txt']);
+        await _git(fixture.additionalRoot, ['commit', '-m', 'Comment layers']);
+        await fixture.write(
+          'a modified.txt',
+          'context before\nStaged comment target\ncontext after\n',
+        );
+        await _git(fixture.additionalRoot, ['add', '--', 'a modified.txt']);
+        await fixture.write(
+          'a modified.txt',
+          'context before\nWorking comment target\ncontext after\n',
+        );
+        await fixture.write('d staged.txt', 'Second file comment target');
+        await File(
+          '${fixture.primaryRoot.path}/a modified.txt',
+        ).writeAsString('Primary comment target\n');
+      });
+      final before = (await tester.runAsync(fixture.snapshotState))!;
+      final coreBefore = fixture.coreRows();
+      await mount(tester, catalog: withDraft);
+      tester.view.physicalSize = const Size(1600, 5000);
+      await tester.pump();
+      await _selectScope(tester, 'Task / Branch');
+      await _visible(tester, '+Committed comment target');
+      await _reviewReady(tester, 'Approve', count: 2);
+      await _visible(tester, 'Pending review comments (0)');
+      final snapshot = (await tester.runAsync(fixture.taskSnapshot))!;
+      final committed = snapshot.committed.files.single;
+      final staged = snapshot.uncommitted.staged.files.single;
+      final unstaged = snapshot.uncommitted.unstaged.files;
+      final selections = [
+        (
+          '+Committed comment target',
+          _commentAnchor(
+            fixture.additional,
+            committed,
+            ReviewComparisonLayer.committed,
+            'Committed comment target',
+            ReviewComparisonSide.newSide,
+          ),
+          firstText,
+        ),
+        (
+          '+Staged comment target',
+          _commentAnchor(
+            fixture.additional,
+            staged,
+            ReviewComparisonLayer.staged,
+            'Staged comment target',
+            ReviewComparisonSide.newSide,
+          ),
+          'Staged comment body',
+        ),
+        (
+          '-Staged comment target',
+          _commentAnchor(
+            fixture.additional,
+            unstaged.singleWhere(
+              (file) => file.relativePath == 'a modified.txt',
+            ),
+            ReviewComparisonLayer.unstaged,
+            'Staged comment target',
+            ReviewComparisonSide.oldSide,
+          ),
+          'Old-side comment body',
+        ),
+        (
+          '+Second file comment target',
+          _commentAnchor(
+            fixture.additional,
+            unstaged.singleWhere((file) => file.relativePath == 'd staged.txt'),
+            ReviewComparisonLayer.unstaged,
+            'Second file comment target',
+            ReviewComparisonSide.newSide,
+          ),
+          'Second file comment body',
+        ),
+      ];
+      expect(committed.reviewRevision, isNull);
+      expect(committed.commentComparisonIdentity, isNotNull);
+      expect(staged.commentComparisonIdentity, isNot(staged.reviewRevision));
+      final processesBefore = fixture.processes.length;
+      await _beginComment(tester, selections.first.$1);
+      expect(tester.widget<TextField>(find.byType(TextField)).maxLines, 1);
+      await tester.enterText(find.byType(TextField), '   ');
+      await tester.pump();
+      await tester.tap(_reviewAction('Save comment'));
+      await _visible(tester, 'Enter a nonblank single-line comment');
+      expect(fixture.commentRows(), isEmpty);
+      await tester.enterText(find.byType(TextField), 'Canceled comment');
+      await tester.tap(_reviewAction('Cancel editing'));
+      await tester.pump();
+      expect(find.byType(TextField), findsNothing);
+      expect(fixture.commentRows(), isEmpty);
+
+      final saved = <PendingReviewComment>[];
+      for (final (line, anchor, text) in selections) {
+        await _beginComment(tester, line);
+        await _saveComment(tester, text);
+        await _visible(tester, 'Pending review comments (${saved.length + 1})');
+        final comments = (await tester.runAsync(
+          () =>
+              fixture.draftClient.snapshot(fixture.additionalSession.id.value),
+        ))!.comments;
+        final comment = comments.last;
+        expect(comment.text, text);
+        expect(comment.version, 1);
+        expect(comment.sequence, saved.length + 1);
+        expect(_anchorFields(comment.anchor), _anchorFields(anchor));
+        saved.add(comment);
+        expect(fixture.commentRows(), [
+          for (final value in saved)
+            _storedComment(fixture.additionalSession.id.value, value),
+        ]);
+      }
+      expect(saved.map((comment) => comment.id).toSet(), hasLength(4));
+      expect(find.text('Current location'), findsNWidgets(4));
+      expect(fixture.processes, hasLength(processesBefore));
+
+      await tester.tap(_reviewAction('Edit').first);
+      await tester.pump();
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        firstText,
+      );
+      await _saveComment(tester, editedText);
+      final edited = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(fixture.additionalSession.id.value),
+      ))!.comments.first;
+      expect(edited.id, saved.first.id);
+      expect(edited.sequence, saved.first.sequence);
+      expect(edited.version, 2);
+      expect(edited.text, editedText);
+      expect(_anchorFields(edited.anchor), _anchorFields(saved.first.anchor));
+      saved[0] = edited;
+      expect(fixture.commentRows(), [
+        for (final comment in saved)
+          _storedComment(fixture.additionalSession.id.value, comment),
+      ]);
+
+      await tester.runAsync(() => tester.tap(_reviewAction('Delete').at(1)));
+      await _visible(tester, 'Pending review comments (3)');
+      saved.removeAt(1);
+      expect(find.text('Staged comment body'), findsNothing);
+      expect(fixture.commentRows(), [
+        for (final comment in saved)
+          _storedComment(fixture.additionalSession.id.value, comment),
+      ]);
+      await tester.runAsync(() => tester.tap(_reviewAction('Reload comments')));
+      await _visible(tester, editedText);
+      await _reviewReady(tester, 'Edit', count: 3);
+      expect(fixture.commentRows(), [
+        for (final comment in saved)
+          _storedComment(fixture.additionalSession.id.value, comment),
+      ]);
+      expect(fixture.processes, hasLength(processesBefore));
+      expect(fixture.indexWrites, isEmpty);
+      expect(await tester.runAsync(fixture.snapshotState), before);
+      expect(fixture.coreRows(), coreBefore);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+        isNull,
+      );
+
+      final sibling = fixture.store.session(
+        SessionId('additional-peer-session'),
+      )!;
+      await fixture.navigate(tester, fixture.additionalSession, sibling);
+      await _visible(tester, '+Working comment target');
+      await _visible(tester, 'Pending review comments (0)');
+      expect(find.text(editedText), findsNothing);
+      await _beginComment(tester, '+Working comment target');
+      await _saveComment(tester, 'Other Session comment');
+      await _visible(tester, 'Pending review comments (1)');
+      final siblingComment = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(sibling.id.value),
+      ))!.comments.single;
+      expect(siblingComment.anchor.environmentId, fixture.additional.id.value);
+      expect(siblingComment.id, saved.first.id);
+
+      await fixture.navigate(tester, sibling, fixture.primarySession);
+      await _visible(tester, '+Primary comment target');
+      await _visible(tester, 'Pending review comments (0)');
+      expect(find.text('Other Session comment'), findsNothing);
+      expect(find.text(editedText), findsNothing);
+      await _beginComment(tester, '+Primary comment target');
+      await _saveComment(tester, 'Primary Environment comment');
+      await _visible(tester, 'Pending review comments (1)');
+      final primaryComment = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(fixture.primarySession.id.value),
+      ))!.comments.single;
+      expect(primaryComment.anchor.environmentId, fixture.primary.id.value);
+
+      await fixture.navigate(
+        tester,
+        fixture.primarySession,
+        fixture.additionalSession,
+      );
+      await _visible(tester, 'Pending review comments (3)');
+      await _visible(tester, editedText);
+      expect(find.text('Other Session comment'), findsNothing);
+      expect(find.text('Primary Environment comment'), findsNothing);
+      expect(
+        fixture.commentRows(),
+        unorderedEquals([
+          for (final comment in saved)
+            _storedComment(fixture.additionalSession.id.value, comment),
+          _storedComment(sibling.id.value, siblingComment),
+          _storedComment(fixture.primarySession.id.value, primaryComment),
+        ]),
+      );
+      expect(fixture.coreRows(), coreBefore);
+      expect(await tester.runAsync(fixture.snapshotState), before);
+      expect(fixture.indexWrites, isEmpty);
+      expect(fixture.reads, isEmpty);
+      for (final session in [
+        fixture.additionalSession,
+        sibling,
+        fixture.primarySession,
+      ]) {
+        expect(fixture.store.runsForSession(session.id), isEmpty);
+        expect(fixture.lifecycle.runActivitiesForSession(session.id), isEmpty);
+      }
+      expect(
+        fixture.backends.catalog!.installations.map(
+          (entry) => entry.metadata.id.value,
+        ),
+        isNot(contains('dev.adele.plugin.chat-strategy')),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'G7a2 approval refresh preserves original pending anchor through remount and durable compiled UI reopen',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write(_reviewPath, _reviewContent(first: true)),
+      );
+      final before = (await tester.runAsync(fixture.reviewState))!;
+      await mount(tester, catalog: withDraft);
+      await _reviewReady(tester, 'Approve');
+      await _visible(tester, 'Pending review comments (0)');
+      await _beginComment(tester, '+Selected first change');
+      await _saveComment(tester, 'Keep the original review location');
+      await _visible(tester, 'Pending review comments (1)');
+      final saved = fixture.commentRows();
+      expect(saved.single['relative_path'], _reviewPath);
+      expect(saved.single['environment_id'], fixture.additional.id.value);
+      expect(saved.single['layer'], ReviewComparisonLayer.unstaged.name);
+      expect(saved.single['side'], ReviewComparisonSide.newSide.name);
+      expect(saved.single['start_line'], 4);
+      expect(saved.single['end_line'], 4);
+      expect(saved.single['source_excerpt'], 'Selected first change\n');
+      final coreBefore = fixture.coreRows();
+      expect(fixture.indexWrites, isEmpty);
+      expect(await tester.runAsync(fixture.reviewState), before);
+
+      await tester.runAsync(() => tester.tap(_reviewAction('Approve')));
+      await _visible(tester, 'No unstaged changes');
+      await _visible(tester, 'Pending review comments (1)');
+      await _visible(tester, 'Outdated');
+      expect(find.text('Keep the original review location'), findsOneWidget);
+      expect(fixture.commentRows(), saved);
+      await tester.runAsync(
+        () => fixture.expectReviewIndex(before, first: true),
+      );
+      expect(fixture.indexWrites, hasLength(1));
+      await _selectScope(tester, 'Uncommitted changes');
+      await _reviewReady(tester, 'Unapprove');
+      await _visible(tester, '+Selected first change');
+      await _visible(tester, 'Outdated');
+      expect(fixture.commentRows(), saved);
+
+      await tester.runAsync(() => tester.tap(_reviewAction('Unapprove')));
+      await _reviewReady(tester, 'Approve');
+      await _visible(tester, 'No staged changes');
+      expect(fixture.commentRows(), saved);
+      expect(find.textContaining('Outdated'), findsNothing);
+      expect(fixture.indexWrites, hasLength(2));
+      expect(await tester.runAsync(fixture.reviewState), before);
+
+      await tester.runAsync(
+        () => fixture.frontends.prepareToDeactivate(fixture.additionalSession),
+      );
+      fixture.frontends.unbind(fixture.additionalSession);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(
+        () => tester.pumpWidget(fixture.widget(fixture.additionalSession)),
+      );
+      await _visible(tester, 'Pending review comments (1)');
+      await _visible(tester, 'Keep the original review location');
+      await _reviewReady(tester, 'Approve');
+      expect(fixture.commentRows(), saved);
+      expect(fixture.indexWrites, hasLength(2));
+      expect(find.textContaining('Outdated'), findsNothing);
+
+      await tester.runAsync(
+        () => fixture.write(
+          _reviewPath,
+          _reviewContent(
+            first: true,
+          ).replaceFirst('Selected first change', 'Changed after comment'),
+        ),
+      );
+      _refresh(tester);
+      await _visible(tester, '+Changed after comment');
+      await _visible(tester, 'Outdated');
+      expect(fixture.commentRows(), saved);
+      final afterChange = (await tester.runAsync(fixture.snapshotState))!;
+      await tester.pumpWidget(const SizedBox.shrink());
+      final oldSession = fixture.additionalSession;
+      fixture = (await tester.runAsync(fixture.reopen))!;
+      expect(fixture.additionalSession.id, oldSession.id);
+      expect(fixture.additionalSession, isNot(same(oldSession)));
+      expect(fixture.coreRows(), coreBefore);
+      expect(fixture.commentRows(), saved);
+      expect(
+        fixture.environmentRuntime.currentMaterialization(
+          fixture.additional.id,
+        ),
+        isNull,
+      );
+      await mount(tester, catalog: withDraft);
+      await _visible(tester, 'Pending review comments (1)');
+      await _visible(tester, 'Keep the original review location');
+      await _visible(tester, '+Changed after comment');
+      await _visible(tester, 'Outdated');
+      expect(fixture.commentRows(), saved);
+      expect(fixture.coreRows(), coreBefore);
+      expect(await tester.runAsync(fixture.snapshotState), afterChange);
+      expect(fixture.indexWrites, isEmpty);
+      expect(fixture.reads, isEmpty);
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'G7a2 actual draft version conflict preserves editor text and requires explicit reload and reselection',
+    (tester) async {
+      await tester.runAsync(
+        () => fixture.write('a modified.txt', 'Concurrent comment target\n'),
+      );
+      final before = (await tester.runAsync(fixture.snapshotState))!;
+      await mount(tester, catalog: withDraft);
+      await _reviewReady(tester, 'Approve');
+      await _visible(tester, 'Pending review comments (0)');
+      await _beginComment(tester, '+Concurrent comment target');
+      await _saveComment(tester, 'Original comment');
+      final session = fixture.additionalSession.id.value;
+      final original = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(session),
+      ))!.comments.single;
+      await tester.tap(_reviewAction('Edit'));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'Retain my local edit');
+      final independent = (await tester.runAsync(
+        () => fixture.draftClient.updateComment(
+          session,
+          original.id,
+          original.version,
+          'Independent confirmed edit',
+        ),
+      ))!;
+      final confirmed = [_storedComment(session, independent)];
+      expect(fixture.commentRows(), confirmed);
+      expect(find.text('Independent confirmed edit'), findsNothing);
+      final processes = fixture.processes.length;
+
+      await tester.runAsync(() => tester.tap(_reviewAction('Save comment')));
+      await _visible(
+        tester,
+        'Comment change not confirmed. Reload comments before trying again.',
+      );
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'Retain my local edit',
+      );
+      expect(_reviewAction('Save comment'), findsNothing);
+      expect(fixture.commentRows(), confirmed);
+      await tester.runAsync(() => tester.tap(_reviewAction('Reload comments')));
+      await _visible(tester, 'Independent confirmed edit');
+      await _visible(tester, 'Selection invalidated.');
+      expect(_reviewAction('Save comment'), findsNothing);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'Retain my local edit',
+      );
+      expect(fixture.commentRows(), confirmed);
+
+      await tester.tap(_reviewAction('Cancel editing'));
+      await tester.pump();
+      await tester.tap(_reviewAction('Edit'));
+      await tester.pump();
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        independent.text,
+      );
+      await _saveComment(tester, 'Explicitly reconciled edit');
+      final reconciled = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(session),
+      ))!.comments.single;
+      expect(reconciled.id, original.id);
+      expect(reconciled.version, independent.version + 1);
+      expect(reconciled.text, 'Explicitly reconciled edit');
+      expect(_anchorFields(reconciled.anchor), _anchorFields(original.anchor));
+      expect(fixture.commentRows(), [_storedComment(session, reconciled)]);
+      expect(fixture.processes, hasLength(processes));
+      expect(fixture.indexWrites, isEmpty);
+      expect(await tester.runAsync(fixture.snapshotState), before);
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
 
   testWidgets(
     'stock file review changes only the selected nonprimary index and refreshes Uncommitted and Task layers',
@@ -3111,7 +3579,7 @@ void main() {
           ),
         );
         _refresh(tester);
-        await _visible(tester, 'unavailable');
+        await _visible(tester, 'Diff unavailable for this Environment.');
         expect(find.textContaining(clean), findsNothing);
         expect(
           fixture.capabilities.providersFor(environmentProviderCapability),
@@ -3128,16 +3596,16 @@ void main() {
     'frontend-only installation retains Diff when change source is absent',
     (tester) async {
       await mount(tester, catalog: frontendOnly);
-      await _visible(tester, 'unavailable');
+      await _visible(tester, 'Diff unavailable for this Environment.');
       expect(find.text('Diff'), findsOneWidget);
       expect(find.textContaining('No unstaged changes'), findsNothing);
       expect(fixture.backends.backends, isEmpty);
       _refresh(tester);
-      await _visible(tester, 'unavailable');
+      await _visible(tester, 'Diff unavailable for this Environment.');
       expect(fixture.backends.backends, isEmpty);
       for (final (scope, clean) in _scopes.skip(1)) {
         await _selectScope(tester, scope);
-        await _visible(tester, 'unavailable');
+        await _visible(tester, 'Diff unavailable for this Environment.');
         expect(find.textContaining(clean), findsNothing);
       }
       expect(tester.takeException(), isNull);
@@ -3277,6 +3745,16 @@ final class _Fixture {
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,
       backends: backends,
+      sessionServices: PreparedSessionServices(
+        extensions: extensions,
+        backends: backends,
+        controllerForSession: (_, _) =>
+            throw StateError('Diff comments must not acquire execution.'),
+        inspectActivity: (_, _) => false,
+        isCurrent: (session) =>
+            identical(currentSession, session) &&
+            identical(store.session(session.id), session),
+      ),
       mainContentHost: mainContent,
       loadSettings: (catalog) => PreparedSettingsSnapshot.load(
         catalog,
@@ -3467,35 +3945,30 @@ final class _Fixture {
       created.environment,
       additional,
     );
-    final reopenedProvider = _projectProvider(fixture.capabilities);
+    await fixture._restoreProject();
+    return fixture;
+  }
+
+  Future<void> _restoreProject() async {
+    final reopenedProvider = _projectProvider(capabilities);
     try {
-      final reopened = await fixture.lifecycle.openProject(
-        sourceLocation: source.uri,
-        provider: fixture.lifecycle.resolveProjectProvider(
-          reopenedProvider.providerId,
-        ),
+      final reopened = await lifecycle.openProject(
+        sourceLocation: project.sourceLocation,
+        provider: lifecycle.resolveProjectProvider(reopenedProvider.providerId),
       );
       expect(reopened.id, project.id);
-      fixture.additionalSession = fixture.store.session(
-        SessionId('additional-session'),
-      )!;
-      fixture.primarySession = fixture.store.session(
-        SessionId('primary-session'),
-      )!;
-      expect(
-        fixture.baseline(additional),
-        isNot(fixture.baseline(created.environment)),
-      );
-      for (final environment in [created.environment, additional]) {
+      additionalSession = store.session(SessionId('additional-session'))!;
+      primarySession = store.session(SessionId('primary-session'))!;
+      expect(baseline(additional), isNot(baseline(primary)));
+      for (final environment in [primary, additional]) {
         expect(
-          fixture.environmentRuntime.currentMaterialization(environment.id),
+          environmentRuntime.currentMaterialization(environment.id),
           isNull,
         );
       }
     } finally {
       await reopenedProvider.close();
     }
-    return fixture;
   }
 
   final Directory root;
@@ -3511,6 +3984,7 @@ final class _Fixture {
   late final ProductLifecycleCoordinator lifecycle;
   late final Session additionalSession;
   late final Session primarySession;
+  Session? currentSession;
   late final EnvironmentRuntime environmentRuntime;
   late final ApplicationPluginBootstrap backends;
   late final PreparedMainContentHost mainContent;
@@ -3527,6 +4001,81 @@ final class _Fixture {
 
   List<Map<String, Object?>> get indexWrites =>
       processes.where(_isIndexWrite).toList();
+
+  ReviewDraftServiceClient get draftClient {
+    final connection = backends.backends
+        .singleWhere(
+          (backend) => backend.installation.metadata.id.value == _diffPlugin,
+        )
+        .connection!;
+    return ReviewDraftServiceClient(
+      connection.channelFor(
+        connection.defaultConfigurationContext,
+        reviewDraftServiceId,
+      ),
+    );
+  }
+
+  List<Map<String, Object?>> commentRows() => [
+    for (final row
+        in lifecycle
+            .databaseForSession(additionalSession.id)!
+            .queryPluginRows(
+              'SELECT * FROM adele_diff_review_comments ORDER BY session_id, sequence',
+              const {},
+            ))
+      row.values,
+  ];
+
+  Map<String, Object?> coreRows() => {
+    for (final table in [
+      'adele_product_projects',
+      'adele_product_tasks',
+      'adele_product_environments',
+      'adele_product_sessions',
+      'adele_product_session_environment_authority',
+      'adele_product_runs',
+    ])
+      table: [
+        for (final row
+            in lifecycle
+                .databaseForSession(additionalSession.id)!
+                .queryPluginRows('SELECT * FROM $table ORDER BY 1', const {}))
+          row.values,
+      ],
+  };
+
+  Future<TaskChangeSetSnapshot> taskSnapshot() async {
+    final selection = await CapturedEnvironmentCapabilities(
+      environmentRuntime: environmentRuntime,
+      backends: backends,
+      session: additionalSession,
+    ).resolve(_changes);
+    return invokeEnvironmentCapabilityWithBufferedProcess(
+      selection: selection,
+      backends: backends,
+      serviceId: changeSetSourceServiceId,
+      invoke: (channel) =>
+          ChangeSetSourceServiceClient(channel).snapshotTaskChanges(),
+    );
+  }
+
+  Future<_Fixture> reopen() async {
+    await frontends.close();
+    await backends.close();
+    await lifecycle.close();
+    final fresh = _Fixture(
+      root,
+      launcher,
+      host,
+      project,
+      task,
+      primary,
+      additional,
+    );
+    await fresh._restoreProject();
+    return fresh;
+  }
 
   Future<Map<String, String>> snapshotState() async {
     final result = <String, String>{};
@@ -3844,15 +4393,19 @@ final class _Fixture {
     }
   }
 
-  Widget widget(Session session) => MaterialApp(
-    home: Scaffold(
-      body: MainContentHost(
-        session: session,
-        extensions: extensions,
-        actionCoordinator: mainContent.actionCoordinator,
+  Widget widget(Session session) {
+    expect(store.session(session.id), same(session));
+    currentSession = session;
+    return MaterialApp(
+      home: Scaffold(
+        body: MainContentHost(
+          session: session,
+          extensions: extensions,
+          actionCoordinator: mainContent.actionCoordinator,
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Future<void> navigate(
     WidgetTester tester,
@@ -4014,6 +4567,98 @@ bool _isIndexWrite(Map<String, Object?> payload) {
 
 Finder _reviewAction(String label) => find.widgetWithText(TextButton, label);
 
+Future<void> _beginComment(WidgetTester tester, String line) async {
+  final row = find
+      .ancestor(of: find.textContaining(line), matching: find.byType(Row))
+      .first;
+  final action = find.descendant(of: row, matching: _reviewAction('Comment'));
+  await _waitFor(
+    tester,
+    () =>
+        action.evaluate().length == 1 &&
+        tester.widget<TextButton>(action).onPressed != null,
+  );
+  await tester.ensureVisible(action);
+  await tester.pump();
+  await tester.tap(action);
+  await tester.pump();
+  expect(find.byType(TextField), findsOneWidget);
+}
+
+Future<void> _saveComment(WidgetTester tester, String text) async {
+  await tester.enterText(find.byType(TextField), text);
+  await tester.pump();
+  final save = _reviewAction('Save comment');
+  expect(tester.widget<TextButton>(save).onPressed, isNotNull);
+  await tester.ensureVisible(save);
+  await tester.runAsync(() => tester.tap(save));
+  await _waitFor(tester, () => find.byType(TextField).evaluate().isEmpty);
+  await _visible(tester, text);
+}
+
+ReviewCommentAnchor _commentAnchor(
+  Environment environment,
+  ChangedFile file,
+  ReviewComparisonLayer layer,
+  String text,
+  ReviewComparisonSide side,
+) {
+  for (var hunkIndex = 0; hunkIndex < file.hunks.length; hunkIndex++) {
+    final hunk = file.hunks[hunkIndex];
+    var oldLine = hunk.oldStart;
+    var newLine = hunk.newStart;
+    for (var lineIndex = 0; lineIndex < hunk.lines.length; lineIndex++) {
+      final line = hunk.lines[lineIndex];
+      if (line.text == text) {
+        final number = side == ReviewComparisonSide.oldSide ? oldLine : newLine;
+        return ReviewCommentAnchor(
+          environmentId: environment.id.value,
+          relativePath: file.relativePath,
+          layer: layer,
+          side: side,
+          startLine: number,
+          endLine: number,
+          comparisonIdentity: file.commentComparisonIdentity!,
+          sourceExcerpt: '${line.text}${line.noNewline ? '' : '\n'}',
+          hunkIndex: hunkIndex,
+          lineIndex: lineIndex,
+        );
+      }
+      if (line.kind != 'addition') oldLine++;
+      if (line.kind != 'deletion') newLine++;
+    }
+  }
+  throw StateError('Missing captured source line: $text');
+}
+
+Map<String, Object?> _anchorFields(ReviewCommentAnchor anchor) => {
+  'environment_id': anchor.environmentId,
+  'relative_path': anchor.relativePath,
+  'layer': anchor.layer.name,
+  'side': anchor.side.name,
+  'start_line': anchor.startLine,
+  'end_line': anchor.endLine,
+  'comparison_identity': anchor.comparisonIdentity,
+  'source_excerpt': anchor.sourceExcerpt,
+  'hunk_index': anchor.hunkIndex,
+  'line_index': anchor.lineIndex,
+};
+
+// Same full retained-row boundary as durable_review_draft_integration_test.dart,
+// here populated only by actual compiled UI actions over the stock Diff AOT.
+Map<String, Object?> _storedComment(
+  String sessionId,
+  PendingReviewComment comment,
+) => {
+  'session_id': sessionId,
+  'comment_id': comment.id,
+  'sequence': comment.sequence,
+  'version': comment.version,
+  ..._anchorFields(comment.anchor),
+  'text': comment.text,
+  'charge': reviewCommentCharge(comment),
+};
+
 Future<void> _reviewReady(WidgetTester tester, String label, {int count = 1}) =>
     _waitFor(tester, () => _reviewAction(label).evaluate().length == count);
 
@@ -4076,7 +4721,9 @@ Future<void> _waitFor(WidgetTester tester, bool Function() complete) async {
   expect(
     complete(),
     isTrue,
-    reason: 'Timed out waiting for actual AOT/EVC checkpoint.',
+    reason:
+        'Timed out waiting for actual AOT/EVC checkpoint. '
+        'Visible text: ${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data ?? text.textSpan?.toPlainText()).toList()}',
   );
 }
 

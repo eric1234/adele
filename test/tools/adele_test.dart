@@ -1789,6 +1789,7 @@ void main() {
             'initialize': 'initializeDiff',
             'entrypoint': 'buildDiffPane',
             'order': 200,
+            'optionalBackendServices': ['diff.reviewDraft'],
             'canRequestSourceDisplay': true,
             'environmentBufferedProcessCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},

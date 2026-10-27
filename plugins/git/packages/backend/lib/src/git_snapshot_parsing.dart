@@ -295,6 +295,65 @@ List<DiffHunk> parseGitPatch(
   return hunks;
 }
 
+/// Verifies parsed hunks against both exact captured text sides, including every
+/// coordinate and final-newline marker. An incomplete patch is not a comparison.
+void verifyGitPatchContent(
+  List<DiffHunk> hunks,
+  String oldText,
+  String newText,
+) {
+  final oldLines = oldText.isEmpty ? <String>[] : oldText.split('\n');
+  if (oldText.endsWith('\n')) oldLines.removeLast();
+  final newLines = newText.isEmpty ? <String>[] : newText.split('\n');
+  if (newText.endsWith('\n')) newLines.removeLast();
+  final rebuilt = StringBuffer();
+  var oldOffset = 0;
+  var newOffset = 0;
+  for (final hunk in hunks) {
+    final start = hunk.oldStart - (hunk.oldCount == 0 ? 0 : 1);
+    if (start < oldOffset || start > oldLines.length) throw _malformed();
+    while (oldOffset < start) {
+      rebuilt.write(oldLines[oldOffset++]);
+      if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
+        rebuilt.write('\n');
+      }
+      newOffset++;
+    }
+    if (hunk.newStart - (hunk.newCount == 0 ? 0 : 1) != newOffset) {
+      throw _malformed();
+    }
+    for (final line in hunk.lines) {
+      if (line.kind != 'addition') {
+        if (oldOffset >= oldLines.length ||
+            oldLines[oldOffset] != line.text ||
+            line.noNewline !=
+                (oldOffset == oldLines.length - 1 && !oldText.endsWith('\n'))) {
+          throw _malformed();
+        }
+        oldOffset++;
+      }
+      if (line.kind != 'deletion') {
+        if (newOffset >= newLines.length ||
+            newLines[newOffset] != line.text ||
+            line.noNewline !=
+                (newOffset == newLines.length - 1 && !newText.endsWith('\n'))) {
+          throw _malformed();
+        }
+        rebuilt.write(line.text);
+        if (!line.noNewline) rebuilt.write('\n');
+        newOffset++;
+      }
+    }
+  }
+  while (oldOffset < oldLines.length) {
+    rebuilt.write(oldLines[oldOffset++]);
+    if (oldOffset < oldLines.length || oldText.endsWith('\n')) {
+      rebuilt.write('\n');
+    }
+  }
+  if (rebuilt.toString() != newText) throw _malformed();
+}
+
 /// Validates an inventory path using the inspected Environment's path rules.
 void validateGitSnapshotPath(String path, {bool windowsPaths = false}) {
   if (path.isEmpty ||

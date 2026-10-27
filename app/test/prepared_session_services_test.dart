@@ -1,13 +1,17 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
+import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
+import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
@@ -15,7 +19,9 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
+import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,22 +29,80 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 const _library = 'package:session_probe/main.dart';
 
+// Only the transport peer is synthetic; bootstrap, ownership and EVC are real.
+const _hostScript = r'''
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+void send(Map<String, Object?> message) {
+  final bytes = utf8.encode(jsonEncode({'protocolVersion': 1, ...message}));
+  final length = ByteData(4)..setUint32(0, bytes.length);
+  stdout.add([...length.buffer.asUint8List(), ...bytes]);
+}
+void main() {
+  send({'kind': 'hostHello'});
+  var buffer = <int>[];
+  var effects = 0;
+  Map<String, Object?>? held;
+  stdin.listen((bytes) {
+    buffer.addAll(bytes);
+    while (buffer.length >= 4) {
+      final length = ByteData.sublistView(Uint8List.fromList(buffer), 0, 4).getUint32(0);
+      if (buffer.length < length + 4) break;
+      final message = jsonDecode(utf8.decode(buffer.sublist(4, 4 + length))) as Map<String, dynamic>;
+      buffer = buffer.sublist(4 + length);
+      final route = {'requestId': message['requestId'], 'pluginId': message['pluginId'], 'generation': message['generation']};
+      switch (message['kind']) {
+        case 'startPlugin':
+          effects = 0;
+          if ((message['arguments'] as List).contains('fail')) {
+            send({'kind': 'pluginFailed', ...route, 'error': {'code': 'startup_failed', 'message': 'private startup failure'}});
+          } else {
+            send({'kind': 'pluginReady', ...route});
+          }
+        case 'stopPlugin':
+          send({'kind': 'pluginStopped', ...route});
+        case 'request':
+          if (message['serviceId'] != 'fixture.optional' || message['method'] == 'fail') {
+            send({'kind': 'response', ...route, 'ok': false, 'error': {'code': 'service_unavailable', 'message': 'private fixture error'}});
+          } else if (message['method'] == 'effect') {
+            effects++;
+            held = route;
+          } else {
+            if (message['method'] == 'release' && held != null) {
+              send({'kind': 'response', ...held!, 'ok': true, 'payload': effects});
+              held = null;
+            }
+            send({'kind': 'response', ...route, 'ok': true, 'payload': {'context': message['configurationContext'], 'effects': effects}});
+          }
+        case 'shutdownHost':
+          send({'kind': 'hostStopped', 'requestId': message['requestId']});
+          exit(0);
+      }
+    }
+  });
+}
+''';
+
 void main() {
   late Directory temporary;
   late File artifact;
   late PreparedFrontend generation;
+  late Program program;
   setUpAll(() async {
     final compiler = Compiler()
       ..addPlugin(flutterEvalPlugin)
       ..addPlugin(const MainContentDeclarations())
+      ..addPlugin(const OwningBackendDeclarations())
       ..addPlugin(const SessionExecutionDeclarations())
       ..addPlugin(const SessionPresentationLifecycleDeclarations())
       ..entrypoints.add(_library);
-    final program = compiler.compile({
+    program = compiler.compile({
       'session_probe': {
         'main.dart': '''
 import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 bool ready = false;
@@ -68,16 +132,41 @@ Widget lifecycleOnly() {
   return TextButton(onPressed: () { ready = true; },
     child: Text('Acknowledge ' + readMainContentPaneId()));
 }
+Future<List<dynamic>> query(String service, String method) =>
+  settleOwningBackendOperation(requestOwningBackend(service, method, <String, dynamic>{}));
+Widget optionalBackend() => OptionalBackendProbe();
+class OptionalBackendProbe extends StatefulWidget {
+  @override
+  State<OptionalBackendProbe> createState() => OptionalBackendState();
+}
+class OptionalBackendState extends State<OptionalBackendProbe> {
+  String status = 'idle';
+  bool disposed = false;
+  void read() async {
+    final result = await query('fixture.optional', 'read');
+    if (disposed) return;
+    setState(() { status = result[0] == true ? 'available' : 'unavailable'; });
+  }
+  @override
+  void dispose() { disposed = true; super.dispose(); }
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    Text('Optional ' + readMainContentPaneId() + ' ' + status),
+    TextButton(onPressed: read, child: Text('Read optional ' + readMainContentPaneId())),
+  ]);
+}
 ''',
       },
       'adele_ui': {
         for (final name in [
           'main_content_bridge.dart',
+          'owning_backend_bridge.dart',
           'session_execution_bridge.dart',
           'session_presentation_lifecycle_bridge.dart',
         ])
           name: File('../packages/ui/lib/$name').readAsStringSync(),
       },
+      'adele_contract': {'adele_contract.dart': evalContractSupportSource},
     });
     temporary = await Directory.systemTemp.createTemp(
       'adele-session-services-',
@@ -91,6 +180,300 @@ Widget lifecycleOnly() {
     generation = await PreparedFrontend.load(artifact);
     addTearDown(generation.invalidate);
   });
+
+  var backendSequence = 0;
+  Future<PreparedPluginInstallation> startBackend(
+    AdeleRuntime runtime, {
+    bool fail = false,
+  }) async {
+    final root = await Directory(
+      '${temporary.path}/backend-${backendSequence++}',
+    ).create();
+    final directory = await Directory('${root.path}/plugin').create();
+    await File('${directory.path}/backend.aot').writeAsString('fixture');
+    final script = await File(
+      '${root.path}/host.dart',
+    ).writeAsString(_hostScript);
+    await File(
+      '${directory.path}/adele_plugin.installation.json',
+    ).writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': 'dev.example.optional',
+          'version': 'test',
+          'displayName': 'Optional services',
+        },
+        'components': {
+          'backend': {'artifact': 'backend.aot'},
+        },
+      }),
+    );
+    await runtime.plugins.start(
+      installationRoot: root.path,
+      dartaotruntimeExecutable:
+          '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/dart',
+      hostArtifactPath: script.path,
+      startupArguments: {
+        'dev.example.optional': [if (fail) 'fail'],
+      },
+    );
+    return runtime.plugins.catalog!.installations.single;
+  }
+
+  for (final mode in ['no binder', 'missing', 'failed']) {
+    testWidgets('optional backend $mode keeps the pane available', (
+      tester,
+    ) async {
+      final runtime = AdeleRuntime();
+      addTearDown(() => tester.runAsync(runtime.close));
+      final session = Session(
+        id: SessionId('optional'),
+        taskId: TaskId('task'),
+        strategyId: OrchestrationStrategyId('dev.missing.strategy'),
+      );
+      final installation = mode == 'failed'
+          ? (await tester.runAsync(() => startBackend(runtime, fail: true)))!
+          : PreparedPluginInstallation(
+              metadata: PluginMetadata(
+                id: PluginId('dev.example.optional'),
+                version: 'test',
+                displayName: 'Optional services',
+              ),
+              installationDirectory: temporary,
+              backendArtifactUri: null,
+            );
+      if (mode == 'failed') {
+        expect(runtime.plugins.state, ApplicationPluginState.ready);
+        expect(
+          runtime.plugins.backends.single.state,
+          InstalledBackendState.failed,
+        );
+      }
+      final services = PreparedSessionServices(
+        extensions: runtime.extensions,
+        backends: runtime.plugins,
+        controllerForSession: (_, _) => throw StateError('No execution grant.'),
+        inspectActivity: (_, _) => false,
+        isCurrent: (value) => identical(value, session),
+      );
+      final host = PreparedMainContentHost();
+      addTearDown(host.close);
+      final descriptor = PreparedMainContentPresentation(
+        extensionId: ExtensionId('dev.example.optional-pane'),
+        order: 100,
+        library: _library,
+        initialize: 'initialize',
+        entrypoint: 'optionalBackend',
+        optionalBackendServices: ['fixture.optional'],
+      );
+      final contribution = host.createContribution(
+        extensions: runtime.extensions,
+        installation: installation,
+        generation: generation,
+        descriptor: descriptor,
+        services: mode == 'no binder' ? null : services,
+        isActive: () => true,
+      );
+      final registration = runtime.extensions.register(
+        point: mainContentContributions,
+        id: descriptor.extensionId,
+        value: contribution,
+      );
+      addTearDown(registration.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MainContentHost(
+              session: session,
+              extensions: runtime.extensions,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Optional a idle'), findsOneWidget);
+      await tester.tap(find.text('Read optional a'));
+      await tester.pumpAndSettle();
+      expect(find.text('Optional a unavailable'), findsOneWidget);
+      expect(find.text('Frontend unavailable.'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+
+      // The additive optional declaration must not weaken the existing grant.
+      services.registerMetadata(
+        contribution,
+        installation,
+        PreparedMainContentPresentation(
+          extensionId: descriptor.extensionId,
+          order: 100,
+          library: _library,
+          initialize: 'initialize',
+          entrypoint: 'optionalBackend',
+          backendServices: ['fixture.required'],
+          optionalBackendServices: ['fixture.optional'],
+        ),
+      );
+      expect(
+        () => services.bind(
+          runtime.extensions.discover(mainContentContributions).single,
+          session: session,
+          isActive: () => true,
+        ),
+        throwsStateError,
+      );
+    });
+  }
+
+  test(
+    'optional services capture exact installation, context and generation',
+    () async {
+      final runtime = AdeleRuntime();
+      addTearDown(runtime.close);
+      final installation = await startBackend(runtime);
+      final backend = runtime.plugins.backendForInstallation(installation)!;
+      final session = Session(
+        id: SessionId('optional'),
+        taskId: TaskId('task'),
+        strategyId: OrchestrationStrategyId('dev.missing.strategy'),
+      );
+      var live = true;
+      final services = PreparedSessionServices(
+        extensions: runtime.extensions,
+        backends: runtime.plugins,
+        controllerForSession: (_, _) => throw StateError('No execution grant.'),
+        inspectActivity: (_, _) => false,
+        isCurrent: (value) => identical(value, session),
+      );
+      final bridges = <PreparedFrontendBridge>[];
+      Runtime bind(PreparedPluginInstallation owner) {
+        final descriptor = PreparedMainContentPresentation(
+          extensionId: ExtensionId(
+            'dev.example.optional-pane.p${backendSequence++}',
+          ),
+          order: 100,
+          library: _library,
+          initialize: 'initialize',
+          entrypoint: 'optionalBackend',
+          optionalBackendServices: ['fixture.optional', 'fixture.missing'],
+        );
+        final contribution = MainContentContribution(
+          order: 100,
+          attach: (_) {},
+        );
+        final registration = runtime.extensions.register(
+          point: mainContentContributions,
+          id: descriptor.extensionId,
+          value: contribution,
+        );
+        addTearDown(registration.close);
+        services.registerMetadata(contribution, owner, descriptor);
+        final bridge = services.bind(
+          runtime.extensions
+              .discover(mainContentContributions)
+              .singleWhere((view) => view.id == descriptor.extensionId),
+          session: session,
+          isActive: () => live,
+        );
+        addTearDown(bridge.invalidate);
+        bridges.add(bridge);
+        return Runtime.ofProgram(program)..addPlugin(bridge);
+      }
+
+      Future<Object?> query(
+        Runtime eval,
+        String method, {
+        String service = 'fixture.optional',
+      }) async => copyStructuredBridgeData(
+        await (eval.executeLib(_library, 'query', [
+                  $String(service),
+                  $String(method),
+                ])
+                as $Future)
+            .$value,
+      );
+
+      final eval = bind(installation);
+      expect(await query(eval, 'read'), [
+        true,
+        {'context': 'default', 'effects': 0},
+      ]);
+      expect(await query(eval, 'read', service: 'fixture.undeclared'), [
+        false,
+        null,
+      ]);
+      expect(await query(eval, 'read', service: 'fixture.missing'), [
+        false,
+        null,
+      ]);
+      expect(await query(eval, 'fail'), [false, null]);
+      final foreign = bind(
+        PreparedPluginInstallation(
+          metadata: installation.metadata,
+          installationDirectory: installation.installationDirectory,
+          backendArtifactUri: installation.backendArtifactUri,
+        ),
+      );
+      expect(await query(foreign, 'read'), [false, null]);
+      expect(await query(eval, 'read'), [
+        true,
+        {'context': 'default', 'effects': 0},
+      ]);
+
+      final pending = query(eval, 'effect');
+      final control = backend.connection!.channelFor(
+        backend.connection!.defaultConfigurationContext,
+        'fixture.optional',
+      );
+      expect((await control.request('read', {}))! as Map, {
+        'context': 'default',
+        'effects': 1,
+      });
+      live = false;
+      bridges.first.invalidate();
+      await control.request('release', {});
+      expect(await pending, [false, null]);
+      expect(await query(eval, 'effect'), [false, null]);
+      expect(
+        (await control.request('read', {}))! as Map,
+        {'context': 'default', 'effects': 1},
+        reason:
+            'Retirement fences publication and new calls, not admitted effects.',
+      );
+      live = true;
+      expect(await query(eval, 'read'), [false, null]);
+      final fresh = bind(installation);
+      expect(await query(fresh, 'read'), [
+        true,
+        {'context': 'default', 'effects': 1},
+      ]);
+
+      final interrupted = query(fresh, 'effect');
+      expect(await control.request('read', {}), {
+        'context': 'default',
+        'effects': 2,
+      });
+      await backend.connection!.close();
+      expect(await interrupted, [false, null]);
+      expect(await query(fresh, 'read'), [false, null]);
+      final replacement = await runtime.plugins.host!.startPlugin(
+        pluginId: installation.metadata.id.value,
+        artifactUri: installation.backendArtifactUri!,
+      );
+      addTearDown(replacement.close);
+      final replacementChannel = replacement.channelFor(
+        replacement.defaultConfigurationContext,
+        'fixture.optional',
+      );
+      expect(await query(eval, 'effect'), [false, null]);
+      expect(await query(fresh, 'effect'), [false, null]);
+      expect(await query(foreign, 'effect'), [false, null]);
+      expect(await replacementChannel.request('read', {}), {
+        'context': 'default',
+        'effects': 0,
+      });
+    },
+  );
 
   for (final hook in [false, true]) {
     testWidgets(
