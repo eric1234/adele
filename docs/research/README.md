@@ -25,3 +25,7 @@ implementation progress alone is not a reason to modernize old survey terminolog
 - [ChatGPT/Codex authentication and configured instances](openai-chatgpt-auth-integration-survey.md): authentication, credential lifecycle, configured-instance routing, and limits of evidence for the experimental subscription-backed integration.
 
 The model-provider survey builds on the broader harness survey rather than replacing it.
+
+## Dependency investigations
+
+- [AppFlowy Editor 6.2.0 compatibility](appflowy-6.2.0-compatibility.md): pinned-workspace dependency rejection, source-only Code Block feasibility, licensing, and limits of the unexecuted native/EVC experiment.
