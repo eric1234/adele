@@ -1,0 +1,48 @@
+AppFlowy Editor 6.2.0
+https://pub.dev/packages/appflowy_editor/versions/6.2.0
+https://github.com/AppFlowy-IO/appflowy-editor
+
+The published LICENSE offers AGPL-3.0 and Mozilla Public License 2.0 options.
+ADELE uses the MPL-2.0 option for AppFlowy Editor and its local modifications.
+The patch fragments and modified covered files remain available under MPL-2.0:
+https://www.mozilla.org/MPL/2.0/
+
+Source is the published archive pinned in preparation.json. The adjacent patches
+contain ADELE's complete modifications. 01-remove-unused-device-info.patch removes
+the unused Android SDK probe and device_info_plus dependency, without replacing
+keyboard handling. 02-compatible-file-picker.patch pins file_picker to exactly
+12.0.0-beta.3 and adapts three calls to its static API, retaining file selection,
+bytes/path results, and path-only desktop save behavior.
+
+That exact published prerelease accepts win32 ^6.2.0 and the pinned Dart 3.10.9 /
+Flutter 3.38.10 toolchain. Stable file_picker 10.x/11.x require Win32 5; stable
+12.x changes saveFile to require bytes and return a URI, so it is not substituted.
+The functional dependency is retained, not stubbed or force-overridden. Its
+published MIT license (Copyright (c) 2018 Miguel Ruivo) remains part of normal
+dependency notice collection; no file_picker source is vendored here.
+
+03-compatible-image.patch adds an exact image 4.10.2 dependency constraint for
+the PDF dependency graph. It satisfies pdf 3.12.0's declared image range and
+uses archive 4.0.9's decodeBytes API. image 4.11.0 calls decodeLazy, unavailable
+under pdf 3.12.0's archive <4.1 constraint; pdf 3.13.1 requires Dart >=3.12.
+This is a normal intersecting constraint, not a dependency override
+or codec modification. AppFlowy has no direct image imports to adapt. Keep
+image's published MIT notice (Copyright (c) 2013-2022 Brendan Duncan) in normal
+dependency notice collection; no image or PDF source is vendored here.
+
+tools/rich_editor_dependency.dart applies the ordered patches reproducibly.
+Provide recipients the covered source and these patches when distributing a
+build, with instructions for obtaining the modified source.
+
+Preparation preserves the original LICENSE verbatim, including both offered
+licenses. It also preserves the embedded BSD-style source notices:
+Copyright 2014 The Flutter Authors. All rights reserved.
+Copyright 2019 The Fuchsia Authors. All rights reserved.
+These appear in lib/src/flutter/overlay.dart, scrollable_helpers.dart, and
+scrollable_positioned_list/. They are not replaced by the MPL election.
+
+Preserve Flutter's generated dependency notices as well. This is source
+attribution and modification availability guidance, not a complete notice
+inventory or release redistribution clearance. Review the actual shipped
+contents, transitive dependencies, and embedded BSD license requirements before
+distribution.

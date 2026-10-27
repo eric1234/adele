@@ -47,11 +47,11 @@ These are available operations, not a checklist to run for every edit.
 
 | Command | Current behavior |
 | --- | --- |
-| `bootstrap` | Prepares/verifies pinned CodeForge source before `flutter pub get`, verifies that `dart pub workspace list` succeeds, then materializes configured ignored native contract parts. No Rust compilation. |
+| `bootstrap` | Prepares/verifies pinned CodeForge and AppFlowy source before `flutter pub get`, verifies that `dart pub workspace list` succeeds, then materializes configured ignored native contract parts. No Rust compilation. |
 | `format --check` | Checks repository Dart formatting without rewriting files; formatting differences fail. |
 | `generate --check` | Fresh semantic generation compares current local siblings without writing or consulting incremental receipts; missing or stale output fails. |
-| `analyze` | Prepares/verifies CodeForge source, regenerates current contracts, then analyzes repository tools, tool tests, and maintained Dart/Flutter analysis targets with fatal infos. |
-| `test` | Prepares/verifies CodeForge source and regenerates contracts before workers; selecting any target declaring `nativeCodeEditor` builds one shared pinned native editor test library and supplies the loader environment only to those targets. |
+| `analyze` | Prepares/verifies both editor sources, regenerates current contracts, then analyzes repository tools, tool tests, and maintained Dart/Flutter analysis targets with fatal infos. |
+| `test` | Prepares/verifies both editor sources and regenerates contracts before workers; selecting any target declaring `nativeCodeEditor` builds one shared pinned native editor test library and supplies the loader environment only to those targets. |
 | `check` | Runs `generate --check`, then format check, then analysis, then tests, stopping between phases on failure. |
 
 `check` does not bootstrap the workspace or run desktop builds/smokes. Its app test
@@ -241,9 +241,29 @@ A direct local test proves that selected code/test passes. A maintained
 runner policy shared with CI. Direct Flutter commands do not regenerate native
 contract parts; use `dart tools/adele.dart generate` from the repository root
 after declaration changes. Repository `analyze` has no focused `--target` option.
-Direct editor tests also need the separately built native library and loader
+Direct CodeForge tests also need the separately built native library and loader
 environment described in [focused editor checks](#focused-editor-checks); a direct
 Flutter test invocation does not perform that preparation.
+
+## Rich-editor dependency checks
+
+After bootstrap, the native AppFlowy smoke needs no separate CodeForge library:
+
+```sh
+# app/
+flutter test --no-pub --concurrency 1 test/appflowy_editor_smoke_test.dart
+# Repository root
+dart tools/adele.dart test --target adele_tools
+```
+
+The smoke uses the actual patched package and Flutter text-input/keyboard routes,
+not a mock or direct document mutation. It is also automatically discovered by
+`adele_desktop` and its CI shards. The tooling target owns local archive/patch/hash
+preparation fixtures, cache integrity and deliberate recovery, plus launcher tests
+that require prepared source before pub and reject tampering before consumers.
+Fixtures use no network; fresh production bootstrap downloads the pinned archive.
+See [source preparation](toolchain.md#native-rich-editor-dependency) for exact
+identity and licensing. This is not Markdown or evaluated-frontend validation.
 
 ## Configuration foundation checks
 

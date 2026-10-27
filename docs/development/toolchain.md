@@ -128,6 +128,76 @@ or override upstream font assets. Publishing prebuilt binaries needs appropriate
 license review for the shipped target and contents; this checkout makes no
 redistribution-clearance claim.
 
+## Native rich-editor dependency
+
+The application pins `appflowy_editor 6.2.0`, prepared from its published archive.
+[`third_party/appflowy_editor/preparation.json`](../../third_party/appflowy_editor/preparation.json)
+owns the archive SHA-256, ordered compatibility patches, and expected
+prepared-tree digest.
+The root override points only to Git-ignored
+`.adele/dependencies/appflowy_editor`; the root lockfile owns workspace resolution.
+Neither public UI contracts nor stock plugins depend on AppFlowy implementation
+types. The integrated Flutter/Dart/evaluator pins above are unchanged.
+
+The first patch removes `device_info_plus` and an unused Android SDK-version probe from
+`keyboard_height_observer.dart`. The version had no consumers beyond its own
+initialization guard. Actual `keyboard_height_plugin` reporting, listeners, and
+Android duplicate-height suppression remain unchanged. Removing this unnecessary
+dependency avoids its Win32 5.x constraint without changing the OpenAI backend's
+Win32 6.x dependency or forcing a transitive override.
+
+AppFlowy's `file_picker ^10.2.0` constraint also requires Win32 5.x. A second patch
+pins published `file_picker 12.0.0-beta.3` and updates its three calls from
+`FilePicker.platform` to the package's static API. This exact prerelease declares
+Dart 3.10/Flutter 3.38 minimums and Win32 6.x support while retaining the existing
+picker argument/result contracts. Stable 12.x changes save-file semantics and is
+not substituted. This is a bounded dependency compatibility choice, not evidence
+of native picker dialogs or image-upload behavior on any platform.
+
+A third manifest-only patch constrains `image` to `4.10.2`, within PDF's existing
+declared range. With this SDK, `pdf 3.12.0` selects `archive <4.1.0`; `image 4.11.0`
+incorrectly permits that archive range while calling its unavailable `decodeLazy`
+API. Image 4.10.2 uses the supported `decodeBytes` API. This normal dependency
+constraint does not override PDF/archive constraints or alter codec source.
+
+Bootstrap prepares and verifies both editor sources before pub resolution.
+Maintained analysis, tests, and desktop run/build/smoke commands also verify
+AppFlowy before consumers. CI uses those same commands, not a separate setup path.
+The SDK-only helper uses the existing `curl`, Git, GNU `tar`, and `sha256sum`
+prerequisites; it does not build native code or edit the Pub cache.
+
+```sh
+dart tools/adele.dart prepare-rich-editor
+dart tools/adele.dart prepare-rich-editor --archive /absolute/path/appflowy_editor-6.2.0.tar.gz
+```
+
+Cached source is checked against tracked inputs and the trusted tree digest;
+changed, missing, or unexpected immutable source fails without fallback. To
+deliberately replace stale source, stop **all** consumers (including IDE analyzers
+and direct Flutter commands), then run:
+
+```sh
+dart tools/adele.dart prepare-rich-editor --reprepare
+dart tools/adele.dart bootstrap
+```
+
+Repreparation stages and verifies fresh source before replacing the old tree under
+an exclusive lease. Direct Flutter/IDE consumers are not covered by that lease.
+Do not edit prepared source; change the checked-in patches and reviewed digest.
+
+Use the MPL-2.0 option of AppFlowy's MPL-2.0/AGPL-3.0 dual license. Preserve the
+upstream license and embedded attributions; see the
+[retained notices](../../third_party/appflowy_editor/upstream-notices.txt).
+Distributing binaries requires making the corresponding covered source, including
+these patches, available and telling recipients how to obtain it. Normal Flutter
+license collection does not establish complete embedded-source/asset notice
+coverage or future release clearance.
+
+The [native widget smoke](../../app/test/appflowy_editor_smoke_test.dart) exercises
+actual mounting, Flutter text input, Backspace, and unmount/disposal on Linux with
+the pinned SDK. It does not establish mobile/macOS/Windows runtime or packaging
+support, Markdown fidelity, a reusable editor owner, or evaluated frontend access.
+
 ## Native TOML documents
 
 [`adele_toml_document`](../../packages/toml_document/README.md) uses a package-local
@@ -625,7 +695,7 @@ compiled artifacts when source and build context are identical.
 ### Diagnostics
 
 Stage diagnostics report elapsed time and status, including component `cached`,
-`rebuilt`, or `failed` results, CodeForge source preparation, SDK inspection,
+`rebuilt`, or `failed` results, editor source preparation, SDK inspection,
 build-tool preparation, generation, dependency discovery, installation assembly,
 desktop preparation, the Flutter command, and launcher total. `flutter-run` and its
 enclosing launcher total include the application's lifetime until the Flutter process exits; they are not

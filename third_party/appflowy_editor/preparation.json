@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "package": "appflowy_editor",
+  "version": "6.2.0",
+  "archiveUrl": "https://pub.dev/api/archives/appflowy_editor-6.2.0.tar.gz",
+  "archiveSha256": "c2367acdd93c7eeefaf6c58e5fed1a1c62cf02b8368102b786b5c6a0d1c583cf",
+  "preparedTreeSha256": "fd6a03dec22a9f1f6d478a4fa2a8681751f3321874bf45dbd83869cc5cfedb74",
+  "patches": [
+    "01-remove-unused-device-info.patch",
+    "02-compatible-file-picker.patch",
+    "03-compatible-image.patch"
+  ]
+}

@@ -10,6 +10,7 @@ import 'build_timing.dart';
 import 'code_editor_dependency.dart';
 import 'code_editor_smoke.dart';
 import 'contract_artifacts.dart';
+import 'rich_editor_dependency.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -648,6 +649,7 @@ Future<void> main(List<String> arguments) async {
         _usage();
         return;
       case 'prepare-code-editor':
+      case 'prepare-rich-editor':
         var reprepare = false;
         File? archive;
         for (var index = 1; index < arguments.length; index++) {
@@ -660,12 +662,14 @@ Future<void> main(List<String> arguments) async {
               !arguments[index + 1].startsWith('--')) {
             archive = File(arguments[++index]);
           } else {
-            throw const TestUsageException(
-              'prepare-code-editor takes only [--reprepare] [--archive FILE].',
+            throw TestUsageException(
+              '${arguments.first} takes only [--reprepare] [--archive FILE].',
             );
           }
         }
-        await prepareCodeEditorSource(
+        await (arguments.first == 'prepare-code-editor'
+            ? prepareCodeEditorSource
+            : prepareRichEditorSource)(
           Directory.current,
           archive: archive,
           reprepare: reprepare,
@@ -696,17 +700,20 @@ Future<void> main(List<String> arguments) async {
             'editor-smoke requires linux [--workspace] [--prepare-only].',
           );
         }
-        await runCodeEditorSmoke(
+        await withRichEditorSource(
           Directory.current,
-          prepareOnly: arguments.contains('--prepare-only'),
-          workspace: arguments.contains('--workspace'),
+          (_) => runCodeEditorSmoke(
+            Directory.current,
+            prepareOnly: arguments.contains('--prepare-only'),
+            workspace: arguments.contains('--workspace'),
+          ),
         );
         return;
       case 'bootstrap':
         if (arguments.length != 1) {
           throw const TestUsageException('bootstrap takes no options.');
         }
-        await withCodeEditorSource(Directory.current, (_) async {
+        await _withEditorSources(Directory.current, (_) async {
           await _run('workspace dependency resolution', 'flutter', <String>[
             'pub',
             'get',
@@ -748,7 +755,7 @@ Future<void> main(List<String> arguments) async {
         if (arguments.length != 1) {
           throw const TestUsageException('analyze takes no options.');
         }
-        await withCodeEditorSource(Directory.current, (_) async {
+        await _withEditorSources(Directory.current, (_) async {
           await runContractCodegen(repositoryRoot: Directory.current);
           await _run('repository tools', 'dart', <String>[
             'analyze',
@@ -801,8 +808,8 @@ Future<void> main(List<String> arguments) async {
             ? await desktopPreparationToolStats(Directory.current)
             : null;
         final sourceTimer = Stopwatch()..start();
-        await withCodeEditorSource(Directory.current, (_) async {
-          reportBuildTiming('codeforge-source-preparation', sourceTimer);
+        await _withEditorSources(Directory.current, (_) async {
+          reportBuildTiming('editor-source-preparation', sourceTimer);
           final String flutter = target == 'linux'
               ? _which('flutter')
               : 'flutter';
@@ -856,7 +863,7 @@ Future<void> main(List<String> arguments) async {
             'Development smoke requires repository, plugin, and development directories.',
           );
         }
-        await withCodeEditorSource(Directory.current, (_) async {
+        await _withEditorSources(Directory.current, (_) async {
           await runContractCodegen(repositoryRoot: Directory.current);
           await _run(
             'adele_desktop $target $mode build',
@@ -1078,6 +1085,15 @@ String testPlanJson([List<TestTarget> targets = testTargets]) {
   });
 }
 
+Future<T> _withEditorSources<T>(
+  Directory repository,
+  Future<T> Function(Directory codeEditorSource) consume,
+) => withCodeEditorSource(
+  repository,
+  (codeEditorSource) =>
+      withRichEditorSource(repository, (_) => consume(codeEditorSource)),
+);
+
 Future<int> _runTests(TestOptions options) async {
   final List<TestTarget> targets = options.target == null
       ? testTargets
@@ -1100,12 +1116,13 @@ Future<int> _runTests(TestOptions options) async {
     }
   }
   await prepareCodeEditorSource(Directory.current);
+  await prepareRichEditorSource(Directory.current);
   await runContractCodegen(repositoryRoot: Directory.current);
   final Directory? codeEditorLibrary =
       targets.any((target) => target.nativeCodeEditor)
       ? await buildNativeCodeEditorForTests(Directory.current)
       : null;
-  return withCodeEditorSource(Directory.current, (source) async {
+  return _withEditorSources(Directory.current, (source) async {
     if (codeEditorLibrary != null) {
       final prepared =
           jsonDecode(
@@ -1278,10 +1295,13 @@ void _usage() {
 Usage: dart tools/adele.dart <command>
 
 Commands:
-  bootstrap          Prepare CodeForge source, resolve pub, and generate contracts.
+  bootstrap          Prepare editor sources, resolve pub, and generate contracts.
   prepare-code-editor [--reprepare] [--archive FILE]
                      Verify or prepare pinned source without invoking Rust or pub.
                      --reprepare explicitly replaces source under its exclusive lease.
+  prepare-rich-editor [--reprepare] [--archive FILE]
+                     Verify or prepare patched AppFlowy source without invoking pub.
+                     --reprepare requires all consumers to be stopped first.
   build-code-editor-tests
                      Build locked native test library and print its directory.
   format [--check]   Format or verify formatting for all Dart files.
