@@ -323,6 +323,60 @@ void main() {
 
   group('test plan', () {
     test(
+      'native credential command runs pinned locked checks and stops on failure',
+      () async {
+        final fixture = Directory.systemTemp.createTempSync('adele-native-');
+        addTearDown(() => fixture.deleteSync(recursive: true));
+        final native = Directory(
+          '${fixture.path}/packages/credential_store/native',
+        )..createSync(recursive: true);
+        final trace = File('${fixture.path}/trace');
+        final rustup = File('${fixture.path}/rustup')
+          ..writeAsStringSync(r'''#!/bin/sh
+printf '%s\n' "$PWD" "$*" >> "$TRACE"
+if [ "$4" = test ]; then exit "$TEST_EXIT"; fi
+exit "$CLIPPY_EXIT"
+''');
+        expect((await Process.run('chmod', ['+x', rustup.path])).exitCode, 0);
+        final packages = File('${fixture.path}/package_config.json')
+          ..writeAsStringSync(
+            jsonEncode({'configVersion': 2, 'packages': <Object?>[]}),
+          );
+        for (final (testExit, clippyExit) in [(0, 0), (7, 0), (0, 9)]) {
+          if (trace.existsSync()) trace.deleteSync();
+          final result = await Process.run(
+            Platform.resolvedExecutable,
+            [
+              '--packages=${packages.path}',
+              File('tools/adele.dart').absolute.path,
+              'test-credential-store-native',
+            ],
+            workingDirectory: fixture.path,
+            environment: {
+              'PATH': fixture.path,
+              'TRACE': trace.path,
+              'TEST_EXIT': '$testExit',
+              'CLIPPY_EXIT': '$clippyExit',
+            },
+          );
+          expect(result.exitCode, testExit != 0 ? testExit : clippyExit);
+          expect(trace.readAsLinesSync(), [
+            native.path,
+            'run 1.93.0 cargo test --locked',
+            if (testExit == 0) ...[
+              native.path,
+              'run 1.93.0 cargo clippy --locked --all-targets --features fixture-probe -- -D warnings',
+            ],
+          ]);
+          expect(Directory('${fixture.path}/.adele').existsSync(), isFalse);
+        }
+      },
+      skip: !Platform.isLinux
+          ? 'Linux native target uses a shell fixture.'
+          : false,
+    );
+
+    test(
       'CLI works with no resolved workspace packages or bootstrap',
       () async {
         final fixture = Directory.systemTemp.createTempSync('adele-test-plan-');
@@ -514,7 +568,7 @@ void main() {
       },
     );
 
-    test('native TOML metadata includes transitive test dependencies', () {
+    test('native prerequisites cover transitive test dependencies', () {
       final manifests = <String, YamlMap>{};
       for (final path in {
         ...analysisTargets.map((target) => target.path),
@@ -549,10 +603,20 @@ void main() {
               '${target.name} native hooks include dev dependencies of the '
               'test package and production dependencies of its dependencies.',
         );
+        if (visited.contains('adele_credential_store')) {
+          expect(
+            target.nativeCodeEditor ||
+                target.nativeToml ||
+                target.name == 'adele_credential_store',
+            isTrue,
+            reason:
+                '${target.name} must receive the credential compiler in CI.',
+          );
+        }
       }
     });
 
-    test('CI installs the pinned compiler for either native requirement', () {
+    test('CI provisions native requirements without a live keyring', () {
       final workflow =
           loadYaml(File('.github/workflows/ci.yaml').readAsStringSync())
               as YamlMap;
@@ -564,13 +628,30 @@ void main() {
       );
       expect(
         compiler['if'],
-        r'${{ matrix.nativeCodeEditor || matrix.nativeToml }}',
+        r"${{ matrix.nativeCodeEditor || matrix.nativeToml || matrix.name == 'adele_credential_store' || matrix.name == 'adele_credential_store_native' }}",
       );
       expect(
         compiler['run'],
         'rustup toolchain install 1.93.0 --profile minimal '
         '--target x86_64-unknown-linux-gnu',
       );
+      final clippy = steps.cast<YamlMap>().singleWhere(
+        (step) => step['name'] == 'Install credential native linter',
+      );
+      expect(
+        clippy['if'],
+        r"${{ matrix.name == 'adele_credential_store_native' }}",
+      );
+      expect(clippy['run'], 'rustup component add clippy --toolchain 1.93.0');
+      final source = File('.github/workflows/ci.yaml').readAsStringSync();
+      for (final dependency in [
+        'ADELE_CREDENTIAL_STORAGE_SMOKE',
+        'credential_storage_smoke.dart',
+        'gnome-keyring',
+        'libsecret',
+      ]) {
+        expect(source, isNot(contains(dependency)));
+      }
     });
 
     test(
@@ -1281,6 +1362,11 @@ void main() {
         nativeToml: true,
       ),
       (
+        name: 'adele_credential_store',
+        path: 'packages/credential_store',
+        nativeToml: false,
+      ),
+      (
         name: 'adele_configuration_store',
         path: 'packages/configuration_store',
         nativeToml: true,
@@ -1345,6 +1431,30 @@ void main() {
           'path',
         ]),
       );
+    });
+
+    test('credential store keeps narrow native-only dependencies', () {
+      final manifest =
+          loadYaml(
+                File(
+                  'packages/credential_store/pubspec.yaml',
+                ).readAsStringSync(),
+              )
+              as YamlMap;
+      expect(manifest['dependencies'], {
+        'code_assets': '1.2.1',
+        'ffi': '2.2.0',
+        'hooks': '2.0.2',
+      });
+      final native = lookupTestTarget('adele_credential_store_native');
+      expect(native.path, '.');
+      expect(native.executable, 'dart');
+      expect(native.argumentsFor(ci: true), [
+        'tools/adele.dart',
+        'test-credential-store-native',
+      ]);
+      expect(native.nativeToml, isFalse);
+      expect(native.nativeCodeEditor, isFalse);
     });
 
     test('public settings keeps host dependencies out of production', () {
@@ -2215,6 +2325,8 @@ void main() {
         'adele_core_extensions|dart|packages/core_extensions|test',
         'adele_project_storage|dart|packages/project_storage|test',
         'adele_platform_storage|dart|packages/platform_storage|test',
+        'adele_credential_store|dart|packages/credential_store|test',
+        'adele_credential_store_native|dart|.|tools/adele.dart test-credential-store-native',
         'adele_toml_document|dart|packages/toml_document|test',
         'adele_configuration_store|dart|packages/configuration_store|test',
         'adele_settings|dart|packages/settings|test',

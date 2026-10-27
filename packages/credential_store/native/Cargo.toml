@@ -1,0 +1,29 @@
+[package]
+name = "adele_credential_store"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+fixture-probe = []
+
+[[bin]]
+name = "credential_probe"
+path = "src/probe.rs"
+required-features = ["fixture-probe"]
+test = false
+bench = false
+
+[dependencies]
+zeroize = "=1.9.1"
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+keyring-core = "=1.0.1"
+zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = false, features = ["crypto-rust"] }
+
+[profile.release]
+panic = "unwind"
