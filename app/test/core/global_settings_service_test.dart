@@ -5,7 +5,7 @@ import 'dart:ui' show IsolateNameServer;
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
-import 'package:adele_desktop/frontend/prepared_settings.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -1701,11 +1701,21 @@ void main() {
       final settings = createOwner(settings: prepared.settings);
       final view = await settings.load();
       installation.deleteSync(recursive: true);
-      final captured = PreparedSettingsSnapshot.fromView(prepared, view);
+      final captured = PreparedSettingsSnapshot.fromResolution(
+        prepared,
+        view.catalog,
+        values: view.values,
+        failures: view.failures,
+      );
       expect(captured.read(original, enabled.value).value, false);
       final unrelated = await service.load();
       expect(
-        () => PreparedSettingsSnapshot.fromView(prepared, unrelated),
+        () => PreparedSettingsSnapshot.fromResolution(
+          prepared,
+          unrelated.catalog,
+          values: unrelated.values,
+          failures: unrelated.failures,
+        ),
         throwsArgumentError,
       );
       final failure = StateError('failed startup load');
@@ -1717,10 +1727,13 @@ void main() {
       if (Platform.isLinux) {
         await settings.save(view, enabled, true);
         expect(captured.read(original, enabled.value).value, false);
+        final updated = await settings.load();
         expect(
-          PreparedSettingsSnapshot.fromView(
+          PreparedSettingsSnapshot.fromResolution(
             prepared,
-            await settings.load(),
+            updated.catalog,
+            values: updated.values,
+            failures: updated.failures,
           ).read(original, enabled.value).value,
           true,
         );

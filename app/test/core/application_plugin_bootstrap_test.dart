@@ -6,6 +6,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -15,10 +16,153 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
+  for (final mode in ['valid', 'invalid', 'load-failure', 'closing']) {
+    test('backend settings are exact-owner startup values: $mode', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'backend-settings-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final root = await Directory('${directory.path}/installations').create();
+      const owner = 'dev.example.owner';
+      const nested = '$owner.child';
+      const empty = 'dev.example.empty';
+      for (final id in [owner, nested, empty]) {
+        final installed = await Directory('${root.path}/$id').create();
+        await File('${installed.path}/backend.aot').writeAsString('fixture');
+        if (id != empty) {
+          await File('${installed.path}/settings.schema.json').writeAsString(
+            jsonEncode({
+              'schemaVersion': 1,
+              'definitions': [
+                {
+                  'id': '$id.count',
+                  'type': 'integer',
+                  'default': 40,
+                  'minimum': 1,
+                  'label': 'Count',
+                  'category': 'Tests',
+                  'section': 'Execution',
+                },
+              ],
+            }),
+          );
+        }
+        await File(
+          '${installed.path}/adele_plugin.installation.json',
+        ).writeAsString(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {'id': id, 'version': '1', 'displayName': id},
+            if (id != empty) 'settingsSchema': 'settings.schema.json',
+            'components': {
+              'backend': {'artifact': 'backend.aot'},
+            },
+          }),
+        );
+      }
+      final script = await File(
+        '${directory.path}/host.dart',
+      ).writeAsString(_exactHostScript);
+      var loads = 0;
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final overrides = <SettingId, Object?>{
+        SettingId('$owner.count'): mode == 'invalid' ? 0 : 80,
+        SettingId('$nested.count'): 3,
+      };
+      final failure = StateError('Configuration file is unreadable.');
+      final bootstrap = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        ExtensionRegistry(),
+        loadSettings: (catalog) async {
+          loads++;
+          entered.complete();
+          if (mode == 'closing') await release.future;
+          if (mode == 'load-failure') throw failure;
+          return PreparedSettingsSnapshot.resolve(
+            catalog,
+            globalOverrides: overrides,
+          );
+        },
+      );
+      addTearDown(bootstrap.close);
+      final started = bootstrap.start(
+        installationRoot: root.path,
+        dartaotruntimeExecutable:
+            '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/dart',
+        hostArtifactPath: script.path,
+        startupArguments: {
+          for (final id in [owner, nested, empty]) id: ['{}'],
+        },
+      );
+      await entered.future;
+      if (mode == 'closing') {
+        final closing = bootstrap.close();
+        release.complete();
+        await started;
+        await closing;
+        expect(
+          bootstrap.backends.every((entry) => entry.connection == null),
+          isTrue,
+        );
+        expect(loads, 1);
+        return;
+      }
+      await started;
+      expect(bootstrap.state, ApplicationPluginState.ready);
+      expect(loads, 1);
+      final catalog = bootstrap.catalog!;
+      final captured = await bootstrap.settingsForCatalog(catalog);
+      overrides[SettingId('$owner.count')] = 1;
+      expect(await bootstrap.settingsForCatalog(catalog), same(captured));
+      expect(loads, 1);
+      expect(
+        () => bootstrap.configureSettingsLoader((_) async => captured),
+        throwsStateError,
+      );
+      final otherCatalog = await PreparedPluginCatalog.discover(root.path);
+      expect(
+        () => bootstrap.settingsForCatalog(otherCatalog),
+        throwsStateError,
+      );
+      for (final backend in bootstrap.backends) {
+        final id = backend.installation.metadata.id.value;
+        final failed =
+            id != empty &&
+            (mode == 'load-failure' || (mode == 'invalid' && id == owner));
+        if (failed) {
+          expect(backend.state, InstalledBackendState.failed);
+          expect(backend.connection, isNull);
+          if (mode == 'invalid') {
+            expect(
+              backend.failure,
+              isA<InvalidSettingOverride>().having(
+                (error) => error.id,
+                'setting ID',
+                SettingId('$owner.count'),
+              ),
+            );
+          } else {
+            expect(backend.failure, same(failure));
+          }
+        } else {
+          expect(backend.state, InstalledBackendState.active);
+          expect(
+            await backend.connection!.request('settings', {}),
+            id == empty
+                ? <String, Object>{}
+                : {'$id.count': id == owner ? 80 : 3},
+          );
+        }
+      }
+    });
+  }
+
   test(
     'exact installation, strategy origins and channels never retarget',
     () async {
@@ -664,6 +808,7 @@ void send(Map<String, Object?> message) {
 }
 void main() {
   send({'kind': 'hostHello'});
+  final settings = <String, Object?>{};
   var buffer = <int>[];
   stdin.listen((bytes) {
     buffer.addAll(bytes);
@@ -675,11 +820,14 @@ void main() {
       final route = {'requestId': message['requestId'], 'pluginId': message['pluginId'], 'generation': message['generation']};
       switch (message['kind']) {
         case 'startPlugin':
+          settings[message['pluginId'] as String] = message['settings'];
           send({'kind': 'pluginReady', ...route, ...jsonDecode(message['arguments'][0]) as Map<String, dynamic>});
         case 'stopPlugin':
           send({'kind': 'pluginStopped', ...route});
         case 'request':
-          if (message['method'] == 'terminate') {
+          if (message['method'] == 'settings') {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': settings[message['pluginId']]});
+          } else if (message['method'] == 'terminate') {
             send({'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'error': {'code': 'fixture_terminated', 'message': 'Fixture terminated'}});
           } else {
             send({'kind': 'response', ...route, 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId']}});

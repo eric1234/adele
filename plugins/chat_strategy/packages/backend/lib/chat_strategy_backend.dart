@@ -28,16 +28,25 @@ const String chatToolNarrationGuidance =
     'individually. Explicit user instructions take precedence over this guidance.';
 
 final class ChatStrategyPlugin {
-  ChatStrategyPlugin({ChatSessionStore? sessions})
-    : sessions = sessions ?? ChatSessionStore();
+  ChatStrategyPlugin({
+    required this.maxModelInvocations,
+    ChatSessionStore? sessions,
+  }) : sessions = sessions ?? ChatSessionStore() {
+    _requirePositiveBudget(maxModelInvocations);
+  }
 
   final ChatSessionStore sessions;
+  final int maxModelInvocations;
 
   OrchestrationStrategyContribution get contribution =>
       OrchestrationStrategyContribution(
         strategyId: chatStrategyId,
         materialize: (OrchestrationStrategyHostContext context) =>
-            _ChatExecution(context.host, sessions.obtain(context.session.id)),
+            _ChatExecution(
+              context.host,
+              sessions.obtain(context.session.id),
+              maxModelInvocations,
+            ),
       );
 
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
@@ -97,20 +106,9 @@ final class ChatSessionBackend implements ChatSessionService {
   }
 
   @override
-  Future<void> configureSession(
-    String sessionId,
-    String instructions,
-    int maxModelInvocations,
-  ) async {
-    if (maxModelInvocations < 1) {
-      throw const ChatSessionFailure(
-        code: 'invalid_configuration',
-        message: 'maxModelInvocations must be positive.',
-        details: <String, Object?>{},
-      );
-    }
+  Future<void> configureSession(String sessionId, String instructions) async {
     final session = await _session(sessionId);
-    await session._configure(instructions, maxModelInvocations);
+    await session._configure(instructions);
   }
 }
 
@@ -119,8 +117,10 @@ final class ChatRemoteOrchestrationBackend
     implements RemoteOrchestrationService {
   ChatRemoteOrchestrationBackend({
     required this.sessions,
+    required this.maxModelInvocations,
     required AdeleRequestChannel Function(String context) hostChannel,
   }) {
+    _requirePositiveBudget(maxModelInvocations);
     _backend = RemoteOrchestrationBackend(
       routes: {
         chatStrategyRouteId: OrchestrationStrategyContribution(
@@ -130,6 +130,7 @@ final class ChatRemoteOrchestrationBackend
             return transaction.execution = _ChatExecution(
               context.host,
               transaction.staged,
+              maxModelInvocations,
             );
           },
         ),
@@ -139,6 +140,7 @@ final class ChatRemoteOrchestrationBackend
   }
 
   final ChatSessionStore sessions;
+  final int maxModelInvocations;
   late final RemoteOrchestrationBackend _backend;
   final Map<SessionId, _ChatHistoryTransaction> _materializing = {};
   final Map<String, _ChatHistoryTransaction> _executions = {};
@@ -284,7 +286,6 @@ final class _ChatHistoryTransaction {
   _ChatHistoryTransaction(this.source)
     : staged = ChatSessionState(source.id)
         .._instructions = source.instructions
-        .._maxModelInvocations = source.maxModelInvocations
         .._draftRequest = source.draftRequest
         .._entries.addAll(source._entries)
         .._nextEntry = source._nextEntry {
@@ -402,7 +403,7 @@ final class ChatSessionStore {
     final parameters = <String, Object?>{':session': id.value};
     final rows = await storage.queryForSession(
       id.value,
-      'SELECT session_id, instructions, max_model_invocations, next_entry, '
+      'SELECT session_id, instructions, next_entry, '
       'draft_request '
       'FROM adele_chat_sessions WHERE session_id = :session',
       parameters,
@@ -415,13 +416,10 @@ final class ChatSessionStore {
     if (rows.isNotEmpty) {
       final values = rows.single.values;
       final instructions = values['instructions'];
-      final budget = values['max_model_invocations'];
       final counter = values['next_entry'];
       final draft = values['draft_request'];
       if (values['session_id'] != id.value ||
           instructions is! String ||
-          budget is! int ||
-          budget < 1 ||
           counter is! int ||
           counter < 0 ||
           draft is! String) {
@@ -432,10 +430,9 @@ final class ChatSessionStore {
       }
       state
         .._instructions = instructions
-        .._maxModelInvocations = budget
         .._nextEntry = counter
         .._draftRequest = draft;
-      state._requireReadableConfiguration(instructions, budget, counter, draft);
+      state._requireReadableConfiguration(instructions, counter, draft);
     }
     final runIds = <RunId>{};
     while (true) {
@@ -506,7 +503,6 @@ final class ChatSessionStore {
     if (rows.isEmpty) {
       state._requireReadableConfiguration(
         state.instructions,
-        state.maxModelInvocations,
         state._nextEntry,
         state.draftRequest,
       );
@@ -514,13 +510,12 @@ final class ChatSessionStore {
         RelationalStatement(
           sql:
               'INSERT INTO adele_chat_sessions '
-              '(session_id, instructions, max_model_invocations, next_entry, '
+              '(session_id, instructions, next_entry, '
               'draft_request) '
-              'VALUES (:session, :instructions, :budget, :counter, :draft)',
+              'VALUES (:session, :instructions, :counter, :draft)',
           parameters: {
             ...parameters,
             ':instructions': state.instructions,
-            ':budget': state.maxModelInvocations,
             ':counter': state._nextEntry,
             ':draft': state.draftRequest,
           },
@@ -536,7 +531,6 @@ const _chatSchema = '''
 CREATE TABLE adele_chat_sessions (
   session_id TEXT NOT NULL PRIMARY KEY REFERENCES adele_product_sessions(id),
   instructions TEXT NOT NULL,
-  max_model_invocations INTEGER NOT NULL CHECK (max_model_invocations > 0),
   next_entry INTEGER NOT NULL CHECK (next_entry >= 0),
   draft_request TEXT NOT NULL
 );
@@ -572,7 +566,6 @@ final class ChatSessionState {
   final SessionId id;
   final ProjectStorageService? _storage;
   String _instructions = chatDefaultInstructions;
-  int _maxModelInvocations = 8;
   final List<ChatEntry> _entries = <ChatEntry>[];
   int _nextEntry = 0;
   String _draftRequest = '';
@@ -586,21 +579,6 @@ final class ChatSessionState {
     _requireVolatile();
     _requireIdle();
     _instructions = value;
-  }
-
-  int get maxModelInvocations => _maxModelInvocations;
-
-  set maxModelInvocations(int value) {
-    _requireVolatile();
-    _requireIdle();
-    if (value < 1) {
-      throw ArgumentError.value(
-        value,
-        'maxModelInvocations',
-        'Must be positive.',
-      );
-    }
-    _maxModelInvocations = value;
   }
 
   ChatEntry appendUserMessage(String content) {
@@ -656,14 +634,12 @@ final class ChatSessionState {
     ':session': id.value,
     ':previousCounter': _nextEntry,
     ':previousInstructions': _instructions,
-    ':previousBudget': _maxModelInvocations,
     ':previousDraft': _draftRequest,
   };
 
   static const _whereCurrent =
       'WHERE session_id = :session AND next_entry = :previousCounter '
       'AND instructions = :previousInstructions '
-      'AND max_model_invocations = :previousBudget '
       'AND draft_request = :previousDraft';
 
   Future<void> _setDraftRequest(String content) async {
@@ -671,12 +647,7 @@ final class ChatSessionState {
     _acquire(claim);
     try {
       if (_storage != null) {
-        _requireReadableConfiguration(
-          _instructions,
-          _maxModelInvocations,
-          _nextEntry,
-          content,
-        );
+        _requireReadableConfiguration(_instructions, _nextEntry, content);
       }
       await _storage?.transactionForSession(id.value, [
         RelationalStatement(
@@ -692,33 +663,22 @@ final class ChatSessionState {
     }
   }
 
-  Future<void> _configure(String instructions, int budget) async {
+  Future<void> _configure(String instructions) async {
     final claim = Object();
     _acquire(claim);
     try {
       if (_storage != null) {
-        _requireReadableConfiguration(
-          instructions,
-          budget,
-          _nextEntry,
-          _draftRequest,
-        );
+        _requireReadableConfiguration(instructions, _nextEntry, _draftRequest);
       }
       await _storage?.transactionForSession(id.value, [
         RelationalStatement(
           sql:
-              'UPDATE adele_chat_sessions SET instructions = :instructions, '
-              'max_model_invocations = :budget $_whereCurrent',
-          parameters: {
-            ..._preconditions,
-            ':instructions': instructions,
-            ':budget': budget,
-          },
+              'UPDATE adele_chat_sessions SET instructions = :instructions $_whereCurrent',
+          parameters: {..._preconditions, ':instructions': instructions},
           expectedRows: 1,
         ),
       ], ProjectStorageAccessMode.durable);
       _instructions = instructions;
-      _maxModelInvocations = budget;
     } finally {
       _release(claim);
     }
@@ -732,7 +692,6 @@ final class ChatSessionState {
     if (_storage == null) return;
     _requireReadableConfiguration(
       _instructions,
-      _maxModelInvocations,
       counter,
       clearDraft ? '' : _draftRequest,
     );
@@ -775,14 +734,12 @@ final class ChatSessionState {
 
   void _requireReadableConfiguration(
     String instructions,
-    int budget,
     int counter,
     String draftRequest,
   ) {
     _requireReadableRow({
       'session_id': id.value,
       'instructions': instructions,
-      'max_model_invocations': budget,
       'next_entry': counter,
       'draft_request': draftRequest,
     });
@@ -799,7 +756,6 @@ final class ChatSessionState {
   ChatSessionSnapshot snapshot() => ChatSessionSnapshot(
     entries: _entries,
     instructions: instructions,
-    maxModelInvocations: maxModelInvocations,
     draftRequest: draftRequest,
   );
 
@@ -840,12 +796,21 @@ String _requireContent(String content) {
   return content;
 }
 
+void _requirePositiveBudget(int value) {
+  if (value < 1) {
+    throw ArgumentError.value(
+      value,
+      'maxModelInvocations',
+      'Must be positive.',
+    );
+  }
+}
+
 final class _ChatExecution implements OrchestrationExecution {
-  _ChatExecution(this.host, this.session)
+  _ChatExecution(this.host, this.session, this.maxModelInvocations)
     : instructions = session.instructions.isEmpty
           ? chatToolNarrationGuidance
-          : '$chatToolNarrationGuidance\n\n${session.instructions}',
-      maxModelInvocations = session.maxModelInvocations {
+          : '$chatToolNarrationGuidance\n\n${session.instructions}' {
     session._requireVolatile();
     if (host.sessionId != session.id) {
       throw ArgumentError('Run and Session identities must match.');

@@ -147,7 +147,9 @@ void main() {
       (await ModelToolComposer(extensions).materialize(context)).materialize();
 
   Future<PluginBackendActivation> startCommand() async {
-    addTearDown(ChatStrategyPlugin().activate(extensions).close);
+    addTearDown(
+      ChatStrategyPlugin(maxModelInvocations: 8).activate(extensions).close,
+    );
     final topology = await OrchestrationTestLifecycle.create(
       extensions,
       context.sessionId,

@@ -488,7 +488,10 @@ Future<_RunFixture> _runFixture({
   required ModelPort model,
   required ToolRegistration registration,
 }) async {
-  final ChatTestTopology topology = ChatTestTopology(SessionId('session-$id'));
+  final ChatTestTopology topology = ChatTestTopology(
+    SessionId('session-$id'),
+    maxModelInvocations: 8,
+  );
   addTearDown(topology.close);
   final ChatSessionState session = topology.chat.sessions.obtain(
     topology.session.id,

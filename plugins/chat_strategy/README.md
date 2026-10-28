@@ -62,12 +62,11 @@ Future<ChatSessionSnapshot> snapshot(String sessionId);
 Future<ChatEntry> appendUserMessage(String sessionId, String content);
 Future<void> setDraftRequest(String sessionId, String content);
 Future<ChatEntry> submitDraftRequest(String sessionId);
-Future<void> configureSession(
-  String sessionId, String instructions, int maxModelInvocations);
+Future<void> configureSession(String sessionId, String instructions);
 ```
 
 `ChatSessionSnapshot` contains immutable `entries`, `instructions`,
-`maxModelInvocations`, and `String draftRequest`. Each `ChatEntry` contains
+and `String draftRequest`. Each `ChatEntry` contains
 `String id`, `String role` (`user` or `assistant`), `String content`, and required
 nullable `String? runId`. The Run association can be non-null only for a user entry;
 it is semantic identity, not a live execution or opaque presentation handle.
@@ -97,17 +96,28 @@ changes the draft; configuration also leaves it intact. Draft restoration does
 not start a Run. The [backend map](packages/backend/README.md) defines hydration,
 the unchanged v1 baseline, and the existing storage-readability bound.
 
-`configureSession` replaces both settings atomically. The default budget is eight
-model invocations and must remain positive. Stock source-tool/approval guidance
-is `chatDefaultInstructions` in the backend, not a host/frontend default.
-Each execution captures configuration at materialization. Materialization claims
+`configureSession` replaces only Session instructions. Stock source-tool/approval
+guidance is `chatDefaultInstructions` in the backend, not a host/frontend default.
+The authoritative [`settings.schema.json`](settings.schema.json) declares
+`dev.adele.plugin.chat-strategy.max-model-invocations` with default 40 and minimum 1,
+without an upper bound. The contract exports `chatMaxModelInvocationsSettingId`
+for explicit callers. Both `ChatStrategyPlugin` and `ChatRemoteOrchestrationBackend`
+require a positive `maxModelInvocations` constructor argument, independently of
+their Session store. Installed startup reads the host-resolved setting through
+`AdeleBackendSettings`; missing or invalid values fail rather than selecting a
+plugin-local default. The budget is not Session state or persisted Chat data.
+Each execution captures its instructions and immutable budget at materialization.
+A differently configured plugin/backend can use the same store for later Runs;
+it cannot alter existing executions, including tool or approval waits. Installed
+settings are a backend-generation startup snapshot, not live reconfiguration.
+Materialization claims
 the Session until execution close finishes, including approval waits and terminal
 host settlement. Appends, draft edits/submission, configuration, and another
 materialization cannot change a claimed Session. Idle durable writes also retain
 the claim through SQL acknowledgement before publishing new canonical state. Snapshots and other
 Sessions remain usable.
 The service returns declared `ChatSessionFailure` codes `session_busy`,
-`invalid_session`, `invalid_content`, or `invalid_configuration`.
+`invalid_session`, or `invalid_content`.
 Storage and corruption failures are not translated into invalid-input failures
 or hidden by volatile fallback.
 The remote execution owner closes on terminal settlement or errors; explicit

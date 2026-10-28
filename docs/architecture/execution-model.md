@@ -104,6 +104,15 @@ to continue with tool results or complete/fail its work. It decides which semant
 results become strategy-owned state. Stock Chat's conversation projection and
 bounded sequential loop are one example, not universal Session/Run semantics.
 
+Chat's model invocation budget is ordinary global configuration delivered at
+backend startup, separate from its Session instructions, history, and Draft
+Request. Each materialized Run captures the backend's immutable value;
+continuations and approval resume use that same limit. Exhaustion fails the Run
+rather than reporting successful partial completion. The budget does not authorize
+tools or change proposal validation, sequential execution, policy, or approvals.
+See [Chat invocation configuration](profiles-and-configuration.md#chat-invocation-budget)
+for declaration, application/restart boundaries, and standalone injection.
+
 The host owns Run lifecycle mechanics, model invocation identity/evidence,
 executable tool snapshots, proposal validation/resolution, policy, approval,
 actual tool execution, exact-binding validation, and observations. A strategy

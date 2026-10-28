@@ -64,6 +64,10 @@ void main() {
     expect((document['identity'] as _Row)['session_id'], _session);
     expect(storage.queries, isNotEmpty);
     final conversation = document['conversation'] as _Row;
+    expect(conversation['configuration'], {
+      'instructions': '  Keep exact instructions.\r\n',
+      'next_entry': 4,
+    });
     expect(conversation['entries'], storage.rows[chatEntries.name]);
     expect(storage.cursors[chatEntries.name], [null, 0, 1, 2, 3]);
     expect(storage.cursors[productRuns.name], [null, 'run-a', 'run-z']);
@@ -1871,7 +1875,6 @@ final class _QueryFixture implements ProjectStorageService {
     rows[chatSessions.name]!.add({
       'session_id': _session,
       'instructions': '  Keep exact instructions.\r\n',
-      'max_model_invocations': 8,
       'next_entry': 0,
       'draft_request': '',
     });

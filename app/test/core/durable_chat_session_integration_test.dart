@@ -6,14 +6,20 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,11 +27,12 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
+import '../../../tools/backend_artifacts.dart';
+
 const _gitPluginId = 'dev.adele.plugin.git';
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _instructions = 'Retain the conversation exactly. Answer without tools.';
-const _budget = 3;
 const _draftRequest =
     '  Question after restart:\n\tkeep this partial request...\n  ';
 final _projectProviderId = ProviderId('dev.adele.project.local-directory');
@@ -33,6 +40,7 @@ final _gitProviderId = ProviderId('dev.adele.environment.git-worktree');
 
 void main() {
   late Directory artifacts;
+  late Directory installations;
   late File hostArtifact;
   late String aotRuntime;
 
@@ -65,7 +73,57 @@ void main() {
         stage: 'durable-chat-${entry.key}',
       );
     }
+    installations = await Directory('${artifacts.path}/installed').create();
+    for (final id in [_projectPluginId, _gitPluginId, _chatPluginId]) {
+      final installation = Directory('${installations.path}/$id');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: installation,
+        pluginId: id,
+        displayName: id,
+        backend: true,
+      );
+      await File(
+        '${artifacts.path}/$id.aot',
+      ).copy('${installation.path}/backend.aot');
+    }
   });
+
+  Future<AdeleRuntime> startPrepared({
+    Map<SettingId, Object?> globalOverrides = const {},
+    PlatformStorageRoots? roots,
+  }) async {
+    final runtime = AdeleRuntime(
+      ids: MonotonicProductIdSource(seed: 'global-chat-budget'),
+    );
+    addTearDown(runtime.close);
+    runtime.plugins.configureSettingsLoader(
+      (catalog) async => roots == null
+          ? PreparedSettingsSnapshot.resolve(
+              catalog,
+              globalOverrides: globalOverrides,
+            )
+          : PreparedSettingsSnapshot.load(catalog, roots: roots),
+    );
+    await runtime.plugins.start(
+      installationRoot: installations.path,
+      dartaotruntimeExecutable: aotRuntime,
+      hostArtifactPath: hostArtifact.path,
+      startupArguments: const {},
+    );
+    expect(runtime.plugins.state, ApplicationPluginState.ready);
+    expect(runtime.plugins.catalog!.issues, isEmpty);
+    expect(runtime.plugins.backends, hasLength(3));
+    for (final backend in runtime.plugins.backends) {
+      expect(backend.installation.frontend, isNull);
+      expect(
+        backend.state,
+        InstalledBackendState.active,
+        reason: '${backend.failure}',
+      );
+    }
+    return runtime;
+  }
 
   Future<_RuntimeBackends> start(ProductIdSource ids) async {
     late final PluginBackendActivation git;
@@ -104,6 +162,225 @@ void main() {
   }
 
   test(
+    'backend-only prepared Chat enforces default 40 then global 80 on the same durable Session',
+    () async {
+      final source = await _source();
+      final global = await Directory.systemTemp.createTemp(
+        'chat-global-settings-',
+      );
+      addTearDown(() => global.delete(recursive: true));
+      final roots = PlatformStorageRoots(
+        operatingSystem: Platform.operatingSystem,
+        configurationRoot: '${global.path}/config',
+        localStateRoot: '${global.path}/state',
+        localDataRoot: '${global.path}/data',
+        cacheRoot: '${global.path}/cache',
+      );
+      SessionId? sessionId;
+      Map<String, Object?>? retained;
+      Map<String, Object?>? coreRows;
+      for (final limit in [40, 80]) {
+        final runtime = await startPrepared(roots: roots);
+        final backend = runtime.plugins.backends.singleWhere(
+          (backend) => backend.installation.metadata.id.value == _chatPluginId,
+        );
+        final settings = await runtime.plugins.settingsForCatalog(
+          runtime.plugins.catalog!,
+        );
+        expect(settings.valuesForInstallation(backend.installation), {
+          chatMaxModelInvocationsSettingId: limit,
+        });
+        final chat = _chatClient(backend.connection!);
+        if (sessionId == null) {
+          sessionId = (await _createSession(runtime, source)).session.id;
+          await chat.configureSession(sessionId.value, _instructions);
+          await chat.setDraftRequest(sessionId.value, _draftRequest);
+          coreRows = _inspect(source, _coreRows);
+        } else {
+          await runtime.lifecycle.openProject(
+            sourceLocation: source.uri,
+            provider: runtime.lifecycle.resolveProjectProvider(
+              _projectProviderId,
+            ),
+          );
+          expect(runtime.store.session(sessionId)!.id, sessionId);
+          expect(_snapshot(await chat.snapshot(sessionId.value)), retained);
+          expect(_inspect(source, _coreRows), coreRows);
+        }
+        await chat.appendUserMessage(
+          sessionId.value,
+          'Loop with limit $limit.',
+        );
+        final model = _LoopModel();
+        final tool = _LoopTool();
+        final policy = _LoopPolicy();
+        final run = await _createRun(
+          runtime,
+          sessionId,
+          'global-limit-$limit',
+          model,
+          toolCatalog: _loopCatalog(tool),
+          policy: policy,
+        );
+        final before = _snapshot(await chat.snapshot(sessionId.value));
+        await run.start();
+        expect(run.run.state, RunState.failed);
+        expect(
+          run.run.failure,
+          isA<RemoteStrategyFailure>()
+              .having(
+                (failure) => failure.code,
+                'code',
+                'ModelInvocationLimitExceeded',
+              )
+              .having(
+                (failure) => failure.message,
+                'message',
+                contains('$limit model invocations'),
+              ),
+        );
+        expect(model.calls, limit);
+        expect(tool.calls, limit - 1);
+        expect(policy.calls, limit - 1);
+        expect(run.run.interruptions, isEmpty);
+        final activity = runtime.lifecycle.runActivity(run.run.id)!;
+        expect(activity.state, RunState.failed);
+        expect(activity.models, hasLength(limit));
+        expect(activity.tools, hasLength(limit - 1));
+        expect(
+          runtime.store.runRecord(run.run.id)!.state,
+          RunTerminalState.failed,
+        );
+        expect(_snapshot(await chat.snapshot(sessionId.value)), before);
+        await run.close();
+
+        if (limit == 80) {
+          // A fresh Run gets all 80 slots, including a final non-tool answer.
+          final completingModel = _LoopModel(completeAt: limit);
+          final completingTool = _LoopTool();
+          final completing = await _createRun(
+            runtime,
+            sessionId,
+            'global-limit-final-answer',
+            completingModel,
+            toolCatalog: _loopCatalog(completingTool),
+            policy: _LoopPolicy(),
+          );
+          await completing.start();
+          expect(completing.run.state, RunState.completed);
+          expect(completingModel.calls, limit);
+          expect(completingTool.calls, limit - 1);
+          expect(
+            (await chat.snapshot(sessionId.value)).entries.last.content,
+            'Completed in the final permitted slot.',
+          );
+          await completing.close();
+        }
+        retained = _snapshot(await chat.snapshot(sessionId.value));
+        expect(retained['instructions'], _instructions);
+        expect(retained['draftRequest'], _draftRequest);
+        expect(_inspect(source, _coreRows), coreRows);
+        _inspect(source, _expectSchema);
+        if (limit == 40) {
+          final service = GlobalSettingsService(
+            catalog: runtime.plugins.catalog!.settings,
+            roots: roots,
+          );
+          try {
+            final saved = await service.save(
+              await service.load(),
+              SettingId(chatMaxModelInvocationsSettingId),
+              80,
+            );
+            expect(
+              saved.values[SettingId(chatMaxModelInvocationsSettingId)]!.source,
+              SettingValueSource.global,
+            );
+            expect(settings.valuesForInstallation(backend.installation), {
+              chatMaxModelInvocationsSettingId: 40,
+            });
+          } finally {
+            await service.close();
+          }
+        }
+        await runtime.close();
+      }
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
+    'backend-only prepared Chat keeps its startup budget across approval waits',
+    () async {
+      final source = await _source();
+      final overrides = <SettingId, Object?>{};
+      final runtime = await startPrepared(globalOverrides: overrides);
+      final session = (await _createSession(runtime, source)).session;
+      final backend = runtime.plugins.backends.singleWhere(
+        (backend) => backend.installation.metadata.id.value == _chatPluginId,
+      );
+      final settings = await runtime.plugins.settingsForCatalog(
+        runtime.plugins.catalog!,
+      );
+      final chat = _chatClient(backend.connection!);
+      await chat.appendUserMessage(session.id.value, 'Loop through approvals.');
+      final model = _LoopModel();
+      final tool = _LoopTool();
+      final policy = _LoopPolicy(askAt: {1, 39});
+      final run = await _createRun(
+        runtime,
+        session.id,
+        'global-limit-approval',
+        model,
+        toolCatalog: _loopCatalog(tool),
+        policy: policy,
+      );
+      await run.start();
+      expect(run.run.state, RunState.waiting);
+      expect(model.calls, 1);
+      expect(tool.calls, 0);
+      overrides[SettingId(chatMaxModelInvocationsSettingId)] = 80;
+      expect(
+        settings
+            .read(backend.installation, chatMaxModelInvocationsSettingId)
+            .value,
+        40,
+      );
+      expect(
+        () => settings.valuesForInstallation(
+          backend.installation,
+        )[chatMaxModelInvocationsSettingId] = 80,
+        throwsUnsupportedError,
+      );
+      await _approve(run);
+      expect(run.run.state, RunState.waiting);
+      expect(model.calls, 39);
+      expect(tool.calls, 38);
+      await _approve(run);
+      expect(run.run.state, RunState.failed);
+      expect(model.calls, 40);
+      expect(tool.calls, 39);
+      expect(policy.calls, 39);
+      expect(run.run.interruptions, isEmpty);
+      expect(
+        run.run.failure,
+        isA<RemoteStrategyFailure>().having(
+          (failure) => failure.code,
+          'code',
+          'ModelInvocationLimitExceeded',
+        ),
+      );
+      expect(
+        run.run.journal.records.where(
+          (record) => record.event is RunInterrupted,
+        ),
+        hasLength(2),
+      );
+      expect((await chat.snapshot(session.id.value)).entries, hasLength(1));
+    },
+  );
+
+  test(
     'durable Chat history and draft survive generation replacement and restart, then submit once',
     () async {
       final source = await _source();
@@ -127,12 +404,11 @@ void main() {
         {
           'session_id': session.id.value,
           'instructions': initial.instructions,
-          'max_model_invocations': initial.maxModelInvocations,
           'next_entry': 0,
           'draft_request': '',
         },
       ]);
-      await chatA.configureSession(session.id.value, _instructions, _budget);
+      await chatA.configureSession(session.id.value, _instructions);
       final firstUser = await chatA.appendUserMessage(
         session.id.value,
         'First durable question.',
@@ -170,7 +446,6 @@ void main() {
         {
           'session_id': session.id.value,
           'instructions': _instructions,
-          'max_model_invocations': _budget,
           'next_entry': 2,
           'draft_request': _draftRequest,
         },
@@ -373,7 +648,6 @@ void main() {
         {
           'session_id': session.id.value,
           'instructions': _instructions,
-          'max_model_invocations': _budget,
           'next_entry': 5,
           'draft_request': '',
         },
@@ -491,7 +765,7 @@ void main() {
       final sessionId = product.session.id;
       final coreBefore = _inspect(source, _coreRows);
       final chat = _chatClient(generation.connection);
-      await chat.configureSession(sessionId.value, _instructions, _budget);
+      await chat.configureSession(sessionId.value, _instructions);
       await chat.appendUserMessage(sessionId.value, 'Retained before failure.');
       await chat.setDraftRequest(sessionId.value, _draftRequest);
       final before = await chat.snapshot(sessionId.value);
@@ -500,7 +774,6 @@ void main() {
         {
           'session_id': sessionId.value,
           'instructions': _instructions,
-          'max_model_invocations': _budget,
           'next_entry': 1,
           'draft_request': _draftRequest,
         },
@@ -533,7 +806,7 @@ void main() {
         CREATE TRIGGER reject_chat_entry BEFORE INSERT ON adele_chat_entries
         BEGIN SELECT RAISE(ABORT, 'durable-chat-entry-failure'); END;
         CREATE TRIGGER reject_chat_configuration
-        BEFORE UPDATE OF instructions, max_model_invocations ON adele_chat_sessions
+        BEFORE UPDATE OF instructions ON adele_chat_sessions
         BEGIN SELECT RAISE(ABORT, 'durable-chat-configuration-failure'); END;
         CREATE TRIGGER reject_chat_draft
         BEFORE UPDATE OF draft_request ON adele_chat_sessions
@@ -580,7 +853,6 @@ void main() {
         chat.configureSession(
           sessionId.value,
           'Must not replace instructions.',
-          11,
         ),
         storageFailure,
       );
@@ -797,6 +1069,9 @@ final class _RuntimeBackends {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: File('${artifacts.path}/$pluginId.aot').uri,
+      settings: {
+        if (pluginId == _chatPluginId) chatMaxModelInvocationsSettingId: 8,
+      },
       createInfrastructureServices: (connection) =>
           projectStorageServices(runtime.lifecycle, connection),
     );
@@ -862,16 +1137,18 @@ Future<SessionOrchestrationRun> _createRun(
   AdeleRuntime runtime,
   SessionId sessionId,
   String runId,
-  _Model model,
-) async {
+  ModelPort model, {
+  ToolCatalog? toolCatalog,
+  ToolPolicy policy = const _NoTools(),
+}) async {
   final run = await createSessionOrchestrationRun(
     lifecycle: runtime.lifecycle,
     sessionId: sessionId,
     runId: RunId(runId),
     contextComposer: runtime.contextComposer,
     model: model,
-    toolCatalog: ToolCatalog(),
-    policy: const _NoTools(),
+    toolCatalog: toolCatalog ?? ToolCatalog(),
+    policy: policy,
   );
   addTearDown(run.close);
   return run;
@@ -920,9 +1197,122 @@ final class _NoTools implements ToolPolicy {
   );
 }
 
+Future<void> _approve(SessionOrchestrationRun run) {
+  final pending =
+      run.run.interruptions.values.single as ToolApprovalInterruption;
+  return run.resolveApproval(
+    ToolApprovalResolution(
+      interruptionId: pending.id,
+      toolInvocationId: pending.toolInvocationId,
+      approved: true,
+    ),
+  );
+}
+
+final class _LoopModel implements ModelPort {
+  _LoopModel({this.completeAt});
+  final int? completeAt;
+  int calls = 0;
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    calls++;
+    // Bound even a regressed implementation without a timing-based test oracle.
+    expect(calls, lessThanOrEqualTo(100));
+    expect(request.tools.byAlias('continue_loop'), isNotNull);
+    expect(
+      request.input.whereType<SemanticToolOutcomeInput>(),
+      hasLength(calls - 1),
+    );
+    yield ModelOutputItemCompleted(
+      invocationId: request.invocationId,
+      item: calls == completeAt
+          ? ModelTextOutput('Completed in the final permitted slot.')
+          : ModelToolProposalOutput(
+              ProviderToolProposal(
+                providerCallId: 'loop-$calls',
+                alias: 'continue_loop',
+                arguments: const {},
+              ),
+            ),
+    );
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: ModelSettlement.completed,
+      metadata: ModelTerminalMetadata(
+        effectiveModel: 'global-budget-deterministic',
+      ),
+    );
+  }
+}
+
+ToolCatalog _loopCatalog(_LoopTool tool) => ToolCatalog()
+  ..register(
+    ToolRegistration(
+      definition: ToolDefinition(
+        id: ToolId('dev.adele.test.continue-loop'),
+        description: 'Continue the deterministic loop.',
+      ),
+      modelDefinition: ModelToolDefinition(
+        alias: 'continue_loop',
+        description: 'Continue the deterministic loop.',
+        argumentsSchema: const {},
+      ),
+      executable: tool,
+    ),
+  );
+
+final class _LoopTool implements ToolExecutable {
+  int calls = 0;
+
+  @override
+  void validateBinding() {}
+
+  @override
+  CanonicalToolArguments validateAndNormalize(Map<String, Object?> arguments) {
+    expect(arguments, isEmpty);
+    return CanonicalToolArguments(arguments);
+  }
+
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async => EffectDescription(
+    effects: const [ToolEffect.resourceInspection],
+    targets: const [],
+    summary: 'Continue the deterministic loop.',
+  );
+
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async* {
+    calls++;
+    yield ToolExecutionTerminal(
+      ToolOutcome(
+        disposition: ToolOutcomeDisposition.success,
+        effectCertainty: EffectCertainty.knownOccurred,
+        modelContent: 'Continue.',
+      ),
+    );
+  }
+}
+
+final class _LoopPolicy implements ToolPolicy {
+  _LoopPolicy({this.askAt = const {}});
+  final Set<int> askAt;
+  int calls = 0;
+
+  @override
+  ToolPolicyDecision evaluate(ToolPolicyInput input) => askAt.contains(++calls)
+      ? ToolPolicyDecision.ask
+      : ToolPolicyDecision.allow;
+}
+
 Map<String, Object?> _snapshot(ChatSessionSnapshot snapshot) => {
   'instructions': snapshot.instructions,
-  'maxModelInvocations': snapshot.maxModelInvocations,
   'draftRequest': snapshot.draftRequest,
   'entries': [
     for (final entry in snapshot.entries)
@@ -940,7 +1330,6 @@ void _expectHistory(
   List<(String, String)> entries,
 ) {
   expect(snapshot.instructions, _instructions);
-  expect(snapshot.maxModelInvocations, _budget);
   expect(snapshot.entries.map((entry) => (entry.role, entry.content)), entries);
   expect(snapshot.entries.map((entry) => entry.id), [
     for (var index = 0; index < entries.length; index++) 'entry-$index',
@@ -993,7 +1382,6 @@ void _expectSchema(Database database) {
     [
       ('session_id', 'TEXT', 1),
       ('instructions', 'TEXT', 1),
-      ('max_model_invocations', 'INTEGER', 1),
       ('next_entry', 'INTEGER', 1),
       ('draft_request', 'TEXT', 1),
     ],

@@ -332,6 +332,7 @@ final class DevelopmentSelfHostingTopology {
     required this.chatSession,
     required this.resolvedStrategy,
     required this.baselineCommit,
+    required this.maxModelInvocations,
     required PluginBackendActivation chatStrategyActivation,
     required PluginCapabilityActivation environmentActivation,
     required PluginBackendActivation agentsMdActivation,
@@ -362,6 +363,7 @@ final class DevelopmentSelfHostingTopology {
   final ToolCatalog catalog;
   final Directory projectSource;
   final String baselineCommit;
+  final int maxModelInvocations;
   final PluginBackendActivation _chatStrategyActivation;
   final PluginCapabilityActivation _environmentActivation;
   final PluginBackendActivation _agentsMdActivation;
@@ -378,10 +380,18 @@ final class DevelopmentSelfHostingTopology {
     required Map<String, String> hostEnvironment,
     required String identity,
     required String taskTitle,
+    required int maxModelInvocations,
     bool includeCommandTools = true,
     DevelopmentSelfHostingLog? log,
     void Function(DevelopmentSelfHostingRetainedState state)? onTaskEstablished,
   }) async {
+    if (maxModelInvocations <= 0) {
+      throw ArgumentError.value(
+        maxModelInvocations,
+        'maxModelInvocations',
+        'Must be positive.',
+      );
+    }
     final PluginBackendHost host = await PluginBackendHost.start(
       dartaotruntimeExecutable: artifacts.dartAotRuntime,
       hostArtifactPath: artifacts.hostArtifact.path,
@@ -416,6 +426,7 @@ final class DevelopmentSelfHostingTopology {
       final PluginBackendConnection chatConnection = await host.startPlugin(
         pluginId: chatStrategyPluginId.value,
         artifactUri: artifacts.chatStrategyArtifact.uri,
+        settings: {chatMaxModelInvocationsSettingId: maxModelInvocations},
         createInfrastructureServices: (connection) =>
             projectStorageServices(lifecycle, connection),
       );
@@ -578,6 +589,7 @@ final class DevelopmentSelfHostingTopology {
             chatSession: chatSession,
             resolvedStrategy: resolvedStrategy,
             baselineCommit: retainedState.baselineCommit,
+            maxModelInvocations: maxModelInvocations,
             chatStrategyActivation: chatStrategyActivation,
             environmentActivation: environmentActivation,
             agentsMdActivation: agentsMdActivation,
@@ -743,18 +755,13 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required String instructions,
   required ModelPort model,
   required ToolCatalog catalog,
-  required int maxModelInvocations,
 }) async {
   final Session? session = lifecycle.store.session(sessionId);
   if (session == null || session.strategyId != chatStrategyId) {
     throw StateError('Self-hosting requires a canonical Chat Session.');
   }
   lifecycle.validateResolvedStrategy(session.strategyId, resolvedStrategy);
-  await sessions.configureSession(
-    sessionId.value,
-    instructions,
-    maxModelInvocations,
-  );
+  await sessions.configureSession(sessionId.value, instructions);
   resolvedStrategy.validateBinding();
   await sessions.appendUserMessage(sessionId.value, prompt);
   resolvedStrategy.validateBinding();

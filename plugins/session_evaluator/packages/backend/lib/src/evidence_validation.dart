@@ -283,8 +283,7 @@ void validateConversation(Map<String, Object?> conversation) {
     return;
   }
   evidenceRequire(
-    (configuration['max_model_invocations'] as int) > 0 &&
-        configuration['next_entry'] == entries.length,
+    configuration['next_entry'] == entries.length,
     'Chat configuration/counter disagrees with retained entries (or changed during reads).',
   );
   final runs = <String>{};

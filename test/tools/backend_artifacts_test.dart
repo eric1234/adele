@@ -154,6 +154,7 @@ void main() {
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
       'plugins/git/packages/backend/native/git_pty_helper.c',
       'plugins/openai/records.schema.json',
+      'plugins/chat_strategy/settings.schema.json',
       'plugins/source_editor/settings.schema.json',
     ]) {
       final File destination = File('${root.path}/$path');
@@ -2258,7 +2259,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'version': '0.1.0',
               'displayName': plugin.name,
             },
-            if (plugin.directory == 'source-editor')
+            if (plugin.directory == 'source-editor' ||
+                plugin.directory == 'chat-strategy')
               'settingsSchema': 'settings.schema.json',
             if (plugin.directory == 'openai')
               'recordsSchema': 'records.schema.json',
@@ -2279,6 +2281,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (plugin.backend ? 1 : 0) +
                   (hasFrontend ? 1 : 0) +
                   (plugin.directory == 'source-editor' ? 1 : 0) +
+                  (plugin.directory == 'chat-strategy' ? 1 : 0) +
                   (plugin.directory == 'openai' ? 1 : 0) +
                   (plugin.directory == 'git' ? 1 : 0),
             ),
@@ -2442,7 +2445,30 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(setting.validate(true), isTrue);
         expect(() => setting.validate('true'), throwsException);
         expect(() => setting.validate(1), throwsException);
-        expect(catalog.settings.definitions, [setting]);
+        final chatSettings = catalog.installations
+            .singleWhere(
+              (entry) =>
+                  entry.metadata.id.value == 'dev.adele.plugin.chat-strategy',
+            )
+            .settingsSchema!;
+        final budget = chatSettings.definitions.single;
+        expect(
+          File.fromUri(chatSettings.artifactUri).readAsBytesSync(),
+          File('plugins/chat_strategy/settings.schema.json').readAsBytesSync(),
+        );
+        expect(
+          budget.id.value,
+          'dev.adele.plugin.chat-strategy.max-model-invocations',
+        );
+        expect(budget.defaultValue, 40);
+        expect(budget.category, 'Agents');
+        expect(budget.section, 'Execution');
+        expect(budget.label, 'Maximum Model Invocations per Run');
+        expect(budget.validate(1), 1);
+        expect(budget.validate(80), 80);
+        expect(budget.validate(9223372036854775807), 9223372036854775807);
+        expect(() => budget.validate(0), throwsException);
+        expect(catalog.settings.definitions, [budget, setting]);
         expect(catalog.settings.resolve(setting.id).value, isFalse);
         final sourceCommand =
             source.frontend!.extensions.single
@@ -2922,6 +2948,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   for (final declaration in [
+    (kind: 'settings', source: 'chat_strategy', installation: 'chat-strategy'),
     (kind: 'settings', source: 'source_editor', installation: 'source-editor'),
     (kind: 'records', source: 'openai', installation: 'openai'),
   ]) {

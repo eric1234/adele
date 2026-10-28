@@ -5,10 +5,10 @@ import 'dart:typed_data';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
-import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -495,11 +495,18 @@ Widget settingsPane() {
     'setting reads require exact declared owner, not a namespace prefix',
     () async {
       final snapshot = await load();
+      final ownValues = snapshot.valuesForInstallation(source);
+      expect(ownValues, {_folding: false});
+      expect(() => ownValues[_folding] = true, throwsUnsupportedError);
       for (final id in [_healthyPlugin, _otherPlugin, _nestedPlugin]) {
         final foreign = catalog.installations.singleWhere(
           (entry) => entry.metadata.id.value == id,
         );
         snapshot.validateInstallation(foreign);
+        expect(
+          snapshot.valuesForInstallation(foreign),
+          id == _healthyPlugin ? <String, Object>{} : {'$id.enabled': true},
+        );
         expect(() => snapshot.read(foreign, _folding), throwsStateError);
         if (id != _healthyPlugin) {
           expect(snapshot.read(foreign, '$id.enabled').value, true);
@@ -536,6 +543,7 @@ Widget settingsPane() {
         settingsSchema: source.settingsSchema,
       );
       for (final foreign in [replacement, clone]) {
+        expect(() => snapshot.valuesForInstallation(foreign), throwsStateError);
         expect(() => snapshot.read(foreign, _folding), throwsStateError);
         expect(() => snapshot.validateInstallation(foreign), throwsStateError);
       }

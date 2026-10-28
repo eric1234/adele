@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 
 import 'backend_host_protocol.dart';
 
@@ -187,6 +188,9 @@ final class PluginBackendHost {
 
   /// [startupArgumentsOnly] conveys explicit-configuration intent to the backend.
   /// It is bootstrap metadata, not process-environment isolation.
+  /// [settings] is copied and structurally validated before callbacks or awaits,
+  /// then delivered only to this new generation. The caller owns resolution and
+  /// declaration validation; this transport accepts only bool, int, and String.
   /// [createInfrastructureServices] supplies only explicitly granted services for
   /// this exact connection. Dispatchers remain caller-owned. Capture the connection's
   /// [PluginBackendConnection.validateInfrastructureContext] for service-entry checks.
@@ -195,11 +199,13 @@ final class PluginBackendHost {
     required Uri artifactUri,
     List<String> arguments = const <String>[],
     bool startupArgumentsOnly = false,
+    Map<String, Object> settings = const {},
     Map<String, AdeleBackendDispatcher> Function(
       PluginBackendConnection connection,
     )?
     createInfrastructureServices,
   }) async {
+    final capturedSettings = adeleCopyBackendSettings(settings);
     if (_plugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already connected.');
     }
@@ -235,6 +241,7 @@ final class PluginBackendHost {
           'hostInfrastructureContext': connection._infrastructure.id,
           'arguments': List<String>.of(arguments, growable: false),
           'startupArgumentsOnly': startupArgumentsOnly,
+          'settings': capturedSettings,
           'defaultConfigurationContext':
               connection.defaultConfigurationContext._wireValue,
         },
