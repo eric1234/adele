@@ -167,6 +167,12 @@ The callback checks that the widget is mounted and still has a selection before
 refreshing, preventing a delayed null-selection failure after teardown without
 coupling independent editors' timers. Mobile selection behavior is unchanged.
 
+The composition-only backtick formatter respects the installed character-shortcut
+allowlist through a focused source patch. Omitting inline-code formatting must not
+secretly format literal fenced-code input during IME commits. Default AppFlowy
+shortcuts retain their existing behavior. No version, public API or preparation
+workflow changes are involved.
+
 Bootstrap prepares and verifies both editor sources before pub resolution.
 Maintained analysis, tests, and desktop run/build/smoke commands also verify
 AppFlowy before consumers. CI uses those same commands, not a separate setup path.

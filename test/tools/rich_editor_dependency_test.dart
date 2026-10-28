@@ -512,6 +512,7 @@ Future<void> main() async {
       '02-compatible-file-picker.patch',
       '03-compatible-image.patch',
       '04-selection-lifecycle.patch',
+      '05-respect-character-shortcut-policy.patch',
     ]);
     final patch = File(
       'third_party/appflowy_editor/${(config['patches'] as List).first}',

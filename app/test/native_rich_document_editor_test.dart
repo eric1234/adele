@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/editor/rich_document_markdown.dart';
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,6 +25,7 @@ Future<EditorState> select(
   String text, {
   int? end,
   int? start,
+  List<int> path = const [0],
 }) async {
   await tester.tapAt(tester.getCenter(find.text(text, findRichText: true)));
   await frames(tester);
@@ -30,7 +33,7 @@ Future<EditorState> select(
       .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
       .editorState;
   state.selection = Selection.single(
-    path: [0],
+    path: path,
     startOffset: start ?? text.length,
     endOffset: end ?? start ?? text.length,
   );
@@ -40,7 +43,8 @@ Future<EditorState> select(
 
 Future<void> append(WidgetTester tester, String text) async {
   final value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
-  tester.testTextInput.updateEditingValue(
+  await input(
+    tester,
     TextEditingValue(
       text: '${value.text}$text',
       selection: TextSelection.collapsed(
@@ -48,6 +52,25 @@ Future<void> append(WidgetTester tester, String text) async {
       ),
     ),
   );
+}
+
+Future<void> insertAtSelection(WidgetTester tester, String text) async {
+  expect(tester.testTextInput.hasAnyClients, isTrue);
+  final value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+  final range = value.selection;
+  await input(
+    tester,
+    TextEditingValue(
+      text: value.text.replaceRange(range.start, range.end, text),
+      selection: TextSelection.collapsed(offset: range.start + text.length),
+    ),
+  );
+}
+
+Future<void> input(WidgetTester tester, TextEditingValue value) async {
+  // The mock does not retain IME updates, and AppFlowy need not echo them back.
+  tester.testTextInput.editingState = value.toJSON();
+  tester.testTextInput.updateEditingValue(value);
   await frames(tester);
 }
 
@@ -76,7 +99,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null);
   });
-  test('untouched snapshots preserve source including unsupported code', () {
+  test('untouched snapshots preserve supported and unsupported source', () {
     for (final source in [
       '',
       ' \t\n\n',
@@ -371,6 +394,715 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'code typing and formatting shortcuts retain literal plain text',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(markdown: '```dart\nseed\n```');
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'seed');
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      expect(owner.unsupportedReason, isNull);
+      expect(
+        editor.blockComponentBuilders[RichDocumentMarkdown.codeBlockType],
+        isA<ParagraphBlockComponentBuilder>(),
+      );
+      final builder =
+          editor.blockComponentBuilders[RichDocumentMarkdown.codeBlockType]!;
+      expect(
+        builder.configuration
+            .textStyle(state.document.root.children.single)
+            .fontFamily,
+        'monospace',
+      );
+
+      for (final literal in [
+        '- item',
+        '# title',
+        '* item',
+        '**bold**',
+        '*italic*',
+        '`inline`',
+        '```dart',
+      ]) {
+        final code = state.document.root.children.single;
+        state.selection = Selection.single(
+          path: [0],
+          startOffset: 0,
+          endOffset: code.delta!.length,
+        );
+        await frames(tester);
+        // Whole-string insertion bypasses AppFlowy's character transformations.
+        for (final character in literal.split('')) {
+          await insertAtSelection(tester, character);
+        }
+        expect(code.type, RichDocumentMarkdown.codeBlockType);
+        expect(code.attributes['language'], 'dart');
+        expect(code.children, isEmpty);
+        expect(code.delta!.toJson(), (Delta()..insert(literal)).toJson());
+        expect(state.document.root.children, hasLength(1));
+
+        state.selection = Selection.single(
+          path: [0],
+          startOffset: 0,
+          endOffset: literal.length,
+        );
+        await frames(tester);
+        final revision = owner.revision;
+        for (final key in [
+          LogicalKeyboardKey.keyB,
+          LogicalKeyboardKey.keyI,
+          LogicalKeyboardKey.keyE,
+        ]) {
+          await control(tester, key);
+        }
+        expect(owner.revision, revision);
+        expect(code.delta!.toJson(), (Delta()..insert(literal)).toJson());
+      }
+      state.selection = Selection.collapsed(Position(path: [0], offset: 7));
+      await frames(tester);
+      await control(tester, LogicalKeyboardKey.keyB);
+      await insertAtSelection(tester, '!');
+      expect(
+        state.document.root.children.single.delta!.toJson(),
+        (Delta()..insert('```dart!')).toJson(),
+      );
+      expect(owner.snapshot()['markdown'], '````dart\n```dart!\n````');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'code newline, paste replacement, copy and cut use native routes',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(
+        markdown: '```dart\nalpha\nomega\n```',
+      );
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'alpha\nomega', start: 5);
+      final code = state.document.root.children.single;
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await frames(tester);
+      expect(code.delta!.toPlainText(), 'alpha\n\nomega');
+      await insertAtSelection(tester, '\n');
+      expect(code.delta!.toPlainText(), 'alpha\n\n\nomega');
+      expect(state.document.root.children, hasLength(1));
+
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: 8,
+      );
+      await frames(tester);
+      await Clipboard.setData(const ClipboardData(text: '  *x*\r\n\t`y`\r\n'));
+      await control(tester, LogicalKeyboardKey.keyV);
+      const pasted = '  *x*\n\t`y`\nomega';
+      expect(code.delta!.toJson(), (Delta()..insert(pasted)).toJson());
+      expect(code.attributes['language'], 'dart');
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(code.delta!.toPlainText(), 'alpha\n\n\nomega');
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(code.delta!.toPlainText(), pasted);
+
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: 11,
+      );
+      await frames(tester);
+      final revision = owner.revision;
+      await control(tester, LogicalKeyboardKey.keyC);
+      expect(clipboard, '  *x*\n\t`y`\n');
+      expect(owner.revision, revision);
+      await control(tester, LogicalKeyboardKey.keyX);
+      expect(clipboard, '  *x*\n\t`y`\n');
+      expect(code.delta!.toPlainText(), 'omega');
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(code.delta!.toPlainText(), pasted);
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(code.delta!.toPlainText(), 'omega');
+      expect(owner.snapshot()['markdown'], '```dart\nomega\n```');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('typed fence creates code, Tab is literal and Alt Enter exits', (
+    tester,
+  ) async {
+    final owner = NativeRichDocumentEditor(markdown: 'replace');
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final state = await select(tester, 'replace', start: 0, end: 7);
+    for (final character in '```dart'.split('')) {
+      await insertAtSelection(tester, character);
+    }
+    expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await frames(tester);
+    expect(
+      state.document.root.children.single.type,
+      RichDocumentMarkdown.codeBlockType,
+    );
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+    expect(state.document.root.children.single.delta!.toPlainText(), '```dart');
+    await control(tester, LogicalKeyboardKey.keyY);
+    final code = state.document.root.children.single;
+    expect(code.type, RichDocumentMarkdown.codeBlockType);
+    expect(code.attributes['language'], 'dart');
+    expect(code.delta!.toPlainText(), '');
+    expect(owner.snapshot()['markdown'], '```dart\n\n```');
+    final revision = owner.revision;
+    await control(tester, LogicalKeyboardKey.enter);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+    await frames(tester);
+    expect(owner.revision, revision);
+    await insertAtSelection(tester, 'ab');
+    state.selection = Selection.single(path: [0], startOffset: 1, endOffset: 2);
+    await frames(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await frames(tester);
+    expect(code.delta!.toPlainText(), 'a\t');
+
+    state.selection = Selection.single(path: [0], startOffset: 0, endOffset: 1);
+    await frames(tester);
+    final beforeExit = code.toJson();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await frames(tester);
+    expect(code.toJson(), beforeExit);
+    expect(state.document.root.children, hasLength(2));
+    expect(state.document.root.children.last.type, ParagraphBlockKeys.type);
+    expect(state.selection, Selection.collapsed(Position(path: [1])));
+    await insertAtSelection(tester, 'after');
+    expect(state.document.root.children.last.delta!.toPlainText(), 'after');
+    await control(tester, LogicalKeyboardKey.keyZ);
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(state.document.root.children, hasLength(1));
+    expect(state.document.root.children.single.toJson(), beforeExit);
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final readOnly in [false, true]) {
+    testWidgets(
+      'code mouse caret and Shift arrow selection, readOnly=$readOnly',
+      (tester) async {
+        const text = 'abcd\nefgh';
+        const source = '```text\n$text\n```';
+        final owner = NativeRichDocumentEditor(
+          markdown: source,
+          readOnly: readOnly,
+        );
+        await tester.pumpWidget(host(owner.buildView()));
+        await frames(tester);
+        final state = tester
+            .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
+            .editorState;
+        final rendered = tester.renderObject<RenderParagraph>(
+          find.text(text, findRichText: true),
+        );
+        final caret = rendered.getOffsetForCaret(
+          const TextPosition(offset: 2),
+          Rect.zero,
+        );
+        await tester.tapAt(
+          rendered.localToGlobal(caret + const Offset(1, 5)),
+          kind: PointerDeviceKind.mouse,
+        );
+        await frames(tester);
+        expect(
+          state.selection,
+          Selection.collapsed(Position(path: [0], offset: 2)),
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await frames(tester);
+        expect(
+          state.selection,
+          Selection.single(path: [0], startOffset: 3, endOffset: 1),
+        );
+        await control(tester, LogicalKeyboardKey.keyC);
+        expect(clipboard, 'bc');
+        expect(owner.snapshot()['markdown'], source);
+        expect(owner.revision, 0);
+        expect(tester.testTextInput.hasAnyClients, !readOnly);
+        if (readOnly) {
+          await control(tester, LogicalKeyboardKey.keyX);
+          await control(tester, LogicalKeyboardKey.keyV);
+          await control(tester, LogicalKeyboardKey.keyB);
+          await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+          await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+          await frames(tester);
+          expect(owner.snapshot()['markdown'], source);
+          expect(owner.revision, 0);
+          expect(tester.testTextInput.hasAnyClients, isFalse);
+        } else {
+          await insertAtSelection(tester, '!');
+          expect(
+            state.document.root.children.single.delta!.toPlainText(),
+            'a!d\nefgh',
+          );
+        }
+        owner.dispose();
+        await frames(tester);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'multiple code edits and list paste undo preserve mixed structure',
+    (tester) async {
+      const source =
+          '# Title\n\n- parent\n  - child\n\n'
+          '```dart\nfirst\n```\n\n## Middle\n\n'
+          '~~~python\nsecond\n~~~\n\nAfter';
+      final owner = NativeRichDocumentEditor(markdown: source);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'first', path: [2]);
+      final original = state.document.toJson();
+      final blocks = state.document.root.children;
+      final child = blocks[1].children.single;
+      final childJson = child.toJson();
+      await insertAtSelection(tester, '!');
+      await select(tester, 'second', path: [4], start: 0, end: 6);
+      await insertAtSelection(tester, 'two');
+      expect(blocks[2].delta!.toPlainText(), 'first!');
+      expect(blocks[2].attributes['language'], 'dart');
+      expect(blocks[4].delta!.toPlainText(), 'two');
+      expect(blocks[4].attributes['language'], 'python');
+      await select(tester, 'parent', path: [1]);
+      await Clipboard.setData(const ClipboardData(text: ' first\nsecond  \n'));
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(blocks[1].delta!.toPlainText(), 'parent first\nsecond  \n');
+      expect(blocks[1].children.single, same(child));
+      expect(child.toJson(), childJson);
+      final exported = RichDocumentMarkdown.decode(
+        owner.snapshot()['markdown']! as String,
+      );
+      expect(exported.toJson(), state.document.toJson());
+      exported.dispose();
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(blocks[1].delta!.toPlainText(), 'parent');
+      expect(blocks[1].children.single.toJson(), childJson);
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(blocks[4].delta!.toPlainText(), 'second');
+      expect(blocks[2].delta!.toPlainText(), 'first!');
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(state.document.toJson(), original);
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('code IME commits and replacements remain literal', (
+    tester,
+  ) async {
+    const source = '~~~dart\n`x`\n~~~';
+    final owner = NativeRichDocumentEditor(markdown: source);
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final state = await select(tester, '`x`');
+    final code = state.document.root.children.single;
+    var value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      value.copyWith(composing: const TextRange(start: 1, end: 4)),
+    );
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    expect(value.composing, const TextRange(start: 1, end: 4));
+    await input(tester, value.copyWith(composing: TextRange.empty));
+    expect(code.delta!.toJson(), (Delta()..insert('`x`')).toJson());
+    expect(owner.snapshot()['markdown'], source);
+    expect(owner.revision, 0);
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    expect(value.composing, TextRange.empty);
+    // Commit can arrive before a frame. Rejection plus post-frame repair would
+    // restore the cached old value and make this commit look like a no-op.
+    tester.testTextInput.updateEditingValue(
+      value.copyWith(composing: const TextRange(start: 1, end: 4)),
+    );
+    await tester.idle();
+    tester.testTextInput.updateEditingValue(value);
+    await tester.idle();
+    await frames(tester);
+    expect(code.delta!.toJson(), (Delta()..insert('`x`')).toJson());
+    expect(owner.revision, 0);
+    expect(
+      TextEditingValue.fromJSON(tester.testTextInput.editingState!).composing,
+      TextRange.empty,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await frames(tester);
+    expect(code.delta!.toPlainText(), '`x`\n');
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(code.delta!.toPlainText(), '`x`');
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      value.copyWith(selection: const TextSelection.collapsed(offset: 2)),
+    );
+    expect(
+      state.selection,
+      Selection.collapsed(Position(path: [0], offset: 1)),
+    );
+    state.selection = Selection.single(path: [0], startOffset: 0, endOffset: 3);
+    await frames(tester);
+    await insertAtSelection(tester, 'abx');
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      value.copyWith(composing: const TextRange(start: 3, end: 4)),
+    );
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    // A composition replacement's range is not the collapsed editor selection.
+    await input(
+      tester,
+      TextEditingValue(
+        text: value.text.replaceRange(3, 4, '\n'),
+        selection: const TextSelection.collapsed(offset: 4),
+      ),
+    );
+    expect(code.delta!.toPlainText(), 'ab\n');
+    await insertAtSelection(tester, ' \n');
+    expect(code.delta!.toPlainText(), 'ab\n \n');
+    expect(owner.snapshot()['markdown'], '```dart\nab\n \n\n```');
+
+    // Retirement during a non-text update must not reopen its input client.
+    state.selectionNotifier.addListener(() {
+      if (!owner.isDisposed) owner.dispose();
+    });
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      value.copyWith(selection: const TextSelection.collapsed(offset: 2)),
+    );
+    expect(state.isDisposed, isTrue);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('word deletion near code never uses a neighboring offset', (
+    tester,
+  ) async {
+    final owner = NativeRichDocumentEditor(
+      markdown: 'Before\n\n```dart\n  code  \n```\n\nAfter',
+    );
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final state = await select(tester, '  code  ', path: [1], start: 2);
+    final original = state.document.toJson();
+    final code = state.document.root.children[1];
+    await control(tester, LogicalKeyboardKey.backspace);
+    expect(code.delta!.toPlainText(), 'code  ');
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(state.document.toJson(), original);
+    state.selection = Selection.collapsed(Position(path: [1], offset: 6));
+    await frames(tester);
+    await control(tester, LogicalKeyboardKey.delete);
+    expect(code.delta!.toPlainText(), '  code');
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(state.document.toJson(), original);
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('cross-block code selections copy but reject destructive input', (
+    tester,
+  ) async {
+    const source = 'Before\n\n```dart\nalpha\nbeta\n```\n\nAfter';
+    final owner = NativeRichDocumentEditor(markdown: source);
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final state = await select(tester, 'Before');
+    final original = state.document.toJson();
+    final ranges = [
+      (
+        Selection(
+          start: Position(path: [0], offset: 2),
+          end: Position(path: [1], offset: 5),
+        ),
+        'fore\nalpha',
+      ),
+      (
+        Selection(
+          start: Position(path: [1], offset: 2),
+          end: Position(path: [2], offset: 3),
+        ),
+        'pha\nbeta\nAft',
+      ),
+      (
+        Selection(
+          start: Position(path: [0], offset: 2),
+          end: Position(path: [2], offset: 3),
+        ),
+        'fore\nalpha\nbeta\nAft',
+      ),
+    ];
+    for (final (range, copied) in ranges) {
+      for (final selection in [range, range.reversed]) {
+        state.selection = selection;
+        await frames(tester);
+        final value = TextEditingValue.fromJSON(
+          tester.testTextInput.editingState!,
+        );
+        await input(
+          tester,
+          value.copyWith(composing: const TextRange(start: 1, end: 2)),
+        );
+        expect(state.selection, selection);
+        await control(tester, LogicalKeyboardKey.keyC);
+        expect(clipboard, copied);
+        await Clipboard.setData(const ClipboardData(text: 'replacement'));
+        for (final key in [
+          LogicalKeyboardKey.backspace,
+          LogicalKeyboardKey.delete,
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.tab,
+        ]) {
+          await tester.sendKeyEvent(key);
+          await frames(tester);
+          expect(state.document.toJson(), original, reason: '$selection $key');
+        }
+        for (final key in [
+          LogicalKeyboardKey.backspace,
+          LogicalKeyboardKey.delete,
+          LogicalKeyboardKey.keyX,
+          LogicalKeyboardKey.keyV,
+        ]) {
+          await control(tester, key);
+          expect(
+            state.document.toJson(),
+            original,
+            reason: '$selection Ctrl+$key',
+          );
+        }
+        expect(clipboard, 'replacement');
+        // Exercise all three IME deltas independently of keyboard commands.
+        await insertAtSelection(tester, 'denied');
+        expect(state.document.toJson(), original);
+        await insertAtSelection(tester, '');
+        expect(state.document.toJson(), original);
+        await append(tester, '!');
+        expect(state.document.toJson(), original);
+        expect(state.selection, selection);
+        expect(owner.revision, 0);
+        expect(owner.snapshot()['markdown'], source);
+      }
+    }
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'boundary deletion preserves code language and neighboring heading',
+    (tester) async {
+      const source = 'Before\n\n```dart\nalpha\nbeta\n```\n\n## After';
+      final owner = NativeRichDocumentEditor(markdown: source);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'Before');
+      final original = state.document.toJson();
+      for (final (path, offset, key) in [
+        ([0], 6, LogicalKeyboardKey.delete),
+        ([1], 0, LogicalKeyboardKey.backspace),
+        ([1], 10, LogicalKeyboardKey.delete),
+        ([2], 0, LogicalKeyboardKey.backspace),
+      ]) {
+        state.selection = Selection.collapsed(
+          Position(path: path, offset: offset),
+        );
+        await frames(tester);
+        await tester.sendKeyEvent(key);
+        await frames(tester);
+        expect(state.document.toJson(), original, reason: '$path $key');
+        await control(tester, key);
+        expect(state.document.toJson(), original, reason: '$path Ctrl+$key');
+        expect(owner.revision, 0);
+      }
+      final code = state.document.root.children[1];
+      for (final (offset, key) in [
+        (5, LogicalKeyboardKey.delete),
+        (6, LogicalKeyboardKey.backspace),
+      ]) {
+        state.selection = Selection.collapsed(
+          Position(path: [1], offset: offset),
+        );
+        await frames(tester);
+        await tester.sendKeyEvent(key);
+        await frames(tester);
+        expect(code.delta!.toPlainText(), 'alphabeta');
+        expect(code.type, RichDocumentMarkdown.codeBlockType);
+        expect(code.attributes['language'], 'dart');
+        await control(tester, LogicalKeyboardKey.keyZ);
+        expect(state.document.toJson(), original);
+      }
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'code remount retains exact CRLF until editing, then retains undo',
+    (tester) async {
+      const source = '~~~dart\r\n  value  \r\n\tline\r\n~~~\r\n';
+      const text = '  value  \n\tline';
+      final owner = NativeRichDocumentEditor(markdown: source);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, text);
+      expect(owner.snapshot()['markdown'], source);
+      expect(owner.revision, 0);
+      await tester.pumpWidget(host(const SizedBox.shrink()));
+      await frames(tester);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(state.isDisposed, isFalse);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      expect(await select(tester, text), same(state));
+      expect(owner.snapshot()['markdown'], source);
+      expect(owner.revision, 0);
+      await insertAtSelection(tester, '!');
+      expect(owner.snapshot()['markdown'], '```dart\n$text!\n```');
+      await tester.pumpWidget(host(const SizedBox.shrink()));
+      await frames(tester);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      expect(await select(tester, '$text!'), same(state));
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '```dart\n$text\n```');
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(owner.snapshot()['markdown'], '```dart\n$text!\n```');
+      owner.dispose();
+      await frames(tester);
+      expect(state.isDisposed, isTrue);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final cut in [false, true]) {
+    testWidgets(
+      'pending code ${cut ? 'cut' : 'paste'} cannot mutate stale input',
+      (tester) async {
+        for (final invalidation in [
+          'selection',
+          'revision',
+          'unmount',
+          'focus',
+          'retirement',
+        ]) {
+          final pending = Completer<Object?>();
+          var requests = 0;
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+                if (call.method ==
+                    (cut ? 'Clipboard.setData' : 'Clipboard.getData')) {
+                  requests++;
+                  return pending.future;
+                }
+                return null;
+              });
+          final owner = NativeRichDocumentEditor(
+            markdown: '```dart\nkeep\n```',
+          );
+          await tester.pumpWidget(host(owner.buildView()));
+          await frames(tester);
+          final state = await select(tester, 'keep', start: 0, end: 2);
+          final selection = state.selection;
+          await control(
+            tester,
+            cut ? LogicalKeyboardKey.keyX : LogicalKeyboardKey.keyV,
+          );
+          expect(requests, 1, reason: invalidation);
+          switch (invalidation) {
+            case 'selection':
+              state.selection = Selection.collapsed(
+                Position(path: [0], offset: 4),
+              );
+              await frames(tester);
+            case 'revision':
+              await insertAtSelection(tester, 'OK');
+              // Restore the captured selection so revision alone must fence it.
+              state.selection = selection;
+              await frames(tester);
+            case 'unmount':
+              await tester.pumpWidget(host(const SizedBox.shrink()));
+              await frames(tester);
+              expect(tester.testTextInput.hasAnyClients, isFalse);
+              await tester.pumpWidget(host(owner.buildView()));
+              await frames(tester);
+              expect(
+                await select(tester, 'keep', start: 0, end: 2),
+                same(state),
+              );
+            case 'focus':
+              tester
+                  .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
+                  .focusNode!
+                  .unfocus();
+              await frames(tester);
+            case 'retirement':
+              owner.dispose();
+              await frames(tester);
+          }
+          final revision = owner.revision;
+          pending.complete(cut ? null : {'text': 'stale paste'});
+          await frames(tester);
+          expect(owner.revision, revision, reason: invalidation);
+          if (invalidation == 'retirement') {
+            expect(state.isDisposed, isTrue);
+            expect(tester.testTextInput.hasAnyClients, isFalse);
+          } else {
+            expect(
+              state.document.root.children.single.delta!.toPlainText(),
+              invalidation == 'revision' ? 'OKep' : 'keep',
+              reason: invalidation,
+            );
+            expect(
+              state.document.root.children.single.attributes['language'],
+              'dart',
+            );
+            owner.dispose();
+            await frames(tester);
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(tester.takeException(), isNull);
+        }
+      },
+    );
+  }
 
   testWidgets('competing mount fails without replacing the first attachment', (
     tester,

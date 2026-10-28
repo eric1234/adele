@@ -3,6 +3,11 @@ import 'package:flutter/material.dart';
 
 Widget buildView() => RichDocumentFixture('ab', false);
 
+Widget buildCodeView() => RichDocumentFixture('```dart\nab\n```', false);
+
+Widget buildReadOnlyCodeView() =>
+    RichDocumentFixture('~~~dart\n  read-only\t**x**  \n\n~~~\n', true);
+
 Future<Widget> buildHydratedView() async {
   final markdown = await hydrateMarkdown();
   final handle = createRichDocumentEditor(markdown, false);
@@ -183,7 +188,7 @@ class RichDocumentFixtureState extends State<RichDocumentFixture> {
         Text('Rebuilds: $rebuilds'),
         Text('Snapshot revision: $snapshotRevision'),
         Text('Snapshot readOnly: $snapshotReadOnly'),
-        Text('Snapshot text: $snapshotText'),
+        SizedBox(height: 60, child: Text('Snapshot text: $snapshotText')),
         Text('Snapshot error: $snapshotError'),
         Text('Snapshot reason: $snapshotReason'),
         if (visible) SizedBox(height: 240, child: editor),

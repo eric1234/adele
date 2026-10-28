@@ -1,25 +1,46 @@
+import 'dart:convert';
+
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:markdown/markdown.dart' as md;
 
 /// The editable Markdown subset. Exact source retention belongs to the owner.
 ///
-/// Supports paragraphs, headings, simple quotes, nested lists and inline
-/// bold/italic/code/links. Code blocks, HTML, hard breaks, reference definitions,
-/// and other block/inline extensions are rejected rather than flattened.
+/// Supports paragraphs, headings, simple quotes, nested lists, fenced code and
+/// inline bold/italic/code/links. Indented/nested code, HTML, hard breaks,
+/// reference definitions and other extensions are rejected rather than flattened.
 abstract final class RichDocumentMarkdown {
+  static const codeBlockType = 'code_block';
+
+  /// Plain code text excludes the structural newline before the closing fence.
+  static Node codeBlockNode({String text = '', String? language}) {
+    if (language != null) _checkLanguage(language);
+    return Node(
+      type: codeBlockType,
+      attributes: {
+        'delta': (Delta()..insert(text)).toJson(),
+        'language': ?language,
+      },
+    );
+  }
+
   static Document decode(String source) {
+    final fences = _FencedCodeSyntax();
+    final parser = _parser(blockSyntaxes: [fences]);
+    final lines = LineSplitter.split(source).map(md.Line.new).toList();
+    final elements = parser.parseLineList(lines);
     // The upstream block parser trims Unicode/control whitespace before the AST
-    // exists. Keep such raw imports read-only; entity spelling is lossless.
-    for (final rune in source.runes) {
-      if (rune == 9 || rune == 10 || rune == 13 || rune == 32) continue;
-      if (String.fromCharCode(rune).trim().isEmpty) {
-        throw const FormatException(
-          'Raw Unicode/control whitespace requires entity spelling.',
-        );
+    // exists. Only literal code-body lines bypass it, not surrounding prose.
+    for (final line in lines) {
+      if (fences.literalLines.contains(line)) continue;
+      for (final rune in line.content.runes) {
+        if (rune == 9 || rune == 32) continue;
+        if (String.fromCharCode(rune).trim().isEmpty) {
+          throw const FormatException(
+            'Raw Unicode/control whitespace requires entity spelling.',
+          );
+        }
       }
     }
-    final parser = _parser();
-    final elements = parser.parse(source);
     if (parser.linkReferences.isNotEmpty ||
         parser.footnoteReferences.isNotEmpty) {
       throw const FormatException('Reference definitions are not supported.');
@@ -62,11 +83,67 @@ abstract final class RichDocumentMarkdown {
   }
 }
 
-md.Document _parser() => md.Document(
-  extensionSet: md.ExtensionSet.gitHubFlavored,
-  inlineSyntaxes: [_RejectHtml()],
-  encodeHtml: false,
-);
+md.Document _parser({Iterable<md.BlockSyntax> blockSyntaxes = const []}) =>
+    md.Document(
+      blockSyntaxes: blockSyntaxes,
+      extensionSet: md.ExtensionSet.gitHubFlavored,
+      inlineSyntaxes: [_RejectHtml()],
+      encodeHtml: false,
+    );
+
+class _FencedCodeSyntax extends md.FencedCodeBlockSyntax {
+  final literalLines = <md.Line>{};
+
+  @override
+  md.Node parse(md.BlockParser parser) {
+    if (parser.parentSyntax != null) {
+      throw const FormatException('Nested code blocks are not supported.');
+    }
+    final opening = pattern.firstMatch(parser.current.content)!;
+    final marker =
+        opening.namedGroup('backtick') ?? opening.namedGroup('tilde')!;
+    final indent = opening[1]!.length;
+    final info =
+        (opening.namedGroup('backtickInfo') ?? opening.namedGroup('tildeInfo')!)
+            .replaceAll(RegExp(r'^[ \t]+|[ \t]+$'), '');
+    if (info.isNotEmpty) _checkLanguage(info);
+    final closing = RegExp(
+      '^ {0,3}${RegExp.escape(marker[0])}{${marker.length},}[ \\t]*\$',
+    );
+    final body = <String>[];
+    parser.advance();
+    while (!parser.isDone) {
+      final line = parser.current;
+      if (closing.firstMatch(line.content)?.end == line.content.length) {
+        parser.advance();
+        // Joining, rather than trimming an upstream code AST, preserves blank
+        // lines: zero/one empty body line is '', two empty body lines are '\n'.
+        return md.Element.text(
+          RichDocumentMarkdown.codeBlockType,
+          body.join('\n'),
+        )..attributes.addAll({if (info.isNotEmpty) 'language': info});
+      }
+      literalLines.add(line);
+      var removed = 0;
+      while (removed < indent &&
+          removed < line.content.length &&
+          line.content.codeUnitAt(removed) == 32) {
+        removed++;
+      }
+      body.add(line.content.substring(removed));
+      parser.advance();
+    }
+    throw const FormatException('Unclosed fenced code block.');
+  }
+}
+
+void _checkLanguage(Object? language) {
+  if (language is! String ||
+      RegExp(r'^[A-Za-z0-9][A-Za-z0-9_+.-]*$').firstMatch(language)?.end !=
+          language.length) {
+    throw const FormatException('Unsupported code language.');
+  }
+}
 
 class _RejectHtml extends md.InlineHtmlSyntax {
   @override
@@ -81,6 +158,15 @@ List<Node> _blocks(md.Node input) {
   }
   final children = input.children ?? const <md.Node>[];
   final tag = input.tag;
+  if (tag == RichDocumentMarkdown.codeBlockType) {
+    _checkKeys(input.attributes, {'language'});
+    return [
+      RichDocumentMarkdown.codeBlockNode(
+        text: input.textContent,
+        language: input.attributes['language'],
+      ),
+    ];
+  }
   if (tag == 'ul' || tag == 'ol') {
     _checkKeys(input.attributes, tag == 'ol' ? {'start'} : {});
     final start = int.tryParse(input.attributes['start'] ?? '1');
@@ -234,12 +320,17 @@ String _writeBlocks(List<Node> nodes) {
     }
     _checkKeys(node.attributes, {
       'delta',
+      if (node.type == RichDocumentMarkdown.codeBlockType) 'language',
       if (node.type == 'heading') 'level',
       if (node.type == 'numbered_list') 'number',
     });
     if (node.children.isNotEmpty &&
         (!_isList(node) || node.children.any((child) => !_isList(child)))) {
       throw const FormatException('Unsupported nested blocks.');
+    }
+    if (node.type == RichDocumentMarkdown.codeBlockType) {
+      buffer.write(_writeCodeBlock(node));
+      continue;
     }
     final delta = node.delta;
     if (delta == null) throw const FormatException('Block has no text.');
@@ -269,6 +360,38 @@ String _writeBlocks(List<Node> nodes) {
     }
   }
   return buffer.toString();
+}
+
+String _writeCodeBlock(Node node) {
+  final language = node.attributes['language'];
+  if (node.attributes.containsKey('language')) _checkLanguage(language);
+  final operations = node.attributes['delta'];
+  if (operations is! List) throw const FormatException('Block has no text.');
+  final buffer = StringBuffer();
+  // Delta.fromJson silently drops unknown operations; validate before conversion.
+  for (final operation in operations) {
+    if (operation is! Map<String, dynamic>) {
+      throw const FormatException('Unsupported code text operation.');
+    }
+    _checkKeys(operation, {'insert', 'attributes'});
+    final text = operation['insert'];
+    final attributes = operation['attributes'];
+    if (text is! String ||
+        (attributes != null && (attributes is! Map || attributes.isNotEmpty))) {
+      throw const FormatException('Code blocks require plain text.');
+    }
+    buffer.write(text);
+  }
+  final text = buffer.toString();
+  if (text.contains('\r')) {
+    throw const FormatException('Code text requires LF line endings.');
+  }
+  var length = 3;
+  for (final match in RegExp(r'`+').allMatches(text)) {
+    if (match[0]!.length >= length) length = match[0]!.length + 1;
+  }
+  final fence = '`' * length;
+  return '$fence${language ?? ''}\n$text\n$fence';
 }
 
 const _marks = ['href', 'bold', 'italic', 'code'];
