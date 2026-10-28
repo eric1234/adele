@@ -51,6 +51,24 @@ sandboxing, or general settings/profile/credential infrastructure. See
 [`app/README.md`](../../app/README.md#chatgpt-source-checkout-configuration) for
 OpenAI's no-fallback and empty-configuration behavior.
 
+## Bootstrap Settings
+
+`PluginBackendHost.startPlugin(settings: values)` accepts an already-resolved
+`Map<String, Object>`, defaulting to an explicit empty map. It copies and validates
+the map before any callback or await, so caller mutation cannot change an admitted
+startup. Validation uses public
+[`adele_plugin_backend_support`](../plugin_backend_support/README.md#bootstrap-settings)
+and permits only bool, int, or String values. The runtime always sends a `settings`
+field through the shared host to the new backend generation's bootstrap message.
+It adds no plugin-ID policy, configuration-context lookup, defaults, or live RPC;
+declaration ownership and semantic validation belong to the caller. A replacement
+receives its own snapshot, never a retained prior generation's settings.
+
+The focused connection test checks capture before callbacks/awaits and rejection
+before startup dispatch. Real AOT delivery, peer isolation, replacement, and
+consumer-read startup failure are covered in
+[`plugin_backend_host/test/plugin_termination_test.dart`](../plugin_backend_host/test/plugin_termination_test.dart).
+
 ## Prepared Catalog
 
 This section maps the current installed schema and catalog behavior. The

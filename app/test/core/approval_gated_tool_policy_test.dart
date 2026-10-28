@@ -40,7 +40,7 @@ void main() {
 
   setUp(() async {
     final ExtensionRegistry extensions = ExtensionRegistry();
-    final ChatStrategyPlugin chat = ChatStrategyPlugin();
+    final ChatStrategyPlugin chat = ChatStrategyPlugin(maxModelInvocations: 8);
     addTearDown(chat.activate(extensions).close);
     addTearDown(const FilesystemToolsPlugin().activate(extensions).close);
     addTearDown(const SearchToolsPlugin().activate(extensions).close);

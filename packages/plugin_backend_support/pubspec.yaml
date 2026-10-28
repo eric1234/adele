@@ -1,5 +1,5 @@
 name: adele_plugin_backend_support
-description: Narrow unary and server-streaming host-call support for ADELE plugin backends.
+description: Immutable bootstrap settings and scoped host-call support for ADELE plugin backends.
 publish_to: none
 version: 0.1.0
 

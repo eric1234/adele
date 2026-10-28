@@ -1443,8 +1443,7 @@ Future<String> read() async {
 Future<bool> configure() async {
   final client = ChatSessionServiceClient(OwningBackendRequestChannel(chatSessionServiceId));
   final String instructions = 'configured instructions';
-  final int budget = 2 + 3;
-  final result = await settleSessionOperation(client.configureSession('session', instructions, budget));
+  final result = await settleSessionOperation(client.configureSession('session', instructions));
   return result[0] == true;
 }
 ''',
@@ -1467,14 +1466,13 @@ Future<bool> configure() async {
           {'id': 'entry', 'role': 'user', 'content': 'decoded', 'runId': null},
         ],
         'instructions': '',
-        'maxModelInvocations': 3,
         'draftRequest': '',
       };
       for (final data in <Object?>[
         valid,
         {...valid, 'unknown': true},
         {'entries': valid['entries'], 'instructions': ''},
-        {...valid, 'maxModelInvocations': '3'},
+        {...valid, 'maxModelInvocations': 3},
         {...valid}..remove('draftRequest'),
         {...valid, 'draftRequest': null},
         {...valid, 'draftRequest': 42},
@@ -1542,7 +1540,6 @@ Future<bool> configure() async {
         expect(channel.calls.single.$2, {
           'sessionId': 'session',
           'instructions': 'configured instructions',
-          'maxModelInvocations': 5,
         });
         bridge.invalidate();
       }
@@ -1695,7 +1692,6 @@ class _Source extends ChangeNotifier
     final snapshot = ChatSessionSnapshot(
       entries: entries,
       instructions: 'Backend defaults',
-      maxModelInvocations: 4,
       draftRequest: draftRequest,
     );
     final gate = snapshotGate;
@@ -1755,11 +1751,7 @@ class _Source extends ChangeNotifier
   }
 
   @override
-  Future<void> configureSession(
-    String sessionId,
-    String instructions,
-    int maxModelInvocations,
-  ) async {
+  Future<void> configureSession(String sessionId, String instructions) async {
     configurations++;
   }
 

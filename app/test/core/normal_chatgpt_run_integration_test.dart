@@ -11,6 +11,7 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
@@ -19,7 +20,6 @@ import 'package:adele_desktop/frontend/environment_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
-import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
@@ -5540,7 +5540,6 @@ void main() {
             await chat.configureSession(
               session.id.value,
               'Backend remains independent.',
-              3,
             );
             final entry = await chat.appendUserMessage(
               session.id.value,
@@ -5550,7 +5549,6 @@ void main() {
             expect(snapshot.entries.single.id, entry.id);
             expect(snapshot.entries.single.content, entry.content);
             expect(snapshot.instructions, 'Backend remains independent.');
-            expect(snapshot.maxModelInvocations, 3);
             // Main Content validates bytecode on activation. Both absence and
             // corruption leave no Chat registration, without a native fallback.
             expect(
@@ -5770,6 +5768,9 @@ void main() {
       () async {
         final runtime = AdeleRuntime();
         addTearDown(runtime.close);
+        runtime.plugins.configureSettingsLoader(
+          (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+        );
         await prepared.start(
           runtime,
           startupArguments: {
@@ -6265,6 +6266,14 @@ final class _PreparedProduct {
     await compileChatFrontend(
       repositoryRoot: repository,
       artifact: File('${root.path}/$_chatPluginId/frontend.evc'),
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: Directory('${root.path}/$_chatPluginId'),
+      pluginId: _chatPluginId,
+      displayName: 'Chat',
+      backend: true,
+      frontend: true,
     );
     await File('${root.path}/$_taskBrowserPluginId/frontend.evc').writeAsBytes(
       await compileTaskBrowserFrontend(repositoryRoot: repository),

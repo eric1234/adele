@@ -36,6 +36,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_eval: 0.8.2
+  markdown: ^7.3.1
   plugin_runtime: ^0.1.0
   re_highlight: 0.0.3
   sqlite3: ^3.5.2

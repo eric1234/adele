@@ -412,6 +412,7 @@ final class DevelopmentSelfHostingRunner {
             hostEnvironment: providerConfiguration!.hostEnvironment,
             identity: identity,
             taskTitle: options.taskTitle,
+            maxModelInvocations: options.maxModelInvocations,
             log: logger.log,
             onTaskEstablished: (DevelopmentSelfHostingRetainedState state) {
               retainedState = state;
@@ -451,7 +452,9 @@ final class DevelopmentSelfHostingRunner {
         }
         logger.log('Model profile: ${options.profile.cliName}.');
         logger.log('Selected model: ${activeConfiguration.selectedModel}.');
-        logger.log('Model invocation ceiling: ${options.maxModelInvocations}.');
+        logger.log(
+          'Model invocation ceiling: ${activeTopology.maxModelInvocations}.',
+        );
         final DevelopmentSelfHostingRunResult completedRun = await timings
             .measure(
               'adeleRun',
@@ -466,7 +469,6 @@ final class DevelopmentSelfHostingRunner {
                 instructions: instructions!,
                 model: model,
                 catalog: activeTopology.catalog,
-                maxModelInvocations: options.maxModelInvocations,
               ),
             );
         runResult = completedRun;
@@ -545,7 +547,7 @@ final class DevelopmentSelfHostingRunner {
           providerId: options.profile.providerId,
           configuredContext: options.profile.configuredContext,
           selectedModel: providerConfiguration?.selectedModel,
-          maxModelInvocations: options.maxModelInvocations,
+          maxModelInvocations: topology?.maxModelInvocations,
           promptFileHash: promptHash,
           instructionsFileHash: instructionsHash,
           startedAt: startedAt,

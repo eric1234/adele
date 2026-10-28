@@ -32,13 +32,11 @@ final class ChatSessionSnapshot {
   ChatSessionSnapshot({
     required List<ChatEntry> entries,
     required this.instructions,
-    required this.maxModelInvocations,
     required this.draftRequest,
   }) : entries = List<ChatEntry>.unmodifiable(entries);
 
   final List<ChatEntry> entries;
   final String instructions;
-  final int maxModelInvocations;
   final String draftRequest;
 }
 
@@ -60,17 +58,13 @@ abstract interface class ChatSessionService {
   @AdeleMethod('submitDraftRequest')
   Future<ChatEntry> submitDraftRequest(String sessionId);
 
-  /// Replaces both settings atomically; the invocation limit must be positive.
+  /// Replaces the Session's instructions without changing its draft or history.
   @AdeleMethod('configureSession')
-  Future<void> configureSession(
-    String sessionId,
-    String instructions,
-    int maxModelInvocations,
-  );
+  Future<void> configureSession(String sessionId, String instructions);
 }
 
-/// Declared codes: session_busy, invalid_session, invalid_content,
-/// invalid_configuration. A busy Session remains readable.
+/// Declared codes: session_busy, invalid_session, invalid_content.
+/// A busy Session remains readable.
 @AdeleFailure('chat.sessionFailure')
 final class ChatSessionFailure implements Exception {
   const ChatSessionFailure({

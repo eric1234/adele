@@ -49,7 +49,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_plugin_api`](../../packages/plugin_api/pubspec.yaml) | Public: generic plugin identity, extension registration, and binding liveness | No Flutter, host implementations, app, or concrete plugins. |
 | [`adele_core_extensions`](../../packages/core_extensions/pubspec.yaml) | Public: core-owned extension contracts and window selection observation without another domain owner | Not a catch-all for public APIs; no Flutter or implementation dependencies. |
 | [`adele_contract`](../../packages/contract/pubspec.yaml) | Public: declarations, channels, and exposure values | No Flutter, analyzer/compiler, generation tooling, or host/runtime implementation dependencies. |
-| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels | No Flutter, host internals, or domain-specific orchestration semantics. |
+| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels and immutable backend startup settings | No Flutter, host internals, configuration persistence, or domain-specific orchestration semantics. |
 | [`adele_capabilities`](../../packages/capabilities/pubspec.yaml) | Public: capability/provider identities and routing | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_model_provider`](../../packages/model_provider/pubspec.yaml) | Public: provider-neutral model-provider contract | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_product`](../../packages/product/pubspec.yaml) | Public: product identities and immutable values | No executable orchestration, extension registration, UI, host, or plugin implementation concerns. |
@@ -122,12 +122,21 @@ internal host packages, and generic host/native third-party libraries required
 for bridges and composition. It must not become the implementation owner of
 concrete plugin behavior or define public plugin contracts in application code.
 
-Desktop prepared-frontend startup may use the internal Settings host and global
-storage roots off the UI isolate. Interpreted consumers receive owner-scoped
-immutable scalar values through public UI bridges, not host persistence APIs.
+Desktop startup may use the internal Settings host and global storage roots off
+the UI isolate. The application resolves one shared snapshot and projects exact
+installation-owned declarations to independently activated components. Interpreted
+consumers receive immutable scalar values through public UI bridges; AOT backends
+receive a copied generation-local map through public `AdeleBackendSettings` and
+generic `PluginBackendHost.startPlugin(settings: ...)` transport. Neither receives
+host persistence APIs or cross-plugin settings access. Declaration resolution and
+validation remain in the existing Settings contracts, not a plugin-specific app
+adapter or a second transport-level resolver.
+
 Native presentation primitives accept generic construction options; application
-code must not interpret a concrete plugin's setting ID. Backend AOT preparation
-and pure-Dart prepared schema parsing remain independent of native TOML.
+code must not interpret a concrete plugin's setting ID. Backend AOT preparation,
+bootstrap scalar transport, and pure-Dart prepared schema parsing remain independent
+of native TOML. A plugin reads its delivered values, not configuration files or an
+app-private Settings service.
 
 Credential access is app-private. The desktop's asynchronous credential adapter
 runs `adele_credential_store` operations off the UI isolate; native storage does

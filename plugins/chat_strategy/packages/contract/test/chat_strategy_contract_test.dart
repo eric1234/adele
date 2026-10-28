@@ -1,8 +1,35 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:adele_contract/adele_contract.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('authoritative schema declares the positive unbounded Run budget', () {
+    final schema = jsonDecode(
+      File('../../settings.schema.json').readAsStringSync(),
+    );
+    expect(schema, {
+      'schemaVersion': 1,
+      'definitions': [
+        {
+          'id': chatMaxModelInvocationsSettingId,
+          'type': 'integer',
+          'default': 40,
+          'minimum': 1,
+          'label': 'Maximum Model Invocations per Run',
+          'category': 'Agents',
+          'section': 'Execution',
+        },
+      ],
+    });
+    expect(
+      chatMaxModelInvocationsSettingId,
+      'dev.adele.plugin.chat-strategy.max-model-invocations',
+    );
+  });
+
   test(
     'public semantic identities and occurrence value equality are stable',
     () {
@@ -29,7 +56,7 @@ void main() {
       addTearDown(dispatcher.close);
       final channel = _Channel(dispatcher);
       final client = ChatSessionServiceClient(channel);
-      await client.configureSession('session', '  exact\r\n', 3);
+      await client.configureSession('session', '  exact\r\n');
       final accepted = await client.appendUserMessage('session', '  Prompt.\n');
       final snapshot = await client.snapshot('session');
       expect(accepted.id, 'entry-0');
@@ -39,7 +66,6 @@ void main() {
       expect(snapshot.entries.single.id, accepted.id);
       expect(snapshot.entries.single, isNot(same(accepted)));
       expect(snapshot.instructions, '  exact\r\n');
-      expect(snapshot.maxModelInvocations, 3);
       expect(snapshot.draftRequest, '');
       expect(() => snapshot.entries.clear(), throwsUnsupportedError);
       expect(channel.calls.map((call) => call.$1), [
@@ -51,6 +77,20 @@ void main() {
         'sessionId': 'session',
         'content': '  Prompt.\n',
       });
+      expect(channel.calls.first.$2, {
+        'sessionId': 'session',
+        'instructions': '  exact\r\n',
+      });
+      final response = await dispatcher.dispatch({
+        'kind': 'request',
+        'requestId': 4,
+        'method': chatSessionServiceSnapshotId,
+        'payload': {'sessionId': 'session'},
+      });
+      expect(
+        (response['payload']! as Map).keys,
+        unorderedEquals(['entries', 'instructions', 'draftRequest']),
+      );
     },
   );
 
@@ -83,6 +123,36 @@ void main() {
       expect(submission.$2, {'sessionId': 'session'});
     },
   );
+
+  test('Session wire contract rejects the removed budget field', () async {
+    final service = _Service();
+    final dispatcher = ChatSessionServiceDispatcher(service);
+    addTearDown(dispatcher.close);
+    final response = await dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': 1,
+      'method': chatSessionServiceConfigureSessionId,
+      'payload': {
+        'sessionId': 'session',
+        'instructions': 'Not accepted.',
+        'maxModelInvocations': 8,
+      },
+    });
+    expect(response['ok'], isFalse);
+    expect(service.instructions, '');
+    final client = ChatSessionServiceClient(
+      _SnapshotChannel({
+        'entries': <Object?>[],
+        'instructions': '',
+        'draftRequest': '',
+        'maxModelInvocations': 8,
+      }),
+    );
+    await expectLater(
+      client.snapshot('session'),
+      throwsA(isA<AdeleProtocolException>()),
+    );
+  });
 
   test('declared busy errors survive the generated service boundary', () async {
     final service = _Service()..busy = true;
@@ -150,7 +220,6 @@ void main() {
               },
             ],
             'instructions': '',
-            'maxModelInvocations': 8,
             'draftRequest': '',
           }),
         );
@@ -174,7 +243,6 @@ void main() {
           _SnapshotChannel({
             'entries': <Object?>[],
             'instructions': '',
-            'maxModelInvocations': 8,
             ...draftFields,
           }),
         );
@@ -222,7 +290,6 @@ final class _Channel implements AdeleRequestChannel {
 final class _Service implements ChatSessionService {
   final entries = <ChatEntry>[];
   String instructions = '';
-  int maximum = 8;
   String draft = '';
   bool busy = false;
 
@@ -231,7 +298,6 @@ final class _Service implements ChatSessionService {
       ChatSessionSnapshot(
         entries: entries,
         instructions: instructions,
-        maxModelInvocations: maximum,
         draftRequest: draft,
       );
 
@@ -267,13 +333,8 @@ final class _Service implements ChatSessionService {
   }
 
   @override
-  Future<void> configureSession(
-    String sessionId,
-    String instructions,
-    int maxModelInvocations,
-  ) async {
+  Future<void> configureSession(String sessionId, String instructions) async {
     this.instructions = instructions;
-    maximum = maxModelInvocations;
   }
 }
 

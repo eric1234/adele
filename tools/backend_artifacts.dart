@@ -15,6 +15,9 @@ import 'git_pty_artifact.dart';
 import 'stock_frontend_descriptors.dart';
 
 const _stockSchemaSources = {
+  'dev.adele.plugin.chat-strategy': {
+    'settings': 'plugins/chat_strategy/settings.schema.json',
+  },
   'dev.adele.source-editor': {
     'settings': 'plugins/source_editor/settings.schema.json',
   },

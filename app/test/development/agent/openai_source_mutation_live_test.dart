@@ -12,12 +12,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'source_coding_live_test_support.dart';
 import 'source_read_evidence_test_support.dart';
 
-const String _originalFragment = '  int _maxModelInvocations = 8;';
-const String _replacementFragment = '  int _maxModelInvocations = 9;';
+const String _originalFragment = '"default": 40';
+const String _replacementFragment = '"default": 41';
 const String _mutationPrompt =
-    'Read plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart using '
+    'Read plugins/chat_strategy/settings.schema.json using '
     'read_file. Then use apply_patch to change the default '
-    'maxModelInvocations assignment from 8 to 9. Use the exact opaque '
+    'dev.adele.plugin.chat-strategy.max-model-invocations setting from 40 to 41. Use the exact opaque '
     'Revision returned by read_file as expectedRevision. Supply an ordered '
     'edits array of {search, replace} objects. Use enough exact surrounding '
     'source in each search that it matches exactly once in the working text '
@@ -360,8 +360,8 @@ _MutationEvidence _expectSuccessfulMutationRun({
       contains('change was made'),
       contains('change has been made'),
       contains('successfully'),
-      contains('is now 9'),
-      contains('to 9'),
+      contains('is now 41'),
+      contains('to 41'),
     ),
   );
   expect(

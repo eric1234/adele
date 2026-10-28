@@ -285,7 +285,6 @@ class _ChatFrontendState extends State<ChatFrontend> {
         snapshot = ChatSessionSnapshot(
           entries: entries,
           instructions: current.instructions,
-          maxModelInvocations: current.maxModelInvocations,
           draftRequest: '',
         );
         draftFailure = '';

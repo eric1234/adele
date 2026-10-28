@@ -13,15 +13,16 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../../../tool/self_hosting/development_self_hosting.dart';
 
 const String sourceCodingStrategyPath =
-    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
+    'plugins/chat_strategy/settings.schema.json';
 const String sourceCodingPrompt =
     'Locate the maintained ADELE file that declares '
-    'ChatSessionState. Use search to locate it, then use '
+    'the dev.adele.plugin.chat-strategy.max-model-invocations setting. '
+    'Use search to locate it, then use '
     'read_file on the returned relative path. Report the exact relative '
-    'path and the default maxModelInvocations value. You must inspect the '
+    'path and the declared default value. You must inspect the '
     'source rather than answer from memory.';
 const String sourceCodingInstructions =
-    'You must call search for "final class ChatSessionState", '
+    'You must call search for "dev.adele.plugin.chat-strategy.max-model-invocations", '
     'then call read_file with the relative path returned by search before '
     'answering.';
 const String openAiApiKeyProviderId = developmentSelfHostingApiKeyProviderId;
@@ -95,6 +96,7 @@ final class SourceCodingLiveHarness {
             hostEnvironment: hostEnvironment,
             identity: '$identity-source-live',
             taskTitle: taskTitle,
+            maxModelInvocations: 8,
             includeCommandTools: enableCommandTools,
           );
       return SourceCodingLiveHarness._(
@@ -125,7 +127,6 @@ final class SourceCodingLiveHarness {
           instructions: developmentInstructions,
           model: model,
           catalog: catalog,
-          maxModelInvocations: 8,
         );
     if (result.executionFailure != null) {
       Error.throwWithStackTrace(
@@ -430,7 +431,7 @@ void expectSuccessfulSourceCodingRun({
   final String answer = result.session.entries.last.content;
   expect(answer.trim(), isNotEmpty);
   expect(answer, contains(sourceCodingStrategyPath));
-  expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));
+  expect(answer.toLowerCase(), anyOf(contains('40'), contains('forty')));
   if (expectedEffectiveModel != null) {
     print('ChatGPT source tool sequence: ${aliases.join(' -> ')}');
     print('ChatGPT source final assistant response: $answer');

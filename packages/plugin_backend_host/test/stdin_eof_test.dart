@@ -56,6 +56,7 @@ void main() {
           'defaultConfigurationContext': 'default',
           'artifactUri': pluginArtifact.uri.toString(),
           'arguments': <String>['acknowledge-hang'],
+          'settings': <String, Object>{},
         }),
       );
       await process.stdin.flush();

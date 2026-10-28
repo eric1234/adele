@@ -124,7 +124,9 @@ void main() {
     () async {
       final _Fixture fixture = await _Fixture.create();
       await fixture.registration.close();
-      final ChatStrategyPlugin replacement = ChatStrategyPlugin();
+      final ChatStrategyPlugin replacement = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration registration = replacement.activate(
         fixture.registry,
       );
@@ -921,7 +923,7 @@ void main() {
   );
 
   test(
-    'instructions and budget are captured at materialization, not start',
+    'Session instructions are captured at materialization and fenced during execution',
     () async {
       final _Fixture fixture = await _Fixture.create(
         instructions: 'Use source tools before answering.',
@@ -932,17 +934,9 @@ void main() {
         () => fixture.state.instructions = 'Changed after materialization.',
         throwsA(isA<ChatSessionFailure>()),
       );
-      expect(
-        () => fixture.state.maxModelInvocations = 1,
-        throwsA(isA<ChatSessionFailure>()),
-      );
       fixture.host.onProposal = (tools, proposal) async {
         expect(
           () => fixture.state.instructions = 'Changed during execution.',
-          throwsA(isA<ChatSessionFailure>()),
-        );
-        expect(
-          () => fixture.state.maxModelInvocations = 20,
           throwsA(isA<ChatSessionFailure>()),
         );
         return StrategyToolContinuation(_outcome(proposal.providerCallId));
@@ -969,6 +963,108 @@ void main() {
     },
   );
 
+  for (final phase in ['materialization', 'tool', 'approval']) {
+    test('new plugin budget cannot alter an execution at $phase', () async {
+      final fixture = await _Fixture.create(
+        maxModelInvocations: 2,
+        turns: [_batchTurn(proposalCount: 1), _batchTurn(proposalCount: 1)],
+      );
+      final entered = Completer<void>();
+      final gate = Completer<void>();
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      Future<void>? advancing;
+      if (phase == 'tool') {
+        fixture.host.onProposal = (tools, proposal) async {
+          entered.complete();
+          await gate.future;
+          return StrategyToolContinuation(_outcome(proposal.providerCallId));
+        };
+        advancing = fixture.execution.start();
+        await entered.future;
+      } else if (phase == 'approval') {
+        fixture.host.waitingCalls.add('call-1');
+        await fixture.execution.start();
+        expect(fixture.host.state, RunState.waiting);
+      }
+      final replacement = ChatStrategyPlugin(
+        sessions: fixture.plugin.sessions,
+        maxModelInvocations: 3,
+      );
+      final nextHost = _Host(RunId('run-2'), fixture.session.id, [
+        _batchTurn(proposalCount: 1),
+        _batchTurn(proposalCount: 1),
+        _finalTurn(),
+      ]);
+      final context = OrchestrationStrategyHostContext(
+        session: fixture.session,
+        host: nextHost,
+      );
+      await expectLater(
+        () => replacement.contribution.materialize(context),
+        throwsA(isA<ChatSessionFailure>()),
+      );
+      if (phase == 'approval') {
+        await fixture.execution.resolveApproval(fixture.host.approval(true));
+      } else if (advancing != null) {
+        gate.complete();
+        await advancing;
+      } else {
+        await fixture.execution.start();
+      }
+      expect(fixture.host.state, RunState.failed);
+      expect(fixture.host.requests, hasLength(2));
+      expect(fixture.host.proposals, hasLength(1));
+      expect(
+        fixture.host.failure,
+        isA<ModelInvocationLimitExceeded>().having(
+          (error) => error.maximum,
+          'captured maximum',
+          2,
+        ),
+      );
+      await fixture.execution.close();
+      fixture.state.appendUserMessage('Next Run.');
+      final next = await replacement.contribution.materialize(context);
+      addTearDown(next.close);
+      await next.start();
+      expect(nextHost.state, RunState.completed);
+      expect(nextHost.requests, hasLength(3));
+      expect(nextHost.proposals, hasLength(2));
+      expect(
+        nextHost.requests.first.input.cast<SemanticMessageInput>().map(
+          (item) => item.content,
+        ),
+        ['Perform steps.', 'Next Run.'],
+      );
+      expect(fixture.state.snapshot().entries.map((entry) => entry.content), [
+        'Perform steps.',
+        'Next Run.',
+        'Complete.',
+      ]);
+    });
+  }
+
+  for (final budget in [40, 41]) {
+    test(
+      'explicit budget $budget permits a final answer in its last slot',
+      () async {
+        final fixture = await _Fixture.create(
+          maxModelInvocations: budget,
+          turns: [
+            for (var i = 1; i < budget; i++) _batchTurn(proposalCount: 1),
+            _finalTurn(),
+          ],
+        );
+        await fixture.execution.start();
+        expect(fixture.host.state, RunState.completed);
+        expect(fixture.host.requests, hasLength(budget));
+        expect(fixture.host.proposals, hasLength(budget - 1));
+      },
+    );
+  }
+
   test(
     'two Runs share canonical Session history but never private Run items',
     () async {
@@ -978,8 +1074,7 @@ void main() {
       await fixture.execution.close();
       fixture.plugin.sessions.obtain(SessionId(fixture.session.id.value))
         ..appendUserMessage('Now explain.')
-        ..instructions = 'Second Run instructions.'
-        ..maxModelInvocations = 2;
+        ..instructions = 'Second Run instructions.';
       final _Host secondHost = _Host(
         RunId('run-2'),
         fixture.session.id,
@@ -1351,10 +1446,9 @@ final class _Fixture {
     List<StrategyModelTurn>? turns,
     int maxModelInvocations = 8,
     String instructions = '',
-  }) {
+  }) : plugin = ChatStrategyPlugin(maxModelInvocations: maxModelInvocations) {
     state = plugin.sessions.obtain(session.id)
       ..instructions = instructions
-      ..maxModelInvocations = maxModelInvocations
       ..appendUserMessage('Perform steps.');
     host = _Host(
       RunId('run-1'),
@@ -1384,7 +1478,7 @@ final class _Fixture {
     return fixture;
   }
 
-  final ChatStrategyPlugin plugin = ChatStrategyPlugin();
+  final ChatStrategyPlugin plugin;
   final ExtensionRegistry registry = ExtensionRegistry();
   final Session session = Session(
     id: SessionId('session-1'),

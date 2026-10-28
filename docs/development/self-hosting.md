@@ -37,7 +37,7 @@ partial. Review unredacted prompts, responses, source, tool arguments, full comm
 output, and provider details before sharing. Handoffs are not automatically pruned
 or registered as durable history; retain or remove the local directories deliberately.
 
-The remaining sections describe the unchanged legacy headless runner, whose isolated
+The remaining sections describe the legacy headless runner, whose isolated
 clone and retained reports differ from a desktop handoff's live-source references.
 
 ## Entrypoints
@@ -171,6 +171,15 @@ the exact live activation's ownership for atomic Task establishment. Its origina
 comparison baseline is retained in the Git-owned SQL table even for this temporary
 Project backing, not in provider state or inferred from a later HEAD.
 
+`DevelopmentSelfHostingTopology.start` requires an explicit positive
+`maxModelInvocations`. It injects that value into Chat through
+`PluginBackendHost.startPlugin(settings: ...)` before backend readiness and retains
+the same immutable value on the topology. This standalone composition does not
+read the desktop's global settings or infer a default. `executeDevelopmentSelfHostingRun`
+configures Session instructions only; it cannot replace the topology's budget.
+Chat captures the configured value for each Run, with the same bounded sequencing
+as normal desktop execution. See the [configuration boundary](../architecture/profiles-and-configuration.md#chat-invocation-budget).
+
 The runner uses an allow policy for validated tools, unlike the interactive
 desktop's approval-gated mutation/process policy. Domain validation, revision
 checks, and Session authority still apply, but there is no approval UI. Commands
@@ -196,6 +205,11 @@ worktree directory name is provider-generated rather than a fixed `task/` path.
 | `summary.md` | Human-readable evidence summary with a bounded final-response rendering; `summary.json` retains the full captured response. |
 | `runner.log` | Runner messages and captured compilation diagnostics, not a complete backend-stderr log. |
 | `git/` | Task/Project/launching-checkout status, patch/stat/whitespace-check evidence, changed paths, Git facts, and collection errors. |
+
+The logged invocation ceiling and manifest's `maxModelInvocations` report the
+actual configured topology budget, not a Session snapshot or an independently
+supplied reporting value. The manifest value is null if topology startup did not
+complete; a requested CLI limit is not evidence of an established backend.
 
 Usage counters retain provider evidence independently: `cacheReadTokens` and
 `cacheWriteTokens` are null when unreported, while an explicit zero remains zero.

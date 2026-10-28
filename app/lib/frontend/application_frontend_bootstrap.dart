@@ -11,6 +11,7 @@ import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/application_plugin_bootstrap.dart';
+import '../core/prepared_settings.dart';
 import '../core/resource_cleanup.dart';
 import 'console_bridge.dart';
 import 'directory_picker_bridge.dart';
@@ -20,7 +21,6 @@ import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
 import 'prepared_main_content_host.dart';
 import 'prepared_session_services.dart';
-import 'prepared_settings.dart';
 import 'prepared_task_browser_host.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';

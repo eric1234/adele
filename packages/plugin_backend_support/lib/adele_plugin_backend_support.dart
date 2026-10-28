@@ -1,10 +1,11 @@
-/// Explicitly scoped host calls, independent of host implementation.
+/// Immutable bootstrap settings and explicitly scoped host calls.
 library;
 
 import 'dart:async';
 
 import 'package:adele_contract/adele_contract.dart';
 
+export 'adele_backend_settings.dart';
 export 'adele_capability_consumer.dart';
 export 'capability_consumer.dart';
 
