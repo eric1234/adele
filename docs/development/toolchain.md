@@ -160,6 +160,13 @@ incorrectly permits that archive range while calling its unavailable `decodeLazy
 API. Image 4.10.2 uses the supported `decodeBytes` API. This normal dependency
 constraint does not override PDF/archive constraints or alter codec source.
 
+A desktop selection lifecycle patch replaces the globally keyed metrics debounce
+with an instance-owned 100 ms timer. A new metrics event replaces that instance's
+pending refresh; clearing selection or disposing the selection service cancels it.
+The callback checks that the widget is mounted and still has a selection before
+refreshing, preventing a delayed null-selection failure after teardown without
+coupling independent editors' timers. Mobile selection behavior is unchanged.
+
 Bootstrap prepares and verifies both editor sources before pub resolution.
 Maintained analysis, tests, and desktop run/build/smoke commands also verify
 AppFlowy before consumers. CI uses those same commands, not a separate setup path.

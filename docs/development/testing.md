@@ -245,25 +245,41 @@ Direct CodeForge tests also need the separately built native library and loader
 environment described in [focused editor checks](#focused-editor-checks); a direct
 Flutter test invocation does not perform that preparation.
 
-## Rich-editor dependency checks
+## Rich-document editor checks
 
-After bootstrap, the native AppFlowy smoke needs no separate CodeForge library:
+After bootstrap, native AppFlowy and evaluated rich-document checks need no
+separate CodeForge library:
 
 ```sh
 # app/
-flutter test --no-pub --concurrency 1 test/appflowy_editor_smoke_test.dart
+flutter test --no-pub --concurrency 1 test/appflowy_editor_smoke_test.dart test/rich_document_markdown_test.dart test/native_rich_document_editor_test.dart test/rich_document_editor_bridge_test.dart
 # Repository root
-dart tools/adele.dart test --target adele_tools
+dart tools/adele.dart test --target adele_ui
 ```
 
-The smoke uses the actual patched package and Flutter text-input/keyboard routes,
-not a mock or direct document mutation. It is also automatically discovered by
-`adele_desktop` and its CI shards. The tooling target owns local archive/patch/hash
+The native owner and genuine compiled-EVC fixture use the actual patched package,
+normal `PreparedFrontend` hosting, and Flutter text-input/keyboard routes. Conversion
+tests separately exercise import/export and explicit unsupported cases. The suites
+cover ordinary remount/undo ownership, snapshots and observation, read-only input,
+independent documents, invalid and retired handles, mounted-widget revocation,
+input-client closure, and resource disposal. Use bounded frame pumping rather than
+waiting indefinitely for upstream cursor/selection animations to settle.
+
+All app tests are automatically discovered by `adele_desktop` and its CI shards;
+public interpreted-stub tests belong to `adele_ui`. Select the existing CodeForge,
+Terminal, prepared frontend failure, Main Content, and presentation lifecycle tests
+when changing shared hosting, with the native prerequisites described below.
+Keep app Flutter commands serialized. These checks do not establish human IME
+acceptance, production Chat integration, or other-platform packaging.
+
+For dependency-preparation changes, `dart tools/adele.dart test --target adele_tools`
+owns local archive/patch/hash
 preparation fixtures, cache integrity and deliberate recovery, plus launcher tests
 that require prepared source before pub and reject tampering before consumers.
 Fixtures use no network; fresh production bootstrap downloads the pinned archive.
 See [source preparation](toolchain.md#native-rich-editor-dependency) for exact
-identity and licensing. This is not Markdown or evaluated-frontend validation.
+identity and licensing; preparation tests do not substitute for Markdown or
+evaluated-frontend validation.
 
 ## Configuration foundation checks
 

@@ -587,20 +587,95 @@ and the [Linux profile/manual entrypoint](../docs/development/testing.md#integra
 Those procedures are not pass claims; earlier investigation results do not
 establish human checks of this integrated path or macOS/Windows execution.
 
-### Native rich-editor dependency
+### Native rich-document editor
 
 The app privately depends on patched AppFlowy Editor 6.2.0. Source preparation,
 the dependency compatibility patches, licensing, and recovery commands belong to
 the [toolchain policy](../docs/development/toolchain.md#native-rich-editor-dependency).
-[`appflowy_editor_smoke_test.dart`](test/appflowy_editor_smoke_test.dart) mounts the
-real localized editor, sends Flutter text input and Backspace, and releases focus
-before unmounting and disposing editor state. Focus loss while mounted lets
-AppFlowy close its text-input client; disposing editor state alone does not.
-The test is discovered by the normal desktop test target.
+[`NativeRichDocumentEditor`](lib/editor/native_rich_document_editor.dart) owns one
+in-memory AppFlowy document, editor state, transaction observation, and undo history.
+It accepts supplied Markdown and a fixed read-only option, without a document ID,
+file path, storage service, or Session semantics. Ordinary rebuilding and complete
+native view unmount/remount preserve the document and undo; focus and viewport are
+view-local. Simultaneous mounts of one owner fail explicitly rather than taking over
+the first view. Independent owners have independent documents.
 
-There is no production rich-editor adapter or evaluated bridge yet. Chat still
-uses its existing composer; Markdown fidelity and plugin-facing ownership are
-not established by dependency resolution or this native smoke.
+Disposal revokes editing and closes the input service synchronously while its widget
+is mounted. Physical editor-state disposal waits until the AppFlowy subtree is
+removed; focus and the upstream notifiers not covered by `EditorState.dispose`
+are also released. Normal view deactivation closes input without destroying the
+owner. Disposal is idempotent. This addresses the mounted-focus requirement retained
+in [`appflowy_editor_smoke_test.dart`](test/appflowy_editor_smoke_test.dart).
+The small maintained selection-lifecycle dependency patch makes resize refresh
+timers instance-owned and cancels them on selection release/disposal. The native
+resize-then-unmount regression reproduces the unpatched null-selection crash.
+
+[`RichDocumentEditorBridge`](lib/frontend/rich_document_editor_bridge.dart) creates
+owners on demand from plugin-supplied Markdown, so a frontend may load content
+asynchronously before creation. Its bounded handle table belongs to one exact
+presentation/runtime, not a global document registry. It survives native view
+rebuilding or temporary hiding only while that presentation remains live. Explicit
+handle release, presentation failure/disposal, and prepared exit retention revoke
+access and dispose the owned editors. Neither old handles nor cached widgets can
+acquire a replacement generation. Exit retention may keep the evaluated outer
+subtree mounted, but it does not retain editing authority or a document for later
+reuse. A future consumer needing navigation-independent ownership must deliberately
+integrate with host retention; this primitive does not supply persistence.
+
+The public [UI bridge](../packages/ui/lib/rich_document_editor_bridge.dart) exposes
+creation, view construction, invalidation subscriptions, explicit Markdown
+snapshots, and release. Notifications carry no document and selection alone does
+not notify. The revision is document-transaction invalidation, not a dirty flag,
+plugin persistence version, or save acknowledgement. Snapshots copy scalar data
+across the evaluator boundary; AppFlowy state and native controllers never cross it.
+
+Only supported text block builders and editing shortcuts are installed. No slash
+menu, floating formatting menu, link navigation/menu, image/file insertion, native
+upload dialog, HTML paste, or document-triggered network/filesystem operation is
+wired. Links display inertly. Clipboard paste accepts plain text and rechecks the
+same live mounted view after the asynchronous read. Native bold, italic, inline
+code, selection, clipboard, and undo/redo remain ordinary editor interactions,
+not a plugin transaction API.
+
+Multiline plain-text paste keeps line breaks inside the current block. It does
+not use AppFlowy's multi-block paste helper, which moves original nested list
+children before recording Undo. Cut requires an explicit text selection rather
+than deleting the last block at a collapsed cursor. Tab indentation and conversion
+of nested/container blocks to paragraphs are not enabled; those transformations
+can produce structures outside the supported Markdown subset. Read-only selection
+does not attach a text-input client, but selection and explicit copy remain usable.
+
+#### Markdown boundary
+
+[`RichDocumentMarkdown`](lib/editor/rich_document_markdown.dart) maps a closed
+Markdown AST subset to AppFlowy's document tree and exports without mutating it.
+The prepared 6.2.0 wrappers are not safe defaults: import preformatting can rewrite
+code, missing parsers discard blocks, inline conversion can lose nested styles,
+and nested export reparents live nodes. The adapter uses public Markdown and
+AppFlowy document APIs instead; it does not patch those codecs or expose native
+JSON as the portable representation.
+
+| Case | Behavior |
+| --- | --- |
+| Import without a document mutation | Snapshot returns the exact original string, including empty input, CRLF, blank lines and trailing whitespace. Selection and rebuilding do not switch to exported Markdown. |
+| Editable subset | Paragraphs, headings 1-6, bold/italic (including nested runs), inline code with backticks, inert links without titles, bulleted/numbered/nested lists, and single-paragraph blockquotes. Unicode remains text. |
+| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal punctuation is escaped; numeric entities protect edge whitespace and otherwise ambiguous newlines. |
+| Unsupported imports | Fenced and indented code blocks, images, tables, HTML, task lists, strikethrough, hard breaks, reference/footnote definitions, link titles, complex quote/list bodies and separate adjacent same-kind lists. Raw Unicode/control whitespace that the block parser can trim is rejected; entity-spelled whitespace is supported. The entire original source remains visible and snapshot-readable, with an explicit read-only reason; no partially decoded document replaces it. |
+| Unsupported edited state | Export fails explicitly, including ambiguous emphasis, multiline inline-code spans, unknown attributes, unsupported nested structure or an empty paragraph whose removal would merge separate same-kind lists. The bridge returns `markdown: null` with `error: 'unsupported_serialization'`; callers must not save this as content. The native document remains available for correction/Undo. |
+
+Fenced-code tests cover languages, multiline/indented content, embedded backticks,
+trailing whitespace and CRLF as preserved unsupported input. Basic editable code
+requires a dedicated block representation, renderer and newline/clipboard behavior;
+the incompatible `appflowy_editor_plugins` package is not imported. A focused
+code-block slice is needed before using this editor for arbitrary existing Markdown.
+The subset is intentionally conservative, not a claim of general CommonMark/GFM
+round-trip fidelity or complete IME/composition semantics.
+
+The focused native, conversion, and compiled-EVC tests are automatically discovered
+by the desktop target; see [validation](../docs/development/testing.md#rich-document-editor-checks).
+These are pinned Linux Flutter widget-engine checks, not human keyboard/IME
+acceptance or macOS/Windows packaging evidence. Chat's composer, backend contracts,
+and persistent plain-text Draft Request semantics are unchanged.
 
 ### Native terminal surface
 
