@@ -4,6 +4,82 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  for (final policy in ['none', 'standard', 'wrapped']) {
+    testWidgets('composition formatting respects $policy shortcut policy', (
+      tester,
+    ) async {
+      final events = switch (policy) {
+        'none' => <CharacterShortcutEvent>[],
+        'standard' => standardCharacterShortcutEvents,
+        _ => [
+          formatBackquoteToCode.copyWith(
+            handler: (state) => formatBackquoteToCode.handler(state),
+          ),
+        ],
+      };
+      final editor = EditorState(
+        document: Document(
+          root: pageNode(children: [paragraphNode(text: '`x`')]),
+        ),
+      );
+      final focus = FocusNode();
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData(platform: TargetPlatform.linux),
+            localizationsDelegates: const [
+              AppFlowyEditorLocalizations.delegate,
+            ],
+            home: Scaffold(
+              body: AppFlowyEditor(
+                editorState: editor,
+                focusNode: focus,
+                characterShortcutEvents: events,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        focus.requestFocus();
+        editor.selection = Selection.collapsed(Position(path: [0], offset: 3));
+        await tester.pumpAndSettle();
+        final value = TextEditingValue.fromJSON(
+          tester.testTextInput.editingState!,
+        );
+        tester.testTextInput.updateEditingValue(
+          value.copyWith(composing: const TextRange(start: 1, end: 4)),
+        );
+        await tester.idle();
+        tester.testTextInput.updateEditingValue(
+          value.copyWith(composing: TextRange.empty),
+        );
+        await tester.idle();
+        await tester.pumpAndSettle();
+        expect(
+          editor.document.root.children.single.delta!.toJson(),
+          policy == 'none'
+              ? (Delta()..insert('`x`')).toJson()
+              : (Delta()..insert('x', attributes: {'code': true})).toJson(),
+        );
+        expect(
+          TextEditingValue.fromJSON(
+            tester.testTextInput.editingState!,
+          ).composing,
+          TextRange.empty,
+        );
+      } finally {
+        focus.unfocus();
+        await tester.pump();
+        await tester.pumpWidget(const SizedBox.shrink());
+        editor.dispose();
+        focus.dispose();
+        await tester.pump();
+      }
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('patched AppFlowy mounts, edits through native input, and disposes', (
     tester,
   ) async {

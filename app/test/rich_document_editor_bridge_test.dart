@@ -14,10 +14,12 @@ import 'package:flutter_test/flutter_test.dart';
 const _library = 'package:rich_document_probe/main.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory temporary;
   late File artifact;
   late Program program;
   late PreparedFrontend generation;
+  String? clipboard;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-rich-document-');
@@ -43,10 +45,23 @@ void main() {
   });
   tearDownAll(() => temporary.delete(recursive: true));
   setUp(() async {
+    clipboard = null;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard = (call.arguments as Map)['text'] as String;
+          }
+          if (call.method == 'Clipboard.getData') return {'text': clipboard};
+          return null;
+        });
     generation = await PreparedFrontend.load(artifact);
     expect(generation.failure, isNull);
   });
-  tearDown(() => generation.invalidate());
+  tearDown(() {
+    generation.invalidate();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+  });
 
   Widget presentation({
     String entrypoint = 'buildView',
@@ -125,37 +140,204 @@ void main() {
   );
 
   testWidgets(
-    'rebuilding and native unmount retain the same content and undo',
+    'prepared EVC edits literal code with Enter, multiline paste and Alt+Enter',
     (tester) async {
-      await tester.pumpWidget(_host(presentation()));
+      await tester.pumpWidget(_host(presentation(entrypoint: 'buildCodeView')));
       final state = await _select(tester, 'ab');
-      await _append(tester, '!');
-      final element = tester.element(find.byType(AppFlowyEditor));
-      _press(tester, 'Rebuild');
+      final node = state.document.root.children.single;
+      expect(node.type, 'code_block', reason: '${state.document.toJson()}');
+      expect(node.attributes['language'], 'dart');
+      expect(node.delta!.toJson(), [
+        {'insert': 'ab'},
+      ]);
+      expect(_notifications(tester), 0);
+      _press(tester, 'Snapshot');
       await _frames(tester);
-      expect(tester.element(find.byType(AppFlowyEditor)), same(element));
-      expect(find.text('Rebuilds: 1'), findsOneWidget);
-      _press(tester, 'Toggle');
+      expect(_snapshotText(tester), '```dart\nab\n```');
+      expect(find.text('Snapshot revision: 0'), findsOneWidget);
+      expect(find.text('Snapshot readOnly: false'), findsOneWidget);
+
+      await _append(tester, ' **x**');
+      expect(_notifications(tester), greaterThan(0));
+      expect(_snapshotText(tester), '```dart\nab\n```');
+      expect(find.text('Snapshot revision: 0'), findsOneWidget);
+      _press(tester, 'Snapshot');
       await _frames(tester);
-      expect(element.mounted, isFalse);
-      expect(state.isDisposed, isFalse);
+      final captured = _snapshotText(tester);
+      expect(captured, '```dart\nab **x**\n```');
+      expect(find.text('Snapshot revision: 0'), findsNothing);
+
+      // Ordinary Enter reaches AppFlowy's character shortcuts through text input.
+      await _append(tester, '\n');
+      expect(state.document.root.children.single, same(node));
+      expect(node.delta!.toPlainText(), 'ab **x**\n');
+      await Clipboard.setData(
+        const ClipboardData(text: '\t# [x](u) & <b>  \r\n\r\n```  \r\n'),
+      );
+      await _control(tester, LogicalKeyboardKey.keyV);
+      const text = 'ab **x**\n\t# [x](u) & <b>  \n\n```  \n';
+      expect(state.document.root.children.single, same(node));
+      expect(node.delta!.toJson(), [
+        {'insert': text},
+      ]);
+      expect(node.attributes['language'], 'dart');
+      expect(_snapshotText(tester), captured);
+      final notices = _notifications(tester);
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: 2,
+      );
+      await _frames(tester);
+      expect(_notifications(tester), notices);
+      state.selection = Selection.collapsed(
+        Position(path: [0], offset: text.length),
+      );
+      await _frames(tester);
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      const serialized = '````dart\n$text\n````';
+      expect(_snapshotText(tester), serialized);
+      expect(find.text('Snapshot error: '), findsOneWidget);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await _frames(tester);
+      expect(state.document.root.children.map((node) => node.type), [
+        'code_block',
+        ParagraphBlockKeys.type,
+      ]);
+      expect(node.delta!.toPlainText(), text);
+      await _append(tester, 'after');
+      expect(state.document.root.children.last.delta!.toPlainText(), 'after');
+      expect(_snapshotText(tester), serialized);
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), '$serialized\n\nafter');
+      state.selection = Selection.collapsed(Position(path: [0], offset: 2));
+      await _frames(tester);
+      final beforeRelease = _notifications(tester);
+      _press(tester, 'Release');
+      expect(state.editable, isFalse);
       expect(tester.testTextInput.hasAnyClients, isFalse);
-      _press(tester, 'Snapshot');
       await _frames(tester);
-      expect(_snapshotText(tester), contains('ab!'));
-      _press(tester, 'Toggle');
-      await _frames(tester);
-      expect(await _select(tester, 'ab!'), same(state));
-      await _control(tester, LogicalKeyboardKey.keyZ);
-      expect(state.document.root.children.single.delta!.toPlainText(), 'ab');
-      _press(tester, 'Snapshot');
-      await _frames(tester);
-      expect(_snapshotText(tester).trim(), 'ab');
+      expect(find.byType(AppFlowyEditor), findsNothing);
+      expect(_notifications(tester), beforeRelease);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(state.isDisposed, isTrue);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final (fence, language) in [
+    ('```dart', 'dart'),
+    ('~~~python', 'python'),
+  ]) {
+    testWidgets('prepared EVC creates code from $fence and ordinary Enter', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_host(presentation()));
+      final state = await _select(tester, 'ab');
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: 2,
+      );
+      await _frames(tester);
+      final value = TextEditingValue.fromJSON(
+        tester.testTextInput.editingState!,
+      );
+      _input(
+        tester,
+        TextEditingValue(
+          text: value.text.replaceRange(
+            value.selection.start,
+            value.selection.end,
+            fence,
+          ),
+          selection: TextSelection.collapsed(
+            offset: value.selection.start + fence.length,
+          ),
+        ),
+      );
+      await _frames(tester);
+      expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+      expect(state.document.root.children.single.delta!.toPlainText(), fence);
+      expect(
+        state.selection,
+        Selection.collapsed(Position(path: [0], offset: fence.length)),
+      );
+      await _append(tester, '\n');
+      expect(
+        state.document.root.children,
+        hasLength(1),
+        reason: '${state.document.toJson()}',
+      );
+      final node = state.document.root.children.single;
+      expect(node.type, 'code_block', reason: '${state.document.toJson()}');
+      expect(node.attributes['language'], language);
+      expect(node.delta!.toPlainText(), '');
+      expect(_notifications(tester), greaterThan(0));
+      expect(find.text('Snapshot text: (not requested)'), findsOneWidget);
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), '```$language\n\n```');
+      await _append(tester, '\t**x**  ');
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), '```$language\n\t**x**  \n```');
+      expect(find.text('Snapshot error: '), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(state.isDisposed, isTrue);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final code in [false, true]) {
+    testWidgets(
+      'rebuild and native unmount retain content and undo/redo (code: $code)',
+      (tester) async {
+        await tester.pumpWidget(
+          _host(presentation(entrypoint: code ? 'buildCodeView' : 'buildView')),
+        );
+        final state = await _select(tester, 'ab');
+        await _append(tester, '!');
+        final element = tester.element(find.byType(AppFlowyEditor));
+        _press(tester, 'Rebuild');
+        await _frames(tester);
+        expect(tester.element(find.byType(AppFlowyEditor)), same(element));
+        expect(find.text('Rebuilds: 1'), findsOneWidget);
+        _press(tester, 'Toggle');
+        await _frames(tester);
+        expect(element.mounted, isFalse);
+        expect(state.isDisposed, isFalse);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        _press(tester, 'Snapshot');
+        await _frames(tester);
+        expect(_snapshotText(tester), code ? '```dart\nab!\n```' : 'ab!');
+        _press(tester, 'Toggle');
+        await _frames(tester);
+        expect(await _select(tester, 'ab!'), same(state));
+        await _control(tester, LogicalKeyboardKey.keyZ);
+        expect(state.document.root.children.single.delta!.toPlainText(), 'ab');
+        _press(tester, 'Snapshot');
+        await _frames(tester);
+        expect(_snapshotText(tester), code ? '```dart\nab\n```' : 'ab');
+        await _control(tester, LogicalKeyboardKey.keyY);
+        expect(state.document.root.children.single.delta!.toPlainText(), 'ab!');
+        _press(tester, 'Snapshot');
+        await _frames(tester);
+        expect(_snapshotText(tester), code ? '```dart\nab!\n```' : 'ab!');
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(state.isDisposed, isTrue);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'plugin can create after asynchronous hydration and import marks',
@@ -241,6 +423,51 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'prepared read-only code selects and copies without input clients',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(presentation(entrypoint: 'buildReadOnlyCodeView')),
+      );
+      const text = '  read-only\t**x**  \n';
+      final state = await _select(tester, text);
+      final node = state.document.root.children.single;
+      expect(node.type, 'code_block');
+      expect(node.attributes['language'], 'dart');
+      expect(node.delta!.toPlainText(), text);
+      expect(state.editable, isFalse);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: text.length,
+      );
+      await _frames(tester);
+      await _control(tester, LogicalKeyboardKey.keyC);
+      expect(clipboard, text);
+      expect(AppFlowyClipboard.lastText, text);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      await Clipboard.setData(const ClipboardData(text: 'denied\npaste'));
+      await _control(tester, LogicalKeyboardKey.keyV);
+      await _control(tester, LogicalKeyboardKey.keyB);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await _frames(tester);
+      expect(node.delta!.toPlainText(), text);
+      expect(_notifications(tester), 0);
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), '~~~dart\n$text\n~~~\n');
+      expect(find.text('Snapshot readOnly: true'), findsOneWidget);
+      expect(find.text('Snapshot revision: 0'), findsOneWidget);
+      expect(find.text('Snapshot error: '), findsOneWidget);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(state.isDisposed, isTrue);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'handles are bounded, runtime-local, copied and permanently revoked',
@@ -342,71 +569,76 @@ void main() {
     },
   );
 
-  testWidgets(
-    'independent handles retain owners and release only their own editor',
-    (tester) async {
-      final bridge = RichDocumentEditorBridge(isActive: () => true);
-      final runtime = bind(bridge);
-      final first = _create(runtime, 'first');
-      final second = _create(runtime, 'second');
-      final notices = [0, 0];
-      for (final (index, handle) in [first, second].indexed) {
-        _invoke(runtime, 'observeHandle', [
-          $String(handle),
-          $Function((_, _, _) {
-            notices[index]++;
-            return null;
-          }),
-        ]);
-      }
-      final firstView =
-          _invoke(runtime, 'buildHandle', [$String(first)]) as Widget;
-      final secondView =
-          _invoke(runtime, 'buildHandle', [$String(second)]) as Widget;
-      expect(
-        _invoke(runtime, 'buildHandle', [$String(first)]),
-        same(firstView),
-      );
-      await tester.pumpWidget(_host(firstView));
-      final firstState = await _select(tester, 'first');
-      final oldSnapshot =
-          _invoke(runtime, 'snapshotHandle', [$String(first)]) as Map;
-      await _append(tester, '!');
-      expect(notices, [1, 0]);
-      await tester.pumpWidget(_host(secondView));
-      final secondState = await _select(tester, 'second');
-      expect(secondState, isNot(same(firstState)));
-      expect(firstState.isDisposed, isFalse);
-      expect(
-        (_invoke(runtime, 'snapshotHandle', [$String(first)])
-            as Map)['markdown'],
-        contains('first!'),
-      );
-      expect(
-        (_invoke(runtime, 'snapshotHandle', [$String(second)])
-            as Map)['markdown'],
-        'second',
-      );
-      expect(oldSnapshot['markdown'], 'first');
-      _invoke(runtime, 'releaseHandle', [$String(first)]);
-      expect(firstState.isDisposed, isTrue);
-      expect(secondState.isDisposed, isFalse);
-      await _append(tester, '?');
-      expect(notices, [1, 1]);
-      expect(
-        (_invoke(runtime, 'snapshotHandle', [$String(second)])
-            as Map)['markdown'],
-        contains('second?'),
-      );
-      bridge.invalidate();
-      expect(secondState.editable, isFalse);
-      expect(tester.testTextInput.hasAnyClients, isFalse);
-      await _frames(tester);
-      expect(secondState.isDisposed, isTrue);
-      await tester.pumpWidget(const SizedBox.shrink());
-      expect(tester.takeException(), isNull);
-    },
-  );
+  for (final code in [false, true]) {
+    testWidgets(
+      'independent handles retain and release only their own editor (code: $code)',
+      (tester) async {
+        String markdown(String text) => code ? '```dart\n$text\n```' : text;
+        final bridge = RichDocumentEditorBridge(isActive: () => true);
+        final runtime = bind(bridge);
+        final first = _create(runtime, markdown('first'));
+        final second = _create(runtime, markdown('second'));
+        final notices = [0, 0];
+        for (final (index, handle) in [first, second].indexed) {
+          _invoke(runtime, 'observeHandle', [
+            $String(handle),
+            $Function((_, _, arguments) {
+              expect(arguments, isEmpty);
+              notices[index]++;
+              return null;
+            }),
+          ]);
+        }
+        final firstView =
+            _invoke(runtime, 'buildHandle', [$String(first)]) as Widget;
+        final secondView =
+            _invoke(runtime, 'buildHandle', [$String(second)]) as Widget;
+        expect(
+          _invoke(runtime, 'buildHandle', [$String(first)]),
+          same(firstView),
+        );
+        await tester.pumpWidget(_host(firstView));
+        final firstState = await _select(tester, 'first');
+        final oldSnapshot =
+            _invoke(runtime, 'snapshotHandle', [$String(first)]) as Map;
+        await _append(tester, '!');
+        expect(notices, [1, 0]);
+        await tester.pumpWidget(_host(secondView));
+        final secondState = await _select(tester, 'second');
+        expect(secondState, isNot(same(firstState)));
+        expect(firstState.isDisposed, isFalse);
+        expect(
+          (_invoke(runtime, 'snapshotHandle', [$String(first)])
+              as Map)['markdown'],
+          markdown('first!'),
+        );
+        expect(
+          (_invoke(runtime, 'snapshotHandle', [$String(second)])
+              as Map)['markdown'],
+          markdown('second'),
+        );
+        expect(oldSnapshot['markdown'], markdown('first'));
+        expect(oldSnapshot['revision'], 0);
+        _invoke(runtime, 'releaseHandle', [$String(first)]);
+        expect(firstState.isDisposed, isTrue);
+        expect(secondState.isDisposed, isFalse);
+        await _append(tester, '?');
+        expect(notices, [1, 1]);
+        expect(
+          (_invoke(runtime, 'snapshotHandle', [$String(second)])
+              as Map)['markdown'],
+          markdown('second?'),
+        );
+        bridge.invalidate();
+        expect(secondState.editable, isFalse);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        await _frames(tester);
+        expect(secondState.isDisposed, isTrue);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   for (final failure in ['false', 'throw']) {
     testWidgets(
@@ -442,46 +674,56 @@ void main() {
     );
   }
 
-  testWidgets(
-    'exit retention synchronously stops already-mounted native input',
-    (tester) async {
-      await tester.pumpWidget(_host(presentation()));
-      final state = await _select(tester, 'ab');
-      await _append(tester, '!');
-      final element = tester.element(find.byType(AppFlowyEditor));
-      final before = state.document.root.toJson();
-      final client = tester.testTextInput.log.lastWhere(
-        (call) => call.method == 'TextInput.setClient',
-      );
-      generation.retainPresentations();
-      expect(element.mounted, isTrue);
-      expect(state.editable, isFalse);
-      expect(tester.testTextInput.hasAnyClients, isFalse);
-      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-        SystemChannels.textInput.name,
-        SystemChannels.textInput.codec.encodeMethodCall(
-          MethodCall('TextInputClient.updateEditingState', [
-            (client.arguments as List).first,
-            const TextEditingValue(
-              text: 'stale input',
-              selection: TextSelection.collapsed(offset: 11),
-            ).toJSON(),
-          ]),
-        ),
-        (_) {},
-      );
-      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
-      expect(state.document.root.toJson(), before);
-      await _frames(tester);
-      expect(state.isDisposed, isTrue);
-      expect(find.byType(AppFlowyEditor), findsNothing);
-      generation.releasePresentations();
-      await _frames(tester);
-      expect(find.text('Frontend unavailable.'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-      expect(tester.takeException(), isNull);
-    },
-  );
+  for (final code in [false, true]) {
+    testWidgets(
+      'exit retention fences mounted native input and selection (code: $code)',
+      (tester) async {
+        await tester.pumpWidget(
+          _host(presentation(entrypoint: code ? 'buildCodeView' : 'buildView')),
+        );
+        final state = await _select(tester, 'ab');
+        await _append(tester, '!');
+        final selectionService = state.service.selectionService;
+        final element = tester.element(find.byType(AppFlowyEditor));
+        final before = state.document.root.toJson();
+        final client = tester.testTextInput.log.lastWhere(
+          (call) => call.method == 'TextInput.setClient',
+        );
+        generation.retainPresentations();
+        expect(element.mounted, isTrue);
+        expect(state.editable, isFalse);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        selectionService.updateSelection(
+          Selection.collapsed(Position(path: [0], offset: 1)),
+        );
+        expect(state.selection, isNull);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          SystemChannels.textInput.name,
+          SystemChannels.textInput.codec.encodeMethodCall(
+            MethodCall('TextInputClient.updateEditingState', [
+              (client.arguments as List).first,
+              const TextEditingValue(
+                text: 'stale input',
+                selection: TextSelection.collapsed(offset: 11),
+              ).toJSON(),
+            ]),
+          ),
+          (_) {},
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+        expect(state.document.root.toJson(), before);
+        await _frames(tester);
+        expect(state.isDisposed, isTrue);
+        expect(find.byType(AppFlowyEditor), findsNothing);
+        generation.releasePresentations();
+        await _frames(tester);
+        expect(find.text('Frontend unavailable.'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   for (final retirement in ['Release', 'Fail', 'Fail observer', 'dispose']) {
     testWidgets('$retirement revokes owners and fences queued notifications', (
@@ -563,30 +805,37 @@ void main() {
     },
   );
 
-  testWidgets(
-    'unsupported post-edit serialization has an explicit safe result',
-    (tester) async {
-      await tester.pumpWidget(_host(presentation()));
-      final state = await _select(tester, 'ab');
-      final node = state.document.root.children.single;
-      await state.apply(
-        state.transaction..formatText(node, 0, 2, {'underline': true}),
-      );
-      await _frames(tester);
-      _press(tester, 'Snapshot');
-      await _frames(tester);
-      expect(_snapshotText(tester), '(unavailable)');
-      expect(
-        find.text('Snapshot error: unsupported_serialization'),
-        findsOneWidget,
-      );
-      expect(find.text('Snapshot reason: '), findsOneWidget);
-      expect(find.text('Frontend unavailable.'), findsNothing);
-      await tester.pumpWidget(const SizedBox.shrink());
-      expect(state.isDisposed, isTrue);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  for (final code in [false, true]) {
+    testWidgets(
+      'unsupported post-edit attributes serialize safely (code: $code)',
+      (tester) async {
+        await tester.pumpWidget(
+          _host(presentation(entrypoint: code ? 'buildCodeView' : 'buildView')),
+        );
+        final state = await _select(tester, 'ab');
+        await _append(tester, '!');
+        final node = state.document.root.children.single;
+        // Fault injection only: this unsupported attribute has no UI command.
+        await state.apply(
+          state.transaction..formatText(node, 0, 2, {'underline': true}),
+        );
+        await _frames(tester);
+        _press(tester, 'Snapshot');
+        await _frames(tester);
+        expect(_snapshotText(tester), '(unavailable)');
+        expect(
+          find.text('Snapshot error: unsupported_serialization'),
+          findsOneWidget,
+        );
+        expect(find.text('Snapshot reason: '), findsOneWidget);
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(state.editable, isTrue);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(state.isDisposed, isTrue);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('observer failure releases every owner and reports only once', (
     tester,
@@ -662,7 +911,8 @@ Future<EditorState> _select(WidgetTester tester, String text) async {
 Future<void> _append(WidgetTester tester, String text) async {
   expect(tester.testTextInput.hasAnyClients, isTrue);
   final value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
-  tester.testTextInput.updateEditingValue(
+  _input(
+    tester,
     TextEditingValue(
       text: '${value.text}$text',
       selection: TextSelection.collapsed(
@@ -671,6 +921,13 @@ Future<void> _append(WidgetTester tester, String text) async {
     ),
   );
   await _frames(tester);
+}
+
+void _input(WidgetTester tester, TextEditingValue value) {
+  // TestTextInput remembers host writes, not platform input. Keep the simulated
+  // IME value current even when AppFlowy correctly avoids echoing it to the host.
+  tester.testTextInput.editingState = value.toJSON();
+  tester.testTextInput.updateEditingValue(value);
 }
 
 Future<void> _control(WidgetTester tester, LogicalKeyboardKey key) async {

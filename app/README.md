@@ -656,6 +656,34 @@ same live mounted view after the asynchronous read. Native bold, italic, inline
 code, selection, clipboard, and undo/redo remain ordinary editor interactions,
 not a plugin transaction API.
 
+Fenced code uses a top-level `code_block` leaf with one plain-text Delta and an
+optional `language` attribute. A configured public paragraph component supplies
+AppFlowy's multiline text, caret and mouse selection, with monospace text and a
+shaded block wrapper. There is no second buffer, input client, syntax engine or
+dependency on the older `appflowy_editor_plugins` implementation.
+
+At the end of a top-level paragraph containing only an opening backtick or tilde
+fence (at least three markers, optionally followed immediately by a supported
+language), **Enter** replaces that paragraph with an empty code block. Within
+code, **Enter** inserts a literal LF and **Tab** inserts a literal tab; neither
+auto-indents nor interprets Markdown. **Alt+Enter** inserts a normal paragraph
+after the entire unchanged code block and moves the caret there. Ctrl/Cmd+Enter
+is not assigned. Arrow navigation and mouse selection remain native; formatting
+shortcuts cannot add marks to code, including through a mixed selection.
+Code IME replacements use their native ranges literally. The maintained AppFlowy
+patch makes composition-only backtick formatting respect the installed shortcut
+allowlist, so code commits stay literal without rejecting valid IME transitions
+or maintaining a separate input buffer. See the [preparation contract](../docs/development/toolchain.md#native-rich-editor-dependency).
+
+Backspace/Delete at a code boundary do not merge blocks or discard their language.
+Ranges spanning multiple blocks and touching code can be selected and copied, but
+typing, deleting, cutting and pasting across those ranges are not supported;
+edit within one block instead. Both keyboard commands and native text-input
+replacement enforce this restriction. Code clipboard data is plain text, and cut
+and paste recheck the captured selection, content revision and live focused view
+after the asynchronous clipboard operation. Undo/redo uses the existing document
+history, including code creation and exit, without reparenting surrounding lists.
+
 Multiline plain-text paste keeps line breaks inside the current block. It does
 not use AppFlowy's multi-block paste helper, which moves original nested list
 children before recording Undo. Cut requires an explicit text selection rather
@@ -677,16 +705,28 @@ JSON as the portable representation.
 | Case | Behavior |
 | --- | --- |
 | Import without a document mutation | Snapshot returns the exact original string, including empty input, CRLF, blank lines and trailing whitespace. Selection and rebuilding do not switch to exported Markdown. |
-| Editable subset | Paragraphs, headings 1-6, bold/italic (including nested runs), inline code with backticks, inert links without titles, bulleted/numbered/nested lists, and single-paragraph blockquotes. Unicode remains text. |
-| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal punctuation is escaped; numeric entities protect edge whitespace and otherwise ambiguous newlines. |
-| Unsupported imports | Fenced and indented code blocks, images, tables, HTML, task lists, strikethrough, hard breaks, reference/footnote definitions, link titles, complex quote/list bodies and separate adjacent same-kind lists. Raw Unicode/control whitespace that the block parser can trim is rejected; entity-spelled whitespace is supported. The entire original source remains visible and snapshot-readable, with an explicit read-only reason; no partially decoded document replaces it. |
-| Unsupported edited state | Export fails explicitly, including ambiguous emphasis, multiline inline-code spans, unknown attributes, unsupported nested structure or an empty paragraph whose removal would merge separate same-kind lists. The bridge returns `markdown: null` with `error: 'unsupported_serialization'`; callers must not save this as content. The native document remains available for correction/Undo. |
+| Editable subset | Paragraphs, headings 1-6, bold/italic (including nested runs), inline code with backticks, inert links without titles, bulleted/numbered/nested lists, single-paragraph blockquotes, and top-level fenced code. Unicode remains text. |
+| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal prose punctuation is escaped; numeric entities protect edge whitespace and otherwise ambiguous newlines. Empty paragraph spacers become blank block separation. Code exports with collision-safe backtick fences without escaping or trimming its literal contents. |
+| Unsupported imports | Indented or nested code, unclosed fences, complex/unsafe fence info strings, images, tables, HTML, task lists, strikethrough, hard breaks, reference/footnote definitions, link titles, complex quote/list bodies and separate adjacent same-kind lists. Outside literal code bodies, raw Unicode/control whitespace that the block parser can trim is rejected; entity-spelled whitespace is supported. The entire original source remains visible and snapshot-readable, with an explicit read-only reason; no partially decoded document replaces it. |
+| Unsupported edited state | Export fails explicitly, including styled code, invalid code language/delta, CR-bearing code text, ambiguous emphasis, multiline inline-code spans, unknown attributes, unsupported nested structure or an empty paragraph whose removal would merge separate same-kind lists. The bridge returns `markdown: null` with `error: 'unsupported_serialization'`; callers must not save this as content. The native document remains available for correction/Undo. |
 
-Fenced-code tests cover languages, multiline/indented content, embedded backticks,
-trailing whitespace and CRLF as preserved unsupported input. Basic editable code
-requires a dedicated block representation, renderer and newline/clipboard behavior;
-the incompatible `appflowy_editor_plugins` package is not imported. A focused
-code-block slice is needed before using this editor for arbitrary existing Markdown.
+Fenced imports use a Markdown block-syntax extension, accepting closed backtick and
+tilde fences of three or more markers. Language identifiers match
+`[A-Za-z0-9][A-Za-z0-9_+.-]*`, retaining case; surrounding ASCII spaces/tabs in an
+imported info string are allowed, but metadata, escapes and entities are not.
+Opening indentation of zero to three spaces follows CommonMark structural
+dedenting. All remaining code indentation, tabs, trailing spaces, blank lines and
+Markdown-looking text stay literal. Imported line endings normalize only in the
+native tree; an untouched snapshot still returns the exact original source.
+
+The code Delta excludes the single structural newline before the closing fence.
+Serialization writes an opening line, the complete code text, one structural LF,
+and the closing fence. Thus empty code and code containing a newline remain
+distinct; a trailing code LF produces an additional blank line before closure.
+An immediate closing fence and one empty body line both import as empty code.
+The exported fence is longer than every backtick run in the actual code, so even
+embedded delimiter lines cannot close it prematurely. Repeated exports never
+mutate the document. No full Markdown compatibility/diff framework is involved.
 The subset is intentionally conservative, not a claim of general CommonMark/GFM
 round-trip fidelity or complete IME/composition semantics.
 
