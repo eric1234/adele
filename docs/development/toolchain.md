@@ -301,14 +301,6 @@ whose Linux prerequisites additionally include `dbus-daemon`, `dbus-run-session`
 `gdbus`, `gnome-keyring-daemon`, and `setsid` from util-linux. No libsecret or OpenSSL
 development package is needed for this credential backend.
 
-Cargo and Rust runtime notices need explicit inclusion: they are not discovered
-automatically as Dart dependencies. The package's consolidated
-[`LICENSE`](../../packages/credential_store/LICENSE) supplies them to Flutter's
-normal `NOTICES.Z` collection; the package README owns inventory maintenance.
-Retain those notices when distributing the native library and review
-the actual shipped contents. This is not release-distribution clearance or evidence
-of macOS/Windows credential support.
-
 ## Native terminal dependency
 
 The app pins the published `xterm2 5.2.0` archive, with checksum

@@ -136,26 +136,3 @@ exact bytes on stdin, not argv. Stdout is only `<status> <verified>`; `corrupt`
 uses explicit core access to check invalid UTF-8 preservation without repair.
 It leaves that item for the runner's exact-reference cleanup. Never run it
 against a user's keyring.
-
-## Third-party notices
-
-The package's `LICENSE` contains third-party notices, not an ADELE source-license
-grant. Flutter collects it into `NOTICES.Z`; standalone native distribution must
-carry it alongside the library. It includes the locked Cargo graph and pinned
-Rust runtime notices. From the repository root:
-
-```sh
-rustup component add rust-src rust-docs --toolchain 1.93.0
-dart packages/credential_store/tool/generate_notices.dart
-dart packages/credential_store/tool/generate_notices.dart --check
-```
-
-The SDK-only generator uses pinned Cargo metadata and `sha256sum`; exact crate
-sources may be fetched when not cached. It does not build the bridge, resolve
-Dart packages, or access a keyring. A lock change requires license/source-notice
-review before changing `reviewedLockSha256` in the generator. After reviewed
-regeneration, update the `LICENSE` SHA-256 snapshot in `test/notices_test.dart`.
-The ordinary notice test checks fingerprints and complete output without Cargo
-cache, Rust source components, or network; full `--check` reconstructs the source
-inventory. Re-review the runtime inventory when changing the Rust pin. This
-inventory is not general release/legal clearance.
