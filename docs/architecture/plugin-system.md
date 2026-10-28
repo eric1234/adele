@@ -244,6 +244,16 @@ This is a narrow callable composition path, not general recursive Extension Poin
 transport or authority delegation. Selection, lifetime, and limits belong to
 [backend Capability consumption](contracts-and-capabilities.md#prepared-backend-capability-consumption).
 
+Backend startup also accepts immutable scalar settings through public
+`AdeleBackendSettings` in `adele_plugin_backend_support`. Normal host composition
+projects only the exact installation's validated declarations from the same startup
+snapshot used by independent frontends. `PluginBackendHost.startPlugin(settings: ...)`
+copies values for the new generation; this is bootstrap data, not a callable
+Capability, infrastructure grant, configuration-routing context, or live subscription.
+Plugins receive no configuration paths, TOML store, or access to another plugin's
+settings. Missing required consumed values fail explicitly. Resolution and
+component-local failures belong to [ordinary configuration](profiles-and-configuration.md#ordinary-configuration-resolution).
+
 ### Frontend and collaboration
 
 Prepared plugin frontends execute through the interpreted Flutter path in the
@@ -921,13 +931,13 @@ backend owns these version-1 tables:
 
 | Table | Chat-owned meaning |
 | --- | --- |
-| `adele_chat_sessions(session_id, instructions, max_model_invocations, next_entry, draft_request)` | Configuration, entry counter, and current plain-text Draft Request, linked by foreign key to core Session identity. |
+| `adele_chat_sessions(session_id, instructions, next_entry, draft_request)` | Session instructions, entry counter, and current plain-text Draft Request, linked by foreign key to core Session identity. |
 | `adele_chat_entries(session_id, sequence, entry_id, role, content, run_id)` | Ordered canonical user/assistant history, linked to the Chat Session row; nullable semantic Run association on user entries only. |
 | `adele_chat_feedback_submissions(session_id, submission_id, canonical_payload, entry_id)` | Immutable structured feedback and stable receipt relationship to one canonical user occurrence; unique submission and occurrence per Session. |
 
 `ChatSessionStore` initializes or loads state only on first actual state access,
 not at Project reopen or core Session creation. Defaults apply only to an
-uninitialized Session, including an empty draft; existing history, configuration,
+uninitialized Session, including an empty draft; existing history, instructions,
 counter, and draft are validated and restored, never replaced on corruption.
 The cache is generation-local; durable SQL state is the source of truth across
 backend replacement. Missing Chat
@@ -945,6 +955,11 @@ lookup. Draft Request is neither consumed nor rewritten. See the
 [Chat backend](../../plugins/chat_strategy/packages/backend/README.md) for storage,
 bounds and uncertain-result handling.
 
+The invocation budget is [global configuration](profiles-and-configuration.md#chat-invocation-budget),
+not a Session field, snapshot value, or SQL column. Backend construction requires
+an explicit value, captured separately by each Run. Restoring Session state neither
+restores nor overrides the backend's startup configuration.
+
 `run_id` is nullable and unique with `session_id`; assistant entries cannot carry
 it. There is deliberately no foreign key to the core terminal Run table: Chat
 associates the final history entry only when it is an unassociated user entry, after successful
@@ -956,7 +971,7 @@ association without durable terminal evidence. The field identifies historical
 activity; it is neither an opaque presentation handle nor execution authority.
 
 User append commits its entry and counter together before cache mutation or
-return, without changing the draft. Configuration commits both fields before
+return, without changing the draft. `configureSession` commits instructions before
 updating the cache and also preserves the draft. Draft replacement preserves exact
 plain text, including whitespace. Draft submission rejects blank content and
 atomically commits one user entry, the advanced counter, and an empty draft before

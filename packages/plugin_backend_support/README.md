@@ -1,11 +1,38 @@
 # ADELE Plugin Backend Support
 
 `adele_plugin_backend_support` is an experimental public, pure-Dart package with
-only `adele_contract` as a production dependency. It provides
-`AdeleHostRequestMultiplexer` for generated unary and server-streaming clients
-calling explicitly scoped host services. It imports neither Flutter nor internal
-host implementations. Its public Capability consumer facade lets generated plugin
+only `adele_contract` as a production dependency. It provides immutable backend
+bootstrap settings and `AdeleHostRequestMultiplexer` for generated unary and
+server-streaming clients calling explicitly scoped host services. It imports
+neither Flutter nor internal host implementations. Its public Capability consumer
+facade lets generated plugin
 clients use declared context-free unary access without importing runtime packages.
+
+## Bootstrap Settings
+
+`AdeleBackendSettings.fromBootstrap(bootstrapMessage)` reads the explicit
+`settings` map delivered at backend startup. `AdeleBackendSettings(values)` also
+supports native construction. Both copy scalar values into an immutable snapshot;
+`read<T>(id)` fails on a missing value or wrong type, without coercion or fallback.
+The public `values` map is unmodifiable. Only string keys with bool, int, or String
+values are accepted, using the shared `adeleCopyBackendSettings` structural helper.
+There is no transport-specific integer ceiling or declaration policy.
+
+Resolve defaults, ownership, and declaration constraints before startup. The
+snapshot belongs to that exact backend generation; later caller edits or a new
+same-ID generation cannot change captured values. Settings are data, not a
+configuration-context lookup, host-service grant, or RPC. This package does not
+load files, interpret TOML, select plugin identities, or implement live updates.
+Consumers must receive an explicit map, even if empty; missing or malformed
+bootstrap settings fail rather than substituting an empty map. Backends that do
+not consume settings need not construct the reader.
+
+[`backend_settings_test.dart`](test/backend_settings_test.dart) covers immutable
+copies, typed reads, and shared structural validation. Real AOT bootstrap and
+generation isolation are tested by the internal
+[`plugin_backend_host`](../plugin_backend_host/README.md).
+
+## Host Calls
 
 Construct one `AdeleHostRequestMultiplexer(send: responsePort.send)` per backend
 generation with the existing response port. Its bound channels share the

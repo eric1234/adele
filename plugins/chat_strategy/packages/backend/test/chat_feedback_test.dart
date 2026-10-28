@@ -38,20 +38,30 @@ void main() {
   }) => feedback.lookup(chatStrategyRouteId, session, submissionId);
 
   test(
-    'native strategy target shares the existing durable Session store',
+    'native strategy target retains feedback independently of Run budgets',
     () async {
-      final plugin = ChatStrategyPlugin(sessions: store);
-      final target = plugin.contribution.feedbackTarget!(
-        Session(
-          id: SessionId('session'),
-          taskId: TaskId('task'),
-          strategyId: chatStrategyId,
-        ),
+      final session = Session(
+        id: SessionId('session'),
+        taskId: TaskId('task'),
+        strategyId: chatStrategyId,
       );
+      final plugin = ChatStrategyPlugin(
+        sessions: store,
+        maxModelInvocations: 1,
+      );
+      final target = plugin.contribution.feedbackTarget!(session);
       final receipt = await target.accept(_submission());
       expect(_identity(receipt), ('review', 'session', 'entry-0'));
       expect(
         _identity((await target.lookup('review'))!.receipt),
+        _identity(receipt),
+      );
+      final replacement = ChatStrategyPlugin(
+        sessions: ChatSessionStore(storage: storage),
+        maxModelInvocations: 2,
+      ).contribution.feedbackTarget!(session);
+      expect(
+        _identity(await replacement.accept(_submission())),
         _identity(receipt),
       );
       expect((await chat.snapshot('session')).entries.single.id, 'entry-0');
@@ -63,7 +73,7 @@ void main() {
     () async {
       const draft = '  Unrelated draft\r\n\t\u00e9\u{1f600}';
       await chat.setDraftRequest('session', draft);
-      await chat.configureSession('session', 'Existing instructions.', 3);
+      await chat.configureSession('session', 'Existing instructions.');
       final submission = _submission();
       final writes = storage.transactions;
       final receipt = await accept(submission);
@@ -78,7 +88,15 @@ void main() {
       final snapshot = await chat.snapshot('session');
       expect(snapshot.draftRequest, draft);
       expect(snapshot.instructions, 'Existing instructions.');
-      expect(snapshot.maxModelInvocations, 3);
+      expect(
+        storage.database.select('SELECT * FROM adele_chat_sessions').single,
+        {
+          'session_id': 'session',
+          'instructions': 'Existing instructions.',
+          'next_entry': 1,
+          'draft_request': draft,
+        },
+      );
       final entry = snapshot.entries.single;
       expect((entry.id, entry.role, entry.runId), ('entry-0', 'user', null));
       expect(entry.content, renderChatSessionFeedback(submission));
@@ -281,7 +299,7 @@ void main() {
       final stale = ChatSessionFeedbackService(staleStore);
       addTearDown(stale.close);
       await staleStore.load(SessionId('session'));
-      await chat.configureSession('session', 'New instructions.', 2);
+      await chat.configureSession('session', 'New instructions.');
       await chat.setDraftRequest('session', 'New draft.');
       await chat.appendUserMessage('session', 'Independent accepted input.');
       final writes = storage.transactions;
@@ -343,6 +361,7 @@ void main() {
       final receipt = await accept(_submission());
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No execution expected.'),
       );
       addTearDown(backend.close);
@@ -382,6 +401,7 @@ void main() {
       await chat.snapshot('session');
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No execution expected.'),
       );
       addTearDown(backend.close);
@@ -502,6 +522,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
       final state = await store.load(SessionId('session'));
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No execution expected.'),
       );
       addTearDown(backend.close);
@@ -535,11 +556,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
         'append' => chat.appendUserMessage('session', 'Must not append.'),
         'setDraft' => chat.setDraftRequest('session', 'Must not replace.'),
         'submitDraft' => chat.submitDraftRequest('session'),
-        'configure' => chat.configureSession(
-          'session',
-          'Must not configure.',
-          2,
-        ),
+        'configure' => chat.configureSession('session', 'Must not configure.'),
         _ => throw StateError('Unknown operation.'),
       };
       await expectLater(racing, throwsStateError);
@@ -568,6 +585,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
         final state = await store.load(SessionId('session'));
         final backend = ChatRemoteOrchestrationBackend(
           sessions: store,
+          maxModelInvocations: 8,
           hostChannel: (_) => throw StateError('No execution expected.'),
         );
         addTearDown(backend.close);
@@ -782,7 +800,6 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
                   'values': {
                     'session_id': 'session',
                     'instructions': chatDefaultInstructions,
-                    'max_model_invocations': 8,
                     'next_entry': 9,
                     'draft_request': '',
                   },
@@ -831,6 +848,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
       await accept(_submission());
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No execution expected.'),
       );
       addTearDown(backend.close);

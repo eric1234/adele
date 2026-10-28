@@ -52,6 +52,7 @@ upgrade of an older document.
 - `conversation`: Chat configuration and exact canonical entries, including
   stable entry IDs, roles, text, Session-local sequences, and nullable Run IDs.
   Assistant entries remain unassociated. Draft text is not a submitted message.
+  The backend's model-invocation budget is not Session state and is not exported.
 - `runs`: terminal product records with their execution root, lifecycle,
   model invocations and outputs, prepared tools, tool changes, and rejected
   proposals. Each relationship retains its Run-local identities/sequences.

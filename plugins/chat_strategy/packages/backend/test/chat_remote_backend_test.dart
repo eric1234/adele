@@ -13,6 +13,63 @@ import '../bin/chat_strategy_backend.dart' as entrypoint;
 import 'support/chat_storage.dart';
 
 void main() {
+  for (final (label, fields, matcher)
+      in <(String, Map<String, Object?>, Matcher)>[
+        ('missing map', {}, throwsFormatException),
+        ('missing setting', {'settings': <String, Object>{}}, throwsStateError),
+        (
+          'string value',
+          {
+            'settings': {chatMaxModelInvocationsSettingId: '40'},
+          },
+          throwsStateError,
+        ),
+        (
+          'boolean value',
+          {
+            'settings': {chatMaxModelInvocationsSettingId: true},
+          },
+          throwsStateError,
+        ),
+        (
+          'zero value',
+          {
+            'settings': {chatMaxModelInvocationsSettingId: 0},
+          },
+          throwsArgumentError,
+        ),
+        (
+          'negative value',
+          {
+            'settings': {chatMaxModelInvocationsSettingId: -1},
+          },
+          throwsArgumentError,
+        ),
+      ]) {
+    test('entrypoint rejects $label before advertising readiness', () async {
+      final bootstrap = ReceivePort();
+      final responses = ReceivePort();
+      addTearDown(bootstrap.close);
+      addTearDown(responses.close);
+      final ready = <Object?>[];
+      final calls = <Object?>[];
+      bootstrap.listen(ready.add);
+      responses.listen(calls.add);
+      await expectLater(
+        entrypoint.main([], {
+          'bootstrapPort': bootstrap.sendPort,
+          'responsePort': responses.sendPort,
+          'defaultConfigurationContext': 'configured-default',
+          'hostInfrastructureContext': 'infrastructure-token',
+          ...fields,
+        }),
+        matcher,
+      );
+      expect(ready, isEmpty);
+      expect(calls, isEmpty);
+    });
+  }
+
   test(
     'standalone entrypoint routes private service and advertises only strategy',
     () async {
@@ -43,7 +100,6 @@ void main() {
       final snapshot = await backend.chat.snapshot('session');
       expect(snapshot.entries, isEmpty);
       expect(snapshot.instructions, chatDefaultInstructions);
-      expect(snapshot.maxModelInvocations, 8);
       expect(snapshot.draftRequest, '');
       expect(backend.hostCalls, isNotEmpty);
       expect(
@@ -482,7 +538,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         throwsA(isA<AdeleRemoteFailure>()),
       );
       expect(backend.host.events, isEmpty);
-      await backend.chat.configureSession('session', 'Claim released.', 2);
+      await backend.chat.configureSession('session', 'Claim released.');
       backend.storage.database.execute('DROP TRIGGER reject_association');
       final retry = await backend.materialize();
       expect(retry, 'execution-1');
@@ -532,11 +588,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         'session',
         'Independent direct prompt.',
       );
-      await first.chat.configureSession(
-        'session',
-        'Retained configuration.',
-        3,
-      );
+      await first.chat.configureSession('session', 'Retained configuration.');
       expect((await first.chat.snapshot('session')).draftRequest, draft);
       await first.close();
 
@@ -545,7 +597,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
       final restored = await second.chat.snapshot('session');
       expect(restored.draftRequest, draft);
       expect(restored.instructions, 'Retained configuration.');
-      expect(restored.maxModelInvocations, 3);
       expect(restored.entries.single.id, 'entry-0');
       final entry = await second.chat.submitDraftRequest('session');
       expect((entry.id, entry.role, entry.content), ('entry-1', 'user', draft));
@@ -573,7 +624,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
       await backend.chat.configureSession(
         'session',
         '  exact instructions\r\n',
-        2,
       );
       final first = await backend.chat.appendUserMessage(
         'session',
@@ -596,7 +646,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
       expect(before.entries.single.id, first.id);
       expect(() => after.entries.clear(), throwsUnsupportedError);
       expect(after.instructions, '  exact instructions\r\n');
-      expect(after.maxModelInvocations, 2);
       expect((await backend.chat.snapshot('other')).entries, isEmpty);
       for (final invalid in ['', ' ', '\t\r\n']) {
         await expectLater(
@@ -608,19 +657,8 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           _failure('invalid_session'),
         );
       }
-      for (final invalid in [0, -1]) {
-        await expectLater(
-          backend.chat.configureSession(
-            'session',
-            'Must not replace.',
-            invalid,
-          ),
-          _failure('invalid_configuration'),
-        );
-      }
       final unchanged = await backend.chat.snapshot('session');
       expect(unchanged.instructions, after.instructions);
-      expect(unchanged.maxModelInvocations, 2);
       expect(
         unchanged.entries.map((entry) => entry.id),
         after.entries.map((entry) => entry.id),
@@ -637,7 +675,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         await backend.chat.configureSession(
           'session',
           'Original instructions.',
-          2,
         );
         final original = await backend.chat.appendUserMessage(
           'session',
@@ -649,7 +686,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         final configuring = backend.chat.configureSession(
           'session',
           'Changed instructions.',
-          3,
         );
         if (mutationsFirst) await configuring;
         final appending = backend.chat.appendUserMessage(
@@ -672,17 +708,12 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           captured.instructions,
           mutationsFirst ? 'Changed instructions.' : before.instructions,
         );
-        expect(
-          captured.maxModelInvocations,
-          mutationsFirst ? 3 : before.maxModelInvocations,
-        );
         expect(captured.entries.map((entry) => entry.content), [
           'Original prompt.',
           if (mutationsFirst) 'Additional prompt.',
         ]);
         expect(before.entries.single.id, original.id);
         expect(before.instructions, 'Original instructions.');
-        expect(before.maxModelInvocations, 2);
         expect(
           await backend.orchestration.start(execution, 'token'),
           RemoteRunState.completed,
@@ -693,7 +724,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         );
         final settled = await backend.chat.snapshot('session');
         expect(settled.instructions, captured.instructions);
-        expect(settled.maxModelInvocations, captured.maxModelInvocations);
         expect(
           settled.entries
               .take(captured.entries.length)
@@ -747,7 +777,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         backend.host.materials.single.instructions,
         '$chatToolNarrationGuidance\n\n$chatDefaultInstructions',
       );
-      await backend.chat.configureSession('session', 'Next instructions.', 1);
+      await backend.chat.configureSession('session', 'Next instructions.');
       final nextUser = await backend.chat.appendUserMessage(
         'session',
         'Follow up.',
@@ -864,6 +894,98 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
     );
   }
 
+  for (final phase in ['tool', 'approval']) {
+    test(
+      'remote budget survives $phase wait and next backend uses its own limit',
+      () async {
+        final storage = ChatTestStorage();
+        final store = ChatSessionStore(storage: storage);
+        final service = ChatSessionBackend(store);
+        final host = _Host()..batch = true;
+        final nextHost = _Host()..batch = true;
+        final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+        final nextDispatcher = RemoteOrchestrationHostServiceDispatcher(
+          nextHost,
+        );
+        final backend = ChatRemoteOrchestrationBackend(
+          sessions: store,
+          maxModelInvocations: 2,
+          hostChannel: (_) => _DirectHostChannel(dispatcher),
+        );
+        final gate = Completer<void>();
+        if (phase == 'tool') host.proposalGate = gate;
+        addTearDown(() async {
+          if (!gate.isCompleted) gate.complete();
+          await backend.close();
+          await dispatcher.close();
+          await nextDispatcher.close();
+          storage.close();
+        });
+        await service.appendUserMessage('session', 'First prompt.');
+        final execution = await backend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'run',
+        );
+        final advancing = backend.start(execution, 'first');
+        if (phase == 'tool') {
+          await host.proposalEntered.future;
+        } else {
+          expect(await advancing, RemoteRunState.waiting);
+        }
+        final nextBackend = ChatRemoteOrchestrationBackend(
+          sessions: store,
+          maxModelInvocations: 1,
+          hostChannel: (_) => _DirectHostChannel(nextDispatcher),
+        );
+        addTearDown(nextBackend.close);
+        await expectLater(
+          nextBackend.materialize(chatStrategyRouteId, _session, 'run-2'),
+          _failure('session_busy'),
+        );
+        if (phase == 'tool') {
+          gate.complete();
+          expect(await advancing, RemoteRunState.waiting);
+        }
+        expect(
+          await backend.resolveApproval(
+            execution,
+            RemoteApprovalResolution(
+              interruptionId: 'approval',
+              toolInvocationId: 'tool',
+              approved: true,
+            ),
+            'resume',
+          ),
+          RemoteRunState.completed,
+        );
+        expect(host.materials, hasLength(2));
+        await service.appendUserMessage('session', 'Next prompt.');
+        final next = await nextBackend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'run-2',
+        );
+        expect(await nextBackend.start(next, 'next'), RemoteRunState.failed);
+        expect(nextHost.materials, hasLength(1));
+        expect(nextHost.events, ['start', 'model', 'fail']);
+        expect(nextHost.failure!.message, contains('1 model invocations'));
+        expect(
+          (await service.snapshot(
+            'session',
+          )).entries.map((entry) => entry.content),
+          ['First prompt.', 'Final answer.', 'Next prompt.'],
+        );
+        expect(
+          storage.database
+              .select('PRAGMA table_info(adele_chat_sessions)')
+              .map((row) => row['name']),
+          ['session_id', 'instructions', 'next_entry', 'draft_request'],
+        );
+      },
+    );
+  }
+
   test(
     'stale draft rejects assistant commit after honest host completion',
     () async {
@@ -913,7 +1035,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           await backend.chat.configureSession(
             'session',
             'Retained instructions.',
-            3,
           );
           final user = await backend.chat.appendUserMessage(
             'session',
@@ -956,7 +1077,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
             [(user.id, 'user', 'Prompt.')],
           );
           expect(rejected.instructions, 'Retained instructions.');
-          expect(rejected.maxModelInvocations, 3);
           final durable = await ChatSessionBackend(
             ChatSessionStore(storage: backend.storage),
           ).snapshot('session');
@@ -1010,14 +1130,13 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
     'close waiting',
   ]) {
     test('$mode releases Session without inventing a final entry', () async {
-      final backend = await _RunningBackend.start();
+      final backend = await _RunningBackend.start(
+        maxModelInvocations: mode == 'limit' ? 1 : 8,
+      );
       addTearDown(backend.close);
       backend.host.batch = mode != 'model error';
       backend.host.modelError = mode == 'model error';
       await backend.chat.appendUserMessage('session', 'Prompt.');
-      if (mode == 'limit') {
-        await backend.chat.configureSession('session', '', 1);
-      }
       final execution = await backend.materialize();
       if (mode == 'model error') {
         await expectLater(
@@ -1051,7 +1170,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         ).snapshot('session')).entries.single.content,
         'Prompt.',
       );
-      await backend.chat.configureSession('session', 'After release.', 2);
+      await backend.chat.configureSession('session', 'After release.');
       await backend.chat.appendUserMessage('session', 'Next.');
     });
   }
@@ -1090,6 +1209,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
       );
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (context) => _DirectHostChannel(
           context == 'first' ? firstDispatcher : secondDispatcher,
         ),
@@ -1265,6 +1385,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
           final backend = ChatRemoteOrchestrationBackend(
             sessions: store,
+            maxModelInvocations: 8,
             hostChannel: (_) => _DirectHostChannel(dispatcher),
           );
           addTearDown(() async {
@@ -1333,7 +1454,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
             'run',
             if (!rejectCompletion) null,
           ]);
-          await service.configureSession('session', 'After close.', 2);
+          await service.configureSession('session', 'After close.');
           await service.appendUserMessage('session', 'Next.');
         },
       );
@@ -1347,6 +1468,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
       final service = ChatSessionBackend(store);
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) =>
             throw StateError('Materialization has no host authority.'),
       );
@@ -1384,6 +1506,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
           final backend = ChatRemoteOrchestrationBackend(
             sessions: store,
+            maxModelInvocations: 8,
             hostChannel: (_) => _DirectHostChannel(dispatcher),
           );
           final entered = Completer<void>();
@@ -1529,6 +1652,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
         final backend = ChatRemoteOrchestrationBackend(
           sessions: store,
+          maxModelInvocations: 8,
           hostChannel: (_) => _DirectHostChannel(dispatcher),
         );
         addTearDown(() async {
@@ -1550,7 +1674,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
                       'values': {
                         'session_id': 'session',
                         'instructions': '',
-                        'max_model_invocations': 8,
                         'next_entry': count,
                         'draft_request': '',
                       },
@@ -1561,7 +1684,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           await service.configureSession(
             'session',
             'x' * (relationalQueryByteLimit - emptyBytes),
-            8,
           );
         }
         final before = await service.snapshot('session');
@@ -1586,7 +1708,6 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         expect(storage.transactions, writes);
         final canonical = await service.snapshot('session');
         expect(canonical.instructions, before.instructions);
-        expect(canonical.maxModelInvocations, before.maxModelInvocations);
         if (durable) {
           expect(
             canonical.entries.map((entry) => entry.id),
@@ -1611,7 +1732,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           expect(canonical.entries, hasLength(count + 1));
         }
         await backend.release(execution);
-        await service.configureSession('session', 'Short.', 8);
+        await service.configureSession('session', 'Short.');
         expect(
           (await service.appendUserMessage('session', 'Next.')).id,
           'entry-${count + (durable ? 0 : 1)}',
@@ -1691,6 +1812,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
         final service = ChatSessionBackend(store);
         final backend = ChatRemoteOrchestrationBackend(
           sessions: store,
+          maxModelInvocations: 8,
           hostChannel: (_) =>
               throw StateError('Materialization must not start.'),
         );
@@ -1758,6 +1880,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
       final store = ChatSessionStore(storage: storage);
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No invocation authority.'),
       );
       final gate = Completer<void>();
@@ -1798,6 +1921,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
       final service = ChatSessionBackend(store);
       final backend = ChatRemoteOrchestrationBackend(
         sessions: store,
+        maxModelInvocations: 8,
         hostChannel: (_) => throw StateError('No invocation authority.'),
       );
       addTearDown(backend.close);
@@ -1920,12 +2044,16 @@ final class _RunningBackend {
   bool stopped = false;
   bool closed = false;
 
-  static Future<_RunningBackend> start({ChatTestStorage? storage}) async {
+  static Future<_RunningBackend> start({
+    ChatTestStorage? storage,
+    int maxModelInvocations = 8,
+  }) async {
     final bootstrap = ReceivePort();
     final responses = ReceivePort();
     final isolate = await Isolate.spawn(_runBackend, [
       bootstrap.sendPort,
       responses.sendPort,
+      <String, Object>{chatMaxModelInvocationsSettingId: maxModelInvocations},
     ]);
     try {
       final ready = await bootstrap.first.timeout(const Duration(seconds: 5));
@@ -1981,7 +2109,7 @@ final class _RunningBackend {
         _failure('session_busy'),
       ),
       expectLater(
-        chat.configureSession('session', 'Rejected.', 3),
+        chat.configureSession('session', 'Rejected.'),
         _failure('session_busy'),
       ),
       expectLater(
@@ -1992,7 +2120,6 @@ final class _RunningBackend {
     ]);
     final after = await chat.snapshot('session');
     expect(after.instructions, before.instructions);
-    expect(after.maxModelInvocations, before.maxModelInvocations);
     expect(after.draftRequest, before.draftRequest);
     expect(
       after.entries.map((entry) => (entry.id, entry.role, entry.content)),
@@ -2056,11 +2183,12 @@ final class _RunningBackend {
   }
 }
 
-Future<void> _runBackend(List<SendPort> ports) => entrypoint.main([], {
+Future<void> _runBackend(List<Object> ports) => entrypoint.main([], {
   'bootstrapPort': ports[0],
   'responsePort': ports[1],
   'defaultConfigurationContext': 'configured-default',
   'hostInfrastructureContext': 'infrastructure-token',
+  'settings': ports[2],
 });
 
 final class _Channel implements AdeleRequestChannel {
@@ -2113,8 +2241,10 @@ final class _Host implements RemoteOrchestrationHostService {
   final materials = <StrategyInferenceMaterial>[];
   final modelEntered = Completer<void>();
   final completeEntered = Completer<void>();
+  final proposalEntered = Completer<void>();
   Completer<void>? modelGate;
   Completer<void>? completeGate;
+  Completer<void>? proposalGate;
   bool batch = false;
   bool approved = false;
   bool modelError = false;
@@ -2123,6 +2253,7 @@ final class _Host implements RemoteOrchestrationHostService {
   bool refuse = false;
   String finalAnswer = 'Final answer.';
   RemoteRunState state = RemoteRunState.created;
+  RemoteOrchestrationFailure? failure;
 
   @override
   Future<RemoteRunState> transition(
@@ -2130,6 +2261,7 @@ final class _Host implements RemoteOrchestrationHostService {
     RemoteOrchestrationFailure? failure,
   ) async {
     events.add(transition.name);
+    this.failure = failure;
     if (transition == RemoteRunTransition.complete) {
       if (!completeEntered.isCompleted) completeEntered.complete();
       await completeGate?.future;
@@ -2195,6 +2327,8 @@ final class _Host implements RemoteOrchestrationHostService {
     expect(toolSnapshotHandle, 'snapshot');
     expect(state, RemoteRunState.running);
     events.add('proposal-$proposalHandle');
+    if (!proposalEntered.isCompleted) proposalEntered.complete();
+    await proposalGate?.future;
     if (proposalHandle == 'one') {
       state = RemoteRunState.waiting;
       return RemoteStrategyToolResult.fromLocal(const StrategyToolWaiting());

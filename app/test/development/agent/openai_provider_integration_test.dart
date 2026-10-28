@@ -222,6 +222,7 @@ void main() {
           );
       final ChatTestTopology topology = ChatTestTopology(
         SessionId('session-openai-b4'),
+        maxModelInvocations: 8,
       );
       addTearDown(topology.close);
       final ChatSessionState session = topology.chat.sessions.obtain(
@@ -398,8 +399,7 @@ void main() {
   test(
     'searches and reads real ADELE source through four shared-host AOT backends',
     () async {
-      const String strategyPath =
-          'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
+      const String strategyPath = 'plugins/chat_strategy/settings.schema.json';
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-openai-environment-source-',
       );
@@ -469,7 +469,9 @@ void main() {
                   'id': 'fc_search',
                   'call_id': 'call_search',
                   'name': 'search',
-                  'arguments': '{"pattern":"final class ChatSessionState"}',
+                  'arguments': jsonEncode({
+                    'pattern': chatMaxModelInvocationsSettingId,
+                  }),
                   'status': 'completed',
                 }),
               );
@@ -545,8 +547,8 @@ void main() {
                 (input[6]! as Map<String, Object?>)['output'],
                 allOf(
                   startsWith('File: ${jsonEncode(strategyPath)}'),
-                  contains('final class ChatSessionState'),
-                  contains('_maxModelInvocations = 8'),
+                  contains(chatMaxModelInvocationsSettingId),
+                  contains('"default": 40'),
                 ),
               );
               _sse(
@@ -554,7 +556,7 @@ void main() {
                 _outputDone(
                   _message(
                     'msg_final',
-                    '$strategyPath declares ChatSessionState and defaults its model-invocation limit to 8.',
+                    '$strategyPath declares the Chat model-invocation limit with default 40.',
                   ),
                 ),
               );
@@ -606,7 +608,9 @@ void main() {
       );
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration strategyActivation = chat.activate(
         extensions,
       );
@@ -707,7 +711,7 @@ void main() {
         ..instructions =
             'Use search to locate the requested declaration, then use read_file with the returned relative path before answering.'
         ..appendUserMessage(
-          'Find where ChatSessionState is declared, inspect the source, and report its path and model invocation limit.',
+          'Find where $chatMaxModelInvocationsSettingId is declared, inspect the source, and report its path and default value.',
         );
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
@@ -732,7 +736,7 @@ void main() {
       expect(outbound, hasLength(3));
       expect(
         session.snapshot().entries.last.content,
-        '$strategyPath declares ChatSessionState and defaults its model-invocation limit to 8.',
+        '$strategyPath declares the Chat model-invocation limit with default 40.',
       );
       final List<ToolInvocationPrepared> prepared = run.journal.records
           .map((ExecutionEventRecord record) => record.event)
@@ -826,7 +830,7 @@ Future<void> _createSourceRepository({
   const List<String> sourcePaths = <String>[
     'README.md',
     'app/tool/self_hosting/development_agent_support.dart',
-    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart',
+    'plugins/chat_strategy/settings.schema.json',
   ];
   await source.create(recursive: true);
   for (final String relativePath in sourcePaths) {

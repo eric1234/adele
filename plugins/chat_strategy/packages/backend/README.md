@@ -13,7 +13,7 @@ multiplexer. Construction makes no storage calls before ready. First Session
 access deduplicates hydration, asks `isDurableSession`, and initializes or reads
 the Chat-owned v1 relational baseline. The schema owner is the connection's exact
 PluginId, `dev.adele.plugin.chat-strategy`, not a caller-supplied owner.
-`adele_chat_sessions` stores instructions, positive invocation budget, the
+`adele_chat_sessions` stores instructions, the
 next-entry counter, and `draft_request TEXT NOT NULL`, keyed by and referencing
 `adele_product_sessions(id)`. The current schema remains a v1 baseline, with no
 upgrade migration or compatibility reader for development schemas.
@@ -35,10 +35,10 @@ query, keeping individually readable rows within the response bound. An empty
 result ends the contiguous lookup. A final retained-row count and the entry-counter
 check reject hidden rows or gaps before publishing state. It validates the current
 contiguous sequence/`entry-N` IDs, role, nonblank content, nullable user-only Run
-associations and their uniqueness, counter, budget, and string draft. The counter
+associations and their uniqueness, counter, and string draft. The counter
 starts at zero and is shared by both roles. Raw message,
 draft, and instruction bytes are retained. Missing state is initialized to stock
-instructions, budget eight, counter zero, and an empty draft. Invalid canonical row
+instructions, counter zero, and an empty draft. Invalid canonical row
 values raise `ChatStateCorruption`; schema/query failures also propagate rather
 than resetting state. Before durable
 writes, each projected configuration/entry row must fit the
@@ -67,10 +67,18 @@ volatile fixture behavior.
 
 The strategy preserves ordered canonical user/final-assistant projection,
 provider-native Run-local replay, sequential tool proposals, approval pauses,
-refusals, and the positive model-invocation limit. Instructions and the limit are
-captured at materialization; the default limit is eight and stock instructions
-are backend-owned. Intermediate tool, native, reasoning, and narration items do
-not enter canonical history.
+refusals, and the positive model-invocation limit. `ChatStrategyPlugin` and
+`ChatRemoteOrchestrationBackend` require a positive `maxModelInvocations` argument
+independently of the store. Each execution captures that immutable budget at
+materialization alongside the Session instructions. The authoritative
+[`settings.schema.json`](../../settings.schema.json) declares default 40, minimum 1,
+and no maximum; the entrypoint requires the host's resolved startup value through
+`AdeleBackendSettings.fromBootstrap(...).read<int>(chatMaxModelInvocationsSettingId)`.
+No missing-setting fallback exists. A differently configured plugin/backend can
+share the store for a later Run, without changing an existing execution across
+tool or approval waits. The budget is absent from Session snapshots, SQL, and
+instruction configuration. Intermediate tool, native, reasoning, and narration
+items do not enter canonical history.
 
 After successful `RemoteOrchestrationBackend.materialize`,
 `ChatRemoteOrchestrationBackend` associates the final history entry with the semantic
@@ -151,8 +159,8 @@ actual encoded storage-row bounds are enforced before creating an occurrence.
 
 Service mutations hold the same Session claim while SQL is pending and are
 rejected while another write or materialized execution owns it, including
-approval waits and terminal acknowledgement. Configuration replaces both fields
-in one SQL transaction before memory publication. Appends persist the candidate
+approval waits and terminal acknowledgement. `configureSession` replaces only
+instructions in one SQL transaction before memory publication. Appends persist the candidate
 entry and counter atomically before returning it. Expected row counts and prior
 counter/configuration/draft predicates reject writes from stale generation caches.
 Read-only snapshots and other Sessions remain available.

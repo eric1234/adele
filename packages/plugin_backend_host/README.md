@@ -33,6 +33,19 @@ bootstrap always sets it to `true`. This is temporary deployment metadata, not a
 environment scrubber or settings/profile/credential service. See
 [`plugin_runtime` startup arguments](../plugin_runtime/README.md#startup-arguments).
 
+Every `startPlugin` frame also carries an explicit `settings` map, including when
+empty. The host uses public
+[`adele_plugin_backend_support`](../plugin_backend_support/README.md#bootstrap-settings)
+structural validation to copy string-keyed bool/int/String values before spawning,
+then forwards them to that exact isolate generation's bootstrap message. It does
+not resolve defaults, interpret setting IDs or declaration constraints, or add a
+configuration lookup/RPC. A backend may ignore the field; consumers use
+`AdeleBackendSettings` to capture and read it. Missing required values or wrong
+consumer types fail that startup without affecting peers or a corrected retry.
+`test/backend_settings_test.dart` covers malformed frames before spawn;
+`test/plugin_termination_test.dart` uses the real shared-host/backend AOT fixture
+for scalar roundtrips, immutable capture, peer isolation, and same-ID replacement.
+
 Both shared-host and plugin-backend protocols use version 1 with exact
 protocol-version matching. Before the first release, unstable wire changes may
 retain that version; rebuild coherent runtime/host/backend snapshots rather than

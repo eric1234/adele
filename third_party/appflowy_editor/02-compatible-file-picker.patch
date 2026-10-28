@@ -1,0 +1,31 @@
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -15,5 +15,5 @@
+   collection: "^1.18.0"
+   diff_match_patch: "^0.4.1"
+-  file_picker: ^10.2.0
++  file_picker: 12.0.0-beta.3
+   flutter:
+     sdk: flutter
+diff --git a/lib/src/editor/util/file_picker/file_picker_impl.dart b/lib/src/editor/util/file_picker/file_picker_impl.dart
+--- a/lib/src/editor/util/file_picker/file_picker_impl.dart
++++ b/lib/src/editor/util/file_picker/file_picker_impl.dart
+@@ -5,4 +5,4 @@
+   @override
+   Future<String?> getDirectoryPath({String? title}) {
+-    return fp.FilePicker.platform.getDirectoryPath();
++    return fp.FilePicker.getDirectoryPath();
+   }
+@@ -21,4 +21,4 @@
+   }) async {
+-    final result = await fp.FilePicker.platform.pickFiles(
++    final result = await fp.FilePicker.pickFiles(
+       dialogTitle: dialogTitle,
+       initialDirectory: initialDirectory,
+@@ -44,4 +44,4 @@
+   }) {
+-    return fp.FilePicker.platform.saveFile(
++    return fp.FilePicker.saveFile(
+       dialogTitle: dialogTitle,
+       fileName: fileName,

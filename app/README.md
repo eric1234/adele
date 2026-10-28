@@ -18,6 +18,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | --- | --- |
 | Construction of the shared `AdeleRuntime` and its registries/store/coordinators | Generic Extension Point semantics: [plugin system](../docs/architecture/plugin-system.md), [plugin API](../packages/plugin_api/README.md). |
 | Normal prepared backend bootstrap and window-owned frontend activation | Source preparation/build semantics: [plugin layout](../docs/architecture/plugin-layout.md), [plugin builder](../packages/plugin_builder/README.md); backend hosting: [plugin runtime](../packages/plugin_runtime/README.md). |
+| Shared startup settings projection and Global Settings I/O/UI | Scalar/record semantics: [settings](../packages/settings/README.md); configuration ownership and apply boundaries: [profiles and configuration](../docs/architecture/profiles-and-configuration.md). |
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git](../plugins/git/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
@@ -94,9 +95,10 @@ backend connection without importing stock plugins.
 
 Normal startup consumes prepared artifacts, never plugin source. Backend and
 frontend availability are independent, but both owners consume the same catalog
-snapshot. Missing plugin functionality remains unavailable without app-native
-stock substitutes. Backend registrations enter the same generic registries used
-by lifecycle and execution composition; installation presence alone grants none.
+and resolved settings snapshots. Missing plugin functionality remains unavailable
+without app-native stock substitutes. Backend registrations enter the same generic
+registries used by lifecycle and execution composition; installation presence alone
+grants none.
 
 ### Normal backend startup
 
@@ -109,6 +111,9 @@ settle without a child process, including with frontend-only installations.
 The bootstrap accepts generic deployment locations and an optional PluginId-to-argv
 file. It forwards opaque arguments with `startupArgumentsOnly: true`; neither the
 bootstrap nor shared host interprets provider credentials or stock configuration.
+Separately, it projects declared scalar values from the shared
+[startup settings snapshot](#prepared-settings) and passes them to each
+`startPlugin(settings: ...)` call before that backend advertises readiness.
 Ready advertisements are adapted by `PluginBackendActivation.registerAdvertised`
 and `createRemoteExtensionAdapters` into existing registries, not an app-specific
 stock activation table.
@@ -231,36 +236,50 @@ concrete frontend behavior belongs to each plugin.
 
 ### Prepared settings
 
-[`PreparedSettingsSnapshot`](lib/frontend/prepared_settings.dart) assembles the
+[`PreparedSettingsSnapshot`](lib/core/prepared_settings.dart) assembles the
 catalog's validated declarations and resolves them through `GlobalSettingsStore`
-once before frontend activation. Normal application startup uses
+for both independently activated frontends and backends.
+`ApplicationPluginBootstrap.settingsForCatalog` memoizes the resolution for the
+exact discovered catalog. `AdeleApplication` configures its loader before startup
+and gives the same accessor to `ApplicationFrontendBootstrap`; frontend activation
+does not depend on backend readiness. Normal application startup uses
 [`GlobalSettingsService`](lib/core/global_settings_service.dart), the same retained
 I/O owner as the Settings dialog, with roots captured at application mount. Only
 immutable scalar results, provenance, and errors return to the UI isolate. No store
 reads occur in widget builds or bridge calls. Startup with no declarations does not
-read configuration. Backend startup does not wait for settings or acquire a
-settings dependency. The standalone read-only loader remains available to isolated
-hosts/tests using a short-lived isolate.
+read configuration. The standalone read-only `load` uses a short-lived isolate;
+`resolve(catalog, globalOverrides: ...)` supports explicit default/override
+resolution for isolated hosts and fixtures without reading user configuration.
 
 The host binds `readPluginSetting` in the public contribution bridge to the exact
 prepared installation and its validated declarations, not a caller-supplied owner
 or a namespace-prefix guess. Main Content initialization, input/pane presentations,
 and fresh finite operations receive the same startup values with their existing
-liveness checks. Other presentation roles and backend AOT settings delivery are not
-implemented. The bridge exports no paths, TOML, mutation, credentials, or other
-owners' settings.
+liveness checks. Other presentation roles have no settings bridge. For backends,
+`valuesForInstallation` validates the exact installation and projects only its
+declared values. `PluginBackendHost.startPlugin(settings: ...)` copies the scalar
+map for that generation, and plugin code reads it with public
+`AdeleBackendSettings.fromBootstrap`. The delivery paths export no filesystem
+paths, TOML, mutation, credentials, or other owners' settings. There is no backend
+settings RPC or subscription; declaration/default/override semantics remain in the
+existing Settings resolver rather than the transport.
 
-Invalid known overrides fail the owning frontend activation and retain an
-attributable error in `InstalledFrontendActivation.failure`. Whole-file load or
-catalog aggregation failures remain errors for frontends declaring settings;
-settings-free frontends and independently started backends remain usable. An invalid
-schema is a settings-specific catalog issue, not a reason to disable a valid
-executable component; attempting to read an undeclared setting still fails.
+Invalid known overrides fail each owning component's activation and retain an
+attributable error in `InstalledFrontendActivation.failure` or
+`InstalledBackendActivation.failure`; healthy unrelated components remain usable.
+Whole-file load or catalog aggregation failures remain errors for components
+declaring settings, without disabling settings-free frontends or backends. An
+invalid schema is a settings-specific catalog issue, not an automatic executable
+failure. A backend that consumes a missing required setting still fails explicitly
+before readiness; a frontend read of an undeclared setting also fails.
 Startup never creates or rewrites `settings.toml` or materializes defaults.
 
 Consumer configuration is captured at startup, without watching or live refresh.
 Edit global `settings.toml` manually or through Global Settings and restart ADELE
-to apply changes, including to subsequently opened Source editors.
+to apply changes, including to later Chat Runs and subsequently opened Source
+editors. For Chat, use **Agents / Execution / Maximum Model Invocations per Run**;
+its [declaration and Run boundary](../docs/architecture/profiles-and-configuration.md#chat-invocation-budget)
+are plugin-owned, not Session configuration or an application hardcoded default.
 See [configuration architecture](../docs/architecture/profiles-and-configuration.md)
 for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
 for declaration ownership, bounds, and diagnostics.
@@ -280,7 +299,7 @@ keyboard focus. Declaration metadata supplies categories, sections, labels,
 descriptions, scalar controls, and search terms.
 
 The dialog loads current persisted configuration on each opening, independently
-of the immutable frontend startup snapshot. Effective values and Default/Global
+of the immutable shared startup snapshot. Effective values and Default/Global
 provenance remain visible while drafts are edited. Save is deliberate and per
 setting; Reset removes an override instead of copying its default. Text input
 does not write on each keystroke, enum labels are not serialized, and ordinary
@@ -586,6 +605,96 @@ See [focused owner/EVC checks](../docs/development/testing.md#focused-editor-che
 and the [Linux profile/manual entrypoint](../docs/development/testing.md#integrated-editor-smoke).
 Those procedures are not pass claims; earlier investigation results do not
 establish human checks of this integrated path or macOS/Windows execution.
+
+### Native rich-document editor
+
+The app privately depends on patched AppFlowy Editor 6.2.0. Source preparation,
+the dependency compatibility patches, licensing, and recovery commands belong to
+the [toolchain policy](../docs/development/toolchain.md#native-rich-editor-dependency).
+[`NativeRichDocumentEditor`](lib/editor/native_rich_document_editor.dart) owns one
+in-memory AppFlowy document, editor state, transaction observation, and undo history.
+It accepts supplied Markdown and a fixed read-only option, without a document ID,
+file path, storage service, or Session semantics. Ordinary rebuilding and complete
+native view unmount/remount preserve the document and undo; focus and viewport are
+view-local. Simultaneous mounts of one owner fail explicitly rather than taking over
+the first view. Independent owners have independent documents.
+
+Disposal revokes editing and closes the input service synchronously while its widget
+is mounted. Physical editor-state disposal waits until the AppFlowy subtree is
+removed; focus and the upstream notifiers not covered by `EditorState.dispose`
+are also released. Normal view deactivation closes input without destroying the
+owner. Disposal is idempotent. This addresses the mounted-focus requirement retained
+in [`appflowy_editor_smoke_test.dart`](test/appflowy_editor_smoke_test.dart).
+The small maintained selection-lifecycle dependency patch makes resize refresh
+timers instance-owned and cancels them on selection release/disposal. The native
+resize-then-unmount regression reproduces the unpatched null-selection crash.
+
+[`RichDocumentEditorBridge`](lib/frontend/rich_document_editor_bridge.dart) creates
+owners on demand from plugin-supplied Markdown, so a frontend may load content
+asynchronously before creation. Its bounded handle table belongs to one exact
+presentation/runtime, not a global document registry. It survives native view
+rebuilding or temporary hiding only while that presentation remains live. Explicit
+handle release, presentation failure/disposal, and prepared exit retention revoke
+access and dispose the owned editors. Neither old handles nor cached widgets can
+acquire a replacement generation. Exit retention may keep the evaluated outer
+subtree mounted, but it does not retain editing authority or a document for later
+reuse. A future consumer needing navigation-independent ownership must deliberately
+integrate with host retention; this primitive does not supply persistence.
+
+The public [UI bridge](../packages/ui/lib/rich_document_editor_bridge.dart) exposes
+creation, view construction, invalidation subscriptions, explicit Markdown
+snapshots, and release. Notifications carry no document and selection alone does
+not notify. The revision is document-transaction invalidation, not a dirty flag,
+plugin persistence version, or save acknowledgement. Snapshots copy scalar data
+across the evaluator boundary; AppFlowy state and native controllers never cross it.
+
+Only supported text block builders and editing shortcuts are installed. No slash
+menu, floating formatting menu, link navigation/menu, image/file insertion, native
+upload dialog, HTML paste, or document-triggered network/filesystem operation is
+wired. Links display inertly. Clipboard paste accepts plain text and rechecks the
+same live mounted view after the asynchronous read. Native bold, italic, inline
+code, selection, clipboard, and undo/redo remain ordinary editor interactions,
+not a plugin transaction API.
+
+Multiline plain-text paste keeps line breaks inside the current block. It does
+not use AppFlowy's multi-block paste helper, which moves original nested list
+children before recording Undo. Cut requires an explicit text selection rather
+than deleting the last block at a collapsed cursor. Tab indentation and conversion
+of nested/container blocks to paragraphs are not enabled; those transformations
+can produce structures outside the supported Markdown subset. Read-only selection
+does not attach a text-input client, but selection and explicit copy remain usable.
+
+#### Markdown boundary
+
+[`RichDocumentMarkdown`](lib/editor/rich_document_markdown.dart) maps a closed
+Markdown AST subset to AppFlowy's document tree and exports without mutating it.
+The prepared 6.2.0 wrappers are not safe defaults: import preformatting can rewrite
+code, missing parsers discard blocks, inline conversion can lose nested styles,
+and nested export reparents live nodes. The adapter uses public Markdown and
+AppFlowy document APIs instead; it does not patch those codecs or expose native
+JSON as the portable representation.
+
+| Case | Behavior |
+| --- | --- |
+| Import without a document mutation | Snapshot returns the exact original string, including empty input, CRLF, blank lines and trailing whitespace. Selection and rebuilding do not switch to exported Markdown. |
+| Editable subset | Paragraphs, headings 1-6, bold/italic (including nested runs), inline code with backticks, inert links without titles, bulleted/numbered/nested lists, and single-paragraph blockquotes. Unicode remains text. |
+| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal punctuation is escaped; numeric entities protect edge whitespace and otherwise ambiguous newlines. |
+| Unsupported imports | Fenced and indented code blocks, images, tables, HTML, task lists, strikethrough, hard breaks, reference/footnote definitions, link titles, complex quote/list bodies and separate adjacent same-kind lists. Raw Unicode/control whitespace that the block parser can trim is rejected; entity-spelled whitespace is supported. The entire original source remains visible and snapshot-readable, with an explicit read-only reason; no partially decoded document replaces it. |
+| Unsupported edited state | Export fails explicitly, including ambiguous emphasis, multiline inline-code spans, unknown attributes, unsupported nested structure or an empty paragraph whose removal would merge separate same-kind lists. The bridge returns `markdown: null` with `error: 'unsupported_serialization'`; callers must not save this as content. The native document remains available for correction/Undo. |
+
+Fenced-code tests cover languages, multiline/indented content, embedded backticks,
+trailing whitespace and CRLF as preserved unsupported input. Basic editable code
+requires a dedicated block representation, renderer and newline/clipboard behavior;
+the incompatible `appflowy_editor_plugins` package is not imported. A focused
+code-block slice is needed before using this editor for arbitrary existing Markdown.
+The subset is intentionally conservative, not a claim of general CommonMark/GFM
+round-trip fidelity or complete IME/composition semantics.
+
+The focused native, conversion, and compiled-EVC tests are automatically discovered
+by the desktop target; see [validation](../docs/development/testing.md#rich-document-editor-checks).
+These are pinned Linux Flutter widget-engine checks, not human keyboard/IME
+acceptance or macOS/Windows packaging evidence. Chat's composer, backend contracts,
+and persistent plain-text Draft Request semantics are unchanged.
 
 ### Native terminal surface
 
@@ -1499,7 +1608,7 @@ for value limits and security qualifications, and
 ### Normal Chat interaction
 
 With its prepared contributions available, Chat is the current stock Session.
-The Chat backend owns conversation state/history, Draft Request, configuration,
+The Chat backend owns conversation state/history, Draft Request, Session instructions,
 and strategy sequencing; its interpreted frontend owns history/composer
 presentation and activity grouping.
 The app owns generic scheduling, Run hosting, provider/tool/context composition,
@@ -1507,7 +1616,7 @@ execution status, policy, and approvals, not a second Chat implementation. Chat'
 contributed pane places the native status controls through the public bridge;
 the application does not wrap Chat in a privileged strategy surface.
 
-The backend lazily loads initialized durable Chat history/configuration/draft
+The backend lazily loads initialized durable Chat history/instructions/draft
 through the shared storage service; Project opening does not hydrate Chat. The host
 Run can already be completed when plugin history storage fails; the
 [terminal retention rules](../docs/architecture/execution-model.md#terminal-run-retention)
@@ -1515,6 +1624,12 @@ preserve that outcome while surfacing the error. Generation-local
 cache, durable state, and transport-uncertainty boundaries live in
 [plugin persistence](../docs/architecture/plugin-system.md#chat-participation)
 and the [Chat README](../plugins/chat_strategy/README.md).
+
+The invocation limit instead comes from [prepared startup settings](#prepared-settings)
+and is captured by Chat for each Run. Session snapshots and SQL do not retain it;
+`configureSession` updates instructions only. Changing Settings does not alter
+active or later Runs in the same application startup, and does not change host
+policy or approval behavior.
 
 The current Draft Request is plain text. Chat's prepared frontend restores it and
 sequentially saves coalesced edits through its own backend service. Send flushes
@@ -1677,6 +1792,8 @@ headless entrypoints. Runner, topology, and report owners live under
 [`tool/self_hosting/`](tool/self_hosting/), deliberately outside `app/lib` because
 they know concrete plugins. They reuse application/core runtime composition and
 normal remote execution boundaries, not desktop frontend composition.
+The topology injects an explicit invocation budget at Chat backend startup and
+reports that configured value; Session configuration remains instructions-only.
 
 This legacy workflow remains separate from desktop evaluation handoff preparation;
 the desktop Command does not launch it. See
@@ -1709,16 +1826,17 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 Project identity/source, Tasks, Environment semantic records, and provider-state
 snapshots, Sessions, semantic Environment associations, terminal Run records, and
 terminal public activity snapshots are durable; initialized Chat conversation,
-configuration, plain-text Draft Request, and user-entry Run associations are
+instructions, plain-text Draft Request, and user-entry Run associations are
 plugin-owned durable state. Environment materialization remains lazy
 and runtime-only.
 Active/waiting Runs, claims, approval restart, live bindings, and native continuation
 recovery are not persisted. Rich Draft Request documents, conversation forks,
 and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
-active Runs per Session. Automatic selection/resume, general settings,
-Profiles, configured-provider/credential management, and workbench persistence
-remain absent.
+active Runs per Session. Global scalar settings and nonsecret configuration records
+are implemented, with startup-only scalar delivery to frontends and backends.
+Automatic selection/resume, Profiles, configured-provider/credential management,
+and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.
 Intended UX belongs to
@@ -1738,6 +1856,7 @@ repository-wide deferred-feature ledger here.
 | Prepared console and retained terminal content | [`lib/frontend/prepared_console_host.dart`](lib/frontend/prepared_console_host.dart), [`lib/frontend/environment_terminal_bridge.dart`](lib/frontend/environment_terminal_bridge.dart), [`lib/terminal/terminal_console_content.dart`](lib/terminal/terminal_console_content.dart) |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
+| Shared startup settings and configuration I/O | [`lib/core/prepared_settings.dart`](lib/core/prepared_settings.dart): `PreparedSettingsSnapshot`; [`lib/core/global_settings_service.dart`](lib/core/global_settings_service.dart): `GlobalSettingsService` |
 | Backend Capability mediation | [`lib/core/backend_capability_host.dart`](lib/core/backend_capability_host.dart): `BackendCapabilityHost` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Task Browser projection/actions | [`lib/frontend/window_task_browser_source.dart`](lib/frontend/window_task_browser_source.dart), [`lib/frontend/task_browser_bridge.dart`](lib/frontend/task_browser_bridge.dart): `WindowTaskBrowserSource`, `TaskBrowserSource`, `TaskBrowserBridge` |

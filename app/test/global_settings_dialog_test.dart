@@ -20,6 +20,7 @@ const _count = '$_owner.count';
 const _message = '$_owner.message';
 const _mode = '$_owner.mode';
 const _folding = 'dev.adele.source-editor.enable-folding';
+const _chatBudget = 'dev.adele.plugin.chat-strategy.max-model-invocations';
 const _restart = 'Restart ADELE to apply configuration changes.';
 
 void main() {
@@ -1054,6 +1055,64 @@ void main() {
         }
       });
     },
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'published Chat budget validates, saves, reopens and resets without activation',
+    (tester) => tester.runAsync(() async {
+      final installations = Directory('${temporary.path}/installed');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: Directory('${installations.path}/chat'),
+        pluginId: 'dev.adele.plugin.chat-strategy',
+        displayName: 'Chat',
+      );
+      final prepared = await PreparedPluginCatalog.discover(installations.path);
+      expect(prepared.issues, isEmpty);
+      expect(prepared.installations.single.frontend, isNull);
+      expect(prepared.installations.single.backendArtifactUri, isNull);
+      catalog = prepared.settings;
+      final type = catalog.definitions.single.type as IntegerSettingType;
+      expect(type.minimum, 1);
+      expect(type.maximum, isNull);
+      await mount(tester);
+      await loaded(tester);
+      expect(find.text('Maximum Model Invocations per Run'), findsWidgets);
+      expect(find.textContaining('Agents'), findsWidgets);
+      expect(find.textContaining('Execution'), findsWidgets);
+      expect(
+        tester.widget<TextField>(_input(_chatBudget)).controller!.text,
+        '40',
+      );
+      expect(_rowText(_chatBudget, 'Default'), findsOneWidget);
+      for (final invalid in ['0', '-1', '1.5', 'invalid']) {
+        await tester.enterText(_input(_chatBudget), invalid);
+        await tester.pump();
+        expect(_buttonEnabled(tester, _save(_chatBudget)), isFalse);
+        expect(settingsFile().existsSync(), isFalse);
+      }
+      await tester.enterText(_input(_chatBudget), '80');
+      await tester.pump();
+      await tap(tester, _save(_chatBudget));
+      await expectPersisted(_chatBudget, 80, SettingValueSource.global);
+      expect(_rowText(_chatBudget, 'Global'), findsOneWidget);
+      Navigator.of(tester.element(find.byType(GlobalSettingsDialog))).pop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open settings'));
+      await tester.pump();
+      await loaded(tester);
+      expect(
+        tester.widget<TextField>(_input(_chatBudget)).controller!.text,
+        '80',
+      );
+      await tap(tester, _reset(_chatBudget));
+      await expectPersisted(_chatBudget, 40, SettingValueSource.defaultValue);
+      expect(settingsFile().readAsStringSync(), isNot(contains(_chatBudget)));
+      expect(_rowText(_chatBudget, 'Default'), findsOneWidget);
+      expect(find.text(_restart), findsOneWidget);
+      await unmount(tester);
+    }),
     skip: !Platform.isLinux,
   );
 

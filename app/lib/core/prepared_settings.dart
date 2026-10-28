@@ -7,29 +7,63 @@ import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../core/global_settings_service.dart';
-
 /// One read-only startup snapshot, not a watcher or a configuration writer.
 /// Normal startup captures the application's settings owner; standalone loading
 /// uses a short-lived read-only isolate for independent prepared-host consumers.
 final class PreparedSettingsSnapshot {
   PreparedSettingsSnapshot._(this._catalog, this._values, this._failures);
 
-  factory PreparedSettingsSnapshot.fromView(
+  factory PreparedSettingsSnapshot.fromResolution(
     PreparedPluginCatalog catalog,
-    GlobalSettingsView view,
-  ) {
+    SettingsCatalog resolvedCatalog, {
+    required Map<SettingId, ResolvedSetting<Object>> values,
+    required Map<SettingId, Object> failures,
+  }) {
     final definitions = catalog.settings.definitions;
-    if (definitions.length != view.catalog.definitions.length ||
+    if (definitions.length != resolvedCatalog.definitions.length ||
         definitions.any(
           (definition) =>
-              !identical(definition, view.catalog.definition(definition.id)),
+              !identical(definition, resolvedCatalog.definition(definition.id)),
         )) {
       throw ArgumentError(
         'Settings belong to another prepared catalog snapshot.',
       );
     }
-    return PreparedSettingsSnapshot._(catalog, view.values, view.failures);
+    return PreparedSettingsSnapshot._(
+      catalog,
+      Map.unmodifiable(values),
+      Map.unmodifiable(failures),
+    );
+  }
+
+  /// Explicit default/override resolution for standalone hosts and fixtures.
+  /// This path never reads user configuration files.
+  factory PreparedSettingsSnapshot.resolve(
+    PreparedPluginCatalog catalog, {
+    Map<SettingId, Object?> globalOverrides = const {},
+  }) {
+    final values = <SettingId, ResolvedSetting<Object>>{};
+    final failures = <SettingId, Object>{};
+    try {
+      final settings = catalog.settings;
+      for (final definition in settings.definitions) {
+        try {
+          values[definition.id] = settings.resolve<Object>(
+            definition.id,
+            globalOverrides: globalOverrides,
+          );
+        } on Object catch (error) {
+          failures[definition.id] = error;
+        }
+      }
+    } on Object catch (error) {
+      return PreparedSettingsSnapshot.fromFailure(catalog, error);
+    }
+    return PreparedSettingsSnapshot._(
+      catalog,
+      Map.unmodifiable(values),
+      Map.unmodifiable(failures),
+    );
   }
 
   factory PreparedSettingsSnapshot.fromFailure(
@@ -85,7 +119,7 @@ final class PreparedSettingsSnapshot {
     }
   }
 
-  /// Invalid known overrides fail their owning frontend before publication.
+  /// Invalid known overrides fail their owning component before publication.
   /// An omitted/malformed schema alone does not disable executable components.
   void validateInstallation(PreparedPluginInstallation installation) {
     _validateOwner(installation);
@@ -94,6 +128,20 @@ final class PreparedSettingsSnapshot {
             <SettingDefinition<Object>>[]) {
       if (_failures[definition.id] case final failure?) throw failure;
     }
+  }
+
+  /// Projects only declarations of this exact installation, never a namespace
+  /// prefix or another installation with matching semantic identity.
+  Map<String, Object> valuesForInstallation(
+    PreparedPluginInstallation installation,
+  ) {
+    validateInstallation(installation);
+    return Map.unmodifiable({
+      for (final definition
+          in installation.settingsSchema?.definitions ??
+              <SettingDefinition<Object>>[])
+        definition.id.value: read(installation, definition.id.value).value,
+    });
   }
 
   ResolvedSetting<Object> read(

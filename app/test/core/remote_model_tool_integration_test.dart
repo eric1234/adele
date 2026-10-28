@@ -166,7 +166,9 @@ void main() {
       'Command fixture',
     ]);
     late final PluginBackendActivation git;
-    addTearDown(ChatStrategyPlugin().activate(extensions).close);
+    addTearDown(
+      ChatStrategyPlugin(maxModelInvocations: 8).activate(extensions).close,
+    );
     final lifecycle = ProductLifecycleCoordinator.generated(
       store: InMemoryProductStore(),
       registry: capabilities,
@@ -1191,7 +1193,7 @@ void main() {
 
       late final PluginBackendActivation gitA;
       final searchA = await start(searchArtifact, _searchId);
-      final chat = ChatStrategyPlugin();
+      final chat = ChatStrategyPlugin(maxModelInvocations: 8);
       addTearDown(chat.activate(extensions).close);
       final store = InMemoryProductStore();
       final lifecycle = ProductLifecycleCoordinator.generated(

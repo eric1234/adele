@@ -61,6 +61,8 @@ workspace:
   - plugins/git
 
 dependency_overrides:
+  appflowy_editor:
+    path: .adele/dependencies/appflowy_editor
   code_forge:
     path: .adele/dependencies/code_forge
 

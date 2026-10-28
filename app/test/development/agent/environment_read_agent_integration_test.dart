@@ -24,8 +24,7 @@ import 'source_read_evidence_test_support.dart';
 const String _gitPluginId = 'dev.adele.plugin.git';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
-const String _sourceRelativePath =
-    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
+const String _sourceRelativePath = 'plugins/chat_strategy/settings.schema.json';
 const String _transientSourceRelativePath =
     'app/tool/self_hosting/phase_v_d1_transient_test_file.txt';
 const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
@@ -136,6 +135,7 @@ void main() {
             hostEnvironment: const <String, String>{},
             identity: 'topology',
             taskTitle: 'Establish a canonical development Session',
+            maxModelInvocations: 3,
           );
       addTearDown(topology.close);
 
@@ -269,11 +269,10 @@ void main() {
             sessions: topology.chatSession,
             resolvedStrategy: topology.resolvedStrategy,
             sessionId: topology.sessionId,
-            prompt: 'Locate and read ChatSessionState.',
+            prompt: 'Locate and read the Chat invocation-budget declaration.',
             instructions: 'Inspect source through the authorized Environment.',
             model: model,
             catalog: topology.catalog,
-            maxModelInvocations: 3,
           );
       expect(result.succeeded, isTrue, reason: result.run.failure?.toString());
       expect(result.sessionSnapshot.entries, hasLength(2));
@@ -388,7 +387,9 @@ void main() {
       late final PluginCapabilityActivation environmentGenerationA;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration strategyActivation = chat.activate(
         extensions,
       );
@@ -488,7 +489,7 @@ void main() {
       expect(strategy.lastToolOutcome?.hostData['text'], expectedSource);
       expect(
         history.snapshot().entries.last.content,
-        allOf(contains(_sourceRelativePath), contains('8')),
+        allOf(contains(_sourceRelativePath), contains('40')),
       );
 
       await searchGenerationA.close();
@@ -582,15 +583,14 @@ void main() {
       final MaterializedTool searchC = catalogB.materialize().byAlias(
         'search',
       )!;
-      const String siblingPath =
-          'plugins/chat_strategy/packages/backend/lib/scope-decoy.txt';
+      const String siblingPath = 'plugins/chat_strategy/scope-decoy.txt';
       final String worktreePath = developmentGitWorktreePath(
         store.project(project.id)!,
         materializationB.environment,
       );
       await File(
         '$worktreePath/$siblingPath',
-      ).writeAsString('final class ChatSessionState decoy\n');
+      ).writeAsString('$chatMaxModelInvocationsSettingId decoy\n');
       final ToolOutcome restoredSearch = await _executeSearch(
         searchC,
         sessionId,
@@ -599,10 +599,7 @@ void main() {
       expect(materializationB, isNot(same(materializationA)));
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
-      expect(
-        restoredSearch.hostData['path'],
-        'plugins/chat_strategy/packages/backend/lib',
-      );
+      expect(restoredSearch.hostData['path'], 'plugins/chat_strategy');
       final ToolOutcome missingScope = await _executeSearch(
         searchC,
         sessionId,
@@ -626,8 +623,8 @@ void main() {
       final List<String> sourceLines = const LineSplitter().convert(
         expectedSource,
       );
-      final int matchingLine = sourceLines.indexOf(
-        'final class ChatSessionState {',
+      final int matchingLine = sourceLines.indexWhere(
+        (line) => line.contains(chatMaxModelInvocationsSettingId),
       );
       expect(matchingLine, isNonNegative);
       final Map<String, Object?> expectedMatch = <String, Object?>{
@@ -638,7 +635,7 @@ void main() {
       expect(fileScope.disposition, ToolOutcomeDisposition.success);
       expect(fileScope.effectCertainty, EffectCertainty.knownOccurred);
       expect(fileScope.hostData['path'], _sourceRelativePath);
-      expect(fileScope.hostData['pattern'], 'final class ChatSessionState');
+      expect(fileScope.hostData['pattern'], chatMaxModelInvocationsSettingId);
       expect(
         fileScope.hostData['environmentId'],
         authority.environmentId.value,
@@ -663,7 +660,7 @@ void main() {
           equals(<String, Object?>{
             'relativePath': siblingPath,
             'lineNumber': 1,
-            'snippet': 'final class ChatSessionState decoy',
+            'snippet': '$chatMaxModelInvocationsSettingId decoy',
           }),
         ),
       );
@@ -728,7 +725,9 @@ void main() {
       late final PluginCapabilityActivation environmentActivation;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration strategyActivation = chat.activate(
         extensions,
       );
@@ -868,7 +867,7 @@ void main() {
       expect(
         history.snapshot().entries.last.content,
         allOf(
-          contains('maxModelInvocations to 9'),
+          contains('max-model-invocations default to 41'),
           contains('git diff --check exited with code 0'),
         ),
       );
@@ -1041,8 +1040,8 @@ void main() {
       final EnvironmentTextFile resultingFile = await materialization.provider
           .readFile(created.environment.id, _sourceRelativePath);
       final String expectedTaskSource = originalSource.replaceFirst(
-        '_maxModelInvocations = 8',
-        '_maxModelInvocations = 9',
+        '"default": 40',
+        '"default": 41',
       );
       expect(resultingFile.text, expectedTaskSource);
       expect(resultingFile.revision, model.postWriteRevision);
@@ -1060,11 +1059,8 @@ void main() {
         '${source.path}/$_sourceRelativePath',
       ).readAsString();
       expect(unchangedProjectSource, originalSource);
-      expect(unchangedProjectSource, contains('_maxModelInvocations = 8'));
-      expect(
-        unchangedProjectSource,
-        isNot(contains('_maxModelInvocations = 9')),
-      );
+      expect(unchangedProjectSource, contains('"default": 40'));
+      expect(unchangedProjectSource, isNot(contains('"default": 41')));
 
       expect(await storage.isDurableSession(sessionId.value), isFalse);
       expect(lifecycle.databaseForSession(sessionId), isNull);
@@ -1124,7 +1120,9 @@ void main() {
       late final PluginCapabilityActivation environmentActivation;
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin(
+        maxModelInvocations: 8,
+      );
       final ExtensionRegistration strategyActivation = chat.activate(
         extensions,
       );
@@ -1377,8 +1375,8 @@ final class _SearchReadModel implements ModelPort {
             providerCallId: 'search-call-1',
             alias: 'search',
             arguments: const <String, Object?>{
-              'pattern': 'final class ChatSessionState',
-              'path': './plugins/chat_strategy/packages/backend//lib/',
+              'pattern': chatMaxModelInvocationsSettingId,
+              'path': './plugins//chat_strategy/',
             },
           ),
         ),
@@ -1412,8 +1410,8 @@ final class _SearchReadModel implements ModelPort {
     } else {
       final String content = outcomes.last.outcome.modelContent;
       receivedRealSource =
-          content.contains('final class ChatSessionState') &&
-          content.contains('_maxModelInvocations = 8');
+          content.contains(chatMaxModelInvocationsSettingId) &&
+          content.contains('"default": 40');
       if (!receivedRealSource) {
         throw StateError(
           'The model did not receive real ADELE source content.',
@@ -1422,7 +1420,7 @@ final class _SearchReadModel implements ModelPort {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelTextOutput(
-          '$discoveredPath declares ChatSessionState and defaults maxModelInvocations to 8.',
+          '$discoveredPath declares the Chat model-invocation limit with default 40.',
         ),
       );
     }
@@ -1517,7 +1515,7 @@ final class _ReadPatchCommandModel implements ModelPort {
       expectedRevision = file.revision;
       final List<String> candidateLines = file.text
           .split('\n')
-          .where((line) => line.contains('_maxModelInvocations = 8'))
+          .where((line) => line.contains('"default": 40'))
           .toList(growable: false);
       if (candidateLines.length != 1) {
         throw StateError(
@@ -1526,12 +1524,12 @@ final class _ReadPatchCommandModel implements ModelPort {
       }
       final String search = candidateLines.single;
       final String intermediate = search.replaceFirst(
-        '_maxModelInvocations = 8',
-        '_maxModelInvocations = 10',
+        '"default": 40',
+        '"default": 42',
       );
       final String replace = search.replaceFirst(
-        '_maxModelInvocations = 8',
-        '_maxModelInvocations = 9',
+        '"default": 40',
+        '"default": 41',
       );
       edits = <Map<String, Object?>>[
         <String, Object?>{'search': search, 'replace': intermediate},
@@ -1589,7 +1587,7 @@ final class _ReadPatchCommandModel implements ModelPort {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelTextOutput(
-          'Patched $observedPath, changed maxModelInvocations to 9, and '
+          'Patched $observedPath, changed max-model-invocations default to 41, and '
           'git diff --check exited with code 0.',
         ),
       );
@@ -1886,11 +1884,11 @@ _VisiblePatch _parseVisiblePatch(String modelContent) {
 Future<ToolOutcome> _executeSearch(
   MaterializedTool tool,
   SessionId sessionId, {
-  String path = 'plugins/chat_strategy/packages/backend/lib',
+  String path = 'plugins/chat_strategy',
 }) async {
   final CanonicalToolArguments arguments = await tool.executable
       .validateAndNormalize(<String, Object?>{
-        'pattern': 'final class ChatSessionState',
+        'pattern': chatMaxModelInvocationsSettingId,
         'path': path,
       });
   return (await tool.executable

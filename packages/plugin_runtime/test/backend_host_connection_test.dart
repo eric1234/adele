@@ -8,6 +8,86 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'captures and validates settings before startup callbacks or awaits',
+    () async {
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  void send(Map<String, Object?> message) => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, ...message}));
+  final starts = <String, Map<String, Object?>>{};
+  final decoder = BackendHostFrameDecoder();
+  send({'kind': 'hostHello'});
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final pluginId = message['pluginId'] as String?;
+      if (message['kind'] == 'startPlugin') {
+        starts[pluginId!] = message;
+        send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': pluginId});
+      } else if (message['kind'] == 'request') {
+        send({'kind': 'response', 'requestId': message['requestId'], 'pluginId': pluginId, 'ok': true,
+          'payload': {'starts': starts.length, 'settings': starts[pluginId]!['settings']}});
+      } else if (message['kind'] == 'shutdownHost') {
+        send({'kind': 'hostStopped', 'requestId': message['requestId']});
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      var callbacks = 0;
+      for (final invalid in <Object>[1.5, [], {}, Object()]) {
+        await expectLater(
+          host.startPlugin(
+            pluginId: 'settings',
+            artifactUri: Uri.file('/unused'),
+            settings: {'count': invalid},
+            createInfrastructureServices: (_) {
+              callbacks++;
+              return {};
+            },
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(callbacks, 0);
+      final source = <String, Object>{
+        'count': 7,
+        'enabled': true,
+        'label': 'first',
+      };
+      final starting = host.startPlugin(
+        pluginId: 'settings',
+        artifactUri: Uri.file('/unused'),
+        settings: source,
+        createInfrastructureServices: (_) {
+          callbacks++;
+          source['count'] = 19;
+          return {};
+        },
+      );
+      source.clear();
+      final connection = await starting;
+      expect(callbacks, 1);
+      expect(await connection.request('bootstrap', {}), {
+        'starts': 1,
+        'settings': {'count': 7, 'enabled': true, 'label': 'first'},
+      });
+      final empty = await host.startPlugin(
+        pluginId: 'empty',
+        artifactUri: Uri.file('/unused'),
+      );
+      expect(await empty.request('bootstrap', {}), {
+        'starts': 2,
+        'settings': <String, Object>{},
+      });
+    },
+  );
+
   group('contextual unary channel', () {
     late _FakeHost fake;
     late PluginBackendHost host;

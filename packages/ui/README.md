@@ -386,6 +386,28 @@ native implementations supply their behavior; calling a stub natively throws
   [public stub](lib/contribution_bridge.dart),
   [catalog opt-ins](../plugin_runtime/README.md#prepared-catalog), and
   [application retention/authority](../../app/README.md#source-editor-hosting).
+- `rich_document_editor_bridge.dart` is an independent presentation-owned Markdown
+  editor primitive. `createRichDocumentEditor(markdown, readOnly)` allocates a native
+  owner after the plugin has loaded its content; `buildRichDocumentEditor(handle)`
+  displays it. `subscribeRichDocumentEditor` and `unsubscribeRichDocumentEditor`
+  retain the same callback identity for coalesced invalidations with no document
+  payload. `snapshotRichDocumentEditor(handle)` explicitly copies `markdown`,
+  `revision`, `readOnly`, and `unsupportedReason`. Unsupported imports remain
+  read-only with their original source intact; an unsupported export returns null
+  Markdown and `error: 'unsupported_serialization'`, never degraded or stale content
+  masquerading as a successful snapshot. Revisions describe native document
+  transactions, not selection, persistence versions, dirty state, or save success.
+  `releaseRichDocumentEditor(handle)` revokes and disposes that owner. At most 16
+  editors are retained by one presentation. Rebuilds and native view unmount/remount
+  preserve the same live owner's content and undo. Presentation retirement,
+  including prepared exit retention, ends ownership and native input even when the
+  evaluated subtree remains mounted; replacement presentations require fresh
+  creation and cannot reuse handles. There is no document identity, global lookup,
+  controller/transaction API, AppFlowy type, storage, or Chat behavior here. The
+  [native adapter and supported Markdown limits](../../app/README.md#native-rich-document-editor)
+  remain application-owned. Production plugin descriptor wiring is deliberately
+  outside this primitive; the compiled fixture uses normal `PreparedFrontend`
+  hosting with an explicitly supplied bridge.
 - `environment_access_bridge.dart` supplies only `readEnvironmentTextFile(path)`
   and conditional `replaceEnvironmentTextFile(path, text, expectedRevision)` for
   an admitted finite operation's captured Environment. Views, initializers, and

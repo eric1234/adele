@@ -13,6 +13,8 @@ import '../../tools/contract_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import 'code_editor_dependency_test.dart'
     show createCodeEditorDependencyFixture;
+import 'rich_editor_dependency_test.dart'
+    show createRichEditorDependencyFixture;
 
 const String _codegenEntrypoint =
     'packages/contract_codegen/bin/contract_codegen.dart';
@@ -140,6 +142,7 @@ void main() {
       'tools/desktop_tool_artifacts.dart',
       'tools/build_timing.dart',
       'tools/code_editor_dependency.dart',
+      'tools/rich_editor_dependency.dart',
       'tools/code_editor_smoke.dart',
       'tools/code_editor_smoke_support.dart',
       'tools/contract_artifacts.dart',
@@ -151,6 +154,7 @@ void main() {
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
       'plugins/git/packages/backend/native/git_pty_helper.c',
       'plugins/openai/records.schema.json',
+      'plugins/chat_strategy/settings.schema.json',
       'plugins/source_editor/settings.schema.json',
     ]) {
       final File destination = File('${root.path}/$path');
@@ -158,6 +162,7 @@ void main() {
       File(path).copySync(destination.path);
     }
     await createCodeEditorDependencyFixture(root);
+    await createRichEditorDependencyFixture(root);
     Directory('${root.path}/app').createSync();
     final File harness = File('${root.path}/app/$_frontendHarness');
     harness.parent.createSync();
@@ -430,6 +435,7 @@ if [ "\$1" = "--version" ]; then
 elif [ "\$1" = pub ]; then
   test "\$PWD" = '${root.path}' || exit 98
   test -f '${root.path}/.adele/dependencies/code_forge/lib/code.dart' || exit 94
+  test -f '${root.path}/.adele/dependencies/appflowy_editor/lib/editor.dart' || exit 94
   test "\$#" = 2 && test "\$2" = get || exit 97
   printf 'pub-get\n' >> '${commands.path}'
   if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = pub-get ]; then exit 19; fi
@@ -520,6 +526,9 @@ if [ "\$1" = pub ]; then
   test "\$#" = 3 && test "\$2" = workspace && test "\$3" = list || exit 97
   printf 'workspace-list\n' >> '${commands.path}'
   if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = workspace-list ]; then exit 19; fi
+elif [ "\$1" = format ]; then
+  test "\$#" = 4 && test "\$2" = --output=none && test "\$3" = --set-exit-if-changed && test "\$4" = . || exit 97
+  printf 'format-check\n' >> '${commands.path}'
 elif [ "\$1" = analyze ] || [ "\$1" = test ]; then
   test -f '${generatedContract.path}' || exit 95
   printf '%s|dart|%s\n' "\$1" "\$PWD" >> '${commands.path}'
@@ -1357,8 +1366,18 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
       expect(commands.existsSync(), isFalse);
       expect(generatedContract.existsSync(), isFalse);
       expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
+      expect(Directory('${root.path}/.adele').existsSync(), isFalse);
     },
   );
+
+  test('format check remains available before bootstrap', () async {
+    removeBootstrapMetadata();
+    final result = await invoke(['format', '--check']);
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(commands.readAsLinesSync(), ['format-check']);
+    expect(generatedContract.existsSync(), isFalse);
+    expect(Directory('${root.path}/.adele').existsSync(), isFalse);
+  });
 
   test('invalid test target fails before generation or workers', () async {
     final result = await invoke(['test', '--target', 'not-a-target']);
@@ -1392,6 +1411,9 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
     ['help'],
     ['--help'],
     ['prepare-code-editor', '--invalid'],
+    ['prepare-rich-editor', '--invalid'],
+    ['prepare-rich-editor', '--archive'],
+    ['prepare-rich-editor', '--reprepare', '--reprepare'],
     ['build-code-editor-tests', '--invalid'],
     ['editor-smoke'],
     ['editor-smoke', 'linux', '--invalid'],
@@ -1418,20 +1440,25 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
     ['build', 'linux'],
     ['run', 'linux'],
   ]) {
-    test(
-      '${arguments.join(' ')} refuses altered source before consumers',
-      () async {
-        final prepared = await invoke(['prepare-code-editor']);
-        expect(prepared.exitCode, 0, reason: '${prepared.stderr}');
-        File(
-          '${root.path}/.adele/dependencies/code_forge/lib/code.dart',
-        ).writeAsStringSync('tampered');
-        final result = await invoke(arguments);
-        expect(result.exitCode, 1);
-        expect(result.stderr, contains('Stale or altered'));
-        expect(commands.existsSync(), isFalse);
-      },
-    );
+    for (final (command, package, file) in [
+      ('prepare-code-editor', 'code_forge', 'code.dart'),
+      ('prepare-rich-editor', 'appflowy_editor', 'editor.dart'),
+    ]) {
+      test(
+        '${arguments.join(' ')} refuses altered $package before consumers',
+        () async {
+          final prepared = await invoke([command]);
+          expect(prepared.exitCode, 0, reason: '${prepared.stderr}');
+          File(
+            '${root.path}/.adele/dependencies/$package/lib/$file',
+          ).writeAsStringSync('tampered');
+          final result = await invoke(arguments);
+          expect(result.exitCode, 1);
+          expect(result.stderr, contains('Stale or altered'));
+          expect(commands.existsSync(), isFalse);
+        },
+      );
+    }
   }
 
   test(
@@ -2232,7 +2259,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'version': '0.1.0',
               'displayName': plugin.name,
             },
-            if (plugin.directory == 'source-editor')
+            if (plugin.directory == 'source-editor' ||
+                plugin.directory == 'chat-strategy')
               'settingsSchema': 'settings.schema.json',
             if (plugin.directory == 'openai')
               'recordsSchema': 'records.schema.json',
@@ -2253,6 +2281,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (plugin.backend ? 1 : 0) +
                   (hasFrontend ? 1 : 0) +
                   (plugin.directory == 'source-editor' ? 1 : 0) +
+                  (plugin.directory == 'chat-strategy' ? 1 : 0) +
                   (plugin.directory == 'openai' ? 1 : 0) +
                   (plugin.directory == 'git' ? 1 : 0),
             ),
@@ -2416,7 +2445,30 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(setting.validate(true), isTrue);
         expect(() => setting.validate('true'), throwsException);
         expect(() => setting.validate(1), throwsException);
-        expect(catalog.settings.definitions, [setting]);
+        final chatSettings = catalog.installations
+            .singleWhere(
+              (entry) =>
+                  entry.metadata.id.value == 'dev.adele.plugin.chat-strategy',
+            )
+            .settingsSchema!;
+        final budget = chatSettings.definitions.single;
+        expect(
+          File.fromUri(chatSettings.artifactUri).readAsBytesSync(),
+          File('plugins/chat_strategy/settings.schema.json').readAsBytesSync(),
+        );
+        expect(
+          budget.id.value,
+          'dev.adele.plugin.chat-strategy.max-model-invocations',
+        );
+        expect(budget.defaultValue, 40);
+        expect(budget.category, 'Agents');
+        expect(budget.section, 'Execution');
+        expect(budget.label, 'Maximum Model Invocations per Run');
+        expect(budget.validate(1), 1);
+        expect(budget.validate(80), 80);
+        expect(budget.validate(9223372036854775807), 9223372036854775807);
+        expect(() => budget.validate(0), throwsException);
+        expect(catalog.settings.definitions, [budget, setting]);
         expect(catalog.settings.resolve(setting.id).value, isFalse);
         final sourceCommand =
             source.frontend!.extensions.single
@@ -2896,6 +2948,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   for (final declaration in [
+    (kind: 'settings', source: 'chat_strategy', installation: 'chat-strategy'),
     (kind: 'settings', source: 'source_editor', installation: 'source-editor'),
     (kind: 'records', source: 'openai', installation: 'openai'),
   ]) {

@@ -18,41 +18,61 @@ void main() {
     'plugin retains the supplied store and defaults to an isolated store',
     () {
       final ChatSessionStore store = ChatSessionStore();
-      final ChatStrategyPlugin plugin = ChatStrategyPlugin(sessions: store);
+      final ChatStrategyPlugin plugin = ChatStrategyPlugin(
+        sessions: store,
+        maxModelInvocations: 8,
+      );
 
       expect(plugin.sessions, same(store));
-      expect(ChatStrategyPlugin().sessions, isNot(same(store)));
       expect(
-        ChatStrategyPlugin().sessions,
-        isNot(same(ChatStrategyPlugin().sessions)),
+        ChatStrategyPlugin(maxModelInvocations: 8).sessions,
+        isNot(same(store)),
+      );
+      expect(
+        ChatStrategyPlugin(maxModelInvocations: 8).sessions,
+        isNot(same(ChatStrategyPlugin(maxModelInvocations: 8).sessions)),
       );
     },
   );
 
-  test('standalone state defaults to empty history and eight model calls', () {
+  test('standalone state defaults to stock instructions and empty history', () {
     final ChatSessionState state = ChatSessionState(SessionId('session-1'));
 
     expect(state.instructions, chatDefaultInstructions);
-    expect(state.maxModelInvocations, 8);
     expect(state.snapshot().instructions, state.instructions);
-    expect(state.snapshot().maxModelInvocations, state.maxModelInvocations);
     expect(state.snapshot().entries, isEmpty);
     expect(state.draftRequest, '');
     expect(state.snapshot().draftRequest, '');
   });
 
-  test('configuration is mutable and rejects nonpositive budgets', () {
+  test('Session instructions are mutable', () {
     final ChatSessionState state = ChatSessionState(SessionId('session-1'))
-      ..instructions = 'Use source tools before answering.'
-      ..maxModelInvocations = 2;
+      ..instructions = 'Use source tools before answering.';
 
     expect(state.instructions, 'Use source tools before answering.');
-    expect(state.maxModelInvocations, 2);
-    for (final int invalid in <int>[0, -1, -20]) {
-      expect(() => state.maxModelInvocations = invalid, throwsArgumentError);
-      expect(state.maxModelInvocations, 2);
-    }
   });
+
+  test(
+    'strategy constructors reject nonpositive budgets independently of store',
+    () {
+      final store = ChatSessionStore();
+      for (final int invalid in <int>[0, -1, -20]) {
+        expect(
+          () =>
+              ChatStrategyPlugin(sessions: store, maxModelInvocations: invalid),
+          throwsArgumentError,
+        );
+        expect(
+          () => ChatRemoteOrchestrationBackend(
+            sessions: store,
+            maxModelInvocations: invalid,
+            hostChannel: (_) => throw StateError('No execution expected.'),
+          ),
+          throwsArgumentError,
+        );
+      }
+    },
+  );
 
   test('snapshot is an immutable copy, not a live view of conversation', () {
     final ChatSessionState state = ChatSessionState(SessionId('session-1'))
@@ -79,7 +99,6 @@ void main() {
     final ChatSessionSnapshot snapshot = ChatSessionSnapshot(
       entries: entries,
       instructions: 'Instructions.',
-      maxModelInvocations: 8,
       draftRequest: 'Draft.',
     );
     entries.clear();

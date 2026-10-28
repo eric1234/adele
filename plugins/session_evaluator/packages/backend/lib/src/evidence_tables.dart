@@ -31,7 +31,7 @@ const chatSessions = EvidenceTable(
   'adele_chat_sessions',
   'session_id',
   text: ['session_id', 'instructions'],
-  integers: ['max_model_invocations', 'next_entry'],
+  integers: ['next_entry'],
   excluded: ['draft_request'],
 );
 const chatEntries = EvidenceTable(

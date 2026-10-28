@@ -10,6 +10,7 @@ import 'package:adele_plugin_backend_support/capability_consumer.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'backend_capability_host.dart';
+import 'prepared_settings.dart';
 import 'remote_inference_context_host.dart';
 import 'resource_cleanup.dart';
 
@@ -176,7 +177,9 @@ final class ApplicationPluginBootstrap {
     this.registry,
     this.extensions, {
     this.createInfrastructureServices,
-  });
+    Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)?
+    loadSettings,
+  }) : _loadSettings = loadSettings ?? PreparedSettingsSnapshot.load;
 
   final CapabilityRegistry registry;
   final ExtensionRegistry extensions;
@@ -195,6 +198,31 @@ final class ApplicationPluginBootstrap {
   Future<void>? _starting;
   Future<void>? _closing;
   Future<void>? _cleanup;
+  Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)
+  _loadSettings;
+  Future<PreparedSettingsSnapshot>? _settings;
+
+  /// Binds the composition root's shared I/O owner before either component starts.
+  void configureSettingsLoader(
+    Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog) loader,
+  ) {
+    if (_state != ApplicationPluginState.unconfigured) {
+      throw StateError('Plugin settings must be configured before startup.');
+    }
+    _loadSettings = loader;
+  }
+
+  /// Both independent component owners consume one startup resolution.
+  Future<PreparedSettingsSnapshot> settingsForCatalog(
+    PreparedPluginCatalog catalog,
+  ) {
+    if (!identical(catalog, _catalog)) {
+      throw StateError('Settings belong to another prepared catalog snapshot.');
+    }
+    return _settings ??= Future.sync(() => _loadSettings(catalog)).catchError(
+      (Object error) => PreparedSettingsSnapshot.fromFailure(catalog, error),
+    );
+  }
 
   ApplicationPluginState get state => _state;
   Object? get failure => _failure;
@@ -362,6 +390,10 @@ final class ApplicationPluginBootstrap {
         if (_failure != null) throw _failure!;
         backend._state = InstalledBackendState.starting;
         try {
+          final settings = (await settingsForCatalog(
+            catalog,
+          )).valuesForInstallation(backend.installation);
+          if (_state == ApplicationPluginState.closing) return;
           final PluginBackendConnection
           connection = backend._connection = await host.startPlugin(
             pluginId: backend.installation.metadata.id.value,
@@ -369,6 +401,7 @@ final class ApplicationPluginBootstrap {
             arguments:
                 startup[backend.installation.metadata.id.value] ?? const [],
             startupArgumentsOnly: true,
+            settings: settings,
             createInfrastructureServices: (connection) {
               final services = <String, AdeleBackendDispatcher>{
                 ...?createInfrastructureServices?.call(connection),
@@ -545,6 +578,7 @@ final class ApplicationPluginBootstrap {
     } finally {
       for (final backend in _backends) {
         if (backend._state == InstalledBackendState.active ||
+            backend._state == InstalledBackendState.starting ||
             backend._state == InstalledBackendState.pending) {
           backend._state = InstalledBackendState.closed;
         }

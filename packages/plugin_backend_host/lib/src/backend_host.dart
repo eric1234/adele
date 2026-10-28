@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const Duration _pluginLifecycleTimeout = Duration(seconds: 2);
@@ -158,6 +159,7 @@ final class AdeleBackendHost {
     if (startupArgumentsOnly is! bool) {
       throw const FormatException('startupArgumentsOnly must be a boolean.');
     }
+    final settings = adeleCopyBackendSettings(message['settings']);
     final _PluginIsolate plugin = await _PluginIsolate.start(
       pluginId: pluginId,
       generation: generation,
@@ -168,6 +170,7 @@ final class AdeleBackendHost {
           .toList(growable: false),
       defaultConfigurationContext: defaultConfigurationContext,
       startupArgumentsOnly: startupArgumentsOnly,
+      settings: settings,
       send: _send,
       diagnostic: _diagnostic,
       onTerminated: _pluginTerminated,
@@ -572,6 +575,7 @@ final class _PluginIsolate {
     required List<String> arguments,
     required String defaultConfigurationContext,
     required bool startupArgumentsOnly,
+    required Map<String, Object> settings,
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
@@ -595,6 +599,8 @@ final class _PluginIsolate {
           'defaultConfigurationContext': defaultConfigurationContext,
           'hostInfrastructureContext': hostInfrastructureContext,
           'startupArgumentsOnly': startupArgumentsOnly,
+          // spawnUri cannot transfer the immutable snapshot's map wrapper.
+          'settings': Map<String, Object>.of(settings),
         },
         onError: errorPort.sendPort,
         onExit: exitPort.sendPort,

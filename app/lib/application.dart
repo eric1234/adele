@@ -5,6 +5,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -14,7 +15,6 @@ import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
-import 'package:adele_desktop/frontend/prepared_settings.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
@@ -223,7 +223,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ),
       consoleHost: _consoleHost,
       mainContentHost: _mainContentHost,
-      loadSettings: _loadStartupSettings,
+      loadSettings: _runtime.plugins.settingsForCatalog,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -423,7 +423,13 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         return await PreparedSettingsSnapshot.load(catalog);
       }
       final settings = await _settingsService();
-      return PreparedSettingsSnapshot.fromView(catalog, await settings.load());
+      final view = await settings.load();
+      return PreparedSettingsSnapshot.fromResolution(
+        catalog,
+        view.catalog,
+        values: view.values,
+        failures: view.failures,
+      );
     } on Object catch (error) {
       return PreparedSettingsSnapshot.fromFailure(catalog, error);
     }
@@ -604,6 +610,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _bootstrapPlugins() async {
     try {
+      _runtime.plugins.configureSettingsLoader(_loadStartupSettings);
       if (widget.bootstrapPlugins case final bootstrap?) {
         await bootstrap(_runtime.plugins);
       } else {

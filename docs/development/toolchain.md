@@ -128,6 +128,83 @@ or override upstream font assets. Publishing prebuilt binaries needs appropriate
 license review for the shipped target and contents; this checkout makes no
 redistribution-clearance claim.
 
+## Native rich-editor dependency
+
+The application pins `appflowy_editor 6.2.0`, prepared from its published archive.
+[`third_party/appflowy_editor/preparation.json`](../../third_party/appflowy_editor/preparation.json)
+owns the archive SHA-256, ordered compatibility patches, and expected
+prepared-tree digest.
+The root override points only to Git-ignored
+`.adele/dependencies/appflowy_editor`; the root lockfile owns workspace resolution.
+Neither public UI contracts nor stock plugins depend on AppFlowy implementation
+types. The integrated Flutter/Dart/evaluator pins above are unchanged.
+
+The first patch removes `device_info_plus` and an unused Android SDK-version probe from
+`keyboard_height_observer.dart`. The version had no consumers beyond its own
+initialization guard. Actual `keyboard_height_plugin` reporting, listeners, and
+Android duplicate-height suppression remain unchanged. Removing this unnecessary
+dependency avoids its Win32 5.x constraint without changing the OpenAI backend's
+Win32 6.x dependency or forcing a transitive override.
+
+AppFlowy's `file_picker ^10.2.0` constraint also requires Win32 5.x. A second patch
+pins published `file_picker 12.0.0-beta.3` and updates its three calls from
+`FilePicker.platform` to the package's static API. This exact prerelease declares
+Dart 3.10/Flutter 3.38 minimums and Win32 6.x support while retaining the existing
+picker argument/result contracts. Stable 12.x changes save-file semantics and is
+not substituted. This is a bounded dependency compatibility choice, not evidence
+of native picker dialogs or image-upload behavior on any platform.
+
+A third manifest-only patch constrains `image` to `4.10.2`, within PDF's existing
+declared range. With this SDK, `pdf 3.12.0` selects `archive <4.1.0`; `image 4.11.0`
+incorrectly permits that archive range while calling its unavailable `decodeLazy`
+API. Image 4.10.2 uses the supported `decodeBytes` API. This normal dependency
+constraint does not override PDF/archive constraints or alter codec source.
+
+A desktop selection lifecycle patch replaces the globally keyed metrics debounce
+with an instance-owned 100 ms timer. A new metrics event replaces that instance's
+pending refresh; clearing selection or disposing the selection service cancels it.
+The callback checks that the widget is mounted and still has a selection before
+refreshing, preventing a delayed null-selection failure after teardown without
+coupling independent editors' timers. Mobile selection behavior is unchanged.
+
+Bootstrap prepares and verifies both editor sources before pub resolution.
+Maintained analysis, tests, and desktop run/build/smoke commands also verify
+AppFlowy before consumers. CI uses those same commands, not a separate setup path.
+The SDK-only helper uses the existing `curl`, Git, GNU `tar`, and `sha256sum`
+prerequisites; it does not build native code or edit the Pub cache.
+
+```sh
+dart tools/adele.dart prepare-rich-editor
+dart tools/adele.dart prepare-rich-editor --archive /absolute/path/appflowy_editor-6.2.0.tar.gz
+```
+
+Cached source is checked against tracked inputs and the trusted tree digest;
+changed, missing, or unexpected immutable source fails without fallback. To
+deliberately replace stale source, stop **all** consumers (including IDE analyzers
+and direct Flutter commands), then run:
+
+```sh
+dart tools/adele.dart prepare-rich-editor --reprepare
+dart tools/adele.dart bootstrap
+```
+
+Repreparation stages and verifies fresh source before replacing the old tree under
+an exclusive lease. Direct Flutter/IDE consumers are not covered by that lease.
+Do not edit prepared source; change the checked-in patches and reviewed digest.
+
+Use the MPL-2.0 option of AppFlowy's MPL-2.0/AGPL-3.0 dual license. Preserve the
+upstream license and embedded attributions; see the
+[retained notices](../../third_party/appflowy_editor/upstream-notices.txt).
+Distributing binaries requires making the corresponding covered source, including
+these patches, available and telling recipients how to obtain it. Normal Flutter
+license collection does not establish complete embedded-source/asset notice
+coverage or future release clearance.
+
+The [native widget smoke](../../app/test/appflowy_editor_smoke_test.dart) exercises
+actual mounting, Flutter text input, Backspace, and unmount/disposal on Linux with
+the pinned SDK. It does not establish mobile/macOS/Windows runtime or packaging
+support, Markdown fidelity, a reusable editor owner, or evaluated frontend access.
+
 ## Native TOML documents
 
 [`adele_toml_document`](../../packages/toml_document/README.md) uses a package-local
@@ -151,9 +228,10 @@ inputs, and bundles the resulting dynamic library as a Dart code asset. Rust
 source, manifests, and `Cargo.lock` are committed; generated libraries are not.
 Loading never substitutes a Dart parser. CI's `nativeToml` target metadata selects
 the compiler prerequisite independently of `nativeCodeEditor`. The desktop now
-consumes the Settings host at frontend startup, so its tests and frontend targets
-with a development dependency on the desktop require native TOML as well. This
-does not add Rust to standalone semantic Settings or prepared-catalog parsing.
+consumes the Settings host for shared frontend/backend startup values, so its tests
+and frontend targets with a development dependency on the desktop require native
+TOML as well. This does not add Rust to standalone semantic Settings or
+prepared-catalog parsing.
 
 The host-only [`adele_configuration_store`](../../packages/configuration_store/README.md)
 uses that same transitive hook and compiler requirement, not another native build.
@@ -171,6 +249,11 @@ cli`, still preview on this pin. Maintained backend AOT compilation remains root
 at the repository's dependency-free launcher package and imports no Settings host
 or TOML implementation. Do not move those commands to the app's native-hook graph
 or infer native-asset delivery from successful snapshot compilation.
+
+Backend settings use the generic `PluginBackendHost.startPlugin(settings: ...)`
+bootstrap map and public `AdeleBackendSettings` reader. Resolution and native TOML
+remain host-side; independently compiled backends receive copied scalar values, not
+native assets or a dependency on the Settings host.
 
 `toml_edit` and the private JSON bridge have exact direct Cargo pins and a committed
 transitive lock. See the package's [native notices](../../packages/toml_document/third_party_notices.txt)
@@ -428,17 +511,19 @@ and the same remote Chat backend, not an in-process strategy fallback.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
-`backend.aot` and `frontend.evc`. The same stock publication helper copies the
-Source Editor's authoritative `settings.schema.json` and OpenAI's authoritative
-`records.schema.json` byte-for-byte, referencing them through the independent
-installation-level `settingsSchema` and `recordsSchema` fields. Schema metadata is
-available without backend/frontend activation or authentication; the OpenAI record
+`backend.aot` and `frontend.evc`. The same stock publication helper copies
+Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
+authoritative `records.schema.json` byte-for-byte, referencing them through the
+independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
+metadata is available without backend/frontend activation or authentication; the OpenAI record
 declaration contains no credential fields and does not change runtime startup
-configuration. Global user values remain in TOML, not generated installation
-artifacts. Runtime receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared
-runtime/host paths, and the temporary generic
-`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend or frontend artifact
-defines or source paths. Installed manifests are distinct from the draft
+configuration. Global scalar values remain in TOML, not generated installation
+artifacts or the startup-argv file. Application startup resolves them from prepared
+declarations for both frontends and backends; changing a user override requires
+application restart, not plugin recompilation. Runtime receives
+`ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the temporary
+generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend or frontend
+artifact defines or source paths. Installed manifests are distinct from the draft
 `adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
 to it. See [`../architecture/plugin-layout.md`](../architecture/plugin-layout.md#prepared-installation-snapshot).
 
@@ -625,7 +710,7 @@ compiled artifacts when source and build context are identical.
 ### Diagnostics
 
 Stage diagnostics report elapsed time and status, including component `cached`,
-`rebuilt`, or `failed` results, CodeForge source preparation, SDK inspection,
+`rebuilt`, or `failed` results, editor source preparation, SDK inspection,
 build-tool preparation, generation, dependency discovery, installation assembly,
 desktop preparation, the Flutter command, and launcher total. `flutter-run` and its
 enclosing launcher total include the application's lifetime until the Flutter process exits; they are not

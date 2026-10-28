@@ -12,6 +12,10 @@ final ExtensionId chatStrategyExtensionId = ExtensionId(
 );
 const String chatStrategyRouteId = 'chat';
 
+/// Chat's declared per-Run budget, supplied explicitly by backend callers.
+const String chatMaxModelInvocationsSettingId =
+    'dev.adele.plugin.chat-strategy.max-model-invocations';
+
 /// Opaque occurrence identity, stable across snapshots within one Session.
 /// The generated DTO transports [value] as a String for interpreted clients.
 final class ChatEntryId {
