@@ -194,6 +194,9 @@ versioned envelope:
       "label": "Example API",
       "description": "A named API configuration.",
       "displayField": "display-name",
+      "credentialSlots": [
+        {"id": "api-key", "label": "API key", "kind": "secret-text"}
+      ],
       "fields": [
         {
           "id": "display-name",
@@ -214,7 +217,7 @@ versioned envelope:
 ```
 
 Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
-`fields`; `description` and `displayField` are optional. When present,
+`fields`; `description`, `displayField`, and `credentialSlots` are optional. When present,
 `displayField` is a local field ID referencing a declared required `string` field,
 not an enum. The public record constructor validates that reference during
 discovery; an invalid reference rejects the whole record schema. Omission preserves
@@ -227,7 +230,14 @@ authored order. Empty `recordTypes` and `fields` arrays are valid. `type` is exa
 Only integers accept inclusive optional `minimum`/`maximum` native integer bounds.
 Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret
-metadata, validators, or executable hooks are accepted at any schema level.
+values, validators, or executable hooks are accepted at any schema level.
+
+`credentialSlots` defaults to an empty array and retains declaration order. Entries
+accept exactly the required `id`, `label`, and `kind` keys; `kind` must be
+`secret-text`. IDs and bounded presentation labels use the public Settings slot
+constructors. Duplicate slot IDs within one type reject the whole schema; different
+types may reuse them. Slots are separate from ordinary fields: `secret-text` is not
+a scalar field type, and no secret or reference is included in schema metadata.
 
 The installation's `PluginId` is the `RecordTypeDefinition.owner`; schemas cannot
 choose it. Type IDs must belong to that namespace at a dot boundary. Local IDs,
@@ -238,9 +248,10 @@ declarations do not configure or activate a provider, select an account, or supp
 credentials; persisted values and runtime consumption belong to separate owners.
 
 `PreparedRecordsSchema` owns independent input limits: 1 MiB of UTF-8 bytes with a
-bounded read, 256 record types, 128 fields per type, and 128 options per enum. Type
-IDs allow at most 256 UTF-16 code units; collection and field IDs follow the public
-64-character bound. Type/collection/field labels, enum values, and enum labels
+bounded read, 256 record types, 128 fields and 128 credential slots per type, and
+128 options per enum. Type IDs allow at most 256 UTF-16 code units; collection,
+field and slot IDs follow the public 64-character bound. Credential-slot labels
+allow 128 UTF-16 code units. Type/collection/field labels, enum values, and enum labels
 allow 160 UTF-16 code units each; descriptions allow 4096 and preserve arbitrary
 text, including empty, multiline, and control characters, unlike labels.
 Asset references use the same portable relative-path, canonical
@@ -248,10 +259,10 @@ confinement, symlink, and regular-file checks as settings and executable artifac
 
 `PreparedPluginInstallation.recordsSchema` is null when absent or rejected;
 otherwise it holds the canonical `artifactUri` and immutable `definitions` sorted
-by record-type ID, with fields in source order. Discovery snapshots declarations
+by record-type ID, with fields and credential slots in source order. Discovery snapshots declarations
 without executing code or loading user configuration. Later asset edits cannot
 mutate that snapshot. Missing/unreadable assets, malformed/unsupported schemas,
-duplicate type or field IDs, and conflicting collection labels reject the **whole**
+duplicate type, field or slot IDs, and conflicting collection labels reject the **whole**
 record schema, never a partial set. `PreparedPluginCatalogIssue.isRecordsSchemaIssue`
 marks the failure (`component` is null), without discarding healthy settings or
 executable components. Failure in those siblings likewise preserves valid records.

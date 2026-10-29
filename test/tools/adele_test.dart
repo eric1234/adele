@@ -1478,6 +1478,7 @@ exit "$CLIPPY_EXIT"
         unorderedEquals([
           'adele_settings',
           'adele_configuration_store',
+          'adele_credential_store',
           'adele_toml_document',
         ]),
       );

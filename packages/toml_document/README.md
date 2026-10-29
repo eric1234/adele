@@ -34,6 +34,12 @@ final text = removed.source;
 - `requireTable(path)` verifies an existing regular table without editing text.
   Missing segments report `path`; inline tables, arrays, or scalar segments report
   `type`. Implicit dotted-key tables count as regular tables.
+- `tableKeys(path)` returns immutable direct keys of a regular table, including
+  nested tables and unsupported values without reading their contents. It uses
+  the same missing/wrong-type failures as `requireTable`.
+- `ensureTable(path)` creates only a missing leaf as an explicit regular table
+  under existing regular parents. Existing regular tables are exact no-ops;
+  unsupported values and missing parents fail without repair or coercion.
 - Equal-value writes and absent-leaf removals return the same snapshot without
   reserialization. A missing parent is an error, including during removal.
 - Failures expose `TomlException.kind` (`parse`, `path`, `type`, or `edit`) and
@@ -51,8 +57,9 @@ dependency lock; no-op operations retain the exact input. Replacement scalar
 spelling (such as quote style or integer radix) is chosen by the library. Removing
 a key can remove its attached comments. Explicit empty parent tables are retained,
 but removing the last dotted key can remove its implicit parent table entirely;
-later operations requiring that parent then fail with a path error. There is no
-custom table synthesis, text-preservation algorithm, or upstream fork.
+later operations requiring that parent then fail with a path error. Explicit
+`ensureTable` uses `toml_edit`, not string concatenation or automatic parent repair.
+There is no custom text-preservation algorithm or upstream fork.
 
 Each operation reparses a complete text snapshot synchronously. This deliberately
 small boundary is not a large-file editor, schema validator, collection editor,
@@ -116,5 +123,6 @@ cargo +1.93.0 fmt --manifest-path native/Cargo.toml --check
 The explicit compiler above matches the directory-local pin in `native/`.
 Dart integration tests call the real
 Rust asset from the normal standalone test runner, covering scalar operations,
-diagnostics, formatting, literal keys, Unicode, no-ops, and failure isolation.
+regular-table creation/key enumeration, diagnostics, formatting, literal keys,
+Unicode, no-ops, and failure isolation.
 Rust tests cover the C ABI's malformed-input and response-release paths.

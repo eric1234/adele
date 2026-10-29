@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer, RootIsolateToken;
@@ -7,6 +8,10 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart';
+
+import 'credential_service.dart';
+
+part 'record_credential_service.dart';
 
 /// An application owner's lease on the main isolate's shared settings worker.
 ///
@@ -218,6 +223,9 @@ enum _Operation {
   createRecord,
   updateRecord,
   deleteRecord,
+  inspectCredential,
+  setCredentialReference,
+  refreshRecord,
   release,
 }
 
@@ -235,6 +243,8 @@ final class _Request {
     this.recordType,
     this.recordId,
     this.recordValues,
+    this.credentialSlot,
+    this.credentialReference,
   });
 
   final int owner;
@@ -249,6 +259,8 @@ final class _Request {
   final RecordTypeId? recordType;
   final ConfigurationRecordId? recordId;
   final Map<String, Object?>? recordValues;
+  final RecordCredentialSlotId? credentialSlot;
+  final CredentialReference? credentialReference;
 }
 
 final class _Values {
@@ -278,6 +290,14 @@ final class _RecordCollectionValues {
 
   final List<_RecordValues> records;
   final List<RecordDiagnosticView> diagnostics;
+}
+
+/// Only the trusted coordinator receives this projection, not generic views.
+final class _CredentialValues {
+  const _CredentialValues(this.owner, this.reference);
+
+  final String owner;
+  final CredentialReference? reference;
 }
 
 /// The lease registry is main-isolate-only: Dart's Unix locks do not serialize
@@ -319,6 +339,20 @@ final class _SettingsWorker {
   int nextOwner = 0;
   int _nextRequest = 0;
   bool _stopping = false;
+  Future<void> _workflows = Future<void>.value();
+
+  // A workflow reserves admission, not a native document or another writer.
+  // Its individual TOML requests still execute on the existing worker. Keeping
+  // this gate shared across owners prevents ordinary CRUD/reloads interleaving
+  // while a credential operation is awaiting the separate keyring queue.
+  Future<T> exclusive<T>(Future<T> Function() operation) {
+    final result = _workflows.then((_) => operation());
+    _workflows = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
 
   Future<void> _start(Future<void>? predecessor) async {
     try {
@@ -393,7 +427,10 @@ final class _SettingsWorker {
     if (!_exited.isCompleted) _exited.complete();
   }
 
-  Future<Object?> request(_Request request) async {
+  Future<Object?> request(_Request request) =>
+      exclusive(() => _request(request));
+
+  Future<Object?> _request(_Request request) async {
     final port = await _ready.future;
     if (_failure case final failure?) {
       Error.throwWithStackTrace(failure, _failureStack!);
@@ -480,6 +517,9 @@ final class _SettingsOwner {
         }
       case _Operation.updateRecord:
       case _Operation.deleteRecord:
+      case _Operation.inspectCredential:
+      case _Operation.setCredentialReference:
+      case _Operation.refreshRecord:
         final key = (request.collection!, request.recordId!);
         final current = recordBaselines[key];
         if (current == null ||
@@ -493,6 +533,13 @@ final class _SettingsOwner {
           );
         }
         final expected = current.$2;
+        if (request.credentialSlot case final slot?) {
+          if (!expected.type.credentialSlots.any((entry) => entry.id == slot)) {
+            throw const RecordCredentialFailure(
+              RecordCredentialFailureKind.invalidSlot,
+            );
+          }
+        }
         if (request.operation == _Operation.updateRecord) {
           _validateRecordValues(
             expected.type,
@@ -501,6 +548,25 @@ final class _SettingsOwner {
           );
         }
         try {
+          if (request.operation == _Operation.inspectCredential) {
+            await records.validateCurrent(expected);
+            return _CredentialValues(
+              expected.type.owner.value,
+              expected.credentials[request.credentialSlot!],
+            );
+          }
+          if (request.operation == _Operation.setCredentialReference) {
+            return _publishRecord(
+              await records.setCredentialReference(
+                expected,
+                request.credentialSlot!,
+                request.credentialReference,
+              ),
+            );
+          }
+          if (request.operation == _Operation.refreshRecord) {
+            return _publishRecord(await records.validateCurrent(expected));
+          }
           if (request.operation == _Operation.deleteRecord) {
             await records.delete(expected);
             recordBaselines.remove(key);
@@ -511,6 +577,9 @@ final class _SettingsOwner {
           );
         } on InvalidRecordValue {
           // R1 also validates edits, including document shape, before writing.
+          rethrow;
+        } on ConfigurationRecordCredentialsPresent {
+          // A deletion guard is a known prewrite failure, not a lost baseline.
           rethrow;
         } on Object {
           // An unconfirmed transaction can have persisted. Only Reload may

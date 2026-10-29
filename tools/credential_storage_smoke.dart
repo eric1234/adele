@@ -230,6 +230,8 @@ const _reports = {
   'PASS malformed UTF-8 failure preserves exact stored bytes',
   'PASS locked existing read/write/delete fail without changing the value',
   'PASS persistence across daemon and reader-process restart',
+  'PASS bound record attachment with only a nonsecret TOML reference',
+  'PASS bound record reconstruction across process and daemon restart, replacement and Forget',
   'PASS real blocked native call leaves Flutter frames responsive and close pending',
   'PASS disposable credential cleanup',
 };
@@ -242,6 +244,8 @@ const _fixtureStages = {
   'corrupt bytes',
   'locked existing entry',
   'daemon restart',
+  'record attachment',
+  'record reconstruction',
   'Flutter responsiveness',
   'entry cleanup',
 };
@@ -280,6 +284,25 @@ Future<void> _inside(Directory root, _Children children) async {
   Future<void> missing(String reference) async {
     await probe('read', reference, statuses: {1});
     await probe('contains', reference, statuses: {1});
+  }
+
+  Future<void> association(String phase) async {
+    await children.command(
+      '${env['FLUTTER_ROOT']}/bin/flutter',
+      [
+        'test',
+        '--no-pub',
+        '--reporter',
+        'expanded',
+        '--concurrency',
+        '1',
+        'test/credential_association_smoke_test.dart',
+      ],
+      directory: app,
+      environment: {...env, 'ADELE_CREDENTIAL_ASSOCIATION_PHASE': phase},
+      timeout: const Duration(minutes: 4),
+    );
+    _require(File('$fixture/association-$phase.completed').existsSync());
   }
 
   Future<_Child> daemon() async {
@@ -345,6 +368,12 @@ Future<void> _inside(Directory root, _Children children) async {
       'PASS production service CRUD, byte limit, reconstruction, FIFO and close drain',
     );
 
+    stage = 'record attachment';
+    await association('attach');
+    stdout.writeln(
+      'PASS bound record attachment with only a nonsecret TOML reference',
+    );
+
     stage = 'native independent entries';
     final a = 'cred1_${_random().substring(0, 32)}';
     final b = 'cred1_${_random().substring(0, 32)}';
@@ -396,6 +425,11 @@ Future<void> _inside(Directory root, _Children children) async {
       'PASS locked existing read/write/delete fail without changing the value',
     );
     stdout.writeln('PASS persistence across daemon and reader-process restart');
+    stage = 'record reconstruction';
+    await association('reopen');
+    stdout.writeln(
+      'PASS bound record reconstruction across process and daemon restart, replacement and Forget',
+    );
     stage = 'Flutter responsiveness';
     File('$fixture/daemon.pid').writeAsStringSync('${keyring.process.pid}');
     await children.command(

@@ -70,6 +70,90 @@ name = "one"
     },
   );
 
+  test('table keys include every direct entry without interpreting values', () {
+    const source = '''
+[credentials] # retain
+"literal.key" = 'opaque'
+"" = 1
+array = [1, 2]
+inline = { nested = {} }
+future.deep.value = true
+[credentials.empty]
+[[credentials.records]]
+''';
+    final document = TomlDocument.parse(source);
+    final keys = document.tableKeys(['credentials']);
+    expect(keys, [
+      'literal.key',
+      '',
+      'array',
+      'inline',
+      'future',
+      'empty',
+      'records',
+    ]);
+    expect(document.tableKeys(['credentials', 'future']), ['deep']);
+    expect(document.tableKeys(['credentials', 'empty']), isEmpty);
+    expect(() => keys.clear(), throwsUnsupportedError);
+    expect(document.source, source);
+    expect(
+      () => document.tableKeys(['missing']),
+      throwsA(failure(TomlFailureKind.path)),
+    );
+    for (final key in ['literal.key', 'array', 'inline', 'records']) {
+      expect(
+        () => document.tableKeys(['credentials', key]),
+        throwsA(failure(TomlFailureKind.type)),
+      );
+    }
+  });
+
+  test(
+    'ensure table creates only a missing leaf and preserves existing content',
+    () {
+      const source =
+          "# retained\n[values] # values\nname = 'Original' # name\n";
+      final original = TomlDocument.parse(source);
+      final created = original.ensureTable(['credentials']);
+      expect(created.source, startsWith(source));
+      expect(created.source, contains('[credentials]\n'));
+      expect(created.tableKeys(['credentials']), isEmpty);
+      expect(created.ensureTable(['credentials']), same(created));
+      final filled = created.setScalar(['credentials', 'api-key'], 'reference');
+      final cleared = filled.removeScalar(['credentials', 'api-key']);
+      expect(cleared.tableKeys(['credentials']), isEmpty);
+      expect(cleared.source, contains('[credentials]\n'));
+      final nested = created.ensureTable(['credentials', 'literal.key']);
+      expect(nested.tableKeys(['credentials']), ['literal.key']);
+      expect(nested.tableKeys(['credentials', 'literal.key']), isEmpty);
+      expect(original.source, source);
+
+      final implicit = TomlDocument.parse("credentials.key = 'old'\r\n");
+      expect(implicit.ensureTable(['credentials']), same(implicit));
+      for (final path in <List<String>>[
+        [],
+        ['missing', 'child'],
+      ]) {
+        expect(
+          () => original.ensureTable(path),
+          throwsA(failure(TomlFailureKind.path)),
+        );
+      }
+      for (final value in ['1', "'text'", '{}', '[]']) {
+        final document = TomlDocument.parse('credentials = $value\n');
+        expect(
+          () => document.ensureTable(['credentials']),
+          throwsA(failure(TomlFailureKind.type)),
+        );
+        expect(
+          () => document.ensureTable(['credentials', 'child']),
+          throwsA(failure(TomlFailureKind.path)),
+        );
+        expect(document.source, 'credentials = $value\n');
+      }
+    },
+  );
+
   test('parse failures contain useful native location diagnostics', () {
     expect(
       () => TomlDocument.parse('[tools]\nlimit =\n'),

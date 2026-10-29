@@ -83,7 +83,7 @@ fn operate(request: &str) -> Result<Json, Failure> {
     let (key, parents) = path
         .split_last()
         .ok_or_else(|| Failure::new("path", "The key path must not be empty."))?;
-    if operation == "requireTable" {
+    if operation == "requireTable" || operation == "tableKeys" {
         let mut table = document.as_table();
         for key in path {
             table = table
@@ -94,10 +94,23 @@ fn operate(request: &str) -> Result<Json, Failure> {
                     Failure::new("type", format!("Key {key:?} is not a regular table."))
                 })?;
         }
-        return Ok(json!({"document": source}));
+        return Ok(if operation == "tableKeys" {
+            json!({"keys": table.iter().map(|(key, _)| key).collect::<Vec<_>>()})
+        } else {
+            json!({"document": source})
+        });
     }
     let table = parent_table(document.as_table_mut(), parents)?;
     match operation {
+        "ensureTable" => {
+            if let Some(item) = table.get(key) {
+                if !item.is_table() {
+                    return Err(Failure::new("type", "Expected a regular table."));
+                }
+                return Ok(json!({"document": source}));
+            }
+            table.insert(key, Item::Table(Table::new()));
+        }
         "read" => {
             let item = table
                 .get(key)
@@ -209,6 +222,59 @@ mod tests {
         ] {
             let failure = operate(
                 &json!({"operation": "requireTable", "document": source, "path": path}).to_string(),
+            )
+            .unwrap_err();
+            assert_eq!(failure.kind, kind);
+        }
+    }
+
+    #[test]
+    fn creates_leaf_tables_and_enumerates_nested_and_unknown_entries() {
+        let source = "[values]\nname = 'kept' # comment\n";
+        let result = operate(
+            &json!({"operation": "ensureTable", "document": source, "path": ["credentials"]})
+                .to_string(),
+        )
+        .unwrap_or_else(|failure| panic!("{}", failure.message));
+        let edited = result["document"].as_str().unwrap();
+        assert!(edited.starts_with(source));
+        assert!(edited.contains("[credentials]\n"));
+        let noop = operate(
+            &json!({"operation": "ensureTable", "document": edited, "path": ["credentials"]})
+                .to_string(),
+        )
+        .unwrap_or_else(|failure| panic!("{}", failure.message));
+        assert_eq!(noop["document"], edited);
+        let keys = operate(
+            &json!({
+                "operation": "tableKeys",
+                "document": "[credentials]\nkey = 'ref'\nunknown = {}\n[credentials.empty]\n[[credentials.array]]\n",
+                "path": ["credentials"],
+            })
+            .to_string(),
+        )
+        .unwrap_or_else(|failure| panic!("{}", failure.message));
+        assert_eq!(keys["keys"], json!(["key", "unknown", "empty", "array"]));
+        for (operation, source, path, kind) in [
+            ("ensureTable", "", vec!["missing", "child"], "path"),
+            (
+                "ensureTable",
+                "credentials = {}",
+                vec!["credentials"],
+                "type",
+            ),
+            (
+                "ensureTable",
+                "[[credentials]]",
+                vec!["credentials"],
+                "type",
+            ),
+            ("tableKeys", "", vec!["credentials"], "path"),
+            ("tableKeys", "credentials = {}", vec!["credentials"], "type"),
+            ("tableKeys", "[credentials]", vec![], "path"),
+        ] {
+            let failure = operate(
+                &json!({"operation": operation, "document": source, "path": path}).to_string(),
             )
             .unwrap_err();
             assert_eq!(failure.kind, kind);

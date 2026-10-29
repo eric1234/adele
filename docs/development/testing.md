@@ -319,8 +319,11 @@ suite owns workspace/analysis/target discovery and CI compiler metadata, includi
 the persistence and Settings host targets' transitive native TOML requirement.
 It also checks the packages' narrow direct production dependencies: public
 Settings depends only on `adele_plugin_api`, the internal Settings host depends on
-Settings/configuration-store/TOML, and configuration-store retains its existing
-storage/TOML/path boundary. These are focused manifest checks, not a repository-wide
+Settings/configuration-store/TOML plus credential-store's pure reference identity,
+and configuration-store retains its existing storage/TOML/path boundary. The
+app/plugin boundary test also restricts Settings host credential imports to
+`credential_reference.dart`, including conditional/relative directives, and keeps
+that identity entrypoint SDK-only. These are focused checks, not a repository-wide
 dependency-graph linter.
 
 The configuration-store target uses temporary configuration/state/data/cache roots
@@ -334,8 +337,8 @@ the target uses coreutils `chmod` and `stat`. Linux x64 is the validated persist
 path, not macOS/Windows or unconditional power-loss durability evidence.
 
 The `adele_settings` target owns pure-Dart definition, catalog, and resolution
-checks, including record identity/presence and shared scalar validation, without
-filesystem persistence or native TOML. The `adele_settings_host`
+checks, including record identity/presence, credential-slot declarations and shared
+scalar validation, without filesystem persistence or native TOML. The `adele_settings_host`
 target owns the thin adapter boundary using actual configuration-store and native
 TOML operations with temporary roots, not a fake persistence layer. Semantic
 resolution checks do not substitute for native host integration checks; neither
@@ -344,8 +347,9 @@ target establishes application Settings UI or Profile activation behavior.
 Prepared declaration parsing remains pure Dart in the `plugin_runtime` target,
 covering independent schemas, scalar constraints, ownership, bounded metadata,
 asset confinement, whole-schema rejection, component isolation, and deterministic
-duplicate diagnostics. Record display-field tests cover omitted metadata and required
-string references, including the authoritative stock OpenAI schema. The tooling
+duplicate diagnostics. Record tests cover optional display fields and credential
+slots, strict kind/key validation, bounds and multi-type isolation, including the
+authoritative stock OpenAI schema. The tooling
 target exercises actual stock schema publication through the maintained installation
 helper, not just a hand-authored manifest.
 
@@ -359,6 +363,10 @@ exercises Boolean, bounded integer and enum fields without a dummy production
 plugin. The existing host target already declares `nativeToml`; no additional
 target or worker is needed. The configuration-store suite separately exercises
 multi-file transactions, conditional create/delete and cross-process coordination.
+Credential-reference cases in that host suite use only the pure identity API and
+real TOML, not a keyring: absent/empty tables, known reference edits, unknown nested
+content preservation, malformed entries, shared value/reference conflicts and
+whole-record deletion guards. TOML tests own `ensureTable` and `tableKeys` behavior.
 
 `app/test/prepared_settings_test.dart` loads the real Source declaration with
 temporary configuration roots and checks native persistence/provenance, explicit
@@ -465,7 +473,8 @@ dart tools/adele.dart test --target adele_credential_store
 dart tools/adele.dart test --target adele_credential_store_native
 dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart
 # app/
-flutter test --no-pub --concurrency 1 test/core/credential_service_test.dart test/credential_application_lifecycle_test.dart
+flutter test --no-pub --concurrency 1 test/core/credential_service_test.dart test/core/record_credential_service_test.dart
+flutter test --no-pub --concurrency 1 test/credential_application_lifecycle_test.dart test/record_credential_application_lifecycle_test.dart
 ```
 
 The package target owns the synchronous native/Dart boundary. The native target
@@ -477,12 +486,20 @@ executing it or accessing a keyring. The SDK-only underlying command,
 without editor preparation or pub resolution. Neither target needs an unlocked
 keyring. App service tests use deterministic adapters for strict values, redaction,
 queueing, uncertain-mutation fences, explicit reconciliation, and shutdown draining.
-The application lifecycle tests check lazy construction, mount-time ownership,
-rebuild retention, and accepted-exit/disposal fencing and draining. These do not
+`app/test/core/record_credential_service_test.dart` exercises the host association
+coordinator with real conditional configuration persistence and deterministic
+credential adapters. It owns protected binding checks, whole-envelope size bounds,
+attach/replace/forget ordering, missing-local establishment, status-only inspection,
+partial failures, explicit reconciliation and owner/revision/slot isolation. Select
+it with the existing worker regressions when changing admission: an OS wait must
+not allow ordinary CRUD or another owner's configuration requests to interleave.
+`app/test/record_credential_application_lifecycle_test.dart` adds lazy pairing,
+mount-time factory capture, rebuild retention, rejected-exit usability and blocked
+association drain to the existing standalone credential lifecycle tests. These do not
 establish real Secret Service behavior. Tooling tests check workspace,
 analysis and CI discovery, pre-bootstrap `test-plan`, native command failure
 propagation, and the prohibition on production plugin credential-store dependencies
-and imports.
+and imports, plus the host's identity-only credential dependency.
 
 The real-keyring fixture is **separate and opt-in**, not an ordinary CI dependency.
 With the pinned `FLUTTER_ROOT` exported, from the repository root:
@@ -500,8 +517,13 @@ HOME/XDG/control directories, never the developer's login keyring. Simply unsett
 user's runtime bus. Do not manually enable the gated app test against the normal
 desktop session. The fixture owns daemon/process cleanup and invokes the app probe
 and `app/test/credential_storage_responsiveness_test.dart` inside its isolated
-environment. This is where real persistence, storage failures and off-UI native
-blocking are checked, rather than inferred from fake adapter tests.
+environment. The same runner invokes `app/test/credential_association_smoke_test.dart`
+in separate attach and reopen processes across a disposable daemon restart, using
+the real OpenAI declaration and temporary configuration roots. That fixture checks
+nonsecret TOML references, bound-envelope reconstruction, same-reference replacement
+and Forget before record deletion. This is where real persistence, storage failures
+and off-UI native blocking are checked, rather than inferred from fake adapter tests.
+These commands describe validation procedures, not recorded successful outcomes.
 
 Native packaging changes also require the retained actual application build:
 

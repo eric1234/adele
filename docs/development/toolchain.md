@@ -574,10 +574,10 @@ and the same remote Chat backend, not an in-process strategy fallback.
 Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
 authoritative `records.schema.json` byte-for-byte, referencing them through the
 independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
-metadata is available without backend/frontend activation or authentication; the OpenAI record
-declaration contains no credential fields and does not change runtime startup
-configuration. Global scalar values remain in TOML, not generated installation
-artifacts or the startup-argv file. Application startup resolves them from prepared
+metadata is available without backend/frontend activation or authentication; the
+OpenAI record declares an API-key credential slot, not secret values, and does not
+change runtime startup configuration. Global scalar values remain in TOML, not
+generated installation artifacts or the startup-argv file. Application startup resolves them from prepared
 declarations for both frontends and backends; changing a user override requires
 application restart, not plugin recompilation. Runtime receives
 `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the temporary

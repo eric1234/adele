@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
+import 'package:adele_credential_store/credential_reference.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_toml_document/adele_toml_document.dart';
 
@@ -148,12 +149,80 @@ final class ConfigurationRecordStore {
       expected.type,
       validated,
       saved,
+      credentials: expected.credentials,
+      hasCredentialEntries: expected.hasCredentialEntries,
     );
+  }
+
+  /// Changes only one declared nonsecret association, conditional on the same
+  /// whole-record baseline as ordinary values. Unknown entries are never adopted.
+  Future<ConfigurationRecordSnapshot> setCredentialReference(
+    ConfigurationRecordSnapshot expected,
+    RecordCredentialSlotId slot,
+    CredentialReference? reference,
+  ) async {
+    _checkCatalog(expected);
+    if (!expected.type.credentialSlots.any(
+      (definition) => definition.id == slot,
+    )) {
+      throw ConfigurationRecordFormatException(
+        expected.collection,
+        expected.id,
+        'Cannot edit an undeclared credential slot.',
+      );
+    }
+    if (expected.credentials[slot] == reference) {
+      return validateCurrent(expected);
+    }
+    var document = expected.document;
+    final path = ['credentials', slot.value];
+    if (reference == null) {
+      document = document.removeScalar(path);
+    } else {
+      document = document
+          .ensureTable(['credentials'])
+          .setScalar(path, reference.value);
+    }
+    final credentials = _readCredentials(expected.type, expected.id, document);
+    await _checkIdentity(expected.collection, expected.id);
+    final saved = _file(
+      expected.collection,
+      expected.id,
+    ).save(expected._baseline, document);
+    return ConfigurationRecordSnapshot._(
+      catalog,
+      expected.id,
+      expected.type,
+      expected.values,
+      saved,
+      credentials: credentials.references,
+      hasCredentialEntries: credentials.hasEntries,
+    );
+  }
+
+  /// Asserts the exact observed byte/existence baseline without writing or
+  /// loading a replacement snapshot. Success returns [expected] itself.
+  Future<ConfigurationRecordSnapshot> validateCurrent(
+    ConfigurationRecordSnapshot expected,
+  ) async {
+    _checkCatalog(expected);
+    await _checkIdentity(expected.collection, expected.id);
+    _file(
+      expected.collection,
+      expected.id,
+    ).save(expected._baseline, expected.document);
+    return expected;
   }
 
   /// Removes only this record in this layer, conditional on its observed bytes.
   Future<void> delete(ConfigurationRecordSnapshot expected) async {
     _checkCatalog(expected);
+    if (expected.hasCredentialEntries) {
+      throw ConfigurationRecordCredentialsPresent(
+        expected.collection,
+        expected.id,
+      );
+    }
     await _checkIdentity(expected.collection, expected.id);
     _file(expected.collection, expected.id).delete(expected._baseline);
   }
@@ -241,13 +310,62 @@ final class ConfigurationRecordStore {
         throw InvalidRecordValue(collection, id, field.id, error.message);
       }
     }
+    final credentials = _readCredentials(type, id, document);
     return ConfigurationRecordSnapshot._(
       catalog,
       id,
       type,
       type.validate(id, values),
       baseline,
+      credentials: credentials.references,
+      hasCredentialEntries: credentials.hasEntries,
     );
+  }
+
+  ({
+    Map<RecordCredentialSlotId, CredentialReference> references,
+    bool hasEntries,
+  })
+  _readCredentials(
+    RecordTypeDefinition type,
+    ConfigurationRecordId id,
+    TomlDocument document,
+  ) {
+    final List<String> keys;
+    try {
+      keys = document.tableKeys(['credentials']);
+    } on TomlException catch (error) {
+      if (error.kind == TomlFailureKind.path) {
+        return (references: const {}, hasEntries: false);
+      }
+      throw ConfigurationRecordFormatException(
+        type.collection,
+        id,
+        'credentials must be a regular table.',
+      );
+    }
+    final references = <RecordCredentialSlotId, CredentialReference>{};
+    for (final slot in type.credentialSlots) {
+      if (!keys.contains(slot.id.value)) continue;
+      try {
+        final value = document.readScalar(['credentials', slot.id.value]);
+        if (value is! String) throw const FormatException();
+        references[slot.id] = CredentialReference.parse(value);
+      } on TomlException {
+        throw ConfigurationRecordFormatException(
+          type.collection,
+          id,
+          'Credential slot "${slot.id}" must contain a valid credential reference.',
+        );
+      } on FormatException {
+        throw ConfigurationRecordFormatException(
+          type.collection,
+          id,
+          'Credential slot "${slot.id}" must contain a valid credential reference.',
+        );
+      }
+    }
+    return (references: references, hasEntries: keys.isNotEmpty);
   }
 
   Map<String, Object> _validateDesired(
@@ -285,14 +403,22 @@ final class ConfigurationRecordSnapshot {
     this.id,
     this.type,
     Map<String, Object> values,
-    this._baseline,
-  ) : values = Map.unmodifiable(values);
+    this._baseline, {
+    Map<RecordCredentialSlotId, CredentialReference> credentials = const {},
+    this.hasCredentialEntries = false,
+  }) : values = Map.unmodifiable(values),
+       credentials = Map.unmodifiable(credentials);
 
   final RecordCatalog _catalog;
   final ConfigurationSnapshot _baseline;
   final ConfigurationRecordId id;
   final RecordTypeDefinition type;
   final Map<String, Object> values;
+  final Map<RecordCredentialSlotId, CredentialReference> credentials;
+
+  /// Includes unknown credential keys and nested tables, even when no declared
+  /// slot is associated. Such content must not be silently deleted.
+  final bool hasCredentialEntries;
   RecordCollectionId get collection => type.collection;
   TomlDocument get document => _baseline.document;
 }
@@ -346,4 +472,16 @@ final class ConfigurationRecordNotFound implements Exception {
 
   @override
   String toString() => 'Record not found: $collection/$recordId';
+}
+
+/// Whole-record deletion cannot implicitly remove known or unknown associations.
+final class ConfigurationRecordCredentialsPresent implements Exception {
+  const ConfigurationRecordCredentialsPresent(this.collection, this.recordId);
+
+  final RecordCollectionId collection;
+  final ConfigurationRecordId recordId;
+
+  @override
+  String toString() =>
+      'Record $collection/$recordId has credential entries; deletion is blocked.';
 }
