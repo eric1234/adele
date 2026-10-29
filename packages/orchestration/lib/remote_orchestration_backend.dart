@@ -330,6 +330,28 @@ final class _HostProxy implements OrchestrationExecutionHost {
 
   Future<void> flush() => _operation(() async {});
 
+  @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) =>
+      _operation(() async {
+        if (_state == RunState.completed ||
+            _state == RunState.failed ||
+            _state == RunState.cancelled) {
+          throw const InvalidRunOperation(
+            'A terminal execution cannot read history.',
+          );
+        }
+        try {
+          final result = await _client!.readHistoricalRun(runId.value);
+          validateBinding();
+          return result.toLocal();
+        } on RemoteHistoricalRunEvidenceFailure catch (error) {
+          throw HistoricalRunEvidenceFailure(
+            code: error.code,
+            message: error.message,
+          );
+        }
+      }, recoverHistoricalFailure: true);
+
   Future<void> _flush() async {
     while (_transitions.isNotEmpty) {
       validateBinding();
@@ -412,7 +434,10 @@ final class _HostProxy implements OrchestrationExecutionHost {
     return item;
   });
 
-  Future<T> _operation<T>(Future<T> Function() operation) async {
+  Future<T> _operation<T>(
+    Future<T> Function() operation, {
+    bool recoverHistoricalFailure = false,
+  }) async {
     _requireIdle();
     final settled = Completer<void>();
     pending = settled.future;
@@ -422,8 +447,10 @@ final class _HostProxy implements OrchestrationExecutionHost {
       validateBinding();
       return value;
     } on Object catch (error, stack) {
-      _failure ??= error;
-      _failureStack ??= stack;
+      if (!recoverHistoricalFailure || error is! HistoricalRunEvidenceFailure) {
+        _failure ??= error;
+        _failureStack ??= stack;
+      }
       rethrow;
     } finally {
       pending = null;

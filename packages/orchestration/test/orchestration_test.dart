@@ -744,6 +744,10 @@ final class _TestHost implements OrchestrationExecutionHost {
   ToolApprovalResolution? resolution;
 
   @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) =>
+      throw UnimplementedError();
+
+  @override
   void validateBinding() {
     validations++;
     if (bindingFailure case final Object error) throw error;

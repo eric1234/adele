@@ -792,6 +792,10 @@ final class _Host implements RemoteOrchestrationHostService {
   StrategyToolResult result = const StrategyToolWaiting();
   Object? failure;
   @override
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) =>
+      throw UnimplementedError();
+
+  @override
   Future<RemoteRunState> transition(
     RemoteRunTransition transition,
     RemoteOrchestrationFailure? failure,

@@ -60,6 +60,37 @@ final class RemoteExpectedSessionFeedback {
       );
 }
 
+/// Library-local wire wrapper over the narrowed public activity projection.
+@AdeleValue('orchestration.historicalRunEvidence')
+final class RemoteHistoricalRunEvidence {
+  RemoteHistoricalRunEvidence({required Map<String, Object?> payload})
+    : payload = adeleSnapshotJsonMap(payload) {
+    toLocal();
+  }
+
+  final Map<String, Object?> payload;
+
+  static RemoteHistoricalRunEvidence fromLocal(
+    local.HistoricalRunEvidence value,
+  ) => RemoteHistoricalRunEvidence(payload: value.toJson());
+
+  local.HistoricalRunEvidence toLocal() =>
+      local.HistoricalRunEvidence.fromJson(payload);
+}
+
+@AdeleFailure('orchestration.historicalRunEvidenceFailure')
+final class RemoteHistoricalRunEvidenceFailure implements Exception {
+  const RemoteHistoricalRunEvidenceFailure({
+    required this.code,
+    required this.message,
+    this.details = const {},
+  });
+
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+
 @AdeleValue('orchestration.session')
 final class RemoteOrchestrationSession {
   RemoteOrchestrationSession({
@@ -609,6 +640,9 @@ abstract interface class RemoteOrchestrationService {
 
 @AdeleService('orchestrationExecutionHost')
 abstract interface class RemoteOrchestrationHostService {
+  @AdeleMethod('readHistoricalRun')
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId);
+
   @AdeleMethod('transition')
   Future<RemoteRunState> transition(
     RemoteRunTransition transition,

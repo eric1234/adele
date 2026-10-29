@@ -140,6 +140,7 @@ The narrow host interface supplies:
 | `id`, `sessionId`, `state` | Execution identity and small lifecycle state, not the kernel Run object |
 | `start()`, `complete()`, `fail(error)`, `validateBinding()` | Host-owned lifecycle and retained-strategy validation |
 | `invokeModel(StrategyInferenceMaterial)` | Returns a `StrategyModelTurn` with ordered output, settlement/metadata or failure, and an opaque tool snapshot |
+| `readHistoricalRun(RunId)` | Reads bounded, sanitized terminal evidence for an exact previous Run in the captured canonical Session; never supplies execution authority or inserts context |
 | `processProposal(tools: ..., proposal: ...)` | Processes a `ProviderToolProposal` against its exact `StrategyToolSnapshot`, including host policy and execution |
 | `resolveApproval(resolution)` | Resolves the host-retained exact invocation and returns `SemanticToolOutcomeInput` for continuation |
 
@@ -218,7 +219,7 @@ The support library remains in this pure-Dart public package; generic
 
 Each start/resume creates a fresh `PluginHostInvocation` allowlisting only
 `RemoteOrchestrationHostService`: lifecycle transition, collected model invocation,
-proposal processing, and no-argument `applyCurrentApproval`. Settlement or
+historical Run read, proposal processing, and no-argument `applyCurrentApproval`. Settlement or
 retirement revokes it. No model-provider, Environment, policy, tool executable,
 catalog, kernel Run, or journal authority is given to the backend.
 
@@ -343,6 +344,73 @@ native envelopes stay opaque here. Live Run-local native/encrypted continuation
 remains distinct from historical evidence, which is never replayed. See
 [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
 Reasoning deltas and nested navigation remain deferred.
+
+## Historical Run Evidence
+
+`OrchestrationExecutionHost.readHistoricalRun(RunId)` is an explicit strategy read,
+available only during the captured execution's active start/resume operation,
+before terminal settlement. It is unavailable during materialization, between
+advancements, and after close. The host derives Session scope from its canonical
+Session capture, checks the open lifecycle and exact strategy binding, and requires
+both an authoritative terminal product record and matching retained activity.
+It does not enumerate Runs or infer chronology from identifiers.
+
+`HistoricalRunEvidence` contains `record` (`RunRecord`, including actual terminal
+state) and `activity` (a narrowed immutable `RunActivitySnapshot`). It adapts existing
+public evidence rather than introducing another execution event model or durable
+transcript. `fromActivity` validates record/activity agreement, projects a strict
+allowlist, and enforces bounds; `toJson`/`fromJson` are the transport projection, not
+the Project storage format or a replay codec.
+
+The projection preserves original Run-local model identities, start/terminal and
+output occurrence sequences, recorded assistant text, proposals and original
+arguments, provider item/call correlation, resolved tool identity/canonical
+arguments, policy/effects, approval/rejection facts, progress, rejected proposals,
+failure kind/message/provider code, and model settlement/incomplete reason. Tool
+outcomes retain model-visible content, disposition, failure kind and effect
+certainty, including in ordered tool changes. Missing terminal observations and
+outcomes stay null: a proposal, prepared invocation, execution start, and recorded
+completion remain different facts. Reading these values authorizes none of them.
+
+Native-only output occurrences are excluded, leaving original sequence gaps; text
+and proposal native attachments are removed. All model terminal metadata (including
+native state, usage and provider-detail maps), failure provider-detail maps, and
+outcome `hostData` are excluded. Safe native presentation is also outside this
+semantic projection. Existing activity already excludes host diagnostics, causes,
+stacks, executable bindings and approval tokens. Historical native envelopes never
+become live continuation objects. Retained storage and ordinary activity Inspection
+remain unchanged.
+
+`HistoricalRunEvidenceFailure.code` is `current_run` for this execution's Run,
+`unavailable` for unknown/foreign/nonterminal Runs or unavailable/inconsistent
+evidence, and `result_too_large` when the complete projection exceeds a bound.
+Foreign and unknown IDs share the same safe failure without revealing membership.
+A retained terminal Run with valid empty activity succeeds; absence never becomes
+an empty success. Binding/lifecycle/transport errors retain their existing failure
+semantics, not a fabricated history miss. Strategies can catch declared read
+failures and continue their own sequencing.
+
+`RemoteOrchestrationHostService.readHistoricalRun(String)` uses the same generated
+request channel and operation grant as other host calls. Its library-local
+`RemoteHistoricalRunEvidence` wraps the strict projection, with declared
+`RemoteHistoricalRunEvidenceFailure` mapped back to the public failure. No Session
+selector, new registry, storage grant, or application-private database access is
+exposed to installed strategies.
+
+`HistoricalRunEvidenceLimits` caps the complete projected JSON at **512 KiB UTF-8**,
+**50,000 expanded value/container nodes**, and **depth 48** (root depth zero),
+identically for native and remote callers. This leaves room for generated envelopes
+inside existing depth-64, 100,000-node and 8 MiB framed transport limits. Oversize
+fails before a success response, with no truncation, summarization, paging, or
+streaming. Supporting larger retained Runs needs a subsequent explicit bounded
+retrieval design. The evidence does not contain full inference input, instructions,
+text deltas, or tool-owned full command transcripts that were never in the source
+snapshot. It provides no cross-Run ordering or file-freshness guarantees.
+
+Core owns retention and read admission; the strategy decides whether and how these
+facts contribute to future inference. Stock Chat does not yet call this operation
+or inject historical execution context. See the canonical
+[historical access boundary](../../docs/architecture/execution-model.md#strategy-access-to-historical-evidence).
 
 ## Inference Context
 

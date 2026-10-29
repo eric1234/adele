@@ -395,6 +395,21 @@ final class _ExecutionHostOperation implements RemoteOrchestrationHostService {
   });
 
   @override
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) =>
+      perform(() async {
+        try {
+          return RemoteHistoricalRunEvidence.fromLocal(
+            await host.readHistoricalRun(RunId(runId)),
+          );
+        } on HistoricalRunEvidenceFailure catch (error) {
+          throw RemoteHistoricalRunEvidenceFailure(
+            code: error.code,
+            message: error.message,
+          );
+        }
+      });
+
+  @override
   Future<RemoteStrategyModelTurn> invokeModel(
     RemoteStrategyInferenceMaterial material,
   ) => perform(() async {

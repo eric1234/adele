@@ -7,6 +7,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 
 import 'session_feedback.dart';
+import 'src/historical_run.dart';
 import 'src/model.dart';
 import 'src/run.dart';
 import 'src/tool.dart';
@@ -30,6 +31,7 @@ export 'package:adele_product/adele_product.dart'
 export 'session_feedback.dart';
 export 'src/activity.dart';
 export 'src/context.dart';
+export 'src/historical_run.dart';
 export 'src/model.dart';
 export 'src/run.dart';
 export 'src/tool.dart';
@@ -114,6 +116,12 @@ abstract interface class OrchestrationExecutionHost {
   void start();
   void complete();
   void fail(Object error);
+
+  /// Reads one retained terminal Run from this host's canonical Session, only
+  /// during an active strategy operation. The current Run is never historical.
+  /// Unknown, foreign and missing evidence share an `unavailable` failure;
+  /// valid empty evidence succeeds. Reads grant no replay or execution authority.
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId);
 
   Future<StrategyModelTurn> invokeModel(StrategyInferenceMaterial material);
 
