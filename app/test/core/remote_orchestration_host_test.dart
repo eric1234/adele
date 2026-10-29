@@ -116,6 +116,183 @@ void main() {
     return execution;
   }
 
+  test(
+    'history preserves typed evidence and declared recoverable failures',
+    () async {
+      final probe = await activate();
+      final host = _RecordingHost();
+      final previous = _historyEvidence(host.sessionId);
+      host.historyReader = (runId) async {
+        if (runId == previous.record.id) return previous;
+        throw HistoricalRunEvidenceFailure(
+          code: runId.value,
+          message: 'History read failed.',
+        );
+      };
+      final execution = await materialize(host);
+      final advancing = execution.start();
+      final active = await _ready(probe.connection, 'execution-0/start');
+      for (final code in ['unavailable', 'current_run', 'result_too_large']) {
+        _expectDenied(await _history(probe.connection, active, code), code);
+        expect(host.state, RunState.running);
+        expect(host.failure, isNull);
+      }
+      expect(
+        await _history(probe.connection, active, previous.record.id.value),
+        {'ok': true, 'evidence': previous.toJson()},
+      );
+      expect(host.historyReads.map((id) => id.value), [
+        'unavailable',
+        'current_run',
+        'result_too_large',
+        previous.record.id.value,
+      ]);
+      expect(host.processed, isEmpty);
+      expect(host.approvals, isEmpty);
+      await _finish(probe.connection, 'execution-0/start');
+      await advancing;
+      expect(host.state, RunState.completed);
+      expect(await _control(probe.connection, 'released'), ['execution-0']);
+    },
+  );
+
+  test(
+    'history invocation expires between approvals and after terminal close',
+    () async {
+      final probe = await activate();
+      final host = _RecordingHost()..waitForApproval = true;
+      final previous = _historyEvidence(host.sessionId);
+      host.historyReader = (_) async => previous;
+      final execution = await materialize(host);
+      _expectDenied(
+        await _history(probe.connection, {
+          'context': 'unavailable',
+        }, 'previous'),
+        'host_invocation_unavailable',
+      );
+      expect(host.historyReads, isEmpty);
+      final starting = execution.start();
+      final start = await _ready(probe.connection, 'execution-0/start');
+      expect(await _history(probe.connection, start, 'previous'), {
+        'ok': true,
+        'evidence': previous.toJson(),
+      });
+      await _proposal(
+        probe.connection,
+        start,
+        (start['turns'] as List).first as Map,
+      );
+      await _finish(probe.connection, 'execution-0/start', 'waiting');
+      await starting;
+      _expectDenied(
+        await _history(probe.connection, start, 'previous'),
+        'host_invocation_unavailable',
+      );
+      expect(host.historyReads, hasLength(1));
+      final resuming = execution.resolveApproval(
+        ToolApprovalResolution(
+          interruptionId: RunInterruptionId('approval'),
+          toolInvocationId: ToolInvocationId('invocation'),
+          approved: true,
+        ),
+      );
+      final resume = await _ready(probe.connection, 'execution-0/resume');
+      _expectDenied(
+        await _history(probe.connection, start, 'previous'),
+        'host_invocation_unavailable',
+      );
+      expect(await _history(probe.connection, resume, 'previous'), {
+        'ok': true,
+        'evidence': previous.toJson(),
+      });
+      expect(host.state, RunState.waiting);
+      await _control(probe.connection, 'approval', {
+        'context': resume['context'],
+      });
+      await _finish(probe.connection, 'execution-0/resume');
+      await resuming;
+      await execution.close();
+      _expectDenied(
+        await _history(probe.connection, resume, 'previous'),
+        'host_invocation_unavailable',
+      );
+      expect(host.historyReads, hasLength(2));
+    },
+  );
+
+  test('history grant cannot migrate to a replacement generation', () async {
+    final probe = await activate();
+    final host = _RecordingHost()..waitForApproval = true;
+    host.historyReader = (_) async => _historyEvidence(host.sessionId);
+    final execution = await materialize(host);
+    final starting = execution.start();
+    final start = await _ready(probe.connection, 'execution-0/start');
+    await _proposal(
+      probe.connection,
+      start,
+      (start['turns'] as List).first as Map,
+    );
+    await _finish(probe.connection, 'execution-0/start', 'waiting');
+    await starting;
+    await probe.retire();
+    await probe.connection.close();
+    final replacement = await activate();
+    final replacementHost = _RecordingHost();
+    replacementHost.historyReader = (_) async =>
+        _historyEvidence(host.sessionId);
+    final replacementExecution = await materialize(replacementHost);
+    final advancing = replacementExecution.start();
+    final fresh = await _ready(replacement.connection, 'execution-0/start');
+    _expectDenied(
+      await _history(replacement.connection, start, 'previous'),
+      'host_invocation_unavailable',
+    );
+    expect(host.historyReads, isEmpty);
+    expect(replacementHost.historyReads, isEmpty);
+    expect(
+      (await _history(replacement.connection, fresh, 'previous') as Map)['ok'],
+      isTrue,
+    );
+    expect(replacementHost.historyReads, [RunId('previous')]);
+    await _finish(replacement.connection, 'execution-0/start');
+    await advancing;
+  });
+
+  test('detached history read is revoked and drained before failure', () async {
+    final probe = await activate();
+    final host = _RecordingHost();
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    addTearDown(() {
+      if (!release.isCompleted) release.complete();
+    });
+    host.historyReader = (_) async {
+      entered.complete();
+      await release.future;
+      return _historyEvidence(host.sessionId);
+    };
+    final execution = await materialize(host);
+    final advancing = execution.start();
+    final failed = expectLater(
+      advancing,
+      throwsA(isA<AdeleProtocolException>()),
+    );
+    final active = await _ready(probe.connection, 'execution-0/start');
+    final detached = _history(probe.connection, active, 'previous');
+    await entered.future.timeout(_bound);
+    final queued = _history(probe.connection, active, 'previous');
+    await _finish(probe.connection, 'execution-0/start', 'detached');
+    _expectDenied(await detached, 'host_invocation_unavailable');
+    _expectDenied(await queued, 'host_invocation_unavailable');
+    expect(host.historyReads, [RunId('previous')]);
+    expect(await _control(probe.connection, 'released'), isEmpty);
+    release.complete();
+    await failed.timeout(_bound);
+    expect(await _control(probe.connection, 'released'), ['execution-0']);
+    expect(host.processed, isEmpty);
+    expect(host.approvals, isEmpty);
+  });
+
   for (final attack in [
     'fabricated snapshot',
     'fabricated proposal',
@@ -714,6 +891,35 @@ Future<Object?> _proposal(
   'proposal': handles['proposal'],
 });
 
+Future<Object?> _history(
+  PluginBackendConnection connection,
+  Map<Object?, Object?> active,
+  String runId,
+) => _control(connection, 'history', {
+  'context': active['context'],
+  'runId': runId,
+});
+
+HistoricalRunEvidence _historyEvidence(SessionId sessionId) =>
+    HistoricalRunEvidence.fromActivity(
+      record: RunRecord(
+        id: RunId('previous'),
+        sessionId: sessionId,
+        state: RunTerminalState.failed,
+      ),
+      activity: RunActivitySnapshot(
+        runId: RunId('previous'),
+        sessionId: sessionId,
+        state: RunState.failed,
+        sequence: 2,
+        lifecycle: const [
+          RunLifecycleActivity(sequence: 1, state: RunState.running),
+          RunLifecycleActivity(sequence: 2, state: RunState.failed),
+        ],
+        failure: ActivityFailure(kind: 'fixture', message: 'Earlier failure.'),
+      ),
+    );
+
 void _expectDenied(Object? result, [String code = 'internal_error']) {
   expect(result, isA<Map<Object?, Object?>>());
   final response = result! as Map;
@@ -737,6 +943,8 @@ final class _RecordingHost implements OrchestrationExecutionHost {
   final approvals = <ToolApprovalResolution>[];
   final observedOutcomes = <ToolOutcome>[];
   final evidence = <String>[];
+  final historyReads = <RunId>[];
+  Future<HistoricalRunEvidence> Function(RunId)? historyReader;
   final proposalEntered = Completer<void>();
   Completer<void>? settleProposal;
   bool waitForApproval = false;
@@ -750,6 +958,12 @@ final class _RecordingHost implements OrchestrationExecutionHost {
 
   @override
   void validateBinding() {}
+
+  @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) async {
+    historyReads.add(runId);
+    return historyReader!(runId);
+  }
 
   @override
   void start() {

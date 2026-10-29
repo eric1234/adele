@@ -579,6 +579,52 @@ development storage rather than legacy readers. Before the first declared storag
 compatibility commitment, further execution-schema changes rewrite/squash version 1
 instead of accumulating development migrations.
 
+### Strategy access to historical evidence
+
+Strategies may explicitly request retained terminal evidence by exact Run identity
+through `OrchestrationExecutionHost.readHistoricalRun`. The host derives Session
+scope from the canonical Session captured for the requesting execution, not from a
+strategy-supplied selector. Admission requires that capture's open lifecycle and
+exact live strategy binding, an active start/resume operation before terminal
+settlement, and a different Run with a matching same-Session terminal product
+record and retained `RunActivitySnapshot`. Materialization, quiescent approval waits,
+and closed executions confer no read access. A resume operation can read evidence
+without using or changing its separately captured approval authorization.
+
+Unknown, foreign-Session, nonterminal, missing, or inconsistent evidence cannot
+disclose historical content and shares one unavailable result. The current Run is
+explicitly ineligible. These failures are distinct from a valid retained terminal
+snapshot with empty activity, and strategies may handle them without poisoning
+execution. Revoked binding/lifecycle and infrastructure failures retain their own
+semantics. There is no journal fallback, arbitrary Session lookup, plugin-table
+access, or second durable transcript.
+
+`HistoricalRunEvidence` is a narrowed immutable projection over the existing
+public activity types plus its authoritative `RunRecord`. It preserves original
+Run-local identities/sequences, model text and proposals, tool identity and
+proposal correlation, policy/approval/rejection facts, progress, failure and
+incomplete observations, and model-visible outcome content with actual disposition
+and effect certainty. It never upgrades a proposal to execution, a start to success,
+or absent terminal evidence to completion. Opaque native-only outputs are omitted
+without renumbering retained occurrences; native attachments, terminal model
+metadata, provider-detail maps and arbitrary outcome host data are excluded.
+No executable bindings, approval tokens or host-only diagnostics cross this read
+boundary. Historical provider state is never reconstructed into live continuation.
+
+Installed backends use the existing generated operation-scoped host transport and
+exact-generation request channel, not a storage service or application shortcut.
+Native and remote reads share explicit bounds and declared oversized-result failure,
+with no partial success, implicit summarization or truncation. The
+[public orchestration contract](../../packages/orchestration/README.md#historical-run-evidence)
+owns precise fields, failure codes and bounds. Larger retrieval requires a later
+explicit design, not a generalized streaming framework in this boundary.
+
+Terminal retention and durable Project reopening remain unchanged. The read grants
+no authorization to repeat historical operations and promises no cross-Run
+chronology or file freshness. Core does not automatically add this evidence to
+inference context. A strategy owns its selection and future semantic projection;
+stock Chat's canonical history and inference construction are unchanged.
+
 ## Implementation scope
 
 The implemented foundation includes bounded strategy-driven Runs, streaming model
