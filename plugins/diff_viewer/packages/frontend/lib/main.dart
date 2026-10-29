@@ -1,6 +1,7 @@
 import 'package:adele_ui/environment_capability_bridge.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/session_feedback_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter/material.dart';
@@ -50,6 +51,16 @@ class DiffPaneState extends State<DiffPane> {
   bool commentPending = false;
   int commentRevision = 0;
   int editorRevision = 0;
+  int displayedDraftRevision = -1;
+  int submissionRevision = 0;
+  bool submissionPending = false;
+  bool submissionLoaded = false;
+  bool acceptanceRetryAllowed = false;
+  String submissionMessage = '';
+  // ignore: avoid_init_to_null
+  PreparedReviewSubmission? submission = null;
+  // ignore: avoid_init_to_null
+  ReviewSubmissionSummary? submissionSummary = null;
   // The evaluator pin requires explicit null initializers for boxed fields.
   // ignore: avoid_init_to_null
   ReviewCommentAnchor? editorAnchor = null;
@@ -81,6 +92,10 @@ class DiffPaneState extends State<DiffPane> {
       }
       commentRevision++;
       editorRevision++;
+      submissionRevision++;
+      submissionPending = false;
+      submissionLoaded = false;
+      acceptanceRetryAllowed = false;
       commentStatus = 'unavailable';
       abandon();
       // Another pane can refuse departure. This pane stays refreshable then.
@@ -551,14 +566,27 @@ class DiffPaneState extends State<DiffPane> {
       !disposed &&
       commentStatus == 'ready' &&
       !commentPending &&
+      !submissionPending &&
+      !commentsFrozen() &&
       !reviewPending;
 
-  void reloadComments() async {
-    if (disposed || commentPending) return;
+  bool commentsFrozen() {
+    final current = submissionSummary;
+    return current != null &&
+        (current.status == ReviewSubmissionStatus.prepared ||
+            current.status == ReviewSubmissionStatus.deliveryPending);
+  }
+
+  Future<void> reloadComments() async {
+    if (disposed || commentPending || submissionPending) return;
+    submissionRevision++;
     commentRevision++;
     final captured = commentRevision;
     setState(() {
       commentStatus = 'loading';
+      displayedDraftRevision = -1;
+      submissionLoaded = false;
+      acceptanceRetryAllowed = false;
     });
     final result = await settleOwningBackendOperation(
       draftClient.snapshot(sessionId),
@@ -593,10 +621,543 @@ class DiffPaneState extends State<DiffPane> {
     }
     setState(() {
       comments = snapshot.comments;
+      displayedDraftRevision = snapshot.revision;
+      submissionSummary = snapshot.currentReview;
       commentsLoaded = true;
       commentStatus = 'ready';
       commentMessage = '';
     });
+    final review = await settleOwningBackendOperation(
+      draftClient.readReview(sessionId),
+    );
+    if (disposed || captured != commentRevision || submissionPending) return;
+    if (review[0] != true) {
+      setState(() {
+        submissionMessage =
+            'Review state unavailable. Reload comments to reconcile.';
+      });
+      return;
+    }
+    // The evaluator pin's nullable DTO cast rejects null; branch before casting.
+    final summary = snapshot.currentReview;
+    if (review[1] == null) {
+      if (summary != null) {
+        inconsistentReviewSnapshot();
+        return;
+      }
+      setState(() {
+        submissionLoaded = true;
+        submission = null;
+        submissionMessage = '';
+      });
+      return;
+    }
+    final current = review[1] as PreparedReviewSubmission;
+    // A recovered payload must describe the same handoff as the displayed
+    // snapshot, not a newer frozen collection prepared between these reads.
+    if (current.sessionId != sessionId ||
+        summary == null ||
+        summary.submissionId != current.submissionId ||
+        summary.status != current.status ||
+        summary.commentCount != current.commentCount ||
+        summary.schedulingAttempt != current.schedulingAttempt ||
+        summary.occurrenceId != current.occurrenceId ||
+        summary.runId != current.runId) {
+      inconsistentReviewSnapshot();
+      return;
+    }
+    setState(() {
+      submissionLoaded = true;
+      rememberSubmission(current);
+      submissionMessage = '';
+    });
+  }
+
+  void inconsistentReviewSnapshot() {
+    setState(() {
+      submissionLoaded = false;
+      submission = null;
+      displayedDraftRevision = -1;
+      commentStatus = 'unavailable';
+      submissionMessage =
+          'Review changed while loading. Reload comments before continuing.';
+    });
+  }
+
+  void rememberSubmission(PreparedReviewSubmission current) {
+    submission = current;
+    submissionSummary = ReviewSubmissionSummary(
+      submissionId: current.submissionId,
+      status: current.status,
+      commentCount: current.commentCount,
+      schedulingAttempt: current.schedulingAttempt,
+      occurrenceId: current.occurrenceId,
+      runId: current.runId,
+    );
+  }
+
+  bool canSubmitReview() {
+    final current = submission;
+    return !disposed &&
+        submissionLoaded &&
+        !submissionPending &&
+        !commentPending &&
+        commentStatus == 'ready' &&
+        displayedDraftRevision >= 0 &&
+        comments.isNotEmpty &&
+        editorAnchor == null &&
+        (current == null || current.status == ReviewSubmissionStatus.scheduled);
+  }
+
+  bool submissionActive(int captured) =>
+      !disposed && captured == submissionRevision;
+
+  void finishSubmission(String message, bool reload) async {
+    setState(() {
+      submissionPending = false;
+      submissionMessage = message;
+    });
+    if (reload) {
+      final reloaded = submissionRevision + 1;
+      await reloadComments();
+      if (!submissionActive(reloaded)) return;
+      final current = submission;
+      if (current == null ||
+          current.status != ReviewSubmissionStatus.scheduled) {
+        setState(() {
+          submissionMessage = message;
+        });
+      }
+    }
+  }
+
+  void unconfirmedSubmission() {
+    setState(() {
+      submissionPending = false;
+      submissionLoaded = false;
+      acceptanceRetryAllowed = false;
+      displayedDraftRevision = -1;
+      commentStatus = 'uncertain';
+      submissionMessage =
+          'Review change not confirmed. Reload comments to reconcile before retrying.';
+    });
+  }
+
+  bool matchingReceipt(
+    Map<String, Object?> result,
+    PreparedReviewSubmission current,
+  ) =>
+      result['sessionId'] == current.sessionId &&
+      result['submissionId'] == current.submissionId;
+
+  // One explicit action owns this chain. Read/reconcile never dispatches delivery
+  // or a Run, and every external effect follows its durable admission marker.
+  void submitReview(String action, int epoch, int displayedRevision) async {
+    if (!submissionActive(epoch) ||
+        submissionPending ||
+        commentPending ||
+        !submissionLoaded ||
+        editorAnchor != null) {
+      return;
+    }
+    final availability = readSessionFeedbackAvailability();
+    if (action == 'submit' &&
+        (!canSubmitReview() ||
+            displayedRevision != displayedDraftRevision ||
+            availability['available'] != true ||
+            availability['canStart'] != true)) {
+      return;
+    }
+    PreparedReviewSubmission? current = submission;
+    if (action != 'submit' && current == null) return;
+    if (action == 'deliver' &&
+        current!.status != ReviewSubmissionStatus.prepared) {
+      return;
+    }
+    if (action == 'retryAcceptance' &&
+        (!acceptanceRetryAllowed ||
+            current!.status != ReviewSubmissionStatus.deliveryPending)) {
+      return;
+    }
+    if (action == 'reconcileAcceptance' &&
+        current!.status != ReviewSubmissionStatus.deliveryPending) {
+      return;
+    }
+    if (action == 'run' && current!.status != ReviewSubmissionStatus.accepted) {
+      return;
+    }
+    if (action == 'reconcileRun' &&
+        current!.status != ReviewSubmissionStatus.schedulingPending &&
+        current.status != ReviewSubmissionStatus.accepted) {
+      return;
+    }
+    submissionRevision++;
+    commentRevision++;
+    final captured = submissionRevision;
+    setState(() {
+      submissionPending = true;
+      acceptanceRetryAllowed = false;
+      submissionMessage = 'Submitting review...';
+    });
+
+    if (action == 'submit') {
+      final prepared = await settleOwningBackendOperation(
+        draftClient.prepareReview(sessionId, displayedRevision),
+      );
+      if (!submissionActive(captured)) return;
+      if (prepared[0] != true) {
+        unconfirmedSubmission();
+        return;
+      }
+      final preparation = prepared[1] as ReviewPreparationResult;
+      if (preparation.submission == null) {
+        final code = preparation.rejectionCode;
+        if (code == 'submission_too_large') {
+          setState(() {
+            submissionPending = false;
+          });
+          final reloaded = submissionRevision + 1;
+          await reloadComments();
+          if (!submissionActive(reloaded)) return;
+          setState(() {
+            submissionMessage =
+                'The complete saved review is too large to submit. Nothing was truncated or split. Edit or delete saved comments before trying again.';
+          });
+          return;
+        }
+        String message =
+            'Review preparation rejected. Reload comments before trying again.';
+        if (code == 'stale_draft') {
+          message =
+              'Saved comments changed. Reload comments before submitting review.';
+        }
+        if (code == 'empty_review') {
+          message = 'No saved comments to submit. Reload comments.';
+        }
+        if (code == 'review_conflict') {
+          message =
+              'A saved review already exists. Reload comments to reconcile.';
+        }
+        if (code == 'counter_exhausted') {
+          message =
+              'Review submission limit reached. Reload comments to inspect saved state.';
+        }
+        setState(() {
+          submissionPending = false;
+          submissionLoaded = false;
+          displayedDraftRevision = -1;
+          commentStatus = 'unavailable';
+          submissionMessage = message;
+        });
+        return;
+      }
+      final next = preparation.submission!;
+      if (next.sessionId != sessionId ||
+          next.status != ReviewSubmissionStatus.prepared) {
+        unconfirmedSubmission();
+        return;
+      }
+      current = next;
+      setState(() {
+        rememberSubmission(next);
+      });
+    }
+    // The canonical string is backend-authored. Never decode, rebuild or narrow
+    // it to the currently visible Git scope or the local editor contents.
+    final prepared = current!;
+    if (action == 'submit' || action == 'deliver') {
+      final marked = await settleOwningBackendOperation(
+        draftClient.markDeliveryAttempted(sessionId, prepared.submissionId),
+      );
+      if (!submissionActive(captured)) return;
+      if (marked[0] != true) {
+        unconfirmedSubmission();
+        return;
+      }
+      final next = marked[1] as PreparedReviewSubmission;
+      current = next;
+      setState(() {
+        rememberSubmission(next);
+      });
+    }
+
+    if (action == 'submit' ||
+        action == 'deliver' ||
+        action == 'retryAcceptance' ||
+        action == 'reconcileAcceptance') {
+      Future<Map<String, Object?>> operation;
+      if (action == 'reconcileAcceptance') {
+        operation = lookupSessionFeedback(prepared.canonicalPayload);
+      } else {
+        operation = acceptSessionFeedback(prepared.canonicalPayload);
+      }
+      final settled = await settleOwningBackendOperation(operation);
+      if (!submissionActive(captured)) return;
+      if (settled[0] != true) {
+        finishSubmission(
+          'Review acceptance uncertain. Reconcile acceptance before retrying.',
+          false,
+        );
+        return;
+      }
+      final result = settled[1] as Map<String, Object?>;
+      final occurrence = result['occurrenceId'];
+      if (result['status'] != 'accepted' ||
+          !matchingReceipt(result, prepared) ||
+          occurrence is! String ||
+          occurrence == '') {
+        final retry =
+            action == 'reconcileAcceptance' &&
+            result['status'] == 'absent' &&
+            result['retryAllowed'] == true &&
+            matchingReceipt(result, prepared);
+        setState(() {
+          acceptanceRetryAllowed = retry;
+        });
+        finishSubmission(
+          retry
+              ? 'Review not accepted. Retry sends the same saved review.'
+              : 'Review acceptance uncertain. Reconcile acceptance before retrying.',
+          false,
+        );
+        return;
+      }
+      final confirmed = await settleOwningBackendOperation(
+        draftClient.confirmAcceptance(
+          sessionId,
+          prepared.submissionId,
+          prepared.sessionId,
+          // The evaluator does not promote bridged Object values after guards.
+          result['occurrenceId'] as String,
+        ),
+      );
+      if (!submissionActive(captured)) return;
+      if (confirmed[0] != true) {
+        unconfirmedSubmission();
+        return;
+      }
+      final next = confirmed[1] as PreparedReviewSubmission;
+      current = next;
+      setState(() {
+        rememberSubmission(next);
+        displayedDraftRevision = -1;
+        commentStatus = 'loading';
+      });
+      if (action == 'reconcileAcceptance') {
+        finishSubmission('', true);
+        return;
+      }
+    }
+
+    final accepted = current;
+    final reconcilingAccepted =
+        action == 'reconcileRun' &&
+        accepted.status == ReviewSubmissionStatus.accepted;
+    final uncertainRunMessage = reconcilingAccepted
+        ? 'Review accepted. Existing Run association not confirmed.'
+        : 'Review accepted. Run scheduling uncertain. Reconcile Run; do not start again.';
+    final occurrence = accepted.occurrenceId;
+    if (occurrence == null) {
+      unconfirmedSubmission();
+      return;
+    }
+    if (action != 'reconcileRun') {
+      final ready = readSessionFeedbackAvailability();
+      if (ready['available'] != true || ready['canStart'] != true) {
+        finishSubmission('Review accepted. Run not started.', true);
+        return;
+      }
+      final marked = await settleOwningBackendOperation(
+        draftClient.markSchedulingAttempted(
+          sessionId,
+          accepted.submissionId,
+          occurrence,
+        ),
+      );
+      if (!submissionActive(captured)) return;
+      if (marked[0] != true) {
+        unconfirmedSubmission();
+        return;
+      }
+      final next = marked[1] as PreparedReviewSubmission;
+      current = next;
+      setState(() {
+        rememberSubmission(next);
+        submissionMessage = 'Review accepted. Starting Run...';
+      });
+    }
+    Future<Map<String, Object?>> operation;
+    int schedulingAttempt = current.schedulingAttempt + 0;
+    if (action == 'reconcileRun') {
+      operation = lookupSessionFeedbackRun(
+        accepted.canonicalPayload,
+        occurrence,
+      );
+    } else {
+      operation = startSessionFeedbackRun(
+        accepted.canonicalPayload,
+        occurrence,
+        schedulingAttempt,
+      );
+    }
+    final settled = await settleOwningBackendOperation(operation);
+    if (!submissionActive(captured)) return;
+    if (settled[0] != true) {
+      finishSubmission(uncertainRunMessage, !reconcilingAccepted);
+      return;
+    }
+    final result = settled[1] as Map<String, Object?>;
+    if (!matchingReceipt(result, accepted) ||
+        result['occurrenceId'] != occurrence) {
+      finishSubmission(uncertainRunMessage, !reconcilingAccepted);
+      return;
+    }
+    final runId = result['runId'];
+    Future<PreparedReviewSubmission> confirmation;
+    if (result['status'] == 'scheduled' && runId is String && runId != '') {
+      if (reconcilingAccepted) {
+        // A normal Chat Run may already own this occurrence. Record its proven
+        // association only after lookup, without dispatching another Run.
+        final marked = await settleOwningBackendOperation(
+          draftClient.markSchedulingAttempted(
+            sessionId,
+            accepted.submissionId,
+            occurrence,
+          ),
+        );
+        if (!submissionActive(captured)) return;
+        if (marked[0] != true) {
+          unconfirmedSubmission();
+          return;
+        }
+        final next = marked[1] as PreparedReviewSubmission;
+        schedulingAttempt = next.schedulingAttempt + 0;
+        setState(() {
+          rememberSubmission(next);
+        });
+      }
+      confirmation = draftClient.confirmRunScheduled(
+        sessionId,
+        accepted.submissionId,
+        occurrence,
+        schedulingAttempt,
+        result['runId'] as String,
+      );
+    } else if (!reconcilingAccepted &&
+        result['status'] == 'not_started' &&
+        result['retryAllowed'] == true) {
+      confirmation = draftClient.confirmRunNotStarted(
+        sessionId,
+        accepted.submissionId,
+        occurrence,
+        schedulingAttempt,
+      );
+    } else {
+      finishSubmission(uncertainRunMessage, !reconcilingAccepted);
+      return;
+    }
+    final confirmed = await settleOwningBackendOperation(confirmation);
+    if (!submissionActive(captured)) return;
+    if (confirmed[0] != true) {
+      unconfirmedSubmission();
+      return;
+    }
+    final next = confirmed[1] as PreparedReviewSubmission;
+    setState(() {
+      rememberSubmission(next);
+    });
+    finishSubmission(
+      next.status == ReviewSubmissionStatus.accepted
+          ? 'Review accepted. Run not started.'
+          : '',
+      true,
+    );
+  }
+
+  Widget submissionControls() {
+    final current = submission;
+    final epoch = submissionRevision;
+    final displayed = displayedDraftRevision;
+    final availability = readSessionFeedbackAvailability();
+    final available = availability['available'] == true;
+    final canStart = available && availability['canStart'] == true;
+    final reason = availability['reason'];
+    final actionable =
+        submissionLoaded &&
+        !submissionPending &&
+        !commentPending &&
+        editorAnchor == null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (commentsLoaded && displayed >= 0)
+          Text('Saved comments revision: $displayed'),
+        if (canSubmitReview() && canStart)
+          TextButton(
+            onPressed: () => submitReview('submit', epoch, displayed),
+            child: Text('Submit Review'),
+          ),
+        if (commentsLoaded && comments.isNotEmpty && editorAnchor != null)
+          Text('Save or cancel the open comment before submitting review.'),
+        if (commentsLoaded && !canStart)
+          Text(reason is String ? reason : 'Review submission unavailable.'),
+        if (current != null &&
+            current.status == ReviewSubmissionStatus.prepared)
+          Text(
+            'Saved review prepared (${current.commentCount} comments). Not delivered.',
+          ),
+        if (current != null &&
+            current.status == ReviewSubmissionStatus.deliveryPending)
+          Text('Review delivery attempted. Acceptance not confirmed.'),
+        if (current != null &&
+            current.status == ReviewSubmissionStatus.accepted)
+          Text('Review accepted. Run scheduling not recorded.'),
+        if (current != null &&
+            current.status == ReviewSubmissionStatus.schedulingPending)
+          Text('Review accepted. Run scheduling not confirmed.'),
+        if (current != null &&
+            current.status == ReviewSubmissionStatus.scheduled)
+          Text('Review accepted. Run scheduled: ${current.runId}'),
+        if (submissionMessage != '') Text(submissionMessage),
+        if (actionable &&
+            current != null &&
+            current.status == ReviewSubmissionStatus.prepared &&
+            available)
+          TextButton(
+            onPressed: () => submitReview('deliver', epoch, displayed),
+            child: Text('Deliver prepared review'),
+          ),
+        if (actionable &&
+            current != null &&
+            current.status == ReviewSubmissionStatus.deliveryPending)
+          TextButton(
+            onPressed: () =>
+                submitReview('reconcileAcceptance', epoch, displayed),
+            child: Text('Reconcile acceptance'),
+          ),
+        if (actionable && acceptanceRetryAllowed && available)
+          TextButton(
+            onPressed: () => submitReview('retryAcceptance', epoch, displayed),
+            child: Text('Retry same review'),
+          ),
+        if (actionable &&
+            current != null &&
+            current.status == ReviewSubmissionStatus.accepted &&
+            canStart)
+          TextButton(
+            onPressed: () => submitReview('run', epoch, displayed),
+            child: Text('Retry Run'),
+          ),
+        if (actionable &&
+            current != null &&
+            (current.status == ReviewSubmissionStatus.schedulingPending ||
+                current.status == ReviewSubmissionStatus.accepted))
+          TextButton(
+            onPressed: () => submitReview('reconcileRun', epoch, displayed),
+            child: Text('Reconcile Run'),
+          ),
+      ],
+    );
   }
 
   void openComment(
@@ -676,6 +1237,7 @@ class DiffPaneState extends State<DiffPane> {
     final operationRevision = commentRevision;
     setState(() {
       commentPending = true;
+      displayedDraftRevision = -1;
       commentMessage = 'Saving comment...';
     });
     Future<PendingReviewComment> operation;
@@ -695,17 +1257,11 @@ class DiffPaneState extends State<DiffPane> {
       unconfirmedComment();
       return;
     }
-    final accepted = result[1] as PendingReviewComment;
-    final List<PendingReviewComment> next = [];
-    for (final comment in comments) {
-      next.add(comment.id == accepted.id ? accepted : comment);
-    }
-    if (selected == null) next.add(accepted);
     setState(() {
-      comments = next;
       commentPending = false;
       clearEditor();
     });
+    await reloadComments();
   }
 
   void deleteComment(PendingReviewComment selected, int captured) async {
@@ -720,6 +1276,7 @@ class DiffPaneState extends State<DiffPane> {
     final operationRevision = commentRevision;
     setState(() {
       commentPending = true;
+      displayedDraftRevision = -1;
       commentMessage = 'Deleting comment...';
     });
     final result = await settleOwningBackendOperation(
@@ -730,21 +1287,18 @@ class DiffPaneState extends State<DiffPane> {
       unconfirmedComment();
       return;
     }
-    final List<PendingReviewComment> next = [];
-    for (final comment in comments) {
-      if (comment.id != selected.id) next.add(comment);
-    }
     setState(() {
-      comments = next;
       commentPending = false;
       commentMessage = '';
     });
+    await reloadComments();
   }
 
   void unconfirmedComment() {
     setState(() {
       commentPending = false;
       commentStatus = 'uncertain';
+      displayedDraftRevision = -1;
       editorInvalid = true;
       editorRevision++;
       commentMessage =
@@ -760,11 +1314,12 @@ class DiffPaneState extends State<DiffPane> {
             ? 'Pending review comments (${comments.length})'
             : 'Pending review comments',
       ),
+      submissionControls(),
       if (commentStatus == 'loading') Text('Loading comments...'),
       if (commentsLoaded && commentStatus != 'ready')
         Text('Showing last confirmed comments.'),
       if (commentMessage != '') Text(commentMessage),
-      if (!commentPending)
+      if (!commentPending && !submissionPending)
         TextButton(onPressed: reloadComments, child: Text('Reload comments')),
     ],
   );
@@ -1024,6 +1579,7 @@ class DiffPaneState extends State<DiffPane> {
   @override
   void dispose() {
     disposed = true;
+    submissionRevision++;
     commentRevision++;
     editorRevision++;
     editor.dispose();

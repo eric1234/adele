@@ -11,6 +11,7 @@ import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/session_feedback_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -45,6 +46,7 @@ void main() {
               ..addPlugin(const MainContentDeclarations())
               ..addPlugin(const ContributionDeclarations())
               ..addPlugin(const EnvironmentCapabilityAccessDeclarations())
+              ..addPlugin(const SessionFeedbackDeclarations())
               ..entrypoints.add(_library))
             .compile({
               'prepared_panes': {'main.dart': _source},
@@ -56,6 +58,7 @@ void main() {
                   'main_content_bridge',
                   'contribution_bridge',
                   'environment_capability_bridge',
+                  'session_feedback_bridge',
                 ])
                   '$library.dart': await File(
                     '../packages/ui/lib/$library.dart',
@@ -100,6 +103,7 @@ void main() {
     bool actionCommand = false,
     String actionEntrypoint = 'buildInput',
     bool capabilityProbe = false,
+    bool sessionFeedback = false,
   }) async {
     final root = await Directory(
       '${temporary.path}/case-${sequence++}',
@@ -127,6 +131,7 @@ void main() {
                 'library': _library,
                 'initialize': initialize,
                 'entrypoint': entrypoint,
+                'sessionFeedback': sessionFeedback,
                 if (capabilityProbe) ...{
                   for (final field in [
                     'capabilities',
@@ -440,6 +445,93 @@ void main() {
       },
     );
   }
+
+  for (final granted in [false, true]) {
+    testWidgets(
+      'feedback pane is default denied and gracefully unbound (opt-in=$granted)',
+      (tester) async {
+        await tester.runAsync(
+          () => activate(
+            entrypoint: 'buildFeedbackPane',
+            sessionFeedback: granted,
+          ),
+        );
+        await tester.pumpWidget(host());
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Feedback unavailable a'),
+          granted ? findsOneWidget : findsNothing,
+        );
+        expect(
+          find.text('Frontend unavailable.'),
+          granted ? findsNothing : findsOneWidget,
+        );
+        expect(find.text('Independent content'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('initializer does not receive a declared pane feedback bridge', (
+    tester,
+  ) async {
+    final bindings = <_Binding>[];
+    await tester.runAsync(
+      () => activate(
+        initialize: 'initializeFeedback',
+        sessionFeedback: true,
+        host: PreparedMainContentHost(
+          createBinding:
+              ({
+                required installation,
+                required descriptor,
+                required session,
+                required paneId,
+              }) {
+                final binding = _Binding(session, paneId);
+                bindings.add(binding);
+                return binding.binding;
+              },
+        ),
+      ),
+    );
+    await tester.pumpWidget(host());
+    await tester.pumpAndSettle();
+    expect(bindings, isEmpty);
+    expect(find.text('body a'), findsNothing);
+    expect(find.text('Independent content'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'input actions cannot inherit feedback declared for mounted panes',
+    (tester) async {
+      final prepared = PreparedMainContentHost();
+      await tester.runAsync(
+        () => activate(
+          host: prepared,
+          sessionFeedback: true,
+          actionCommand: true,
+          actionEntrypoint: 'buildFeedbackInput',
+        ),
+      );
+      await tester.pumpWidget(
+        host(actionCoordinator: prepared.actionCoordinator),
+      );
+      await tester.pumpAndSettle();
+      final pane = tester.element(find.text('body a'));
+      await CommandResolver(extensions).resolve(_commandId).invoke();
+      await tester.pumpAndSettle();
+      expect(find.text('Unexpected feedback input'), findsNothing);
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect(tester.element(find.text('body a')), same(pane));
+      expect(find.text('Independent content'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'Main Content Command availability follows its exact mounted input host',
@@ -1210,8 +1302,22 @@ import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/contribution_bridge.dart';
 import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/session_feedback_bridge.dart';
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
+void initializeFeedback() {
+  readSessionFeedbackAvailability();
+  initializePanes();
+}
+Widget buildFeedbackInput() {
+  readSessionFeedbackAvailability();
+  return Text('Unexpected feedback input');
+}
+Widget buildFeedbackPane() {
+  final available = readSessionFeedbackAvailability()['available'];
+  final id = readMainContentPaneId();
+  return Text(available == true ? 'Feedback available $id' : 'Feedback unavailable $id');
+}
 Future<String?> readCapability() =>
   resolveEnvironmentCapabilityProvider('test.contextual', 1, 'test.contextual', null);
 Future<String?> processCapability() =>

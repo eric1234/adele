@@ -158,7 +158,18 @@ void main() {
         encodeSessionFeedbackSubmission(record.submission),
         encodeSessionFeedbackSubmission(submission),
       );
-      final execution = await backend.materialize();
+      expect(record.runId, isNull);
+      final execution = await backend.materialize(
+        expectedFeedback: receipts.first,
+      );
+      expect(
+        (await backend.feedback.lookup(
+          chatStrategyRouteId,
+          'session',
+          submission.submissionId,
+        ))!.runId,
+        'run',
+      );
       await expectLater(
         backend.feedback.accept(
           chatStrategyRouteId,
@@ -486,7 +497,7 @@ void main() {
           (chatStrategyRouteId, _session, ' run '),
         ]) {
           await expectLater(
-            backend.orchestration.materialize(route, session, run),
+            backend.orchestration.materialize(route, session, run, null),
             throwsA(isA<AdeleRemoteFailure>()),
           );
           expect(
@@ -926,6 +937,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           chatStrategyRouteId,
           _session,
           'run',
+          null,
         );
         final advancing = backend.start(execution, 'first');
         if (phase == 'tool') {
@@ -940,7 +952,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         );
         addTearDown(nextBackend.close);
         await expectLater(
-          nextBackend.materialize(chatStrategyRouteId, _session, 'run-2'),
+          nextBackend.materialize(chatStrategyRouteId, _session, 'run-2', null),
           _failure('session_busy'),
         );
         if (phase == 'tool') {
@@ -965,6 +977,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           chatStrategyRouteId,
           _session,
           'run-2',
+          null,
         );
         expect(await nextBackend.start(next, 'next'), RemoteRunState.failed);
         expect(nextHost.materials, hasLength(1));
@@ -1229,6 +1242,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
               strategyId: chatStrategyId.value,
             ),
             run,
+            null,
           );
       await service.appendUserMessage('first', 'First prompt');
       await service.appendUserMessage('second', 'Second prompt');
@@ -1324,6 +1338,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           strategyId: chatStrategyId.value,
         ),
         'other-run',
+        null,
       );
       expect(
         await backend.orchestration.start(second, 'second-token'),
@@ -1402,6 +1417,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
               strategyId: chatStrategyId.value,
             ),
             'run',
+            null,
           );
           expect(user.runId, isNull);
           expect(
@@ -1482,6 +1498,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           strategyId: chatStrategyId.value,
         ),
         'run',
+        null,
       );
       final closing = backend.close();
       await expectLater(materializing, throwsStateError);
@@ -1531,6 +1548,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
             chatStrategyRouteId,
             _session,
             'run',
+            null,
           );
           final writes = storage.transactions;
           final error = StateError(
@@ -1578,7 +1596,12 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
             _failure('session_busy'),
           );
           await expectLater(
-            backend.materialize(chatStrategyRouteId, _session, 'duplicate'),
+            backend.materialize(
+              chatStrategyRouteId,
+              _session,
+              'duplicate',
+              null,
+            ),
             _failure('session_busy'),
           );
           await expectLater(
@@ -1691,6 +1714,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
           chatStrategyRouteId,
           _session,
           'run',
+          null,
         );
         final writes = storage.transactions;
         final advancing = backend.start(execution, 'token');
@@ -1832,6 +1856,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
           chatStrategyRouteId,
           _session,
           'run',
+          null,
         );
         final failure = StateError('Association storage failed.');
         final rejected = expectLater(
@@ -1893,6 +1918,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
         chatStrategyRouteId,
         _session,
         'run',
+        null,
       );
       final rejected = expectLater(materializing, throwsStateError);
       await entered.future;
@@ -1935,7 +1961,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
       final writing = service.appendUserMessage('session', 'Accepted.');
       await entered.future;
       await expectLater(
-        backend.materialize(chatStrategyRouteId, _session, 'run'),
+        backend.materialize(chatStrategyRouteId, _session, 'run', null),
         _failure('session_busy'),
       );
       gate.complete();
@@ -1945,6 +1971,7 @@ UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
         chatStrategyRouteId,
         _session,
         'run',
+        null,
       );
       await backend.release(execution);
     },
@@ -2091,7 +2118,10 @@ final class _RunningBackend {
     return completer.future.timeout(const Duration(seconds: 5));
   }
 
-  Future<String> materialize({String run = 'run'}) => orchestration.materialize(
+  Future<String> materialize({
+    String run = 'run',
+    SessionFeedbackReceipt? expectedFeedback,
+  }) => orchestration.materialize(
     chatStrategyRouteId,
     RemoteOrchestrationSession(
       sessionId: 'session',
@@ -2099,6 +2129,7 @@ final class _RunningBackend {
       strategyId: chatStrategyId.value,
     ),
     run,
+    RemoteExpectedSessionFeedback.fromLocal(expectedFeedback),
   );
 
   Future<void> expectBusy() async {

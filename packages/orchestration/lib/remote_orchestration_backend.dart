@@ -38,6 +38,7 @@ final class RemoteOrchestrationBackend implements RemoteOrchestrationService {
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
+    RemoteExpectedSessionFeedback? expectedFeedback,
   ) async {
     _requireOpen();
     final contribution = _routes[routeId];
@@ -51,7 +52,11 @@ final class RemoteOrchestrationBackend implements RemoteOrchestrationService {
     _materializing.add(settled.future);
     try {
       final execution = await contribution.materialize(
-        OrchestrationStrategyHostContext(session: localSession, host: host),
+        OrchestrationStrategyHostContext(
+          session: localSession,
+          host: host,
+          expectedFeedback: expectedFeedback?.toLocal(localSession.id.value),
+        ),
       );
       if (_closed) {
         await execution.close();

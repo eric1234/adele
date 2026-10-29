@@ -4,27 +4,33 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/environment_capability_invocation.dart';
 import 'package:adele_desktop/core/environment_capability_selection.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/core/session_feedback_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:crypto/crypto.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
@@ -36,13 +42,19 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/backend_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
+import '../tool/chat_frontend_compiler.dart';
 import '../tool/diff_viewer_frontend_compiler.dart';
 import '../tool/source_editor_frontend_compiler.dart';
+import 'support/gated_project_storage.dart';
 import 'support/project_provider.dart';
+import 'support/review_execution_fixture.dart';
 
 const _gitPlugin = 'dev.adele.plugin.git';
 const _diffPlugin = 'dev.adele.diff-viewer';
 const _sourcePlugin = 'dev.adele.source-editor';
+const _chatPlugin = 'dev.adele.plugin.chat-strategy';
+const _reviewDraft =
+    '  Keep this unrelated Chat draft\n\twithout submitting it.  ';
 const _punctuatedPath = "b tracked + [file]; 'quoted'\tname.txt";
 const _reviewPath = "b review + [file]; 'quoted'.txt";
 const _fileReviewPath = "b file review + [file]; 'quoted'.txt";
@@ -65,6 +77,8 @@ void main() {
   late Directory approvalDenied;
   late Directory failedDraftBackend;
   late Directory withDraft;
+  late Directory withFeedback;
+  late Directory withMountedChat;
   late File host;
   late String aotRuntime;
 
@@ -106,10 +120,10 @@ void main() {
       backend: true,
     );
     final diff = await Directory('${installations.path}/diff').create();
-    await compileDiffViewerFrontend(
-      repositoryRoot: repository,
-      sdkPath: File(dart).parent.parent.path,
-      artifact: File('${diff.path}/frontend.evc'),
+    await _compileDiffFrontend(
+      repository.path,
+      File(dart).parent.parent.path,
+      '${diff.path}/frontend.evc',
     );
     final component = {
       'frontend': {
@@ -143,9 +157,9 @@ void main() {
       },
     });
     final source = await Directory('${installations.path}/source').create();
-    await File('${source.path}/frontend.evc').writeAsBytes(
-      await compileSourceEditorFrontend(repositoryRoot: repository),
-    );
+    await File(
+      '${source.path}/frontend.evc',
+    ).writeAsBytes(await _compileSourceFrontend(repository.path));
     await publishStockPluginInstallation(
       repositoryRoot: repository,
       installationDirectory: source,
@@ -213,6 +227,55 @@ void main() {
       backend: true,
       frontend: true,
     );
+    withFeedback = await Directory('${artifacts.path}/with-feedback').create();
+    for (final original in withDraft.listSync().whereType<Directory>()) {
+      final copy = await Directory(
+        '${withFeedback.path}/${original.uri.pathSegments.where((part) => part.isNotEmpty).last}',
+      ).create();
+      for (final file in original.listSync().whereType<File>()) {
+        await file.copy('${copy.path}/${file.uri.pathSegments.last}');
+      }
+    }
+    final chat = await Directory('${withFeedback.path}/chat').create();
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint:
+          'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+      artifact: File('${chat.path}/backend.aot'),
+      stage: 'prepared-diff-chat',
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: chat,
+      pluginId: _chatPlugin,
+      displayName: 'Chat',
+      backend: true,
+    );
+    withMountedChat = await Directory(
+      '${artifacts.path}/with-mounted-chat',
+    ).create();
+    for (final original in withFeedback.listSync().whereType<Directory>()) {
+      final copy = await Directory(
+        '${withMountedChat.path}/${original.uri.pathSegments.where((part) => part.isNotEmpty).last}',
+      ).create();
+      for (final file in original.listSync().whereType<File>()) {
+        await file.copy('${copy.path}/${file.uri.pathSegments.last}');
+      }
+    }
+    final chatPresentation = Directory('${withMountedChat.path}/chat');
+    await _compileChatFrontend(
+      repository.path,
+      '${chatPresentation.path}/frontend.evc',
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: chatPresentation,
+      pluginId: _chatPlugin,
+      displayName: 'Chat',
+      backend: true,
+      frontend: true,
+    );
   });
   tearDownAll(() => artifacts.delete(recursive: true));
 
@@ -231,6 +294,7 @@ void main() {
     Directory? catalog,
     bool approvalPresent = true,
     String? expectedBackendFailure,
+    Future<void> Function()? beforeMount,
   }) async {
     tester.view.physicalSize = const Size(1600, 2000);
     tester.view.devicePixelRatio = 1;
@@ -249,6 +313,7 @@ void main() {
         ),
       );
     }
+    if (beforeMount != null) await tester.runAsync(beforeMount);
     await tester.runAsync(
       () => tester.pumpWidget(fixture.widget(fixture.additionalSession)),
     );
@@ -501,6 +566,653 @@ void main() {
           fixture.store.runsForSession(fixture.additionalSession.id),
           isEmpty,
         );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  for (final mountChat in [false, true]) {
+    testWidgets(
+      'G7b2 stock AOT EVC review submits exact multi-layer batch ${mountChat ? 'with mounted Chat notification' : 'without a Chat mount'} and reopens authoritatively',
+      (tester) async {
+        await tester.runAsync(() async {
+          await fixture.close();
+          fixture = await _Fixture.create(
+            installations: installations,
+            host: host,
+            aotRuntime: aotRuntime,
+            feedback: true,
+          );
+          await fixture.write(
+            'a modified.txt',
+            'context before\nCommitted review target\ncontext after\n',
+          );
+          await _git(fixture.additionalRoot, ['add', '--', 'a modified.txt']);
+          await _git(fixture.additionalRoot, [
+            'commit',
+            '-m',
+            'Review submission layers',
+          ]);
+          await fixture.write(
+            'a modified.txt',
+            'context before\nStaged review target\ncontext after\n',
+          );
+          await _git(fixture.additionalRoot, ['add', '--', 'a modified.txt']);
+          await fixture.write(
+            'a modified.txt',
+            'context before\nWorking review target\ncontext after\n',
+          );
+          await fixture.write(
+            'd staged.txt',
+            'Second review file without final newline',
+          );
+        });
+        final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
+        final coreBefore = fixture.coreRows();
+        await tester.runAsync(() async {
+          fixture.executionFixture.modelGate = Completer<void>();
+        });
+        final catalog = mountChat ? withMountedChat : withFeedback;
+        await mount(
+          tester,
+          catalog: catalog,
+          beforeMount: () async {
+            for (final session in [
+              fixture.additionalSession,
+              fixture.primarySession,
+              fixture.store.session(SessionId('additional-peer-session'))!,
+            ]) {
+              await fixture.chatClient.setDraftRequest(
+                session.id.value,
+                _reviewDraft,
+              );
+            }
+          },
+        );
+        tester.view.physicalSize = const Size(2400, 6000);
+        await tester.pump();
+        expect(find.text('Chat'), mountChat ? findsOneWidget : findsNothing);
+        expect(fixture.additionalSession.strategyId, chatStrategyId);
+        expect(
+          fixture.backends.backends.map(
+            (backend) => backend.connection!.pluginId,
+          ),
+          unorderedEquals([_gitPlugin, _diffPlugin, _chatPlugin]),
+        );
+        expect(
+          stockFrontendDescriptors[_diffPlugin]!.single['sessionFeedback'],
+          isTrue,
+        );
+
+        await _visible(tester, '+Second review file without final newline');
+        await tester.runAsync(() => tester.tap(_sourceAction().last));
+        await _waitFor(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+        );
+        final native = _editor(tester);
+        final editorElement = tester.element(find.byType(CodeForge));
+        const sourceText = 'Second review file without final newline';
+        expect(native.controller!.text, sourceText);
+        native.focusNode!.requestFocus();
+        await tester.pump();
+        await _key(tester, LogicalKeyboardKey.home, control: true);
+        await _key(tester, LogicalKeyboardKey.delete);
+        expect(native.controller!.text, sourceText.substring(1));
+
+        await _selectScope(tester, 'Task / Branch');
+        await _visible(tester, '+Committed review target');
+        await _visible(tester, 'Pending review comments (0)');
+        final snapshot = (await tester.runAsync(fixture.taskSnapshot))!;
+        final selections = [
+          (
+            '+Committed review target',
+            snapshot.committed.files.single,
+            ReviewComparisonLayer.committed,
+            'Committed review target',
+            ReviewComparisonSide.newSide,
+            "  Keep '\u03bb' and \u6771\u4eac exactly  ",
+          ),
+          (
+            '+Staged review target',
+            snapshot.uncommitted.staged.files.single,
+            ReviewComparisonLayer.staged,
+            'Staged review target',
+            ReviewComparisonSide.newSide,
+            'Keep staged e\u0301 and \u00e9 separate',
+          ),
+          (
+            '-Staged review target',
+            snapshot.uncommitted.unstaged.files.first,
+            ReviewComparisonLayer.unstaged,
+            'Staged review target',
+            ReviewComparisonSide.oldSide,
+            'Review the original old side',
+          ),
+          (
+            '+Second review file without final newline',
+            snapshot.uncommitted.unstaged.files.last,
+            ReviewComparisonLayer.unstaged,
+            sourceText,
+            ReviewComparisonSide.newSide,
+            'Second file exact comment \u{1f642}',
+          ),
+        ];
+        final saved = <PendingReviewComment>[];
+        for (final (line, file, layer, original, side, text) in selections) {
+          await _beginComment(tester, line);
+          await _saveComment(tester, text);
+          await _visible(
+            tester,
+            'Pending review comments (${saved.length + 1})',
+          );
+          final comment = (await tester.runAsync(
+            () => fixture.draftClient.snapshot(
+              fixture.additionalSession.id.value,
+            ),
+          ))!.comments.last;
+          expect(comment.text, text);
+          expect(
+            _anchorFields(comment.anchor),
+            _anchorFields(
+              _commentAnchor(fixture.additional, file, layer, original, side),
+            ),
+          );
+          saved.add(comment);
+        }
+        final session = fixture.additionalSession.id.value;
+        final peer = fixture.store.session(
+          SessionId('additional-peer-session'),
+        )!;
+        final isolated = (await tester.runAsync(
+          () async => [
+            await fixture.draftClient.createComment(
+              peer.id.value,
+              saved.first.anchor,
+              'Other Session pending',
+            ),
+            await fixture.draftClient.createComment(
+              fixture.primarySession.id.value,
+              _commentAnchor(
+                fixture.primary,
+                selections.first.$2,
+                ReviewComparisonLayer.committed,
+                'Committed review target',
+                ReviewComparisonSide.newSide,
+              ),
+              'Other Environment pending',
+            ),
+          ],
+        ))!;
+        final isolatedRows = [
+          _storedComment(peer.id.value, isolated.first),
+          _storedComment(fixture.primarySession.id.value, isolated.last),
+        ];
+        final originalRows = [
+          for (final comment in saved) _storedComment(session, comment),
+        ];
+        expect(
+          fixture.commentRows().where((row) => row['session_id'] == session),
+          originalRows,
+        );
+        await _reviewReady(tester, 'Submit Review');
+        final staleSubmit = tester
+            .widget<TextButton>(_reviewAction('Submit Review'))
+            .onPressed!;
+        await tester.ensureVisible(_reviewAction('Submit Review'));
+        await tester.runAsync(() => tester.tap(_reviewAction('Submit Review')));
+        await tester.runAsync(
+          () => fixture.executionFixture.entered.future.timeout(_bound),
+        );
+        await _visible(tester, 'Review accepted. Run scheduled:');
+        await _visible(tester, 'Pending review comments (0)');
+        final review = (await tester.runAsync(
+          () => fixture.draftClient.readReview(session),
+        ))!;
+        expect(review, isNotNull);
+        final frozen = review;
+        expect(frozen.status, ReviewSubmissionStatus.scheduled);
+        expect(frozen.schedulingAttempt, 1);
+        final submission = decodeSessionFeedbackSubmission(
+          frozen.canonicalPayload,
+        );
+        expect(
+          submission.comments.map(_feedbackCommentFields),
+          saved.map(
+            (comment) => {
+              'id': comment.id,
+              'version': comment.version,
+              'sequence': comment.sequence,
+              'text': comment.text,
+              'anchor': _anchorFields(comment.anchor),
+            },
+          ),
+        );
+        expect(frozen.commentCount, saved.length);
+        expect(
+          encodeSessionFeedbackSubmission(submission),
+          frozen.canonicalPayload,
+        );
+        final target = CapturedSessionFeedbackTarget.capture(
+          lifecycle: fixture.lifecycle,
+          session: fixture.additionalSession,
+        );
+        final record = (await tester.runAsync(
+          () => target.lookup(frozen.submissionId),
+        ))!;
+        expect(record.receipt.sessionId, session);
+        expect(record.receipt.submissionId, frozen.submissionId);
+        expect(record.receipt.occurrenceId, frozen.occurrenceId);
+        expect(record.runId, frozen.runId);
+        expect(
+          (await tester.runAsync(
+            () => target.accept(submission),
+          ))!.occurrenceId,
+          record.receipt.occurrenceId,
+        );
+        expect(
+          encodeSessionFeedbackSubmission(record.submission),
+          frozen.canonicalPayload,
+        );
+        final chat = (await tester.runAsync(
+          () => fixture.chatClient.snapshot(session),
+        ))!;
+        expect(chat.entries, hasLength(1));
+        expect(chat.entries.single.id, frozen.occurrenceId);
+        expect(chat.entries.single.role, 'user');
+        expect(chat.entries.single.runId, frozen.runId);
+        expect(chat.entries.single.content, endsWith(frozen.canonicalPayload));
+        expect(chat.draftRequest, _reviewDraft);
+        expect(fixture.feedbackRows(), [
+          {
+            'session_id': session,
+            'submission_id': frozen.submissionId,
+            'canonical_payload': frozen.canonicalPayload,
+            'entry_id': frozen.occurrenceId,
+          },
+        ]);
+        expect(reviewModelMessages(fixture.executionFixture.requests.single), [
+          chat.entries.single.content,
+        ]);
+        expect(
+          fixture.executionFixture.requests.single['instructions'],
+          isNot(contains(frozen.canonicalPayload)),
+        );
+        if (mountChat) {
+          await _visible(tester, chat.entries.single.content);
+          expect(find.text(chat.entries.single.content), findsOneWidget);
+          expect(
+            tester
+                .widgetList<TextField>(find.byType(TextField))
+                .singleWhere((field) => field.onSubmitted != null)
+                .controller!
+                .text,
+            _reviewDraft,
+          );
+        }
+        staleSubmit();
+        await tester.pump();
+        expect(fixture.feedbackRows(), hasLength(1));
+        expect(fixture.commentRows(), unorderedEquals(isolatedRows));
+        expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+
+        await _beginComment(
+          tester,
+          '+Second review file without final newline',
+        );
+        await _saveComment(tester, 'Next pending batch is independent');
+        await _visible(tester, 'Pending review comments (1)');
+        final next = (await tester.runAsync(
+          () => fixture.draftClient.snapshot(session),
+        ))!.comments.single;
+        expect(next.sequence, greaterThan(saved.last.sequence));
+        expect(next.id, isNot(isIn(saved.map((comment) => comment.id))));
+        final controller = fixture.controllers[fixture.additionalSession.id]!;
+        await tester.runAsync(() async {
+          fixture.executionFixture.release();
+          await controller.activeRunFuture?.timeout(_bound);
+        });
+        expect(controller.failure, isNull);
+        expect(fixture.executionFixture.requests, hasLength(2));
+        for (final request in fixture.executionFixture.requests) {
+          expect(reviewModelMessages(request), [chat.entries.single.content]);
+          expect(
+            jsonEncode(request),
+            isNot(contains('Next pending batch is independent')),
+          );
+          expect(reviewModelMessages(request), isNot(contains(_reviewDraft)));
+        }
+        expect(fixture.executionFixture.executedSessions, [session]);
+        expect(
+          fixture.store
+              .runsForSession(fixture.additionalSession.id)
+              .single
+              .id
+              .value,
+          frozen.runId,
+        );
+        expect(
+          fixture.store
+              .runsForSession(fixture.additionalSession.id)
+              .single
+              .state,
+          RunTerminalState.completed,
+        );
+        final terminal = (await tester.runAsync(
+          () => fixture.chatClient.snapshot(session),
+        ))!;
+        expect(
+          terminal.entries.where((entry) => entry.role == 'user'),
+          hasLength(1),
+        );
+        expect(
+          terminal.entries.where(
+            (entry) => entry.content == ReviewExecutionFixture.answer,
+          ),
+          hasLength(1),
+        );
+        expect(terminal.draftRequest, _reviewDraft);
+        for (final other in [peer, fixture.primarySession]) {
+          final otherChat = (await tester.runAsync(
+            () => fixture.chatClient.snapshot(other.id.value),
+          ))!;
+          expect(otherChat.entries, isEmpty);
+          expect(otherChat.draftRequest, _reviewDraft);
+          expect(fixture.store.runsForSession(other.id), isEmpty);
+          expect(fixture.lifecycle.runActivitiesForSession(other.id), isEmpty);
+        }
+        expect(
+          fixture.environmentRuntime.currentMaterialization(fixture.primary.id),
+          isNull,
+        );
+        expect({
+          ...fixture.coreRows(),
+          'adele_product_runs': coreBefore['adele_product_runs'],
+        }, coreBefore);
+        expect(tester.element(find.byType(CodeForge)), same(editorElement));
+        expect(_editor(tester).controller, same(native.controller));
+        expect(_editor(tester).undoController, same(native.undoController));
+        expect(native.controller!.text, sourceText.substring(1));
+        native.focusNode!.requestFocus();
+        await tester.pump();
+        await _key(tester, LogicalKeyboardKey.keyZ, control: true);
+        expect(native.controller!.text, sourceText);
+        expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        fixture.frontends.unbind(fixture.additionalSession);
+        await tester.runAsync(
+          () => tester.pumpWidget(fixture.widget(fixture.additionalSession)),
+        );
+        await _visible(
+          tester,
+          'Review accepted. Run scheduled: ${frozen.runId}',
+        );
+        await _visible(tester, 'Next pending batch is independent');
+        expect(fixture.executionFixture.requests, hasLength(2));
+        expect(fixture.feedbackRows(), hasLength(1));
+        final durableComments = fixture.commentRows();
+        await tester.pumpWidget(const SizedBox.shrink());
+        final priorSession = fixture.additionalSession;
+        fixture = (await tester.runAsync(fixture.reopen))!;
+        expect(fixture.additionalSession, isNot(same(priorSession)));
+        expect(fixture.additionalSession.id, priorSession.id);
+        await mount(tester, catalog: catalog);
+        await _visible(
+          tester,
+          'Review accepted. Run scheduled: ${frozen.runId}',
+        );
+        await _visible(tester, 'Next pending batch is independent');
+        final restored = (await tester.runAsync(
+          () => fixture.draftClient.readReview(session),
+        ))!;
+        expect(restored.canonicalPayload, frozen.canonicalPayload);
+        expect(restored.submissionId, frozen.submissionId);
+        expect(restored.occurrenceId, frozen.occurrenceId);
+        expect(restored.runId, frozen.runId);
+        expect(restored.status, ReviewSubmissionStatus.scheduled);
+        expect(fixture.commentRows(), durableComments);
+        expect(fixture.feedbackRows(), hasLength(1));
+        expect(fixture.executionFixture.requests, isEmpty);
+        expect(
+          fixture.store.runsForSession(fixture.additionalSession.id),
+          hasLength(1),
+        );
+        expect(
+          (await tester.runAsync(
+            () => fixture.chatClient.snapshot(session),
+          ))!.draftRequest,
+          _reviewDraft,
+        );
+        expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'G7b2 actual waiting Chat Run fences preparation from a retained compiled Submit callback',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.close();
+        fixture = await _Fixture.create(
+          installations: installations,
+          host: host,
+          aotRuntime: aotRuntime,
+          feedback: true,
+        );
+        await fixture.write('a modified.txt', 'Waiting review target\n');
+      });
+      fixture.executionFixture.requiresApproval = true;
+      final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
+      await mount(
+        tester,
+        catalog: withFeedback,
+        beforeMount: () => fixture.chatClient.setDraftRequest(
+          fixture.additionalSession.id.value,
+          _reviewDraft,
+        ),
+      );
+      await _visible(tester, '+Waiting review target');
+      await _beginComment(tester, '+Waiting review target');
+      await _saveComment(tester, 'Do not merge this into the waiting Run');
+      await _reviewReady(tester, 'Submit Review');
+      final retainedSubmit = tester
+          .widget<TextButton>(_reviewAction('Submit Review'))
+          .onPressed!;
+      final comments = fixture.commentRows();
+      final session = fixture.additionalSession.id.value;
+      final ordinary = (await tester.runAsync(
+        () => fixture.chatClient.appendUserMessage(
+          session,
+          'Ordinary request awaiting tool approval',
+        ),
+      ))!;
+      final controller = fixture.controllerFor(fixture.additionalSession, null);
+      await tester.runAsync(() async {
+        await controller.startRun();
+        await controller.activeRunFuture!.timeout(_bound);
+      });
+      expect(controller.pendingApproval, isNotNull);
+      expect(controller.isRunning, isTrue);
+      expect(
+        fixture.lifecycle.hasSessionExecution(fixture.additionalSession),
+        isTrue,
+      );
+      final approval = controller.pendingApproval;
+      retainedSubmit();
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => fixture.draftClient.readReview(session)),
+        isNull,
+      );
+      expect(fixture.commentRows(), comments);
+      expect(fixture.feedbackRows(), isEmpty);
+      expect(controller.pendingApproval, same(approval));
+      expect(fixture.executionFixture.requests, hasLength(1));
+      expect(fixture.executionFixture.executedSessions, isEmpty);
+      final chat = (await tester.runAsync(
+        () => fixture.chatClient.snapshot(session),
+      ))!;
+      expect(chat.entries, hasLength(1));
+      expect(chat.entries.single.id, ordinary.id);
+      expect(chat.entries.single.runId, controller.latestRunId!.value);
+      expect(chat.draftRequest, _reviewDraft);
+      expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  for (final checkpoint in [
+    'afterReceipt',
+    'beforeScheduling',
+    'afterScheduling',
+  ]) {
+    testWidgets(
+      'G7b2 compiled retired view $checkpoint preserves durable status without duplicate delivery or scheduling',
+      (tester) async {
+        await tester.runAsync(() async {
+          await fixture.close();
+          fixture = await _Fixture.create(
+            installations: installations,
+            host: host,
+            aotRuntime: aotRuntime,
+            feedback: true,
+          );
+          await fixture.write('a modified.txt', 'Retirement review target\n');
+        });
+        final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
+        await mount(
+          tester,
+          catalog: withFeedback,
+          beforeMount: () => fixture.chatClient.setDraftRequest(
+            fixture.additionalSession.id.value,
+            _reviewDraft,
+          ),
+        );
+        await _visible(tester, '+Retirement review target');
+        await _beginComment(tester, '+Retirement review target');
+        await _saveComment(
+          tester,
+          'Retain this exact review across retirement',
+        );
+        await _visible(tester, 'Pending review comments (1)');
+        final session = fixture.additionalSession.id.value;
+        final selectedStatus = switch (checkpoint) {
+          'afterReceipt' => 'accepted',
+          'beforeScheduling' => 'schedulingPending',
+          _ => 'scheduled',
+        };
+        final gate = (await tester.runAsync(
+          () async => fixture.storageProbes[_diffPlugin]!.holdTransaction(
+            afterCommit: checkpoint != 'afterReceipt',
+            parameters: {':status': selectedStatus},
+          ),
+        ))!;
+        await _reviewReady(tester, 'Submit Review');
+        await tester.runAsync(() => tester.tap(_reviewAction('Submit Review')));
+        await tester.runAsync(() => gate.entered.future.timeout(_bound));
+        final beforeAck = (await tester.runAsync(
+          () => fixture.draftClient.readReview(session),
+        ))!;
+        expect(beforeAck, isNotNull);
+        expect(fixture.feedbackRows(), hasLength(1));
+        final receiptRows = fixture.feedbackRows();
+        final acceptedChat = (await tester.runAsync(
+          () => fixture.chatClient.snapshot(session),
+        ))!;
+        expect(
+          acceptedChat.entries.where((entry) => entry.role == 'user'),
+          hasLength(1),
+        );
+        expect(acceptedChat.draftRequest, _reviewDraft);
+        if (checkpoint == 'afterReceipt') {
+          expect(beforeAck.status, ReviewSubmissionStatus.deliveryPending);
+          expect(
+            (await tester.runAsync(
+              () => fixture.draftClient.snapshot(session),
+            ))!.comments,
+            hasLength(1),
+          );
+        } else {
+          expect(beforeAck.status.name, selectedStatus);
+          expect(
+            (await tester.runAsync(
+              () => fixture.draftClient.snapshot(session),
+            ))!.comments,
+            isEmpty,
+          );
+        }
+        if (checkpoint != 'afterScheduling') {
+          expect(fixture.executionFixture.requests, isEmpty);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        fixture.frontends.unbind(fixture.additionalSession);
+        await tester.runAsync(() async {
+          gate.release();
+          await gate.settled.future.timeout(_bound);
+        });
+        if (checkpoint == 'afterScheduling') {
+          await tester.runAsync(() async {
+            await fixture
+                .controllers[fixture.additionalSession.id]!
+                .activeRunFuture
+                ?.timeout(_bound);
+          });
+        }
+        await tester.runAsync(
+          () => tester.pumpWidget(fixture.widget(fixture.additionalSession)),
+        );
+        final expectedText = switch (checkpoint) {
+          'afterReceipt' => 'Review accepted. Run scheduling not recorded.',
+          'beforeScheduling' => 'Reconcile Run',
+          _ => 'Review accepted. Run scheduled:',
+        };
+        await _visible(tester, expectedText);
+        final recovered = (await tester.runAsync(
+          () => fixture.draftClient.readReview(session),
+        ))!;
+        expect(recovered.status.name, selectedStatus);
+        expect(recovered.canonicalPayload, beforeAck.canonicalPayload);
+        expect(recovered.submissionId, beforeAck.submissionId);
+        expect(recovered.occurrenceId, receiptRows.single['entry_id']);
+        expect(fixture.feedbackRows(), receiptRows);
+        expect(
+          fixture.executionFixture.requests,
+          hasLength(checkpoint == 'afterScheduling' ? 2 : 0),
+        );
+        if (checkpoint == 'beforeScheduling') {
+          await tester.runAsync(
+            () => tester.tap(_reviewAction('Reconcile Run')),
+          );
+          await tester.pump();
+          expect(fixture.executionFixture.requests, isEmpty);
+          expect(
+            (await tester.runAsync(
+              () => fixture.draftClient.readReview(session),
+            ))!.status,
+            ReviewSubmissionStatus.schedulingPending,
+          );
+        }
+        final oldSession = fixture.additionalSession;
+        await tester.pumpWidget(const SizedBox.shrink());
+        fixture = (await tester.runAsync(fixture.reopen))!;
+        expect(fixture.additionalSession, isNot(same(oldSession)));
+        await mount(tester, catalog: withFeedback);
+        await _visible(tester, expectedText);
+        expect(fixture.feedbackRows(), receiptRows);
+        expect(fixture.executionFixture.requests, isEmpty);
+        expect(
+          fixture.store.runsForSession(fixture.additionalSession.id),
+          hasLength(checkpoint == 'afterScheduling' ? 1 : 0),
+        );
+        expect(await tester.runAsync(fixture.snapshotState), gitBefore);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
@@ -3718,27 +4430,42 @@ final class _Fixture {
     this.project,
     this.task,
     this.primary,
-    this.additional,
-  ) {
-    lifecycle = ProductLifecycleCoordinator(
-      store: store,
-      registry: capabilities,
-      extensions: extensions,
-      ids: MonotonicProductIdSource(),
-      providerForBinding: (binding) => GeneratedEnvironmentProvider(
-        providerId: binding.provider.id,
-        service: EnvironmentProviderServiceClient(
-          _EnvironmentChannel(binding.requestChannel, this),
-        ),
-      ),
-    );
+    this.additional, {
+    this.feedback = false,
+  }) {
+    runtime = feedback ? AdeleRuntime() : null;
+    capabilities = runtime?.registry ?? CapabilityRegistry();
+    extensions = runtime?.extensions ?? ExtensionRegistry();
+    store = runtime?.store ?? InMemoryProductStore();
+    lifecycle =
+        runtime?.lifecycle ??
+        ProductLifecycleCoordinator(
+          store: store,
+          registry: capabilities,
+          extensions: extensions,
+          ids: MonotonicProductIdSource(),
+          providerForBinding: (binding) => GeneratedEnvironmentProvider(
+            providerId: binding.provider.id,
+            service: EnvironmentProviderServiceClient(
+              _EnvironmentChannel(binding.requestChannel, this),
+            ),
+          ),
+        );
     environmentRuntime = lifecycle.environmentRuntime;
     backends = ApplicationPluginBootstrap(
       capabilities,
       extensions,
-      createInfrastructureServices: (connection) =>
-          projectStorageServices(lifecycle, connection),
+      createInfrastructureServices: (connection) {
+        final services = projectStorageServices(lifecycle, connection);
+        final probe = GatedProjectStorage(services[projectStorageServiceId]!);
+        storageProbes[connection.pluginId] = probe;
+        return {projectStorageServiceId: probe};
+      },
     );
+    backends.configureSettingsLoader(
+      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+    );
+    if (runtime != null) executionFixture.register(runtime!);
     mainContent = PreparedMainContentHost(
       environmentRuntime: environmentRuntime,
     );
@@ -3748,8 +4475,9 @@ final class _Fixture {
       sessionServices: PreparedSessionServices(
         extensions: extensions,
         backends: backends,
-        controllerForSession: (_, _) =>
-            throw StateError('Diff comments must not acquire execution.'),
+        lifecycle: feedback ? lifecycle : null,
+        controllerForSession: controllerFor,
+        lookupControllerForSession: (session) => controllers[session.id],
         inspectActivity: (_, _) => false,
         isCurrent: (session) =>
             identical(currentSession, session) &&
@@ -3774,6 +4502,7 @@ final class _Fixture {
     required File host,
     required String aotRuntime,
     Future<void> Function(Directory source)? initializeSource,
+    bool feedback = false,
   }) async {
     final root = await Directory.systemTemp.createTemp('adele-diff-case-');
     final repository = await Directory('${root.path}/repository').create();
@@ -3926,7 +4655,9 @@ final class _Fixture {
           Session(
             id: SessionId(id),
             taskId: created.task.id,
-            strategyId: OrchestrationStrategyId('test.uninstalled-strategy'),
+            strategyId: feedback
+                ? chatStrategyId
+                : OrchestrationStrategyId('test.uninstalled-strategy'),
           ),
           environment.id,
         );
@@ -3944,6 +4675,7 @@ final class _Fixture {
       created.task,
       created.environment,
       additional,
+      feedback: feedback,
     );
     await fixture._restoreProject();
     return fixture;
@@ -3978,9 +4710,14 @@ final class _Fixture {
   final Task task;
   final Environment primary;
   final Environment additional;
-  final capabilities = CapabilityRegistry();
-  final extensions = ExtensionRegistry();
-  final store = InMemoryProductStore();
+  final bool feedback;
+  late final AdeleRuntime? runtime;
+  late final CapabilityRegistry capabilities;
+  late final ExtensionRegistry extensions;
+  late final InMemoryProductStore store;
+  final executionFixture = ReviewExecutionFixture();
+  final controllers = <SessionId, SessionExecutionController>{};
+  final storageProbes = <String, GatedProjectStorage>{};
   late final ProductLifecycleCoordinator lifecycle;
   late final Session additionalSession;
   late final Session primarySession;
@@ -4001,6 +4738,52 @@ final class _Fixture {
 
   List<Map<String, Object?>> get indexWrites =>
       processes.where(_isIndexWrite).toList();
+
+  SessionExecutionController controllerFor(
+    Session session,
+    ResolvedOrchestrationStrategy? strategy,
+  ) {
+    if (runtime == null) {
+      throw StateError('Diff comments must not acquire execution.');
+    }
+    return controllers.putIfAbsent(
+      session.id,
+      () => SessionExecutionController(
+        runtime: runtime!,
+        session: session,
+        strategy: strategy,
+        providerId: ReviewExecutionFixture.providerId,
+        model: ReviewExecutionFixture.model,
+      ),
+    );
+  }
+
+  PluginBackendConnection connectionFor(String pluginId) => backends.backends
+      .singleWhere(
+        (backend) => backend.installation.metadata.id.value == pluginId,
+      )
+      .connection!;
+
+  ChatSessionServiceClient get chatClient {
+    final connection = connectionFor(_chatPlugin);
+    return ChatSessionServiceClient(
+      connection.channelFor(
+        connection.defaultConfigurationContext,
+        chatSessionServiceId,
+      ),
+    );
+  }
+
+  List<Map<String, Object?>> feedbackRows() => [
+    for (final row
+        in lifecycle
+            .databaseForSession(additionalSession.id)!
+            .queryPluginRows(
+              'SELECT * FROM adele_chat_feedback_submissions ORDER BY session_id, submission_id',
+              const {},
+            ))
+      row.values,
+  ];
 
   ReviewDraftServiceClient get draftClient {
     final connection = backends.backends
@@ -4062,6 +4845,7 @@ final class _Fixture {
 
   Future<_Fixture> reopen() async {
     await frontends.close();
+    await _closeExecution();
     await backends.close();
     await lifecycle.close();
     final fresh = _Fixture(
@@ -4072,6 +4856,7 @@ final class _Fixture {
       task,
       primary,
       additional,
+      feedback: feedback,
     );
     await fresh._restoreProject();
     return fresh;
@@ -4426,9 +5211,20 @@ final class _Fixture {
     if (!readRelease.isCompleted) readRelease.complete();
     await releaseGate();
     await frontends.close();
+    await _closeExecution();
     await backends.close();
     await lifecycle.close();
     await root.delete(recursive: true);
+  }
+
+  Future<void> _closeExecution() async {
+    if (!feedback) return;
+    executionFixture.release();
+    for (final controller in controllers.values) {
+      await controller.close();
+    }
+    await executionFixture.close();
+    await runtime!.plugins.close();
   }
 }
 
@@ -4473,6 +5269,29 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
     return result;
   }
 }
+
+// The pinned compiler caches TypeRefs by numeric library ID across Compiler
+// instances. Match the portable-Git harness: each actual stock EVC is prepared
+// in its own isolate, without changing its maintained sources or host bindings.
+Future<void> _compileDiffFrontend(String root, String sdk, String output) =>
+    Isolate.run(
+      () => compileDiffViewerFrontend(
+        repositoryRoot: Directory(root),
+        sdkPath: sdk,
+        artifact: File(output),
+      ),
+    );
+
+Future<Uint8List> _compileSourceFrontend(String root) => Isolate.run(
+  () => compileSourceEditorFrontend(repositoryRoot: Directory(root)),
+);
+
+Future<void> _compileChatFrontend(String root, String output) => Isolate.run(
+  () => compileChatFrontend(
+    repositoryRoot: Directory(root),
+    artifact: File(output),
+  ),
+);
 
 Future<void> _manifest(
   Directory directory,
@@ -4567,6 +5386,10 @@ bool _isIndexWrite(Map<String, Object?> payload) {
 
 Finder _reviewAction(String label) => find.widgetWithText(TextButton, label);
 
+Finder _commentEditor() => find.byWidgetPredicate(
+  (widget) => widget is TextField && widget.onSubmitted == null,
+);
+
 Future<void> _beginComment(WidgetTester tester, String line) async {
   final row = find
       .ancestor(of: find.textContaining(line), matching: find.byType(Row))
@@ -4582,17 +5405,17 @@ Future<void> _beginComment(WidgetTester tester, String line) async {
   await tester.pump();
   await tester.tap(action);
   await tester.pump();
-  expect(find.byType(TextField), findsOneWidget);
+  expect(_commentEditor(), findsOneWidget);
 }
 
 Future<void> _saveComment(WidgetTester tester, String text) async {
-  await tester.enterText(find.byType(TextField), text);
+  await tester.enterText(_commentEditor(), text);
   await tester.pump();
   final save = _reviewAction('Save comment');
   expect(tester.widget<TextButton>(save).onPressed, isNotNull);
   await tester.ensureVisible(save);
   await tester.runAsync(() => tester.tap(save));
-  await _waitFor(tester, () => find.byType(TextField).evaluate().isEmpty);
+  await _waitFor(tester, () => _commentEditor().evaluate().isEmpty);
   await _visible(tester, text);
 }
 
@@ -4642,6 +5465,25 @@ Map<String, Object?> _anchorFields(ReviewCommentAnchor anchor) => {
   'source_excerpt': anchor.sourceExcerpt,
   'hunk_index': anchor.hunkIndex,
   'line_index': anchor.lineIndex,
+};
+
+Map<String, Object?> _feedbackCommentFields(SessionFeedbackComment comment) => {
+  'id': comment.id,
+  'version': comment.version,
+  'sequence': comment.sequence,
+  'text': comment.text,
+  'anchor': {
+    'environment_id': comment.anchor.environmentId,
+    'relative_path': comment.anchor.relativePath,
+    'layer': comment.anchor.layer.name,
+    'side': comment.anchor.side.name,
+    'start_line': comment.anchor.startLine,
+    'end_line': comment.anchor.endLine,
+    'comparison_identity': comment.anchor.comparisonIdentity,
+    'source_excerpt': comment.anchor.sourceExcerpt,
+    'hunk_index': comment.anchor.hunkIndex,
+    'line_index': comment.anchor.lineIndex,
+  },
 };
 
 // Same full retained-row boundary as durable_review_draft_integration_test.dart,

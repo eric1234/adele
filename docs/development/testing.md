@@ -591,6 +591,9 @@ The draft contract suite exercises generated native/eval anchored comments,
 typed enums, bounds, exact text, and failure reconstruction. The maintained
 `diff_viewer_backend` target uses test-owned real SQLite for transactional draft
 CRUD, concurrency, rollback, bounded snapshots, corruption and uncertain outcomes.
+Its review-submission suite additionally covers complete-collection preparation,
+monotonic submission allocation, backend freeze, exact receipt finalization,
+scheduling-attempt CAS, bounded active retention, and all-state on-disk recovery.
 `app/test/core/durable_review_draft_integration_test.dart` owns actual Diff AOT and
 generated-client access through canonical Project storage: durable close/reopen,
 volatile Project lifetime, backend replacement, lost acknowledgements, retirement,
@@ -605,6 +608,11 @@ rows, same-path cancellation, clean states, selected-scope Refresh/Retry, pendin
 scope/departure fencing, eligible/ineligible headers, unchanged unusual paths,
 availability, duplicate suppression, safe errors, and stale callbacks alongside
 snapshot rendering.
+Submission cases exercise the actual compiled controls and generated draft client:
+all saved scopes, unsaved-editor exclusion, authoritative revisions, immutable
+identity retention, explicit reconciliation/retry, narrow layout, and independent
+approval/Source access after feedback failure. These injected bridge fixtures do
+not replace real host/strategy authority or SQLite tests.
 The separate review test dispatcher exercises actual generated-client hunk and file
 actions, independent complete-file eligibility, layer-specific typed revisions/indices,
 unavailable or denied approval, shared pending admission, success-only refresh,
@@ -629,7 +637,7 @@ From `app/`, focused native/compiled consumer authority checks need no native ed
 library. Serialize Flutter invocations sharing its build directory:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/main_content_source_display_test.dart test/prepared_main_content_host_test.dart
+flutter test --no-pub --concurrency 1 test/main_content_source_display_test.dart test/prepared_main_content_host_test.dart test/session_feedback_presentation_test.dart
 ```
 
 For the real Diff+Source integration, first run
@@ -655,6 +663,15 @@ buffered-process response after execution on the selected Environment, then veri
 departure and retirement prevent further requests and stale publication.
 The Source read gate likewise holds a real provider response, not substituted file contents;
 neither gate adds a production testing hook. These tests do not need a PTY.
+Review-submission cases in the same prepared integration file add actual Diff and
+Chat AOT with compiled Diff EVC, canonical Project storage, and deterministic
+normal model/tool execution. They check complete feedback and correct occurrence
+association, mounted-Chat notifications, independent Git/Source state, waiting
+occupancy, retired acknowledgements, remount, and durable Project reopen. The
+durable draft integration suite separately gates real storage commits around
+preparation, acceptance and local finalization. Run the public orchestration and
+Chat contract/backend/frontend targets alongside these app selections when
+changing feedback delivery or expected-occurrence materialization.
 Review controls additionally prove exact selected-hunk and complete-file index object
 changes and unchanged working-file hashes, HEAD/branch and Task baseline, nonprimary isolation,
 manual-staging staleness, index-lock rejection and retirement after a real index

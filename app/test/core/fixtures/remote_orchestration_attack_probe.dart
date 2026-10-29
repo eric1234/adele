@@ -140,6 +140,7 @@ final class _AttackProbe implements RemoteOrchestrationService {
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
+    RemoteExpectedSessionFeedback? expectedFeedback,
   ) async => 'execution-${nextExecution++}';
 
   @override
@@ -306,6 +307,7 @@ final class _FeedbackProbe implements RemoteSessionFeedbackService {
         occurrenceId: '$routeId/entry',
       ),
       submission: submission,
+      runId: null,
     );
     records['$routeId/$sessionId/${submission.submissionId}'] = record;
     return record.receipt;

@@ -48,6 +48,245 @@ void main() {
     addTearDown(fixture.close);
   });
 
+  SessionFeedbackReceipt receipt({
+    String id = 'review',
+    String occurrence = 'entry-0',
+  }) => SessionFeedbackReceipt(
+    submissionId: id,
+    sessionId: fixture.session.id.value,
+    occurrenceId: occurrence,
+  );
+
+  test(
+    'feedback admission is synchronous and duplicate scheduling maps one Run',
+    () async {
+      fixture.materialization = Completer<void>();
+      final controller = fixture.owners().getOrCreate(fixture.session);
+      final expected = fixture.runtime.lifecycle.resolveSessionStrategy(
+        fixture.session.id,
+      );
+      final feedback = receipt();
+      final scheduling = controller.startRun(
+        expectedStrategy: expected,
+        expectedFeedback: feedback,
+      );
+      final admission = controller.feedbackRunFor(feedback)!;
+      expect(admission.state, SessionFeedbackRunAdmissionState.preparing);
+      expect(fixture.executions, isEmpty);
+      expect(await scheduling, admission.runId);
+      expect(
+        await controller.startRun(
+          expectedStrategy: expected,
+          expectedFeedback: receipt(),
+        ),
+        admission.runId,
+      );
+      await expectLater(
+        controller.startRun(
+          expectedFeedback: receipt(id: 'other', occurrence: 'entry-1'),
+        ),
+        throwsStateError,
+      );
+      await fixture.materializing.future;
+      expect(fixture.expectedFeedback.single, same(feedback));
+      fixture.materialization!.complete();
+      await admission.preparationSettled;
+      expect(admission.state, SessionFeedbackRunAdmissionState.associated);
+      final advancing = controller.activeRunFuture!;
+      final call = await fixture.model.callAt(0);
+      call.propose('review');
+      call.settle();
+      await advancing;
+      expect(controller.pendingApproval, isNotNull);
+      expect(admission.state, SessionFeedbackRunAdmissionState.started);
+      expect(
+        await controller.startRun(expectedFeedback: receipt()),
+        admission.runId,
+      );
+      await expectLater(controller.startRun(), throwsStateError);
+      await expectLater(
+        controller.startRun(
+          expectedFeedback: receipt(id: 'other', occurrence: 'entry-1'),
+        ),
+        throwsStateError,
+      );
+      await fixture.modelRegistration.close();
+      await fixture.strategy.close();
+      expect(controller.canStart, isFalse);
+      expect(
+        await controller.startRun(
+          expectedStrategy: expected,
+          expectedFeedback: receipt(),
+        ),
+        admission.runId,
+      );
+      await controller.close();
+      expect(controller.feedbackRunFor(receipt()), same(admission));
+      expect(
+        await controller.startRun(expectedFeedback: receipt()),
+        admission.runId,
+      );
+      expect(fixture.ids.values, [admission.runId]);
+      expect(fixture.tool.executions, 0);
+    },
+  );
+
+  test(
+    'unrelated retained execution blocks fresh feedback admission',
+    () async {
+      final controller = fixture.controller();
+      final release = fixture.runtime.lifecycle.retainSessionExecution(
+        fixture.session,
+      );
+      addTearDown(release);
+      await expectLater(
+        controller.startRun(expectedFeedback: receipt()),
+        throwsStateError,
+      );
+      expect(controller.feedbackRunFor(receipt()), isNull);
+      expect(fixture.ids.values, isEmpty);
+      expect(fixture.model.calls, isEmpty);
+    },
+  );
+
+  test(
+    'feedback preparation failures permit only explicit proven-safe retry',
+    () async {
+      fixture.tool.materializeGate = Completer<void>();
+      final controller = fixture.controller();
+      final expected = controller.strategy!;
+      final feedback = receipt();
+      final first = await controller.startRun(
+        expectedStrategy: expected,
+        expectedFeedback: feedback,
+      );
+      final admission = controller.feedbackRunFor(feedback)!;
+      await fixture.tool.materializing.future;
+      fixture.tool.materializeGate!.completeError(
+        StateError('Tools unavailable.'),
+      );
+      await admission.preparationSettled;
+      expect(
+        admission.state,
+        SessionFeedbackRunAdmissionState.failedBeforeAssociation,
+      );
+      expect(fixture.executions, isEmpty);
+      expect(fixture.model.calls, isEmpty);
+      expect(await controller.startRun(expectedFeedback: receipt()), first);
+      expect(controller.feedbackRunFor(receipt()), same(admission));
+      fixture.tool.materializeGate = null;
+      final second = await controller.retryFeedbackRun(
+        receipt: feedback,
+        expectedStrategy: expected,
+      );
+      expect(second, isNot(first));
+      final retried = controller.feedbackRunFor(feedback)!;
+      expect(retried, isNot(same(admission)));
+      expect(retried.runId, second);
+      final advancing = controller.activeRunFuture!;
+      (await fixture.model.callAt(0)).settle();
+      await advancing;
+      expect(retried.state, SessionFeedbackRunAdmissionState.started);
+      expect(fixture.ids.values, [first, second]);
+    },
+  );
+
+  for (final retire in [false, true]) {
+    test(
+      'feedback materialization uncertainty never reschedules (retire=$retire)',
+      () async {
+        fixture.materialization = Completer<void>();
+        final controller = fixture.controller();
+        final expected = controller.strategy!;
+        final feedback = receipt();
+        final id = await controller.startRun(
+          expectedStrategy: expected,
+          expectedFeedback: feedback,
+        );
+        final admission = controller.feedbackRunFor(feedback)!;
+        await fixture.materializing.future;
+        if (retire) {
+          await fixture.strategy.close();
+          fixture.strategy = fixture.registerStrategy();
+          fixture.materialization!.complete();
+        } else {
+          fixture.materialization!.completeError(
+            StateError('Association acknowledgement lost.'),
+          );
+        }
+        await admission.preparationSettled;
+        expect(admission.state, SessionFeedbackRunAdmissionState.uncertain);
+        expect(admission.failure, isNotNull);
+        expect(
+          await controller.startRun(
+            expectedStrategy: expected,
+            expectedFeedback: receipt(),
+          ),
+          id,
+        );
+        expect(
+          await controller.retryFeedbackRun(
+            receipt: receipt(),
+            expectedStrategy: expected,
+          ),
+          id,
+        );
+        expect(fixture.ids.values, [id]);
+        expect(fixture.model.calls, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'association survives startup rejection without terminal Run evidence',
+    () async {
+      fixture.gatesFor(fixture.session).startError = StateError(
+        'Start rejected.',
+      );
+      final controller = fixture.controller();
+      final feedback = receipt();
+      final id = await controller.startRun(expectedFeedback: feedback);
+      final advancing = controller.activeRunFuture!;
+      final admission = controller.feedbackRunFor(feedback)!;
+      await advancing;
+      expect(admission.state, SessionFeedbackRunAdmissionState.associated);
+      expect(fixture.runtime.store.runRecord(id), isNull);
+      expect(fixture.model.calls, isEmpty);
+      expect(
+        await controller.retryFeedbackRun(
+          receipt: feedback,
+          expectedStrategy: controller.strategy!,
+        ),
+        id,
+      );
+      expect(fixture.ids.values, [id]);
+    },
+  );
+
+  test(
+    'feedback state notification does not require model or materialization',
+    () async {
+      final controller = fixture.controller(model: null);
+      final feedback = receipt();
+      final before = controller.sessionStateRevision;
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      controller.notifySessionStateChanged();
+      expect(controller.sessionStateRevision, before + 1);
+      expect(notifications, 1);
+      await expectLater(
+        controller.startRun(expectedFeedback: feedback),
+        throwsStateError,
+      );
+      expect(controller.feedbackRunFor(feedback), isNull);
+      expect(fixture.ids.values, isEmpty);
+      expect(fixture.executions, isEmpty);
+      await controller.close();
+      controller.notifySessionStateChanged();
+      expect(controller.sessionStateRevision, before + 1);
+    },
+  );
+
   test(
     'controllers share runtime Run IDs unless explicitly overridden',
     () async {
@@ -2178,6 +2417,7 @@ final class _Fixture {
   final environment = _EnvironmentChannel();
   final tool = _Tool();
   final executions = <_Execution>[];
+  final expectedFeedback = <SessionFeedbackReceipt?>[];
   final controllers = <SessionExecutionController>[];
   final ownerCollections = <SessionExecutionOwners>[];
   final sessionGates = <SessionId, _SessionGates>{};
@@ -2274,6 +2514,7 @@ final class _Fixture {
     value: OrchestrationStrategyContribution(
       strategyId: _strategyId,
       materialize: (context) async {
+        expectedFeedback.add(context.expectedFeedback);
         if (!materializing.isCompleted) materializing.complete();
         final gates = gatesFor(context.session);
         if (!gates.materializing.isCompleted) gates.materializing.complete();

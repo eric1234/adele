@@ -178,7 +178,7 @@ executable Capability. Its operations are:
 
 | Method | Result |
 | --- | --- |
-| `snapshot(sessionId)` | Complete immutable pending collection in creation order. |
+| `snapshot(sessionId)` | Complete immutable pending collection in creation order, authoritative SQL `revision`, and nullable small `currentReview` summary. |
 | `createComment(sessionId, anchor, text)` | Persisted new comment with independent ID, sequence and version 1. |
 | `updateComment(sessionId, commentId, expectedVersion, text)` | Authoritative body-only replacement with version incremented once. |
 | `deleteComment(sessionId, commentId, expectedVersion)` | Remove exactly the matching pending record. |
@@ -209,20 +209,23 @@ Environment IDs are retained data, not source-read or execution authority; there
 is no absolute checkout path, Project selector, storage owner, or database path in
 the service. The host validates Session membership in the current open Project.
 
-`packages/backend/lib/diff_viewer_backend.dart` owns the current v1 SQL baseline:
+`packages/backend/lib/diff_viewer_backend.dart` owns the v1 draft baseline and a
+CREATE-only v2 handoff migration:
 
 | Table | Retained data |
 | --- | --- |
 | `adele_diff_review_sessions` | Core Session foreign key, next sequence, mutation revision, comment count and aggregate size charge. |
 | `adele_diff_review_comments` | Composite Session/comment ID key, unique Session/sequence, version, ordinary columns for each anchor field, exact text and size charge; foreign key to the draft Session row. |
+| `adele_diff_review_allocators` | Separate monotonic Session-local submission allocator, retained independently of the current payload. |
+| `adele_diff_review_handoffs` | One current immutable canonical payload, original preparation revision/count, delivery/scheduling state, monotonic scheduling attempt, and confirmed occurrence/Run IDs. |
 
 IDs are Session-local `comment-N` values with positive monotonic creation
 sequences. Deletion retains the counter, so IDs are never reused. Identical
 anchors and text create distinct comments, never deduplicated records. A fresh
 snapshot queries committed SQL rather than a retained comment cache. A bounded
 generation-local last-Session schema guard avoids repeated initialization during
-ordinary use. No compatibility reader or migration for older development schemas
-is supplied.
+ordinary use. The v2 migration adds tables without rewriting the v1 draft header
+or comments; no compatibility reader for other development schemas is supplied.
 
 The AOT entrypoint binds `ProjectStorageServiceClient` through the actual
 `hostInfrastructureContext`, under PluginId `dev.adele.diff-viewer`, using
@@ -273,8 +276,8 @@ behind an old handle.
 The conservative charge is 256 bytes plus six per Session-ID code unit, and 512
 bytes per comment plus six per code unit across its ID, text, and anchor strings
 (including enum names). Six bounds worst-case JSON escaping, and fixed overhead
-bounds structural keys/numbers. This keeps the generated full response below
-512 KiB and leaves room for the SQL query's repeated header/Session fields below
+bounds structural keys/numbers. This bounds pending-comment content at
+512 KiB and leaves room for the small handoff summary and SQL query's repeated header/Session fields below
 the host's 1 MiB/1,000-row bounds. Count and charge are checked atomically with
 writes and verified on reads. Oversize or corrupt data fails explicitly; nothing
 is silently trimmed or returned as a partial collection. These conservative bounds
@@ -282,10 +285,64 @@ keep ordinary feedback cheap without a retained history cache.
 
 Pending comments are not submitted feedback, Chat entries, model outputs, tool
 proposals, Run activity, or Git approval state. Saving/deleting a comment never
-approves, unapproves, discards, or reverts source. Submit Review, compatible strategy
-acceptance, compact strategy occurrences, and plugin-owned content in general
-Inspection remain separate later work. There is no universal Session-input or
-Inspection framework in this service.
+approves, unapproves, discards, or reverts source. There is no universal Session-input
+or Inspection framework in this service.
+
+### Durable Review Handoff
+
+The same generated service owns the data-only submission lifecycle. All handoff
+operations require durable Project storage, unlike pending-comment CRUD's explicit
+temporary-storage support. Failed durable access never reports a volatile success.
+
+| Method | Result / precondition |
+| --- | --- |
+| `prepareReview(sessionId, expectedRevision)` | Returns `ReviewPreparationResult`: either the committed immutable submission of every saved pending comment at the displayed authoritative revision, or a definite pre-write rejection. |
+| `readReview(sessionId)` | Nullable complete current handoff; does not deliver feedback or start a Run. |
+| `markDeliveryAttempted(sessionId, submissionId)` | One admission from `prepared` to durable `deliveryPending`, before cross-plugin dispatch. |
+| `confirmAcceptance(sessionId, submissionId, receiptSessionId, occurrenceId)` | Atomically records a confirmed receipt and deletes only original comment IDs, sequences and versions. |
+| `markSchedulingAttempted(sessionId, submissionId, occurrenceId)` | One admission from `accepted` to durable `schedulingPending`, incrementing `schedulingAttempt` before host dispatch. |
+| `confirmRunScheduled(sessionId, submissionId, occurrenceId, expectedAttempt, runId)` | Records the exact confirmed occurrence/attempt/Run association; identical confirmation is idempotent. |
+| `confirmRunNotStarted(sessionId, submissionId, occurrenceId, expectedAttempt)` | Restores `accepted` only on positive host proof that this exact scheduling attempt did not start. |
+
+`PreparedReviewSubmission` carries Session/submission IDs, exact `canonicalPayload`,
+typed `ReviewSubmissionStatus`, original comment count, scheduling attempt, and
+nullable occurrence/Run IDs. `ReviewSubmissionSummary` omits the payload and Session
+ID. Full payload reads are separate so a snapshot never repeats a 128 KiB payload
+on every SQL comment row. Backend mapping uses explicit enum switches to the public
+`SessionFeedbackSubmission` values and only `encodeSessionFeedbackSubmission` /
+`decodeSessionFeedbackSubmission`, not another JSON protocol. The public 128 KiB
+UTF-8 payload bound applies before any allocator or draft write. Strategy-owned
+model-content projection and its separate bound remain with the accepting strategy.
+
+`ReviewPreparationResult` has required nullable `submission` and `rejectionCode`
+fields, exactly one nonnull. Its fixed rejection codes are `stale_draft`,
+`empty_review`, `submission_too_large`, `review_conflict`, and `counter_exhausted`.
+Only complete-payload admission reports `submission_too_large`; revision and
+submission allocator exhaustion report `counter_exhausted`. These typed pre-write
+results let interpreted presentation show a safe specific rejection without
+inspecting native exceptions. Storage/schema/read failures and attempted SQL writes,
+including CAS conflicts and lost commit acknowledgements, still throw failures;
+they are never converted into definite preparation rejection. A success carries
+the exact committed prepared DTO and a null rejection code.
+
+Preparation rejects empty, stale or oversized batches unchanged; it never selects
+only comments in the current Diff scope. The separate `review-N` allocator is
+transactional and survives removal of completed payloads. Preparation reserves both
+its own and acceptance's draft-revision increments before freezing. CRUD rejects
+`prepared` and `deliveryPending` both before writing and in the SQL header CAS, so
+an independently loaded backend cannot mutate the batch. Acceptance preserves the
+comment creation counter, permits new pending comments, and leaves the unscheduled
+handoff retained. Only `scheduled` permits another preparation; replacement prunes
+the previous row atomically, bounding retention to one immutable payload per Session.
+
+Receipt confirmation requires the same Session, submission, and occurrence; Run
+confirmation also requires the captured scheduling attempt. Repeated attempt
+markers reject rather than authorize another dispatch. A delayed not-started reply
+cannot reset a newer attempt. SQL failure, lost acknowledgement, backend retirement,
+and missing read-only association evidence never establish rollback. Reopen reads
+retained state without replay; an uncertain `schedulingPending` handoff stays pending
+until positive reconciliation. The backend stores no live controller, binding or
+execution authority and does not itself accept feedback or schedule Runs.
 
 ### Comment Workflow
 
@@ -462,7 +519,7 @@ through its [existing document model](../source_editor/README.md#ownership).
 The host owns [captured authority and late presentation fencing](../../docs/architecture/plugin-system.md#main-content-source-display).
 Index-only approval does not change Source working-file bytes, dirty buffers or undo.
 There is no automatic refresh watcher, addition/deletion hunk approval,
-discard/revert, source editing within Diff, commit, review feedback submission, or
+discard/revert, source editing within Diff, commit, or
 side-by-side mode. Addition/deletion review is bounded complete-file
 approval, not general staging of arbitrary untracked content or unsupported deletions.
 

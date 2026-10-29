@@ -390,6 +390,7 @@ Additional Main Content fields are explicit opt-ins:
 
 | Field | Meaning / default |
 | --- | --- |
+| `sessionFeedback` | Boolean, false by default. Requests pane-only host-mediated feedback acceptance, explicit lookup, and receipt-targeted ordinary Run scheduling for the captured canonical Session. Missing support leaves the pane available; no initializer, input action, or finite operation acquires this permission. |
 | `optionalBackendServices` | Empty by default; immutable service-ID allowlist, duplicate-free and disjoint from `backendServices`. Requests pane-only access to the exact sibling backend without making its availability a pane prerequisite. Uses the same service-ID validation and is rejected on other roles and behavioral extensions. |
 | `capabilities` | Empty by default; immutable, duplicate-free `CapabilityKey` allowlist for context-free calls, encoded as `[{"id": "org.example.read", "majorVersion": 1}]`. Each entry accepts only those fields and uses the public Capability identity and positive-integer major-version validation. Different majors of the same ID are distinct keys. |
 | `environmentReadCapabilities` | Separate empty-by-default immutable `CapabilityKey` allowlist, with the same encoding and strict validation as `capabilities`. Requests pane-only contextual unary calls with an operation-scoped Environment read grant; it does not enable context-free access or any other Environment service. |

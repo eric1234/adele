@@ -45,12 +45,18 @@ final class ChatStrategyPlugin {
           ChatSessionFeedbackService(sessions),
           session.id.value,
         ),
-        materialize: (OrchestrationStrategyHostContext context) =>
-            _ChatExecution(
-              context.host,
-              sessions.obtain(context.session.id),
-              maxModelInvocations,
-            ),
+        materialize: (OrchestrationStrategyHostContext context) {
+          if (context.expectedFeedback != null) {
+            throw const InvalidRunOperation(
+              'Accepted feedback requires durable Chat materialization.',
+            );
+          }
+          return _ChatExecution(
+            context.host,
+            sessions.obtain(context.session.id),
+            maxModelInvocations,
+          );
+        },
       );
 
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
@@ -401,6 +407,7 @@ final class ChatSessionFeedbackService implements RemoteSessionFeedbackService {
           occurrenceId: entryId,
         ),
         submission: submission,
+        runId: runId as String?,
       );
     } on Object {
       // Missing data and failed/corrupt reads are not interchangeable.
@@ -532,6 +539,7 @@ final class ChatRemoteOrchestrationBackend
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
+    RemoteExpectedSessionFeedback? expectedFeedback,
   ) async {
     _requireOpen();
     final settled = Completer<void>();
@@ -543,9 +551,18 @@ final class ChatRemoteOrchestrationBackend
       _requireOpen();
       transaction = _ChatHistoryTransaction(source);
       _materializing[source.id] = transaction;
-      executionId = await _backend.materialize(routeId, session, runId);
+      executionId = await _backend.materialize(
+        routeId,
+        session,
+        runId,
+        expectedFeedback,
+      );
       _requireOpen();
-      await transaction.associateRun(RunId(runId));
+      await transaction.associateRun(
+        RunId(runId),
+        expectedFeedback: expectedFeedback?.toLocal(session.sessionId),
+        feedback: ChatSessionFeedbackService(sessions),
+      );
       _requireOpen();
       _executions[executionId] = transaction;
       return executionId;
@@ -679,12 +696,53 @@ final class _ChatHistoryTransaction {
   Future<void>? releasing;
   Future<void>? _finishing;
 
-  Future<void> associateRun(RunId runId) async {
+  Future<void> associateRun(
+    RunId runId, {
+    SessionFeedbackReceipt? expectedFeedback,
+    required ChatSessionFeedbackService feedback,
+  }) async {
+    SessionFeedbackRecord? accepted;
+    if (expectedFeedback != null) {
+      accepted = await feedback._read(source.id, expectedFeedback.submissionId);
+      if (expectedFeedback.sessionId != source.id.value ||
+          accepted == null ||
+          accepted.receipt.occurrenceId != expectedFeedback.occurrenceId) {
+        throw const InvalidRunOperation(
+          'The expected feedback occurrence is not accepted by this Session.',
+        );
+      }
+      if (accepted.runId != null && accepted.runId != runId.value) {
+        source._refreshRequired = true;
+        throw const InvalidRunOperation(
+          'The feedback occurrence is already associated with another Run.',
+        );
+      }
+      if (source._entries.isEmpty ||
+          source._entries.last.id != expectedFeedback.occurrenceId ||
+          source._entries.last.role != 'user' ||
+          source._entries.last.content !=
+              renderChatSessionFeedback(accepted.submission)) {
+        source._refreshRequired = true;
+        throw const InvalidRunOperation(
+          'The accepted feedback has been superseded by later Chat input.',
+        );
+      }
+    }
     if (source._entries.isEmpty) return;
     final entry = source._entries.last;
-    if (entry.role != 'user' || entry.runId != null) return;
+    if (expectedFeedback == null &&
+        (entry.role != 'user' || entry.runId != null)) {
+      return;
+    }
+    if (entry.runId != null && entry.runId != runId.value) {
+      throw const InvalidRunOperation(
+        'The feedback occurrence is already associated with another Run.',
+      );
+    }
     final index = source._entries.length - 1;
-    if (source._entries.any((entry) => entry.runId == runId.value)) {
+    if (source._entries.any(
+      (other) => other.id != entry.id && other.runId == runId.value,
+    )) {
       throw const InvalidRunOperation('The Run already has a Chat user entry.');
     }
     final associated = ChatEntry(
@@ -702,30 +760,46 @@ final class _ChatHistoryTransaction {
         'content': associated.content,
         'run_id': associated.runId,
       });
-      await storage.transactionForSession(source.id.value, [
-        RelationalStatement(
-          sql:
-              'UPDATE adele_chat_sessions SET next_entry = :previousCounter '
-              '${ChatSessionState._whereCurrent}',
-          parameters: source._preconditions,
-          expectedRows: 1,
-        ),
-        RelationalStatement(
-          sql:
-              'UPDATE adele_chat_entries SET run_id = :run '
-              'WHERE session_id = :session AND sequence = :sequence '
-              "AND entry_id = :entry AND role = 'user' AND content = :content "
-              'AND run_id IS NULL',
-          parameters: {
-            ':session': source.id.value,
-            ':sequence': index,
-            ':entry': entry.id,
-            ':content': entry.content,
-            ':run': runId.value,
-          },
-          expectedRows: 1,
-        ),
-      ], ProjectStorageAccessMode.durable);
+      try {
+        await storage.transactionForSession(source.id.value, [
+          RelationalStatement(
+            sql:
+                'UPDATE adele_chat_sessions SET next_entry = :previousCounter '
+                '${ChatSessionState._whereCurrent}',
+            parameters: source._preconditions,
+            expectedRows: 1,
+          ),
+          RelationalStatement(
+            sql:
+                'UPDATE adele_chat_entries SET run_id = :run '
+                'WHERE session_id = :session AND sequence = :sequence '
+                "AND entry_id = :entry AND role = 'user' AND content = :content "
+                '${expectedFeedback == null ? 'AND run_id IS NULL' : 'AND (run_id IS NULL OR run_id = :run) '
+                          'AND EXISTS (SELECT 1 FROM adele_chat_feedback_submissions '
+                          'WHERE session_id = :session AND submission_id = :submission '
+                          'AND entry_id = :entry AND canonical_payload = :payload)'}',
+            parameters: {
+              ':session': source.id.value,
+              ':sequence': index,
+              ':entry': entry.id,
+              ':content': entry.content,
+              ':run': runId.value,
+              if (accepted != null) ...{
+                ':submission': accepted.receipt.submissionId,
+                ':payload': encodeSessionFeedbackSubmission(
+                  accepted.submission,
+                ),
+              },
+            },
+            expectedRows: 1,
+          ),
+        ], ProjectStorageAccessMode.durable);
+      } on Object {
+        // A commit may have succeeded despite a lost acknowledgement. A later
+        // load must read durable association before any further mutation.
+        if (expectedFeedback != null) source._refreshRequired = true;
+        rethrow;
+      }
     }
     source._entries[index] = associated;
     staged._entries[index] = associated;

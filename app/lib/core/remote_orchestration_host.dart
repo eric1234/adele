@@ -111,6 +111,7 @@ final class _RemoteStrategy {
       routeId,
       RemoteOrchestrationSession.fromLocal(context.session),
       context.host.id.value,
+      RemoteExpectedSessionFeedback.fromLocal(context.expectedFeedback),
     );
     if (executionId.trim().isEmpty || !_executions.add(executionId)) {
       throw const AdeleProtocolException(

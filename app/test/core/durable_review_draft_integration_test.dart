@@ -1,20 +1,23 @@
 @Timeout(Duration(minutes: 5))
 library;
 
-import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/core/session_feedback_host.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:diff_viewer_contract/review_draft.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
@@ -22,9 +25,12 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
 import '../../../tools/backend_artifacts.dart';
+import '../support/gated_project_storage.dart';
+import '../support/review_execution_fixture.dart';
 
 const _diffPlugin = 'dev.adele.diff-viewer';
 const _projectPlugin = 'dev.adele.plugin.local-directory-project';
+const _chatPlugin = 'dev.adele.plugin.chat-strategy';
 const _bound = Duration(seconds: 15);
 const _text =
     "  Review '\u03bb'; keep \u6771\u4eac and \u{1f642}\r\n\tsecond line\n  ";
@@ -34,8 +40,10 @@ final _environmentProvider = ProviderId('test.review-draft.environment');
 final _strategy = OrchestrationStrategyId('test.review-draft.strategy');
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory artifacts;
   late Directory installations;
+  late Directory feedbackInstallations;
   late File hostArtifact;
   late String aotRuntime;
 
@@ -82,20 +90,47 @@ void main() {
         backend: true,
       );
     }
+    feedbackInstallations = await Directory(
+      '${artifacts.path}/feedback',
+    ).create();
+    for (final original in installations.listSync().whereType<Directory>()) {
+      final copy = await Directory(
+        '${feedbackInstallations.path}/${original.uri.pathSegments.where((part) => part.isNotEmpty).last}',
+      ).create();
+      for (final file in original.listSync().whereType<File>()) {
+        await file.copy('${copy.path}/${file.uri.pathSegments.last}');
+      }
+    }
+    final chat = await Directory('${feedbackInstallations.path}/chat').create();
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint:
+          'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+      artifact: File('${chat.path}/backend.aot'),
+      stage: 'review-draft-chat',
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: chat,
+      pluginId: _chatPlugin,
+      displayName: 'Chat',
+      backend: true,
+    );
   });
 
-  Future<_Fixture> start({ProductIdSource? ids}) async {
+  Future<_Fixture> start({ProductIdSource? ids, bool withChat = false}) async {
     final fixture = _Fixture(ids: ids);
     addTearDown(fixture.close);
     await fixture.bootstrap.start(
-      installationRoot: installations.path,
+      installationRoot: (withChat ? feedbackInstallations : installations).path,
       dartaotruntimeExecutable: aotRuntime,
       hostArtifactPath: hostArtifact.path,
     );
     expect(fixture.bootstrap.state, ApplicationPluginState.ready);
     expect(fixture.bootstrap.failure, isNull);
     expect(fixture.bootstrap.catalog!.issues, isEmpty);
-    expect(fixture.bootstrap.backends, hasLength(2));
+    expect(fixture.bootstrap.backends, hasLength(withChat ? 3 : 2));
     for (final backend in fixture.bootstrap.backends) {
       expect(
         backend.state,
@@ -118,7 +153,7 @@ void main() {
     );
     expect(
       fixture.runtime.extensions.discover(orchestrationStrategyContributions),
-      isEmpty,
+      withChat ? hasLength(1) : isEmpty,
     );
     return fixture;
   }
@@ -484,6 +519,353 @@ void main() {
     },
   );
 
+  for (final stage in ['prepare', 'accept', 'finalize']) {
+    for (final afterCommit in [false, true]) {
+      test(
+        'G7b2 real AOT $stage ${afterCommit ? 'lost commit acknowledgement' : 'before commit'} reopens authoritative review and Chat state',
+        () async {
+          final source = await _source();
+          final fixture = await start(withChat: true);
+          final graph = await fixture.createGraph(source, withChat: true);
+          final session = graph.session.id.value;
+          final comments = await _seedReview(fixture, graph);
+          final isolated = await fixture.client.createComment(
+            graph.otherSession.id.value,
+            _anchor(graph.otherEnvironment.id.value),
+            'Other Session must remain pending',
+          );
+          await fixture.chatClient.setDraftRequest(session, _editedText);
+          await fixture.chatClient.snapshot(graph.otherSession.id.value);
+          final coreBefore = _inspect(source, _coreRows);
+          final target = CapturedSessionFeedbackTarget.capture(
+            lifecycle: fixture.runtime.lifecycle,
+            session: graph.session,
+          );
+          final snapshot = await fixture.client.snapshot(session);
+          PreparedReviewSubmission? prepared;
+          SessionFeedbackReceipt? receipt;
+          if (stage != 'prepare') {
+            prepared = (await fixture.client.prepareReview(
+              session,
+              snapshot.revision,
+            )).submission!;
+            _expectFrozenBatch(prepared, comments);
+            await fixture.client.markDeliveryAttempted(
+              session,
+              prepared.submissionId,
+            );
+            if (stage == 'finalize') {
+              receipt = await target.accept(
+                decodeSessionFeedbackSubmission(prepared.canonicalPayload),
+              );
+            }
+          }
+          final owner = stage == 'accept' ? fixture.chat : fixture.diff;
+          final gate = fixture.probes[owner]!.holdTransaction(
+            afterCommit: afterCommit,
+            sqlContains: stage == 'accept'
+                ? 'INSERT INTO adele_chat_feedback_submissions'
+                : null,
+          );
+          final Future<Object?> operation = switch (stage) {
+            'prepare' => fixture.client.prepareReview(
+              session,
+              snapshot.revision,
+            ),
+            'accept' => target.accept(
+              decodeSessionFeedbackSubmission(prepared!.canonicalPayload),
+            ),
+            _ => fixture.client.confirmAcceptance(
+              session,
+              prepared!.submissionId,
+              receipt!.sessionId,
+              receipt.occurrenceId,
+            ),
+          };
+          final failed = expectLater(
+            operation,
+            stage == 'accept'
+                ? throwsA(
+                    isA<SessionFeedbackFailure>().having(
+                      (error) => error.code,
+                      'code',
+                      'outcome_uncertain',
+                    ),
+                  )
+                : _failure('outcome_uncertain'),
+          );
+          await gate.entered.future.timeout(_bound);
+          owner.revokeInfrastructureContext();
+          await failed.timeout(_bound);
+          gate.release();
+          await gate.settled.future.timeout(_bound);
+          final durableRows = _inspect(source, _reviewRows);
+          final chatRows = _inspect(source, _chatRows);
+          final accepted =
+              stage == 'finalize' || (stage == 'accept' && afterCommit);
+          final finalized = stage == 'finalize' && afterCommit;
+          expect(chatRows['receipts'], hasLength(accepted ? 1 : 0));
+          expect(durableRows['comments'], hasLength(finalized ? 1 : 4));
+          expect(_inspect(source, _coreRows), coreBefore);
+          if (stage != 'accept') {
+            final retired = fixture.client;
+            await fixture.replaceDiff();
+            await expectLater(
+              retired.snapshot(session),
+              throwsA(isA<PluginConnectionClosed>()),
+            );
+            final replacement = await fixture.client.readReview(session);
+            if (stage == 'prepare' && !afterCommit) {
+              expect(replacement, isNull);
+            } else {
+              _expectFrozenBatch(replacement!, comments);
+              expect(
+                replacement.status,
+                finalized
+                    ? ReviewSubmissionStatus.accepted
+                    : stage == 'prepare'
+                    ? ReviewSubmissionStatus.prepared
+                    : ReviewSubmissionStatus.deliveryPending,
+              );
+            }
+            expect(_inspect(source, _reviewRows), durableRows);
+          }
+          await fixture.close();
+
+          final ids = _NoAllocationIds();
+          final fresh = await start(ids: ids, withChat: true);
+          await fresh.runtime.lifecycle.openProject(
+            sourceLocation: source.uri,
+            provider: fresh.runtime.lifecycle.resolveProjectProvider(
+              _projectProvider,
+            ),
+          );
+          final reopened = fresh.runtime.store.session(graph.session.id)!;
+          final restored = await fresh.client.readReview(session);
+          final restoredSnapshot = await fresh.client.snapshot(session);
+          if (stage == 'prepare' && !afterCommit) {
+            expect(restored, isNull);
+            expect(restoredSnapshot.currentReview, isNull);
+          } else {
+            expect(restored, isNotNull);
+            _expectFrozenBatch(restored!, comments);
+            expect(
+              restored.status,
+              finalized
+                  ? ReviewSubmissionStatus.accepted
+                  : stage == 'prepare'
+                  ? ReviewSubmissionStatus.prepared
+                  : ReviewSubmissionStatus.deliveryPending,
+            );
+            expect(restored.runId, isNull);
+            expect(restored.schedulingAttempt, 0);
+            if (prepared != null) {
+              expect(restored.canonicalPayload, prepared.canonicalPayload);
+              expect(restored.submissionId, prepared.submissionId);
+            }
+            if (!finalized) {
+              await expectLater(
+                fresh.client.updateComment(
+                  session,
+                  comments.first.id,
+                  comments.first.version,
+                  'Must not alter the frozen batch',
+                ),
+                _failure('draft_frozen'),
+              );
+              expect(
+                (await fresh.client.readReview(session))!.canonicalPayload,
+                restored.canonicalPayload,
+              );
+            }
+          }
+          expect(
+            restoredSnapshot.comments.map(_commentFields),
+            finalized ? isEmpty : comments.map(_commentFields),
+          );
+          expect(
+            (await fresh.client.snapshot(
+              graph.otherSession.id.value,
+            )).comments.map(_commentFields),
+            [_commentFields(isolated)],
+          );
+          final canonical = await fresh.chatClient.snapshot(session);
+          expect(canonical.draftRequest, _editedText);
+          expect(canonical.entries, hasLength(accepted ? 1 : 0));
+          if (accepted) {
+            final record = (await CapturedSessionFeedbackTarget.capture(
+              lifecycle: fresh.runtime.lifecycle,
+              session: reopened,
+            ).lookup(restored!.submissionId))!;
+            expect(record.receipt.occurrenceId, canonical.entries.single.id);
+            expect(
+              encodeSessionFeedbackSubmission(record.submission),
+              restored.canonicalPayload,
+            );
+            expect(record.runId, isNull);
+          }
+          expect(
+            (await fresh.chatClient.snapshot(
+              graph.otherSession.id.value,
+            )).entries,
+            isEmpty,
+          );
+          expect(fresh.runtime.store.runsForSession(reopened.id), isEmpty);
+          expect(
+            fresh.runtime.lifecycle.runActivitiesForSession(reopened.id),
+            isEmpty,
+          );
+          expect(_inspect(source, _reviewRows), durableRows);
+          expect(_inspect(source, _chatRows), chatRows);
+          expect(_inspect(source, _coreRows), coreBefore);
+          expect(ids.calls, 0);
+        },
+      );
+    }
+  }
+
+  for (final checkpoint in ['accepted', 'schedulingPending', 'scheduled']) {
+    test(
+      'G7b2 durable $checkpoint reopen retains one receipt and never repeats scheduling',
+      () async {
+        final source = await _source();
+        final fixture = await start(withChat: true);
+        final graph = await fixture.createGraph(source, withChat: true);
+        final session = graph.session.id.value;
+        final comments = await _seedReview(fixture, graph);
+        await fixture.chatClient.setDraftRequest(session, _editedText);
+        final prepared = (await fixture.client.prepareReview(
+          session,
+          (await fixture.client.snapshot(session)).revision,
+        )).submission!;
+        _expectFrozenBatch(prepared, comments);
+        final target = CapturedSessionFeedbackTarget.capture(
+          lifecycle: fixture.runtime.lifecycle,
+          session: graph.session,
+        );
+        await fixture.client.markDeliveryAttempted(
+          session,
+          prepared.submissionId,
+        );
+        final receipt = await target.accept(
+          decodeSessionFeedbackSubmission(prepared.canonicalPayload),
+        );
+        await fixture.client.confirmAcceptance(
+          session,
+          prepared.submissionId,
+          session,
+          receipt.occurrenceId,
+        );
+        final next = await fixture.client.createComment(
+          session,
+          comments.first.anchor,
+          'New pending comment after acceptance',
+        );
+        expect(next.sequence, greaterThan(comments.last.sequence));
+        PreparedReviewSubmission? scheduling;
+        if (checkpoint != 'accepted') {
+          scheduling = await fixture.client.markSchedulingAttempted(
+            session,
+            prepared.submissionId,
+            receipt.occurrenceId,
+          );
+          expect(scheduling.schedulingAttempt, 1);
+        }
+        String? runId;
+        if (checkpoint == 'scheduled') {
+          final model = ReviewExecutionFixture()..register(fixture.runtime);
+          final controller = SessionExecutionController(
+            runtime: fixture.runtime,
+            session: graph.session,
+            providerId: ReviewExecutionFixture.providerId,
+            model: ReviewExecutionFixture.model,
+          );
+          try {
+            runId = (await controller.startRun(
+              expectedStrategy: fixture.runtime.lifecycle
+                  .resolveSessionStrategy(graph.session.id),
+              expectedFeedback: receipt,
+            )).value;
+            await controller.activeRunFuture!.timeout(_bound);
+            expect(controller.failure, isNull);
+            expect(model.requests, hasLength(2));
+            expect(model.executedSessions, [session]);
+            final accepted = (await fixture.chatClient.snapshot(
+              session,
+            )).entries.singleWhere((entry) => entry.id == receipt.occurrenceId);
+            expect(accepted.runId, runId);
+            expect(reviewModelMessages(model.requests.first), [
+              accepted.content,
+            ]);
+            final gate = fixture.probe.holdTransaction(afterCommit: true);
+            final failed = expectLater(
+              fixture.client.confirmRunScheduled(
+                session,
+                prepared.submissionId,
+                receipt.occurrenceId,
+                scheduling!.schedulingAttempt,
+                runId,
+              ),
+              _failure('outcome_uncertain'),
+            );
+            await gate.entered.future.timeout(_bound);
+            fixture.diff.revokeInfrastructureContext();
+            await failed.timeout(_bound);
+            gate.release();
+            await gate.settled.future.timeout(_bound);
+          } finally {
+            await controller.close();
+            await model.close();
+          }
+        }
+        final before = _inspect(source, _reviewRows);
+        final chatBefore = _inspect(source, _chatRows);
+        await fixture.close();
+        final fresh = await start(ids: _NoAllocationIds(), withChat: true);
+        await fresh.runtime.lifecycle.openProject(
+          sourceLocation: source.uri,
+          provider: fresh.runtime.lifecycle.resolveProjectProvider(
+            _projectProvider,
+          ),
+        );
+        final review = (await fresh.client.readReview(session))!;
+        expect(review.status.name, checkpoint);
+        expect(review.canonicalPayload, prepared.canonicalPayload);
+        expect(review.submissionId, prepared.submissionId);
+        expect(review.occurrenceId, receipt.occurrenceId);
+        expect(review.runId, runId);
+        expect(
+          (await fresh.client.snapshot(session)).comments.map(_commentFields),
+          [_commentFields(next)],
+        );
+        final canonical = await fresh.chatClient.snapshot(session);
+        expect(canonical.draftRequest, _editedText);
+        expect(
+          canonical.entries.where((entry) => entry.role == 'user'),
+          hasLength(1),
+        );
+        expect(
+          canonical.entries
+              .singleWhere((entry) => entry.id == receipt.occurrenceId)
+              .runId,
+          runId,
+        );
+        final record = (await CapturedSessionFeedbackTarget.capture(
+          lifecycle: fresh.runtime.lifecycle,
+          session: fresh.runtime.store.session(graph.session.id)!,
+        ).lookup(prepared.submissionId))!;
+        expect(record.runId, runId);
+        expect(record.receipt.occurrenceId, receipt.occurrenceId);
+        expect(
+          fresh.runtime.store.runsForSession(graph.session.id),
+          hasLength(runId == null ? 0 : 1),
+        );
+        expect(_inspect(source, _reviewRows), before);
+        expect(_inspect(source, _chatRows), chatBefore);
+      },
+    );
+  }
+
   for (final closeProject in [false, true]) {
     test(
       'queued Diff transaction cannot enter SQL after ${closeProject ? 'Project close' : 'generation retirement'}',
@@ -539,25 +921,38 @@ final class _Fixture {
       runtime.extensions,
       createInfrastructureServices: _services,
     );
+    bootstrap.configureSettingsLoader(
+      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+    );
   }
 
   final AdeleRuntime runtime;
   late final ApplicationPluginBootstrap bootstrap;
   late PluginBackendConnection diff;
-  final probes = <PluginBackendConnection, _StorageProbe>{};
+  final probes = <PluginBackendConnection, GatedProjectStorage>{};
   Future<void>? _closing;
 
   ReviewDraftServiceClient get client => ReviewDraftServiceClient(
     diff.channelFor(diff.defaultConfigurationContext, reviewDraftServiceId),
   );
-  _StorageProbe get probe => probes[diff]!;
+  GatedProjectStorage get probe => probes[diff]!;
+
+  PluginBackendConnection get chat => bootstrap.backends
+      .singleWhere(
+        (backend) => backend.installation.metadata.id.value == _chatPlugin,
+      )
+      .connection!;
+
+  ChatSessionServiceClient get chatClient => ChatSessionServiceClient(
+    chat.channelFor(chat.defaultConfigurationContext, chatSessionServiceId),
+  );
 
   Map<String, AdeleBackendDispatcher> _services(
     PluginBackendConnection connection,
   ) {
     final services = projectStorageServices(runtime.lifecycle, connection);
     expect(services.keys, [projectStorageServiceId]);
-    final probe = _StorageProbe(services[projectStorageServiceId]!);
+    final probe = GatedProjectStorage(services[projectStorageServiceId]!);
     probes[connection] = probe;
     return {projectStorageServiceId: probe};
   }
@@ -591,7 +986,11 @@ final class _Fixture {
     expect(diff.extensionExposures, isEmpty);
   }
 
-  Future<_Graph> createGraph(Directory source, {bool volatile = false}) async {
+  Future<_Graph> createGraph(
+    Directory source, {
+    bool volatile = false,
+    bool withChat = false,
+  }) async {
     final channel = _EstablishmentOnlyChannel();
     final environment = runtime.registry.register(
       provider: ProviderDescriptor(
@@ -637,11 +1036,11 @@ final class _Fixture {
       );
       final session = runtime.lifecycle.createSession(
         taskId: task.task.id,
-        strategyId: _strategy,
+        strategyId: withChat ? chatStrategyId : _strategy,
       );
       final otherSession = runtime.lifecycle.createSession(
         taskId: task.task.id,
-        strategyId: _strategy,
+        strategyId: withChat ? chatStrategyId : _strategy,
       );
       expect(channel.calls, 2);
       return (
@@ -682,6 +1081,66 @@ typedef _Graph = ({
   Session otherSession,
 });
 
+Future<List<PendingReviewComment>> _seedReview(
+  _Fixture fixture,
+  _Graph graph,
+) async {
+  final comments = <PendingReviewComment>[];
+  for (final layer in ReviewComparisonLayer.values) {
+    comments.add(
+      await fixture.client.createComment(
+        graph.session.id.value,
+        _anchor(
+          graph.environment.id.value,
+          layer: layer,
+          relativePath: layer == ReviewComparisonLayer.staged
+              ? 'lib/second.dart'
+              : 'lib/first.dart',
+          side: layer == ReviewComparisonLayer.committed
+              ? ReviewComparisonSide.oldSide
+              : ReviewComparisonSide.newSide,
+        ),
+        '$_text ${layer.name}',
+      ),
+    );
+  }
+  return comments;
+}
+
+void _expectFrozenBatch(
+  PreparedReviewSubmission review,
+  List<PendingReviewComment> comments,
+) {
+  final submission = decodeSessionFeedbackSubmission(review.canonicalPayload);
+  expect(submission.submissionId, review.submissionId);
+  expect(submission.kind, SessionFeedbackKind.codeReview);
+  expect(review.commentCount, comments.length);
+  expect(
+    submission.comments.map(
+      (comment) => {
+        'id': comment.id,
+        'version': comment.version,
+        'sequence': comment.sequence,
+        'text': comment.text,
+        'anchor': {
+          'environmentId': comment.anchor.environmentId,
+          'relativePath': comment.anchor.relativePath,
+          'layer': comment.anchor.layer.name,
+          'side': comment.anchor.side.name,
+          'startLine': comment.anchor.startLine,
+          'endLine': comment.anchor.endLine,
+          'comparisonIdentity': comment.anchor.comparisonIdentity,
+          'sourceExcerpt': comment.anchor.sourceExcerpt,
+          'hunkIndex': comment.anchor.hunkIndex,
+          'lineIndex': comment.anchor.lineIndex,
+        },
+      },
+    ),
+    comments.map(_commentFields),
+  );
+  expect(encodeSessionFeedbackSubmission(submission), review.canonicalPayload);
+}
+
 final class _EstablishmentOnlyChannel implements AdeleRequestChannel {
   int calls = 0;
   @override
@@ -697,86 +1156,14 @@ final class _EstablishmentOnlyChannel implements AdeleRequestChannel {
   }
 }
 
-/// Gates actual host dispatch/replies, never substitutes a storage implementation.
-final class _StorageProbe implements AdeleBackendDispatcher {
-  _StorageProbe(this.delegate);
-  final AdeleBackendDispatcher delegate;
-  final calls = <String>[];
-  _TransactionGate? _next;
-  final _gates = <_TransactionGate>[];
-
-  _TransactionGate holdTransaction({bool afterCommit = false}) {
-    expect(_next, isNull);
-    final gate = _TransactionGate(afterCommit);
-    _gates.add(gate);
-    _next = gate;
-    return gate;
-  }
-
-  @override
-  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async {
-    final method = request['method']! as String;
-    calls.add(method);
-    final payload = request['payload']! as Map;
-    expect(
-      payload['accessMode'],
-      ProjectStorageAccessMode.durableOrTemporary.name,
-    );
-    final gate = method == projectStorageServiceTransactionForSessionId
-        ? _next
-        : null;
-    if (gate == null) return delegate.dispatch(request);
-    _next = null;
-    try {
-      if (!gate.afterCommit) {
-        gate.entered.complete();
-        await gate._release.future;
-      }
-      final response = await delegate.dispatch(request);
-      if (gate.afterCommit) {
-        expect(response['ok'], isTrue);
-        gate.entered.complete();
-        await gate._release.future;
-      }
-      return response;
-    } finally {
-      gate.settled.complete();
-    }
-  }
-
-  @override
-  Future<void> handle(
-    Map<Object?, Object?> command,
-    void Function(Map<String, Object?>) send,
-  ) async => send(await dispatch(command));
-
-  @override
-  Future<void> close() async {
-    for (final gate in _gates) {
-      gate.release();
-    }
-    await delegate.close();
-  }
-}
-
-final class _TransactionGate {
-  _TransactionGate(this.afterCommit);
-  final bool afterCommit;
-  final entered = Completer<void>();
-  final settled = Completer<void>();
-  final _release = Completer<void>();
-  void release() {
-    if (!_release.isCompleted) _release.complete();
-  }
-}
-
 ReviewCommentAnchor _anchor(
   String environmentId, {
   ReviewComparisonLayer layer = ReviewComparisonLayer.unstaged,
   ReviewComparisonSide side = ReviewComparisonSide.newSide,
+  String relativePath = "lib/a + [quoted]; '\u6771\u4eac'.dart",
 }) => ReviewCommentAnchor(
   environmentId: environmentId,
-  relativePath: "lib/a + [quoted]; '\u6771\u4eac'.dart",
+  relativePath: relativePath,
   layer: layer,
   side: side,
   startLine: 17,
@@ -810,6 +1197,17 @@ Map<String, Object?> _commentFields(PendingReviewComment comment) => {
 
 Map<String, Object?> _snapshotFields(ReviewDraftSnapshot snapshot) => {
   'sessionId': snapshot.sessionId,
+  'revision': snapshot.revision,
+  'currentReview': snapshot.currentReview == null
+      ? null
+      : {
+          'submissionId': snapshot.currentReview!.submissionId,
+          'status': snapshot.currentReview!.status.name,
+          'commentCount': snapshot.currentReview!.commentCount,
+          'occurrenceId': snapshot.currentReview!.occurrenceId,
+          'runId': snapshot.currentReview!.runId,
+          'schedulingAttempt': snapshot.currentReview!.schedulingAttempt,
+        },
   'comments': snapshot.comments.map(_commentFields).toList(),
 };
 
@@ -863,6 +1261,29 @@ Map<String, Object?> _reviewRows(Database database) => {
     database,
     'SELECT * FROM adele_diff_review_comments ORDER BY 1, 2',
   ),
+  'allocators': _rows(
+    database,
+    'SELECT * FROM adele_diff_review_allocators ORDER BY 1',
+  ),
+  'handoffs': _rows(
+    database,
+    'SELECT * FROM adele_diff_review_handoffs ORDER BY 1',
+  ),
+};
+
+Map<String, Object?> _chatRows(Database database) => {
+  'sessions': _rows(
+    database,
+    'SELECT * FROM adele_chat_sessions ORDER BY session_id',
+  ),
+  'entries': _rows(
+    database,
+    'SELECT * FROM adele_chat_entries ORDER BY session_id, sequence',
+  ),
+  'receipts': _rows(
+    database,
+    'SELECT * FROM adele_chat_feedback_submissions ORDER BY session_id, submission_id',
+  ),
 };
 
 void _expectStoredComment(
@@ -914,7 +1335,7 @@ void _expectOwner(Directory source) {
       ),
     ),
     [
-      {'owner_id': _diffPlugin, 'version': 1},
+      {'owner_id': _diffPlugin, 'version': 2},
       {'owner_id': 'dev.adele.execution', 'version': 1},
       {'owner_id': 'dev.adele.product', 'version': 1},
     ],

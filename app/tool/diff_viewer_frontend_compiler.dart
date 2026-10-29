@@ -4,6 +4,7 @@ import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
+import 'package:adele_desktop/frontend/session_feedback_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
@@ -45,6 +46,7 @@ Future<void> compileDiffViewerFrontend({
     ..addPlugin(const MainContentDeclarations())
     ..addPlugin(const OwningBackendDeclarations())
     ..addPlugin(const EnvironmentCapabilityAccessDeclarations())
+    ..addPlugin(const SessionFeedbackDeclarations())
     ..addPlugin(const SessionPresentationLifecycleDeclarations())
     ..entrypoints.addAll([
       diffViewerFrontendLibrary,
@@ -84,6 +86,7 @@ class ReviewDraftLimits {
         'environment_capability_bridge.dart',
         'main_content_bridge.dart',
         'owning_backend_bridge.dart',
+        'session_feedback_bridge.dart',
         'session_presentation_lifecycle_bridge.dart',
       ])
         name: await File('$root/packages/ui/lib/$name').readAsString(),

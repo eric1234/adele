@@ -69,17 +69,34 @@ CREATE TABLE IF NOT EXISTS test_owner_schema (version INTEGER NOT NULL);
     schemaChecks++;
     await beforeSchema?.call();
     _check(sessionId, accessMode);
-    if (migrations.length != 1) throw StateError('Expected the v1 baseline.');
-    if (database
-            .select('SELECT version FROM test_owner_schema')
-            .single['version'] ==
-        1) {
-      return;
+    if (migrations.any(
+      (sql) => sql
+          .split(';')
+          .where((part) => part.trim().isNotEmpty)
+          .any(
+            (part) => !RegExp(
+              r'^CREATE\s+TABLE\b',
+              caseSensitive: false,
+            ).hasMatch(part.trim()),
+          ),
+    )) {
+      throw StateError('Host migrations permit only CREATE TABLE statements.');
     }
+    final version =
+        database
+                .select('SELECT version FROM test_owner_schema')
+                .single['version']
+            as int;
+    if (version > migrations.length) throw StateError('Newer owner schema.');
+    if (version == migrations.length) return;
     database.execute('BEGIN');
     try {
-      database.execute(migrations.single);
-      database.execute('UPDATE test_owner_schema SET version=1');
+      for (var index = version; index < migrations.length; index++) {
+        database.execute(migrations[index]);
+      }
+      database.execute('UPDATE test_owner_schema SET version=?', [
+        migrations.length,
+      ]);
       database.execute('COMMIT');
     } on Object {
       database.execute('ROLLBACK');

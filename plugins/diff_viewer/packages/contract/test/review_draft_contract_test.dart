@@ -32,6 +32,15 @@ const _failureCodes = [
   'storage_unavailable',
   'outcome_uncertain',
   'backend_closed',
+  'draft_frozen',
+  'review_conflict',
+];
+const _rejectionCodes = [
+  'stale_draft',
+  'empty_review',
+  'submission_too_large',
+  'review_conflict',
+  'counter_exhausted',
 ];
 
 void main() {
@@ -41,6 +50,8 @@ void main() {
     expect(reviewDraftServiceCreateCommentId, 'diff.reviewDraft.createComment');
     expect(reviewDraftServiceUpdateCommentId, 'diff.reviewDraft.updateComment');
     expect(reviewDraftServiceDeleteCommentId, 'diff.reviewDraft.deleteComment');
+    expect(reviewDraftServicePrepareReviewId, 'diff.reviewDraft.prepareReview');
+    expect(reviewDraftServiceReadReviewId, 'diff.reviewDraft.readReview');
     expect(reviewDraftServiceId, isNot(reviewApprovalHandlerServiceId));
     expect(reviewDraftServiceId, isNot(changeSetSourceServiceId));
     // The new validation must not tighten the shipped approval selections.
@@ -59,7 +70,12 @@ void main() {
     final first = _comment();
     final second = _comment(id: 'comment-3', sequence: 3);
     final input = [first, second];
-    final snapshot = ReviewDraftSnapshot(sessionId: 'session', comments: input);
+    final snapshot = ReviewDraftSnapshot(
+      sessionId: 'session',
+      revision: 2,
+      comments: input,
+      currentReview: null,
+    );
     input.clear();
     expect(snapshot.comments, [first, second]);
     expect(() => snapshot.comments.clear(), throwsUnsupportedError);
@@ -70,12 +86,22 @@ void main() {
       [second, first],
     ]) {
       expect(
-        () => ReviewDraftSnapshot(sessionId: 'session', comments: comments),
+        () => ReviewDraftSnapshot(
+          sessionId: 'session',
+          revision: 2,
+          comments: comments,
+          currentReview: null,
+        ),
         throwsArgumentError,
       );
     }
     expect(
-      ReviewDraftSnapshot(sessionId: 'session', comments: []).comments,
+      ReviewDraftSnapshot(
+        sessionId: 'session',
+        revision: 0,
+        comments: [],
+        currentReview: null,
+      ).comments,
       isEmpty,
     );
   });
@@ -124,7 +150,12 @@ void main() {
       for (final value in _invalidIdentities()) {
         expect(() => _comment(id: value), throwsArgumentError);
         expect(
-          () => ReviewDraftSnapshot(sessionId: value, comments: []),
+          () => ReviewDraftSnapshot(
+            sessionId: value,
+            revision: 0,
+            comments: [],
+            currentReview: null,
+          ),
           throwsArgumentError,
         );
       }
@@ -165,17 +196,149 @@ void main() {
     expect(range.endLine - range.startLine + 1, ReviewDraftLimits.maxLineRange);
   });
 
+  test('handoff summaries validate status, identities and attempt bounds', () {
+    for (final status in ReviewSubmissionStatus.values) {
+      final accepted = status.index >= ReviewSubmissionStatus.accepted.index;
+      final attempted =
+          status.index >= ReviewSubmissionStatus.schedulingPending.index;
+      final value = ReviewSubmissionSummary(
+        submissionId: 'review-1',
+        status: status,
+        commentCount: 1,
+        schedulingAttempt: attempted ? 1 : 0,
+        occurrenceId: accepted ? 'entry-1' : null,
+        runId: status == ReviewSubmissionStatus.scheduled ? 'run-1' : null,
+      );
+      expect(value.status, status);
+    }
+    for (final count in [0, 129]) {
+      expect(
+        () => ReviewSubmissionSummary(
+          submissionId: 'r',
+          status: ReviewSubmissionStatus.prepared,
+          commentCount: count,
+          schedulingAttempt: 0,
+          occurrenceId: null,
+          runId: null,
+        ),
+        throwsArgumentError,
+      );
+    }
+    for (final attempt in [-1, ReviewDraftLimits.maxSequence + 1]) {
+      expect(
+        () => ReviewSubmissionSummary(
+          submissionId: 'r',
+          status: ReviewSubmissionStatus.accepted,
+          commentCount: 1,
+          schedulingAttempt: attempt,
+          occurrenceId: 'entry',
+          runId: null,
+        ),
+        throwsArgumentError,
+      );
+    }
+    expect(
+      () => ReviewSubmissionSummary(
+        submissionId: 'r',
+        status: ReviewSubmissionStatus.schedulingPending,
+        commentCount: 1,
+        schedulingAttempt: 0,
+        occurrenceId: 'entry',
+        runId: null,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => ReviewSubmissionSummary(
+        submissionId: 'r',
+        status: ReviewSubmissionStatus.prepared,
+        commentCount: 1,
+        schedulingAttempt: 0,
+        occurrenceId: 'entry',
+        runId: null,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => ReviewSubmissionSummary(
+        submissionId: 'r',
+        status: ReviewSubmissionStatus.scheduled,
+        commentCount: 1,
+        schedulingAttempt: 1,
+        occurrenceId: 'entry',
+        runId: null,
+      ),
+      throwsArgumentError,
+    );
+    for (final revision in [-1, ReviewDraftLimits.maxVersion + 1]) {
+      expect(
+        () => ReviewDraftSnapshot(
+          sessionId: 's',
+          revision: revision,
+          comments: [],
+          currentReview: null,
+        ),
+        throwsArgumentError,
+      );
+    }
+  });
+
+  test('preparation result has exactly one success or fixed rejection', () {
+    final submission = _Service()._setReview(ReviewSubmissionStatus.prepared);
+    final success = ReviewPreparationResult(
+      submission: submission,
+      rejectionCode: null,
+    );
+    expect(identical(success.submission, submission), isTrue);
+    expect(success.rejectionCode, isNull);
+    for (final code in _rejectionCodes) {
+      final rejected = ReviewPreparationResult(
+        submission: null,
+        rejectionCode: code,
+      );
+      expect(rejected.submission, isNull);
+      expect(rejected.rejectionCode, code);
+      expect(
+        () => ReviewPreparationResult(
+          submission: submission,
+          rejectionCode: code,
+        ),
+        throwsArgumentError,
+      );
+    }
+    for (final code in [
+      null,
+      '',
+      'limit_exceeded',
+      'outcome_uncertain',
+      'storage_unavailable',
+      'diagnostics ${'x' * 1024}',
+    ]) {
+      expect(
+        () => ReviewPreparationResult(submission: null, rejectionCode: code),
+        throwsArgumentError,
+      );
+    }
+  });
+
   test('comment count and combined charge are independent finite limits', () {
     final small = [
       for (var i = 1; i <= 128; i++) _comment(id: 'c$i', sequence: i),
     ];
     expect(
-      ReviewDraftSnapshot(sessionId: 's', comments: small).comments,
+      ReviewDraftSnapshot(
+        sessionId: 's',
+        revision: 128,
+        comments: small,
+        currentReview: null,
+      ).comments,
       small,
     );
     expect(
       () => ReviewDraftSnapshot(
         sessionId: 's',
+        revision: 129,
+        currentReview: null,
         comments: [
           ...small,
           _comment(id: 'c129', sequence: 129),
@@ -194,7 +357,12 @@ void main() {
     ];
     expect(reviewDraftSnapshotCharge('s', large), greaterThan(512 * 1024));
     expect(
-      () => ReviewDraftSnapshot(sessionId: 's', comments: large),
+      () => ReviewDraftSnapshot(
+        sessionId: 's',
+        revision: 10,
+        comments: large,
+        currentReview: null,
+      ),
       throwsArgumentError,
     );
     expect(reviewDraftSnapshotCharge('session', []), 256 + 6 * 7);
@@ -242,7 +410,12 @@ void main() {
       ReviewDraftLimits.maxSnapshotCharge,
     );
     expect(
-      ReviewDraftSnapshot(sessionId: 's', comments: comments).comments,
+      ReviewDraftSnapshot(
+        sessionId: 's',
+        revision: 8,
+        comments: comments,
+        currentReview: null,
+      ).comments,
       comments,
     );
     final last = comments.last;
@@ -253,7 +426,12 @@ void main() {
       anchor: _anchor({'sourceExcerpt': '${last.anchor.sourceExcerpt}x'}),
     );
     expect(
-      () => ReviewDraftSnapshot(sessionId: 's', comments: comments),
+      () => ReviewDraftSnapshot(
+        sessionId: 's',
+        revision: 8,
+        comments: comments,
+        currentReview: null,
+      ),
       throwsArgumentError,
     );
   });
@@ -348,6 +526,46 @@ void main() {
               data['expectedVersion']! as int,
             );
             return null;
+          case 'prepare':
+            return client.prepareReview(
+              sessionId,
+              data['expectedRevision']! as int,
+            );
+          case 'readReview':
+            return client.readReview(sessionId);
+          case 'delivery':
+            return client.markDeliveryAttempted(
+              sessionId,
+              data['submissionId']! as String,
+            );
+          case 'acceptance':
+            return client.confirmAcceptance(
+              sessionId,
+              data['submissionId']! as String,
+              data['receiptSessionId']! as String,
+              data['occurrenceId']! as String,
+            );
+          case 'scheduling':
+            return client.markSchedulingAttempted(
+              sessionId,
+              data['submissionId']! as String,
+              data['occurrenceId']! as String,
+            );
+          case 'scheduled':
+            return client.confirmRunScheduled(
+              sessionId,
+              data['submissionId']! as String,
+              data['occurrenceId']! as String,
+              data['expectedAttempt']! as int,
+              data['runId']! as String,
+            );
+          case 'notStarted':
+            return client.confirmRunNotStarted(
+              sessionId,
+              data['submissionId']! as String,
+              data['occurrenceId']! as String,
+              data['expectedAttempt']! as int,
+            );
         }
         throw StateError('Unknown test operation.');
       }
@@ -355,6 +573,122 @@ void main() {
       Future<Object?> raw(String method, Map<String, Object?> payload) => eval
           ? runEval('raw', {'method': method, 'payload': payload})
           : channel.request(method, payload);
+
+      test(
+        'preparation returns exact success or typed pre-write rejection',
+        () async {
+          for (final code in <String?>[..._rejectionCodes, null]) {
+            service.preparationRejection = code;
+            final result = await invoke('prepare', _request);
+            final expected = <String, Object?>{
+              'submission': code == null
+                  ? <String, Object?>{
+                      'sessionId': 'session',
+                      'submissionId': 'review-1',
+                      'canonicalPayload': _payload,
+                      'status': 'prepared',
+                      'commentCount': 1,
+                      'schedulingAttempt': 0,
+                      'occurrenceId': null,
+                      'runId': null,
+                    }
+                  : null,
+              'rejectionCode': code,
+            };
+            expect(channel.method, reviewDraftServicePrepareReviewId);
+            expect(channel.payload, {
+              'sessionId': 'session',
+              'expectedRevision': 1,
+            });
+            expect(channel.response, expected);
+            if (eval) {
+              expect(result, expected);
+            } else {
+              final preparation = result! as ReviewPreparationResult;
+              expect(preparation.rejectionCode, code);
+              if (code == null) {
+                expect(preparation.submission!.canonicalPayload, _payload);
+              } else {
+                expect(preparation.submission, isNull);
+                expect(service.review, isNull);
+              }
+            }
+          }
+        },
+      );
+
+      test('preparation response requires both nullable wire fields', () async {
+        for (final replacement in <Map<String, Object?>>[
+          {'submission': null},
+          {'rejectionCode': 'empty_review'},
+          {'submission': null, 'rejectionCode': 'empty_review', 'extra': true},
+          if (!eval) ...[
+            {'submission': null, 'rejectionCode': null},
+            {'submission': null, 'rejectionCode': 'outcome_uncertain'},
+          ],
+        ]) {
+          channel.replacement = replacement;
+          await expectLater(
+            invoke('prepare', _request),
+            throwsA(
+              eval ? isA<$InstanceImpl>() : isA<AdeleProtocolException>(),
+            ),
+          );
+        }
+      });
+
+      test(
+        'handoff methods roundtrip exact payload and required nullable state',
+        () async {
+          expect(await invoke('readReview', _request), isNull);
+          await invoke('prepare', _request);
+          for (final (operation, status, attempt) in [
+            ('readReview', 'prepared', 0),
+            ('delivery', 'deliveryPending', 0),
+            ('acceptance', 'accepted', 0),
+            ('scheduling', 'schedulingPending', 1),
+            ('notStarted', 'accepted', 1),
+            ('scheduling', 'schedulingPending', 2),
+            ('scheduled', 'scheduled', 2),
+            ('readReview', 'scheduled', 2),
+          ]) {
+            final result = await invoke(operation, {
+              ..._request,
+              'expectedAttempt': attempt,
+            });
+            final expected = <String, Object?>{
+              'sessionId': 'session',
+              'submissionId': 'review-1',
+              'canonicalPayload': _payload,
+              'status': status,
+              'commentCount': 1,
+              'schedulingAttempt': attempt,
+              'occurrenceId': ['prepared', 'deliveryPending'].contains(status)
+                  ? null
+                  : 'entry-1',
+              'runId': status == 'scheduled' ? 'run-1' : null,
+            };
+            expect(channel.response, expected);
+            if (eval) {
+              expect(result, expected);
+            } else {
+              expect(
+                (result! as PreparedReviewSubmission).canonicalPayload,
+                _payload,
+              );
+            }
+          }
+          await invoke('snapshot', _request);
+          expect((channel.response! as Map)['currentReview'], {
+            'submissionId': 'review-1',
+            'status': 'scheduled',
+            'commentCount': 1,
+            'schedulingAttempt': 2,
+            'occurrenceId': 'entry-1',
+            'runId': 'run-1',
+          });
+        },
+      );
 
       test(
         'all methods roundtrip exact text, enums, anchors and counters',
@@ -407,6 +741,8 @@ void main() {
               expect(channel.payload, {'sessionId': 'session-\u03bb'});
               expect(channel.response, {
                 'sessionId': 'session-\u03bb',
+                'revision': 1,
+                'currentReview': null,
                 'comments': [created],
               });
               if (eval) {
@@ -452,6 +788,8 @@ void main() {
               await invoke('snapshot', {'sessionId': 'session-\u03bb'});
               expect(channel.response, {
                 'sessionId': 'session-\u03bb',
+                'revision': 1,
+                'currentReview': null,
                 'comments': <Object?>[],
               });
             }
@@ -477,6 +815,13 @@ void main() {
                 'create',
                 'update',
                 'delete',
+                'prepare',
+                'readReview',
+                'delivery',
+                'acceptance',
+                'scheduling',
+                'scheduled',
+                'notStarted',
               ]) {
                 await expectLater(
                   invoke(operation, _request),
@@ -584,6 +929,54 @@ void main() {
               'expectedVersion': 1,
             },
           ),
+          (
+            reviewDraftServicePrepareReviewId,
+            <String, Object?>{'sessionId': 'session', 'expectedRevision': 1},
+          ),
+          (
+            reviewDraftServiceReadReviewId,
+            <String, Object?>{'sessionId': 'session'},
+          ),
+          (
+            reviewDraftServiceMarkDeliveryAttemptedId,
+            <String, Object?>{'sessionId': 'session', 'submissionId': 'r'},
+          ),
+          (
+            reviewDraftServiceConfirmAcceptanceId,
+            <String, Object?>{
+              'sessionId': 'session',
+              'submissionId': 'r',
+              'receiptSessionId': 'session',
+              'occurrenceId': 'e',
+            },
+          ),
+          (
+            reviewDraftServiceMarkSchedulingAttemptedId,
+            <String, Object?>{
+              'sessionId': 'session',
+              'submissionId': 'r',
+              'occurrenceId': 'e',
+            },
+          ),
+          (
+            reviewDraftServiceConfirmRunScheduledId,
+            <String, Object?>{
+              'sessionId': 'session',
+              'submissionId': 'r',
+              'occurrenceId': 'e',
+              'expectedAttempt': 1,
+              'runId': 'run-1',
+            },
+          ),
+          (
+            reviewDraftServiceConfirmRunNotStartedId,
+            <String, Object?>{
+              'sessionId': 'session',
+              'submissionId': 'r',
+              'occurrenceId': 'e',
+              'expectedAttempt': 1,
+            },
+          ),
         ]) {
           for (final payload in [
             for (final field in valid.keys) ...[
@@ -642,6 +1035,8 @@ void main() {
           ]) {
             channel.replacement = {
               'sessionId': 'session',
+              'revision': 1,
+              'currentReview': null,
               'comments': [
                 {...comment, 'anchor': anchor},
               ],
@@ -750,7 +1145,16 @@ const _request = <String, Object?>{
   'expectedVersion': 1,
   'anchor': _anchorWire,
   'text': _text,
+  'expectedRevision': 1,
+  'submissionId': 'review-1',
+  'receiptSessionId': 'session',
+  'occurrenceId': 'entry-1',
+  'expectedAttempt': 1,
+  'runId': 'run-1',
 };
+
+// Envelope transport deliberately treats this fixture as opaque exact bytes.
+const _payload = '{"opaque":"  \\r\\n\\u03bb  "}';
 
 final _malformedUnicode = [
   String.fromCharCode(0xd800),
@@ -865,6 +1269,8 @@ PendingReviewComment _comment({
 
 class _Service implements ReviewDraftService {
   final comments = <PendingReviewComment>[];
+  PreparedReviewSubmission? review;
+  String? preparationRejection;
   Object? failure;
   int calls = 0;
 
@@ -876,7 +1282,21 @@ class _Service implements ReviewDraftService {
   @override
   Future<ReviewDraftSnapshot> snapshot(String sessionId) async {
     _enter();
-    return ReviewDraftSnapshot(sessionId: sessionId, comments: comments);
+    return ReviewDraftSnapshot(
+      sessionId: sessionId,
+      revision: 1,
+      comments: comments,
+      currentReview: review == null
+          ? null
+          : ReviewSubmissionSummary(
+              submissionId: review!.submissionId,
+              status: review!.status,
+              commentCount: review!.commentCount,
+              occurrenceId: review!.occurrenceId,
+              schedulingAttempt: review!.schedulingAttempt,
+              runId: review!.runId,
+            ),
+    );
   }
 
   @override
@@ -916,6 +1336,102 @@ class _Service implements ReviewDraftService {
   ) async {
     _enter();
     comments.clear();
+  }
+
+  PreparedReviewSubmission _setReview(
+    ReviewSubmissionStatus status, {
+    int? attempt,
+  }) => review = PreparedReviewSubmission(
+    sessionId: 'session',
+    submissionId: 'review-1',
+    canonicalPayload: _payload,
+    status: status,
+    commentCount: 1,
+    schedulingAttempt: attempt ?? review?.schedulingAttempt ?? 0,
+    occurrenceId: status.index >= ReviewSubmissionStatus.accepted.index
+        ? 'entry-1'
+        : null,
+    runId: status == ReviewSubmissionStatus.scheduled ? 'run-1' : null,
+  );
+
+  @override
+  Future<ReviewPreparationResult> prepareReview(
+    String sessionId,
+    int expectedRevision,
+  ) async {
+    _enter();
+    if (preparationRejection != null) {
+      return ReviewPreparationResult(
+        submission: null,
+        rejectionCode: preparationRejection,
+      );
+    }
+    return ReviewPreparationResult(
+      submission: _setReview(ReviewSubmissionStatus.prepared),
+      rejectionCode: null,
+    );
+  }
+
+  @override
+  Future<PreparedReviewSubmission?> readReview(String sessionId) async {
+    _enter();
+    return review;
+  }
+
+  @override
+  Future<PreparedReviewSubmission> markDeliveryAttempted(
+    String sessionId,
+    String submissionId,
+  ) async {
+    _enter();
+    return _setReview(ReviewSubmissionStatus.deliveryPending);
+  }
+
+  @override
+  Future<PreparedReviewSubmission> confirmAcceptance(
+    String sessionId,
+    String submissionId,
+    String receiptSessionId,
+    String occurrenceId,
+  ) async {
+    _enter();
+    return _setReview(ReviewSubmissionStatus.accepted);
+  }
+
+  @override
+  Future<PreparedReviewSubmission> markSchedulingAttempted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+  ) async {
+    _enter();
+    return _setReview(
+      ReviewSubmissionStatus.schedulingPending,
+      attempt: review!.schedulingAttempt + 1,
+    );
+  }
+
+  @override
+  Future<PreparedReviewSubmission> confirmRunScheduled(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+    String runId,
+  ) async {
+    _enter();
+    return _setReview(ReviewSubmissionStatus.scheduled);
+  }
+
+  @override
+  Future<PreparedReviewSubmission> confirmRunNotStarted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+  ) async {
+    _enter();
+    return _setReview(ReviewSubmissionStatus.accepted);
   }
 }
 
@@ -990,17 +1506,58 @@ Map<String, Object?> describe(PendingReviewComment comment) {
   };
 }
 
+String statusName(ReviewSubmissionStatus status) {
+  if (status == ReviewSubmissionStatus.prepared) return 'prepared';
+  if (status == ReviewSubmissionStatus.deliveryPending) return 'deliveryPending';
+  if (status == ReviewSubmissionStatus.accepted) return 'accepted';
+  if (status == ReviewSubmissionStatus.schedulingPending) return 'schedulingPending';
+  return 'scheduled';
+}
+
+Map<String, Object?> describeSummary(ReviewSubmissionSummary value) => {
+  'submissionId': value.submissionId, 'status': statusName(value.status),
+  'commentCount': value.commentCount, 'schedulingAttempt': value.schedulingAttempt,
+  'occurrenceId': value.occurrenceId, 'runId': value.runId,
+};
+
+Map<String, Object?> describeReview(PreparedReviewSubmission value) => {
+  'sessionId': value.sessionId, 'submissionId': value.submissionId,
+  'canonicalPayload': value.canonicalPayload, 'status': statusName(value.status),
+  'commentCount': value.commentCount, 'schedulingAttempt': value.schedulingAttempt,
+  'occurrenceId': value.occurrenceId, 'runId': value.runId,
+};
+
+Map<String, Object?> describePreparation(ReviewPreparationResult result) {
+  // Keep nullable maps boxed as Object? under the pinned evaluator.
+  Object? submission = null;
+  if (result.submission != null) {
+    submission = describeReview(result.submission!);
+  }
+  return {'submission': submission, 'rejectionCode': result.rejectionCode};
+}
+
 Future<String> run(Function send, String operation, String wire) async {
   final data = jsonDecode(wire);
   final ReviewDraftServiceClient client = ReviewDraftServiceClient(Channel(send));
   if (operation == 'raw') {
     return jsonEncode(await Channel(send).request(data['method'], data['payload']));
   }
+  if (operation == 'readReview') {
+    final review = await client.readReview(data['sessionId']);
+    if (review == null) return 'null';
+    return jsonEncode(describeReview(review));
+  }
+  if (operation == 'prepare') return jsonEncode(describePreparation(await client.prepareReview(data['sessionId'],data['expectedRevision'])));
+  if (operation == 'delivery') return jsonEncode(describeReview(await client.markDeliveryAttempted(data['sessionId'],data['submissionId'])));
+  if (operation == 'acceptance') return jsonEncode(describeReview(await client.confirmAcceptance(data['sessionId'],data['submissionId'],data['receiptSessionId'],data['occurrenceId'])));
+  if (operation == 'scheduling') return jsonEncode(describeReview(await client.markSchedulingAttempted(data['sessionId'],data['submissionId'],data['occurrenceId'])));
+  if (operation == 'scheduled') return jsonEncode(describeReview(await client.confirmRunScheduled(data['sessionId'],data['submissionId'],data['occurrenceId'],data['expectedAttempt'],data['runId'])));
+  if (operation == 'notStarted') return jsonEncode(describeReview(await client.confirmRunNotStarted(data['sessionId'],data['submissionId'],data['occurrenceId'],data['expectedAttempt'])));
   if (operation == 'snapshot') {
     final snapshot = await client.snapshot(data['sessionId']);
     final items = <PendingReviewComment>[];
     items.addAll(snapshot.comments);
-    final copy = ReviewDraftSnapshot(sessionId: snapshot.sessionId, comments: items);
+    final copy = ReviewDraftSnapshot(sessionId: snapshot.sessionId, revision: snapshot.revision, comments: items, currentReview: snapshot.currentReview);
     items.clear();
     snapshot.comments.clear();
     copy.comments.clear();
@@ -1008,7 +1565,13 @@ Future<String> run(Function send, String operation, String wire) async {
     for (final comment in copy.comments) {
       descriptions.add(describe(comment));
     }
-    return jsonEncode({'sessionId': snapshot.sessionId, 'comments': descriptions});
+    // The pin misboxes a null/Map conditional as an unconditional BoxMap.
+    Object? currentReview = null;
+    if (copy.currentReview != null) {
+      currentReview = describeSummary(copy.currentReview!);
+    }
+    return jsonEncode({'sessionId': snapshot.sessionId, 'revision': snapshot.revision, 'comments': descriptions,
+      'currentReview': currentReview});
   }
   if (operation == 'create') {
     final value = data['anchor'];

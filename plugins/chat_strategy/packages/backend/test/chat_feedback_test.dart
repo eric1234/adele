@@ -37,6 +37,217 @@ void main() {
     String session = 'session',
   }) => feedback.lookup(chatStrategyRouteId, session, submissionId);
 
+  ChatRemoteOrchestrationBackend guardedBackend(ChatSessionStore sessions) {
+    final backend = ChatRemoteOrchestrationBackend(
+      sessions: sessions,
+      maxModelInvocations: 8,
+      hostChannel: (_) => throw StateError('No execution expected.'),
+    );
+    addTearDown(backend.close);
+    return backend;
+  }
+
+  test(
+    'expected feedback retains durable association without starting',
+    () async {
+      final receipt = await accept(_submission());
+      final backend = guardedBackend(store);
+      final expected = RemoteExpectedSessionFeedback.fromLocal(receipt);
+      final execution = await backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'accepted-run',
+        expected,
+      );
+      expect((await lookup('review'))!.runId, 'accepted-run');
+      expect(_identity(await accept(_submission())), _identity(receipt));
+      await backend.release(execution);
+
+      // Repeating the exact Run association is allowed, never another Run.
+      final repeated = await backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'accepted-run',
+        expected,
+      );
+      await backend.release(repeated);
+      final reopenedStore = ChatSessionStore(storage: storage);
+      final reopened = guardedBackend(reopenedStore);
+      final durable = await ChatSessionFeedbackService(
+        reopenedStore,
+      ).lookup(chatStrategyRouteId, 'session', 'review');
+      expect(durable!.runId, 'accepted-run');
+      await expectLater(
+        reopened.materialize(
+          chatStrategyRouteId,
+          _session,
+          'duplicate',
+          expected,
+        ),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect((await lookup('review'))!.runId, 'accepted-run');
+      expect((await chat.snapshot('session')).entries, hasLength(1));
+    },
+  );
+
+  for (final laterFeedback in [false, true]) {
+    test(
+      'superseded feedback never associates later input ($laterFeedback)',
+      () async {
+        final receipt = await accept(_submission());
+        if (laterFeedback) {
+          await accept(_submission(id: 'later'));
+        } else {
+          await chat.appendUserMessage('session', 'Unrelated later input.');
+        }
+        final backend = guardedBackend(store);
+        final writes = storage.transactions;
+        await expectLater(
+          backend.materialize(
+            chatStrategyRouteId,
+            _session,
+            'must-not-associate',
+            RemoteExpectedSessionFeedback.fromLocal(receipt),
+          ),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        expect(storage.transactions, writes);
+        expect((await lookup('review'))!.runId, isNull);
+        expect((await chat.snapshot('session')).entries.map((e) => e.runId), [
+          null,
+          null,
+        ]);
+        // The normal null-input path is unchanged and can use the latest input.
+        final ordinary = await backend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'ordinary-run',
+          null,
+        );
+        expect(
+          (await chat.snapshot('session')).entries.last.runId,
+          'ordinary-run',
+        );
+        expect((await lookup('review'))!.runId, isNull);
+        await backend.release(ordinary);
+      },
+    );
+  }
+
+  test(
+    'expected receipt must identify its exact accepted submission',
+    () async {
+      await accept(_submission());
+      final backend = guardedBackend(store);
+      for (final expected in [
+        RemoteExpectedSessionFeedback(
+          submissionId: 'absent',
+          occurrenceId: 'entry-0',
+        ),
+        RemoteExpectedSessionFeedback(
+          submissionId: 'review',
+          occurrenceId: 'entry-1',
+        ),
+      ]) {
+        await expectLater(
+          backend.materialize(
+            chatStrategyRouteId,
+            _session,
+            'wrong-run',
+            expected,
+          ),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+      }
+      expect((await lookup('review'))!.runId, isNull);
+      await chat.appendUserMessage('session', 'Claim released.');
+    },
+  );
+
+  test(
+    'cross-generation supersession races fail the atomic association CAS',
+    () async {
+      final receipt = await accept(_submission());
+      final backend = guardedBackend(store);
+      final entered = Completer<void>();
+      final gate = Completer<void>();
+      storage.beforeTransaction = () {
+        entered.complete();
+        return gate.future;
+      };
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      final materializing = backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'stale-run',
+        RemoteExpectedSessionFeedback.fromLocal(receipt),
+      );
+      final rejected = expectLater(materializing, throwsStateError);
+      await entered.future;
+      storage.beforeTransaction = null;
+      await ChatSessionBackend(
+        ChatSessionStore(storage: storage),
+      ).appendUserMessage('session', 'Won before the association transaction.');
+      gate.complete();
+      await rejected;
+      expect((await lookup('review'))!.runId, isNull);
+      expect((await chat.snapshot('session')).entries.map((e) => e.runId), [
+        null,
+        null,
+      ]);
+    },
+  );
+
+  test(
+    'lost association acknowledgement refreshes cache and forbids another Run',
+    () async {
+      final receipt = await accept(_submission());
+      final backend = guardedBackend(store);
+      final entered = Completer<void>();
+      final acknowledgement = Completer<void>();
+      addTearDown(() {
+        storage.afterCommit = null;
+        if (!acknowledgement.isCompleted) acknowledgement.complete();
+      });
+      storage.afterCommit = () {
+        entered.complete();
+        return acknowledgement.future;
+      };
+      final materializing = backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'committed-run',
+        RemoteExpectedSessionFeedback.fromLocal(receipt),
+      );
+      final rejected = expectLater(materializing, throwsStateError);
+      await entered.future;
+      expect((await lookup('review'))!.runId, 'committed-run');
+      expect((await chat.snapshot('session')).entries.single.runId, isNull);
+      acknowledgement.completeError(
+        StateError('Lost association acknowledgement.'),
+      );
+      await rejected;
+      storage.afterCommit = null;
+      expect(
+        (await chat.snapshot('session')).entries.single.runId,
+        'committed-run',
+      );
+      await expectLater(
+        backend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'must-not-retry',
+          RemoteExpectedSessionFeedback.fromLocal(receipt),
+        ),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect((await lookup('review'))!.runId, 'committed-run');
+    },
+  );
+
   test(
     'native strategy target retains feedback independently of Run budgets',
     () async {
@@ -369,6 +580,7 @@ void main() {
         chatStrategyRouteId,
         _session,
         'run',
+        null,
       );
       final writes = storage.transactions;
       expect(_identity((await lookup('review'))!.receipt), _identity(receipt));
@@ -410,6 +622,7 @@ void main() {
         chatStrategyRouteId,
         _session,
         'old-run',
+        null,
       );
       final independent = ChatSessionFeedbackService(
         ChatSessionStore(storage: storage),
@@ -427,6 +640,7 @@ void main() {
         chatStrategyRouteId,
         _session,
         'new-run',
+        null,
       );
       expect(state.snapshot().entries.single.runId, 'new-run');
       await backend.release(next);
@@ -552,6 +766,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
           chatStrategyRouteId,
           _session,
           'racing-run',
+          null,
         ),
         'append' => chat.appendUserMessage('session', 'Must not append.'),
         'setDraft' => chat.setDraftRequest('session', 'Must not replace.'),
@@ -572,6 +787,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
         chatStrategyRouteId,
         _session,
         'explicit-run',
+        null,
       );
       expect(state.snapshot().entries.single.runId, 'explicit-run');
       await backend.release(execution);
@@ -594,6 +810,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
                 chatStrategyRouteId,
                 _session,
                 'old-run',
+                null,
               )
             : null;
         final independent = ChatSessionFeedbackService(
@@ -618,6 +835,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
           chatStrategyRouteId,
           _session,
           'next-run',
+          null,
         );
         expect(state.snapshot().entries.single.runId, 'next-run');
         await backend.release(next);
@@ -856,6 +1074,7 @@ BEGIN SELECT RAISE(ABORT, 'private SQL failure'); END;
         chatStrategyRouteId,
         _session,
         'run',
+        null,
       );
       storage.database.execute(
         "UPDATE adele_chat_entries SET run_id = ' invalid ' ",

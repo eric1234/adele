@@ -29,6 +29,37 @@ enum RemoteModelIncompleteReason { outputLimit, contextLimit, other }
 
 enum RemoteStrategyToolResultKind { waiting, continuation }
 
+/// Expected input within the separately supplied canonical Session.
+@AdeleValue('orchestration.expectedSessionFeedback')
+final class RemoteExpectedSessionFeedback {
+  RemoteExpectedSessionFeedback({
+    required this.submissionId,
+    required this.occurrenceId,
+  }) {
+    local.validateSessionFeedbackIdentity(submissionId);
+    local.validateSessionFeedbackIdentity(occurrenceId);
+  }
+
+  final String submissionId;
+  final String occurrenceId;
+
+  static RemoteExpectedSessionFeedback? fromLocal(
+    local.SessionFeedbackReceipt? receipt,
+  ) => receipt == null
+      ? null
+      : RemoteExpectedSessionFeedback(
+          submissionId: receipt.submissionId,
+          occurrenceId: receipt.occurrenceId,
+        );
+
+  local.SessionFeedbackReceipt toLocal(String sessionId) =>
+      local.SessionFeedbackReceipt(
+        submissionId: submissionId,
+        sessionId: sessionId,
+        occurrenceId: occurrenceId,
+      );
+}
+
 @AdeleValue('orchestration.session')
 final class RemoteOrchestrationSession {
   RemoteOrchestrationSession({
@@ -556,6 +587,7 @@ abstract interface class RemoteOrchestrationService {
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
+    RemoteExpectedSessionFeedback? expectedFeedback,
   );
 
   @AdeleMethod('start')

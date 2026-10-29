@@ -4,12 +4,15 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/application_plugin_bootstrap.dart';
+import '../core/product_lifecycle.dart';
 import '../ui/execution/session_execution_controller.dart';
 import '../ui/inspection/activity_inspection_selection.dart';
 import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 import 'session_execution_bridge.dart';
 import 'session_execution_source.dart';
+import 'session_feedback_bridge.dart';
+import 'session_feedback_source.dart';
 
 /// Opt-in services for an actual presentation, never a renderer selection or an
 /// execution owner. Registration and backend origins retain their exact identity.
@@ -22,10 +25,13 @@ final class PreparedSessionServices {
     required this.isCurrent,
     this.isInteractive,
     this.lookupControllerForSession,
+    this.lifecycle,
   });
 
   final ExtensionRegistry extensions;
   final ApplicationPluginBootstrap backends;
+  final ProductLifecycleCoordinator? lifecycle;
+  final _feedbackAdmissions = SessionFeedbackAdmissions();
   final SessionExecutionController Function(
     Session,
     ResolvedOrchestrationStrategy?,
@@ -167,6 +173,30 @@ final class PreparedSessionServices {
     }
 
     return PreparedFrontendBridges([
+      if (descriptor.sessionFeedback)
+        SessionFeedbackBridge(
+          source: lifecycle == null
+              ? null
+              : SessionFeedbackPresentationSource(
+                  session: session,
+                  lifecycle: lifecycle!,
+                  admissions: _feedbackAdmissions,
+                  controllerForSession: () =>
+                      controllerForSession(session, null),
+                  lookupControllerForSession: () =>
+                      lookupControllerForSession?.call(session),
+                  validateAttachment: () {
+                    validateView();
+                    if (!(isInteractive ?? isCurrent)(session)) {
+                      throw StateError(
+                        'The Session attachment is not interactive.',
+                      );
+                    }
+                    // Feedback permission belongs to this mounted pane, independently
+                    // of optional owning-backend/comment and Git capability services.
+                  },
+                ),
+        ),
       if (descriptor.sessionExecution)
         SessionExecutionBridge(
           source: SessionExecutionPresentationSource(

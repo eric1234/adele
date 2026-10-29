@@ -8,6 +8,8 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
+import '../../../tools/stock_frontend_descriptors.dart';
+
 void main() {
   late Directory temporary;
   late Directory root;
@@ -513,6 +515,7 @@ void main() {
       expect(session.entrypoint, _session['entrypoint']);
       expect(session.initialize, _session['initialize']);
       expect(session.sessionExecution, isFalse);
+      expect(session.sessionFeedback, isFalse);
       expect(session.backendServices, isEmpty);
       expect(session.optionalBackendServices, isEmpty);
       expect(session.capabilities, isEmpty);
@@ -861,6 +864,7 @@ void main() {
     bool nativeCodeEditor = false,
     bool environmentTextFiles = false,
     bool canRequestSourceDisplay = false,
+    bool sessionFeedback = false,
   }) => PreparedMainContentPresentation(
     extensionId: ExtensionId('org.example.main-content'),
     order: 200,
@@ -880,6 +884,77 @@ void main() {
     nativeCodeEditor: nativeCodeEditor,
     environmentTextFiles: environmentTextFiles,
     canRequestSourceDisplay: canRequestSourceDisplay,
+    sessionFeedback: sessionFeedback,
+  );
+
+  test('Session feedback defaults denied without an explicit declaration', () {
+    expect(mainContent().sessionFeedback, isFalse);
+    expect(mainContent().toJson()['sessionFeedback'], isFalse);
+  });
+
+  for (final granted in [false, true]) {
+    test(
+      'Session feedback is an independent roundtripped opt-in $granted',
+      () async {
+        final descriptor = mainContent(sessionFeedback: granted);
+        await install(
+          'feedback',
+          _manifest(
+            components: {
+              'frontend': _frontend(presentations: [descriptor.toJson()]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        final parsed =
+            installation.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(parsed.sessionFeedback, granted);
+        expect(parsed.toJson(), descriptor.toJson());
+        expect(installation.backendArtifactUri, isNull);
+        expect(parsed.sessionExecution, isFalse);
+        expect(parsed.backendServices, isEmpty);
+        expect(parsed.optionalBackendServices, isEmpty);
+        expect(parsed.strategyAffinity, PreparedStrategyAffinity.independent);
+        expect(parsed.actions, isEmpty);
+        expect(parsed.operations, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'stock Diff alone opts into Session feedback without execution affinity',
+    () async {
+      for (final entry in stockFrontendDescriptors.entries) {
+        await install(
+          entry.key,
+          _manifest(
+            id: entry.key,
+            components: {'frontend': _frontend(presentations: entry.value)},
+          ),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final optedIn = [
+        for (final installation in catalog.installations)
+          for (final descriptor in installation.frontend!.presentations)
+            if (descriptor is PreparedMainContentPresentation &&
+                descriptor.sessionFeedback)
+              (installation, descriptor),
+      ];
+      expect(optedIn, hasLength(1));
+      expect(optedIn.single.$1.metadata.id, PluginId('dev.adele.diff-viewer'));
+      expect(optedIn.single.$2.sessionExecution, isFalse);
+      expect(
+        optedIn.single.$2.strategyAffinity,
+        PreparedStrategyAffinity.independent,
+      );
+      expect(optedIn.single.$2.backendServices, isEmpty);
+      expect(optedIn.single.$2.optionalBackendServices, ['diff.reviewDraft']);
+    },
   );
 
   for (final granted in [false, true]) {
@@ -1082,6 +1157,7 @@ void main() {
                 initialize: 'initializePanes',
                 entrypoint: 'buildPane',
                 sessionExecution: true,
+                sessionFeedback: true,
                 backendServices: ['org.example.session'],
                 optionalBackendServices: ['org.example.optional'],
                 capabilities: [contextFree, contextual.first],
@@ -1110,6 +1186,7 @@ void main() {
           ..._mainContent,
           'order': populated ? -10 : 200,
           'sessionExecution': populated,
+          'sessionFeedback': populated,
           'backendServices': populated ? ['org.example.session'] : <String>[],
           'optionalBackendServices': populated
               ? ['org.example.optional']
@@ -1314,6 +1391,7 @@ void main() {
       'nativeCodeEditor',
       'environmentTextFiles',
       'canRequestSourceDisplay',
+      'sessionFeedback',
     ])
       for (final value in <Object?>[null, 'true', 1, [], {}])
         'invalid $field ${jsonEncode(value)}': {..._mainContent, field: value},

@@ -308,8 +308,17 @@ void main() {
     final ExtensionRegistry registry = ExtensionRegistry();
     final Session session = _session(strategyId);
     final _TestHost host = _TestHost(session.id);
+    final expectedFeedback = SessionFeedbackReceipt(
+      submissionId: 'review',
+      sessionId: session.id.value,
+      occurrenceId: 'occurrence',
+    );
     final OrchestrationStrategyHostContext context =
-        OrchestrationStrategyHostContext(session: session, host: host);
+        OrchestrationStrategyHostContext(
+          session: session,
+          host: host,
+          expectedFeedback: expectedFeedback,
+        );
     OrchestrationStrategyHostContext? received;
     final OrchestrationExecution execution = _materialize(context);
     registry.register(
@@ -332,6 +341,19 @@ void main() {
     expect(materialized, same(execution));
     expect(received, same(context));
     expect(context.session, same(session));
+    expect(context.expectedFeedback, same(expectedFeedback));
+    expect(
+      () => OrchestrationStrategyHostContext(
+        session: session,
+        host: host,
+        expectedFeedback: SessionFeedbackReceipt(
+          submissionId: 'review',
+          sessionId: 'foreign-session',
+          occurrenceId: 'occurrence',
+        ),
+      ),
+      throwsArgumentError,
+    );
     expect(context.host, same(host));
     expect(host.validations, 2);
     expect(host.state, RunState.created);

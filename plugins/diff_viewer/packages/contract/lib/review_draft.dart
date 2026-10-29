@@ -31,6 +31,122 @@ enum ReviewComparisonLayer { unstaged, staged, committed }
 
 enum ReviewComparisonSide { oldSide, newSide }
 
+/// Attempted states survive lost replies; absence of evidence is not rollback.
+enum ReviewSubmissionStatus {
+  prepared,
+  deliveryPending,
+  accepted,
+  schedulingPending,
+  scheduled,
+}
+
+@AdeleValue('diff.reviewSubmissionSummary')
+final class ReviewSubmissionSummary {
+  ReviewSubmissionSummary({
+    required this.submissionId,
+    required this.status,
+    required this.commentCount,
+    required this.schedulingAttempt,
+    required this.occurrenceId,
+    required this.runId,
+  }) {
+    validateReviewDraftIdentity(submissionId, 'submissionId');
+    if (commentCount < 1 || commentCount > ReviewDraftLimits.maxComments) {
+      throw ArgumentError('Invalid prepared review count.');
+    }
+    if (occurrenceId != null) {
+      validateReviewDraftIdentity(occurrenceId!, 'occurrenceId');
+    }
+    if (runId != null) validateReviewDraftIdentity(runId!, 'runId');
+    final accepted =
+        status == ReviewSubmissionStatus.accepted ||
+        status == ReviewSubmissionStatus.schedulingPending ||
+        status == ReviewSubmissionStatus.scheduled;
+    if (accepted != (occurrenceId != null) ||
+        (status == ReviewSubmissionStatus.scheduled) != (runId != null)) {
+      throw ArgumentError('Invalid prepared review state.');
+    }
+    if (schedulingAttempt < 0 ||
+        schedulingAttempt > ReviewDraftLimits.maxSequence ||
+        (!accepted && schedulingAttempt != 0) ||
+        ((status == ReviewSubmissionStatus.schedulingPending ||
+                status == ReviewSubmissionStatus.scheduled) &&
+            schedulingAttempt == 0)) {
+      throw ArgumentError('Invalid scheduling attempt.');
+    }
+  }
+
+  final String submissionId;
+  final ReviewSubmissionStatus status;
+  final int commentCount;
+  final int schedulingAttempt;
+  final String? occurrenceId;
+  final String? runId;
+}
+
+/// Local transport envelope for the public SessionFeedback canonical codec.
+/// The backend owns payload validation; consumers forward the exact string.
+@AdeleValue('diff.preparedReviewSubmission')
+final class PreparedReviewSubmission {
+  PreparedReviewSubmission({
+    required this.sessionId,
+    required this.submissionId,
+    required this.canonicalPayload,
+    required this.status,
+    required this.commentCount,
+    required this.schedulingAttempt,
+    required this.occurrenceId,
+    required this.runId,
+  }) {
+    validateReviewDraftIdentity(sessionId, 'sessionId');
+    ReviewSubmissionSummary(
+      submissionId: submissionId,
+      status: status,
+      commentCount: commentCount,
+      schedulingAttempt: schedulingAttempt,
+      occurrenceId: occurrenceId,
+      runId: runId,
+    );
+    if (canonicalPayload.isEmpty) {
+      throw ArgumentError('Missing prepared review payload.');
+    }
+  }
+
+  final String sessionId;
+  final String submissionId;
+  final String canonicalPayload;
+  final ReviewSubmissionStatus status;
+  final int commentCount;
+  final int schedulingAttempt;
+  final String? occurrenceId;
+  final String? runId;
+}
+
+/// A confirmed preparation or a definite rejection before any handoff write.
+/// Storage and uncertain mutation failures remain exceptions, never rejections.
+@AdeleValue('diff.reviewPreparationResult')
+final class ReviewPreparationResult {
+  ReviewPreparationResult({
+    required this.submission,
+    required this.rejectionCode,
+  }) {
+    if ((submission == null) == (rejectionCode == null) ||
+        (rejectionCode != null &&
+            !const [
+              'stale_draft',
+              'empty_review',
+              'submission_too_large',
+              'review_conflict',
+              'counter_exhausted',
+            ].contains(rejectionCode))) {
+      throw ArgumentError('Invalid review preparation result.');
+    }
+  }
+
+  final PreparedReviewSubmission? submission;
+  final String? rejectionCode;
+}
+
 /// Immutable captured source data, never approval or Environment authority.
 /// Coordinates describe the original displayed comparison, not a live lookup.
 @AdeleValue('diff.reviewCommentAnchor')
@@ -157,9 +273,14 @@ final class PendingReviewComment {
 final class ReviewDraftSnapshot {
   ReviewDraftSnapshot({
     required this.sessionId,
+    required this.revision,
     required List<PendingReviewComment> comments,
+    required this.currentReview,
   }) : comments = List<PendingReviewComment>.unmodifiable(comments) {
     validateReviewDraftIdentity(sessionId, 'sessionId');
+    if (revision < 0 || revision > ReviewDraftLimits.maxVersion) {
+      throw ArgumentError('Invalid authoritative draft revision.');
+    }
     if (this.comments.length > ReviewDraftLimits.maxComments) {
       throw ArgumentError('Too many pending review comments.');
     }
@@ -181,7 +302,11 @@ final class ReviewDraftSnapshot {
   }
 
   final String sessionId;
+
+  /// Authoritative SQL revision, never inferred from locally patched comments.
+  final int revision;
   final List<PendingReviewComment> comments;
+  final ReviewSubmissionSummary? currentReview;
 }
 
 /// Conservative size charge, not a second wire codec. Six bytes per UTF-16 code
@@ -269,6 +394,58 @@ abstract interface class ReviewDraftService {
     String commentId,
     int expectedVersion,
   );
+
+  /// Freezes every saved pending comment, not a caller-selected scope or subset.
+  @AdeleMethod('prepareReview')
+  Future<ReviewPreparationResult> prepareReview(
+    String sessionId,
+    int expectedRevision,
+  );
+
+  @AdeleMethod('readReview')
+  Future<PreparedReviewSubmission?> readReview(String sessionId);
+
+  /// One admission only. A repeated marker does not authorize another dispatch.
+  @AdeleMethod('markDeliveryAttempted')
+  Future<PreparedReviewSubmission> markDeliveryAttempted(
+    String sessionId,
+    String submissionId,
+  );
+
+  /// Records a confirmed public receipt and removes exact frozen versions.
+  @AdeleMethod('confirmAcceptance')
+  Future<PreparedReviewSubmission> confirmAcceptance(
+    String sessionId,
+    String submissionId,
+    String receiptSessionId,
+    String occurrenceId,
+  );
+
+  @AdeleMethod('markSchedulingAttempted')
+  Future<PreparedReviewSubmission> markSchedulingAttempted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+  );
+
+  @AdeleMethod('confirmRunScheduled')
+  Future<PreparedReviewSubmission> confirmRunScheduled(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+    String runId,
+  );
+
+  /// Only positive host evidence of pre-start rejection permits this transition.
+  /// A missing association, failed read or lost reply never establishes it.
+  @AdeleMethod('confirmRunNotStarted')
+  Future<PreparedReviewSubmission> confirmRunNotStarted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+  );
 }
 
 /// `invalid_request` rejects invalid data; `stale_comment` requires a fresh
@@ -276,6 +453,10 @@ abstract interface class ReviewDraftService {
 /// `corrupt_state`, `storage_unavailable`, and `backend_closed` remain explicit.
 /// `outcome_uncertain` never establishes rollback: read a fresh snapshot rather
 /// than replaying a mutation whose acknowledgement was lost.
+/// `draft_frozen` rejects CRUD before confirmed acceptance. `review_conflict`
+/// rejects mismatched receipt/Run or repeated attempt admission. Definite
+/// preparation rejections use [ReviewPreparationResult], not thrown failures.
+/// Handoffs require durable storage, never temporary success.
 @AdeleFailure('diff.reviewDraftFailure')
 final class ReviewDraftFailure implements Exception {
   const ReviewDraftFailure({

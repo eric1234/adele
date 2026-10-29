@@ -19,10 +19,15 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   required ToolCatalog toolCatalog,
   required ToolPolicy policy,
   ResolvedOrchestrationStrategy? resolvedStrategy,
+  SessionFeedbackReceipt? expectedFeedback,
 }) async {
   final Session? session = lifecycle.store.session(sessionId);
   if (session == null) {
     throw StateError('Session $sessionId is not published.');
+  }
+  if (expectedFeedback != null &&
+      expectedFeedback.sessionId != session.id.value) {
+    throw ArgumentError('Expected feedback belongs to another Session.');
   }
   final ResolvedOrchestrationStrategy binding =
       resolvedStrategy ?? lifecycle.resolveSessionStrategy(sessionId);
@@ -43,7 +48,11 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   final releaseSessionExecution = lifecycle.retainSessionExecution(session);
   try {
     final OrchestrationExecution execution = await binding.materialize(
-      OrchestrationStrategyHostContext(session: session, host: host),
+      OrchestrationStrategyHostContext(
+        session: session,
+        host: host,
+        expectedFeedback: expectedFeedback,
+      ),
     );
     try {
       lifecycle.validateResolvedStrategy(session.strategyId, binding);

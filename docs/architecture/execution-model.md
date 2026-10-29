@@ -105,7 +105,7 @@ The public `adele_orchestration` feedback contract currently supports one immuta
 code-review batch: ordered comments with their exact text, original source anchors,
 Environment provenance, and caller-retained submission identity. It is not an
 arbitrary-payload message bus or a core Review identity. Diff owns pending comments
-and future batch construction; core owns the canonical recipient Session and its
+and durable batch construction; core owns the canonical recipient Session and its
 permanent strategy binding; the compatible strategy owns accepted occurrences.
 
 The native host captures an actual canonical Session and the exact uniquely
@@ -113,9 +113,15 @@ resolved strategy contribution, including its optional feedback target. Matching
 backend service ID alone does not establish compatibility. Admission revalidates
 the canonical Session, open lifecycle, attachment eligibility, and exact binding.
 Retirement cannot retarget a captured operation. A fresh explicit capture may use
-a replacement generation to reconcile durable data. Future interpreted consumers
+a replacement generation to reconcile durable data. Opted-in interpreted panes
 receive only presentation-bound operations, not Session/backend selectors or
 channels. The native capture seam does not grant interpreted access by itself.
+
+Diff freezes its entire authoritative saved collection with a revision precondition
+and transactionally allocates the immutable submission identity before delivery.
+Its durable handoff retains attempted delivery/scheduling separately from confirmed
+acceptance and Run association. Only matching acceptance evidence removes the exact
+original comments from pending state; a lost acknowledgement never clears them.
 
 Acceptance records one semantic input occurrence and a stable receipt; it does not
 materialize an execution or Environment, invoke models/tools, alter Git approval,
@@ -145,9 +151,21 @@ queuing. The host uses read-only lookup for accepted duplicates during occupancy
 so receipt reconciliation remains available even after backend replacement while
 an old Run is waiting. Acceptance preserves Draft Request and records no
 assistant entry or Run association. A later normal Run associates and consumes the
-accepted user occurrence through unchanged Chat sequencing. This occupancy observes
+accepted user occurrence through unchanged Chat sequencing. A feedback-targeted Run
+carries the expected receipt through ordinary materialization. Chat validates and
+associates that exact eligible user occurrence under its existing claim, rejecting
+a superseded occurrence rather than silently consuming a later user entry.
+This occupancy observes
 the existing Run owner; it neither schedules execution nor replaces the controller's
 admission, exact-pin rules, or Chat's mutation claim.
+
+The execution owner retains receipt-to-Run admission before asynchronous preparation;
+strategy lookup separately exposes the durable occurrence-to-Run association, not a
+changed acceptance receipt. Reconciliation checks both. Missing terminal history is
+not evidence that a Run never started. Explicit retry is allowed only after proven
+pre-materialization failure; durable scheduling attempts guard late responses from
+resetting newer attempts. After owner/process loss with no authoritative association,
+an attempted start remains uncertain, not permission for an automatic duplicate.
 
 See the [public feedback API](../../packages/orchestration/README.md#session-feedback)
 and [Chat persistence](../../plugins/chat_strategy/packages/backend/README.md)

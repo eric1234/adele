@@ -246,6 +246,7 @@ void main() {
               strategyId: chatStrategyId.value,
             ),
             'run',
+            null,
           ),
           _busy,
         );
@@ -616,6 +617,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
             chatStrategyRouteId,
             _session,
             'original-run',
+            null,
           );
           await current.release(execution);
         }
@@ -623,7 +625,12 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
           'SELECT * FROM adele_chat_entries',
         );
         await expectLater(
-          staleBackend.materialize(chatStrategyRouteId, _session, 'stale-run'),
+          staleBackend.materialize(
+            chatStrategyRouteId,
+            _session,
+            'stale-run',
+            null,
+          ),
           throwsStateError,
         );
         expect(
@@ -668,7 +675,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
       addTearDown(backend.close);
       final writes = storage.transactions;
       await expectLater(
-        backend.materialize(chatStrategyRouteId, _session, 'long-run'),
+        backend.materialize(chatStrategyRouteId, _session, 'long-run', null),
         throwsStateError,
       );
       expect(storage.transactions, writes);
@@ -677,6 +684,7 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
         chatStrategyRouteId,
         _session,
         'r',
+        null,
       );
       expect((await service.snapshot('session')).entries.single.runId, 'r');
       final restored = await ChatSessionBackend(

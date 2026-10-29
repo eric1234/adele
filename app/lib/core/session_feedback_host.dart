@@ -57,6 +57,11 @@ final class CapturedSessionFeedbackTarget implements SessionFeedbackTarget {
   final ResolvedOrchestrationStrategy _strategy;
   final SessionFeedbackTarget _target;
 
+  /// Exact strategy admitted for this target, never a same-ID replacement.
+  ResolvedOrchestrationStrategy get strategy => _strategy;
+
+  void validate() => _validate();
+
   /// Trusted caller fence, not plugin-supplied authority or a target selector.
   final void Function()? _validateAttachment;
 

@@ -91,6 +91,7 @@ void main() {
       'main_content',
       'owning_backend',
       'session_execution',
+      'session_feedback',
       'session_presentation_lifecycle',
       'tool_activity_inspection',
       'console',

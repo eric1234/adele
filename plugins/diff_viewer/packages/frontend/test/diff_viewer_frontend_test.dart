@@ -9,8 +9,10 @@ import 'package:adele_desktop/frontend/environment_capability_diagnostics.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/session_feedback_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
+import 'package:adele_orchestration/session_feedback.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
@@ -30,6 +32,7 @@ void main() {
   late ExtensionRegistry sourceRegistry;
   late _Source source;
   late _DraftBackend draft;
+  late _Feedback feedback;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('diff-viewer-eval-');
@@ -48,6 +51,7 @@ void main() {
     sourceRegistry = ExtensionRegistry();
     source = _Source();
     draft = _DraftBackend();
+    feedback = _Feedback(draft.events);
   });
   tearDown(() async {
     frontend.invalidate();
@@ -93,6 +97,7 @@ void main() {
               ),
               lifecycle,
               port,
+              _FeedbackPort(feedback, sessionId),
               OwningBackendBridge(
                 channels: {if (withDraft) reviewDraftServiceId: capturedDraft},
                 validateBinding: () {
@@ -145,6 +150,1000 @@ void main() {
       uncommitted: port.service.uncommitted,
     );
   }
+
+  group('saved review submission', () {
+    Future<void> mountReview(
+      WidgetTester tester, {
+      Size size = const Size(1100, 1800),
+    }) async {
+      await tester.binding.setSurfaceSize(size);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      feedback.available = true;
+      await mount(tester, withDraft: true);
+    }
+
+    Future<void> click(WidgetTester tester, String label) async {
+      await tester.tap(find.widgetWithText(TextButton, label));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+
+    Future<void> remount(
+      WidgetTester tester, {
+      String session = 'canonical',
+    }) async {
+      await tester.pumpWidget(const SizedBox());
+      final previous = port;
+      addTearDown(previous.close);
+      port = _Port();
+      lifecycle = SessionPresentationLifecycleBridge(isActive: () => true);
+      await mount(tester, withDraft: true, sessionId: session);
+    }
+
+    testWidgets(
+      'submits all saved Session comments from clean Diff in durable order without Git rescan',
+      (tester) async {
+        draft.comments().addAll([
+          _comment(
+            text: ' exact first\r\nsecond ',
+            anchor: _commentAnchor(
+              side: ReviewComparisonSide.oldSide,
+              startLine: 10,
+              endLine: 12,
+              excerpt: 'old\r\nsource',
+            ),
+          ),
+          _comment(
+            id: 'outside',
+            sequence: 2,
+            text: 'committed outside current scope',
+            anchor: _commentAnchor(
+              layer: ReviewComparisonLayer.committed,
+              environmentId: 'original-environment',
+            ),
+          ),
+          _comment(
+            id: 'staged',
+            sequence: 3,
+            text: 'staged outdated location',
+            anchor: _commentAnchor(layer: ReviewComparisonLayer.staged),
+          ),
+        ]);
+        draft.revisions['canonical'] = 41;
+        await mountReview(tester);
+        expect(find.text('Saved comments revision: 41'), findsOneWidget);
+        expect(find.text('Pending review comments (3)'), findsOneWidget);
+        expect(find.text('No unstaged changes.'), findsOneWidget);
+        final gitReads = List.of(port.methods);
+        await click(tester, 'Submit Review');
+        expect(
+          draft.events,
+          containsAllInOrder([
+            reviewDraftServicePrepareReviewId,
+            reviewDraftServiceMarkDeliveryAttemptedId,
+            'acceptSessionFeedback',
+            reviewDraftServiceConfirmAcceptanceId,
+            reviewDraftServiceMarkSchedulingAttemptedId,
+            'startSessionFeedbackRun',
+            reviewDraftServiceConfirmRunScheduledId,
+            reviewDraftServiceSnapshotId,
+          ]),
+        );
+        expect(
+          draft.payloads[draft.methods.indexOf(
+            reviewDraftServicePrepareReviewId,
+          )],
+          {'sessionId': 'canonical', 'expectedRevision': 41},
+        );
+        final accepted = feedback.calls.first.payload;
+        expect(feedback.calls.last.payload, accepted);
+        expect(feedback.calls.last.occurrence, 'occurrence-1');
+        final decoded = decodeSessionFeedbackSubmission(accepted);
+        expect(decoded.comments.map((comment) => comment.id), [
+          'saved-1',
+          'outside',
+          'staged',
+        ]);
+        expect(decoded.comments.first.text, ' exact first\r\nsecond ');
+        expect(decoded.comments.first.anchor.sourceExcerpt, 'old\r\nsource');
+        expect(decoded.comments.first.anchor.endLine, 12);
+        expect(
+          decoded.comments[1].anchor.environmentId,
+          'original-environment',
+        );
+        expect(
+          decoded.comments[1].anchor.layer,
+          SessionFeedbackComparisonLayer.committed,
+        );
+        expect(draft.comments(), isEmpty);
+        expect(find.text('Pending review comments (0)'), findsOneWidget);
+        expect(
+          find.text('Review accepted. Run scheduled: run-1'),
+          findsOneWidget,
+        );
+        expect(port.methods, gitReads);
+        expect(port.review.operations, isEmpty);
+        expect(source.paths, isEmpty);
+      },
+    );
+
+    for (final stage in [
+      reviewDraftServicePrepareReviewId,
+      reviewDraftServiceMarkDeliveryAttemptedId,
+      reviewDraftServiceConfirmAcceptanceId,
+      reviewDraftServiceMarkSchedulingAttemptedId,
+      reviewDraftServiceConfirmRunScheduledId,
+    ]) {
+      testWidgets(
+        'duplicate clicks and scope changes do not duplicate held $stage',
+        (tester) async {
+          draft.comments().add(_comment());
+          await mountReview(tester);
+          final button = tester.widget<TextButton>(
+            find.widgetWithText(TextButton, 'Submit Review'),
+          );
+          final gate = Completer<void>();
+          draft.handoffGates[stage] = gate;
+          button.onPressed!();
+          button.onPressed!();
+          await tester.pumpAndSettle();
+          expect(find.widgetWithText(TextButton, 'Delete'), findsNothing);
+          await click(tester, 'Task / Branch');
+          button.onPressed!();
+          await tester.pumpAndSettle();
+          expect(
+            draft.methods.where((method) => method == stage),
+            hasLength(1),
+          );
+          if (stage == reviewDraftServiceConfirmAcceptanceId) {
+            expect(
+              feedback.calls.where(
+                (call) => call.method == 'startSessionFeedbackRun',
+              ),
+              isEmpty,
+            );
+          }
+          gate.complete();
+          await tester.pumpAndSettle();
+          expect(feedback.calls.map((call) => call.method), [
+            'acceptSessionFeedback',
+            'startSessionFeedbackRun',
+          ]);
+          expect(
+            draft.methods.where(
+              (method) => method == reviewDraftServicePrepareReviewId,
+            ),
+            hasLength(1),
+          );
+          expect(
+            find.text('Review accepted. Run scheduled: run-1'),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'unsaved editor and pending CRUD prohibit submission; save reloads revision before eligibility',
+      (tester) async {
+        draft.comments().add(_comment());
+        port.service.value = _commentSnapshot();
+        await mountReview(tester);
+        final old = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Submit Review'),
+        );
+        await click(tester, 'Edit');
+        await tester.enterText(find.byType(TextField), 'unsaved replacement');
+        old.onPressed!();
+        await tester.pumpAndSettle();
+        expect(feedback.calls, isEmpty);
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        final write = draft.holdMutation();
+        final read = draft.holdSnapshot();
+        await click(tester, 'Save comment');
+        old.onPressed!();
+        write.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Loading comments...'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        expect(feedback.calls, isEmpty);
+        draft.revisions['canonical'] = 77;
+        draft.comments().add(
+          _comment(
+            id: 'external',
+            sequence: 2,
+            text: 'authoritative external comment',
+          ),
+        );
+        read.complete(
+          ReviewDraftSnapshot(
+            sessionId: 'canonical',
+            revision: 77,
+            comments: draft.comments(),
+            currentReview: null,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('authoritative external comment'), findsOneWidget);
+        expect(find.text('Saved comments revision: 77'), findsOneWidget);
+        expect(feedback.calls, isEmpty);
+        await click(tester, 'Submit Review');
+        expect(
+          decodeSessionFeedbackSubmission(
+            feedback.calls.first.payload,
+          ).comments,
+          hasLength(2),
+        );
+        expect(port.service.calls, 1);
+      },
+    );
+
+    testWidgets(
+      'stale displayed revision fails without loading and submitting unseen comments',
+      (tester) async {
+        draft.comments().add(_comment());
+        await mountReview(tester);
+        draft.comments().add(
+          _comment(id: 'external', sequence: 2, text: 'unseen new comment'),
+        );
+        draft.revisions['canonical'] = 1;
+        await click(tester, 'Submit Review');
+        expect(feedback.calls, isEmpty);
+        expect(draft.snapshots, hasLength(1));
+        expect(find.text('unseen new comment'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        await click(tester, 'Reload comments');
+        expect(find.text('unseen new comment'), findsOneWidget);
+        expect(feedback.calls, isEmpty);
+        await click(tester, 'Submit Review');
+        expect(
+          decodeSessionFeedbackSubmission(
+            feedback.calls.first.payload,
+          ).comments,
+          hasLength(2),
+        );
+      },
+    );
+
+    testWidgets(
+      'typed oversized preparation preserves all comments and reloads for editing without resubmission',
+      (tester) async {
+        draft.comments().addAll([
+          _comment(text: 'first complete comment'),
+          _comment(id: 'second', sequence: 2, text: 'second complete comment'),
+          _comment(id: 'third', sequence: 3, text: 'third complete comment'),
+        ]);
+        final original = List.of(draft.comments());
+        draft.preparationRejection = 'submission_too_large';
+        await mountReview(tester);
+        final reads = List.of(port.methods);
+        await click(tester, 'Submit Review');
+        expect(
+          find.text(
+            'The complete saved review is too large to submit. Nothing was truncated or split. Edit or delete saved comments before trying again.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Pending review comments (3)'), findsOneWidget);
+        expect(draft.comments(), orderedEquals(original));
+        expect(draft.reviews, isEmpty);
+        expect(draft.frozen, isEmpty);
+        expect(draft.submissionSequence, 0);
+        expect(draft.snapshots, hasLength(2));
+        expect(
+          draft.methods.where(
+            (method) => method == reviewDraftServicePrepareReviewId,
+          ),
+          hasLength(1),
+        );
+        expect(feedback.calls, isEmpty);
+        expect(port.methods, reads);
+        await tester.tap(
+          _savedCommentAction('second complete comment', 'Edit'),
+        );
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'shorter comment');
+        await click(tester, 'Save comment');
+        expect(draft.comments()[1].text, 'shorter comment');
+        expect(
+          draft.methods.where(
+            (method) => method == reviewDraftServicePrepareReviewId,
+          ),
+          hasLength(1),
+        );
+        expect(feedback.calls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'unavailable feedback and empty pending collection never prepare',
+      (tester) async {
+        await mountReview(tester);
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        draft.comments().add(_comment());
+        feedback.available = false;
+        feedback.reason = 'No compatible Session feedback target.';
+        await click(tester, 'Reload comments');
+        expect(
+          find.text('No compatible Session feedback target.'),
+          findsOneWidget,
+        );
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Edit'), findsOneWidget);
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServicePrepareReviewId)),
+        );
+        expect(feedback.calls, isEmpty);
+      },
+    );
+
+    for (final reason in [
+      'No model is configured for this Session.',
+      'This Session is waiting for approval.',
+    ]) {
+      testWidgets(
+        'initial Run unavailable: $reason never prepares or freezes comments',
+        (tester) async {
+          draft.comments().add(_comment());
+          feedback.canStart = false;
+          feedback.reason = reason;
+          await mountReview(tester);
+          expect(
+            find.widgetWithText(TextButton, 'Submit Review'),
+            findsNothing,
+          );
+          expect(find.text(reason), findsOneWidget);
+          expect(find.widgetWithText(TextButton, 'Edit'), findsOneWidget);
+          expect(find.widgetWithText(TextButton, 'Delete'), findsOneWidget);
+          expect(draft.methods, [
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
+          ]);
+          expect(draft.reviews, isEmpty);
+          expect(draft.comments(), hasLength(1));
+          expect(feedback.calls, isEmpty);
+        },
+      );
+    }
+
+    testWidgets(
+      'retained Submit callback rechecks Run availability before preparing',
+      (tester) async {
+        draft.comments().add(_comment());
+        await mountReview(tester);
+        final button = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Submit Review'),
+        );
+        feedback.canStart = false;
+        feedback.reason = 'This Session is waiting for approval.';
+        button.onPressed!();
+        await tester.pumpAndSettle();
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServicePrepareReviewId)),
+        );
+        expect(draft.reviews, isEmpty);
+        expect(feedback.calls, isEmpty);
+        await click(tester, 'Reload comments');
+        expect(find.text(feedback.reason), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Edit'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'preaccepted freeze preserves Source and Git approval without replay',
+      (tester) async {
+        draft.comments().add(_comment());
+        port.service.value = _reviewSnapshot(
+          fileRevision: 'file:1',
+          commentIdentity: 'comparison',
+          hunks: 1,
+        );
+        registerSource();
+        feedback.results['acceptSessionFeedback'] = {
+          'status': 'uncertain',
+          'occurrenceId': null,
+        };
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(find.widgetWithText(TextButton, 'Edit'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Comment'), findsNothing);
+        await click(tester, 'Open in Source');
+        await click(tester, 'Approve File');
+        expect(source.paths, ['review.txt']);
+        expect(port.review.operations, ['approveFile']);
+        expect(feedback.calls.map((call) => call.method), [
+          'acceptSessionFeedback',
+        ]);
+        expect(find.text('Reconcile acceptance'), findsOneWidget);
+      },
+    );
+
+    for (final retained in ReviewSubmissionStatus.values) {
+      testWidgets(
+        'remount $retained reads only and presents explicit recovery status',
+        (tester) async {
+          draft.reviews['canonical'] = _preparedReview(status: retained);
+          draft.frozen['canonical'] = [_comment()];
+          if (retained.index < ReviewSubmissionStatus.accepted.index) {
+            draft.comments().add(_comment());
+          }
+          await mountReview(tester);
+          expect(draft.methods, [
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
+          ]);
+          expect(feedback.calls, isEmpty);
+          expect(
+            find.widgetWithText(TextButton, 'Submit Review'),
+            findsNothing,
+          );
+          if (retained == ReviewSubmissionStatus.prepared) {
+            expect(find.text('Deliver prepared review'), findsOneWidget);
+          }
+          if (retained == ReviewSubmissionStatus.deliveryPending) {
+            expect(find.text('Reconcile acceptance'), findsOneWidget);
+          }
+          if (retained == ReviewSubmissionStatus.accepted) {
+            expect(find.text('Retry Run'), findsOneWidget);
+          }
+          if (retained == ReviewSubmissionStatus.schedulingPending) {
+            expect(find.text('Reconcile Run'), findsOneWidget);
+          }
+          if (retained == ReviewSubmissionStatus.scheduled) {
+            expect(
+              find.text('Review accepted. Run scheduled: run-1'),
+              findsOneWidget,
+            );
+          }
+        },
+      );
+    }
+
+    testWidgets(
+      'a review prepared between snapshot and recovery read cannot deliver unseen comments',
+      (tester) async {
+        draft.comments().add(_comment(text: 'displayed comment'));
+        final read = Completer<void>();
+        draft.handoffGates[reviewDraftServiceReadReviewId] = read;
+        await mountReview(tester);
+        draft.comments().add(
+          _comment(id: 'new', sequence: 2, text: 'new unseen comment'),
+        );
+        draft.revisions['canonical'] = 1;
+        await draft.prepareReview('canonical', 1);
+        read.complete();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          find.text(
+            'Review changed while loading. Reload comments before continuing.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Pending review comments (1)'), findsOneWidget);
+        expect(find.text('new unseen comment'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Submit Review'), findsNothing);
+        expect(
+          find.widgetWithText(TextButton, 'Deliver prepared review'),
+          findsNothing,
+        );
+        expect(find.widgetWithText(TextButton, 'Edit'), findsNothing);
+        expect(feedback.calls, isEmpty);
+        await click(tester, 'Reload comments');
+        expect(find.text('Pending review comments (2)'), findsOneWidget);
+        expect(find.text('new unseen comment'), findsOneWidget);
+        expect(
+          find.widgetWithText(TextButton, 'Deliver prepared review'),
+          findsOneWidget,
+        );
+        expect(feedback.calls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'acceptance between snapshot and recovery read cannot expose cleared comments as editable',
+      (tester) async {
+        draft.comments().add(_comment());
+        draft.frozen['canonical'] = List.of(draft.comments());
+        draft.reviews['canonical'] = _preparedReview();
+        final read = Completer<void>();
+        draft.handoffGates[reviewDraftServiceReadReviewId] = read;
+        await mountReview(tester);
+        await draft.markDeliveryAttempted('canonical', 'review-1');
+        await draft.confirmAcceptance(
+          'canonical',
+          'review-1',
+          'canonical',
+          'occurrence-1',
+        );
+        read.complete();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          find.text(
+            'Review changed while loading. Reload comments before continuing.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.widgetWithText(TextButton, 'Edit'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Retry Run'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Reconcile Run'), findsNothing);
+        await click(tester, 'Reload comments');
+        expect(find.text('Pending review comments (0)'), findsOneWidget);
+        expect(
+          find.widgetWithText(TextButton, 'Reconcile Run'),
+          findsOneWidget,
+        );
+        expect(feedback.calls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'accepted remount reconciles an existing ordinary Run while busy without starting another',
+      (tester) async {
+        final accepted = _preparedReview(
+          status: ReviewSubmissionStatus.accepted,
+        );
+        draft.reviews['canonical'] = accepted;
+        feedback.canStart = false;
+        feedback.reason = 'This Session already has an active Run.';
+        await mountReview(tester);
+        expect(feedback.calls, isEmpty);
+        expect(find.widgetWithText(TextButton, 'Retry Run'), findsNothing);
+        final lookup = Completer<Map<String, Object?>>();
+        feedback.gates['lookupSessionFeedbackRun'] = lookup.future;
+        final button = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Reconcile Run'),
+        );
+        button.onPressed!();
+        button.onPressed!();
+        await tester.pumpAndSettle();
+        expect(
+          draft.reviews['canonical']!.status,
+          ReviewSubmissionStatus.accepted,
+        );
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServiceMarkSchedulingAttemptedId)),
+        );
+        lookup.complete({
+          'status': 'scheduled',
+          'sessionId': 'canonical',
+          'submissionId': accepted.submissionId,
+          'occurrenceId': accepted.occurrenceId,
+          'runId': 'ordinary-run',
+        });
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(feedback.calls.map((call) => call.method), [
+          'lookupSessionFeedbackRun',
+        ]);
+        expect(feedback.calls.single.payload, accepted.canonicalPayload);
+        expect(
+          draft.events,
+          containsAllInOrder([
+            'lookupSessionFeedbackRun',
+            reviewDraftServiceMarkSchedulingAttemptedId,
+            reviewDraftServiceConfirmRunScheduledId,
+          ]),
+        );
+        expect(draft.reviews['canonical']!.runId, 'ordinary-run');
+        expect(draft.reviews['canonical']!.schedulingAttempt, 1);
+        expect(
+          find.text('Review accepted. Run scheduled: ordinary-run'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    for (final outcome in ['absent', 'uncertain', 'not_started', 'native']) {
+      testWidgets(
+        'accepted Run reconciliation $outcome creates no pending marker or start',
+        (tester) async {
+          draft.reviews['canonical'] = _preparedReview(
+            status: ReviewSubmissionStatus.accepted,
+          );
+          if (outcome == 'native') {
+            feedback.throwsOn = 'lookupSessionFeedbackRun';
+          } else {
+            feedback.results['lookupSessionFeedbackRun'] = {
+              'status': outcome,
+              'runId': null,
+              'retryAllowed': true,
+            };
+          }
+          await mountReview(tester);
+          await click(tester, 'Reconcile Run');
+          expect(
+            draft.reviews['canonical']!.status,
+            ReviewSubmissionStatus.accepted,
+          );
+          expect(draft.reviews['canonical']!.schedulingAttempt, 0);
+          expect(draft.methods, [
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
+          ]);
+          expect(feedback.calls.map((call) => call.method), [
+            'lookupSessionFeedbackRun',
+          ]);
+          expect(find.widgetWithText(TextButton, 'Retry Run'), findsOneWidget);
+          expect(
+            find.widgetWithText(TextButton, 'Reconcile Run'),
+            findsOneWidget,
+          );
+        },
+      );
+    }
+
+    testWidgets(
+      'lost acceptance finalization acknowledgement cannot start a Run; remount remains read-only',
+      (tester) async {
+        draft.comments().add(_comment());
+        draft.failAfterHandoff = reviewDraftServiceConfirmAcceptanceId;
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(feedback.calls.map((call) => call.method), [
+          'acceptSessionFeedback',
+        ]);
+        expect(draft.comments(), isEmpty);
+        draft.failAfterHandoff = null;
+        await remount(tester);
+        expect(feedback.calls, hasLength(1));
+        expect(
+          find.text('Review accepted. Run scheduling not recorded.'),
+          findsOneWidget,
+        );
+        await click(tester, 'Retry Run');
+        expect(feedback.calls.map((call) => call.method), [
+          'acceptSessionFeedback',
+          'startSessionFeedbackRun',
+        ]);
+      },
+    );
+
+    for (final lost in [
+      (reviewDraftServicePrepareReviewId, ReviewSubmissionStatus.prepared, 0),
+      (
+        reviewDraftServiceMarkDeliveryAttemptedId,
+        ReviewSubmissionStatus.deliveryPending,
+        0,
+      ),
+      (
+        reviewDraftServiceMarkSchedulingAttemptedId,
+        ReviewSubmissionStatus.schedulingPending,
+        1,
+      ),
+      (
+        reviewDraftServiceConfirmRunScheduledId,
+        ReviewSubmissionStatus.scheduled,
+        2,
+      ),
+    ]) {
+      testWidgets(
+        'lost ${lost.$1} acknowledgement stops the chain and remount never replays',
+        (tester) async {
+          draft.comments().add(_comment());
+          draft.failAfterHandoff = lost.$1;
+          await mountReview(tester);
+          await click(tester, 'Submit Review');
+          expect(feedback.calls, hasLength(lost.$3));
+          expect(draft.reviews['canonical']!.status, lost.$2);
+          draft.failAfterHandoff = null;
+          final methods = draft.methods.length;
+          await remount(tester);
+          expect(draft.methods.skip(methods), [
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
+          ]);
+          expect(feedback.calls, hasLength(lost.$3));
+          expect(
+            find.widgetWithText(TextButton, 'Submit Review'),
+            findsNothing,
+          );
+        },
+      );
+    }
+
+    testWidgets(
+      'native acceptance Future failure settles safely and positive lookup never auto-starts',
+      (tester) async {
+        draft.comments().add(_comment());
+        feedback.throwsOn = 'acceptSessionFeedback';
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(find.textContaining('private'), findsNothing);
+        expect(find.text('Reconcile acceptance'), findsOneWidget);
+        expect(draft.comments(), hasLength(1));
+        feedback.throwsOn = null;
+        feedback.canStart = false;
+        await click(tester, 'Reconcile acceptance');
+        expect(feedback.calls.map((call) => call.method), [
+          'acceptSessionFeedback',
+          'lookupSessionFeedback',
+        ]);
+        expect(draft.comments(), isEmpty);
+        expect(
+          find.text('Review accepted. Run scheduling not recorded.'),
+          findsOneWidget,
+        );
+        expect(find.widgetWithText(TextButton, 'Retry Run'), findsNothing);
+        feedback.canStart = true;
+        await click(tester, 'Reload comments');
+        expect(find.text('Retry Run'), findsOneWidget);
+        await click(tester, 'Retry Run');
+        expect(
+          find.text('Review accepted. Run scheduled: run-1'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'absence never unfreezes; only lookup permission enables explicit identical-payload retry',
+      (tester) async {
+        draft.comments().add(_comment());
+        feedback.results['acceptSessionFeedback'] = {
+          'status': 'uncertain',
+          'occurrenceId': null,
+        };
+        feedback.results['lookupSessionFeedback'] = {
+          'status': 'absent',
+          'occurrenceId': null,
+          'retryAllowed': false,
+        };
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        await click(tester, 'Reconcile acceptance');
+        expect(find.text('Retry same review'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Edit'), findsNothing);
+        expect(find.widgetWithText(TextButton, 'Delete'), findsNothing);
+        expect(draft.comments(), hasLength(1));
+        feedback.results['lookupSessionFeedback']!['retryAllowed'] = true;
+        await click(tester, 'Reconcile acceptance');
+        expect(
+          feedback.calls.where(
+            (call) => call.method == 'acceptSessionFeedback',
+          ),
+          hasLength(1),
+        );
+        feedback.results.remove('acceptSessionFeedback');
+        await click(tester, 'Retry same review');
+        final accepts = feedback.calls
+            .where((call) => call.method == 'acceptSessionFeedback')
+            .toList();
+        expect(accepts, hasLength(2));
+        expect(accepts[0].payload, accepts[1].payload);
+        expect(
+          draft.methods.where(
+            (method) => method == reviewDraftServiceMarkDeliveryAttemptedId,
+          ),
+          hasLength(1),
+        );
+        expect(
+          draft.methods.where(
+            (method) => method == reviewDraftServicePrepareReviewId,
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    testWidgets(
+      'confirmed pre-start failure resets durably and requires explicit Retry Run',
+      (tester) async {
+        draft.comments().add(_comment());
+        feedback.results['startSessionFeedbackRun'] = {
+          'status': 'not_started',
+          'runId': null,
+          'retryAllowed': true,
+        };
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(
+          draft.methods,
+          contains(reviewDraftServiceConfirmRunNotStartedId),
+        );
+        expect(find.text('Review accepted. Run not started.'), findsOneWidget);
+        expect(
+          feedback.calls.where(
+            (call) => call.method == 'startSessionFeedbackRun',
+          ),
+          hasLength(1),
+        );
+        feedback.results.remove('startSessionFeedbackRun');
+        await click(tester, 'Retry Run');
+        expect(
+          feedback.calls.where(
+            (call) => call.method == 'startSessionFeedbackRun',
+          ),
+          hasLength(2),
+        );
+        expect(
+          feedback.calls
+              .where((call) => call.method == 'startSessionFeedbackRun')
+              .map((call) => call.attempt),
+          [1, 2],
+        );
+        expect(
+          feedback.calls.where(
+            (call) => call.method == 'acceptSessionFeedback',
+          ),
+          hasLength(1),
+        );
+        expect(
+          find.text('Review accepted. Run scheduled: run-1'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'foreign acceptance and Run identities never finalize durable state',
+      (tester) async {
+        draft.comments().add(_comment());
+        feedback.results['acceptSessionFeedback'] = {
+          'sessionId': 'other-session',
+        };
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServiceConfirmAcceptanceId)),
+        );
+        expect(draft.comments(), hasLength(1));
+        await click(tester, 'Reconcile acceptance');
+        feedback.results['startSessionFeedbackRun'] = {
+          'occurrenceId': 'other-occurrence',
+        };
+        await click(tester, 'Retry Run');
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServiceConfirmRunScheduledId)),
+        );
+        expect(find.text('Reconcile Run'), findsOneWidget);
+        expect(find.text('Retry Run'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'ambiguous scheduling only looks up and does not retry from absent evidence',
+      (tester) async {
+        draft.comments().add(_comment());
+        feedback.throwsOn = 'startSessionFeedbackRun';
+        feedback.results['lookupSessionFeedbackRun'] = {
+          'status': 'uncertain',
+          'runId': null,
+          'retryAllowed': false,
+        };
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        expect(find.text('Retry Run'), findsNothing);
+        expect(find.text('Reconcile Run'), findsOneWidget);
+        await click(tester, 'Reconcile Run');
+        expect(find.text('Retry Run'), findsNothing);
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServiceConfirmRunNotStartedId)),
+        );
+        feedback.throwsOn = null;
+        feedback.results.remove('lookupSessionFeedbackRun');
+        await click(tester, 'Reconcile Run');
+        expect(
+          feedback.calls.where(
+            (call) => call.method == 'startSessionFeedbackRun',
+          ),
+          hasLength(1),
+        );
+        expect(
+          find.text('Review accepted. Run scheduled: run-1'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'acceptance remains visible without start availability and Git approval and Source remain independent',
+      (tester) async {
+        draft.comments().add(_comment());
+        port.service.value = _reviewSnapshot(fileRevision: 'file:1', hunks: 1);
+        registerSource();
+        final accepted = Completer<Map<String, Object?>>();
+        feedback.gates['acceptSessionFeedback'] = accepted.future;
+        await mountReview(tester);
+        await click(tester, 'Submit Review');
+        feedback.canStart = false;
+        feedback.reason = 'Run availability changed during acceptance.';
+        accepted.complete({
+          'status': 'accepted',
+          'sessionId': 'canonical',
+          'submissionId': 'review-1',
+          'occurrenceId': 'occurrence-1',
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('Review accepted. Run not started.'), findsWidgets);
+        expect(find.text(feedback.reason), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Retry Run'), findsNothing);
+        expect(feedback.calls.map((call) => call.method), [
+          'acceptSessionFeedback',
+        ]);
+        await click(tester, 'Open in Source');
+        await click(tester, 'Approve File');
+        expect(source.paths, ['review.txt']);
+        expect(port.review.operations, ['approveFile']);
+      },
+    );
+
+    testWidgets(
+      'narrow submission and recovery controls remain reachable without overflow',
+      (tester) async {
+        draft.comments().add(_comment());
+        final accepted = Completer<Map<String, Object?>>();
+        feedback.gates['acceptSessionFeedback'] = accepted.future;
+        await mountReview(tester, size: const Size(280, 800));
+        for (final width in [280.0, 320.0, 480.0]) {
+          await tester.binding.setSurfaceSize(Size(width, 800));
+          await tester.pumpAndSettle();
+          final button = find.widgetWithText(TextButton, 'Submit Review');
+          expect(tester.getRect(button).right, lessThanOrEqualTo(width));
+          expect(tester.getRect(button).left, greaterThanOrEqualTo(0));
+          expect(tester.takeException(), isNull);
+        }
+        await click(tester, 'Submit Review');
+        feedback.canStart = false;
+        accepted.complete({
+          'status': 'accepted',
+          'sessionId': 'canonical',
+          'submissionId': 'review-1',
+          'occurrenceId': 'occurrence-1',
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('Review accepted. Run not started.'), findsWidgets);
+      },
+    );
+
+    testWidgets(
+      'departed acceptance cannot publish or schedule for a new Session',
+      (tester) async {
+        draft.comments().add(_comment());
+        final gate = Completer<Map<String, Object?>>();
+        feedback.gates['acceptSessionFeedback'] = gate.future;
+        await mountReview(tester);
+        final stale = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Submit Review'),
+        );
+        stale.onPressed!();
+        stale.onPressed!();
+        await tester.pumpAndSettle();
+        expect(feedback.calls, hasLength(1));
+        await lifecycle.prepareToDeactivate();
+        await remount(tester, session: 'other-session');
+        gate.complete({
+          'status': 'accepted',
+          'sessionId': 'canonical',
+          'submissionId': 'review-1',
+          'occurrenceId': 'occurrence-1',
+        });
+        await tester.pumpAndSettle();
+        stale.onPressed!();
+        await tester.pumpAndSettle();
+        expect(feedback.calls, hasLength(1));
+        expect(
+          draft.methods,
+          isNot(contains(reviewDraftServiceConfirmAcceptanceId)),
+        );
+        expect(
+          draft.reviews['canonical']!.status,
+          ReviewSubmissionStatus.deliveryPending,
+        );
+        expect(find.text('Pending review comments (0)'), findsOneWidget);
+        expect(find.textContaining('Review accepted.'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
 
   group('pending review comments', () {
     Future<void> mountComments(
@@ -229,7 +1228,10 @@ void main() {
           expect(anchor.comparisonIdentity, 'comparison:original');
           expect(draft.methods, [
             reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
             reviewDraftServiceCreateCommentId,
+            reviewDraftServiceSnapshotId,
+            reviewDraftServiceReadReviewId,
           ]);
           expect(draft.payloads.first, {'sessionId': 'canonical'});
           expect(find.text('Pending review comments (1)'), findsOneWidget);
@@ -550,13 +1552,13 @@ void main() {
           tester.getTopLeft(find.text('same text').last).dy,
           lessThan(tester.getTopLeft(find.text('different location')).dy),
         );
-        expect(draft.snapshots, ['canonical']);
+        expect(draft.snapshots, List.filled(4, 'canonical'));
         expect(port.service.calls, 1);
       },
     );
 
     testWidgets(
-      'create update and delete consume authoritative response without refetch or optimistic IDs',
+      'create update and delete reload authoritative revision without optimistic IDs',
       (tester) async {
         port.service.value = _commentSnapshot();
         draft.authoritativeText = 'server-created body';
@@ -590,7 +1592,7 @@ void main() {
         ));
         expect(find.text('Pending review comments (0)'), findsOneWidget);
         expect(find.text('server-updated body'), findsNothing);
-        expect(draft.snapshots, ['canonical']);
+        expect(draft.snapshots, List.filled(4, 'canonical'));
         expect(port.service.calls, 1);
         expect(port.review.operations, isEmpty);
       },
@@ -690,7 +1692,7 @@ void main() {
         );
         expect(draft.creates.single.anchor.startLine, 21);
         expect(draft.creates.single.anchor.sourceExcerpt, 'added line');
-        expect(draft.snapshots, List.filled(3, 'canonical'));
+        expect(draft.snapshots, List.filled(4, 'canonical'));
       },
     );
 
@@ -891,7 +1893,7 @@ void main() {
             ),
             findsOneWidget,
           );
-          expect(draft.snapshots, ['canonical']);
+          expect(draft.snapshots, List.filled(2, 'canonical'));
           expect(tester.takeException(), isNull);
         },
       );
@@ -1256,7 +2258,7 @@ void main() {
           find.text('Outside current scope / not inspected'),
           findsNothing,
         );
-        expect(draft.snapshots, List.filled(2, 'canonical'));
+        expect(draft.snapshots, List.filled(3, 'canonical'));
 
         port.service.task = _task(
           committed: _commentSnapshot(identity: 'comparison:committed-changed'),
@@ -1305,7 +2307,7 @@ void main() {
         expect(find.text('edited historical feedback'), findsOneWidget);
         expect(draft.creates, hasLength(1));
         expect(draft.deletes, isEmpty);
-        expect(draft.snapshots, List.filled(3, 'canonical'));
+        expect(draft.snapshots, List.filled(5, 'canonical'));
         expect(port.review.operations, isEmpty);
         expect(source.paths, isEmpty);
       },
@@ -1407,7 +2409,9 @@ void main() {
         older.complete(
           ReviewDraftSnapshot(
             sessionId: 'canonical',
+            revision: 0,
             comments: [_comment(text: 'late old snapshot')],
+            currentReview: null,
           ),
         );
         await tester.pumpAndSettle();
@@ -1419,7 +2423,9 @@ void main() {
         foreign.complete(
           ReviewDraftSnapshot(
             sessionId: 'foreign-session',
+            revision: 0,
             comments: [_comment(text: 'foreign feedback')],
+            currentReview: null,
           ),
         );
         await tester.pumpAndSettle();
@@ -1480,7 +2486,7 @@ void main() {
           draft.creates.single.anchor.comparisonIdentity,
           'independent:comment',
         );
-        expect(draft.snapshots, List.filled(2, 'canonical'));
+        expect(draft.snapshots, List.filled(3, 'canonical'));
         expect(port.review.operations, ['approve']);
       },
     );
@@ -1814,7 +2820,7 @@ void main() {
           expect(draft.updates.map((update) => update.version), [3, 4]);
           expect(draft.comments().single.version, 5);
           expect(draft.updates.last.text, 'explicitly confirmed edit');
-          expect(draft.snapshots, List.filled(3, 'canonical'));
+          expect(draft.snapshots, List.filled(4, 'canonical'));
           expect(draft.creates, isEmpty);
           expect(draft.deletes, isEmpty);
           expect(tester.takeException(), isNull);
@@ -1925,7 +2931,9 @@ void main() {
             snapshotGate.complete(
               ReviewDraftSnapshot(
                 sessionId: 'canonical',
+                revision: 0,
                 comments: [_comment(text: 'canonical late snapshot')],
+                currentReview: null,
               ),
             );
           } else {
@@ -5687,10 +6695,176 @@ Finder _savedCommentAction(String text, String action) => find.descendant(
   matching: find.widgetWithText(TextButton, action),
 );
 
+ReviewSubmissionSummary _summary(PreparedReviewSubmission review) =>
+    ReviewSubmissionSummary(
+      submissionId: review.submissionId,
+      status: review.status,
+      commentCount: review.commentCount,
+      schedulingAttempt: review.schedulingAttempt,
+      occurrenceId: review.occurrenceId,
+      runId: review.runId,
+    );
+
+PreparedReviewSubmission _preparedReview({
+  String sessionId = 'canonical',
+  String submissionId = 'review-1',
+  ReviewSubmissionStatus status = ReviewSubmissionStatus.prepared,
+  List<PendingReviewComment>? comments,
+}) {
+  final entries = comments ?? [_comment()];
+  final value = SessionFeedbackSubmission(
+    submissionId: submissionId,
+    kind: SessionFeedbackKind.codeReview,
+    comments: [
+      for (final comment in entries)
+        SessionFeedbackComment(
+          id: comment.id,
+          text: comment.text,
+          sequence: comment.sequence,
+          version: comment.version,
+          anchor: SessionFeedbackAnchor(
+            environmentId: comment.anchor.environmentId,
+            relativePath: comment.anchor.relativePath,
+            layer: SessionFeedbackComparisonLayer.values.byName(
+              comment.anchor.layer.name,
+            ),
+            side: SessionFeedbackComparisonSide.values.byName(
+              comment.anchor.side.name,
+            ),
+            startLine: comment.anchor.startLine,
+            endLine: comment.anchor.endLine,
+            comparisonIdentity: comment.anchor.comparisonIdentity,
+            sourceExcerpt: comment.anchor.sourceExcerpt,
+            hunkIndex: comment.anchor.hunkIndex,
+            lineIndex: comment.anchor.lineIndex,
+          ),
+        ),
+    ],
+  );
+  return PreparedReviewSubmission(
+    sessionId: sessionId,
+    submissionId: submissionId,
+    canonicalPayload: encodeSessionFeedbackSubmission(value),
+    status: status,
+    commentCount: entries.length,
+    schedulingAttempt:
+        status.index >= ReviewSubmissionStatus.schedulingPending.index ? 1 : 0,
+    occurrenceId: status.index >= ReviewSubmissionStatus.accepted.index
+        ? 'occurrence-1'
+        : null,
+    runId: status == ReviewSubmissionStatus.scheduled ? 'run-1' : null,
+  );
+}
+
+class _Feedback {
+  _Feedback(this.events);
+  final List<String> events;
+  final calls =
+      <({String method, String payload, String? occurrence, int? attempt})>[];
+  bool available = false;
+  bool canStart = true;
+  String reason = 'Review submission unavailable.';
+  final results = <String, Map<String, Object?>>{};
+  final gates = <String, Future<Map<String, Object?>>>{};
+  String? throwsOn;
+
+  Future<Map<String, Object?>> invoke(
+    String method,
+    String session,
+    String payload,
+    String? occurrence,
+    int? attempt,
+  ) async {
+    events.add(method);
+    calls.add((
+      method: method,
+      payload: payload,
+      occurrence: occurrence,
+      attempt: attempt,
+    ));
+    final submission = decodeSessionFeedbackSubmission(payload);
+    final pending = gates.remove(method);
+    if (pending != null) return pending;
+    if (throwsOn == method) throw StateError('private native feedback failure');
+    return {
+      'sessionId': session,
+      'submissionId': submission.submissionId,
+      'occurrenceId': occurrence ?? 'occurrence-1',
+      'runId': method.contains('Run') ? 'run-1' : null,
+      'status': method.contains('Run') ? 'scheduled' : 'accepted',
+      ...?results[method],
+    };
+  }
+}
+
+// Actual compiled stock EVC plus a primitive public-bridge boundary. Native host
+// authority and real durable storage are exercised by the application suite.
+class _FeedbackPort extends SessionFeedbackDeclarations
+    implements PreparedFrontendBridge {
+  _FeedbackPort(this.feedback, this.sessionId);
+  final _Feedback feedback;
+  final String sessionId;
+  final zone = Zone.current;
+
+  @override
+  void configureForRuntime(Runtime runtime) {
+    const library = 'package:adele_ui/session_feedback_bridge.dart';
+    runtime.registerBridgeFunc(
+      library,
+      'readSessionFeedbackAvailability',
+      (_, _, _) => wrapStructuredBridgeData({
+        'available': feedback.available,
+        'canStart': feedback.canStart,
+        'reason': feedback.reason,
+      }),
+    );
+    for (final method in [
+      'acceptSessionFeedback',
+      'lookupSessionFeedback',
+      'startSessionFeedbackRun',
+      'lookupSessionFeedbackRun',
+    ]) {
+      runtime.registerBridgeFunc(library, method, (_, _, args) {
+        final completion = Completer<$Value>();
+        zone.run(() async {
+          try {
+            completion.complete(
+              wrapStructuredBridgeData(
+                await feedback.invoke(
+                  method,
+                  sessionId,
+                  args[0]!.$value as String,
+                  args.length > 1 ? args[1]!.$value as String : null,
+                  args.length > 2 ? args[2]!.$value as int : null,
+                ),
+              ),
+            );
+          } on Object catch (error, stack) {
+            completion.completeError(error, stack);
+          }
+        });
+        return $Future<$Value>.wrap(completion.future);
+      });
+    }
+  }
+
+  @override
+  void invalidate() {}
+}
+
 // Only native service behavior is substituted. The mounted EVC uses the actual
 // generated client, generated native dispatcher and production owning bridge.
 class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
   final _sessions = <String, List<PendingReviewComment>>{};
+  final events = <String>[];
+  final revisions = <String, int>{};
+  final reviews = <String, PreparedReviewSubmission>{};
+  final frozen = <String, List<PendingReviewComment>>{};
+  final handoffGates = <String, Completer<void>>{};
+  String? failBeforeHandoff;
+  String? failAfterHandoff;
+  String? preparationRejection;
+  int submissionSequence = 0;
   final snapshots = <String>[];
   final creates =
       <({String sessionId, ReviewCommentAnchor anchor, String text})>[];
@@ -5736,7 +6910,167 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
     if (snapshotFailure != null) throw snapshotFailure!;
     return ReviewDraftSnapshot(
       sessionId: sessionId,
+      revision: revisions[sessionId] ?? 0,
       comments: comments(sessionId),
+      currentReview: reviews[sessionId] == null
+          ? null
+          : _summary(reviews[sessionId]!),
+    );
+  }
+
+  void _mutated(String sessionId) =>
+      revisions.update(sessionId, (value) => value + 1, ifAbsent: () => 1);
+
+  @override
+  Future<PreparedReviewSubmission?> readReview(String sessionId) async =>
+      reviews[sessionId];
+
+  @override
+  Future<ReviewPreparationResult> prepareReview(
+    String sessionId,
+    int expectedRevision,
+  ) async {
+    final rejection =
+        preparationRejection ??
+        (expectedRevision != (revisions[sessionId] ?? 0)
+            ? 'stale_draft'
+            : comments(sessionId).isEmpty
+            ? 'empty_review'
+            : (reviews[sessionId] != null &&
+                  reviews[sessionId]!.status !=
+                      ReviewSubmissionStatus.scheduled)
+            ? 'review_conflict'
+            : null);
+    if (rejection != null) {
+      return ReviewPreparationResult(
+        submission: null,
+        rejectionCode: rejection,
+      );
+    }
+    frozen[sessionId] = List.of(comments(sessionId));
+    final result = _preparedReview(
+      sessionId: sessionId,
+      submissionId: 'review-${++submissionSequence}',
+      comments: frozen[sessionId],
+    );
+    _mutated(sessionId);
+    reviews[sessionId] = result;
+    return ReviewPreparationResult(submission: result, rejectionCode: null);
+  }
+
+  PreparedReviewSubmission _transition(
+    String sessionId,
+    String submissionId,
+    ReviewSubmissionStatus from,
+    ReviewSubmissionStatus to, {
+    String? occurrenceId,
+    String? runId,
+  }) {
+    final previous = reviews[sessionId]!;
+    if (previous.submissionId != submissionId || previous.status != from) {
+      throw StateError('private transition conflict');
+    }
+    return reviews[sessionId] = PreparedReviewSubmission(
+      sessionId: sessionId,
+      submissionId: submissionId,
+      canonicalPayload: previous.canonicalPayload,
+      commentCount: previous.commentCount,
+      schedulingAttempt: to == ReviewSubmissionStatus.schedulingPending
+          ? previous.schedulingAttempt + 1
+          : previous.schedulingAttempt,
+      status: to,
+      occurrenceId: occurrenceId ?? previous.occurrenceId,
+      runId: runId ?? previous.runId,
+    );
+  }
+
+  @override
+  Future<PreparedReviewSubmission> markDeliveryAttempted(
+    String sessionId,
+    String submissionId,
+  ) async => _transition(
+    sessionId,
+    submissionId,
+    ReviewSubmissionStatus.prepared,
+    ReviewSubmissionStatus.deliveryPending,
+  );
+
+  @override
+  Future<PreparedReviewSubmission> confirmAcceptance(
+    String sessionId,
+    String submissionId,
+    String receiptSessionId,
+    String occurrenceId,
+  ) async {
+    if (sessionId != receiptSessionId) throw StateError('foreign receipt');
+    final previous = reviews[sessionId]!;
+    if (previous.status == ReviewSubmissionStatus.accepted &&
+        previous.occurrenceId == occurrenceId) {
+      return previous;
+    }
+    final result = _transition(
+      sessionId,
+      submissionId,
+      ReviewSubmissionStatus.deliveryPending,
+      ReviewSubmissionStatus.accepted,
+      occurrenceId: occurrenceId,
+    );
+    final ids = frozen[sessionId]!.map((comment) => comment.id).toSet();
+    comments(sessionId).removeWhere((comment) => ids.contains(comment.id));
+    _mutated(sessionId);
+    return result;
+  }
+
+  @override
+  Future<PreparedReviewSubmission> markSchedulingAttempted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+  ) async => _transition(
+    sessionId,
+    submissionId,
+    ReviewSubmissionStatus.accepted,
+    ReviewSubmissionStatus.schedulingPending,
+    occurrenceId: occurrenceId,
+  );
+
+  @override
+  Future<PreparedReviewSubmission> confirmRunScheduled(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+    String runId,
+  ) async {
+    if (reviews[sessionId]!.schedulingAttempt != expectedAttempt) {
+      throw StateError('private old attempt');
+    }
+    return _transition(
+      sessionId,
+      submissionId,
+      ReviewSubmissionStatus.schedulingPending,
+      ReviewSubmissionStatus.scheduled,
+      occurrenceId: occurrenceId,
+      runId: runId,
+    );
+  }
+
+  @override
+  Future<PreparedReviewSubmission> confirmRunNotStarted(
+    String sessionId,
+    String submissionId,
+    String occurrenceId,
+    int expectedAttempt,
+  ) async {
+    if (reviews[sessionId]!.schedulingAttempt != expectedAttempt) {
+      throw StateError('private old attempt');
+    }
+    return _transition(
+      sessionId,
+      submissionId,
+      ReviewSubmissionStatus.schedulingPending,
+      ReviewSubmissionStatus.accepted,
+      occurrenceId: occurrenceId,
     );
   }
 
@@ -5765,6 +7099,7 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
       sequence: sequence,
     );
     comments(sessionId).add(result);
+    _mutated(sessionId);
     if (afterMutationFailure != null) throw afterMutationFailure!;
     return result;
   }
@@ -5800,6 +7135,7 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
       sequence: previous.sequence,
     );
     entries[index] = result;
+    _mutated(sessionId);
     if (afterMutationFailure != null) throw afterMutationFailure!;
     return result;
   }
@@ -5825,6 +7161,7 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
       );
     }
     entries.removeAt(index);
+    _mutated(sessionId);
     if (afterMutationFailure != null) throw afterMutationFailure!;
   }
 
@@ -5832,6 +7169,12 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     methods.add(method);
     payloads.add(payload);
+    events.add(method);
+    final gate = handoffGates.remove(method);
+    if (gate != null) await gate.future;
+    if (failBeforeHandoff == method) {
+      throw StateError('private handoff rejection');
+    }
     final result = await dispatcher.dispatch({
       'kind': 'request',
       'requestId': methods.length,
@@ -5840,6 +7183,9 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
     });
     if (result['ok'] != true) {
       throw StateError('private draft failure: ${result['error']}');
+    }
+    if (failAfterHandoff == method) {
+      throw StateError('private lost handoff acknowledgement');
     }
     return result['payload'];
   }
@@ -5851,7 +7197,12 @@ class _DraftBackend implements ReviewDraftService, AdeleRequestChannel {
     for (final gate in _snapshotGates) {
       if (!gate.isCompleted) {
         gate.complete(
-          ReviewDraftSnapshot(sessionId: 'canonical', comments: []),
+          ReviewDraftSnapshot(
+            sessionId: 'canonical',
+            revision: 0,
+            comments: [],
+            currentReview: null,
+          ),
         );
       }
     }

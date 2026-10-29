@@ -82,14 +82,23 @@ final class OrchestrationStrategyHostContext {
   OrchestrationStrategyHostContext({
     required this.session,
     required this.host,
+    this.expectedFeedback,
   }) {
     if (session.id != host.sessionId) {
       throw ArgumentError('Host and Session identities must match.');
+    }
+    if (expectedFeedback != null &&
+        expectedFeedback!.sessionId != session.id.value) {
+      throw ArgumentError('Expected feedback must belong to this Session.');
     }
   }
 
   final Session session;
   final OrchestrationExecutionHost host;
+
+  /// If supplied, materialization must claim this exact accepted occurrence or
+  /// fail without substituting another input. Null preserves ordinary input.
+  final SessionFeedbackReceipt? expectedFeedback;
 }
 
 /// Owns execution authority and retained approvals, not strategy sequencing.
