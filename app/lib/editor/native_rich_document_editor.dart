@@ -18,6 +18,7 @@ class NativeRichDocumentEditor extends ChangeNotifier {
       _state = _RichEditorState(
         document: RichDocumentMarkdown.decode(markdown),
         readOnly: readOnly,
+        observeInput: _observeInput,
       );
       _state!.editable = !readOnly;
       _transactions = _state!.transactionStream.listen((event) {
@@ -47,30 +48,93 @@ class NativeRichDocumentEditor extends ChangeNotifier {
   String? _unsupportedReason;
   bool _mutated = false;
   bool _disposed = false;
+  bool _editingEnabled = true;
+  bool _compositionPending = false;
+  bool _inputSettling = false;
+  int _inputSequence = 0;
   int _revision = 0;
 
   bool get isDisposed => _disposed;
   bool get readOnly => _readOnly || _unsupportedReason != null;
+  bool get editingEnabled => !_disposed && !readOnly && _editingEnabled;
   String? get unsupportedReason => _unsupportedReason;
+
+  /// Temporarily gates input without replacing the document or its undo history.
+  /// Disabling is not an IME commit. Snapshot before disabling for finalization.
+  void setEditingEnabled(bool enabled) {
+    _checkLive();
+    final effective = enabled && !readOnly;
+    if (editingEnabled == effective) return;
+    _editingEnabled = effective;
+    _state?.inputEnabled = effective;
+    _state?.editable = effective;
+    if (effective) {
+      _state?.selectionExtraInfo = {...?_state?.selectionExtraInfo}
+        ..remove(selectionExtraInfoDoNotAttachTextService);
+    }
+    _view?.editingChanged();
+    notifyListeners();
+  }
+
+  void _observeInput(TextEditingDelta delta) {
+    final composing = delta.composing.isValid && !delta.composing.isCollapsed;
+    if (delta is TextEditingDeltaNonTextUpdate &&
+        !composing &&
+        !_compositionPending &&
+        !_inputSettling) {
+      return;
+    }
+    final sequence = ++_inputSequence;
+    final wasPending = _compositionPending || _inputSettling;
+    _inputSettling = true;
+    if (composing) _compositionPending = true;
+    // In pinned desktop AppFlowy, accepted deltas finish their document and
+    // selection work through microtasks. Fence intermediate replacement state,
+    // including composition-only commits, until the following frame. Closing
+    // the input service is not evidence that a composition was committed.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_disposed || sequence != _inputSequence) return;
+      final wasPending = _compositionPending || _inputSettling;
+      _inputSettling = false;
+      if (_state?.acceptsInput == true) _compositionPending = composing;
+      if (wasPending != _compositionPending) notifyListeners();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+    if (!wasPending) notifyListeners();
+  }
 
   /// Nonempty document transaction invalidation, not a persistence revision.
   int get revision => _revision;
 
   Map<String, Object?> snapshot() {
     _checkLive();
+    final pending = _compositionPending || _inputSettling;
     return {
-      'markdown': _mutated
+      'markdown': pending
+          ? null
+          : _mutated
           ? RichDocumentMarkdown.encode(_state!.document)
           : _original,
       'revision': revision,
       'readOnly': readOnly,
+      'editingEnabled': editingEnabled,
+      'isBlank': pending
+          ? null
+          : _state == null
+          ? _original.trim().isEmpty
+          : _isBlank(_state!.document.root),
       'unsupportedReason': unsupportedReason,
+      if (pending) 'error': 'composition_pending',
     };
   }
 
+  bool _isBlank(Node node) =>
+      (node.delta?.toPlainText().trim().isEmpty ?? true) &&
+      node.children.every(_isBlank);
+
   Widget buildView() {
     _checkLive();
-    return _RichDocumentView(key: ObjectKey(this), owner: this);
+    return NativeRichDocumentEditorView._(key: ObjectKey(this), editor: this);
   }
 
   void _checkLive() {
@@ -108,9 +172,15 @@ class NativeRichDocumentEditor extends ChangeNotifier {
 }
 
 class _RichEditorState extends EditorState {
-  _RichEditorState({required super.document, required this.readOnly});
+  _RichEditorState({
+    required super.document,
+    required this.readOnly,
+    required this.observeInput,
+  });
 
   final bool readOnly;
+  final void Function(TextEditingDelta) observeInput;
+  bool inputEnabled = true;
   bool viewActive = false;
   bool _retired = false;
   final _inputGuard = _CodeInputGuard();
@@ -138,7 +208,8 @@ class _RichEditorState extends EditorState {
   }
 
   @override
-  set editable(bool value) => super.editable = value && !_retired;
+  set editable(bool value) => super.editable =
+      value && !readOnly && inputEnabled && viewActive && !_retired;
 
   @override
   set selection(Selection? value) {
@@ -151,7 +222,7 @@ class _RichEditorState extends EditorState {
       keyboard?.registerInterceptor(_inputGuard);
       _guardedService = keyboard;
     }
-    if (readOnly) {
+    if (!editable) {
       selectionExtraInfo = {
         ...?selectionExtraInfo,
         selectionExtraInfoDoNotAttachTextService: true,
@@ -192,35 +263,41 @@ class _CodeInputGuard extends AppFlowyKeyboardServiceInterceptor {
   bool _reject(EditorState state) =>
       !(state as _RichEditorState).acceptsInput || _crossesCode(state);
 
+  bool _observe(TextEditingDelta delta, EditorState state) {
+    if (_reject(state)) return true;
+    (state as _RichEditorState).observeInput(delta);
+    return false;
+  }
+
   @override
   Future<bool> interceptInsert(
     TextEditingDeltaInsertion insertion,
     EditorState editorState,
     List<CharacterShortcutEvent> characterShortcutEvents,
-  ) async => _reject(editorState);
+  ) async => _observe(insertion, editorState);
 
   @override
   Future<bool> interceptReplace(
     TextEditingDeltaReplacement replacement,
     EditorState editorState,
     List<CharacterShortcutEvent> characterShortcutEvents,
-  ) async => _reject(editorState);
+  ) async => _observe(replacement, editorState);
 
   @override
   Future<bool> interceptDelete(
     TextEditingDeltaDeletion deletion,
     EditorState editorState,
   ) async =>
-      _reject(editorState) ||
       (deletion.deletedRange.isCollapsed &&
-          _codeBoundary(editorState, forward: false));
+          _codeBoundary(editorState, forward: false)) ||
+      _observe(deletion, editorState);
 
   @override
   Future<bool> interceptNonTextUpdate(
     TextEditingDeltaNonTextUpdate update,
     EditorState editorState,
     List<CharacterShortcutEvent> characterShortcutEvents,
-  ) async => _reject(editorState);
+  ) async => _observe(update, editorState);
 }
 
 Transaction? _codeEnter(EditorState state) {
@@ -307,22 +384,22 @@ CommandShortcutEvent _guardDelete(
   },
 );
 
-class _RichDocumentView extends StatefulWidget {
-  const _RichDocumentView({super.key, required this.owner});
+class NativeRichDocumentEditorView extends StatefulWidget {
+  const NativeRichDocumentEditorView._({super.key, required this.editor});
 
-  final NativeRichDocumentEditor owner;
+  final NativeRichDocumentEditor editor;
 
   @override
-  State<_RichDocumentView> createState() => _RichDocumentViewState();
+  State<NativeRichDocumentEditorView> createState() => _RichDocumentViewState();
 }
 
-class _RichDocumentViewState extends State<_RichDocumentView> {
+class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
   final FocusNode _focus = FocusNode(debugLabel: 'rich document');
   bool _attached = false;
   bool _active = true;
   bool _focusDisposed = false;
 
-  NativeRichDocumentEditor get owner => widget.owner;
+  NativeRichDocumentEditor get owner => widget.editor;
 
   @override
   void initState() {
@@ -355,7 +432,19 @@ class _RichDocumentViewState extends State<_RichDocumentView> {
     owner._view = this;
     _attached = true;
     owner._state?.viewActive = true;
-    owner._state?.editable = !owner.readOnly;
+    owner._state?.editable = owner.editingEnabled;
+  }
+
+  void editingChanged() {
+    if (!owner.editingEnabled) _releaseInput();
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      setState(() {});
+    }
   }
 
   void _releaseInput({bool clearSelection = true}) {
@@ -410,7 +499,7 @@ class _RichDocumentViewState extends State<_RichDocumentView> {
     _active = true;
     if (_attached && !owner.isDisposed) {
       owner._state?.viewActive = true;
-      owner._state?.editable = !owner.readOnly;
+      owner._state?.editable = owner.editingEnabled;
     }
   }
 
@@ -539,7 +628,7 @@ class _RichDocumentViewState extends State<_RichDocumentView> {
       child: AppFlowyEditor(
         editorState: owner._state!,
         focusNode: _focus,
-        editable: !owner.readOnly,
+        editable: owner.editingEnabled,
         editorStyle: EditorStyle.desktop(
           padding: const EdgeInsets.all(16),
           textSpanDecorator: (context, node, index, text, before, after) =>
@@ -619,122 +708,130 @@ class _RichDocumentViewState extends State<_RichDocumentView> {
             },
           ),
           if (!owner.readOnly) ...[
-            undoCommand,
-            redoCommand,
-            CommandShortcutEvent(
-              key: 'code newline or fence',
-              command: 'enter',
-              getDescription: () => 'Code newline or create fenced code block',
-              handler: (state) {
-                if (_crossesCode(state)) return KeyEventResult.handled;
-                final transaction = _codeEnter(state);
-                if (transaction == null) return KeyEventResult.ignored;
-                unawaited(state.apply(transaction));
-                return KeyEventResult.handled;
-              },
-            ),
-            CommandShortcutEvent(
-              key: 'exit code block',
-              command: 'alt+enter',
-              getDescription: () => 'Continue in a paragraph after code',
-              handler: (state) {
-                final selection = state.selection;
-                if (selection?.isSingle != true || !_touchesCode(state)) {
-                  return KeyEventResult.ignored;
-                }
-                final path = selection!.start.path.next;
-                unawaited(
-                  state.apply(
-                    state.transaction
-                      ..insertNode(path, paragraphNode())
-                      ..afterSelection = Selection.collapsed(
-                        Position(path: path),
-                      ),
-                  ),
-                );
-                return KeyEventResult.handled;
-              },
-            ),
-            CommandShortcutEvent(
-              key: 'literal code tab',
-              command: 'tab',
-              getDescription: () => 'Insert a tab in code',
-              handler: (state) {
-                if (!_touchesCode(state)) return KeyEventResult.ignored;
-                final range = state.selection!.normalized;
-                if (range.isSingle) {
+            for (final command in [
+              undoCommand,
+              redoCommand,
+              CommandShortcutEvent(
+                key: 'code newline or fence',
+                command: 'enter',
+                getDescription: () =>
+                    'Code newline or create fenced code block',
+                handler: (state) {
+                  if (_crossesCode(state)) return KeyEventResult.handled;
+                  final transaction = _codeEnter(state);
+                  if (transaction == null) return KeyEventResult.ignored;
+                  unawaited(state.apply(transaction));
+                  return KeyEventResult.handled;
+                },
+              ),
+              CommandShortcutEvent(
+                key: 'exit code block',
+                command: 'alt+enter',
+                getDescription: () => 'Continue in a paragraph after code',
+                handler: (state) {
+                  final selection = state.selection;
+                  if (selection?.isSingle != true || !_touchesCode(state)) {
+                    return KeyEventResult.ignored;
+                  }
+                  final path = selection!.start.path.next;
                   unawaited(
                     state.apply(
-                      state.transaction..replaceText(
-                        state.getNodeAtPath(range.start.path)!,
-                        range.startIndex,
-                        range.length,
-                        '\t',
-                        attributes: {},
-                      ),
+                      state.transaction
+                        ..insertNode(path, paragraphNode())
+                        ..afterSelection = Selection.collapsed(
+                          Position(path: path),
+                        ),
                     ),
                   );
-                }
-                return KeyEventResult.handled;
-              },
-            ),
-            convertToParagraphCommand.copyWith(
-              handler: (state) {
-                if (_codeBoundary(state, forward: false)) {
                   return KeyEventResult.handled;
-                }
-                final selection = state.selection;
-                final node = selection == null
-                    ? null
-                    : state.getNodeAtPath(selection.start.path);
-                if (selection?.isCollapsed == true &&
-                    selection!.start.offset == 0 &&
-                    node != null &&
-                    (node.children.isNotEmpty || node.path.length > 1)) {
-                  return KeyEventResult.handled;
-                }
-                return convertToParagraphCommand.handler(state);
-              },
-            ),
-            _guardDelete(backspaceCommand, forward: false),
-            _guardDelete(deleteLeftWordCommand, forward: false, word: true),
-            _guardDelete(deleteLeftSentenceCommand, forward: false),
-            _guardDelete(deleteCommand, forward: true),
-            _guardDelete(deleteRightWordCommand, forward: true, word: true),
-            for (final event in [
-              toggleBoldCommand,
-              toggleItalicCommand,
-              toggleCodeCommand,
-            ])
-              event.copyWith(
-                handler: (state) => _touchesCode(state)
-                    ? KeyEventResult.handled
-                    : event.handler(state),
+                },
               ),
-            cutCommand.copyWith(
-              handler: (state) {
-                // Upstream collapsed Cut deletes the block, including the last
-                // editable paragraph. Only cut an explicit text selection.
-                if (state.selection == null || state.selection!.isCollapsed) {
-                  return KeyEventResult.ignored;
-                }
-                if (_touchesCode(state)) {
-                  unawaited(_copyCode(cut: true));
+              CommandShortcutEvent(
+                key: 'literal code tab',
+                command: 'tab',
+                getDescription: () => 'Insert a tab in code',
+                handler: (state) {
+                  if (!_touchesCode(state)) return KeyEventResult.ignored;
+                  final range = state.selection!.normalized;
+                  if (range.isSingle) {
+                    unawaited(
+                      state.apply(
+                        state.transaction..replaceText(
+                          state.getNodeAtPath(range.start.path)!,
+                          range.startIndex,
+                          range.length,
+                          '\t',
+                          attributes: {},
+                        ),
+                      ),
+                    );
+                  }
                   return KeyEventResult.handled;
-                }
-                return cutCommand.handler(state);
-              },
-            ),
-            CommandShortcutEvent(
-              key: 'paste plain text',
-              command: 'ctrl+v,ctrl+shift+v',
-              macOSCommand: 'cmd+v,cmd+shift+v',
-              getDescription: () => 'Paste plain text',
-              handler: (_) {
-                unawaited(_paste());
-                return KeyEventResult.handled;
-              },
-            ),
+                },
+              ),
+              convertToParagraphCommand.copyWith(
+                handler: (state) {
+                  if (_codeBoundary(state, forward: false)) {
+                    return KeyEventResult.handled;
+                  }
+                  final selection = state.selection;
+                  final node = selection == null
+                      ? null
+                      : state.getNodeAtPath(selection.start.path);
+                  if (selection?.isCollapsed == true &&
+                      selection!.start.offset == 0 &&
+                      node != null &&
+                      (node.children.isNotEmpty || node.path.length > 1)) {
+                    return KeyEventResult.handled;
+                  }
+                  return convertToParagraphCommand.handler(state);
+                },
+              ),
+              _guardDelete(backspaceCommand, forward: false),
+              _guardDelete(deleteLeftWordCommand, forward: false, word: true),
+              _guardDelete(deleteLeftSentenceCommand, forward: false),
+              _guardDelete(deleteCommand, forward: true),
+              _guardDelete(deleteRightWordCommand, forward: true, word: true),
+              for (final event in [
+                toggleBoldCommand,
+                toggleItalicCommand,
+                toggleCodeCommand,
+              ])
+                event.copyWith(
+                  handler: (state) => _touchesCode(state)
+                      ? KeyEventResult.handled
+                      : event.handler(state),
+                ),
+              cutCommand.copyWith(
+                handler: (state) {
+                  // Upstream collapsed Cut deletes the block, including the last
+                  // editable paragraph. Only cut an explicit text selection.
+                  if (state.selection == null || state.selection!.isCollapsed) {
+                    return KeyEventResult.ignored;
+                  }
+                  if (_touchesCode(state)) {
+                    unawaited(_copyCode(cut: true));
+                    return KeyEventResult.handled;
+                  }
+                  return cutCommand.handler(state);
+                },
+              ),
+              CommandShortcutEvent(
+                key: 'paste plain text',
+                command: 'ctrl+v,ctrl+shift+v',
+                macOSCommand: 'cmd+v,cmd+shift+v',
+                getDescription: () => 'Paste plain text',
+                handler: (_) {
+                  unawaited(_paste());
+                  return KeyEventResult.handled;
+                },
+              ),
+            ])
+              command.copyWith(
+                handler: (state) => (state as _RichEditorState).acceptsInput
+                    ? command.handler(state)
+                    : KeyEventResult.handled,
+              ),
           ],
         ],
       ),

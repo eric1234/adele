@@ -391,12 +391,24 @@ native implementations supply their behavior; calling a stub natively throws
   owner after the plugin has loaded its content; `buildRichDocumentEditor(handle)`
   displays it. `subscribeRichDocumentEditor` and `unsubscribeRichDocumentEditor`
   retain the same callback identity for coalesced invalidations with no document
-  payload. `snapshotRichDocumentEditor(handle)` explicitly copies `markdown`,
-  `revision`, `readOnly`, and `unsupportedReason`. Unsupported imports remain
+  payload. `setRichDocumentEditorEditingEnabled(handle, enabled)` temporarily gates
+  editing without replacing the document or undo history. Disabling synchronously
+  closes already-focused input; re-enabling neither focuses nor upgrades immutable
+  construction-time read-only/unsupported policy. Retired/released handles cannot
+  be enabled. `snapshotRichDocumentEditor(handle)` explicitly copies `markdown`,
+  `revision`, `readOnly`, `editingEnabled`, `isBlank`, and `unsupportedReason`.
+  `isBlank` checks model text rather than Markdown delimiters, so empty heading,
+  list, and code scaffolding remains blank. Unsupported imports use raw source
+  text for that check and remain
   read-only with their original source intact; an unsupported export returns null
   Markdown and `error: 'unsupported_serialization'`, never degraded or stale content
-  masquerading as a successful snapshot. Revisions describe native document
-  transactions, not selection, persistence versions, dirty state, or save success.
+  masquerading as a successful snapshot. Active composition or a settling native
+  input delta returns null `markdown`/`isBlank` and `error: 'composition_pending'`.
+  Save/Send/departure must wait for composition completion and retry; disabling,
+  blur, or unmount is not a commit. Snapshot before disabling for finalization.
+  Composition completion and editing-gate changes invalidate subscribers even
+  without a revision change. Revisions describe native document transactions, not
+  selection, persistence versions, dirty state, or save success.
   `releaseRichDocumentEditor(handle)` revokes and disposes that owner. At most 16
   editors are retained by one presentation. Rebuilds and native view unmount/remount
   preserve the same live owner's content and undo. Presentation retirement,
@@ -405,9 +417,10 @@ native implementations supply their behavior; calling a stub natively throws
   creation and cannot reuse handles. There is no document identity, global lookup,
   controller/transaction API, AppFlowy type, storage, or Chat behavior here. The
   [native adapter and supported Markdown limits](../../app/README.md#native-rich-document-editor)
-  remain application-owned. Production plugin descriptor wiring is deliberately
-  outside this primitive; the compiled fixture uses normal `PreparedFrontend`
-  hosting with an explicitly supplied bridge.
+  remain application-owned. Production Main Content descriptors must explicitly
+  opt in with `richDocumentEditor: true` (default false). Only mounted pane
+  presentations receive this bridge, not initializers, actions, or finite
+  operations. This grants no file, backend, or Session execution authority.
 - `environment_access_bridge.dart` supplies only `readEnvironmentTextFile(path)`
   and conditional `replaceEnvironmentTextFile(path, text, expectedRevision)` for
   an admitted finite operation's captured Environment. Views, initializers, and

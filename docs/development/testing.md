@@ -275,8 +275,23 @@ All app tests are automatically discovered by `adele_desktop` and its CI shards;
 public interpreted-stub tests belong to `adele_ui`. Select the existing CodeForge,
 Terminal, prepared frontend failure, Main Content, and presentation lifecycle tests
 when changing shared hosting, with the native prerequisites described below.
-Keep app Flutter commands serialized. These checks do not establish human IME
-acceptance, production Chat integration, or other-platform packaging.
+Keep app Flutter commands serialized. These native checks do not establish human
+IME acceptance or other-platform packaging. Production Chat additionally requires
+the compiled frontend and normal application checks below.
+
+For rich Chat integration, run
+`dart tools/adele.dart test --target chat_strategy_frontend` from the root,
+plus the prepared Main Content/catalog and
+normal Chat application suites. The frontend suite retains its draft queue,
+acceptance, navigation, history, and retirement checks with actual AppFlowy input;
+it also exercises formatting, code, serialization refusal, composition, and native
+owner replacement. `app/test/core/normal_chatgpt_run_integration_test.dart` owns
+normal prepared Chat activation, durable draft restoration, and fake-provider Run
+settlement, including coexistence with Source, Console, and Settings. These tests
+need no paid model credentials. That app suite requires the existing native
+CodeForge test library and loader environment, unlike the focused rich-editor tests.
+Descriptor validation belongs to `plugin_runtime`; preparation/compiler source
+inventories and production import boundaries belong to `adele_tools`.
 
 For dependency-preparation changes, `dart tools/adele.dart test --target adele_tools`
 owns local archive/patch/hash

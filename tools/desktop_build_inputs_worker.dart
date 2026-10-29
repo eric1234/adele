@@ -82,6 +82,7 @@ const _frontends =
         ui: [
           'main_content_bridge.dart',
           'owning_backend_bridge.dart',
+          'rich_document_editor_bridge.dart',
           'session_execution_bridge.dart',
           'session_presentation_lifecycle_bridge.dart',
           'inspection_display.dart',

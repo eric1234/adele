@@ -44,6 +44,9 @@ void unobserveHandle(String handle, void Function() listener) =>
 
 void releaseHandle(String handle) => releaseRichDocumentEditor(handle);
 
+void enableHandle(String handle, bool enabled) =>
+    setRichDocumentEditorEditingEnabled(handle, enabled);
+
 class RichDocumentFixture extends StatefulWidget {
   RichDocumentFixture(this.markdown, this.readOnly, [this.initialHandle = '']);
 

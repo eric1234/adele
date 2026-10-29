@@ -5,10 +5,12 @@ the plugin-owned Chat contract, and public `adele_ui` bridges, not the applicati
 kernel, or Chat backend implementation.
 
 The generated `ChatSessionServiceClient` loads canonical snapshots, saves the
-plain-text Draft Request, and submits it over `OwningBackendRequestChannel`.
+Markdown String Draft Request, and submits it over `OwningBackendRequestChannel`.
 Its `mainContent` descriptor uses ordinary order 100, requests `sessionExecution`,
 explicitly allowlists the generated service ID, and requires `owningBackend`
-strategy affinity. `initializeChatMainContent` reads only
+strategy affinity, and opts into `richDocumentEditor`. Only its admitted mounted
+pane receives that native bridge; initialization receives no editor authority.
+`initializeChatMainContent` reads only
 `readMainContentContext()` (`sessionId`, `strategyId`, `taskId`) and opens local pane
 `chat` only when the strategy matches the public `chatStrategyId`. A mismatch opens
 nothing and acquires no execution controller or backend service. The host neither
@@ -18,7 +20,7 @@ For an admitted pane, generic hosting validates and captures the exact sibling
 backend connection and pins execution to its strategy binding. Neither service
 requests nor later Runs silently select a replacement generation.
 
-The backend owns the durable Draft Request; the frontend restores its exact text
+The backend owns the durable Draft Request; the frontend restores its exact Markdown
 on initial load and owns immediate local edits, asynchronous save/acceptance/start
 state, history rendering, and a presentation-local mapping from accepted entry IDs
 to opaque Run handles. Saves are sequential with one in flight and only the latest
@@ -27,7 +29,9 @@ write fails. Failure of the latest value remains visible without erasing text or
 automatically retrying that revision; another edit, Retry save, Send, or a new
 deactivation attempt can retry.
 Failed initial snapshot loading remains explicitly retryable, and later history reads cannot
-overwrite newer local edits. Disposal detaches subscriptions and rejects late
+overwrite newer local edits. The native editor is created only after a successful
+canonical snapshot; hydration itself issues no save. Disposal releases its editor
+handle, detaches subscriptions and rejects late
 settlements without issuing queued saves or starting a Run.
 
 The contributed pane registers a `Future<bool>` deactivation callback through
@@ -36,17 +40,21 @@ Before actual Session departure, the host suppresses input and aggregates this
 hook with those of other contributed panes while the view and its backend channel
 remain live. Chat joins the sequential save queue
 until the latest local draft is acknowledged. A failed save returns false, keeping
-the view, text, and error available for retry; an in-flight Send also refuses
+the view, native document/undo, and error available for retry; an in-flight Send also refuses
 deactivation rather than allowing partial acceptance/navigation. The hook neither
 submits a message nor starts a Run. Forced disposal or generation retirement still
 cannot guarantee durability of unacknowledged edits. Title/order/width changes and
 pane focus do not invoke Session departure. Frontend retirement revokes the pane's
 services and callbacks, not the independently owned Run.
 
-Send disables duplicate submission, flushes the latest local draft, then asks the
+Send takes a safe current Markdown snapshot, disables duplicate submission,
+flushes the latest local draft, then asks the
 backend to atomically accept and clear it. Save or submission failure preserves
-the composer and starts no Run. Acceptance clears the composer before scheduling;
-if scheduling fails, Send retries only that accepted entry's Run, even with the
+the same composer and undo history and starts no Run. Acceptance releases the old
+handle/subscription and creates a new empty owner before scheduling. This is a
+fresh undo boundary: Undo cannot restore a submitted request as an unsent draft.
+Delayed old-owner callbacks cannot repopulate it. If
+scheduling fails, Send retries only that accepted entry's Run, even with the
 empty composer. Successful scheduling retains the entry/activity mapping. Editing
 remains disabled while submitting, awaiting an accepted entry's Run retry, or
 during active Runs. The host's semantic `sessionStateRevision` changes after
@@ -54,13 +62,49 @@ strategy materialization and terminal settlement. Chat captures it before initia
 hydration, checks it after subscribing, and rechecks asynchronous history reads.
 This discovers a late Run association and a final answer committed during loading
 without polling or reloading history on ordinary activity notifications. Failure
-never synthesizes an answer. There is
-no cross-window draft conflict resolution or rich-document editor in this slice.
+never synthesizes an answer. There is no cross-window draft conflict resolution.
 
-The existing evaluated `TextField` remains single-line. Storage and initial
-restoration retain line breaks exactly, but Flutter's single-line input formatter
-filters them on editing. Multiline composition requires extending the pinned
-evaluator's `TextField` bridge, which currently exposes no `maxLines` option.
+## Rich Composer
+
+The shared native editor owns formatting, selection, input, document serialization,
+and undo/redo; Chat owns persistence and submission. Ordinary history refresh,
+Run updates, and layout rebuilding retain the same native document. Session
+departure flushes through the existing deactivation protocol; a later presentation
+hydrates a fresh owner from persisted Markdown. No AppFlowy types or JSON cross
+the production plugin boundary, and core never reads Chat state to build a document.
+
+Document invalidations carry no content. Chat takes explicit Markdown snapshots
+when saving or finalizing; while a backend write is in flight it coalesces native
+changes until that write settles. Native revision is distinct from Chat's local
+draft revision and save acknowledgement. Selection/focus alone do not write drafts.
+An `unsupported_serialization` result never saves null, stale, or degraded content:
+the native document stays available for correction/Undo, an explicit error appears,
+and Send and ordinary departure are refused. Previously acknowledged content
+remains persisted, without claiming to include the failed local edit.
+
+Unfinished IME composition likewise blocks snapshots, saving, Send, and departure
+with feedback until composition safely completes. Disabling input is not treated
+as a composition commit. Native editability follows Chat's existing `canStart`,
+submission, and accepted-entry retry restrictions, including execution changes
+during asynchronous settlement, without replacing the owner or its undo history.
+
+The composer has a bounded 180-pixel editing viewport with native vertical scrolling;
+auto-growth is a later UI refinement. Enter edits document content, and in fenced
+code inserts a literal newline. The visible Send button is the submission path;
+Ctrl/Cmd+Enter is not assigned in this slice. Normal selection, plain-text clipboard,
+formatting and undo/redo use the shared editor's supported subset and safeguards.
+Paragraphs, headings, basic inline styles, lists, quotes, inline code, and top-level
+fenced code are supported; see the [native Markdown boundary](../../../../app/README.md#markdown-boundary)
+for exact limits and normalization after editing. Blank native text cannot submit
+empty heading/list/code scaffolding; legitimate nonblank Markdown is not trimmed.
+
+Unsupported restored Markdown remains the exact original in the native read-only
+representation, with an explanation and unchanged submission available. It is not
+partially imported, automatically rewritten, or converted to a second plain editor.
+Selections spanning code and other blocks can be selected/copied, but destructive
+editing across them remains blocked; the composer displays that limitation. Edit
+within one block instead. Expanded editing, raw-Markdown editing, slash commands,
+and Agent document editing are not implemented.
 
 Chat decides which completed model activities appear between messages and whether
 to show a single compact output or a narrated group. The generic Session bridge

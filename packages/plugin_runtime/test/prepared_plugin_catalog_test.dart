@@ -536,6 +536,7 @@ void main() {
       expect(session.displaySourceFileOperation, isNull);
       expect(session.retainedData, isFalse);
       expect(session.nativeCodeEditor, isFalse);
+      expect(session.richDocumentEditor, isFalse);
       expect(session.environmentTextFiles, isFalse);
       expect(session.canRequestSourceDisplay, isFalse);
       expect(() => session.actions.clear(), throwsUnsupportedError);
@@ -859,6 +860,7 @@ void main() {
     String? displaySourceFileOperation,
     bool retainedData = false,
     bool nativeCodeEditor = false,
+    bool richDocumentEditor = false,
     bool environmentTextFiles = false,
     bool canRequestSourceDisplay = false,
   }) => PreparedMainContentPresentation(
@@ -878,11 +880,49 @@ void main() {
     displaySourceFileOperation: displaySourceFileOperation,
     retainedData: retainedData,
     nativeCodeEditor: nativeCodeEditor,
+    richDocumentEditor: richDocumentEditor,
     environmentTextFiles: environmentTextFiles,
     canRequestSourceDisplay: canRequestSourceDisplay,
   );
 
   for (final granted in [false, true]) {
+    test(
+      'Main Content rich-document editor is an independent opt-in $granted',
+      () async {
+        final descriptor = mainContent(richDocumentEditor: granted);
+        expect(descriptor.richDocumentEditor, granted);
+        await install(
+          'rich-editor',
+          _manifest(
+            components: {
+              'frontend': _frontend(presentations: [descriptor.toJson()]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        final parsed =
+            installation.frontend!.presentations.single
+                as PreparedMainContentPresentation;
+        expect(parsed.richDocumentEditor, granted);
+        expect(parsed.toJson()['richDocumentEditor'], granted);
+        expect(parsed.actions, isEmpty);
+        expect(parsed.operations, isEmpty);
+        expect(parsed.backendServices, isEmpty);
+        expect(parsed.optionalBackendServices, isEmpty);
+        expect(parsed.capabilities, isEmpty);
+        expect(parsed.environmentReadCapabilities, isEmpty);
+        expect(parsed.environmentBufferedProcessCapabilities, isEmpty);
+        expect(parsed.environmentTextFiles, isFalse);
+        expect(parsed.sessionExecution, isFalse);
+        expect(parsed.nativeCodeEditor, isFalse);
+        expect(parsed.retainedData, isFalse);
+        expect(parsed.canRequestSourceDisplay, isFalse);
+      },
+    );
+
     test(
       'Main Content source-display request is an independent opt-in $granted',
       () async {
@@ -1101,6 +1141,7 @@ void main() {
                 displaySourceFileOperation: 'display',
                 retainedData: true,
                 nativeCodeEditor: true,
+                richDocumentEditor: true,
                 environmentTextFiles: true,
                 canRequestSourceDisplay: true,
               )
@@ -1139,6 +1180,7 @@ void main() {
           if (populated) 'displaySourceFileOperation': 'display',
           'retainedData': populated,
           'nativeCodeEditor': populated,
+          'richDocumentEditor': populated,
           'environmentTextFiles': populated,
           'canRequestSourceDisplay': populated,
         });
@@ -1216,6 +1258,7 @@ void main() {
       expect(descriptor.operations, {'open': 'openSource'});
       expect(descriptor.retainedData, isFalse);
       expect(descriptor.nativeCodeEditor, isFalse);
+      expect(descriptor.richDocumentEditor, isFalse);
       expect(descriptor.environmentTextFiles, isFalse);
       expect(mainContent(retainedData: true).operations, isEmpty);
       expect(
@@ -1312,6 +1355,7 @@ void main() {
     for (final field in [
       'retainedData',
       'nativeCodeEditor',
+      'richDocumentEditor',
       'environmentTextFiles',
       'canRequestSourceDisplay',
     ])
@@ -1390,6 +1434,7 @@ void main() {
       {...mainContentAction, 'label': 'L' * 129},
       {...mainContentAction, 'entrypoint': 'Source.open'},
       {...mainContentAction, 'unknown': true},
+      {...mainContentAction, 'richDocumentEditor': true},
       {
         ...mainContentAction,
         'environmentReadCapabilities': [mainContentCapability],
@@ -1893,6 +1938,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
+      'richDocumentEditor',
     ]) {
       test('${descriptor['role']} rejects $field grants', () async {
         await install(
@@ -1904,7 +1950,9 @@ void main() {
                 presentations: [
                   {
                     ...descriptor,
-                    field: field == 'canRequestSourceDisplay'
+                    field:
+                        field == 'canRequestSourceDisplay' ||
+                            field == 'richDocumentEditor'
                         ? true
                         : <Object?>[],
                   },
@@ -1935,6 +1983,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
+      'richDocumentEditor',
     ]) {
       test('${descriptor['kind']} rejects $field declarations', () async {
         await install(
@@ -1947,7 +1996,9 @@ void main() {
                 'extensions': [
                   {
                     ...descriptor,
-                    field: field == 'canRequestSourceDisplay'
+                    field:
+                        field == 'canRequestSourceDisplay' ||
+                            field == 'richDocumentEditor'
                         ? true
                         : <Object?>[],
                   },

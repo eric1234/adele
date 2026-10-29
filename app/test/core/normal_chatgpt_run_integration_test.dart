@@ -15,6 +15,8 @@ import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
+import 'package:adele_desktop/editor/rich_document_markdown.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/environment_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
@@ -40,6 +42,7 @@ import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
@@ -1196,7 +1199,7 @@ void main() {
         expect(fixture.runIds.values, [runId]);
         expect(outbound, hasLength(1));
         const draft = 'Chat remains editable after cancelling exit.';
-        await tester.enterText(_composer(), draft);
+        await _enterComposer(tester, draft);
         await _terminalUntil(
           tester,
           () async =>
@@ -1478,9 +1481,8 @@ void main() {
           final chatWidget = tester.widget<$StatefulWidget$bridge>(chatView);
           final chatState = tester.state(chatView);
           final chatRuntime = chatWidget.$runtime;
-          final composerController = tester
-              .widget<TextField>(_composer())
-              .controller!;
+          var composerOwner = _composerOwner(tester);
+          var composerState = _composerState(tester);
           final editorA = resources.editor(session.id, 'editor-a')!;
           final nativeA = tester.widget<CodeForge>(find.byType(CodeForge));
           final editorElementA = tester.element(find.byType(CodeForge));
@@ -1495,10 +1497,9 @@ void main() {
               tester.widget<$StatefulWidget$bridge>(chatView).$runtime,
               same(chatRuntime),
             );
-            expect(
-              tester.widget<TextField>(_composer()).controller,
-              same(composerController),
-            );
+            expect(_composerOwner(tester), same(composerOwner));
+            expect(_composerState(tester), same(composerState));
+            expect(composerOwner.isDisposed, isFalse);
             expect(resources.editor(session.id, 'editor-a'), same(editorA));
             expect(editorA.isDisposed, isFalse);
             final a = find.byWidgetPredicate(
@@ -1525,11 +1526,12 @@ void main() {
             await tester.pump();
           }
 
-          await tester.enterText(_composer(), draft);
+          await _enterComposer(tester, draft);
           await _terminalUntil(
             tester,
             () async =>
-                (await chat.snapshot(session.id.value)).draftRequest == draft,
+                (await chat.snapshot(session.id.value)).draftRequest ==
+                _plainMarkdown(draft),
             'exact backend draft save',
           );
           await action('Open B');
@@ -1589,8 +1591,11 @@ void main() {
           expect(editorB.isDisposed, isTrue);
           expect(resources.editor(session.id, 'editor-b'), isNull);
           retainedChat();
-          expect(composerController.text, draft);
-          expect((await chat.snapshot(session.id.value)).draftRequest, draft);
+          expect(_composerMarkdown(tester), _plainMarkdown(draft));
+          expect(
+            (await chat.snapshot(session.id.value)).draftRequest,
+            _plainMarkdown(draft),
+          );
           expect((await chat.snapshot(session.id.value)).entries, isEmpty);
           expect(fixture.runIds.values, isEmpty);
           expect(outbound, isEmpty);
@@ -1603,9 +1608,14 @@ void main() {
           );
           final runId = fixture.runIds.values.single;
           final submitted = await chat.snapshot(session.id.value);
-          expect(submitted.entries.single.content, draft);
+          expect(submitted.entries.single.content, _plainMarkdown(draft));
           expect(submitted.entries.single.runId, runId.value);
           expect(runtime.store.runRecord(runId), isNull);
+          expect(composerOwner.isDisposed, isTrue);
+          expect(_composerOwner(tester), isNot(same(composerOwner)));
+          expect(_composerState(tester), isNot(same(composerState)));
+          composerOwner = _composerOwner(tester);
+          composerState = _composerState(tester);
           await action('Open B');
           await _terminalUntil(
             tester,
@@ -1640,7 +1650,7 @@ void main() {
           expect(fixture.status(tester).isAdvancing, isTrue);
           expect(fixture.status(tester).failureMessage, isNull);
           expect(outbound, hasLength(1));
-          expect(composerController.text, '');
+          expect(_composerMarkdown(tester), '');
           expect((await chat.snapshot(session.id.value)).draftRequest, '');
           expect(
             editorA.snapshot()['text'],
@@ -1768,7 +1778,7 @@ void main() {
           expect(outbound, hasLength(1));
           final snapshot = await chat.snapshot(session.id.value);
           expect(snapshot.entries.map((entry) => (entry.role, entry.content)), [
-            ('user', draft),
+            ('user', _plainMarkdown(draft)),
             ('assistant', answer),
           ]);
           expect(snapshot.entries.first.runId, runId.value);
@@ -1842,7 +1852,7 @@ void main() {
           final prompt =
               ((users.single['content']! as List).single as Map)['text'];
           final label = prompts.entries
-              .singleWhere((entry) => entry.value == prompt)
+              .singleWhere((entry) => _plainMarkdown(entry.value) == prompt)
               .key;
           final other = label == 'A' ? 'B' : 'A';
           expect(users.single, _userInput(prompts[label]!));
@@ -2259,9 +2269,9 @@ void main() {
       );
       childB1.exited = true;
       await _projectionText(tester, consoleHost, 'CONCURRENT_B1_END');
-      expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+      expect(_composerState(tester).editable, isTrue);
       const draftB = 'B remains usable while A needs attention.';
-      await tester.enterText(_composer(), draftB);
+      await _enterComposer(tester, draftB);
       await browse();
       expect(find.textContaining('1 waiting'), findsOneWidget);
       await _terminalTap(tester, find.text(taskA.title));
@@ -2288,7 +2298,7 @@ void main() {
         (await chat.snapshot(
           sessionA.id.value,
         )).entries.map((entry) => (entry.role, entry.content, entry.runId)),
-        [('user', prompts['A'], runA.value)],
+        [('user', _plainMarkdown(prompts['A']!), runA.value)],
       );
       // Old A and foreign B view callbacks have no current presentation authority.
       statusA.onDecision(approvalA1, true);
@@ -2324,7 +2334,13 @@ void main() {
       await _projectionText(tester, consoleHost, 'CONCURRENT_B1_END');
       expect(console.selectedTab, same(tabB1));
       expect(console.eligibleTabs, [tabB1]);
-      expect(tester.widget<TextField>(_composer()).controller!.text, draftB);
+      expect(_composerMarkdown(tester), draftB);
+      expect(
+        _composerState(
+          tester,
+        ).document.root.children.single.delta!.toPlainText(),
+        draftB,
+      );
       final visibleB = context.snapshot;
       final notifications = selections.length;
       childA2.release('exit');
@@ -2361,7 +2377,7 @@ void main() {
             (entry) => (entry.role, entry.content, entry.runId),
           ),
           [
-            ('user', prompts[label], runId.value),
+            ('user', _plainMarkdown(prompts[label]!), runId.value),
             ('assistant', answers[label], null),
           ],
         );
@@ -2453,7 +2469,7 @@ void main() {
       await _projectionText(tester, consoleHost, 'CONCURRENT_A1_END');
       expect(fixture.status(tester).pendingApproval, isNull);
       expect(fixture.status(tester).failureMessage, isNull);
-      expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+      expect(_composerState(tester).editable, isTrue);
       expect(fixture.runIds.values, [runA, runB]);
       await _terminalReaped(
         tester,
@@ -4310,21 +4326,14 @@ void main() {
           findsOneWidget,
         );
 
-        final composer = find.descendant(
-          of: host,
-          matching: find.byType(TextField),
-        );
         const partialDraft = '  Explain the approval workflow\twithout...  ';
-        await tester.enterText(composer, partialDraft);
-        expect(
-          tester.widget<TextField>(composer).controller!.text,
-          partialDraft,
-        );
+        await _enterComposer(tester, partialDraft);
+        expect(_composerMarkdown(tester), _plainMarkdown(partialDraft));
         await _pumpUntil(
           tester,
           () async =>
               (await chat.snapshot(session.id.value)).draftRequest ==
-              partialDraft,
+              _plainMarkdown(partialDraft),
         );
         expect((await chat.snapshot(session.id.value)).entries, isEmpty);
         expect(fixture.runIds.values, isEmpty);
@@ -4339,9 +4348,9 @@ void main() {
         _rethrowEndpointFailure(endpointFailures);
         final first = await chat.snapshot(session.id.value);
         expect(first.draftRequest, '');
-        expect(tester.widget<TextField>(composer).controller!.text, '');
+        expect(_composerMarkdown(tester), '');
         expect(first.entries.map((entry) => (entry.role, entry.content)), [
-          ('user', _initialPrompt),
+          ('user', _plainMarkdown(_initialPrompt)),
           ('assistant', _initialAnswer),
         ]);
         expect(first.entries.map((entry) => entry.id).toSet(), hasLength(2));
@@ -4374,22 +4383,15 @@ void main() {
         final waiting = await chat.snapshot(session.id.value);
         expect(waiting.draftRequest, '');
         expect(waiting.entries.map((entry) => (entry.role, entry.content)), [
-          ('user', _initialPrompt),
+          ('user', _plainMarkdown(_initialPrompt)),
           ('assistant', _initialAnswer),
-          ('user', _prompt),
+          ('user', _plainMarkdown(_prompt)),
         ]);
         expect(
           waiting.entries.take(2).map((entry) => entry.id),
           first.entries.map((entry) => entry.id),
         );
-        expect(
-          tester
-              .widget<TextField>(
-                find.descendant(of: host, matching: find.byType(TextField)),
-              )
-              .enabled,
-          isFalse,
-        );
+        expect(_composerState(tester).editable, isFalse);
         expect(find.text(_narration), findsOneWidget);
         _expectNoSecrets(tester);
 
@@ -4483,9 +4485,9 @@ void main() {
         final canonical = await chat.snapshot(session.id.value);
         expect(canonical.draftRequest, '');
         expect(canonical.entries.map((entry) => (entry.role, entry.content)), [
-          ('user', _initialPrompt),
+          ('user', _plainMarkdown(_initialPrompt)),
           ('assistant', _initialAnswer),
-          ('user', _prompt),
+          ('user', _plainMarkdown(_prompt)),
           ('assistant', answer),
         ]);
         expect(
@@ -4543,14 +4545,7 @@ void main() {
         expect(fixture.status(tester).pendingApproval, isNull);
         expect(fixture.status(tester).failureMessage, isNull);
         expect(fixture.status(tester).isAdvancing, isFalse);
-        expect(
-          tester
-              .widget<TextField>(
-                find.descendant(of: host, matching: find.byType(TextField)),
-              )
-              .enabled,
-          isTrue,
-        );
+        expect(_composerState(tester).editable, isTrue);
         expect(fixture.runIds.values, hasLength(2));
         expect(
           await _sourceSnapshot(fixture.source, taskWorktree: worktree),
@@ -4577,7 +4572,7 @@ void main() {
 
         final sessionRunIds = List<RunId>.of(fixture.runIds.values);
         const retainedDraft = '  Continue after restart:\tkeep this draft  ';
-        await tester.enterText(composer, retainedDraft);
+        await _enterComposer(tester, retainedDraft);
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(
           tester,
@@ -4588,7 +4583,7 @@ void main() {
         expect(_sessionRow(session.id), findsOneWidget);
         expect(
           (await chat.snapshot(session.id.value)).draftRequest,
-          retainedDraft,
+          _plainMarkdown(retainedDraft),
         );
 
         // Duplicate Chat labels require selection by the secondary Session ID,
@@ -4606,12 +4601,12 @@ void main() {
             .runActivitiesForSession(sibling.id)
             .single;
         const siblingDraft = '  Same Task, different Session\t  ';
-        await tester.enterText(_composer(), siblingDraft);
+        await _enterComposer(tester, siblingDraft);
         await _breadcrumb(tester, 'project-breadcrumb');
         await _pumpUntil(tester, () => fixture.shell(tester).task == null);
         expect(
           (await chat.snapshot(sibling.id.value)).draftRequest,
-          siblingDraft,
+          _plainMarkdown(siblingDraft),
         );
         await fixture.createTask(tester, 'Another retained Task');
         final otherTask = fixture.shell(tester).task!;
@@ -4629,12 +4624,12 @@ void main() {
             .runActivitiesForSession(otherSession.id)
             .single;
         const otherDraft = '  Other Task draft\t  ';
-        await tester.enterText(_composer(), otherDraft);
+        await _enterComposer(tester, otherDraft);
         await _breadcrumb(tester, 'project-breadcrumb');
         await _pumpUntil(tester, () => fixture.shell(tester).task == null);
         expect(
           (await chat.snapshot(otherSession.id.value)).draftRequest,
-          otherDraft,
+          _plainMarkdown(otherDraft),
         );
         final inventory = await _git(fixture.source, [
           'worktree',
@@ -4781,16 +4776,24 @@ void main() {
           () => find.text(_narration).evaluate().isNotEmpty,
         );
         expect(_session(tester), same(restoredSession));
+        expect(_composerMarkdown(tester), _plainMarkdown(retainedDraft));
         expect(
-          tester.widget<TextField>(_composer()).controller!.text,
+          _composerState(
+            tester,
+          ).document.root.children.single.delta!.toPlainText(),
           retainedDraft,
         );
-        expect(restoredChat.draftRequest, retainedDraft);
-        for (final text in [_initialPrompt, _initialAnswer, _prompt, answer]) {
+        expect(restoredChat.draftRequest, _plainMarkdown(retainedDraft));
+        for (final text in [
+          _plainMarkdown(_initialPrompt),
+          _initialAnswer,
+          _plainMarkdown(_prompt),
+          answer,
+        ]) {
           expect(find.text(text), findsOneWidget);
         }
         expect(
-          tester.getTopLeft(find.text(_prompt)).dy,
+          tester.getTopLeft(find.text(_plainMarkdown(_prompt))).dy,
           lessThan(tester.getTopLeft(find.text(_narration)).dy),
         );
         expect(
@@ -4852,11 +4855,14 @@ void main() {
         await _openSession(tester, sibling.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         expect(_session(tester), same(fresh.store.session(sibling.id)));
+        expect(_composerMarkdown(tester), _plainMarkdown(siblingDraft));
         expect(
-          tester.widget<TextField>(_composer()).controller!.text,
+          _composerState(
+            tester,
+          ).document.root.children.single.delta!.toPlainText(),
           siblingDraft,
         );
-        expect(find.text(_initialPrompt), findsNothing);
+        expect(find.text(_plainMarkdown(_initialPrompt)), findsNothing);
         expect(find.text(_narration), findsNothing);
         expect(find.text(_siblingPrompt), findsOneWidget);
         expect(find.text(_siblingAnswer), findsOneWidget);
@@ -4891,15 +4897,18 @@ void main() {
         await _openSession(tester, otherSession.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         expect(_session(tester), same(fresh.store.session(otherSession.id)));
+        expect(_composerMarkdown(tester), _plainMarkdown(otherDraft));
         expect(
-          tester.widget<TextField>(_composer()).controller!.text,
+          _composerState(
+            tester,
+          ).document.root.children.single.delta!.toPlainText(),
           otherDraft,
         );
         expect(find.byType(InspectionHost), findsNothing);
         expect(find.text(_otherPrompt), findsOneWidget);
         expect(find.text(_otherAnswer), findsOneWidget);
         expect(find.text(_siblingAnswer), findsNothing);
-        expect(find.text(_initialPrompt), findsNothing);
+        expect(find.text(_plainMarkdown(_initialPrompt)), findsNothing);
         expect(
           (await freshChat.snapshot(otherSession.id.value)).entries.map(
             (entry) => (entry.id, entry.role, entry.content, entry.runId),
@@ -4948,6 +4957,194 @@ void main() {
     );
   }
 
+  testWidgets(
+    'normal Chat restores rich Markdown, saves native edits, departs, restores and submits one Run',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      const restored =
+          '# Restored request\n\n'
+          'Keep **bold** and *italic* with `code`.\n\n'
+          '```dart\n  final count = 1;\n  print(count);  \n```\n';
+      const edited =
+          '# Restored request\n\n'
+          'Keep **bold** and *italic* with `code`.\n\n'
+          '```dart\n  final count = 2;\n  print(count);  \n```';
+      const answer = 'The exact rich request reached the local provider.';
+      final release = Completer<void>();
+      final outbound = <Map<String, Object?>>[];
+      final failures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          expect(body['input'], [
+            {
+              'type': 'message',
+              'role': 'user',
+              'content': [
+                {'type': 'input_text', 'text': edited},
+              ],
+            },
+          ]);
+          await release.future;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _output(request.response, _message('rich-request-answer', answer));
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {'id': 'rich-request-run', 'model': 'gpt-6-astra'},
+          });
+        } on Object catch (error, stack) {
+          failures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+      await fixture.launch(tester, prepared, endpoint: server);
+      addTearDown(() {
+        if (!release.isCompleted) release.complete();
+      });
+      await fixture.openTask(tester);
+      await _tap(tester, 'New Chat Session');
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final session = _session(tester);
+      final runtime = fixture.runtime;
+      final chat = _chatClient(
+        runtime.plugins.backends
+            .singleWhere(
+              (backend) =>
+                  backend.installation.metadata.id.value == _chatPluginId,
+            )
+            .connection!,
+      );
+      await _breadcrumb(tester, 'task-breadcrumb');
+      await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+      await chat.setDraftRequest(session.id.value, restored);
+      await _openSession(tester, session.id);
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final owner = _composerOwner(tester);
+      final state = _composerState(tester);
+      expect(owner.snapshot()['markdown'], restored);
+      expect(owner.revision, 0);
+      expect(state.editable, isTrue);
+      expect(state.document.root.children.map((node) => node.type), [
+        'heading',
+        'paragraph',
+        RichDocumentMarkdown.codeBlockType,
+      ]);
+      final code = state.document.root.children.last;
+      expect(code.attributes['language'], 'dart');
+      expect(
+        code.delta!.toPlainText(),
+        '  final count = 1;\n  print(count);  ',
+      );
+      expect(fixture.runIds.values, isEmpty);
+      expect(outbound, isEmpty);
+      _composerNative(tester).focusNode!.requestFocus();
+      final offset = code.delta!.toPlainText().indexOf('1');
+      state.selection = rich.Selection.single(
+        path: [2],
+        startOffset: offset,
+        endOffset: offset + 1,
+      );
+      await _composerFrames(tester);
+      await _composerInput(tester, '2');
+      expect(_composerOwner(tester), same(owner));
+      expect(_composerState(tester), same(state));
+      expect(owner.snapshot()['markdown'], edited);
+      expect(code.attributes['language'], 'dart');
+      expect(
+        code.delta!.toPlainText(),
+        '  final count = 2;\n  print(count);  ',
+      );
+      final savedDocument = state.document.toJson();
+      await _pumpUntil(
+        tester,
+        () async =>
+            (await chat.snapshot(session.id.value)).draftRequest == edited,
+      );
+      expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+      await _breadcrumb(tester, 'task-breadcrumb');
+      await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+      expect(owner.isDisposed, isTrue);
+      expect((await chat.snapshot(session.id.value)).draftRequest, edited);
+      await _openSession(tester, session.id);
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final reopened = _composerOwner(tester);
+      expect(reopened, isNot(same(owner)));
+      expect(_session(tester), same(session));
+      expect(_composerMarkdown(tester), edited);
+      expect(_composerState(tester).editable, isTrue);
+      expect(_composerState(tester).document.toJson(), savedDocument);
+      expect(fixture.runIds.values, isEmpty);
+      expect(outbound, isEmpty);
+      await _tap(tester, 'Send');
+      await _pumpUntil(
+        tester,
+        () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
+      );
+      final runId = fixture.runIds.values.single;
+      final submitted = await chat.snapshot(session.id.value);
+      expect(submitted.draftRequest, '');
+      expect(submitted.entries.single.content, edited);
+      expect(submitted.entries.single.runId, runId.value);
+      expect(reopened.isDisposed, isTrue);
+      final blank = _composerOwner(tester);
+      expect(blank, isNot(same(reopened)));
+      expect(blank.snapshot()['isBlank'], isTrue);
+      expect(_composerMarkdown(tester), '');
+      expect(_composerState(tester).editable, isFalse);
+      release.complete();
+      await _pumpUntil(
+        tester,
+        () =>
+            find.text(answer).evaluate().isNotEmpty &&
+            !fixture.status(tester).isAdvancing &&
+            _composerState(tester).editable,
+      );
+      _rethrowEndpointFailure(failures);
+      expect(_composerOwner(tester), same(blank));
+      expect(_composerMarkdown(tester), '');
+      expect(blank.snapshot()['isBlank'], isTrue);
+      expect(blank.snapshot()['editingEnabled'], isTrue);
+      expect(runtime.store.runRecord(runId)!.state, RunTerminalState.completed);
+      expect(
+        (await chat.snapshot(
+          session.id.value,
+        )).entries.map((entry) => (entry.role, entry.content)),
+        [('user', edited), ('assistant', answer)],
+      );
+      await _enterComposer(
+        tester,
+        'The empty rich editor accepts the next draft.',
+      );
+      await _pumpUntil(
+        tester,
+        () async =>
+            (await chat.snapshot(session.id.value)).draftRequest ==
+            'The empty rich editor accepts the next draft.',
+      );
+      expect(_composerOwner(tester), same(blank));
+      expect(fixture.runIds.values, [runId]);
+      expect(outbound, hasLength(1));
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
   for (final rejectLatest in [false, true]) {
     testWidgets(
       'prepared Chat navigation ${rejectLatest ? 'retains the Session after draft failure and retries' : 'awaits the latest draft before leaving'}',
@@ -4980,7 +5177,7 @@ void main() {
                 firstArrived.complete();
                 await releaseFirst.future;
               case 2:
-                expect(content, latestDraft);
+                expect(content, _plainMarkdown(latestDraft));
                 latestArrived.complete();
                 await releaseLatest.future;
                 if (rejectLatest) {
@@ -4988,7 +5185,7 @@ void main() {
                 }
               case 3:
                 expect(rejectLatest, isTrue);
-                expect(content, latestDraft);
+                expect(content, _plainMarkdown(latestDraft));
               default:
                 fail('Unexpected automatic draft retry ${writes.length}.');
             }
@@ -5049,9 +5246,9 @@ void main() {
             )
             .connection!;
         final chat = _chatClient(connection);
-        await tester.enterText(_composer(), firstDraft);
+        await _enterComposer(tester, firstDraft);
         await firstArrived.future.timeout(const Duration(seconds: 15));
-        await tester.enterText(_composer(), latestDraft);
+        await _enterComposer(tester, latestDraft);
         await _breadcrumb(
           tester,
           rejectLatest ? 'project-breadcrumb' : 'task-breadcrumb',
@@ -5061,10 +5258,7 @@ void main() {
         expect(context.snapshot, same(selected));
         expect(selections, [same(selected)]);
         expect(fixture.shell(tester).task, same(task));
-        expect(
-          tester.widget<TextField>(_composer()).controller!.text,
-          latestDraft,
-        );
+        expect(_composerMarkdown(tester), _plainMarkdown(latestDraft));
         // Chat serializes reads behind its draft write. Observe the transaction
         // gates here, then assert durable content after releasing them.
         expect(writes, [firstDraft]);
@@ -5075,7 +5269,7 @@ void main() {
         expect(_session(tester), same(session));
         expect(context.snapshot, same(selected));
         expect(selections, [same(selected)]);
-        expect(writes, [firstDraft, latestDraft]);
+        expect(writes, [firstDraft, _plainMarkdown(latestDraft)]);
         expect(fixture.runIds.values, isEmpty);
         expect(fixture.runtime.store.runsForSession(session.id), isEmpty);
         releaseLatest.complete();
@@ -5087,7 +5281,7 @@ void main() {
           expect(selections, [same(selected)]);
           expect(fixture.shell(tester).task, same(task));
           expect(fixture.status(tester).unavailableReason, isNull);
-          expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+          expect(_composerState(tester).editable, isTrue);
           expect(
             tester
                 .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
@@ -5104,15 +5298,12 @@ void main() {
             find.text('Draft was not saved. Your text is preserved.'),
             findsOneWidget,
           );
-          expect(
-            tester.widget<TextField>(_composer()).controller!.text,
-            latestDraft,
-          );
+          expect(_composerMarkdown(tester), _plainMarkdown(latestDraft));
           expect(
             (await chat.snapshot(session.id.value)).draftRequest,
             firstDraft,
           );
-          expect(writes, [firstDraft, latestDraft]);
+          expect(writes, [firstDraft, _plainMarkdown(latestDraft)]);
           // Retrying navigation must use the same still-live prepared view and
           // owning backend route, not a replacement Session or a lost draft.
           await _breadcrumb(tester, 'project-breadcrumb');
@@ -5121,7 +5312,11 @@ void main() {
             () => find.byType(MainContentHost).evaluate().isEmpty,
           );
           expect(fixture.shell(tester).task, isNull);
-          expect(writes, [firstDraft, latestDraft, latestDraft]);
+          expect(writes, [
+            firstDraft,
+            _plainMarkdown(latestDraft),
+            _plainMarkdown(latestDraft),
+          ]);
           await _tap(tester, task.title);
           await _pumpUntil(
             tester,
@@ -5130,7 +5325,7 @@ void main() {
         } else {
           expect(find.byType(MainContentHost), findsNothing);
           expect(fixture.shell(tester).task, same(task));
-          expect(writes, [firstDraft, latestDraft]);
+          expect(writes, [firstDraft, _plainMarkdown(latestDraft)]);
         }
         final departed = context.snapshot;
         expect(departed.session, isNull);
@@ -5139,7 +5334,7 @@ void main() {
         expect(fixture.shell(tester).navigationError, isNull);
         expect(
           (await chat.snapshot(session.id.value)).draftRequest,
-          latestDraft,
+          _plainMarkdown(latestDraft),
         );
         expect((await chat.snapshot(session.id.value)).entries, isEmpty);
         await _openSession(tester, session.id);
@@ -5152,11 +5347,14 @@ void main() {
           same(departed),
           same(context.snapshot),
         ]);
+        expect(_composerMarkdown(tester), _plainMarkdown(latestDraft));
+        expect(fixture.runtime.store.sessionsForTask(task.id), [session]);
         expect(
-          tester.widget<TextField>(_composer()).controller!.text,
+          _composerState(
+            tester,
+          ).document.root.children.single.delta!.toPlainText(),
           latestDraft,
         );
-        expect(fixture.runtime.store.sessionsForTask(task.id), [session]);
         expect(fixture.runIds.values, isEmpty);
         expect(connection.isClosed, isFalse);
         expect(tester.takeException(), isNull);
@@ -6944,7 +7142,7 @@ Future<void> _pumpUntil(
     isTrue,
     reason: 'Timed out waiting for installed product state.',
   );
-  await tester.pumpAndSettle();
+  await _composerFrames(tester);
 }
 
 Future<void> _tap(WidgetTester tester, String label) async {
@@ -6957,7 +7155,7 @@ Future<void> _tap(WidgetTester tester, String label) async {
   await _pumpUntil(tester, () => button.evaluate().isNotEmpty);
   await tester.ensureVisible(button);
   await tester.tap(button);
-  await tester.pumpAndSettle();
+  await _composerFrames(tester);
 }
 
 Session _session(WidgetTester tester) =>
@@ -7081,8 +7279,82 @@ Future<void> _openSourceInput(
   );
 }
 
-Finder _composer() =>
-    find.descendant(of: _chatView(), matching: find.byType(TextField));
+Finder _composer() => find.descendant(
+  of: _chatView(),
+  matching: find.byType(NativeRichDocumentEditorView),
+);
+
+NativeRichDocumentEditor _composerOwner(WidgetTester tester) =>
+    tester.widget<NativeRichDocumentEditorView>(_composer()).editor;
+
+rich.AppFlowyEditor _composerNative(WidgetTester tester) =>
+    tester.widget<rich.AppFlowyEditor>(
+      find.descendant(
+        of: _composer(),
+        matching: find.byType(rich.AppFlowyEditor),
+      ),
+    );
+
+rich.EditorState _composerState(WidgetTester tester) =>
+    _composerNative(tester).editorState;
+
+String _composerMarkdown(WidgetTester tester) =>
+    _composerOwner(tester).snapshot()['markdown']! as String;
+
+String _plainMarkdown(String text) {
+  final document = rich.Document(
+    root: rich.pageNode(children: [rich.paragraphNode(text: text)]),
+  );
+  try {
+    return RichDocumentMarkdown.encode(document);
+  } finally {
+    document.dispose();
+  }
+}
+
+Future<void> _composerFrames(WidgetTester tester) async {
+  // Native caret/selection animations need bounded frames, not pumpAndSettle.
+  for (var i = 0; i < 5; i++) {
+    await tester.pump(const Duration(milliseconds: 30));
+  }
+}
+
+Future<void> _enterComposer(WidgetTester tester, String text) async {
+  await _pumpUntil(
+    tester,
+    () => _composer().evaluate().isNotEmpty && _composerState(tester).editable,
+  );
+  await tester.ensureVisible(_composer());
+  final native = _composerNative(tester);
+  final state = native.editorState;
+  expect(state.document.root.children, hasLength(1));
+  native.focusNode!.requestFocus();
+  state.selection = rich.Selection.single(
+    path: [0],
+    startOffset: 0,
+    endOffset: state.document.root.children.single.delta!.length,
+  );
+  await _composerFrames(tester);
+  await _composerInput(tester, text);
+  expect(state.document.root.children.single.delta!.toPlainText(), text);
+  expect(_composerMarkdown(tester), _plainMarkdown(text));
+}
+
+Future<void> _composerInput(WidgetTester tester, String text) async {
+  expect(tester.testTextInput.hasAnyClients, isTrue);
+  final previous = TextEditingValue.fromJSON(
+    tester.testTextInput.editingState!,
+  );
+  final range = previous.selection;
+  final value = TextEditingValue(
+    text: previous.text.replaceRange(range.start, range.end, text),
+    selection: TextSelection.collapsed(offset: range.start + text.length),
+  );
+  // AppFlowy need not echo the platform's update back to the mock input client.
+  tester.testTextInput.editingState = value.toJSON();
+  tester.testTextInput.updateEditingValue(value);
+  await _composerFrames(tester);
+}
 
 Finder _chatView() => find.ancestor(
   of: find.descendant(
@@ -7103,7 +7375,7 @@ Future<void> _openSession(WidgetTester tester, SessionId id) async {
   final row = _sessionRow(id);
   await tester.ensureVisible(row);
   await tester.tap(row);
-  await tester.pumpAndSettle();
+  await _composerFrames(tester);
 }
 
 Future<void> _breadcrumb(WidgetTester tester, String key) async {
@@ -7114,15 +7386,7 @@ Future<void> _breadcrumb(WidgetTester tester, String key) async {
 }
 
 Future<void> _send(WidgetTester tester, String prompt) async {
-  final field = _composer();
-  await _pumpUntil(
-    tester,
-    () =>
-        field.evaluate().isNotEmpty &&
-        tester.widget<TextField>(field).enabled == true,
-  );
-  await tester.ensureVisible(field);
-  await tester.enterText(field, prompt);
+  await _enterComposer(tester, prompt);
   await _tap(tester, 'Send');
 }
 
@@ -7147,7 +7411,7 @@ Map<String, Object?> _userInput(String text) => {
   'type': 'message',
   'role': 'user',
   'content': [
-    {'type': 'input_text', 'text': text},
+    {'type': 'input_text', 'text': _plainMarkdown(text)},
   ],
 };
 Map<String, Object?> _message(String id, String text) => {

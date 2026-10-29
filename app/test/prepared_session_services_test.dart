@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
+import 'package:adele_desktop/frontend/rich_document_editor_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
@@ -19,6 +21,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -96,6 +99,7 @@ void main() {
       ..addPlugin(const OwningBackendDeclarations())
       ..addPlugin(const SessionExecutionDeclarations())
       ..addPlugin(const SessionPresentationLifecycleDeclarations())
+      ..addPlugin(const RichDocumentEditorDeclarations())
       ..entrypoints.add(_library);
     program = compiler.compile({
       'session_probe': {
@@ -105,6 +109,7 @@ import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
+import 'package:adele_ui/rich_document_editor_bridge.dart';
 bool ready = false;
 void initialize() {
   openMainContentPane('a', 'A', true);
@@ -127,6 +132,11 @@ Widget withoutHook() => Column(children: [
     child: Text('Open activity')),
   buildSessionExecutionStatus(),
 ]);
+Widget richEditor() {
+  subscribeSessionExecution(() {});
+  final handle = createRichDocumentEditor('Draft ' + readMainContentPaneId(), false);
+  return SizedBox(height: 240, child: buildRichDocumentEditor(handle));
+}
 Widget lifecycleOnly() {
   registerSessionPrepareToDeactivate(prepare);
   return TextButton(onPressed: () { ready = true; },
@@ -163,6 +173,7 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
           'owning_backend_bridge.dart',
           'session_execution_bridge.dart',
           'session_presentation_lifecycle_bridge.dart',
+          'rich_document_editor_bridge.dart',
         ])
           name: File('../packages/ui/lib/$name').readAsStringSync(),
       },
@@ -475,9 +486,11 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
     },
   );
 
-  for (final hook in [false, true]) {
+  for (final mode in ['without hook', 'hook', 'rich editor retirement']) {
+    final hook = mode == 'hook';
+    final rich = mode == 'rich editor retirement';
     testWidgets(
-      'per-pane services revoke exact views, not execution; hook=$hook',
+      'per-pane services revoke exact views, not execution; mode=$mode',
       (tester) async {
         final runtime = AdeleRuntime();
         addTearDown(runtime.close);
@@ -549,8 +562,13 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
           order: 100,
           library: _library,
           initialize: 'initialize',
-          entrypoint: hook ? 'buildView' : 'withoutHook',
+          entrypoint: rich
+              ? 'richEditor'
+              : hook
+              ? 'buildView'
+              : 'withoutHook',
           sessionExecution: true,
+          richDocumentEditor: rich,
         );
         final installation = PreparedPluginInstallation(
           metadata: PluginMetadata(
@@ -589,7 +607,7 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
         await tester.pumpWidget(mount());
         await tester.pumpAndSettle();
         expect(allocations, 1);
-        if (!hook) {
+        if (!hook && !rich) {
           expect(find.byType(RunExecutionStatus), findsNWidgets(2));
           expect(
             tester
@@ -599,6 +617,59 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
           );
         }
         final execution = controller!;
+        if (rich) {
+          final owners = tester
+              .widgetList<NativeRichDocumentEditorView>(
+                find.byType(NativeRichDocumentEditorView),
+              )
+              .map((view) => view.editor)
+              .toList();
+          expect(owners, hasLength(2));
+          await tester.tapAt(
+            tester.getCenter(find.text('Draft a', findRichText: true)),
+          );
+          await tester.pumpAndSettle();
+          final state = tester
+              .widget<AppFlowyEditor>(find.byType(AppFlowyEditor).first)
+              .editorState;
+          state.selection = Selection.single(path: [0], startOffset: 7);
+          await tester.pumpAndSettle();
+          expect(tester.testTextInput.hasAnyClients, isTrue);
+          expect(owners.every((owner) => owner.editingEnabled), isTrue);
+
+          // Match the application's extension-change execution refresh. Neither
+          // the frontend nor its Main Content registration is being retired.
+          await strategy.close();
+          execution.refresh();
+          expect(
+            runtime.extensions.discover(mainContentContributions).single.value,
+            same(contribution),
+          );
+          expect(owners.every((owner) => owner.isDisposed), isTrue);
+          expect(tester.testTextInput.hasAnyClients, isFalse);
+          await tester.pumpAndSettle();
+          expect(state.isDisposed, isTrue);
+          expect(find.text('Frontend unavailable.'), findsNWidgets(2));
+          expect(execution.isClosed, isFalse);
+
+          final replacement = runtime.extensions.register(
+            point: orchestrationStrategyContributions,
+            id: ExtensionId('dev.example.strategy'),
+            value: OrchestrationStrategyContribution(
+              strategyId: strategyId,
+              materialize: (_) => throw StateError('Must not retarget.'),
+            ),
+          );
+          addTearDown(replacement.close);
+          execution.refresh();
+          await tester.pumpAndSettle();
+          expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+          expect(find.text('Frontend unavailable.'), findsNWidgets(2));
+          expect(tester.testTextInput.hasAnyClients, isFalse);
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(tester.takeException(), isNull);
+          return;
+        }
         final view = runtime.extensions
             .discover(mainContentContributions)
             .single;

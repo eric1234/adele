@@ -231,6 +231,76 @@ void main() {
     },
   );
 
+  testWidgets(
+    'compiled editing gate preserves undo and rejects retired handles',
+    (tester) async {
+      final bridge = RichDocumentEditorBridge(isActive: () => true);
+      final runtime = bind(bridge);
+      final handle = _create(runtime, 'ab');
+      final view = _invoke(runtime, 'buildHandle', [$String(handle)]) as Widget;
+      await tester.pumpWidget(_host(view));
+      final state = await _select(tester, 'ab');
+      await _append(tester, '!');
+      _invoke(runtime, 'enableHandle', [$String(handle), false]);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(state.editable, isFalse);
+      final snapshot =
+          _invoke(runtime, 'snapshotHandle', [$String(handle)]) as Map;
+      expect(snapshot['markdown'], 'ab!');
+      expect(snapshot['readOnly'], isFalse);
+      expect(snapshot['editingEnabled'], isFalse);
+      expect(snapshot['isBlank'], isFalse);
+      await _frames(tester);
+      await _select(tester, 'ab!');
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      _invoke(runtime, 'enableHandle', [$String(handle), true]);
+      await _frames(tester);
+      expect(await _select(tester, 'ab!'), same(state));
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      expect(state.document.root.children.single.delta!.toPlainText(), 'ab');
+      bridge.invalidate();
+      expect(
+        () => _invoke(runtime, 'enableHandle', [$String(handle), true]),
+        throwsA(anything),
+      );
+      expect(state.editable, isFalse);
+      await _frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'composition-only commit invalidates the compiled safe snapshot',
+    (tester) async {
+      await tester.pumpWidget(_host(presentation()));
+      final state = await _select(tester, 'ab');
+      var value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+      _input(
+        tester,
+        value.copyWith(composing: const TextRange(start: 1, end: 3)),
+      );
+      await _frames(tester);
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), '(unavailable)');
+      expect(find.text('Snapshot error: composition_pending'), findsOneWidget);
+      expect(find.text('Snapshot revision: 0'), findsOneWidget);
+      final notices = _notifications(tester);
+      value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+      _input(tester, value.copyWith(composing: TextRange.empty));
+      await _frames(tester);
+      expect(_notifications(tester), greaterThan(notices));
+      _press(tester, 'Snapshot');
+      await _frames(tester);
+      expect(_snapshotText(tester), 'ab');
+      expect(find.text('Snapshot revision: 0'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(state.isDisposed, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final (fence, language) in [
     ('```dart', 'dart'),
     ('~~~python', 'python'),
@@ -491,12 +561,14 @@ void main() {
         'observeHandle',
         'unobserveHandle',
         'releaseHandle',
+        'enableHandle',
       ]) {
         for (final invalid in ['', 'fabricated', '$handle ', foreign]) {
           expect(
             () => _invoke(runtime, method, [
               $String(invalid),
               if (method.endsWith('observeHandle')) listener,
+              if (method == 'enableHandle') true,
             ]),
             throwsA(anything),
           );
@@ -509,6 +581,8 @@ void main() {
         'markdown': 'original',
         'revision': 0,
         'readOnly': false,
+        'editingEnabled': true,
+        'isBlank': false,
         'unsupportedReason': null,
       });
       expect(
@@ -530,6 +604,10 @@ void main() {
       );
       expect(
         () => _invoke(runtime, 'releaseHandle', [$String(handle)]),
+        throwsA(anything),
+      );
+      expect(
+        () => _invoke(runtime, 'enableHandle', [$String(handle), true]),
         throwsA(anything),
       );
       active = false;
@@ -566,6 +644,26 @@ void main() {
         'foreign',
       );
       expect(captured.$reified['markdown'], 'original');
+    },
+  );
+
+  test(
+    'editing enable cannot upgrade fixed read-only or unsupported imports',
+    () {
+      final runtime = bind(RichDocumentEditorBridge(isActive: () => true));
+      for (final (source, readOnly) in [
+        ('read-only', true),
+        ('![image](unsupported.png)', false),
+      ]) {
+        final handle = _create(runtime, source, readOnly: readOnly);
+        _invoke(runtime, 'enableHandle', [$String(handle), false]);
+        _invoke(runtime, 'enableHandle', [$String(handle), true]);
+        final snapshot =
+            _invoke(runtime, 'snapshotHandle', [$String(handle)]) as Map;
+        expect(snapshot['readOnly'], isTrue);
+        expect(snapshot['editingEnabled'], isFalse);
+        expect(snapshot['markdown'], source);
+      }
     },
   );
 

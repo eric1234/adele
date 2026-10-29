@@ -296,6 +296,7 @@ final class PreparedMainContentPresentation
     this.displaySourceFileOperation,
     this.retainedData = false,
     this.nativeCodeEditor = false,
+    this.richDocumentEditor = false,
     this.environmentTextFiles = false,
     this.canRequestSourceDisplay = false,
   }) : backendServices = List.unmodifiable(backendServices),
@@ -402,6 +403,10 @@ final class PreparedMainContentPresentation
   final String? displaySourceFileOperation;
   final bool retainedData;
   final bool nativeCodeEditor;
+
+  /// Pane-only, presentation-owned editors from supplied Markdown. This does not
+  /// grant retained ownership, file access, or editor access to finite operations.
+  final bool richDocumentEditor;
   final bool environmentTextFiles;
 
   /// Pane-only requests through the public source-display extension point.
@@ -446,6 +451,7 @@ final class PreparedMainContentPresentation
       'displaySourceFileOperation': displaySourceFileOperation,
     'retainedData': retainedData,
     'nativeCodeEditor': nativeCodeEditor,
+    'richDocumentEditor': richDocumentEditor,
     'environmentTextFiles': environmentTextFiles,
     'canRequestSourceDisplay': canRequestSourceDisplay,
   };
@@ -1435,6 +1441,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'displaySourceFileOperation',
         'retainedData',
         'nativeCodeEditor',
+        'richDocumentEditor',
         'environmentTextFiles',
         'canRequestSourceDisplay',
       });
@@ -1553,6 +1560,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
             : null,
         retainedData: permission('retainedData'),
         nativeCodeEditor: permission('nativeCodeEditor'),
+        richDocumentEditor: permission('richDocumentEditor'),
         environmentTextFiles: permission('environmentTextFiles'),
         canRequestSourceDisplay: permission('canRequestSourceDisplay'),
       );
