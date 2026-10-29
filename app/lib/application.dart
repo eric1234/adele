@@ -477,6 +477,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       context: navigator.context,
       builder: (_) => GlobalSettingsDialog(
         service: _settingsService,
+        credentialAssociations: () => _credentialAssociations!,
         declarationIssues: () => [
           if (_settingsCatalogFailure case final failure?)
             'Scalar catalog aggregation failed: $failure',

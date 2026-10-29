@@ -428,13 +428,17 @@ details, display-title fallback, shared create/edit multi-type forms, explicit f
 presence, all scalar types, validation, retained drafts/focus (including collapsed
 editors), narrow layout, reentrant admission, exact-record delete confirmation,
 conflict/uncertain-outcome recovery, and confirmed persistence without a plugin
-executable. The existing application suite publishes the actual OpenAI and Source
-schemas through maintained
-tooling and manages two records before any Project: create, display-name edit with
-stable filename, optional endpoint insertion/removal, unknown/comment preservation,
-independent sibling bytes, canceled/confirmed deletion, reopening, and explicit
-Reload after disk changes. It also saves ordinary scalar Settings and checks no
-provider activation, alongside independent schema and catalog-aggregation failures.
+executable. `app/test/application_test.dart` publishes the actual OpenAI and Source
+schemas through maintained tooling and manages two records before any Project:
+create, display-name edit with stable filename, optional endpoint insertion/removal,
+unknown/comment preservation, independent sibling bytes, canceled/confirmed deletion,
+reopening, and explicit Reload after disk changes. Its credential flow uses the
+application's real retained
+association coordinator with a deterministic storage adapter to check independent
+OpenAI associations, explicit storage checks, replacement, Forget before deletion,
+and reopening without automatic vault reads. It also saves ordinary scalar Settings
+and checks no provider activation, alongside independent schema and
+catalog-aggregation failures.
 Pipe-gated locks verify accepted application exit drains admitted record updates and
 deletes before releasing the settings worker.
 
@@ -475,6 +479,7 @@ dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart
 # app/
 flutter test --no-pub --concurrency 1 test/core/credential_service_test.dart test/core/record_credential_service_test.dart
 flutter test --no-pub --concurrency 1 test/credential_application_lifecycle_test.dart test/record_credential_application_lifecycle_test.dart
+flutter test --no-pub --concurrency 1 test/record_credential_settings_dialog_test.dart test/application_test.dart
 ```
 
 The package target owns the synchronous native/Dart boundary. The native target
@@ -495,8 +500,22 @@ it with the existing worker regressions when changing admission: an OS wait must
 not allow ordinary CRUD or another owner's configuration requests to interleave.
 `app/test/record_credential_application_lifecycle_test.dart` adds lazy pairing,
 mount-time factory capture, rebuild retention, rejected-exit usability and blocked
-association drain to the existing standalone credential lifecycle tests. These do not
-establish real Secret Service behavior. Tooling tests check workspace,
+association drain to the existing standalone credential lifecycle tests.
+
+`app/test/record_credential_settings_dialog_test.dart` exercises declaration-generated
+slot controls through the real coordinator and Settings worker with temporary roots,
+native TOML persistence and deterministic credential adapters, not mocked coordinator
+results. Select it for unchecked/no-automatic-read behavior, explicit check/set/replace,
+missing-local establishment, Forget and reconciliation, transient masked-input
+clearing, and pending-operation presentation lifetime. Recovery checks cover fresh
+owner-bound handles after success or partial failure without losing scalar drafts or
+sibling baselines, stale/configuration failure requiring Reload, and unknown-entry
+deletion guards. The actual OpenAI application case is described in
+[configuration checks](#configuration-foundation-checks). Both are discovered by the
+existing desktop target and shards; neither requires a live keyring or provider.
+
+Deterministic adapter tests do not establish real Secret Service behavior and do not
+replace the native fixtures below. Tooling tests check workspace,
 analysis and CI discovery, pre-bootstrap `test-plan`, native command failure
 propagation, and the prohibition on production plugin credential-store dependencies
 and imports, plus the host's identity-only credential dependency.

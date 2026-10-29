@@ -320,14 +320,20 @@ accept `CredentialSecret`. Results expose only a record view and local-storage
 status, not references or protected payloads. Failures have fixed categories and,
 when available, the latest acknowledged record handle. The existing Settings worker
 owns validation and reference persistence; a shared admission gate spans OS waits.
+`AdeleApplication` supplies a callback for this retained coordinator through
+`GlobalSettingsDialog` to `RecordCollectionPanel`; presentation creates neither a
+second coordinator nor a credential storage adapter.
 See the canonical [association lifecycle](../docs/architecture/profiles-and-configuration.md#record-association-lifecycle)
 for exact binding, mutation ordering, partial failure, reconciliation and shutdown
-rules. No credential UI, provider authentication or runtime delivery is added.
+rules. Settings manages storage associations, not provider authentication or runtime
+delivery.
 
 Focused checks are `test/core/credential_service_test.dart`,
 `test/core/record_credential_service_test.dart`,
 `test/credential_application_lifecycle_test.dart`, and
-`test/record_credential_application_lifecycle_test.dart`. The opt-in
+`test/record_credential_application_lifecycle_test.dart`. Generic Settings controls
+are covered by `test/record_credential_settings_dialog_test.dart`, with actual
+OpenAI declaration/application composition in `test/application_test.dart`. The opt-in
 [`credential storage smoke`](../tools/credential_storage_smoke.dart) provisions a
 disposable real keyring and exercises the production adapter plus the gated
 `test/credential_storage_responsiveness_test.dart` and the process/daemon-restart
@@ -379,11 +385,22 @@ Create and Save publish presented values only after worker acknowledgement. Dele
 requires a safe-default modal identifying the exact record and explaining that its
 entire configuration file, including unknown data, will be removed. Confirmed deletion
 removes only that record and its draft. The host rejects deletion while any credential
-entry remains, including unknown entries; the dialog does not manage those
-associations. No automatic collection refresh invalidates
+entry remains, including unknown entries. Declared associations must be explicitly
+forgotten first; unknown entries require safe manual correction and Reload, not
+automatic cleanup. No automatic collection refresh invalidates
 unrelated edits. Conflicts and uncertain update/delete outcomes retain drafts and fence
 that record until explicit Reload; no retry or field merging occurs. Known pre-write
 validation failures remain correctable without Reload.
+
+After record creation, [`RecordCollectionPanel`](lib/ui/settings/record_collection_panel.dart)
+generates credential-slot controls from the type declaration, independently of
+scalar editing. Slots begin unchecked; opening Settings or navigating records does
+not read the vault. Explicit actions
+check storage, set or replace a secret, establish a missing local value, forget an
+association, or reconcile an uncertain outcome. Masked secret input is transient,
+not a retained scalar draft. The [credential UI boundary](../docs/architecture/profiles-and-configuration.md#record-credential-management)
+defines input clearing, returned-handle replacement, recovery and confidentiality
+rules; a stored credential never implies provider authentication.
 
 `GlobalSettingsService` keeps native TOML operations and conditional persistence
 off the UI isolate. Main-isolate service owners lease one serial worker, with an
@@ -409,12 +426,14 @@ without hiding a healthy independent catalog; installation-wide issues appear in
 both. Missing/invalid schemas remain visible, and duplicate declarations or conflicting
 collection labels reject aggregation. Repairing declarations requires restart.
 
-All configuration still uses one global layer. Provider records are nonsecret
-definitions, not consumed by the runtime: creating, editing, or deleting them does
-not request credentials, authenticate, activate a provider, change Chat, or alter
-temporary environment-variable startup. Restart guidance applies
-to scalar settings, not record activation. Profiles, scopes, credential UI, OAuth,
-runtime restart commands, and live editor reconfiguration remain unimplemented.
+All configuration still uses one global layer. Provider records contain nonsecret
+definitions and credential references, neither consumed by the runtime. Ordinary
+record CRUD does not access the vault; even explicit credential management does not
+authenticate or activate a provider, change Chat, or alter temporary
+environment-variable startup. Restart guidance applies to scalar settings, not
+record activation. Runtime/backend credential delivery, record-based OAuth, Profiles,
+Agent configuration, narrower scopes, runtime restart commands, and live editor
+reconfiguration remain unimplemented.
 
 ### Prepared Capability access
 
@@ -1927,8 +1946,8 @@ and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
 active Runs per Session. Global scalar settings and nonsecret configuration records
 are implemented, with startup-only scalar delivery to frontends and backends.
-Host-only credential association lifecycle exists separately from runtime delivery.
-Automatic selection/resume, Profiles, configured-provider/credential UI,
+Global Settings manages host-only credential associations separately from runtime
+delivery. Automatic selection/resume, Profiles, configured-provider activation,
 and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.

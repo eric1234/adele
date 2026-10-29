@@ -10,11 +10,12 @@ import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:dart_eval/dart_eval.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -24,6 +25,132 @@ final _slot = RecordCredentialSlotId('api-key');
 const _workerName = 'dev.adele.global-settings-owner';
 
 void main() {
+  for (final exiting in [false, true]) {
+    testWidgets(
+      '${exiting ? 'accepted exit' : 'Settings dismissal'} retains an admitted credential UI write until it settles',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1100, 1000));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final fixture = await _ApplicationFixture.create();
+        try {
+          await fixture.mount(tester);
+          final record = await fixture.createRecord();
+          await fixture.openRecord(tester);
+          expect(find.text('Credential status not checked'), findsOneWidget);
+          expect(fixture.storage.calls, isEmpty);
+          await _credentialAction(tester, 'check');
+          await _until(
+            tester,
+            () => find.text('No credential configured').evaluate().isNotEmpty,
+          );
+          await _credentialAction(tester, 'set');
+          final input = find.byKey(
+            const ValueKey('credential-input-providers-work-openai-api-key'),
+          );
+          final controller = tester.widget<TextField>(input).controller!;
+          await tester.enterText(input, 'ui-write-during-departure');
+          await _credentialAction(tester, 'submit');
+          await fixture.storage.writeEntered.future;
+          await tester.pump();
+          expect(controller.text, isEmpty);
+          expect(input, findsNothing);
+          expect(fixture.storage.calls, ['contains', 'write']);
+          final worker = IsolateNameServer.lookupPortByName(_workerName);
+          final originalDialog = tester.element(
+            find.byType(GlobalSettingsDialog),
+          );
+          var exited = false;
+          Future<AppExitResponse>? exit;
+          if (exiting) {
+            exit = tester.binding.handleRequestAppExit().then((response) {
+              exited = true;
+              return response;
+            });
+            await fixture.closeStarted.future;
+            await expectLater(fixture.settings.load(), throwsStateError);
+            await expectLater(
+              fixture.associations.inspect(record, _slot),
+              throwsA(
+                isA<RecordCredentialFailure>().having(
+                  (failure) => failure.kind,
+                  'kind',
+                  RecordCredentialFailureKind.closed,
+                ),
+              ),
+            );
+            expect(originalDialog.mounted, isTrue);
+          } else {
+            await tester.tap(find.byTooltip('Close Settings'));
+            await tester.pumpAndSettle();
+            expect(originalDialog.mounted, isFalse);
+            expect(find.byType(GlobalSettingsDialog), findsNothing);
+            expect(fixture.closeStarted.isCompleted, isFalse);
+            // A fresh Settings read queues behind the admitted association,
+            // without closing its owner or probing the saved reference.
+            await tester.tap(find.byKey(const ValueKey('settings-button')));
+            await tester.pump();
+            expect(find.byType(GlobalSettingsDialog), findsOneWidget);
+          }
+          expect(exited, isFalse);
+          expect(fixture.storage.values, isEmpty);
+          expect(fixture.runtime.plugins.state, ApplicationPluginState.ready);
+          expect(IsolateNameServer.lookupPortByName(_workerName), worker);
+          expect(fixture.storage.calls, ['contains', 'write']);
+          fixture.storage.releaseWrite.complete();
+          if (exit != null) {
+            expect(await exit, AppExitResponse.exit);
+            await tester.pumpAndSettle();
+            expect(find.byType(GlobalSettingsDialog), findsNothing);
+            expect(IsolateNameServer.lookupPortByName(_workerName), isNull);
+            expect(
+              fixture.runtime.plugins.state,
+              ApplicationPluginState.closed,
+            );
+            await expectLater(
+              fixture.credentials.contains(fixture.storage.reference!),
+              throwsA(
+                isA<CredentialFailure>().having(
+                  (failure) => failure.kind,
+                  'kind',
+                  CredentialFailureKind.closed,
+                ),
+              ),
+            );
+          } else {
+            await fixture.openRecord(tester, alreadyOpen: true);
+            expect(fixture.credentialConstructions, 1);
+            expect(fixture.associationConstructions, 1);
+            expect(find.text('Credential status not checked'), findsOneWidget);
+            expect(fixture.storage.calls, ['contains', 'write', 'read']);
+            await _credentialAction(tester, 'check');
+            await _until(
+              tester,
+              () =>
+                  find.text('Credential stored locally').evaluate().isNotEmpty,
+            );
+            expect(fixture.storage.calls, [
+              'contains',
+              'write',
+              'read',
+              'read',
+            ]);
+          }
+          expect(
+            await File(
+              '${fixture.roots.configurationRoot}/providers/work-openai.toml',
+            ).readAsString(),
+            contains(fixture.storage.reference!.value),
+          );
+          expect(fixture.storage.values, hasLength(1));
+          expect(tester.takeException(), isNull);
+        } finally {
+          await fixture.dispose(tester);
+        }
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
+
   for (final graceful in [true, false]) {
     for (final failWrite in [false, true]) {
       testWidgets(
@@ -191,8 +318,10 @@ void main() {
   }
 
   testWidgets(
-    'pending and rejected prepared exit leave the association owner usable',
+    'pending and rejected prepared exit retain the Settings credential draft and owner',
     (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1100, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final fixture = await _ApplicationFixture.create();
       final preflightEntered = Completer<void>();
       final releasePreflight = Completer<bool>();
@@ -246,32 +375,52 @@ void main() {
           ),
           isActive: () => true,
         );
-        final record = await fixture.createRecord();
+        await fixture.createRecord();
+        await fixture.openRecord(tester);
+        await _credentialAction(tester, 'check');
+        await _until(
+          tester,
+          () => find.text('No credential configured').evaluate().isNotEmpty,
+        );
+        await _credentialAction(tester, 'set');
+        final input = find.byKey(
+          const ValueKey('credential-input-providers-work-openai-api-key'),
+        );
+        final controller = tester.widget<TextField>(input).controller!;
+        await tester.enterText(input, 'after-rejected-exit');
+        final dialog = tester.element(find.byType(GlobalSettingsDialog));
         final worker = IsolateNameServer.lookupPortByName(_workerName);
         final exiting = tester.binding.handleRequestAppExit();
         await preflightEntered.future;
-        expect(
-          (await fixture.associations.inspect(record, _slot)).status,
-          RecordCredentialStatus.noReference,
-        );
+        await fixture.settings.load();
+        expect(tester.element(find.byType(GlobalSettingsDialog)), same(dialog));
+        expect(controller.text, 'after-rejected-exit');
         expect(fixture.closeStarted.isCompleted, isFalse);
         releasePreflight.complete(false);
         expect(await exiting, AppExitResponse.cancel);
+        await tester.pumpAndSettle();
+        expect(tester.element(find.byType(GlobalSettingsDialog)), same(dialog));
+        expect(tester.widget<TextField>(input).controller, same(controller));
+        expect(controller.text, 'after-rejected-exit');
         expect(fixture.closeStarted.isCompleted, isFalse);
         expect(fixture.runtime.plugins.state, ApplicationPluginState.ready);
         expect(IsolateNameServer.lookupPortByName(_workerName), worker);
         expect(fixture.storage.calls, isEmpty);
 
         fixture.storage.releaseWrite.complete();
-        final attached = await fixture.associations.attach(
-          record,
-          _slot,
-          CredentialSecret('after-rejected-exit'),
+        await _credentialAction(tester, 'submit');
+        await _until(
+          tester,
+          () => find.text('Credential stored locally').evaluate().isNotEmpty,
         );
-        expect(attached.status, RecordCredentialStatus.stored);
-        final edited = await fixture.settings.updateRecord(attached.record, {
-          'display-name': 'Still usable',
-        });
+        expect(input, findsNothing);
+        final records = await fixture.settings.loadRecords(
+          RecordCollectionId('providers'),
+        );
+        final edited = await fixture.settings.updateRecord(
+          records.records.single,
+          {'display-name': 'Still usable'},
+        );
         expect(
           (await fixture.associations.inspect(edited, _slot)).status,
           RecordCredentialStatus.stored,
@@ -396,6 +545,30 @@ final class _ApplicationFixture {
     {'display-name': 'Work'},
   );
 
+  Future<void> openRecord(
+    WidgetTester tester, {
+    bool alreadyOpen = false,
+  }) async {
+    if (!alreadyOpen) {
+      await tester.tap(find.byKey(const ValueKey('settings-button')));
+    }
+    await _until(
+      tester,
+      () => find.text('Enable Code Folding').evaluate().isNotEmpty,
+    );
+    final dialog = tester.widget<GlobalSettingsDialog>(
+      find.byType(GlobalSettingsDialog),
+    );
+    expect(await dialog.service(), same(settings));
+    expect(dialog.credentialAssociations!(), same(associations));
+    await tester.tap(find.byKey(const ValueKey('settings-section')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Providers').last);
+    await _until(tester, () => find.text('Work').evaluate().isNotEmpty);
+    await tester.tap(find.text('Work'));
+    await tester.pumpAndSettle();
+  }
+
   Future<void> dispose(WidgetTester tester) async {
     if (!start.isCompleted) start.complete();
     if (!storage.releaseWrite.isCompleted) storage.releaseWrite.complete();
@@ -408,6 +581,29 @@ final class _ApplicationFixture {
     await runtime.close();
     await root.delete(recursive: true);
   }
+}
+
+Future<void> _credentialAction(WidgetTester tester, String action) async {
+  final control = find.byKey(
+    ValueKey('credential-$action-providers-work-openai-api-key'),
+  );
+  await tester.ensureVisible(control);
+  await tester.tap(control);
+  await tester.pump();
+}
+
+Future<void> _until(WidgetTester tester, bool Function() ready) async {
+  final clock = Stopwatch()..start();
+  await tester.pump();
+  while (!ready() ||
+      find.byType(LinearProgressIndicator).evaluate().isNotEmpty) {
+    if (clock.elapsed >= const Duration(seconds: 10)) {
+      fail('Timed out waiting for credential Settings.');
+    }
+    await Future<void>.delayed(Duration.zero);
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
 }
 
 final class _GatedWriteStorage implements CredentialStorageAdapter {

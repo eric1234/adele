@@ -11,11 +11,13 @@ final class GlobalSettingsDialog extends StatefulWidget {
   const GlobalSettingsDialog({
     super.key,
     required this.service,
+    this.credentialAssociations,
     this.declarationIssues,
     this.recordDeclarationIssues,
   });
 
   final Future<GlobalSettingsService> Function() service;
+  final RecordCredentialService Function()? credentialAssociations;
   final List<String> Function()? declarationIssues;
   final List<String> Function()? recordDeclarationIssues;
 
@@ -27,16 +29,17 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
   static const _recordDiagnostics = '@record-diagnostics';
   GlobalSettingsService? _service;
   String _section = '';
-  final _panels = <String, Widget>{};
+  final _panels = <String, Widget Function(bool active)>{};
 
   @override
   void initState() {
     super.initState();
     // Navigation reuses these children, including their controls and drafts.
-    _panels[''] = ScalarSettingsPanel(
+    final preferences = ScalarSettingsPanel(
       service: _resolveService,
       declarationIssues: widget.declarationIssues,
     );
+    _panels[''] = (_) => preferences;
   }
 
   Future<GlobalSettingsService> _resolveService() async {
@@ -113,11 +116,15 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                     _panels.putIfAbsent(
                       value,
                       () => value == _recordDiagnostics
-                          ? _RecordDeclarationIssues(
+                          ? (_) => _RecordDeclarationIssues(
                               issues: widget.recordDeclarationIssues!,
                             )
-                          : RecordCollectionPanel(
+                          : (active) => RecordCollectionPanel(
                               service: _service!,
+                              credentialAssociations: widget
+                                  .credentialAssociations
+                                  ?.call(),
+                              active: active,
                               collection: RecordCollectionId(value),
                               declarationIssues: widget.recordDeclarationIssues,
                             ),
@@ -136,7 +143,7 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                       offstage: entry.key != _section,
                       child: ExcludeFocus(
                         excluding: entry.key != _section,
-                        child: entry.value,
+                        child: entry.value(entry.key == _section),
                       ),
                     ),
                 ],

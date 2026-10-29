@@ -9,6 +9,8 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/credential_service.dart';
+import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/main.dart' as application;
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/commands/command_palette.dart';
@@ -40,6 +42,371 @@ import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
+  testWidgets(
+    'Global Settings persists independent stock OpenAI credentials without provider activation',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1100, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const openai = 'dev.adele.openai';
+      const source = 'dev.adele.source-editor';
+      const folding = '$source.enable-folding';
+      const workSecret = 'application-work-test-secret';
+      const personalSecret = 'application-personal-test-secret';
+      const replacement = 'application-work-replacement';
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-provider-credentials-application-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final roots = _configurationRoots(directory);
+      for (final (id, label) in [(source, 'Source'), (openai, 'OpenAI')]) {
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory.current.parent,
+          installationDirectory: Directory('${directory.path}/installed/$id'),
+          pluginId: id,
+          displayName: label,
+        );
+      }
+      final storage = _CredentialStorage();
+      var credentials = CredentialService(storage);
+      var runtime = NativeAdeleRuntime();
+      GlobalSettingsService? settingsOwner;
+      RecordCredentialService? associations;
+
+      Future<void> mount() async {
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            createCredentials: () => credentials,
+            createCredentialAssociations:
+                ({required settings, required credentials}) {
+                  settingsOwner = settings;
+                  final owner = RecordCredentialService(
+                    settings: settings,
+                    credentials: credentials,
+                  );
+                  associations = owner;
+                  return owner;
+                },
+            configurationRoots: roots,
+            readChatGptConfiguration: () => null,
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: '${directory.path}/installed',
+              dartaotruntimeExecutable: '${directory.path}/absent-runtime',
+              hostArtifactPath: '${directory.path}/absent-host.aot',
+            ),
+          ),
+        );
+        await starting;
+        await tester.pumpAndSettle();
+        expect(runtime.plugins.catalog!.issues, isEmpty);
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(runtime.plugins.host, isNull);
+        expect(runtime.plugins.backends, isEmpty);
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      }
+
+      Future<void> openProviders() async {
+        await tester.tap(find.byKey(const ValueKey('settings-button')));
+        await _settingsUntil(
+          tester,
+          () => find
+              .byKey(const ValueKey('setting-input-$folding'))
+              .evaluate()
+              .isNotEmpty,
+        );
+        final dialog = tester.widget<GlobalSettingsDialog>(
+          find.byType(GlobalSettingsDialog),
+        );
+        expect(await dialog.service(), same(settingsOwner));
+        expect(dialog.credentialAssociations!(), same(associations));
+        await _settingsSection(tester, 'Providers');
+      }
+
+      Finder action(String action, [String id = 'work-openai']) =>
+          find.byKey(ValueKey('credential-$action-providers-$id-api-key'));
+
+      bool enabled(String name, String id) =>
+          action(name, id).evaluate().isNotEmpty &&
+          tester.widget<ButtonStyleButton>(action(name, id)).onPressed != null;
+
+      Finder status(String label, String id) => find.descendant(
+        of: find.byKey(ValueKey('credential-slot-providers-$id-api-key')),
+        matching: find.text(label),
+      );
+
+      Future<void> press(String name, [String id = 'work-openai']) =>
+          _settingsAction(tester, 'credential-$name-providers-$id-api-key');
+
+      Future<void> store(String name, String secret, String id) async {
+        await press(name, id);
+        final input = action('input', id);
+        final field = tester.widget<TextField>(input);
+        expect(field.obscureText, isTrue);
+        expect(field.controller!.text, isEmpty);
+        await tester.enterText(input, secret);
+        await press('submit', id);
+        await _settingsUntil(tester, () => enabled('replace', id));
+        expect(input, findsNothing);
+        expect(action('replace', id), findsOneWidget);
+        expect(status('Credential stored locally', id), findsOneWidget);
+      }
+
+      final work = File(
+        '${roots.configurationRoot}/providers/work-openai.toml',
+      );
+      final personal = File(
+        '${roots.configurationRoot}/providers/personal-openai.toml',
+      );
+      final settingsFile = File('${roots.configurationRoot}/settings.toml');
+      CredentialReference reference(String id) => CredentialReference.parse(
+        ConfigurationStore(roots)
+                .recordFile(collectionId: 'providers', recordId: id)
+                .load()
+                .document
+                .readScalar(['credentials', 'api-key'])
+            as String,
+      );
+
+      void expectEnvelope(
+        CredentialReference reference,
+        String id,
+        String secret,
+      ) {
+        expect(jsonDecode(storage.values[reference]!), {
+          'version': 1,
+          'owner': openai,
+          'type': '$openai.api-key',
+          'collection': 'providers',
+          'record': id,
+          'slot': 'api-key',
+          'reference': reference.value,
+          'secret': secret,
+        });
+      }
+
+      Future<void> closeApplication() async {
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+        await tester.pumpAndSettle();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(
+          IsolateNameServer.lookupPortByName('dev.adele.global-settings-owner'),
+          isNull,
+        );
+      }
+
+      try {
+        await mount();
+        await openProviders();
+        await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
+        await _createProviderRecord(
+          tester,
+          'personal-openai',
+          'Personal OpenAI',
+        );
+        for (final id in ['work-openai', 'personal-openai']) {
+          await _expandProviderRecord(tester, id);
+          expect(
+            find.byKey(ValueKey('credential-slot-providers-$id-api-key')),
+            findsOneWidget,
+          );
+          expect(action('check', id), findsOneWidget);
+          expect(status('Credential status not checked', id), findsOneWidget);
+          for (final name in ['set', 'replace', 'establish', 'forget']) {
+            expect(enabled(name, id), isFalse);
+          }
+        }
+        expect(
+          storage.calls,
+          isEmpty,
+          reason:
+              'Startup, record creation and expansion must not read storage.',
+        );
+        for (final (id, secret) in [
+          ('work-openai', workSecret),
+          ('personal-openai', personalSecret),
+        ]) {
+          final callsBeforeCheck = storage.calls.length;
+          await press('check', id);
+          await _settingsUntil(tester, () => enabled('set', id));
+          expect(status('No credential configured', id), findsOneWidget);
+          expect(storage.calls, hasLength(callsBeforeCheck));
+          await store('set', secret, id);
+        }
+        final workReference = reference('work-openai');
+        final personalReference = reference('personal-openai');
+        expect(workReference, isNot(personalReference));
+        expectEnvelope(workReference, 'work-openai', workSecret);
+        expectEnvelope(personalReference, 'personal-openai', personalSecret);
+        for (final file in [work, personal]) {
+          final contents = await file.readAsString();
+          expect(contents, contains('[credentials]'));
+          expect(contents, contains('api-key = "cred1_'));
+          expect(contents, isNot(contains(workSecret)));
+          expect(contents, isNot(contains(personalSecret)));
+        }
+        expect(await settingsFile.exists(), isFalse);
+        final personalBytes = await personal.readAsBytes();
+        final personalEnvelope = storage.values[personalReference];
+        final workBeforeReplace = await work.readAsBytes();
+
+        await store('replace', replacement, 'work-openai');
+        expect(reference('work-openai'), workReference);
+        expect(await work.readAsBytes(), workBeforeReplace);
+        expectEnvelope(workReference, 'work-openai', replacement);
+        expect(storage.values, hasLength(2));
+
+        // Replace retires the old record handle even though TOML bytes do not
+        // change. The ordinary editor must use the acknowledged fresh handle.
+        await _editProviderRecord(tester, 'work-openai');
+        final name = find.byKey(
+          const ValueKey('record-input-providers-work-openai-display-name'),
+        );
+        await tester.enterText(name, 'Work renamed after replacement');
+        await _settingsAction(
+          tester,
+          'record-presence-providers-work-openai-endpoint',
+        );
+        await tester.enterText(
+          find.byKey(
+            const ValueKey('record-input-providers-work-openai-endpoint'),
+          ),
+          'https://example.invalid/work/v1',
+        );
+        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsUntil(tester, () => name.evaluate().isEmpty);
+        expect(
+          await work.readAsString(),
+          contains('display-name = "Work renamed after replacement"'),
+        );
+        expect(reference('work-openai'), workReference);
+        expect(
+          await work.readAsString(),
+          contains('endpoint = "https://example.invalid/work/v1"'),
+        );
+        expect(await work.readAsString(), isNot(contains(replacement)));
+        expect(await personal.readAsBytes(), personalBytes);
+        expect(storage.values[personalReference], personalEnvelope);
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(runtime.plugins.backends, isEmpty);
+        expect(runtime.plugins.host, isNull);
+
+        final callsBeforeReopen = storage.calls.length;
+        await closeApplication();
+        credentials = CredentialService(storage);
+        runtime = NativeAdeleRuntime();
+        await mount();
+        await openProviders();
+        await _expandProviderRecord(tester, 'work-openai');
+        await _expandProviderRecord(tester, 'personal-openai');
+        expect(find.text('Work renamed after replacement'), findsOneWidget);
+        expect(find.text('Personal OpenAI'), findsOneWidget);
+        expect(
+          storage.calls,
+          hasLength(callsBeforeReopen),
+          reason:
+              'Reconstruction and reopening must not inspect saved references.',
+        );
+        expect(reference('work-openai'), workReference);
+        expect(reference('personal-openai'), personalReference);
+        for (final id in ['work-openai', 'personal-openai']) {
+          expect(status('Credential status not checked', id), findsOneWidget);
+          await press('check', id);
+          await _settingsUntil(tester, () => enabled('forget', id));
+          expect(status('Credential stored locally', id), findsOneWidget);
+        }
+        expect(storage.calls.skip(callsBeforeReopen), [
+          ('read', workReference),
+          ('read', personalReference),
+        ]);
+
+        final beforeForget = await work.readAsBytes();
+        final callsBeforeForget = storage.calls.length;
+        await press('forget');
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.textContaining('work-openai'), findsWidgets);
+        expect(find.textContaining('API key'), findsWidgets);
+        await press('forget-cancel');
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(storage.calls, hasLength(callsBeforeForget));
+        expect(await work.readAsBytes(), beforeForget);
+        expectEnvelope(workReference, 'work-openai', replacement);
+        await press('forget');
+        await press('forget-confirm');
+        await _settingsUntil(tester, () => enabled('set', 'work-openai'));
+        expect(
+          status('No credential configured', 'work-openai'),
+          findsOneWidget,
+        );
+        expect(storage.values.containsKey(workReference), isFalse);
+        expect(await work.readAsString(), isNot(contains(workReference.value)));
+        expect(
+          await work.readAsString(),
+          contains('display-name = "Work renamed after replacement"'),
+        );
+        expect(
+          await work.readAsString(),
+          contains('endpoint = "https://example.invalid/work/v1"'),
+        );
+        expect(await personal.readAsBytes(), personalBytes);
+        expect(storage.values[personalReference], personalEnvelope);
+
+        // Forget also replaces the revision. Delete must use that fresh handle,
+        // not require a Reload that could discard independent record drafts.
+        await _settingsAction(tester, 'record-delete-providers-work-openai');
+        await _settingsAction(
+          tester,
+          'record-delete-confirm-providers-work-openai',
+        );
+        await _settingsUntil(
+          tester,
+          () => find
+              .byKey(const ValueKey('record-providers-work-openai'))
+              .evaluate()
+              .isEmpty,
+        );
+        expect(await work.exists(), isFalse);
+        expect(await personal.readAsBytes(), personalBytes);
+        expect(storage.values, {personalReference: personalEnvelope});
+
+        final callsBeforePreferences = storage.calls.length;
+        await _settingsSection(tester, 'Preferences');
+        await _settingsAction(tester, 'setting-input-$folding');
+        await _settingsAction(tester, 'setting-save-$folding');
+        await _settingsUntil(
+          tester,
+          () => find.text('Effective value: true').evaluate().isNotEmpty,
+        );
+        expect(
+          await settingsFile.readAsString(),
+          contains('"$folding" = true'),
+        );
+        expect(await personal.readAsBytes(), personalBytes);
+        expect(storage.values, {personalReference: personalEnvelope});
+        expect(storage.calls, hasLength(callsBeforePreferences));
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(runtime.plugins.backends, isEmpty);
+        expect(runtime.plugins.host, isNull);
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(find.byType(MainContentHost), findsNothing);
+        expect(await Directory(roots.localDataRoot).exists(), isFalse);
+        expect(await Directory(roots.cacheRoot).exists(), isFalse);
+        expect(tester.takeException(), isNull);
+        await closeApplication();
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await associations?.close();
+        await settingsOwner?.close();
+        await credentials.close();
+        await runtime.close();
+      }
+    }),
+    skip: !Platform.isLinux,
+  );
+
   testWidgets(
     'Global Settings creates edits deletes and reloads stock provider records before a Project without runtime activation',
     (tester) => tester.runAsync(() async {
@@ -2078,6 +2445,38 @@ Future<void> _createProviderRecord(
     () => find.byKey(ValueKey('record-providers-$id')).evaluate().isNotEmpty,
   );
   expect(find.text(name), findsOneWidget);
+}
+
+final class _CredentialStorage implements CredentialStorageAdapter {
+  final values = <CredentialReference, String>{};
+  final calls = <(String, CredentialReference)>[];
+
+  @override
+  Future<bool> contains(CredentialReference reference) async {
+    calls.add(('contains', reference));
+    return values.containsKey(reference);
+  }
+
+  @override
+  Future<String?> read(CredentialReference reference) async {
+    calls.add(('read', reference));
+    return values[reference];
+  }
+
+  @override
+  Future<void> write(
+    CredentialReference reference,
+    CredentialSecret secret,
+  ) async {
+    calls.add(('write', reference));
+    values[reference] = secret.reveal();
+  }
+
+  @override
+  Future<void> delete(CredentialReference reference) async {
+    calls.add(('delete', reference));
+    values.remove(reference);
+  }
 }
 
 final class _EnvironmentChannel implements AdeleRequestChannel {
