@@ -23,6 +23,7 @@ import 'main_content_bridge.dart';
 import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_services.dart';
+import 'rich_document_editor_bridge.dart';
 import 'session_feedback_bridge.dart';
 import 'session_presentation_lifecycle_bridge.dart';
 import 'structured_bridge_data.dart';
@@ -61,10 +62,7 @@ final class PreparedMainContentHost {
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
       {};
   final Set<Future<Map<String, Object?>>> _operations = {};
-  final Map<
-    PreparedMainContentPresentation,
-    Set<EnvironmentCapabilityAccessBridge>
-  >
+  final Map<PreparedMainContentPresentation, Set<PreparedFrontendBridge>>
   _contextualAccess = {};
   bool _accepting = true;
   bool _preflighting = false;
@@ -241,10 +239,22 @@ final class PreparedMainContentHost {
                           ? () => _resolveSourceDisplay(extensions, access)
                           : null,
                     );
+                    final richEditor = descriptor.richDocumentEditor
+                        ? RichDocumentEditorBridge(
+                            isActive: () => collection.isActive,
+                          )
+                        : null;
                     late final SessionPresentationLifecycleBridge lifecycle;
                     lifecycle = SessionPresentationLifecycleBridge(
                       isActive: () => collection.isActive,
                       onInvalidate: () {
+                        if (richEditor != null) {
+                          final active = _contextualAccess[descriptor];
+                          active?.remove(richEditor);
+                          if (active?.isEmpty ?? false) {
+                            _contextualAccess.remove(descriptor);
+                          }
+                        }
                         if (identical(_lifecycles[identity]?.$3, lifecycle)) {
                           _lifecycles.remove(identity);
                           // PreparedFrontend retains its inert display during exit;
@@ -271,10 +281,14 @@ final class PreparedMainContentHost {
                       },
                     );
                     (_contextualAccess[descriptor] ??= {}).add(contextual);
+                    if (richEditor != null) {
+                      _contextualAccess[descriptor]!.add(richEditor);
+                    }
                     final acquired = <PreparedFrontendBridge>[
                       collection,
                       lifecycle,
                       contextual,
+                      ?richEditor,
                       CapabilityAccessBridge(
                         registry: capabilityRegistry,
                         capabilities: descriptor.capabilities,
@@ -725,7 +739,8 @@ final class PreparedMainContentHost {
     retained.owner.dispose();
   }
 
-  /// Revocation precedes asynchronous frontend registration/view cleanup.
+  /// Revokes pane-only contextual authority and owned rich editors before
+  /// asynchronous frontend registration/view cleanup.
   void revokeContextualAccess(PreparedMainContentPresentation descriptor) {
     for (final bridge in _contextualAccess.remove(descriptor) ?? const {}) {
       bridge.invalidate();

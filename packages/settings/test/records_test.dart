@@ -7,20 +7,26 @@ void main() {
     final collection = RecordCollectionId('providers');
     final record = ConfigurationRecordId('providers');
     final field = RecordFieldId('providers');
+    final slot = RecordCredentialSlotId('providers');
     final type = RecordTypeId('org.example.api');
     expect(collection, RecordCollectionId('providers'));
     expect(record, ConfigurationRecordId('providers'));
     expect(field, RecordFieldId('providers'));
+    expect(slot, RecordCredentialSlotId('providers'));
     expect(type, RecordTypeId('org.example.api'));
     expect(collection, isNot(record));
     expect(record, isNot(field));
     expect(field, isNot(collection));
+    expect(slot, isNot(field));
+    expect(slot, isNot(record));
+    expect(slot, isNot(collection));
     expect(type, isNot(PluginId(type.value)));
     expect(type, isNot(SettingId(type.value)));
     for (final pair in <(Object, Object)>[
       (collection, RecordCollectionId('providers')),
       (record, ConfigurationRecordId('providers')),
       (field, RecordFieldId('providers')),
+      (slot, RecordCredentialSlotId('providers')),
       (type, RecordTypeId(type.value)),
     ]) {
       expect(pair.$1.hashCode, pair.$2.hashCode);
@@ -29,6 +35,7 @@ void main() {
     expect(collection.toString(), collection.value);
     expect(record.toString(), record.value);
     expect(field.toString(), field.value);
+    expect(slot.toString(), slot.value);
     expect(type.toString(), type.value);
   });
 
@@ -37,6 +44,7 @@ void main() {
       expect(RecordCollectionId(value).value, value);
       expect(ConfigurationRecordId(value).value, value);
       expect(RecordFieldId(value).value, value);
+      expect(RecordCredentialSlotId(value).value, value);
     }
     for (final value in [
       '',
@@ -71,6 +79,11 @@ void main() {
         reason: value,
       );
       expect(() => RecordFieldId(value), throwsFormatException, reason: value);
+      expect(
+        () => RecordCredentialSlotId(value),
+        throwsFormatException,
+        reason: value,
+      );
     }
   });
 
@@ -108,6 +121,7 @@ void main() {
       );
     }
     expect(RecordFieldId('con').value, 'con');
+    expect(RecordCredentialSlotId('con').value, 'con');
   });
 
   test('type identity uses public grammar and owner dot namespace', () {
@@ -150,6 +164,87 @@ void main() {
       expect(_type().displayField, isNull);
     },
   );
+
+  test(
+    'credential slots are copied, ordered, immutable and duplicate-free',
+    () {
+      final z = _slot('z');
+      final a = _slot('a');
+      final slots = [z, a];
+      final type = _type(credentialSlots: slots);
+      slots.clear();
+      expect(type.credentialSlots, [z, a]);
+      expect(() => type.credentialSlots.clear(), throwsUnsupportedError);
+      expect(() => type.credentialSlots[0] = a, throwsUnsupportedError);
+      expect(type.fields, isEmpty);
+      expect(type.validate(_record, {}), isEmpty);
+      expect(_type().credentialSlots, isEmpty);
+      expect(() => _type().credentialSlots.add(a), throwsUnsupportedError);
+      expect(
+        () => _type(credentialSlots: [a, _slot('a')]),
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.name,
+            'name',
+            'credentialSlots',
+          ),
+        ),
+      );
+      expect(z.kind, RecordCredentialKind.secretText);
+      expect(RecordCredentialKind.values, [RecordCredentialKind.secretText]);
+    },
+  );
+
+  test('credential labels use bounded presentation text without coercion', () {
+    for (final label in ['API key', '  Key  ', 'x' * 128, '\u00e9']) {
+      expect(_slot('key', label: label).label, label);
+    }
+    for (final label in [
+      '',
+      ' ',
+      '\t',
+      'a\nb',
+      'a\rb',
+      'a\u0000b',
+      'a\u007fb',
+      'a\u0085b',
+      'a\u009fb',
+      'a\u2028b',
+      'a\u2029b',
+      'x' * 129,
+    ]) {
+      expect(
+        () => _slot('key', label: label),
+        throwsArgumentError,
+        reason: label,
+      );
+    }
+  });
+
+  test('credential slots stay local to types and outside field values', () {
+    final api = _type(
+      fields: [_field('name', const StringSettingType(), required: true)],
+      credentialSlots: [_slot('key'), _slot('token')],
+    );
+    final other = _type(
+      id: 'org.example.other',
+      credentialSlots: [_slot('key', label: 'Other key')],
+    );
+    final catalog = RecordCatalog([other, api]);
+    expect(
+      catalog.definition(api.id).credentialSlots.map((slot) => slot.id.value),
+      ['key', 'token'],
+    );
+    expect(
+      catalog.definition(other.id).credentialSlots.single.label,
+      'Other key',
+    );
+    expect(api.fields.single.id, RecordFieldId('name'));
+    final values = <String, Object?>{'name': 'Work', 'key': Object()};
+    expect(api.validate(_record, values), {'name': 'Work'});
+    expect(values, hasLength(2));
+    expect(other.validate(_record, {}), isEmpty);
+  });
 
   test(
     'display field references a required string without changing values',
@@ -486,6 +581,7 @@ RecordTypeDefinition _type({
   String label = '  API  ',
   Iterable<RecordFieldDefinition<Object>> fields = const [],
   RecordFieldId? displayField,
+  Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
 }) => RecordTypeDefinition(
   id: RecordTypeId(id),
   owner: PluginId(owner),
@@ -495,4 +591,12 @@ RecordTypeDefinition _type({
   description: 'Type\nexplanation',
   fields: fields,
   displayField: displayField,
+  credentialSlots: credentialSlots,
 );
+
+RecordCredentialSlotDefinition _slot(String id, {String label = 'API key'}) =>
+    RecordCredentialSlotDefinition(
+      id: RecordCredentialSlotId(id),
+      label: label,
+      kind: RecordCredentialKind.secretText,
+    );

@@ -18,6 +18,7 @@ import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/session_feedback_host.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
@@ -843,14 +844,10 @@ void main() {
         if (mountChat) {
           await _visible(tester, chat.entries.single.content);
           expect(find.text(chat.entries.single.content), findsOneWidget);
-          expect(
-            tester
-                .widgetList<TextField>(find.byType(TextField))
-                .singleWhere((field) => field.onSubmitted != null)
-                .controller!
-                .text,
-            _reviewDraft,
+          final composer = tester.widget<NativeRichDocumentEditorView>(
+            find.byType(NativeRichDocumentEditorView),
           );
+          expect(composer.editor.snapshot()['markdown'], _reviewDraft);
         }
         staleSubmit();
         await tester.pump();

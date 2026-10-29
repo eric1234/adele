@@ -10,7 +10,8 @@ for explicit backend setting injection; its declaration belongs to the plugin's
 [`settings.schema.json`](../../settings.schema.json), not Session state.
 `ChatSessionSnapshot` contains `entries`, `instructions`,
 and the required `String draftRequest`. The current Draft
-Request representation is exact plain text, not a rich document model.
+Request representation is an exact String (Markdown for the rich frontend), not
+AppFlowy JSON or a backend rich document model. The service does not normalize it.
 
 `ChatEntry` requires `id`, `role`, `content`, and nullable `String? runId`. The
 `runId` key is required even when null. Only a user entry may have a non-null Run

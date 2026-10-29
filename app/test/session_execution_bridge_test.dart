@@ -402,6 +402,86 @@ Future<List<dynamic>> settleBadDecode() => settleSessionOperation(badDecode());
       source.dispose();
     },
   );
+
+  for (final throws in [false, true]) {
+    for (final queued in [false, true]) {
+      testWidgets(
+        'service liveness failure is reported once; throws=$throws queued=$queued',
+        (tester) async {
+          final source = _Source();
+          var live = true;
+          var failures = 0;
+          final bridge = SessionExecutionBridge(
+            source: source,
+            isActive: () {
+              if (!live && throws) {
+                throw StateError('Required service retired.');
+              }
+              return live;
+            },
+          )..onFailure = () => failures++;
+          addTearDown(() {
+            bridge.invalidate();
+            source.dispose();
+          });
+          final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+          Object? invoke(String name) => runtime.executeLib(_library, name);
+          invoke('subscribe');
+          if (queued) source.notifyListeners();
+          live = false;
+          if (!queued) {
+            source.notifyListeners();
+            expect(failures, 1);
+          }
+          await tester.pump();
+          expect(failures, 1);
+          expect(source.observing, isFalse);
+          expect(copyStructuredBridgeData(invoke('count')), 0);
+          source.notifyListeners();
+          expect(() => invoke('execution'), throwsA(anything));
+          bridge.invalidate();
+          await tester.pump();
+          expect(failures, 1);
+        },
+      );
+    }
+  }
+
+  for (final retain in [false, true]) {
+    testWidgets('explicit retirement is not a failure; retain=$retain', (
+      tester,
+    ) async {
+      final source = _Source();
+      var failures = 0;
+      final bridge = SessionExecutionBridge(
+        source: source,
+        isActive: () => source.active,
+      )..onFailure = () => failures++;
+      addTearDown(() {
+        bridge.invalidate();
+        source.dispose();
+      });
+      final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+      Object? invoke(String name) => runtime.executeLib(_library, name);
+      invoke('subscribe');
+      source.notifyListeners();
+      if (retain) {
+        bridge.retainPresentation();
+        expect(
+          (copyStructuredBridgeData(invoke('execution')) as Map)['canStart'],
+          isFalse,
+        );
+      } else {
+        bridge.invalidate();
+        expect(() => invoke('execution'), throwsA(anything));
+      }
+      source.notifyListeners();
+      await tester.pump();
+      expect(copyStructuredBridgeData(invoke('count')), 0);
+      expect(source.observing, isFalse);
+      expect(failures, 0);
+    });
+  }
 }
 
 final class _CleanupBridge implements PreparedFrontendBridge {

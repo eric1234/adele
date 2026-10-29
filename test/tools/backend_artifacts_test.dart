@@ -532,6 +532,12 @@ elif [ "\$1" = format ]; then
 elif [ "\$1" = analyze ] || [ "\$1" = test ]; then
   test -f '${generatedContract.path}' || exit 95
   printf '%s|dart|%s\n' "\$1" "\$PWD" >> '${commands.path}'
+elif [ "\$1" = tools/adele.dart ] && [ "\$2" = test-credential-store-native ]; then
+  test "\$#" = 2 || exit 97
+  test "\$PWD" = '${root.path}' || exit 98
+  test -f '${generatedContract.path}' || exit 95
+  printf 'test|dart|%s|%s %s\n' "\$PWD" "\$1" "\$2" >> '${commands.path}'
+  if [ "\$ADELE_TEST_FAIL_CREDENTIAL_NATIVE" = 1 ]; then exit 37; fi
 else
   exit 99
 fi
@@ -1512,7 +1518,12 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
     expectGenerationArguments();
   });
 
-  for (final targetName in ['adele_tools', 'adele_desktop', null]) {
+  for (final targetName in [
+    'adele_tools',
+    'adele_desktop',
+    'adele_credential_store_native',
+    null,
+  ]) {
     test('test ${targetName ?? 'all'} generates once before workers', () async {
       final result = await invoke([
         'test',
@@ -1534,10 +1545,65 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
         recorded.skip(1),
         unorderedEquals([
           for (final target in targets)
-            'test|${target.executable}|${root.path}${target.path == '.' ? '' : '/${target.path}'}',
+            'test|${target.executable}|${root.path}${target.path == '.' ? '' : '/${target.path}'}'
+                '${target.name == 'adele_credential_store_native' ? '|${target.arguments.join(' ')}' : ''}',
+        ]),
+      );
+      expect(
+        result.stdout
+            .toString()
+            .split('\n')
+            .where((line) => line.startsWith('==> START test:')),
+        unorderedEquals([
+          for (final target in targets) '==> START test: ${target.name}',
         ]),
       );
       expectGenerationArguments();
+    });
+  }
+
+  test('test all propagates a simulated native credential failure', () async {
+    environment['ADELE_TEST_FAIL_CREDENTIAL_NATIVE'] = '1';
+    final result = await invoke(['test', '--jobs', '2']);
+    expect(result.exitCode, 37, reason: '${result.stdout}\n${result.stderr}');
+    expect(
+      result.stderr,
+      'FAILED TEST TARGETS:\n  adele_credential_store_native (exit 37)\n',
+    );
+    final recorded = commands.readAsLinesSync();
+    expect(recorded.first, 'generate|path');
+    expect(
+      recorded.skip(1),
+      unorderedEquals([
+        for (final target in tooling.testTargets)
+          'test|${target.executable}|${root.path}${target.path == '.' ? '' : '/${target.path}'}'
+              '${target.name == 'adele_credential_store_native' ? '|${target.arguments.join(' ')}' : ''}',
+      ]),
+    );
+    expect(
+      result.stdout,
+      contains(
+        'TEST SUMMARY: total ${tooling.testTargets.length}, '
+        'passed ${tooling.testTargets.length - 1}, failed 1,',
+      ),
+    );
+    expectGenerationArguments();
+  });
+
+  for (final (arguments, code) in [
+    (['tools/adele.dart', 'unexpected-native-command'], 99),
+    (['tools/adele.dart', 'test-credential-store-native', '--unexpected'], 97),
+  ]) {
+    test('mock dart rejects ${arguments.join(' ')}', () async {
+      final result = await Process.run(
+        '${root.path}/bin/dart',
+        arguments,
+        workingDirectory: root.path,
+        environment: environment,
+      );
+      expect(result.exitCode, code);
+      expect(commands.existsSync(), isFalse);
+      expect(generatedContract.existsSync(), isFalse);
     });
   }
 
@@ -1821,6 +1887,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'label': 'OpenAI API',
             'description': 'An OpenAI API-key provider configuration.',
             'displayField': 'display-name',
+            'credentialSlots': [
+              {'id': 'api-key', 'label': 'API key', 'kind': 'secret-text'},
+            ],
             'fields': [
               {
                 'id': 'display-name',
@@ -1857,6 +1926,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(type.label, 'OpenAI API');
       expect(type.description, 'An OpenAI API-key provider configuration.');
       expect(type.displayField?.value, 'display-name');
+      expect(type.credentialSlots.single.id.value, 'api-key');
+      expect(type.credentialSlots.single.label, 'API key');
+      expect(type.credentialSlots.single.kind.name, 'secretText');
       expect(type.fields.map((field) => field.id.value), [
         'display-name',
         'endpoint',
@@ -2403,8 +2475,21 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'operations': <String, Object?>{},
           'retainedData': false,
           'nativeCodeEditor': false,
+          'richDocumentEditor': false,
           'environmentTextFiles': false,
         });
+        expect(
+          catalog.installations
+              .where(
+                (installation) =>
+                    installation.frontend?.presentations
+                        .whereType<PreparedMainContentPresentation>()
+                        .any((descriptor) => descriptor.richDocumentEditor) ??
+                    false,
+              )
+              .map((installation) => installation.metadata.id.value),
+          ['dev.adele.plugin.chat-strategy'],
+        );
         final source = catalog.installations.singleWhere(
           (installation) =>
               installation.metadata.id.value == 'dev.adele.source-editor',

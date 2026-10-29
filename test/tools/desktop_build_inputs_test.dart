@@ -90,6 +90,7 @@ void main() {
     for (final bridge in [
       'main_content',
       'owning_backend',
+      'rich_document_editor',
       'session_execution',
       'session_feedback',
       'session_presentation_lifecycle',
@@ -407,6 +408,10 @@ part 'missing_part.dart';
         'plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
       );
       expect(inputs['command-frontend-compilation'], contains(commandContract));
+      expect(
+        inputs['chat-frontend-compilation'],
+        contains(absolute('packages/ui/lib/rich_document_editor_bridge.dart')),
+      );
       expect(
         inputs['filesystem-frontend-compilation'],
         isNot(contains(commandContract)),

@@ -15,6 +15,7 @@ dependencies:
   adele_configuration_store: ^0.1.0
   adele_contract: ^0.1.0
   adele_core_extensions: ^0.1.0
+  adele_credential_store: ^0.1.0
   adele_environment: ^0.1.0
   adele_model_tool: ^0.1.0
   adele_model_provider: ^0.1.0

@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
+import 'package:adele_desktop/editor/rich_document_markdown.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/rich_document_editor_bridge.dart';
 import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
@@ -12,10 +15,12 @@ import 'package:adele_desktop/ui/main_content/main_content_controller.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -53,6 +58,7 @@ void main() {
         'initialize': 'initializeChatMainContent',
         'entrypoint': 'buildChat',
         'sessionExecution': true,
+        'richDocumentEditor': true,
         'backendServices': [chatSessionServiceId],
         'strategyAffinity': 'owningBackend',
       },
@@ -161,35 +167,34 @@ void main() {
             ),
           );
           await tester.pumpWidget(workspace());
-          await tester.pumpAndSettle();
+          await _frames(tester);
           expect(find.text('Independent content'), findsOneWidget);
           final independent = tester.element(find.text('Independent content'));
           if (matching) {
             expect(source.serviceAcquisitions, 1);
             if (backendAvailable) {
-              expect(find.byType(TextField), findsOneWidget);
+              expect(find.byType(NativeRichDocumentEditorView), findsOneWidget);
+              expect(find.byType(AppFlowyEditor), findsOneWidget);
+              expect(find.byType(TextField), findsNothing);
               expect(source.calls.single.$1, 'chat.session.snapshot');
               expect(source.executionReads, greaterThan(0));
               final scroll = tester.widget<SingleChildScrollView>(
-                find.byType(SingleChildScrollView),
+                find.byType(SingleChildScrollView).first,
               );
               expect(scroll.padding, const EdgeInsets.all(24));
-              final composer = tester
-                  .widget<TextField>(find.byType(TextField))
-                  .controller;
+              final composer = _owner(tester);
+              final editorState = _state(tester);
               chatAccess.setTitle('chat', 'Renamed Chat');
               await tester.pumpWidget(workspace());
-              await tester.pumpAndSettle();
+              await _frames(tester);
               expect(
                 tester.widget<SingleChildScrollView>(
-                  find.byType(SingleChildScrollView),
+                  find.byType(SingleChildScrollView).first,
                 ),
                 same(scroll),
               );
-              expect(
-                tester.widget<TextField>(find.byType(TextField)).controller,
-                same(composer),
-              );
+              expect(_owner(tester), same(composer));
+              expect(_state(tester), same(editorState));
               expect(source.serviceAcquisitions, 1);
               expect(source.calls, hasLength(1));
             } else {
@@ -221,22 +226,20 @@ void main() {
   test(
     'prepared entrypoint returns a widget after generated snapshot loading',
     () async {
+      final bridges = PreparedFrontendBridges([
+        SessionPresentationLifecycleBridge(isActive: () => source.active),
+        RichDocumentEditorBridge(isActive: () => source.active),
+        SessionExecutionBridge(source: source, isActive: () => source.active),
+        OwningBackendBridge(
+          channels: {chatSessionServiceId: source},
+          validateBinding: () {},
+        ),
+      ]);
+      addTearDown(bridges.invalidate);
       final runtime = Runtime(artifact.readAsBytesSync().buffer.asByteData())
         ..addPlugin(flutterEvalPlugin)
         ..addPlugin(const ScrollViewBridge())
-        ..addPlugin(
-          PreparedFrontendBridges([
-            SessionPresentationLifecycleBridge(isActive: () => source.active),
-            SessionExecutionBridge(
-              source: source,
-              isActive: () => source.active,
-            ),
-            OwningBackendBridge(
-              channels: {chatSessionServiceId: source},
-              validateBinding: () {},
-            ),
-          ]),
-        );
+        ..addPlugin(bridges);
       final result = await runtime.executeLib(chatFrontendLibrary, 'buildChat');
       expect(result is $Value ? result.$reified : result, isA<Widget>());
     },
@@ -260,19 +263,20 @@ void main() {
         ),
       ]);
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('Chat'), findsOneWidget);
       expect(find.text('First question'), findsOneWidget);
       expect(find.text('First answer'), findsOneWidget);
       expect(source.calls.single.$1, 'chat.session.snapshot');
       expect(source.calls.single.$2, {'sessionId': 'session-opaque'});
-      await tester.enterText(find.byType(TextField), '  Next question  ');
+      await _enterText(tester, '  Next question  ');
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
-      expect(source.submitted, ['  Next question  ']);
+      await _frames(tester);
+      const submitted = '&#32;&#32;Next question&#32;&#32;';
+      expect(source.submitted, [submitted]);
       expect(source.starts, 1);
       expect(_draft(tester), isEmpty);
-      expect(find.text('  Next question  '), findsOneWidget);
+      expect(find.text(submitted), findsOneWidget);
       expect(source.running, isTrue);
       expect(
         source.configurations,
@@ -289,7 +293,7 @@ void main() {
       const restored = '  Saved draft\nwith whitespace  ';
       source.draftRequest = restored;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), restored);
       expect(
         source.writes,
@@ -297,30 +301,455 @@ void main() {
         reason: 'Restoration is not a local edit.',
       );
       const edited = '  New draft  ';
-      await tester.enterText(find.byType(TextField), edited);
-      expect(_draft(tester), edited);
-      await tester.pumpAndSettle();
-      expect(source.draftRequest, edited);
-      expect(source.writes, [edited]);
+      const serialized = '&#32;&#32;New draft&#32;&#32;';
+      await _enterText(tester, edited);
+      expect(_draft(tester), serialized);
+      expect(
+        _state(tester).document.root.children.single.delta!.toPlainText(),
+        edited,
+      );
+      await _frames(tester);
+      expect(source.draftRequest, serialized);
+      expect(source.writes, [serialized]);
       expect(source.submitted, isEmpty);
       expect(source.starts, 0);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(source.hasSubscriptions, isFalse);
       source.active = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      expect(_draft(tester), edited);
-      await tester.enterText(find.byType(TextField), '   ');
-      await tester.pumpAndSettle();
-      expect(source.draftRequest, '   ');
-      await tester.enterText(find.byType(TextField), '');
-      await tester.pumpAndSettle();
+      await _frames(tester);
+      expect(_draft(tester), serialized);
+      await _enterText(tester, '   ');
+      await _frames(tester);
+      expect(source.draftRequest, '&#32;&#32;&#32;');
+      await _enterText(tester, '');
+      await _frames(tester);
       expect(source.draftRequest, isEmpty);
-      expect(source.writes, [edited, '   ', '']);
+      expect(source.writes, [serialized, '&#32;&#32;&#32;', '']);
       expect(source.maxInFlightSaves, 1);
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('rich draft hydration retains exact source without a save', (
+    tester,
+  ) async {
+    const original =
+        '# Heading\r\n\r\n**bold** and *italic* and `code`\r\n\r\n'
+        '- parent\r\n  - child\r\n\r\n~~~dart\r\n  final x = 1;  \r\n~~~\r\n';
+    source.draftRequest = original;
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    final owner = _owner(tester);
+    final state = _state(tester);
+    expect(_draft(tester), original);
+    expect(owner.revision, 0);
+    expect(state.document.root.children.map((node) => node.type), [
+      HeadingBlockKeys.type,
+      ParagraphBlockKeys.type,
+      BulletedListBlockKeys.type,
+      RichDocumentMarkdown.codeBlockType,
+    ]);
+    expect(
+      state.document.root.children[2].children.single.delta!.toPlainText(),
+      'child',
+    );
+    expect(
+      state.document.root.children.last.delta!.toPlainText(),
+      '  final x = 1;  ',
+    );
+    expect(source.writes, isEmpty);
+    source.notifyListeners();
+    await _frames(tester);
+    expect(_owner(tester), same(owner));
+    expect(_state(tester), same(state));
+    expect(_draft(tester), original);
+    expect(source.writes, isEmpty);
+    final departure = source.lifecycle.prepareToDeactivate();
+    await _frames(tester);
+    await departure;
+    expect(source.writes, isEmpty);
+    expect(source.submitted, isEmpty);
+    expect(source.starts, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'multiline input and native formatting save and submit Markdown',
+    (tester) async {
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      await _enterText(tester, 'First');
+      await _insertText(tester, '\n');
+      await _insertText(tester, 'Second');
+      final state = _state(tester);
+      expect(
+        state.document.root.children.map((node) => node.delta!.toPlainText()),
+        ['First', 'Second'],
+      );
+      expect(_draft(tester), 'First\n\nSecond');
+      expect(
+        source.submitted,
+        isEmpty,
+        reason: 'Enter edits, rather than sends.',
+      );
+      expect(source.starts, 0);
+      await _select(
+        tester,
+        Selection.single(path: [0], startOffset: 0, endOffset: 5),
+      );
+      await _control(tester, LogicalKeyboardKey.keyB);
+      await _select(
+        tester,
+        Selection.single(path: [1], startOffset: 0, endOffset: 6),
+      );
+      await _control(tester, LogicalKeyboardKey.keyI);
+      const markdown = '**First**\n\n*Second*';
+      expect(_draft(tester), markdown);
+      expect(source.draftRequest, markdown);
+      expect(source.writes.last, markdown);
+      await tester.tap(find.text('Send'));
+      await _frames(tester);
+      expect(source.submitted, [markdown]);
+      expect(source.entries.single.content, markdown);
+      expect(source.starts, 1);
+      expect(_draft(tester), isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('typed fence and code keyboard input remain literal in Chat', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    await _enterText(tester, '```dart');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await _frames(tester);
+    final state = _state(tester);
+    final code = state.document.root.children.single;
+    expect(code.type, RichDocumentMarkdown.codeBlockType);
+    expect(code.attributes['language'], 'dart');
+    expect(_owner(tester).snapshot()['isBlank'], isTrue);
+    await tester.tap(find.text('Send'));
+    await _frames(tester);
+    expect(
+      source.submitted,
+      isEmpty,
+      reason: 'Empty code fences are not a prompt.',
+    );
+    await _select(tester, Selection.collapsed(Position(path: [0])));
+    await _insertText(tester, '  **literal**');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await _frames(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await _frames(tester);
+    await _insertText(tester, '`code`  ');
+    const literal = '  **literal**\n\t`code`  ';
+    expect(code.delta!.toJson(), (Delta()..insert(literal)).toJson());
+    await _select(
+      tester,
+      Selection.single(path: [0], startOffset: 0, endOffset: 13),
+    );
+    await _control(tester, LogicalKeyboardKey.keyB);
+    expect(code.delta!.toJson(), (Delta()..insert(literal)).toJson());
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await _frames(tester);
+    await _insertText(tester, 'After');
+    const markdown = '```dart\n$literal\n```\n\nAfter';
+    expect(_draft(tester), markdown);
+    expect(source.draftRequest, markdown);
+    expect(source.submitted, isEmpty);
+    await tester.tap(find.text('Send'));
+    await _frames(tester);
+    expect(source.submitted, [markdown]);
+    expect(source.entries.single.content, markdown);
+    expect(source.starts, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unsupported original Markdown can be sent unchanged, not edited', (
+    tester,
+  ) async {
+    const original =
+        'Before\r\n\r\n![alt](https://example.invalid/image.png)\r\n\r\nAfter  \r\n';
+    source.draftRequest = original;
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    final owner = _owner(tester);
+    expect(owner.readOnly, isTrue);
+    expect(owner.unsupportedReason, isNotNull);
+    expect(_draft(tester), original);
+    expect(find.byType(AppFlowyEditor), findsNothing);
+    expect(
+      find.textContaining('preserved read-only and can be sent unchanged.'),
+      findsOneWidget,
+    );
+    expect(tester.testTextInput.hasAnyClients, isFalse);
+    expect(source.writes, isEmpty);
+    await tester.tap(find.text('Send'));
+    await _frames(tester);
+    expect(source.submitted, [original]);
+    expect(source.entries.single.content, original);
+    expect(source.writes, isEmpty);
+    expect(source.starts, 1);
+    expect(owner.isDisposed, isTrue);
+    expect(_owner(tester), isNot(same(owner)));
+    expect(_draft(tester), isEmpty);
+    expect(find.byType(AppFlowyEditor), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final pendingSave in [false, true]) {
+    testWidgets(
+      'unsupported serialization blocks finalization and Undo recovers${pendingSave ? ' after an older pending write' : ''}',
+      (tester) async {
+        source.draftRequest = 'Stored';
+        final gate = Completer<void>();
+        if (pendingSave) source.saveGate = gate;
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        await _enterText(tester, 'Newer');
+        final owner = _owner(tester);
+        final state = _state(tester);
+        // Fault injection only: the admitted UI deliberately has no underline action.
+        await state.apply(
+          state.transaction..formatText(
+            state.document.root.children.single,
+            0,
+            5,
+            {'underline': true},
+          ),
+        );
+        await _frames(tester);
+        if (pendingSave) {
+          expect(source.draftRequest, 'Stored');
+          expect(source.writes, ['Newer']);
+          gate.complete();
+          await _frames(tester);
+        }
+        expect(owner.snapshot, throwsFormatException);
+        expect(source.draftRequest, 'Newer');
+        expect(source.writes, ['Newer']);
+        expect(
+          find.textContaining('This edit cannot be saved as Markdown.'),
+          findsOneWidget,
+        );
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(state.editable, isTrue);
+        await tester.tap(find.text('Send'));
+        await _frames(tester);
+        final rejected = expectLater(
+          source.lifecycle.prepareToDeactivate(),
+          throwsStateError,
+        );
+        await _frames(tester);
+        await rejected;
+        expect(source.submitted, isEmpty);
+        expect(source.starts, 0);
+        expect(source.writes, ['Newer']);
+        expect(_owner(tester), same(owner));
+        expect(_state(tester), same(state));
+        expect(
+          state.document.root.children.single.delta!.toPlainText(),
+          'Newer',
+        );
+        await _select(
+          tester,
+          Selection.collapsed(Position(path: [0], offset: 5)),
+        );
+        await _control(tester, LogicalKeyboardKey.keyZ);
+        expect(_draft(tester), 'Newer');
+        expect(
+          find.textContaining('This edit cannot be saved as Markdown.'),
+          findsNothing,
+        );
+        expect(source.draftRequest, 'Newer');
+        expect(source.writes, ['Newer', 'Newer']);
+        final departure = source.lifecycle.prepareToDeactivate();
+        await _frames(tester);
+        await departure;
+        await tester.tap(find.text('Send'));
+        await _frames(tester);
+        expect(source.submitted, ['Newer']);
+        expect(source.starts, 1);
+        expect(source.maxInFlightSaves, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'execution disable and enable retain owner, document and undo redo',
+    (tester) async {
+      source.draftRequest = 'Keep';
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final owner = _owner(tester);
+      final state = _state(tester);
+      await _select(
+        tester,
+        Selection.collapsed(Position(path: [0], offset: 4)),
+      );
+      await _insertText(tester, '!');
+      expect(source.writes, ['Keep!']);
+      source.running = true;
+      source.notifyListeners();
+      await _frames(tester);
+      expect(state.editable, isFalse);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(owner.snapshot()['editingEnabled'], isFalse);
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await _frames(tester);
+      expect(_draft(tester), 'Keep!');
+      expect(source.writes, ['Keep!']);
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      source.finish();
+      await _frames(tester);
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      expect(owner.snapshot()['editingEnabled'], isTrue);
+      expect(state.editable, isTrue);
+      await _select(
+        tester,
+        Selection.collapsed(Position(path: [0], offset: 5)),
+      );
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      expect(_draft(tester), 'Keep');
+      expect(source.draftRequest, 'Keep');
+      await _control(tester, LogicalKeyboardKey.keyY);
+      expect(_draft(tester), 'Keep!');
+      expect(source.writes, ['Keep!', 'Keep', 'Keep!']);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'acceptance replaces the owner and cannot undo submitted content',
+    (tester) async {
+      source.submitGate = Completer<void>();
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      await _enterText(tester, 'Accepted');
+      final owner = _owner(tester);
+      final state = _state(tester);
+      await tester.tap(find.text('Send'));
+      await _frames(tester);
+      expect(_owner(tester), same(owner));
+      expect(_draft(tester), 'Accepted');
+      expect(owner.isDisposed, isFalse);
+      expect(state.editable, isFalse);
+      source.submitGate!.complete();
+      await _frames(tester);
+      final replacement = _owner(tester);
+      final replacementState = _state(tester);
+      expect(replacement, isNot(same(owner)));
+      expect(replacementState, isNot(same(state)));
+      expect(owner.isDisposed, isTrue);
+      expect(state.isDisposed, isTrue);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(replacementState.editable, isFalse);
+      expect(_draft(tester), isEmpty);
+      source.finish();
+      await _frames(tester);
+      expect(_owner(tester), same(replacement));
+      await _select(tester, Selection.collapsed(Position(path: [0])));
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      expect(_draft(tester), isEmpty);
+      expect(source.writes, ['Accepted']);
+      await _insertText(tester, 'Next');
+      expect(_draft(tester), 'Next');
+      expect(source.draftRequest, 'Next');
+      expect(source.submitted, ['Accepted']);
+      expect(source.starts, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final changesText in [false, true]) {
+    testWidgets(
+      'IME ${changesText ? 'replacement' : 'composition-only transition'} blocks Send and navigation until commit',
+      (tester) async {
+        source.draftRequest = 'seed';
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        final owner = _owner(tester);
+        final state = _state(tester);
+        await _select(
+          tester,
+          Selection.collapsed(Position(path: [0], offset: 4)),
+        );
+        final before = TextEditingValue.fromJSON(
+          tester.testTextInput.editingState!,
+        );
+        final composing = changesText
+            ? TextEditingValue(
+                text: '${before.text}\u4e2d',
+                selection: TextSelection.collapsed(
+                  offset: before.text.length + 1,
+                ),
+                composing: TextRange(
+                  start: before.text.length,
+                  end: before.text.length + 1,
+                ),
+              )
+            : before.copyWith(
+                composing: TextRange(
+                  start: before.text.length - 4,
+                  end: before.text.length,
+                ),
+              );
+        await _input(tester, composing);
+        final revision = owner.revision;
+        expect(owner.snapshot()['markdown'], isNull);
+        expect(owner.snapshot()['error'], 'composition_pending');
+        expect(source.writes, isEmpty);
+        expect(source.draftRequest, 'seed');
+        await tester.tap(find.text('Send'));
+        await _frames(tester);
+        final rejected = expectLater(
+          source.lifecycle.prepareToDeactivate(),
+          throwsStateError,
+        );
+        await _frames(tester);
+        await rejected;
+        expect(source.submitted, isEmpty);
+        expect(source.starts, 0);
+        expect(source.writes, isEmpty);
+        expect(_owner(tester), same(owner));
+        expect(_state(tester), same(state));
+        expect(state.editable, isTrue);
+        expect(find.textContaining('Finish text composition'), findsOneWidget);
+        expect(tester.testTextInput.hasAnyClients, isTrue);
+        await _input(tester, composing.copyWith(composing: TextRange.empty));
+        final committed = changesText ? 'seed\u4e2d' : 'seed';
+        expect(_draft(tester), committed);
+        expect(
+          owner.revision,
+          revision,
+          reason: 'Composition completion alone is not a document edit.',
+        );
+        expect(find.textContaining('Finish text composition'), findsNothing);
+        expect(source.draftRequest, committed);
+        expect(source.writes, changesText ? [committed] : isEmpty);
+        final departure = source.lifecycle.prepareToDeactivate();
+        await _frames(tester);
+        await departure;
+        await tester.tap(find.text('Send'));
+        await _frames(tester);
+        expect(source.submitted, [committed]);
+        expect(source.entries.single.content, committed);
+        expect(source.starts, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('rapid edits coalesce to latest and all saves stay sequential', (
     tester,
@@ -329,27 +758,27 @@ void main() {
     final latest = Completer<void>();
     source.saveGate = first;
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'First');
-    await tester.enterText(find.byType(TextField), 'Skipped');
-    await tester.enterText(find.byType(TextField), 'Latest');
-    await tester.pumpAndSettle();
+    await _frames(tester);
+    await _enterText(tester, 'First');
+    await _enterText(tester, 'Skipped');
+    await _enterText(tester, 'Latest');
+    await _frames(tester);
     expect(_draft(tester), 'Latest');
     expect(source.writes, ['First']);
     expect(source.inFlightSaves, 1);
     source.saveGate = latest;
     first.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.writes, ['First', 'Latest']);
     expect(source.draftRequest, 'First');
-    await tester.enterText(find.byType(TextField), 'Next');
-    await tester.enterText(find.byType(TextField), 'Final');
+    await _enterText(tester, 'Next');
+    await _enterText(tester, 'Final');
     latest.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.writes, ['First', 'Latest', 'Final']);
     expect(source.draftRequest, 'Final');
-    await tester.enterText(find.byType(TextField), 'Sequential');
-    await tester.pumpAndSettle();
+    await _enterText(tester, 'Sequential');
+    await _frames(tester);
     expect(source.writes, ['First', 'Latest', 'Final', 'Sequential']);
     expect(source.draftRequest, 'Sequential');
     expect(source.maxInFlightSaves, 1);
@@ -365,29 +794,30 @@ void main() {
       final latest = Completer<void>();
       source.saveGate = first;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'First');
-      await tester.enterText(find.byType(TextField), 'Skipped');
-      await tester.enterText(find.byType(TextField), '  Latest draft  ');
+      await _frames(tester);
+      await _enterText(tester, 'First');
+      await _enterText(tester, 'Skipped');
+      await _enterText(tester, '  Latest draft  ');
+      const latestDraft = '&#32;&#32;Latest draft&#32;&#32;';
       var prepared = false;
       final pending = source.lifecycle.prepareToDeactivate().then((_) {
         prepared = true;
       });
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(prepared, isFalse);
       expect(source.writes, ['First']);
       expect(source.hasSubscriptions, isTrue);
       source.saveGate = latest;
       first.complete();
-      await tester.pumpAndSettle();
-      expect(source.writes, ['First', '  Latest draft  ']);
+      await _frames(tester);
+      expect(source.writes, ['First', latestDraft]);
       expect(source.draftRequest, 'First');
       expect(prepared, isFalse);
       latest.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       await pending;
       expect(prepared, isTrue);
-      expect(source.draftRequest, '  Latest draft  ');
+      expect(source.draftRequest, latestDraft);
       expect(source.maxInFlightSaves, 1);
       expect(source.inFlightSaves, 0);
       expect(source.submitted, isEmpty);
@@ -397,14 +827,14 @@ void main() {
       expect(source.hasSubscriptions, isFalse);
       source.active = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      expect(_draft(tester), '  Latest draft  ');
+      await _frames(tester);
+      expect(_draft(tester), latestDraft);
       expect(source.lifecycle, isNot(same(retired)));
       await expectLater(retired.prepareToDeactivate(), throwsStateError);
       final reopened = source.lifecycle.prepareToDeactivate();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       await reopened;
-      expect(source.writes, ['First', '  Latest draft  ']);
+      expect(source.writes, ['First', latestDraft]);
       expect(tester.takeException(), isNull);
     },
   );
@@ -415,11 +845,10 @@ void main() {
       final gate = Completer<void>();
       source.saveGate = gate;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      final controller = tester
-          .widget<TextField>(find.byType(TextField))
-          .controller;
-      await tester.enterText(find.byType(TextField), 'Keep unsaved text');
+      await _frames(tester);
+      final controller = _owner(tester);
+      final editorState = _state(tester);
+      await _enterText(tester, 'Keep unsaved text');
       final pending = expectLater(
         source.lifecycle.prepareToDeactivate(),
         throwsA(
@@ -431,14 +860,12 @@ void main() {
         ),
       );
       gate.completeError(StateError('private native storage failure'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       await pending;
       expect(_draft(tester), 'Keep unsaved text');
       expect(source.hasSubscriptions, isTrue);
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller,
-        same(controller),
-      );
+      expect(_owner(tester), same(controller));
+      expect(_state(tester), same(editorState));
       expect(
         find.text('Draft was not saved. Your text is preserved.'),
         findsOneWidget,
@@ -449,7 +876,7 @@ void main() {
       expect(source.starts, 0);
       expect(source.submitted, isEmpty);
       final retry = source.lifecycle.prepareToDeactivate();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       await retry;
       expect(source.draftRequest, 'Keep unsaved text');
       expect(_draft(tester), 'Keep unsaved text');
@@ -465,9 +892,9 @@ void main() {
       final gate = Completer<void>();
       source.saveGate = gate;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'In flight');
-      await tester.enterText(find.byType(TextField), 'Queued');
+      await _frames(tester);
+      await _enterText(tester, 'In flight');
+      await _enterText(tester, 'Queued');
       final pending = expectLater(
         source.lifecycle.prepareToDeactivate(),
         throwsStateError,
@@ -475,7 +902,7 @@ void main() {
       generation.invalidate();
       await tester.pumpWidget(const SizedBox.shrink());
       gate.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       await pending;
       expect(source.writes, ['In flight']);
       expect(source.hasSubscriptions, isFalse);
@@ -494,13 +921,13 @@ void main() {
       source.lifecycle.prepareToDeactivate(),
       throwsStateError,
     );
-    await tester.pumpAndSettle();
+    await _frames(tester);
     await pending;
     expect(source.hasSubscriptions, isTrue);
     expect(_draft(tester), 'Pending acceptance');
     expect(source.starts, 0);
     source.submitGate!.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.starts, 1);
     expect(_draft(tester), isEmpty);
     expect(tester.takeException(), isNull);
@@ -513,11 +940,11 @@ void main() {
       source.saveGate = gate;
       source.failSave = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'First');
-      await tester.enterText(find.byType(TextField), 'Keep latest');
+      await _frames(tester);
+      await _enterText(tester, 'First');
+      await _enterText(tester, 'Keep latest');
       gate.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), 'Keep latest');
       expect(source.writes, ['First', 'Keep latest']);
       expect(source.draftRequest, isEmpty);
@@ -525,9 +952,9 @@ void main() {
         find.text('Draft was not saved. Your text is preserved.'),
         findsOneWidget,
       );
-      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+      expect(_state(tester).editable, isTrue);
       source.notifyListeners();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(
         source.writes,
         ['First', 'Keep latest'],
@@ -535,7 +962,7 @@ void main() {
       );
       source.failSave = false;
       await tester.tap(find.text('Retry save'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.writes, ['First', 'Keep latest', 'Keep latest']);
       expect(source.draftRequest, 'Keep latest');
       expect(_draft(tester), 'Keep latest');
@@ -548,13 +975,13 @@ void main() {
   testWidgets('another local edit retries a failed save', (tester) async {
     source.failSave = true;
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Failed');
-    await tester.pumpAndSettle();
+    await _frames(tester);
+    await _enterText(tester, 'Failed');
+    await _frames(tester);
     expect(find.text('Retry save'), findsOneWidget);
     source.failSave = false;
-    await tester.enterText(find.byType(TextField), 'Edited after failure');
-    await tester.pumpAndSettle();
+    await _enterText(tester, 'Edited after failure');
+    await _frames(tester);
     expect(source.writes, ['Failed', 'Edited after failure']);
     expect(source.draftRequest, 'Edited after failure');
     expect(_draft(tester), 'Edited after failure');
@@ -569,21 +996,21 @@ void main() {
     source.saveGate = first;
     source.failSave = true;
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Older');
-    await tester.enterText(find.byType(TextField), 'Newest');
+    await _frames(tester);
+    await _enterText(tester, 'Older');
+    await _enterText(tester, 'Newest');
     await tester.tap(find.text('Send'));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     source.saveGate = latest;
     first.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.writes, ['Older', 'Newest']);
     expect(source.submitted, isEmpty);
     expect(source.starts, 0);
     expect(_draft(tester), 'Newest');
     source.failSave = false;
     latest.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.events, [
       'save:Older',
       'save:Newest',
@@ -612,50 +1039,51 @@ void main() {
       source.submitGate = Completer<void>();
       source.startGate = Completer<void>();
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'First');
-      await tester.enterText(find.byType(TextField), 'Skipped');
-      await tester.enterText(find.byType(TextField), '  Latest  ');
+      await _frames(tester);
+      await _enterText(tester, 'First');
+      await _enterText(tester, 'Skipped');
+      await _enterText(tester, '  Latest  ');
+      const latestDraft = '&#32;&#32;Latest&#32;&#32;';
       final send = tester
           .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
           .onPressed!;
       send();
       send();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.events, ['save:First']);
-      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+      expect(_state(tester).editable, isFalse);
       source.saveGate = latest;
       first.complete();
-      await tester.pumpAndSettle();
-      expect(source.events, ['save:First', 'saved:First', 'save:  Latest  ']);
+      await _frames(tester);
+      expect(source.events, ['save:First', 'saved:First', 'save:$latestDraft']);
       expect(source.submitted, isEmpty);
       expect(source.starts, 0);
-      expect(_draft(tester), '  Latest  ');
+      expect(_draft(tester), latestDraft);
       latest.complete();
-      await tester.pumpAndSettle();
-      expect(source.submitted, ['  Latest  ']);
+      await _frames(tester);
+      expect(source.submitted, [latestDraft]);
       expect(source.starts, 0);
-      expect(_draft(tester), '  Latest  ');
+      expect(_draft(tester), latestDraft);
       source.submitGate!.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), isEmpty);
       expect(source.draftRequest, isEmpty);
       expect(source.events, [
         'save:First',
         'saved:First',
-        'save:  Latest  ',
-        'saved:  Latest  ',
-        'submit:  Latest  ',
-        'accepted:  Latest  ',
+        'save:$latestDraft',
+        'saved:$latestDraft',
+        'submit:$latestDraft',
+        'accepted:$latestDraft',
         'start',
       ]);
       send();
       expect(source.starts, 1);
       source.startGate!.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.maxInFlightSaves, 1);
-      expect(source.submitted, ['  Latest  ']);
-      expect(source.entries.single.content, '  Latest  ');
+      expect(source.submitted, [latestDraft]);
+      expect(source.entries.single.content, latestDraft);
       expect(tester.takeException(), isNull);
     },
   );
@@ -667,12 +1095,12 @@ void main() {
       source.saveGate = gate;
       source.failSave = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Keep for Send');
+      await _frames(tester);
+      await _enterText(tester, 'Keep for Send');
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       gate.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), 'Keep for Send');
       expect(source.submitted, isEmpty);
       expect(source.starts, 0);
@@ -682,10 +1110,10 @@ void main() {
         find.text('Draft was not saved. Your text is preserved.'),
         findsOneWidget,
       );
-      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+      expect(_state(tester).editable, isTrue);
       source.failSave = false;
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.writes, ['Keep for Send', 'Keep for Send']);
       expect(source.submitted, ['Keep for Send']);
       expect(source.starts, 1);
@@ -700,24 +1128,24 @@ void main() {
     source.submitGate = Completer<void>();
     source.startGate = Completer<void>();
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Send once');
+    await _frames(tester);
+    await _enterText(tester, 'Send once');
     final send = tester
         .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
         .onPressed!;
     send();
     send();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.submitted, ['Send once']);
     expect(source.starts, 0);
     expect(_draft(tester), 'Send once');
     source.submitGate!.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     send();
     expect(source.starts, 1);
     expect(_draft(tester), isEmpty);
     source.startGate!.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(_draft(tester), isEmpty);
     expect(source.submitted, ['Send once']);
     expect(
@@ -731,22 +1159,75 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), '  \n ');
+    await _frames(tester);
+    await _enterText(tester, '  \n ');
     final send = tester
         .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
         .onPressed!;
     send();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.submitted, isEmpty);
-    await tester.enterText(find.byType(TextField), 'Draft');
+    await _enterText(tester, 'Draft');
     source.running = true;
     source.notifyListeners();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     send();
     expect(source.submitted, isEmpty);
     expect(_draft(tester), 'Draft');
   });
+
+  testWidgets('empty formatting scaffolding never becomes a request', (
+    tester,
+  ) async {
+    const markdown = '# \n\n- \n\n```\n\n```';
+    source.draftRequest = markdown;
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    expect(_owner(tester).snapshot()['isBlank'], isTrue);
+    expect(_draft(tester), markdown);
+    await tester.tap(find.text('Send'));
+    await _frames(tester);
+    expect(source.submitted, isEmpty);
+    expect(source.writes, isEmpty);
+    expect(source.draftRequest, markdown);
+    expect(source.starts, 0);
+  });
+
+  testWidgets(
+    'compact native viewport scrolls and survives narrow rebuilding',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 480);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      source.draftRequest = List.generate(
+        20,
+        (index) => 'Paragraph $index with wrapping text in a narrow Chat pane.',
+      ).join('\n\n');
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final owner = _owner(tester);
+      final state = _state(tester);
+      expect(tester.getSize(find.byType(AppFlowyEditor)).height, 180);
+      final scroll = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(AppFlowyEditor),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.drag(find.byType(AppFlowyEditor), const Offset(0, -180));
+      await _frames(tester);
+      expect(scroll.position.pixels, greaterThan(0));
+      source.notifyListeners();
+      await _frames(tester);
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      expect(_draft(tester), source.draftRequest);
+      expect(source.writes, isEmpty);
+      expect(find.text('Send'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'stale terminal snapshot cannot erase a newer accepted occurrence',
@@ -755,13 +1236,17 @@ void main() {
       final gate = Completer<void>();
       source.snapshotGate = gate;
       source.finish();
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Repeated text');
+      await _frames(tester);
+      await _enterText(tester, 'Repeated text');
+      expect(_draft(tester), 'Repeated text');
+      expect(source.writes, ['Repeated text', 'Repeated text']);
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
+      expect(source.submitted, ['Repeated text', 'Repeated text']);
+      expect(source.entries, hasLength(2));
       expect(find.text('Repeated text'), findsNWidgets(2));
       gate.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('Repeated text'), findsNWidgets(2));
       expect(source.entries.map((entry) => entry.id).toSet(), hasLength(2));
       expect(source.starts, 2);
@@ -785,18 +1270,18 @@ void main() {
           ),
         );
         source.finish();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         if (savePending) source.saveGate = saveGate;
-        await tester.enterText(find.byType(TextField), 'New local draft');
-        await tester.pumpAndSettle();
+        await _enterText(tester, 'New local draft');
+        await _frames(tester);
         snapshotGate.complete();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         expect(_draft(tester), 'New local draft');
         expect(find.text('Answer'), findsOneWidget);
         if (savePending) {
           expect(source.draftRequest, isEmpty);
           saveGate.complete();
-          await tester.pumpAndSettle();
+          await _frames(tester);
         }
         expect(source.draftRequest, 'New local draft');
         expect(source.submitted, ['First request']);
@@ -813,7 +1298,7 @@ void main() {
     await _submit(tester, generation, source, 'Quick prompt');
     expect(find.text('Quick canonical answer'), findsOneWidget);
     expect(_draft(tester), isEmpty);
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(_state(tester).editable, isTrue);
   });
 
   testWidgets(
@@ -821,10 +1306,10 @@ void main() {
     (tester) async {
       source.failSubmit = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Keep this draft');
+      await _frames(tester);
+      await _enterText(tester, 'Keep this draft');
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), 'Keep this draft');
       expect(source.entries, isEmpty);
       expect(source.starts, 0);
@@ -835,7 +1320,7 @@ void main() {
       expect(find.text('ADELE'), findsNothing);
       source.failSubmit = false;
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.entries.single.content, 'Keep this draft');
       expect(_draft(tester), isEmpty);
     },
@@ -846,28 +1331,28 @@ void main() {
   ) async {
     source.failStart = true;
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Accepted once');
+    await _frames(tester);
+    await _enterText(tester, 'Accepted once');
     await tester.tap(find.text('Send'));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.entries, hasLength(1));
     expect(_draft(tester), isEmpty);
     expect(source.draftRequest, isEmpty);
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+    expect(_state(tester).editable, isFalse);
     expect(
       find.text('Message accepted, but Run could not start. Retry Send.'),
       findsOneWidget,
     );
     source.failStart = false;
     await tester.tap(find.text('Send'));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.submitted, ['Accepted once']);
     expect(source.writes, ['Accepted once']);
     expect(source.starts, 2);
     expect(_draft(tester), isEmpty);
     source.models.add(_model('retry-activity', [_tool('retry-tool', 'read')]));
     source.notifyListeners();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(find.text('COMPACT retry-tool'), findsOneWidget);
   });
 
@@ -879,14 +1364,11 @@ void main() {
         if (resume) {
           source.advancing = false;
           source.notifyListeners();
-          await tester.pumpAndSettle();
-          expect(
-            tester.widget<TextField>(find.byType(TextField)).enabled,
-            isFalse,
-          );
+          await _frames(tester);
+          expect(_state(tester).editable, isFalse);
           source.advancing = true;
           source.notifyListeners();
-          await tester.pumpAndSettle();
+          await _frames(tester);
         }
         final reads = source.snapshotReads;
         source.entries.add(
@@ -898,14 +1380,11 @@ void main() {
           ),
         );
         source.finish();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         expect(source.snapshotReads, greaterThan(reads));
         expect(find.text('Canonical final answer'), findsOneWidget);
         expect(find.text('ADELE'), findsOneWidget);
-        expect(
-          tester.widget<TextField>(find.byType(TextField)).enabled,
-          isTrue,
-        );
+        expect(_state(tester).editable, isTrue);
       },
     );
   }
@@ -916,7 +1395,7 @@ void main() {
       await _submit(tester, generation, source, 'Failed Run question');
       source.failure = 'Run failed';
       source.finish();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('Failed Run question'), findsOneWidget);
       expect(find.text('ADELE'), findsNothing);
       expect(
@@ -959,7 +1438,7 @@ void main() {
         ),
       );
       source.finish();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('COMPACT read'), findsOneWidget);
       expect(find.text('Read these two files'), findsOneWidget);
       expect(find.text('Safe summary'), findsOneWidget);
@@ -987,7 +1466,7 @@ void main() {
       expect(find.byType(Card), findsNothing);
       await tester.binding.setSurfaceSize(const Size(360, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(tester.takeException(), isNull);
     },
   );
@@ -1008,7 +1487,7 @@ void main() {
         _model('count', [_tool('t1', 'read'), _tool('t2', 'write')]),
       ]);
       source.notifyListeners();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('COMPACT safe'), findsOneWidget);
       expect(find.text(r'Safe\u202E heading'), findsOneWidget);
       expect(find.text('2 operations'), findsOneWidget);
@@ -1059,7 +1538,7 @@ void main() {
         ]),
       ];
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.opened, ['historical-run', 'missing-run']);
       expect(source.starts, 0);
       expect(source.submitted, isEmpty);
@@ -1082,7 +1561,7 @@ void main() {
       expect(source.inspected, ['historical-tool', 'historical-group']);
       expect(source.starts, 0);
       source.notifyListeners();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.opened, ['historical-run', 'missing-run']);
       expect(find.text('COMPACT historical-tool'), findsOneWidget);
       expect(find.text('Retained tool and summary'), findsOneWidget);
@@ -1109,7 +1588,7 @@ void main() {
         _model('duplicate', [_tool('duplicate-tool', 'read_file')]),
       ];
       source.finish();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.opened, isEmpty);
       expect(find.text('COMPACT live-tool'), findsOneWidget);
       expect(find.text('COMPACT duplicate-tool'), findsNothing);
@@ -1117,7 +1596,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       source.active = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.opened, ['recorded-run']);
       expect(find.text('COMPACT live-tool'), findsNothing);
       expect(find.text('COMPACT duplicate-tool'), findsOneWidget);
@@ -1144,7 +1623,7 @@ void main() {
           final gate = Completer<void>();
           if (duringHydration) source.snapshotGate = gate;
           await tester.pumpWidget(_host(generation, source));
-          await tester.pumpAndSettle();
+          await _frames(tester);
           expect(source.snapshotReads, 1);
           source.entries[0] = const ChatEntry(
             id: 'accepted',
@@ -1159,18 +1638,15 @@ void main() {
           source.sessionStateRevision++;
           source.notifyListeners();
           if (duringHydration) gate.complete();
-          await tester.pumpAndSettle();
+          await _frames(tester);
           expect(source.snapshotReads, 2);
           expect(source.opened, ['retained-live']);
           expect(find.text('Retained request'), findsOneWidget);
           expect(find.text('COMPACT retained-tool'), findsOneWidget);
-          expect(
-            tester.widget<TextField>(find.byType(TextField)).enabled,
-            isFalse,
-          );
+          expect(_state(tester).editable, isFalse);
           for (var evidence = 0; evidence < 3; evidence++) {
             source.notifyListeners();
-            await tester.pumpAndSettle();
+            await _frames(tester);
           }
           expect(source.snapshotReads, 2);
           expect(source.opened, ['retained-live']);
@@ -1202,7 +1678,7 @@ void main() {
         final gate = Completer<void>();
         if (initialHydration) source.snapshotGate = gate;
         await tester.pumpWidget(_host(generation, source));
-        await tester.pumpAndSettle();
+        await _frames(tester);
         if (!initialHydration) source.snapshotGate = gate;
         source.entries[0] = const ChatEntry(
           id: 'accepted',
@@ -1216,7 +1692,7 @@ void main() {
         ];
         source.sessionStateRevision++;
         source.notifyListeners();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         source.entries.add(
           const ChatEntry(
             id: 'final',
@@ -1226,16 +1702,16 @@ void main() {
           ),
         );
         source.finish();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         gate.complete();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         expect(find.text('Finishing request'), findsOneWidget);
         expect(find.text('Final canonical answer'), findsOneWidget);
         expect(find.text('COMPACT finishing-tool'), findsOneWidget);
         expect(source.snapshotReads, initialHydration ? 2 : 3);
         final reads = source.snapshotReads;
         source.notifyListeners();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         expect(source.snapshotReads, reads);
         expect(source.starts, 0);
         expect(source.submitted, isEmpty);
@@ -1256,17 +1732,17 @@ void main() {
         _model('first-batch', [_tool('t1', 'read'), _tool('t2', 'read')]),
       );
       source.finish();
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Follow-up');
+      await _frames(tester);
+      await _enterText(tester, 'Follow-up');
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('2 operations'), findsOneWidget);
       expect(source.entries, hasLength(2));
       await tester.pumpWidget(const SizedBox.shrink());
       expect(source.hasSubscriptions, isFalse);
       source.active = true;
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('First prompt'), findsOneWidget);
       expect(find.text('2 operations'), findsNothing);
     },
@@ -1278,23 +1754,24 @@ void main() {
     source.failSnapshot = true;
     source.draftRequest = '  Restored after retry\n ';
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(
       find.text('Chat history is unavailable. Retry to refresh.'),
       findsOneWidget,
     );
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
-    expect(_draft(tester), isEmpty);
+    expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+    expect(find.byType(AppFlowyEditor), findsNothing);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
     final gate = Completer<void>();
     source.snapshotGate = gate;
     source.failSnapshot = false;
     await tester.tap(find.text('Retry history'));
-    await tester.pumpAndSettle();
-    expect(_draft(tester), isEmpty);
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+    await _frames(tester);
+    expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
     gate.complete();
-    await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    await _frames(tester);
+    expect(_state(tester).editable, isTrue);
     expect(_draft(tester), '  Restored after retry\n ');
     expect(source.writes, isEmpty);
   });
@@ -1305,27 +1782,27 @@ void main() {
       source.failSnapshot = true;
       source.draftRequest = 'Original';
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       source.failSnapshot = false;
       await tester.tap(find.text('Retry history'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), 'Original');
       source.running = true;
       source.notifyListeners();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       source.failSnapshot = true;
       source.finish();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(find.text('Retry history'), findsOneWidget);
       source.failSnapshot = false;
       final gate = Completer<void>();
       source.snapshotGate = gate;
       await tester.tap(find.text('Retry history'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Newer local text');
-      await tester.pumpAndSettle();
+      await _frames(tester);
+      await _enterText(tester, 'Newer local text');
+      await _frames(tester);
       gate.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(_draft(tester), 'Newer local text');
       expect(source.draftRequest, 'Newer local text');
       expect(find.text('Retry history'), findsNothing);
@@ -1333,31 +1810,30 @@ void main() {
     },
   );
 
-  testWidgets('initial snapshot retry protects a newer local input revision', (
+  testWidgets('initial snapshot retry admits no input before canonical load', (
     tester,
   ) async {
     source.failSnapshot = true;
     source.draftRequest = 'Stored draft';
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     source.failSnapshot = false;
     final gate = Completer<void>();
     source.snapshotGate = gate;
     await tester.tap(find.text('Retry history'));
-    await tester.pumpAndSettle();
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.enabled, isFalse);
-    // Editing normally stays disabled during initial recovery. Deliver a local
-    // input callback directly to exercise the in-flight snapshot revision guard.
-    field.controller!.text = 'New local input';
-    field.onChanged!('New local input');
-    await tester.pumpAndSettle();
+    await _frames(tester);
+    expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+    expect(find.byType(AppFlowyEditor), findsNothing);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
+    expect(source.writes, isEmpty);
+    expect(source.submitted, isEmpty);
+    expect(source.starts, 0);
     gate.complete();
-    await tester.pumpAndSettle();
-    expect(_draft(tester), 'New local input');
-    expect(source.draftRequest, 'New local input');
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
-    expect(source.writes, ['New local input']);
+    await _frames(tester);
+    expect(_draft(tester), 'Stored draft');
+    expect(source.draftRequest, 'Stored draft');
+    expect(_state(tester).editable, isTrue);
+    expect(source.writes, isEmpty);
     expect(tester.takeException(), isNull);
   });
 
@@ -1368,15 +1844,15 @@ void main() {
         final gate = Completer<void>();
         source.saveGate = gate;
         await tester.pumpWidget(_host(generation, source));
-        await tester.pumpAndSettle();
-        await tester.enterText(find.byType(TextField), 'In flight');
-        await tester.enterText(find.byType(TextField), 'Queued');
+        await _frames(tester);
+        await _enterText(tester, 'In flight');
+        await _enterText(tester, 'Queued');
         if (sending) await tester.tap(find.text('Send'));
-        await tester.pumpAndSettle();
+        await _frames(tester);
         await tester.pumpWidget(const SizedBox.shrink());
         expect(source.hasSubscriptions, isFalse);
         gate.complete();
-        await tester.pumpAndSettle();
+        await _frames(tester);
         expect(source.writes, ['In flight']);
         expect(source.submitted, isEmpty);
         expect(source.starts, 0);
@@ -1388,16 +1864,16 @@ void main() {
   testWidgets('disposal rejects late history retry settlement', (tester) async {
     source.failSnapshot = true;
     await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     source.failSnapshot = false;
     source.draftRequest = 'Late restored text';
     final gate = Completer<void>();
     source.snapshotGate = gate;
     await tester.tap(find.text('Retry history'));
-    await tester.pumpAndSettle();
+    await _frames(tester);
     await tester.pumpWidget(const SizedBox.shrink());
     gate.complete();
-    await tester.pumpAndSettle();
+    await _frames(tester);
     expect(source.hasSubscriptions, isFalse);
     expect(source.writes, isEmpty);
     expect(tester.takeException(), isNull);
@@ -1408,14 +1884,14 @@ void main() {
     (tester) async {
       source.submitGate = Completer<void>();
       await tester.pumpWidget(_host(generation, source));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Late submission');
+      await _frames(tester);
+      await _enterText(tester, 'Late submission');
       await tester.tap(find.text('Send'));
-      await tester.pumpAndSettle();
+      await _frames(tester);
       generation.invalidate();
       await tester.pumpWidget(const SizedBox.shrink());
       source.submitGate!.complete();
-      await tester.pumpAndSettle();
+      await _frames(tester);
       expect(source.starts, 0);
       expect(source.hasSubscriptions, isFalse);
       expect(tester.takeException(), isNull);
@@ -1452,6 +1928,7 @@ Future<bool> configure() async {
         ..addPlugin(flutterEvalPlugin)
         ..addPlugin(const ScrollViewBridge())
         ..addPlugin(const MainContentDeclarations())
+        ..addPlugin(const RichDocumentEditorDeclarations())
         ..addPlugin(const OwningBackendDeclarations())
         ..addPlugin(const SessionExecutionDeclarations())
         ..addPlugin(const SessionPresentationLifecycleDeclarations())
@@ -1554,14 +2031,16 @@ Future<void> _submit(
   String prompt,
 ) async {
   await tester.pumpWidget(_host(generation, source));
-  await tester.pumpAndSettle();
-  await tester.enterText(find.byType(TextField), prompt);
+  await _frames(tester);
+  await _enterText(tester, prompt);
   await tester.tap(find.text('Send'));
-  await tester.pumpAndSettle();
+  await _frames(tester);
 }
 
-Widget _host(PreparedFrontend generation, _Source source) =>
-    MaterialApp(home: Scaffold(body: _presentation(generation, source)));
+Widget _host(PreparedFrontend generation, _Source source) => MaterialApp(
+  theme: ThemeData(platform: TargetPlatform.linux),
+  home: Scaffold(body: _presentation(generation, source)),
+);
 
 Widget _presentation(
   PreparedFrontend generation,
@@ -1578,6 +2057,7 @@ Widget _presentation(
       source.lifecycle = SessionPresentationLifecycleBridge(
         isActive: () => source.active,
       ),
+      RichDocumentEditorBridge(isActive: () => source.active),
       SessionExecutionBridge(source: source, isActive: () => source.active),
       OwningBackendBridge(
         channels: {chatSessionServiceId: source},
@@ -1589,8 +2069,74 @@ Widget _presentation(
   },
 );
 
+NativeRichDocumentEditor _owner(WidgetTester tester) => tester
+    .widget<NativeRichDocumentEditorView>(
+      find.byType(NativeRichDocumentEditorView),
+    )
+    .editor;
+
+EditorState _state(WidgetTester tester) =>
+    tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+
 String _draft(WidgetTester tester) =>
-    tester.widget<TextField>(find.byType(TextField)).controller!.text;
+    _owner(tester).snapshot()['markdown']! as String;
+
+Future<void> _frames(WidgetTester tester) async {
+  // AppFlowy cursor and selection animations do not necessarily settle.
+  for (var i = 0; i < 5; i++) {
+    await tester.pump(const Duration(milliseconds: 30));
+  }
+}
+
+Future<void> _select(WidgetTester tester, Selection selection) async {
+  tester
+      .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
+      .focusNode!
+      .requestFocus();
+  await _frames(tester);
+  _state(tester).selection = selection;
+  await _frames(tester);
+  expect(tester.testTextInput.hasAnyClients, isTrue);
+}
+
+Future<void> _enterText(WidgetTester tester, String text) async {
+  final nodes = _state(tester).document.root.children;
+  await _select(
+    tester,
+    Selection(
+      start: Position(path: nodes.first.path),
+      end: Position(path: nodes.last.path, offset: nodes.last.delta!.length),
+    ),
+  );
+  await _insertText(tester, text);
+}
+
+Future<void> _insertText(WidgetTester tester, String text) async {
+  final value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+  final range = value.selection;
+  await _input(
+    tester,
+    TextEditingValue(
+      text: value.text.replaceRange(range.start, range.end, text),
+      selection: TextSelection.collapsed(offset: range.start + text.length),
+    ),
+  );
+}
+
+Future<void> _input(WidgetTester tester, TextEditingValue value) async {
+  // The test IME does not retain updates, and AppFlowy need not echo them.
+  tester.testTextInput.editingState = value.toJSON();
+  tester.testTextInput.updateEditingValue(value);
+  await _frames(tester);
+}
+
+Future<void> _control(WidgetTester tester, LogicalKeyboardKey key) async {
+  await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+  await tester.sendKeyEvent(key);
+  await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+  await _frames(tester);
+}
+
 Map<String, Object?> _model(
   String handle,
   List<Map<String, Object?>> outputs, {
@@ -1635,7 +2181,9 @@ class _ResponseChannel implements AdeleRequestChannel {
 
 class _Source extends ChangeNotifier
     implements SessionExecutionSource, ChatSessionService, AdeleRequestChannel {
-  late final dispatcher = ChatSessionServiceDispatcher(this);
+  // Match the actual backend so the frontend, not transport serialization,
+  // must enforce sequential saves while history snapshots are pending.
+  late final dispatcher = ChatSessionServiceDispatcher(this, concurrent: true);
   late SessionPresentationLifecycleBridge lifecycle;
   bool get hasSubscriptions => hasListeners;
   final entries = <ChatEntry>[];

@@ -9,9 +9,11 @@ dialog. Desktop Main Content frontends and AOT backends receive owner-scoped val
 from one shared startup snapshot; Source Editor folding and Chat's per-Run model
 invocation limit consume scalar settings. Declarative configuration records
 share scalar validation and conditional persistence and are browsable and manageable
-in Global Settings; the OpenAI plugin declares the first nonsecret provider record.
-Record creation, editing, and confirmed deletion are implemented; runtime record
-consumption, authentication, and Profiles remain unimplemented.
+in Global Settings; the OpenAI plugin declares the first provider record and its
+credential slot. Record creation, editing, and guarded deletion are implemented.
+App-private record credential associations use nonsecret TOML references and Linux
+x64 Secret Service. Credential UI, runtime record consumption, provider authentication
+integration, and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -180,6 +182,14 @@ the declared value when usable and otherwise the stable record ID, never a host
 field-name convention. This metadata does not change identity or require nonblank
 strings: required still means presence.
 
+Optional ordered `credentialSlots` are separate declarations, not scalar fields or
+secret values. Each has a local identity, bounded presentation label and credential
+kind; the only kind is `secretText`. Omission means no slots. The public Settings
+contract contains no credential reference type or native access. See
+[record declarations](../../packages/settings/README.md#named-records) and the
+[prepared schema](../../packages/plugin_runtime/README.md#record-schemas) for exact
+validation and bounds.
+
 Prepared installations optionally reference `recordsSchema`, separately versioned
 from scalar schemas and independent of executable activation. Discovery extends
 the existing catalog; one invalid schema does not disable healthy executable or
@@ -226,9 +236,10 @@ read is presented as an empty collection. Closing the whole dialog discards draf
 canceled application exit preserves the original dialog and its drafts.
 
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
-strings, not an API key or credential reference. These definitions are not consumed
-by the runtime, including after restart. Existing OpenAI authentication, Chat
-selection and startup behavior are unchanged. Future Profiles may contain the same
+strings, plus an `api-key` credential slot, never a secret under ordinary values.
+These records and associations are not consumed by the runtime, including after
+restart. Existing OpenAI authentication, Chat selection and startup behavior are
+unchanged. Future Profiles may contain the same
 kinds of collections, but no Profile identity, ordered record composition or merge
 rules exist yet. Record UI uses the established host-owned serialized I/O boundary,
 not another writer isolate or persistence service.
@@ -385,10 +396,131 @@ The latter is live routing metadata, not the durable record; see
 
 ## Credentials and secrets
 
-Secrets are not ordinary serialized configuration values. Ordinary configuration
-should reference managed credentials or configured instances rather than embed
-secrets. Credential storage and account-management APIs remain deferred; this
-architecture does not choose a secure-storage technology.
+Secrets are not ordinary serialized configuration values. Configuration may retain
+nonsecret credential references, never secrets in TOML, Project/plugin state,
+installation metadata, logs, or artifact identity inputs. OpenAI's declared slot
+does not change existing authentication or provider selection.
+
+The standalone app-private `CredentialService` owns serialized admission,
+validation, mutation verification, and shutdown. Its production adapter runs
+synchronous operations from the internal
+[`adele_credential_store`](../../packages/credential_store/README.md) in
+`Isolate.run`, off the Flutter UI isolate. The package is an OS-storage boundary,
+not a public Settings or plugin API, account manager, OAuth refresh store, or
+credential provider. Constructing or closing an idle service does not access the
+keyring, and normal application startup does not probe or load credentials.
+An explicit trusted host owner must drain the service before releasing it.
+
+A credential reference is a nonsecret, persistable association identity of the form
+`cred1_` followed by 32 lowercase hexadecimal digits. Its authoritative internal
+`CredentialReference` value lives in the SDK-only
+[`credential_reference.dart`](../../packages/credential_store/lib/credential_reference.dart)
+entrypoint, without importing native operations. It is independent of record,
+plugin, account, display name, Profile, and runtime generation. Possession is not
+authorization to read or mutate a secret. A valid reference may have no local
+credential, for example on another machine; absence does not invalidate the
+reference. Secret values are nonempty, valid UTF-8 text without NUL, bounded to
+2560 encoded bytes. Redacted wrappers and fixed diagnostic categories limit
+accidental disclosure; Dart strings are not zeroizable and this is not isolation
+from other trusted host code in the process.
+
+The enabled native path is Linux x64 Secret Service through an explicit store,
+with an ADELE namespace and the reference as the item identity. It uses no plaintext
+file fallback or substitute in-memory store. The user's Secret Service provider
+owns persistence and at-rest policy; encrypted transport is not a guarantee about
+that provider's keyring configuration. macOS, Windows, and other architectures
+have no enabled backend and reject credential access as unavailable until
+separately implemented and validated. This does not disable the application's other
+functionality or desktop build paths.
+
+Confirmed absence remains distinct from inaccessible, locked, corrupt, ambiguous,
+or failed storage. Reads never delete or repair malformed values. A fresh explicit
+native store is constructed for each operation, so initial connection failure is
+not cached permanently. A later deliberate request may try again; a failed request
+is never automatically retried. Native calls may wait for the OS/keyring, including
+an unlock prompt. There is no cancellation or application timeout; shutdown fences
+new requests and drains admitted calls rather than abandoning native work.
+
+Create/replace/delete preconditions and postverification do not constitute
+cross-process compare-and-swap or a transaction with configuration persistence.
+An unconfirmed mutation is not proof of rollback: the host fences further mutations
+of that reference until an explicit successful read, or confirmed absence,
+reconciles it. Presence alone cannot verify replacement contents. No automatic
+retry, merge, secret enumeration, provider wiring, or plugin access grant is added.
+Account-management and future explicitly authorized plugin access remain separate
+design work. See the [application map](../../app/README.md) for local ownership and
+[credential validation](../development/testing.md#credential-storage-checks) for
+the distinction between deterministic tests, isolated keyring smoke, and packaging.
+
+### Record association lifecycle
+
+Records may contain an optional regular `[credentials]` table beside `[values]`.
+Declared slot keys contain validated reference strings only. The
+[Settings host adapter](../../packages/settings_host/README.md#credential-references)
+preserves unknown entries without interpreting or adopting them; malformed known
+references make that record unavailable rather than being treated as missing.
+Ordinary record deletion is blocked while **any** credential entry exists,
+including unknown nested content. Empty/absent tables do not block deletion.
+Ordinary value edits retain associations and use the same whole-record baseline.
+
+The app-private `RecordCredentialService`, part of `GlobalSettingsService`, is the
+only association coordinator. Callers supply an owner-bound `RecordView`, a declared
+slot, and a secret for writes, not an owner, record type, native key or reference.
+The existing Settings worker verifies the exact owner/revision, declaration and
+conditional byte baseline. A shared worker admission gate spans the entire
+workflow, including OS waits, so ordinary configuration operations and other owners
+cannot interleave with it. Every TOML operation still runs on that worker; there is
+no second writer or native-document transfer to presentation. `CredentialService`
+retains its independent OS-operation queue and uncertain-outcome fence.
+Replacement and deletion revalidate the protected binding inside that queue, so
+an intervening admitted host operation cannot substitute a foreign protected value.
+Immediately before OS mutation, the coordinator revalidates the same configuration
+baseline after queued operations and native preflight/unlock waits; a failed guard
+does not perform a mutation or create an uncertain-outcome fence.
+
+OS storage contains a protected JSON envelope with exactly `version`, `owner`,
+`type`, `collection`, `record`, `slot`, `reference` and `secret`. Version is integer
+`1`; every binding value must match the validated record and reference. The whole
+encoded envelope, including metadata and JSON escaping, must fit the existing
+2560-byte bound before either store is mutated. Copying a TOML reference to another
+owner/type/record/slot does not authorize using or deleting the protected value.
+Malformed, foreign or unsupported envelopes remain invalid and are never repaired
+or deleted automatically.
+
+- **Attach:** validate, allocate a fresh reference, conditionally persist it, then
+  create the OS value. A keyring failure may therefore leave a reference with no
+  local value. The safe failure carries the latest acknowledged record handle;
+  `establishLocal` can deliberately reuse that reference after confirmed absence.
+- **Replace:** require the existing valid bound envelope, recheck the configuration
+  baseline after the OS read, then replace under the same reference. Missing local
+  storage is not an implicit create, and invalid bindings are not overwritten.
+- **Forget:** require a valid bound value or confirmed absence, recheck the baseline,
+  delete a present OS value first, then conditionally remove the TOML reference.
+  Configuration failure after deletion can leave a reference to missing local data;
+  it is not evidence that the OS deletion rolled back.
+- **Inspect/reconcile:** return storage status only, never secret material or an
+  authentication assertion. No reference means no keyring access. Inspection does
+  not bypass an uncertain-mutation fence; an explicit reconciliation read establishes
+  the outcome before a later deliberate mutation. Full protected-envelope validation
+  occurs inside the queued read before clearing uncertainty; malformed or foreign
+  payloads cannot reconcile it. Successful mutations and
+  reconciliation issue fresh record revisions. Configuration failures require Reload,
+  not a substituted baseline or automatic retry.
+
+The application lazily pairs one coordinator with its Settings owner and retained
+credential service. Construction and startup do not probe credentials. Accepted
+shutdown synchronously fences both the coordinator and Settings public admission,
+then drains admitted workflows before releasing the Settings worker or closing the
+credential dependency;
+rejected exit leaves the existing owners usable. A blocked OS prompt can delay this
+drain without timeout, cancellation or an inferred rollback.
+
+This is a host-only lifecycle, not a cross-store transaction or cross-process
+keyring compare-and-swap. Manual filesystem edits remain outside it and can race
+conditional checks. It adds no secret-entry UI, runtime/backend delivery, OAuth,
+provider activation, Profile or Agent semantics. Generic record views expose no
+credential references or protected payloads. Linux x64 remains the only enabled
+native credential backend.
 
 ## Configuration persistence
 
@@ -412,7 +544,7 @@ Global persistence has separate ownership and lifetime domains:
 | Local application state | Frequently changing machine-local state, such as remembered layouts and recent Projects. Not portable configuration. |
 | Local application data | Other durable application-managed global data. |
 | Cache | Disposable, rebuildable data. |
-| Secrets | Separate from ordinary configuration; credential infrastructure remains deferred. |
+| Secrets | App-private OS-backed storage, separate from ordinary configuration and global filesystem roots; see [credentials and secrets](#credentials-and-secrets). |
 | Project/Session data | Existing per-Project product and plugin-owned storage, not a global settings store. |
 
 [`adele_platform_storage`](../../packages/platform_storage/README.md) resolves
@@ -634,6 +766,9 @@ Implemented foundations and current limits:
   deletion in Global Settings. OpenAI supplies a nonsecret API-key provider
   declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
+- Host credential storage has a Linux x64 Secret Service adapter and an app-private
+  record association lifecycle, without credential UI, provider activation, runtime
+  delivery, or public/plugin access.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
 - Backend infrastructure access is generation-local, distinct from both
@@ -658,7 +793,8 @@ or production workbench-state persistence.
   semantics.
 - Exact narrower subject scopes and their override semantics.
 - Security/policy/approval composition.
-- Credential storage and account-management APIs.
+- Account-management and public/plugin credential-access APIs; additional native
+  credential platforms require separate implementation and validation.
 - Plugin reconfiguration/restart rules.
 - Richer provider suitability/default policy, including non-capability selection.
 - Remembered workbench-state keying and garbage collection.

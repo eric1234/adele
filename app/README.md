@@ -28,6 +28,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Global Command Palette and application-owned Commands | Presentation-independent Command contract, composition, and dispatch admission: [core extensions](../packages/core_extensions/README.md#commands). |
+| Trusted host credential identity and lifecycle | Internal OS storage binding: [credential store](../packages/credential_store/README.md); authorization and configuration separation: [profiles and configuration](../docs/architecture/profiles-and-configuration.md#credentials-and-secrets). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -284,6 +285,55 @@ See [configuration architecture](../docs/architecture/profiles-and-configuration
 for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
 for declaration ownership, bounds, and diagnostics.
 
+### Host credentials
+
+`AdeleApplication` constructs one app-private
+[`CredentialService`](lib/core/credential_service.dart) at mount and retains it
+across widget rebuilds. Its injectable factory defaults to
+[`createNativeCredentialService`](lib/core/native_credential_storage_adapter.dart).
+Construction does not access the vault. The lazily created Settings owner is paired
+with one `RecordCredentialService` through the mount-captured
+`createCredentialAssociations` factory. Accepted exit synchronously fences the
+coordinator and Settings public admission, then drains admitted workflows before
+releasing the Settings worker and closing the credential service. Canceled exit
+preflight leaves all owners usable. Widget disposal starts the same drain but cannot await.
+
+The adapter runs synchronous native calls in background Dart isolates, using the
+internal `adele_credential_store` code asset. Linux x64 uses the OS Secret Service;
+other platforms explicitly remain unavailable pending qualification. Credential
+references use the internal [pure identity entrypoint](../packages/credential_store/lib/credential_reference.dart),
+not plugin authorization grants. Values are validated opaque text of at most 2,560 UTF-8
+bytes. Presence returns no secret material, though the native backend reads the
+one entry internally. Failures carry only fixed categories; mutation uncertainty
+requires explicit reconciliation before retry.
+
+OS prompts can keep an admitted call and shutdown pending. An isolate is not
+cancellation, and no timeout implies rollback. The service does not cache secrets,
+modify Settings/TOML, or provide cross-process CAS. It is not passed to plugins,
+OAuth, or Session execution.
+
+[`RecordCredentialService`](lib/core/record_credential_service.dart) is a part of
+`global_settings_service.dart`, keeping association authority with private record
+handles. Its `inspect`, `reconcile`, `attach`, `replace`, `establishLocal`, and
+`forget` operations accept owner-bound views and declared slot IDs; writes also
+accept `CredentialSecret`. Results expose only a record view and local-storage
+status, not references or protected payloads. Failures have fixed categories and,
+when available, the latest acknowledged record handle. The existing Settings worker
+owns validation and reference persistence; a shared admission gate spans OS waits.
+See the canonical [association lifecycle](../docs/architecture/profiles-and-configuration.md#record-association-lifecycle)
+for exact binding, mutation ordering, partial failure, reconciliation and shutdown
+rules. No credential UI, provider authentication or runtime delivery is added.
+
+Focused checks are `test/core/credential_service_test.dart`,
+`test/core/record_credential_service_test.dart`,
+`test/credential_application_lifecycle_test.dart`, and
+`test/record_credential_application_lifecycle_test.dart`. The opt-in
+[`credential storage smoke`](../tools/credential_storage_smoke.dart) provisions a
+disposable real keyring and exercises the production adapter plus the gated
+`test/credential_storage_responsiveness_test.dart` and the process/daemon-restart
+association fixture `test/credential_association_smoke_test.dart`; see the maintained
+[testing procedure](../docs/development/testing.md).
+
 ### Global Settings
 
 The header Settings icon opens
@@ -328,7 +378,9 @@ Duplicate IDs, including malformed or unknown-type occupants, are never overwrit
 Create and Save publish presented values only after worker acknowledgement. Delete
 requires a safe-default modal identifying the exact record and explaining that its
 entire configuration file, including unknown data, will be removed. Confirmed deletion
-removes only that record and its draft. No automatic collection refresh invalidates
+removes only that record and its draft. The host rejects deletion while any credential
+entry remains, including unknown entries; the dialog does not manage those
+associations. No automatic collection refresh invalidates
 unrelated edits. Conflicts and uncertain update/delete outcomes retain drafts and fence
 that record until explicit Reload; no retry or field merging occurs. Known pre-write
 validation failures remain correctable without Reload.
@@ -361,7 +413,7 @@ All configuration still uses one global layer. Provider records are nonsecret
 definitions, not consumed by the runtime: creating, editing, or deleting them does
 not request credentials, authenticate, activate a provider, change Chat, or alter
 temporary environment-variable startup. Restart guidance applies
-to scalar settings, not record activation. Profiles, scopes, credentials, OAuth,
+to scalar settings, not record activation. Profiles, scopes, credential UI, OAuth,
 runtime restart commands, and live editor reconfiguration remain unimplemented.
 
 ### Prepared Capability access
@@ -613,7 +665,7 @@ the dependency compatibility patches, licensing, and recovery commands belong to
 the [toolchain policy](../docs/development/toolchain.md#native-rich-editor-dependency).
 [`NativeRichDocumentEditor`](lib/editor/native_rich_document_editor.dart) owns one
 in-memory AppFlowy document, editor state, transaction observation, and undo history.
-It accepts supplied Markdown and a fixed read-only option, without a document ID,
+It accepts supplied Markdown and a fixed read-only ceiling, without a document ID,
 file path, storage service, or Session semantics. Ordinary rebuilding and complete
 native view unmount/remount preserve the document and undo; focus and viewport are
 view-local. Simultaneous mounts of one owner fail explicitly rather than taking over
@@ -642,11 +694,24 @@ reuse. A future consumer needing navigation-independent ownership must deliberat
 integrate with host retention; this primitive does not supply persistence.
 
 The public [UI bridge](../packages/ui/lib/rich_document_editor_bridge.dart) exposes
-creation, view construction, invalidation subscriptions, explicit Markdown
-snapshots, and release. Notifications carry no document and selection alone does
+creation, view construction, editing enablement, invalidation subscriptions,
+explicit Markdown snapshots, and release. Disabling native input closes an already
+focused input client without replacing the document or undo history. Re-enabling
+cannot override a fixed read-only or unsupported import, disposal, or retirement.
+Notifications carry no document and selection alone does
 not notify. The revision is document-transaction invalidation, not a dirty flag,
 plugin persistence version, or save acknowledgement. Snapshots copy scalar data
 across the evaluator boundary; AppFlowy state and native controllers never cross it.
+Snapshots report `isBlank` from model text rather than Markdown scaffolding.
+Native composition and settling input deltas return `markdown: null` with
+`composition_pending`; callers must wait for safe completion before finalizing.
+Pinned AppFlowy applies composing text to the model, but input closure does not
+establish a commit. The adapter retains that safety marker across blur, disabling,
+and remount, and notifies on composition completion even without a text revision.
+Prepared Main Content descriptors must explicitly opt into `richDocumentEditor`
+(default false). `PreparedMainContentHost` installs the bridge only for the admitted
+mounted pane, not initialization, input actions, finite operations, or other roles.
+Retirement synchronously revokes the exact presentation and its native owners.
 
 Only supported text block builders and editing shortcuts are installed. No slash
 menu, floating formatting menu, link navigation/menu, image/file insertion, native
@@ -733,8 +798,11 @@ round-trip fidelity or complete IME/composition semantics.
 The focused native, conversion, and compiled-EVC tests are automatically discovered
 by the desktop target; see [validation](../docs/development/testing.md#rich-document-editor-checks).
 These are pinned Linux Flutter widget-engine checks, not human keyboard/IME
-acceptance or macOS/Windows packaging evidence. Chat's composer, backend contracts,
-and persistent plain-text Draft Request semantics are unchanged.
+acceptance or macOS/Windows packaging evidence. Stock Chat uses this shared bridge
+through normal prepared Main Content hosting; its own generated backend service
+still stores a String and owns draft persistence/atomic acceptance. See the
+[Chat frontend map](../plugins/chat_strategy/packages/frontend/README.md#rich-composer)
+for composer lifecycle, snapshot failure handling, compact layout, and limitations.
 
 ### Native terminal surface
 
@@ -1679,12 +1747,17 @@ and is captured by Chat for each Run. Session snapshots and SQL do not retain it
 active or later Runs in the same application startup, and does not change host
 policy or approval behavior.
 
-The current Draft Request is plain text. Chat's prepared frontend restores it and
+The Draft Request is a Markdown String. Chat's prepared frontend hydrates the shared
+native rich editor only after canonical draft loading and
 sequentially saves coalesced edits through its own backend service. Send flushes
-the latest local text, atomically submits/clears the draft, then schedules a Run.
+the latest safe Markdown snapshot, atomically submits/clears the draft, then
+replaces the native owner with a fresh empty undo boundary and schedules a Run.
 Scheduling retry reuses the accepted entry without duplicating history. Save or
-submission failure preserves visible local text; refreshing history cannot erase
-newer edits. None of these semantics requires app-owned Chat storage or codecs.
+submission failure preserves the rich document and undo; refreshing history cannot
+erase newer edits. Unsafe serialization or pending composition refuses saving,
+submission, and ordinary departure. Unsupported imported Markdown stays unchanged
+and read-only, with unchanged submission available. None of these semantics requires
+app-owned Chat storage or codecs, and native editability grants no Run authority.
 
 `SessionExecutionController` resolves the currently selected provider binding and
 builds a Session-authorized tool catalog for each new Run. Continuations reuse
@@ -1883,7 +1956,8 @@ and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
 active Runs per Session. Global scalar settings and nonsecret configuration records
 are implemented, with startup-only scalar delivery to frontends and backends.
-Automatic selection/resume, Profiles, configured-provider/credential management,
+Host-only credential association lifecycle exists separately from runtime delivery.
+Automatic selection/resume, Profiles, configured-provider/credential UI,
 and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.

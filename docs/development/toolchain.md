@@ -267,6 +267,59 @@ for attribution: normal Flutter Dart license collection does not include Cargo
 dependencies automatically. Release distribution needs notice inclusion and
 review of the actual shipped contents.
 
+## Native credential storage
+
+The internal [`adele_credential_store`](../../packages/credential_store/README.md)
+uses its own `hook/build.dart` and `@Native` code asset under the same integrated
+SDK pin, independently of CodeForge/FRB and the native TOML library. Direct Dart
+dependencies are exactly `hooks 2.0.2`, `code_assets 1.2.1`, and `ffi 2.2.0`.
+The enabled native target is **Linux x64**. Other platforms have no enabled
+credential backend and reject access as unavailable, without disabling unrelated
+application builds.
+
+Its package-local Rust **1.93.0** toolchain, exact direct Cargo pins, and committed
+`Cargo.lock` own native resolution. The Linux backend explicitly uses
+`keyring-core 1.0.1` and `zbus-secret-service-keyring-store 1.0.1` with `crypto-rust`,
+locking `secret-service 5.2.0` and `zbus 5.19.0`. It does not use the `keyring` v1
+facade, libsecret, OpenSSL, or a hand-written Secret Service implementation.
+Do not substitute the facade's process-cached default store for explicit store
+construction. Runtime failure and ownership semantics belong to
+[credentials and secrets](../architecture/profiles-and-configuration.md#credentials-and-secrets).
+
+Builds need rustup, the pinned compiler/target, a Linux linker, and GNU binutils
+(`nm` and `readelf`) for native artifact inspection. Normal hook-aware Dart/Flutter
+consumers build and bundle the library; no application-private loader or external
+credential-library path is required. Code assets are build output, not checked-in
+binaries. Cargo's local `native/target/` and Dart's `.dart_tool/` outputs are ignored.
+Existing CodeForge and AppFlowy source preparation and native TOML delivery remain
+unchanged and must coexist in the actual Linux profile build.
+
+Linux credential assets require the sole production `cdylib` format, static private
+Rust standard-library linkage, `panic=unwind`, and hidden Rust runtime symbols.
+Final ELF inspection must reject shared/interposable Rust runtimes before bundling.
+This gives the credential asset ownership of its own runtime's panic hook,
+including its dependency worker threads, not a process-wide hook shared with
+CodeForge or TOML. The hook suppresses confidential panic diagnostics; the request
+boundary catches only unwinding panics on that request's thread. Background worker
+panics need not become request failures and can leave work blocked. Abort, OOM,
+undefined behavior, and unrecoverable unwinding remain outside that guarantee.
+Changing compiler, platform, linkage, or production library format requires a new
+ownership audit rather than carrying this Linux x64 conclusion forward.
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+rustup component add clippy --toolchain 1.93.0
+dart tools/adele.dart test --target adele_credential_store
+dart tools/adele.dart test --target adele_credential_store_native
+```
+
+The native target runs locked Rust tests and Clippy with warnings denied. Ordinary
+tests and CI need no unlocked keyring or Secret Service daemon. Real keyring tests
+use only the separate [opt-in isolated fixture](testing.md#credential-storage-checks),
+whose Linux prerequisites additionally include `dbus-daemon`, `dbus-run-session`,
+`gdbus`, `gnome-keyring-daemon`, and `setsid` from util-linux. No libsecret or OpenSSL
+development package is needed for this credential backend.
+
 ## Native terminal dependency
 
 The app pins the published `xterm2 5.2.0` archive, with checksum
@@ -521,10 +574,10 @@ and the same remote Chat backend, not an in-process strategy fallback.
 Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
 authoritative `records.schema.json` byte-for-byte, referencing them through the
 independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
-metadata is available without backend/frontend activation or authentication; the OpenAI record
-declaration contains no credential fields and does not change runtime startup
-configuration. Global scalar values remain in TOML, not generated installation
-artifacts or the startup-argv file. Application startup resolves them from prepared
+metadata is available without backend/frontend activation or authentication; the
+OpenAI record declares an API-key credential slot, not secret values, and does not
+change runtime startup configuration. Global scalar values remain in TOML, not
+generated installation artifacts or the startup-argv file. Application startup resolves them from prepared
 declarations for both frontends and backends; changing a user override requires
 application restart, not plugin recompilation. Runtime receives
 `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the temporary

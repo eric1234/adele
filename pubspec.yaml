@@ -14,6 +14,7 @@ workspace:
   - packages/contract
   - packages/contract_codegen
   - packages/core_extensions
+  - packages/credential_store
   - packages/environment
   - packages/model_tool
   - packages/model_provider

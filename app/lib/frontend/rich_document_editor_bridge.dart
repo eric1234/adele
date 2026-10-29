@@ -53,6 +53,18 @@ class RichDocumentEditorDeclarations implements EvalPlugin {
         const [handle],
       ),
       ('snapshotRichDocumentEditor', map, const [handle]),
+      (
+        'setRichDocumentEditorEditingEnabled',
+        voidType,
+        const [
+          handle,
+          BridgeParameter(
+            'enabled',
+            BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
+            false,
+          ),
+        ],
+      ),
       ('subscribeRichDocumentEditor', voidType, const [handle, listener]),
       ('unsubscribeRichDocumentEditor', voidType, const [handle, listener]),
       ('releaseRichDocumentEditor', voidType, const [handle]),
@@ -161,12 +173,24 @@ final class RichDocumentEditorBridge extends RichDocumentEditorDeclarations
             'markdown': null,
             'revision': owner.revision,
             'readOnly': owner.readOnly,
+            'editingEnabled': owner.editingEnabled,
+            'isBlank': null,
             'unsupportedReason': owner.unsupportedReason,
             'error': 'unsupported_serialization',
           };
         }
         _validate();
         return wrapStructuredBridgeData(snapshot);
+      })
+      ..registerBridgeFunc(_library, 'setRichDocumentEditorEditingEnabled', (
+        _,
+        _,
+        args,
+      ) {
+        _resolve(
+          args[0]!.$value,
+        ).owner.setEditingEnabled(args[1]!.$value as bool);
+        return null;
       })
       ..registerBridgeFunc(_library, 'subscribeRichDocumentEditor', (
         _,

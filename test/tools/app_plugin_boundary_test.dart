@@ -44,6 +44,128 @@ void main() {
     });
   });
 
+  test(
+    'plugin production code cannot access the internal credential store',
+    () {
+      final credentialRoot = Directory(
+        'packages/credential_store',
+      ).absolute.uri.toString();
+      for (final manifest in _pluginManifests(Directory('plugins')).values) {
+        expect(
+          _productionPluginDependencies(manifest.readAsStringSync(), {
+            'adele_credential_store',
+          }),
+          isEmpty,
+          reason: manifest.path,
+        );
+        for (final path in ['lib', 'bin']) {
+          final directory = Directory('${manifest.parent.path}/$path');
+          if (!directory.existsSync()) continue;
+          for (final file
+              in directory
+                  .listSync(recursive: true, followLinks: false)
+                  .whereType<File>()
+                  .where((file) => file.path.endsWith('.dart'))) {
+            final unit = parseString(content: file.readAsStringSync()).unit;
+            for (final directive
+                in unit.directives.whereType<UriBasedDirective>()) {
+              final uris = [
+                directive.uri,
+                if (directive is NamespaceDirective)
+                  ...directive.configurations.map((config) => config.uri),
+              ];
+              for (final literal in uris) {
+                final uri = Uri.parse(literal.stringValue!);
+                expect(
+                  uri.scheme == 'package' &&
+                          uri.pathSegments.first == 'adele_credential_store' ||
+                      file.absolute.uri
+                          .resolveUri(uri)
+                          .toString()
+                          .startsWith(credentialRoot),
+                  isFalse,
+                  reason: '${file.path}: $uri',
+                );
+              }
+            }
+          }
+        }
+      }
+    },
+  );
+
+  test(
+    'settings host imports only the pure credential reference entrypoint',
+    () {
+      final files = Directory('packages/settings_host/lib')
+          .listSync(recursive: true, followLinks: false)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.dart'))
+          .toList();
+      expect(files, isNotEmpty);
+      expect([
+        for (final file in files)
+          for (final uri in _forbiddenCredentialUris(
+            file.readAsStringSync(),
+            file.absolute.uri,
+          ))
+            '${file.path}: $uri',
+      ], isEmpty);
+    },
+  );
+
+  test(
+    'credential reference identity cannot transitively expose native access',
+    () {
+      final file = File(
+        'packages/credential_store/lib/credential_reference.dart',
+      );
+      final unit = parseString(content: file.readAsStringSync()).unit;
+      for (final directive in unit.directives) {
+        expect(directive, isA<ImportDirective>());
+        final imported = directive as ImportDirective;
+        for (final uri in [
+          imported.uri,
+          ...imported.configurations.map((configuration) => configuration.uri),
+        ]) {
+          expect(
+            uri.stringValue,
+            anyOf('dart:core', 'dart:math'),
+            reason:
+                'Identity must not import native, host, or application APIs.',
+          );
+        }
+      }
+    },
+  );
+
+  test('credential boundary checks conditional and relative backdoors', () {
+    final sourceUri = File(
+      'packages/settings_host/lib/src/example.dart',
+    ).absolute.uri;
+    expect(
+      _forbiddenCredentialUris('''
+import 'package:adele_credential_store/credential_reference.dart';
+import 'package:adele_credential_store/adele_credential_store.dart';
+export 'package:adele_credential_store/credential_reference.dart'
+    if (dart.library.io) 'package:adele_credential_store/src/native.dart';
+import '../../../credential_store/lib/adele_credential_store.dart';
+export '../../../credential_store/lib/credential_reference.dart';
+// import 'package:adele_credential_store/comment.dart';
+import 'package:adele_credential_store_extra/api.dart';
+part '../../../credential_store/lib/src/native.dart';
+const text = "import 'package:adele_credential_store/string.dart';";
+''', sourceUri),
+      [
+        'package:adele_credential_store/adele_credential_store.dart',
+        'package:adele_credential_store/src/native.dart',
+        '../../../credential_store/lib/adele_credential_store.dart',
+        '../../../credential_store/lib/credential_reference.dart',
+        '../../../credential_store/lib/src/native.dart',
+      ],
+    );
+  });
+
   group('plugin boundary helpers', () {
     test('discovers YAML names recursively, excluding output and symlinks', () {
       final root = Directory.systemTemp.createTempSync('adele-boundary-');
@@ -207,8 +329,11 @@ export '../public.dart'
   });
 }
 
-Set<String> _pluginPackageNames(Directory root) {
-  final names = <String>{};
+Set<String> _pluginPackageNames(Directory root) =>
+    _pluginManifests(root).keys.toSet();
+
+Map<String, File> _pluginManifests(Directory root) {
+  final manifests = <String, File>{};
   final pending = <Directory>[root];
   while (pending.isNotEmpty) {
     for (final entity in pending.removeLast().listSync(followLinks: false)) {
@@ -234,12 +359,16 @@ Set<String> _pluginPackageNames(Directory root) {
         final packageName = manifest['name'];
         expect(packageName, isA<String>(), reason: entity.path);
         expect(packageName as String, isNotEmpty, reason: entity.path);
-        names.add(packageName);
+        manifests[packageName] = entity;
       }
     }
   }
-  expect(names, isNotEmpty, reason: 'No plugin pubspec.yaml files discovered.');
-  return names;
+  expect(
+    manifests,
+    isNotEmpty,
+    reason: 'No plugin pubspec.yaml files discovered.',
+  );
+  return manifests;
 }
 
 Iterable<String> _productionPluginDependencies(
@@ -274,6 +403,32 @@ List<String> _forbiddenAppUris(
               !sourceUri.resolveUri(uri).toString().startsWith(libRoot))) {
         forbidden.add(value);
       }
+    }
+  }
+  return forbidden;
+}
+
+List<String> _forbiddenCredentialUris(String source, Uri sourceUri) {
+  const identity = 'package:adele_credential_store/credential_reference.dart';
+  final credentialRoot = Directory('packages/credential_store').absolute.uri;
+  final unit = parseString(content: source, path: sourceUri.toFilePath()).unit;
+  final forbidden = <String>[];
+  for (final directive in unit.directives.whereType<UriBasedDirective>()) {
+    for (final literal in [
+      directive.uri,
+      if (directive is NamespaceDirective)
+        ...directive.configurations.map((configuration) => configuration.uri),
+    ]) {
+      final value = literal.stringValue!;
+      final uri = Uri.parse(value);
+      final credentialImport =
+          uri.scheme == 'package' &&
+              uri.pathSegments.first == 'adele_credential_store' ||
+          sourceUri
+              .resolveUri(uri)
+              .toString()
+              .startsWith(credentialRoot.toString());
+      if (credentialImport && value != identity) forbidden.add(value);
     }
   }
   return forbidden;

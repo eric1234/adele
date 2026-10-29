@@ -5,12 +5,14 @@ import 'dart:ui' as ui;
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/editor/native_code_editor.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/frontend/code_editor_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -258,6 +260,9 @@ Future<void> _workspace(
           resources.editors.length == 1 &&
           resources.editors.single.isInitialized &&
           _texts(root).contains('Ask ADELE...') &&
+          _elements(
+            root,
+          ).any((element) => element.widget is NativeRichDocumentEditorView) &&
           _texts(root).contains('Synthetic pane: editor-a'),
       'Prepared Chat and initial editor A',
     );
@@ -288,14 +293,25 @@ Future<void> _workspace(
     final chatRuntime = chatWidget.$runtime;
     Element? composerElement;
     void findComposer(Element element) {
-      if (element.widget is TextField) composerElement = element;
+      if (element.widget is NativeRichDocumentEditorView) {
+        composerElement = element;
+      }
       element.visitChildren(findComposer);
     }
 
     chat.visitChildren(findComposer);
     _require(composerElement != null, 'Contributed Chat has no composer.');
     final composer = composerElement!;
-    final composerController = (composer.widget as TextField).controller;
+    final composerOwner =
+        (composer.widget as NativeRichDocumentEditorView).editor;
+    final composerNative = _elements(
+      root,
+    ).map((element) => element.widget).whereType<rich.AppFlowyEditor>().single;
+    final composerState = composerNative.editorState;
+    _require(
+      composerOwner.snapshot()['markdown'] == '' && !composerState.editable,
+      'Provider-free Chat should retain an empty disabled rich editor.',
+    );
     bool chatRetained() =>
         host.mounted &&
         identical((host.widget as MainContentHost).session, session) &&
@@ -307,10 +323,20 @@ Future<void> _workspace(
           chatRuntime,
         ) &&
         composer.mounted &&
+        !composerOwner.isDisposed &&
         identical(
-          (composer.widget as TextField).controller,
-          composerController,
-        );
+          (composer.widget as NativeRichDocumentEditorView).editor,
+          composerOwner,
+        ) &&
+        identical(
+          _elements(root)
+              .map((element) => element.widget)
+              .whereType<rich.AppFlowyEditor>()
+              .single
+              .editorState,
+          composerState,
+        ) &&
+        composerOwner.snapshot()['markdown'] == '';
     final a = resources.editor(session.id, 'editor-a')!;
     _require(
       resources.editor(session.id, 'editor-b') == null,
@@ -473,6 +499,10 @@ Future<void> _workspace(
       !source.isDisposed && source.snapshot()['text'] == editedSource,
       'Task Browser departure discarded the stock Source owner.',
     );
+    _require(
+      composerOwner.isDisposed,
+      'Departure retained the old Chat owner.',
+    );
     List<ListTile> sessionRows() => [
       for (final element in _elements(root))
         if (element.widget case final ListTile row)
@@ -493,6 +523,24 @@ Future<void> _workspace(
     _require(
       source.snapshot()['text'] == editedSource,
       'Source text changed on remount.',
+    );
+    await _until(
+      () => _elements(root)
+          .map((element) => element.widget)
+          .whereType<NativeRichDocumentEditorView>()
+          .isNotEmpty,
+      'Restored Chat rich editor',
+    );
+    final restoredComposer = _elements(root)
+        .map((element) => element.widget)
+        .whereType<NativeRichDocumentEditorView>()
+        .single
+        .editor;
+    _require(
+      !identical(restoredComposer, composerOwner) &&
+          restoredComposer.snapshot()['markdown'] == '' &&
+          restoredComposer.snapshot()['editingEnabled'] == false,
+      'Provider-free Chat did not restore into a fresh disabled owner.',
     );
     await _frames();
     await _key(

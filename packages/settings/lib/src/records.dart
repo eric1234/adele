@@ -78,6 +78,26 @@ final class RecordFieldId {
   String toString() => value;
 }
 
+/// Local credential association identity, separate from ordinary record fields.
+final class RecordCredentialSlotId {
+  factory RecordCredentialSlotId(String value) {
+    _validateRecordLocalId(value, 'record credential slot ID');
+    return RecordCredentialSlotId._(value);
+  }
+
+  const RecordCredentialSlotId._(this.value);
+  final String value;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecordCredentialSlotId && other.value == value;
+  @override
+  int get hashCode => value.hashCode;
+  @override
+  String toString() => value;
+}
+
 void _validateRecordLocalId(
   String value,
   String label, {
@@ -110,6 +130,33 @@ final class RecordFieldDefinition<T extends Object> {
   final bool required;
 }
 
+/// Credential shape metadata, not an ordinary setting value type.
+enum RecordCredentialKind { secretText }
+
+/// Data-only credential association metadata; contains no secret or reference.
+final class RecordCredentialSlotDefinition {
+  RecordCredentialSlotDefinition({
+    required this.id,
+    required this.label,
+    required this.kind,
+  }) {
+    _validatePresentation(label, 'label');
+    if (label.length > maxLabelLength) {
+      throw ArgumentError.value(
+        label,
+        'label',
+        'Must not exceed $maxLabelLength characters.',
+      );
+    }
+  }
+
+  static const maxLabelLength = 128;
+
+  final RecordCredentialSlotId id;
+  final String label;
+  final RecordCredentialKind kind;
+}
+
 /// A plugin-owned record type, grouped into a product-facing collection.
 final class RecordTypeDefinition {
   RecordTypeDefinition({
@@ -121,7 +168,9 @@ final class RecordTypeDefinition {
     this.description,
     required Iterable<RecordFieldDefinition<Object>> fields,
     this.displayField,
-  }) : fields = List.unmodifiable(fields) {
+    Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
+  }) : fields = List.unmodifiable(fields),
+       credentialSlots = List.unmodifiable(credentialSlots) {
     if (!id.value.startsWith('${owner.value}.')) {
       throw ArgumentError.value(id, 'id', 'Must be within owner $owner.');
     }
@@ -134,6 +183,16 @@ final class RecordTypeDefinition {
           field.id,
           'fields',
           'Duplicate record field.',
+        );
+      }
+    }
+    final slotIds = <RecordCredentialSlotId>{};
+    for (final slot in this.credentialSlots) {
+      if (!slotIds.add(slot.id)) {
+        throw ArgumentError.value(
+          slot.id,
+          'credentialSlots',
+          'Duplicate record credential slot.',
         );
       }
     }
@@ -159,6 +218,9 @@ final class RecordTypeDefinition {
   final String label;
   final String? description;
   final List<RecordFieldDefinition<Object>> fields;
+
+  /// Ordered credential associations, never part of ordinary [validate] values.
+  final List<RecordCredentialSlotDefinition> credentialSlots;
 
   /// Optional display-name source, referencing a required ordinary string field.
   ///

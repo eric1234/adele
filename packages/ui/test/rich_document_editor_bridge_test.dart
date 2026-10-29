@@ -10,6 +10,10 @@ void main() {
     expect(() => buildRichDocumentEditor('fake'), throwsUnsupportedError);
     expect(() => snapshotRichDocumentEditor('fake'), throwsUnsupportedError);
     expect(
+      () => setRichDocumentEditorEditingEnabled('fake', true),
+      throwsUnsupportedError,
+    );
+    expect(
       () => subscribeRichDocumentEditor('fake', () {}),
       throwsUnsupportedError,
     );
