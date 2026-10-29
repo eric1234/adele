@@ -20,6 +20,7 @@ dev_dependencies:
   adele_desktop: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
+  appflowy_editor: 6.2.0
   dart_eval: 0.8.5
   flutter_eval: 0.8.2
   flutter_test:

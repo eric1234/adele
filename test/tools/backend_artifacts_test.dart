@@ -2402,8 +2402,21 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'operations': <String, Object?>{},
           'retainedData': false,
           'nativeCodeEditor': false,
+          'richDocumentEditor': false,
           'environmentTextFiles': false,
         });
+        expect(
+          catalog.installations
+              .where(
+                (installation) =>
+                    installation.frontend?.presentations
+                        .whereType<PreparedMainContentPresentation>()
+                        .any((descriptor) => descriptor.richDocumentEditor) ??
+                    false,
+              )
+              .map((installation) => installation.metadata.id.value),
+          ['dev.adele.plugin.chat-strategy'],
+        );
         final source = catalog.installations.singleWhere(
           (installation) =>
               installation.metadata.id.value == 'dev.adele.source-editor',

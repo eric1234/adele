@@ -144,6 +144,9 @@ final class SessionExecutionBridge extends SessionExecutionDeclarations
       // Liveness failures revoke the same actions as retirement.
     }
     invalidate();
+    // Required service loss must also retire presentation-owned input, even
+    // when invalidation suppresses the interpreted execution listener.
+    _onFailure?.call();
     return false;
   }
 

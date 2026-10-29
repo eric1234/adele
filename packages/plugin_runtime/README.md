@@ -380,8 +380,8 @@ stock pane-kind enum. `library` is a canonical `package:` Dart URI; `initialize`
 and `entrypoint` are top-level identifiers. `PreparedMainContentPresentation` is
 data-only and remains Flutter/eval-independent. The initializer reads captured
 Session/Environment identity data and may open an initial collection; it receives
-no execution, backend, file, or source-display consumer services, including when
-the descriptor requests them. Identity context is independent of descriptor grants
+no execution, backend, file, rich-document editor, or source-display consumer
+services, including when the descriptor requests them. Identity context is independent of descriptor grants
 and provider readiness; its API belongs to the
 [UI bridge map](../ui/README.md#interpreted-bridges).
 The content entrypoint renders each admitted pane in its own runtime.
@@ -400,6 +400,7 @@ Additional Main Content fields are explicit opt-ins:
 | `canRequestSourceDisplay` | Strict boolean, false by default; requests pane-only consumption of the public source-display point, not a provider registration or direct file/editor access. |
 | `retainedData` | False by default; requests copied contribution-owned records retained independently of attachment. |
 | `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
+| `richDocumentEditor` | Strict boolean, false by default; requests presentation-owned rich-document editors from supplied Markdown only in mounted panes. Requires no retained data, backend, execution, or file grant. |
 | `environmentTextFiles` | False by default; requires nonempty `operations` and requests the separate Environment read/replace bridge only for finite operations with captured Session context. |
 
 Both Capability allowlists require neither an owning backend nor a currently
@@ -429,6 +430,18 @@ canonical context, resolution, and completion checks belong to
 preserving declared order and copying mutable collections. It includes explicit
 defaults and omits absent operation hooks, so the installed descriptor roundtrips
 through the same strict parser without granting additional access.
+
+`richDocumentEditor` is independent of `nativeCodeEditor` and `retainedData`.
+Omission means false; null and nonboolean values are rejected, as is the field on
+other presentation roles or behavioral extensions. Serialization includes its
+explicit boolean value. Only admitted mounted panes receive the existing public
+rich-document bridge, never initializers, input actions, or finite operations.
+Each bridge captures that exact presentation/runtime; editor handles do not move
+to another pane, Session attachment, or replacement generation. Explicit release,
+presentation failure/disposal, pane departure, registration/frontend retirement,
+and exit retention dispose the bridge-owned editors without a substitute editor.
+This is not retained-document or durable storage authority. Native ownership and
+the Markdown boundary belong to the [application host](../../app/README.md#native-rich-document-editor).
 
 Hooks cannot name undeclared operations. Actions and operations are immutable
 metadata, not stored evaluator callbacks. Exit operations need no mounted pane and
@@ -483,8 +496,9 @@ are rejected for this role. A frontend-only installation needs no backend or sha
 host process to register the contribution. Project-scoped browser actions are
 mediated by the app's public-UI bridge implementation, not runtime backend routing.
 
-Stock Chat uses `mainContent`, ordinary order 100, explicit `sessionExecution: true`,
-an allowlisted Chat service, and `owningBackend` affinity. Its initializer decides
+Stock Chat uses `mainContent`, ordinary order 100, explicit
+`richDocumentEditor: true` and `sessionExecution: true`, an allowlisted Chat service,
+and `owningBackend` affinity. Its initializer decides
 applicability; runtime does not know Chat identities or service semantics. There is
 no separate Session presentation descriptor or reserved strategy slot.
 
