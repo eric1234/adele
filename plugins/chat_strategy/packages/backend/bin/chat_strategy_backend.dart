@@ -47,6 +47,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       serviceId: remoteOrchestrationHostServiceId,
     ),
   );
+  final feedback = ChatSessionFeedbackService(sessions);
   final router = AdeleConfigurationContextRouter(
     contexts: {
       defaultConfigurationContext: {
@@ -56,6 +57,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         ),
         remoteOrchestrationServiceId: RemoteOrchestrationServiceDispatcher(
           orchestration,
+          concurrent: true,
+        ),
+        remoteSessionFeedbackServiceId: RemoteSessionFeedbackServiceDispatcher(
+          feedback,
           concurrent: true,
         ),
       },
@@ -77,6 +82,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             'strategyId': chatStrategyId.value,
             'routeId': chatStrategyRouteId,
             'displayName': 'Chat',
+            'feedbackServiceId': remoteSessionFeedbackServiceId,
           },
         ).toMap(),
       ],
@@ -89,6 +95,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           request['requestId'] is int) {
         // Settle blocked reverse calls before draining active forward requests.
         hostRequests.close();
+        await feedback.close();
         await orchestration.close();
         await router.close();
         responsePort.send(<String, Object?>{
@@ -105,7 +112,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     hostRequests.close();
     requests.close();
     try {
-      await orchestration.close();
+      try {
+        await feedback.close();
+      } finally {
+        await orchestration.close();
+      }
     } finally {
       await router.close();
     }

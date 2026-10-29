@@ -617,6 +617,7 @@ final class ProductLifecycleCoordinator {
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
   final Map<ProjectId, ProjectDatabase> _temporaryProjectDatabases = {};
   final Map<RunId, RunActivitySnapshot> _runActivities = {};
+  final Map<SessionId, int> _sessionExecutions = {};
   final Set<Future<Project>> _projectOpens = {};
   Future<void>? _closing;
 
@@ -917,6 +918,54 @@ final class ProductLifecycleCoordinator {
       throw StateError('Session $sessionId is not published.');
     }
     return strategyResolver.resolve(session.strategyId);
+  }
+
+  /// Validates input authority without resolving a strategy, opening storage, or
+  /// materializing an Environment. Retained semantic records alone are not live
+  /// authority after this lifecycle starts closing.
+  void validateSessionInput(Session session) {
+    _requireOpen();
+    if (!identical(store.session(session.id), session)) {
+      throw ArgumentError('Session input requires the canonical Session.');
+    }
+    final task = store.task(session.taskId);
+    final authority = store.sessionAuthority(session.id);
+    if (task == null ||
+        store.project(task.projectId) == null ||
+        authority == null ||
+        authority.sessionId != session.id ||
+        authority.taskId != task.id) {
+      throw StateError('Session input requires a published Project graph.');
+    }
+  }
+
+  /// Observes existing orchestration ownership, including materialization and
+  /// retired-backend waiting Runs. This does not schedule or start execution.
+  bool hasSessionExecution(Session session) {
+    validateSessionInput(session);
+    return _sessionExecutions.containsKey(session.id);
+  }
+
+  /// Called only by the native Run owner; the release follows its drained close,
+  /// not plugin retirement or the lifetime of a presentation.
+  void Function() retainSessionExecution(Session session) {
+    validateSessionInput(session);
+    _sessionExecutions.update(
+      session.id,
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+    var released = false;
+    return () {
+      if (released) return;
+      released = true;
+      final count = _sessionExecutions[session.id]!;
+      if (count == 1) {
+        _sessionExecutions.remove(session.id);
+      } else {
+        _sessionExecutions[session.id] = count - 1;
+      }
+    };
   }
 
   /// Checks canonical selection in this lifecycle's registry without replacing

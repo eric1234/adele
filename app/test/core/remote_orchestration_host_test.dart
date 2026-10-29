@@ -494,8 +494,108 @@ void main() {
             binding.value.strategyId.value == 'dev.adele.test.named-strategy',
       );
       expect(unnamed.value.displayName, isNull);
+      expect(unnamed.value.feedbackTarget, isNull);
       expect(named.value.displayName, 'Named strategy');
+      expect(named.value.feedbackTarget, isNull);
       expect(await _control(probe.connection, 'released'), isEmpty);
+    },
+  );
+
+  test(
+    'feedback retains exact route, configuration and generation without Run authority',
+    () async {
+      const strategyId = 'dev.adele.test.feedback-strategy';
+      final options = {
+        'configurationContext': 'feedback-context',
+        'metadata': {
+          'strategyId': strategyId,
+          'routeId': 'feedback-route',
+          'feedbackServiceId': remoteSessionFeedbackServiceId,
+        },
+      };
+      final probe = await activate(options);
+      SessionFeedbackTarget capture() =>
+          OrchestrationStrategyResolver(extensions)
+              .resolve(OrchestrationStrategyId(strategyId))
+              .contribution
+              .feedbackTarget!(
+            Session(
+              id: SessionId('feedback-session'),
+              taskId: TaskId('feedback-task'),
+              strategyId: OrchestrationStrategyId(strategyId),
+            ),
+          );
+      final target = capture();
+      final submission = SessionFeedbackSubmission(
+        submissionId: 'feedback-submission',
+        kind: SessionFeedbackKind.codeReview,
+        comments: [
+          SessionFeedbackComment(
+            id: 'comment',
+            anchor: SessionFeedbackAnchor(
+              environmentId: 'feedback-environment',
+              relativePath: 'example.dart',
+              layer: SessionFeedbackComparisonLayer.staged,
+              side: SessionFeedbackComparisonSide.newSide,
+              startLine: 1,
+              endLine: 1,
+              comparisonIdentity: 'comparison',
+              sourceExcerpt: 'example\n',
+              hunkIndex: 0,
+              lineIndex: 0,
+            ),
+            text: 'Review.',
+            version: 1,
+            sequence: 1,
+          ),
+        ],
+      );
+      final receipt = await target.accept(submission);
+      expect(receipt.sessionId, 'feedback-session');
+      expect(receipt.submissionId, submission.submissionId);
+      expect(receipt.occurrenceId, 'feedback-route/entry');
+      final record = await target.lookup(submission.submissionId);
+      expect(record!.receipt.occurrenceId, receipt.occurrenceId);
+      expect(
+        encodeSessionFeedbackSubmission(record.submission),
+        encodeSessionFeedbackSubmission(submission),
+      );
+      expect(await target.lookup('absent'), isNull);
+      final observed = await _control(probe.connection, 'feedback') as Map;
+      expect(observed['materializations'], 0);
+      expect(observed['hostRequests'], 0);
+      final requests = observed['requests'] as List;
+      expect(requests, hasLength(3));
+      for (final request in requests.cast<Map<Object?, Object?>>()) {
+        expect(request['configurationContext'], 'feedback-context');
+        expect(request['hasHostInvocation'], isFalse);
+        final payload = request['payload'] as Map;
+        expect(payload['routeId'], 'feedback-route');
+        expect(payload['sessionId'], 'feedback-session');
+        expect(payload.keys.toSet(), {
+          'routeId',
+          'sessionId',
+          request['method'] == remoteSessionFeedbackServiceAcceptId
+              ? 'submission'
+              : 'submissionId',
+        });
+      }
+      await probe.retire();
+      await probe.connection.close();
+      final replacement = await activate(options);
+      await expectLater(
+        target.accept(submission),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      await expectLater(
+        target.lookup(submission.submissionId),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(
+        (await _control(replacement.connection, 'feedback') as Map)['requests'],
+        isEmpty,
+      );
+      expect(await capture().lookup(submission.submissionId), isNull);
     },
   );
 
@@ -533,6 +633,22 @@ void main() {
       },
     },
     'unsupported service': {'serviceId': 'unsupportedOrchestration'},
+    for (final feedbackServiceId in [null, 123, '', ' ', 'arbitrary.service'])
+      'invalid feedback service $feedbackServiceId': {
+        'metadata': {
+          'strategyId': _strategyId,
+          'routeId': 'attack-route',
+          'feedbackServiceId': feedbackServiceId,
+        },
+      },
+    'feedback opt-in cannot authorize extra metadata': {
+      'metadata': {
+        'strategyId': _strategyId,
+        'routeId': 'attack-route',
+        'feedbackServiceId': remoteSessionFeedbackServiceId,
+        'feedbackRouteId': 'other-route',
+      },
+    },
   }.entries) {
     test(
       '${invalid.key} coherently rolls back earlier extension and capability registrations',

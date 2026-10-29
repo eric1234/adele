@@ -14,10 +14,20 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     jsonDecode(arguments.single) as Map,
   );
   final probe = _AttackProbe(responses);
-  final router = AdeleConfigurationContextRouter.single(
-    configurationContext: configuration,
-    serviceId: remoteOrchestrationServiceId,
-    dispatcher: RemoteOrchestrationServiceDispatcher(probe),
+  final feedbackConfiguration =
+      options['configurationContext'] as String? ?? configuration;
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      for (final context in {configuration, feedbackConfiguration})
+        context: {
+          remoteOrchestrationServiceId: RemoteOrchestrationServiceDispatcher(
+            probe,
+          ),
+          if (context == feedbackConfiguration)
+            remoteSessionFeedbackServiceId:
+                RemoteSessionFeedbackServiceDispatcher(probe.feedback),
+        },
+    },
   );
   final commands = ReceivePort();
   const metadata = {
@@ -54,7 +64,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           extensionId: 'dev.adele.test.orchestration-attack.invalid',
           serviceId:
               options['serviceId'] as String? ?? remoteOrchestrationServiceId,
-          configurationContext: configuration,
+          configurationContext: feedbackConfiguration,
           metadata: options.containsKey('metadata')
               ? Map<String, Object?>.from(options['metadata'] as Map)
               : metadata,
@@ -84,6 +94,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       if (message['kind'] == 'request' && message['serviceId'] == 'probe') {
         unawaited(probe.control(message, responses));
       } else {
+        if (message['serviceId'] == remoteSessionFeedbackServiceId) {
+          probe.feedbackRequests.add({
+            'configurationContext': message['configurationContext'],
+            'method': message['method'],
+            'payload': message['payload'],
+            'hasHostInvocation': message.containsKey('hostInvocationContext'),
+          });
+        }
         unawaited(router.handle(message, responses.send));
       }
     }
@@ -104,6 +122,8 @@ final class _AttackProbe implements RemoteOrchestrationService {
   final ready = <String, Completer<Map<String, Object?>>>{};
   final finishes = <String, Completer<String>>{};
   final released = <String>[];
+  final feedback = _FeedbackProbe();
+  final feedbackRequests = <Map<String, Object?>>[];
   int nextExecution = 0;
   int nextRequest = 0;
   bool failRelease = false;
@@ -197,6 +217,12 @@ final class _AttackProbe implements RemoteOrchestrationService {
           result = true;
         case 'released':
           result = released;
+        case 'feedback':
+          result = {
+            'requests': feedbackRequests,
+            'materializations': nextExecution,
+            'hostRequests': nextRequest,
+          };
         case 'failRelease':
           failRelease = true;
           result = true;
@@ -262,6 +288,35 @@ final class _AttackProbe implements RemoteOrchestrationService {
     }
     pending.clear();
   }
+}
+
+final class _FeedbackProbe implements RemoteSessionFeedbackService {
+  final records = <String, SessionFeedbackRecord>{};
+
+  @override
+  Future<SessionFeedbackReceipt> accept(
+    String routeId,
+    String sessionId,
+    SessionFeedbackSubmission submission,
+  ) async {
+    final record = SessionFeedbackRecord(
+      receipt: SessionFeedbackReceipt(
+        submissionId: submission.submissionId,
+        sessionId: sessionId,
+        occurrenceId: '$routeId/entry',
+      ),
+      submission: submission,
+    );
+    records['$routeId/$sessionId/${submission.submissionId}'] = record;
+    return record.receipt;
+  }
+
+  @override
+  Future<SessionFeedbackRecord?> lookup(
+    String routeId,
+    String sessionId,
+    String submissionId,
+  ) async => records['$routeId/$sessionId/$submissionId'];
 }
 
 // Proposal and approval calls use generated clients over handwritten framing.

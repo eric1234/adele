@@ -887,13 +887,15 @@ fresh authoritative snapshot, never automatic replay.
 
 Pending comments are not submitted feedback, Chat history, Run activity, or Git
 approval state. Approval remains owned by the existing handler and Git index.
-Future feedback acceptance belongs to a compatible Session strategy; compact
+Feedback acceptance belongs to a compatible Session strategy; compact
 occurrence presentation belongs to that strategy, while rich content belongs in
-general Inspection hosting with plugin-owned interpretation. Neither a generic
-Session-input framework nor new Inspection targets are introduced by draft
-storage. The stock Diff frontend remains independent of the draft backend until
-its explicit editing workflow is connected. Exact contract, limits, schema, and
-failure semantics belong to the [Diff map](../../plugins/diff_viewer/README.md#pending-comments).
+general Inspection hosting with plugin-owned interpretation. The narrow
+[host-mediated acceptance boundary](execution-model.md#session-feedback-acceptance)
+does not itself submit or clear pending comments, schedule a Run, or introduce
+Inspection presentation infrastructure. Future Diff submission owns durable batch
+identity and explicit acceptance/reconciliation before scheduling. Exact draft
+contract, limits, schema, and failure semantics belong to the
+[Diff map](../../plugins/diff_viewer/README.md#pending-comments).
 
 ### Command Tools participation
 
@@ -931,6 +933,7 @@ backend owns these version-1 tables:
 | --- | --- |
 | `adele_chat_sessions(session_id, instructions, next_entry, draft_request)` | Session instructions, entry counter, and current plain-text Draft Request, linked by foreign key to core Session identity. |
 | `adele_chat_entries(session_id, sequence, entry_id, role, content, run_id)` | Ordered canonical user/assistant history, linked to the Chat Session row; nullable semantic Run association on user entries only. |
+| `adele_chat_feedback_submissions(session_id, submission_id, canonical_payload, entry_id)` | Immutable structured feedback and stable receipt relationship to one canonical user occurrence; unique submission and occurrence per Session. |
 
 `ChatSessionStore` initializes or loads state only on first actual state access,
 not at Project reopen or core Session creation. Defaults apply only to an
@@ -940,6 +943,17 @@ The cache is generation-local; durable SQL state is the source of truth across
 backend replacement. Missing Chat
 does not prevent core graph restoration or cause its tables to be touched. A fresh
 backend can later load that retained state through fresh resolution.
+
+Review acceptance atomically commits one user entry, its counter, and the complete
+structured submission under a stable caller-retained identity. Exact duplicates
+return the original receipt; conflicting content under the same identity fails.
+Receipt reads use authoritative storage across generations rather than an
+unbounded replay cache. Model-facing text is a separate deterministic projection
+of captured review data, not the canonical structured presentation format. The
+existing claim rejects new feedback during execution but permits accepted receipt
+lookup. Draft Request is neither consumed nor rewritten. See the
+[Chat backend](../../plugins/chat_strategy/packages/backend/README.md) for storage,
+bounds and uncertain-result handling.
 
 The invocation budget is [global configuration](profiles-and-configuration.md#chat-invocation-budget),
 not a Session field, snapshot value, or SQL column. Backend construction requires

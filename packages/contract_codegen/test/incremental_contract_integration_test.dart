@@ -14,7 +14,18 @@ void main() {
     'configured contracts reuse receipts and isolate a wire-schema edit',
     () async {
       final fixture = await _cloneConfiguredContracts();
-      expect(fixture.sources, hasLength(17));
+      final sourceCount = fixture.sources.length;
+      final sourcePaths = [
+        for (final source in fixture.sources)
+          p.relative(source.path, from: fixture.root.path),
+      ];
+      expect(
+        sourcePaths,
+        contains(
+          p.join('packages', 'orchestration', 'lib', 'session_feedback.dart'),
+        ),
+      );
+      expect(sourcePaths.toSet(), hasLength(sourceCount));
       final receipt = File(
         p.join(fixture.root.path, '.dart_tool/adele/contracts/freshness.json'),
       );
@@ -32,7 +43,7 @@ void main() {
         configuration: fixture.configuration,
         generatorIdentity: 'configured-contract-integration',
       );
-      expect(cold, (current: 0, regenerated: 17));
+      expect(cold, (current: 0, regenerated: sourceCount));
 
       final bytes = <String, List<int>>{};
       final modified = <String, DateTime>{};
@@ -51,7 +62,7 @@ void main() {
         generate: (File source, {ContractInputs? inputs}) =>
             throw StateError('Warm generation resolved ${source.path}.'),
       );
-      expect(warm, (current: 17, regenerated: 0));
+      expect(warm, (current: sourceCount, regenerated: 0));
       for (final source in fixture.sources) {
         final output = File(p.setExtension(source.path, '.g.dart'));
         expect(
@@ -104,7 +115,7 @@ void main() {
           return const ContractGenerator().generate(source, inputs: inputs);
         },
       );
-      expect(edited, (current: 16, regenerated: 1));
+      expect(edited, (current: sourceCount - 1, regenerated: 1));
       expect(generatedSources, [demo.path]);
       final authoritative = await const ContractGenerator().generate(demo);
       final changedOutput = File(authoritative.path);
@@ -143,7 +154,7 @@ void main() {
             'Edited warm generation resolved ${source.path}.',
           ),
         ),
-        (current: 17, regenerated: 0),
+        (current: sourceCount, regenerated: 0),
       );
     },
   );

@@ -1,9 +1,11 @@
 # Chat Backend
 
 `chat_strategy_backend` owns canonical Chat history, Draft Request, configuration,
-and sequencing. Its AOT entrypoint exposes the generated Chat Session service and the
-existing remote orchestration service over one backend router and one retained
-`ChatSessionStore`. It advertises only its orchestration strategy contribution.
+and sequencing. Its AOT entrypoint exposes the generated Chat Session, public
+Session feedback, and remote orchestration services over one backend router and
+one retained `ChatSessionStore`. It advertises only its orchestration strategy
+contribution, whose `feedbackServiceId` opts the same exact Chat route into the
+public feedback contract.
 
 The entrypoint requires the host's generation-bound `hostInfrastructureContext`
 and injects a generated `ProjectStorageServiceClient` over the existing host-call
@@ -19,8 +21,11 @@ upgrade migration or compatibility reader for development schemas.
 Session-local unique entry IDs and nullable `run_id TEXT`. Only user entries may
 carry a Run association; `(session_id, run_id)` is unique for non-null values.
 There is no foreign key from `run_id` to the core terminal Run table because
-association precedes terminal retention. Chat never writes core tables or JSON
-snapshots. Cross-system ownership belongs to
+association precedes terminal retention. `adele_chat_feedback_submissions` retains
+the complete canonical structured payload and its user entry link, with primary
+key `(session_id, submission_id)`, unique `(session_id, entry_id)`, and a composite
+foreign key to the canonical entry. Chat never writes core tables or whole-history
+JSON snapshots. Cross-system ownership belongs to
 [Chat participation](../../../../docs/architecture/plugin-system.md#chat-participation).
 
 Hydration looks up the next expected `sequence` within the Session using the
@@ -50,6 +55,8 @@ the host Run. Explicitly volatile state has no persistence row bound. Injected
 oversized stored rows fail explicitly on read, never truncate.
 Storage/transport failures propagate without volatile fallback or
 hidden retry. A failed hydration remains failed for that store generation.
+Concurrent first access by independent stores uses a conflict-safe default insert
+and reads the durable winner instead of publishing speculative defaults.
 
 `ChatSessionStore()` without a client is the explicit volatile fixture path.
 With a client, only the host's explicit `isDurableSession == false` selects
@@ -93,6 +100,63 @@ returns the accepted occurrence. It does not start a Run. Direct `appendUserMess
 and `configureSession` retain the draft; execution neither projects it into model
 input nor consumes it. Volatile stores use these same semantics in memory only.
 
+## Structured feedback
+
+`ChatSessionFeedbackService` implements the public generated
+`RemoteSessionFeedbackService`; `ChatStrategyPlugin` also supplies a bound native
+`feedbackTarget` factory over the same store. Neither path materializes execution,
+starts a Run, reads an Environment, approves work, or changes the Draft Request.
+Feedback requires durable Project storage. Explicitly volatile fixtures/Projects
+fail with `storage_failure`, without a fallback receipt cache or temporary backing.
+
+An immutable submission identity identifies one complete canonical payload within
+its Session and Project. An exact duplicate returns the original receipt; changed
+payload under the same ID fails with `submission_conflict`. Equal comments under
+different IDs remain separate user occurrences. Durable receipt reads do not trust
+the generation cache, and validate both the full structured payload and its linked
+user projection. Reads of unknown IDs return null only after a successful query;
+unavailable storage or invalid retained data is `storage_failure`, not absence.
+An old development v1 schema missing the feedback table fails explicitly, without
+schema repair, migration, or compatibility fallback.
+
+Acceptance acquires the existing Session claim and commits a conditional counter
+CAS, canonical user entry, and structured submission in one SQL transaction.
+The CAS includes the prior counter/configuration/draft and absence of the submission
+ID. SQLite `changes()` links the conditional inserts to that update: an independent
+store's duplicate/CAS loser is an acknowledged no-op, followed only by read-only
+reconciliation. Primary/unique constraints protect identity and entry linkage.
+There is no check-then-insert occurrence allocation or automatic mutation replay.
+Only in-flight same-ID requests are coalesced; no completed receipt cache is kept.
+New input while claimed fails with `session_busy`; accepted duplicates and receipt
+lookup remain readable during materialization, advancement, and approval waits.
+
+Thrown SQL/transport writes are always `outcome_uncertain`: the public storage
+boundary does not expose a provable rollback classification. Explicit lookup by the
+original ID can positively establish acceptance after a lost acknowledgement, but
+absence does not prove a still-running write rolled back. Failure messages contain
+no raw storage errors. Cache publication follows acknowledged SQL and validated
+durable reads. Recovery reloads the existing cached Session under its normal claim;
+an active claim is never overwritten, and a required refresh waits until the next
+idle load before further execution or mutation. Claim acquisition also checks that
+flag, so a previously returned cached-load future cannot enter stale work. A
+positive receipt read invalidates stale history even when payload comparison
+rejects a conflicting duplicate. Shutdown stops new feedback
+admission and drains accepted operations. If the entrypoint closes reverse calls
+while SQL is unresolved, acceptance settles uncertain and a fresh target can look
+up the durable result.
+
+`renderChatSessionFeedback` produces one deterministic user message containing
+explicit feedback guidance and the complete canonical JSON. JSON string escaping
+keeps paths, excerpts, metadata, and comments unambiguous while preserving exact
+Unicode, CRLF, whitespace, same-line comments, and original ordering. Captured
+positions are explicitly historical, not current-source claims; the message asks
+for current-source inspection before editing and labels supplied content as user
+data, not system instructions. Existing Session/system instructions are unchanged.
+The public 128 KiB canonical submission bound, 144 KiB model-content bound, and
+actual encoded storage-row bounds are enforced before creating an occurrence.
+
+## Sequencing and lifecycle
+
 Service mutations hold the same Session claim while SQL is pending and are
 rejected while another write or materialized execution owns it, including
 approval waits and terminal acknowledgement. `configureSession` replaces only
@@ -100,7 +164,7 @@ instructions in one SQL transaction before memory publication. Appends persist t
 entry and counter atomically before returning it. Expected row counts and prior
 counter/configuration/draft predicates reject writes from stale generation caches.
 Read-only snapshots and other Sessions remain available.
-Both generated entrypoint dispatchers explicitly admit concurrent requests;
+All generated entrypoint dispatchers explicitly admit concurrent requests;
 Session claims and per-execution advancement guards, not a backend-global request
 queue, enforce exclusion. A model/tool wait in one Session cannot delay another
 Session's materialization, execution, or canonical reads through that router.
@@ -145,10 +209,16 @@ test-owned SQLite service, including real trigger rollback, exact draft row boun
 and stale-cache rejection; `chat_remote_backend_test.dart` also covers installed
 entrypoint draft operations and generation replacement, infrastructure routing,
 terminal acknowledgement, held commits, and close/hydration races.
+`chat_feedback_test.dart` covers complete structured roundtrip, SQL identity/CAS
+concurrency across stores, busy reads, rollback, commit-then-lost-ack recovery,
+shutdown draining, independent Sessions/Projects, cache refresh, and byte/row
+bounds. The remote suite additionally exercises generated feedback routing and
+retirement uncertainty and checks the later model input remains a user message.
 Focused backend checks after contract generation, from this package:
 
 ```sh
 dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
+dart test test/chat_feedback_test.dart
 dart test test/chat_session_state_test.dart
 dart analyze --fatal-infos lib bin test
 ```

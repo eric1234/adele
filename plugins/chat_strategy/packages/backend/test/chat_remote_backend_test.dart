@@ -93,6 +93,7 @@ void main() {
         'strategyId': chatStrategyId.value,
         'routeId': chatStrategyRouteId,
         'displayName': 'Chat',
+        'feedbackServiceId': remoteSessionFeedbackServiceId,
       });
       expect(backend.hostCalls, isEmpty);
 
@@ -120,6 +121,198 @@ void main() {
             'unknown_method',
           ),
         ),
+      );
+    },
+  );
+
+  test(
+    'generated feedback service accepts headlessly and projects only user input',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final backend = await _RunningBackend.start(storage: storage);
+      addTearDown(backend.close);
+      await backend.chat.setDraftRequest('session', 'Unrelated draft.');
+      final submission = _feedbackSubmission();
+      final receipts = await Future.wait([
+        backend.feedback.accept(chatStrategyRouteId, 'session', submission),
+        backend.feedback.accept(chatStrategyRouteId, 'session', submission),
+      ]);
+      expect(receipts.map((value) => value.occurrenceId), [
+        'entry-0',
+        'entry-0',
+      ]);
+      expect(backend.host.events, isEmpty);
+      expect(
+        backend.hostCalls.every(
+          (call) => call['hostContextKind'] == 'infrastructure',
+        ),
+        isTrue,
+      );
+      final record = (await backend.feedback.lookup(
+        chatStrategyRouteId,
+        'session',
+        submission.submissionId,
+      ))!;
+      expect(
+        encodeSessionFeedbackSubmission(record.submission),
+        encodeSessionFeedbackSubmission(submission),
+      );
+      final execution = await backend.materialize();
+      await expectLater(
+        backend.feedback.accept(
+          chatStrategyRouteId,
+          'session',
+          _feedbackSubmission(id: 'new'),
+        ),
+        _feedbackFailure('session_busy'),
+      );
+      expect(
+        (await backend.feedback.accept(
+          chatStrategyRouteId,
+          'session',
+          submission,
+        )).occurrenceId,
+        'entry-0',
+      );
+      expect(
+        (await backend.feedback.lookup(
+          chatStrategyRouteId,
+          'session',
+          submission.submissionId,
+        ))!.receipt.occurrenceId,
+        'entry-0',
+      );
+      await expectLater(
+        backend.feedback.accept('not-chat', 'session', submission),
+        _feedbackFailure('stale_target'),
+      );
+      expect(
+        await backend.orchestration.start(execution, 'token'),
+        RemoteRunState.completed,
+      );
+      final material = backend.host.materials.single;
+      expect(
+        material.instructions,
+        '$chatToolNarrationGuidance\n\n$chatDefaultInstructions',
+      );
+      final message = material.input.single as SemanticMessageInput;
+      expect(message.role, SemanticMessageRole.user);
+      expect(message.content, renderChatSessionFeedback(submission));
+      expect(
+        (await backend.chat.snapshot('session')).draftRequest,
+        'Unrelated draft.',
+      );
+      await backend.close();
+      final replacement = await _RunningBackend.start(storage: storage);
+      addTearDown(replacement.close);
+      expect(
+        (await replacement.feedback.accept(
+          chatStrategyRouteId,
+          'session',
+          submission,
+        )).occurrenceId,
+        'entry-0',
+      );
+      expect(
+        (await replacement.chat.snapshot(
+          'session',
+        )).entries.map((entry) => entry.role),
+        ['user', 'assistant'],
+      );
+      expect(replacement.host.events, isEmpty);
+    },
+  );
+
+  test(
+    'generated feedback lost SQL acknowledgement never replays acceptance',
+    () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      await backend.chat.snapshot('session');
+      final writes = backend.storage.transactions;
+      backend.storage.afterCommit = () async =>
+          throw StateError('Private SQL ACK failure.');
+      await expectLater(
+        backend.feedback.accept(
+          chatStrategyRouteId,
+          'session',
+          _feedbackSubmission(),
+        ),
+        _feedbackFailure('outcome_uncertain'),
+      );
+      expect(backend.storage.transactions, writes + 1);
+      backend.storage.afterCommit = null;
+      final record = (await backend.feedback.lookup(
+        chatStrategyRouteId,
+        'session',
+        'review',
+      ))!;
+      expect(record.receipt.occurrenceId, 'entry-0');
+      expect(
+        (await backend.feedback.accept(
+          chatStrategyRouteId,
+          'session',
+          _feedbackSubmission(),
+        )).occurrenceId,
+        'entry-0',
+      );
+      expect(backend.storage.transactions, writes + 1);
+      expect(backend.host.events, isEmpty);
+    },
+  );
+
+  test(
+    'entrypoint shutdown settles feedback as uncertain after commit before ACK',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final backend = await _RunningBackend.start(storage: storage);
+      addTearDown(backend.close);
+      await backend.chat.snapshot('session');
+      final gate = Completer<void>();
+      final entered = Completer<void>();
+      storage.afterCommit = () {
+        entered.complete();
+        return gate.future;
+      };
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      final writing = backend.feedback.accept(
+        chatStrategyRouteId,
+        'session',
+        _feedbackSubmission(),
+      );
+      final rejected = expectLater(
+        writing,
+        _feedbackFailure('outcome_uncertain'),
+      );
+      await entered.future;
+      expect(
+        storage.database.select(
+          'SELECT * FROM adele_chat_feedback_submissions',
+        ),
+        hasLength(1),
+      );
+      await backend.shutdown();
+      await rejected;
+      storage.afterCommit = null;
+      gate.complete();
+      await backend.close();
+      final replacement = await _RunningBackend.start(storage: storage);
+      addTearDown(replacement.close);
+      expect(
+        (await replacement.feedback.lookup(
+          chatStrategyRouteId,
+          'session',
+          'review',
+        ))!.receipt.occurrenceId,
+        'entry-0',
+      );
+      expect(
+        (await replacement.chat.snapshot('session')).entries,
+        hasLength(1),
       );
     },
   );
@@ -1768,6 +1961,38 @@ Matcher _failure(String code) => throwsA(
   isA<ChatSessionFailure>().having((error) => error.code, 'code', code),
 );
 
+Matcher _feedbackFailure(String code) => throwsA(
+  isA<SessionFeedbackFailure>()
+      .having((error) => error.code, 'code', code)
+      .having((error) => error.message, 'safe message', isNot(contains('SQL'))),
+);
+
+SessionFeedbackSubmission _feedbackSubmission({String id = 'review'}) =>
+    SessionFeedbackSubmission(
+      submissionId: id,
+      kind: SessionFeedbackKind.codeReview,
+      comments: [
+        SessionFeedbackComment(
+          id: 'comment',
+          anchor: SessionFeedbackAnchor(
+            environmentId: 'environment',
+            relativePath: 'lib/source.dart',
+            layer: SessionFeedbackComparisonLayer.unstaged,
+            side: SessionFeedbackComparisonSide.newSide,
+            startLine: 2,
+            endLine: 3,
+            comparisonIdentity: 'captured-comparison',
+            sourceExcerpt: 'exact\r\nsource\u00e9\u{1f600}',
+            hunkIndex: 0,
+            lineIndex: 1,
+          ),
+          text: '  Fix this "quoted" part.\r\n',
+          version: 2,
+          sequence: 1,
+        ),
+      ],
+    );
+
 final class _RunningBackend {
   _RunningBackend(
     this.isolate,
@@ -1811,6 +2036,9 @@ final class _RunningBackend {
   );
   late final orchestration = RemoteOrchestrationServiceClient(
     _Channel(this, remoteOrchestrationServiceId),
+  );
+  late final feedback = RemoteSessionFeedbackServiceClient(
+    _Channel(this, remoteSessionFeedbackServiceId),
   );
   int nextRequest = 0;
   bool stopped = false;

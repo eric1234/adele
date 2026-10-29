@@ -25,20 +25,27 @@ final class RemoteOrchestrationStrategyAdapter
     final strategyId = metadata['strategyId'];
     final routeId = metadata['routeId'];
     final displayName = metadata['displayName'];
+    final feedbackServiceId = metadata['feedbackServiceId'];
     if (remote.exposure.serviceId != remoteOrchestrationServiceId ||
         metadata.keys.any(
           (key) =>
-              key != 'strategyId' && key != 'routeId' && key != 'displayName',
+              key != 'strategyId' &&
+              key != 'routeId' &&
+              key != 'displayName' &&
+              key != 'feedbackServiceId',
         ) ||
         strategyId is! String ||
         strategyId.trim().isEmpty ||
         routeId is! String ||
         routeId.trim().isEmpty ||
         (metadata.containsKey('displayName') &&
-            (displayName is! String || displayName.trim().isEmpty))) {
+            (displayName is! String || displayName.trim().isEmpty)) ||
+        (metadata.containsKey('feedbackServiceId') &&
+            feedbackServiceId != remoteSessionFeedbackServiceId)) {
       throw const ExtensionContractException(
         'Orchestration exposure requires its supported service and only '
-        'nonblank strategyId, routeId, and optional displayName metadata.',
+        'nonblank strategyId, routeId, optional displayName, and optional '
+        'supported feedbackServiceId metadata.',
       );
     }
     final strategy = _RemoteStrategy(
@@ -50,6 +57,9 @@ final class RemoteOrchestrationStrategyAdapter
       strategyId: strategy.strategyId,
       displayName: displayName as String?,
       materialize: strategy.materialize,
+      feedbackTarget: feedbackServiceId == null
+          ? null
+          : strategy.feedbackTarget,
     );
   }
 }
@@ -61,6 +71,24 @@ final class _RemoteStrategy {
   final OrchestrationStrategyId strategyId;
   final String routeId;
   final Set<String> _executions = {};
+
+  SessionFeedbackTarget feedbackTarget(Session session) {
+    remote.validate();
+    if (session.strategyId != strategyId) {
+      throw ArgumentError('Feedback and Session strategies must match.');
+    }
+    return _RemoteSessionFeedbackTarget(
+      remote,
+      routeId,
+      session.id.value,
+      RemoteSessionFeedbackServiceClient(
+        remote.connection.channelFor(
+          remote.configurationContext,
+          remoteSessionFeedbackServiceId,
+        ),
+      ),
+    );
+  }
 
   Future<OrchestrationExecution> materialize(
     OrchestrationStrategyHostContext context,
@@ -104,6 +132,38 @@ final class _RemoteStrategy {
       await execution.close();
       rethrow;
     }
+  }
+}
+
+final class _RemoteSessionFeedbackTarget implements SessionFeedbackTarget {
+  _RemoteSessionFeedbackTarget(
+    this.remote,
+    this.routeId,
+    this.sessionId,
+    this.client,
+  );
+
+  final RemoteExtensionContext remote;
+  final String routeId;
+  final String sessionId;
+  final RemoteSessionFeedbackServiceClient client;
+
+  @override
+  Future<SessionFeedbackReceipt> accept(
+    SessionFeedbackSubmission submission,
+  ) async {
+    remote.validate();
+    final receipt = await client.accept(routeId, sessionId, submission);
+    remote.validate();
+    return receipt;
+  }
+
+  @override
+  Future<SessionFeedbackRecord?> lookup(String submissionId) async {
+    remote.validate();
+    final record = await client.lookup(routeId, sessionId, submissionId);
+    remote.validate();
+    return record;
   }
 }
 

@@ -898,6 +898,7 @@ UPDATE adele_chat_sessions SET next_entry = 1;
     () async {
       await service.appendUserMessage('session', 'Original.');
       storage.database.execute('''
+PRAGMA foreign_keys = OFF;
 CREATE TABLE corrupt_entries AS SELECT * FROM adele_chat_entries;
 DROP TABLE adele_chat_entries;
 ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;

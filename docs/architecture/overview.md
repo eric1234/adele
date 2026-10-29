@@ -154,8 +154,11 @@ fixed core layout or claims that every surface is implemented.
 For activity presentation, follow the local maps for
 [Inspection composition](../../app/README.md#activity-inspection) and
 [model-native presentation](../../app/README.md#model-native-activity-presentation).
-These views observe execution evidence; they neither define canonical strategy
-state nor grant execution or approval authority.
+Inspection is a general plugin-extensible presentation role, not a synonym for
+model/tool activity. Its current activity consumers observe execution evidence;
+future accepted-feedback consumers can instead inspect strategy-owned structured
+input. Presentation neither defines canonical strategy state nor grants execution
+or approval authority.
 
 ## Configuration and persistence
 
