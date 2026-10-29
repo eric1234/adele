@@ -1529,6 +1529,10 @@ final class _Host implements OrchestrationExecutionHost {
   Future<SemanticToolOutcomeInput> Function(ToolApprovalResolution)? onApproval;
 
   @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) =>
+      throw UnimplementedError();
+
+  @override
   void validateBinding() {
     timeline.add('validate');
     onValidate?.call();

@@ -2256,6 +2256,10 @@ final class _Host implements RemoteOrchestrationHostService {
   RemoteOrchestrationFailure? failure;
 
   @override
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) =>
+      throw UnimplementedError();
+
+  @override
   Future<RemoteRunState> transition(
     RemoteRunTransition transition,
     RemoteOrchestrationFailure? failure,

@@ -3,8 +3,10 @@ import 'dart:convert';
 
 import 'package:adele_desktop/core/inference_context_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/run_activity_projection.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +14,404 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
+  group('historical Run evidence', () {
+    final strategyId = OrchestrationStrategyId('dev.adele.test.history');
+    final extensionId = ExtensionId('dev.adele.test.history.registration');
+    late ExtensionRegistry extensions;
+    late ExtensionRegistration registration;
+    late OrchestrationTestLifecycle topology;
+    late Session session;
+    late _HistoryExecution execution;
+    Future<void> Function(OrchestrationExecutionHost)? duringMaterialize;
+
+    setUp(() async {
+      extensions = ExtensionRegistry();
+      duringMaterialize = null;
+      registration = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (context) async {
+            await duringMaterialize?.call(context.host);
+            return execution = _HistoryExecution(context.host);
+          },
+        ),
+      );
+      addTearDown(registration.close);
+      topology = await OrchestrationTestLifecycle.create(
+        extensions,
+        SessionId('history-session'),
+      );
+      addTearDown(topology.lifecycle.close);
+      session = topology.createSession(strategyId);
+    });
+
+    Future<SessionOrchestrationRun> create() async {
+      final result = await createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('history-current'),
+        contextComposer: InferenceContextComposer(extensions),
+        model: _Model(),
+        toolCatalog: _catalog(_Executable()),
+        policy: const _Policy(ToolPolicyDecision.ask),
+      );
+      addTearDown(result.close);
+      return result;
+    }
+
+    RunRecord retain(
+      String id, {
+      RunTerminalState state = RunTerminalState.completed,
+      SessionId? owner,
+      String? text,
+    }) {
+      final run = AgentRun(id: RunId(id), sessionId: owner ?? session.id)
+        ..start();
+      if (text != null) {
+        final invocationId = ModelInvocationId('$id-model');
+        run
+          ..record(ModelInvocationStarted(invocationId))
+          ..record(
+            ModelOutputObserved(
+              invocationId: invocationId,
+              item: ModelTextOutput(text),
+            ),
+          )
+          ..record(
+            ModelInvocationSettled(
+              invocationId: invocationId,
+              settlement: ModelSettlement.completed,
+              incompleteReason: null,
+              metadata: ModelTerminalMetadata(),
+            ),
+          );
+      }
+      switch (state) {
+        case RunTerminalState.completed:
+          run.complete();
+        case RunTerminalState.failed:
+          run.fail(StateError('Previous Run failed.'));
+        case RunTerminalState.cancelled:
+          run.cancel();
+      }
+      final record = RunRecord(
+        id: run.id,
+        sessionId: run.sessionId,
+        state: state,
+      );
+      topology.lifecycle.retainTerminalRun(
+        record,
+        RunActivityProjection(run).source.snapshot,
+      );
+      return record;
+    }
+
+    Matcher failure(String code) => throwsA(
+      isA<HistoricalRunEvidenceFailure>().having(
+        (error) => error.code,
+        'code',
+        code,
+      ),
+    );
+
+    for (final state in RunTerminalState.values) {
+      test('reads retained $state without modifying either Run', () async {
+        final record = retain('previous', state: state, text: 'Prior output.');
+        final retained = topology.lifecycle.runActivity(record.id)!;
+        final run = await create();
+        execution.onStart = () async {
+          // Admission follows active advancement, even before host.start().
+          final evidence = await execution.host.readHistoricalRun(record.id);
+          expect(evidence.record.id, record.id);
+          expect(evidence.record.sessionId, session.id);
+          expect(evidence.record.state, state);
+          expect(evidence.activity.state.name, state.name);
+          expect(evidence.activity.sequence, retained.sequence);
+          final output = evidence.activity.models.single.outputs.single;
+          expect(
+            output.sequence,
+            retained.models.single.outputs.single.sequence,
+          );
+          expect((output.item as ModelTextOutput).content, 'Prior output.');
+          expect(evidence.activity.failure?.message, retained.failure?.message);
+          expect(run.run.journal.records, isEmpty);
+          expect(
+            () => evidence.activity.models.clear(),
+            throwsUnsupportedError,
+          );
+          execution.host
+            ..start()
+            ..complete();
+        };
+        await run.start();
+        expect(run.run.state, RunState.completed);
+        expect(topology.lifecycle.runActivity(record.id), same(retained));
+      });
+    }
+
+    test(
+      'unknown, foreign and missing evidence share recoverable failure',
+      () async {
+        final foreignTopology = await OrchestrationTestLifecycle.create(
+          extensions,
+          SessionId('foreign-session'),
+        );
+        addTearDown(foreignTopology.lifecycle.close);
+        final foreign = foreignTopology.createSession(strategyId);
+        final foreignStore = foreignTopology.lifecycle.store;
+        final environment = foreignStore.primaryEnvironmentFor(foreign.taskId)!;
+        topology.lifecycle.store.publishRestoredProject(
+          project: foreignStore.project(foreignTopology.task.projectId)!,
+          tasks: [foreignTopology.task],
+          environments: [environment],
+          sessions: [foreign],
+          authorities: [(foreign.id, environment.id)],
+          runRecords: [],
+        );
+        final foreignRun = retain(
+          'foreign',
+          owner: foreign.id,
+          text: 'Private.',
+        );
+        final missing = RunRecord(
+          id: RunId('missing'),
+          sessionId: session.id,
+          state: RunTerminalState.completed,
+        );
+        topology.lifecycle.store.publishTerminalRun(missing);
+        final empty = retain('empty');
+        final run = await create();
+        execution.onStart = () async {
+          execution.host.start();
+          final messages = <String>[];
+          for (final id in [RunId('unknown'), foreignRun.id, missing.id]) {
+            try {
+              await execution.host.readHistoricalRun(id);
+              fail('Unavailable history must not return evidence.');
+            } on HistoricalRunEvidenceFailure catch (error) {
+              expect(error.code, 'unavailable');
+              messages.add(error.message);
+            }
+            expect(execution.host.state, RunState.running);
+          }
+          expect(messages.toSet(), hasLength(1));
+          final evidence = await execution.host.readHistoricalRun(empty.id);
+          expect(evidence.record.id, empty.id);
+          expect(evidence.activity.models, isEmpty);
+          expect(evidence.activity.tools, isEmpty);
+          execution.host.complete();
+        };
+        await run.start();
+        expect(run.run.state, RunState.completed);
+        expect(topology.lifecycle.runActivity(missing.id), isNull);
+      },
+    );
+
+    test('current ID is rejected before consulting retained records', () async {
+      final record = retain('history-current');
+      final run = await create();
+      execution.onStart = () => expectLater(
+        execution.host.readHistoricalRun(record.id),
+        failure('current_run'),
+      );
+      await run.start();
+      expect(run.run.state, RunState.created);
+      expect(run.run.journal.records, isEmpty);
+    });
+
+    test(
+      'oversized evidence is recoverable without truncation or mutation',
+      () async {
+        final large = retain(
+          'large',
+          text: List.filled(600 * 1024, 'x').join(),
+        );
+        final empty = retain('empty');
+        final retained = topology.lifecycle.runActivity(large.id);
+        final run = await create();
+        execution.onStart = () async {
+          execution.host.start();
+          await expectLater(
+            execution.host.readHistoricalRun(large.id),
+            failure('result_too_large'),
+          );
+          expect(execution.host.state, RunState.running);
+          expect(
+            (await execution.host.readHistoricalRun(empty.id)).record.id,
+            empty.id,
+          );
+          execution.host.complete();
+        };
+        await run.start();
+        expect(run.run.state, RunState.completed);
+        expect(topology.lifecycle.runActivity(large.id), same(retained));
+      },
+    );
+
+    test(
+      'history authority exists only during start and approval resume',
+      () async {
+        final record = retain('previous');
+        final denied = throwsA(isA<InvalidRunOperation>());
+        duringMaterialize = (host) =>
+            expectLater(host.readHistoricalRun(record.id), denied);
+        final run = await create();
+        final host = execution.host;
+        await expectLater(host.readHistoricalRun(record.id), denied);
+        execution.onStart = () async {
+          host.start();
+          expect(
+            (await host.readHistoricalRun(record.id)).record.id,
+            record.id,
+          );
+          final turn = await host.invokeModel(
+            StrategyInferenceMaterial(input: []),
+          );
+          await host.processProposal(
+            tools: turn.tools,
+            proposal: (turn.output.single as ModelToolProposalOutput).proposal,
+          );
+        };
+        execution.onResume = (resolution) async {
+          expect(host.state, RunState.waiting);
+          expect(
+            (await host.readHistoricalRun(record.id)).record.id,
+            record.id,
+          );
+          await host.resolveApproval(resolution);
+          expect(
+            (await host.readHistoricalRun(record.id)).record.id,
+            record.id,
+          );
+          host.complete();
+          await expectLater(host.readHistoricalRun(record.id), denied);
+        };
+        execution.onClose = () =>
+            expectLater(host.readHistoricalRun(record.id), denied);
+        await run.start();
+        expect(run.run.state, RunState.waiting);
+        await expectLater(host.readHistoricalRun(record.id), denied);
+        await run.resolveApproval(_approval(run.run));
+        await expectLater(host.readHistoricalRun(record.id), denied);
+        await run.close();
+        await expectLater(host.readHistoricalRun(record.id), denied);
+      },
+    );
+
+    test(
+      'cannot read history while another host operation is active',
+      () async {
+        final record = retain('previous');
+        final run = await create();
+        execution.onStart = () async {
+          execution.host.start();
+          final invoking = execution.host.invokeModel(
+            StrategyInferenceMaterial(input: []),
+          );
+          await expectLater(
+            execution.host.readHistoricalRun(record.id),
+            throwsA(isA<InvalidRunOperation>()),
+          );
+          await invoking;
+          expect(
+            (await execution.host.readHistoricalRun(record.id)).record.id,
+            record.id,
+          );
+          execution.host.complete();
+        };
+        await run.start();
+        expect(run.run.state, RunState.completed);
+      },
+    );
+
+    test('closed lifecycle cannot grant retained history access', () async {
+      final record = retain('previous');
+      final run = await create();
+      execution.onStart = () async {
+        await topology.lifecycle.close();
+        expect(topology.lifecycle.runActivity(record.id), isNotNull);
+        await expectLater(
+          execution.host.readHistoricalRun(record.id),
+          throwsStateError,
+        );
+      };
+      await run.start();
+      expect(run.run.journal.records, isEmpty);
+    });
+
+    test(
+      'matching Session fields cannot replace canonical Session authority',
+      () async {
+        final record = retain('previous');
+        final run = AgentRun(
+          id: RunId('direct-current'),
+          sessionId: session.id,
+        );
+        final host = KernelOrchestrationHost(
+          run: run,
+          lifecycle: topology.lifecycle,
+          session: Session(
+            id: session.id,
+            taskId: session.taskId,
+            strategyId: session.strategyId,
+          ),
+          strategy: topology.lifecycle.resolveSessionStrategy(session.id),
+          contextComposer: InferenceContextComposer(extensions),
+          sourceContextFactory: () => SessionInferenceContextSourceContext(
+            session: session,
+            runId: run.id,
+            environmentRuntime: topology.lifecycle.environmentRuntime,
+          ),
+          model: _Model(),
+          toolCatalog: _catalog(_Executable()),
+          policy: const _Policy(ToolPolicyDecision.allow),
+        );
+        await expectLater(
+          host.readHistoricalRun(record.id),
+          throwsArgumentError,
+        );
+        expect(run.journal.records, isEmpty);
+      },
+    );
+
+    test(
+      'retired strategy cannot read through a replacement binding',
+      () async {
+        final record = retain('previous');
+        final run = await create();
+        var replacements = 0;
+        execution.onStart = () async {
+          execution.host.start();
+          await registration.close();
+          addTearDown(
+            extensions
+                .register(
+                  point: orchestrationStrategyContributions,
+                  id: extensionId,
+                  value: OrchestrationStrategyContribution(
+                    strategyId: strategyId,
+                    materialize: (context) {
+                      replacements++;
+                      return _HistoryExecution(context.host);
+                    },
+                  ),
+                )
+                .close,
+          );
+          await expectLater(
+            execution.host.readHistoricalRun(record.id),
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+        };
+        await expectLater(run.start(), throwsA(isA<StaleExtensionBinding>()));
+        expect(run.run.state, RunState.failed);
+        expect(replacements, 0);
+      },
+    );
+  });
+
   test(
     'identical calls retain distinct host identities through approval, execution and activity',
     () async {
@@ -614,6 +1014,8 @@ void main() {
       final _Model model = _Model();
       KernelOrchestrationHost host(AgentRun run) => KernelOrchestrationHost(
         run: run,
+        lifecycle: topology.lifecycle,
+        session: session,
         strategy: topology.lifecycle.resolveSessionStrategy(session.id),
         contextComposer: InferenceContextComposer(extensions),
         sourceContextFactory: () => SessionInferenceContextSourceContext(
@@ -3843,6 +4245,25 @@ ToolApprovalResolution _approval(AgentRun run) {
     toolInvocationId: interruption.toolInvocationId,
     approved: true,
   );
+}
+
+final class _HistoryExecution implements OrchestrationExecution {
+  _HistoryExecution(this.host);
+
+  final OrchestrationExecutionHost host;
+  late Future<void> Function() onStart;
+  Future<void> Function(ToolApprovalResolution)? onResume;
+  Future<void> Function()? onClose;
+
+  @override
+  Future<void> start() => onStart();
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) =>
+      onResume!(resolution);
+
+  @override
+  Future<void> close() async => onClose?.call();
 }
 
 final class _CompletingExecution implements OrchestrationExecution {
