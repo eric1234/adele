@@ -52,6 +52,7 @@ credentials.json
 Thumbs.db
 
 # Native dependency caches
+/packages/credential_store/native/target/
 app/macos/Pods/
 app/macos/.symlinks/
 app/linux/flutter/ephemeral/

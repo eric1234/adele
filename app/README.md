@@ -28,6 +28,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Global Command Palette and application-owned Commands | Presentation-independent Command contract, composition, and dispatch admission: [core extensions](../packages/core_extensions/README.md#commands). |
+| Trusted host credential identity and lifecycle | Internal OS storage binding: [credential store](../packages/credential_store/README.md); authorization and configuration separation: [profiles and configuration](../docs/architecture/profiles-and-configuration.md#credentials-and-secrets). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -283,6 +284,37 @@ are plugin-owned, not Session configuration or an application hardcoded default.
 See [configuration architecture](../docs/architecture/profiles-and-configuration.md)
 for persistence/provenance and [prepared schema format](../packages/plugin_runtime/README.md)
 for declaration ownership, bounds, and diagnostics.
+
+### Host credentials
+
+`AdeleApplication` constructs one app-private
+[`CredentialService`](lib/core/credential_service.dart) at mount and retains it
+across widget rebuilds. Its injectable factory defaults to
+[`createNativeCredentialService`](lib/core/native_credential_storage_adapter.dart).
+Construction does not access the vault. Accepted exit fences new operations and
+awaits admitted work alongside the other application owners; canceled exit
+preflight leaves it usable. Widget disposal starts the same drain but cannot await.
+
+The adapter runs synchronous native calls in background Dart isolates, using the
+internal `adele_credential_store` code asset. Linux x64 uses the OS Secret Service;
+other platforms explicitly remain unavailable pending qualification. Credential
+references are nonsecret `cred1_<32 lowercase hex digits>` identities, not plugin
+authorization grants. Values are validated opaque text of at most 2,560 UTF-8
+bytes. Presence returns no secret material, though the native backend reads the
+one entry internally. Failures carry only fixed categories; mutation uncertainty
+requires explicit reconciliation before retry.
+
+OS prompts can keep an admitted call and shutdown pending. An isolate is not
+cancellation, and no timeout implies rollback. The service does not cache secrets,
+modify Settings/TOML, or provide cross-process CAS. It is not passed to plugins,
+provider records, OAuth, or Session execution. Those integrations remain deferred.
+
+Focused checks are `test/core/credential_service_test.dart` and
+`test/credential_application_lifecycle_test.dart`. The opt-in
+[`credential storage smoke`](../tools/credential_storage_smoke.dart) provisions a
+disposable real keyring and exercises the production adapter plus the gated
+`test/credential_storage_responsiveness_test.dart`; see the maintained
+[testing procedure](../docs/development/testing.md).
 
 ### Global Settings
 

@@ -61,6 +61,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_ui`](../../packages/ui/pubspec.yaml) | Public: Flutter presentation and bridge contracts | No internal host, app, or concrete plugin dependencies; app-native bridge implementations stay in the app. |
 | [`agent_kernel`](../../packages/agent_kernel/pubspec.yaml) | Internal: generic execution mechanics | No Flutter, app, concrete strategies, providers, tools, or other plugin implementations. |
 | [`adele_platform_storage`](../../packages/platform_storage/pubspec.yaml) | Internal: global configuration/state/data/cache location resolution | Flutter-free, path-only host infrastructure; no persistence or public plugin configuration API. |
+| [`adele_credential_store`](../../packages/credential_store/pubspec.yaml) | Internal: synchronous OS-backed credential operations through a private Rust code asset | Flutter-free host infrastructure, not a plugin API; no Settings, Profiles, provider/account semantics, or ordinary-file fallback. |
 | [`adele_toml_document`](../../packages/toml_document/pubspec.yaml) | Internal: TOML validation and scalar document edits through Rust `toml_edit` | Flutter-free host infrastructure; no CodeForge, app, plugins, location resolution, file persistence, or Settings/Profile semantics. |
 | [`adele_configuration_store`](../../packages/configuration_store/pubspec.yaml) | Internal: conditional global TOML configuration-file persistence | Flutter-free host infrastructure over platform storage roots and TOML documents; no plugin filesystem service, Project storage, local-state database, or Settings/Profile semantics. |
 | [`adele_settings_host`](../../packages/settings_host/pubspec.yaml) | Internal: global scalar settings adapter and identified record CRUD | Uses `adele_settings`, `adele_configuration_store`, and `adele_toml_document`; no second transaction layer, UI, activation, or runtime reconfiguration. |
@@ -137,6 +138,12 @@ bootstrap scalar transport, and pure-Dart prepared schema parsing remain indepen
 of native TOML. A plugin reads its delivered values, not configuration files or an
 app-private Settings service.
 
+Credential access is app-private. The desktop's asynchronous credential adapter
+runs `adele_credential_store` operations off the UI isolate; native storage does
+not belong to public Settings contracts, plugin runtime, or backend AOT preparation.
+Possession of a credential reference grants no authority, and no public plugin
+credential capability is implied. See [credentials and secrets](profiles-and-configuration.md#credentials-and-secrets).
+
 The private Project database and its `sqlite3` dependency belong in `app`, not
 `adele_product`, `adele_project_storage`, `adele_core_extensions`, or a plugin
 backend. The provider describes source-relative placement through public values;
@@ -175,8 +182,8 @@ libraries and same-plugin implementation reuse must still respect these boundari
 It must not depend on `app` / `adele_desktop`, internal host/build packages
 (`plugin_runtime`, `plugin_backend_host`, `plugin_builder`, `contract_codegen`,
 `agent_kernel`, `adele_platform_storage`, `adele_toml_document`,
-`adele_configuration_store`, `adele_settings_host`), or another plugin's
-frontend, backend, or private implementation.
+`adele_configuration_store`, `adele_settings_host`, `adele_credential_store`), or
+another plugin's frontend, backend, or private implementation.
 A strategy obtains execution semantics through `adele_orchestration`, not by
 importing `agent_kernel`. A backend obtains Project storage through
 `adele_project_storage` over `adele_plugin_backend_support`, not by importing the
@@ -249,7 +256,7 @@ checks cover important subsets; they are not a complete dependency-graph linter.
 | Workspace membership | Root [`pubspec.yaml`](../../pubspec.yaml) and nested plugin workspace manifests; `dart pub workspace list` |
 | Actual package edges | The package manifests linked above and their `lib/` imports/exports |
 | Application production boundary | [`app/pubspec.yaml`](../../app/pubspec.yaml), [`app/lib/`](../../app/lib/), and [`app_plugin_boundary_test.dart`](../../test/tools/app_plugin_boundary_test.dart) |
-| Plugin production versus development edges | [`plugins/`](../../plugins/) package manifests, production `lib/` and `bin/` entrypoints, and local READMEs |
+| Plugin production versus development edges | [`plugins/`](../../plugins/) package manifests, production `lib/` and `bin/` entrypoints, and local READMEs; [`app_plugin_boundary_test.dart`](../../test/tools/app_plugin_boundary_test.dart) also rejects production credential-store dependencies and directives |
 | Maintained analysis/test discovery and wiring checks | [`tools/adele.dart`](../../tools/adele.dart) and [`test/tools/adele_test.dart`](../../test/tools/adele_test.dart) |
 
 The tooling tests belong to `dart tools/adele.dart test --target adele_tools`.

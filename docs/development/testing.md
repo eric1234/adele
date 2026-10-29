@@ -214,6 +214,12 @@ library and transitive native TOML hook. Frontend test targets with a developmen
 dependency on the app also declare `nativeToml`, even without CodeForge use.
 Source Editor does not require Linux desktop or PTY prerequisites. Source-only
 bootstrap and tooling tests do not require Rust.
+The standalone credential package and its `adele_credential_store_native` Rust
+test/Clippy target also receive the pinned compiler in CI. The desktop and its
+development-only frontend consumers share that compiler with native TOML and
+require no live keyring. Credential-native prerequisites are described
+[separately](toolchain.md#native-credential-storage); `nativeToml` still means TOML,
+not a generic native dependency flag.
 Follow [native preparation](toolchain.md#native-editor-preparation)
 and use an explicit pinned `FLUTTER_ROOT`, not just a Dart executable selected by
 a version-manager shim.
@@ -447,6 +453,68 @@ The small native ABI suite can be run from `packages/toml_document/native/` with
 `cargo test --locked`, and its formatting with `cargo fmt --check`, using that
 directory's pinned toolchain. Native ABI checks do not cover Settings semantics
 or host persistence integration.
+
+## Credential storage checks
+
+After bootstrap and the [native credential prerequisites](toolchain.md#native-credential-storage),
+run the maintained package/native targets and focused host/tooling checks:
+
+```sh
+# Repository root
+dart tools/adele.dart test --target adele_credential_store
+dart tools/adele.dart test --target adele_credential_store_native
+dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart
+# app/
+flutter test --no-pub --concurrency 1 test/core/credential_service_test.dart test/credential_application_lifecycle_test.dart
+```
+
+The package target owns the synchronous native/Dart boundary. The native target
+runs `cargo test --locked` then
+`cargo clippy --locked --all-targets --features fixture-probe -- -D warnings`
+with Rust 1.93.0, stopping on failure. Clippy includes the opt-in probe without
+executing it or accessing a keyring. The SDK-only underlying command,
+`dart tools/adele.dart test-credential-store-native`, runs those checks directly
+without editor preparation or pub resolution. Neither target needs an unlocked
+keyring. App service tests use deterministic adapters for strict values, redaction,
+queueing, uncertain-mutation fences, explicit reconciliation, and shutdown draining.
+The application lifecycle tests check lazy construction, mount-time ownership,
+rebuild retention, and accepted-exit/disposal fencing and draining. These do not
+establish real Secret Service behavior. Tooling tests check workspace,
+analysis and CI discovery, pre-bootstrap `test-plan`, native command failure
+propagation, and the prohibition on production plugin credential-store dependencies
+and imports.
+
+The real-keyring fixture is **separate and opt-in**, not an ordinary CI dependency.
+With the pinned `FLUTTER_ROOT` exported, from the repository root:
+
+```sh
+ADELE_CREDENTIAL_STORAGE_SMOKE=1 dart tools/credential_storage_smoke.dart
+```
+
+The fixture requires Linux x64, `dbus-daemon`, `dbus-run-session`, `gdbus`, and
+`gnome-keyring-daemon`, plus `setsid` from util-linux for process-tree cleanup,
+in addition to the native/compiler prerequisites. It must
+use a private bus with service activation disabled and disposable daemon
+HOME/XDG/control directories, never the developer's login keyring. Simply unsetting
+`DBUS_SESSION_BUS_ADDRESS` does not isolate the test: D-Bus can fall back to the
+user's runtime bus. Do not manually enable the gated app test against the normal
+desktop session. The fixture owns daemon/process cleanup and invokes the app probe
+and `app/test/credential_storage_responsiveness_test.dart` inside its isolated
+environment. This is where real persistence, storage failures and off-UI native
+blocking are checked, rather than inferred from fake adapter tests.
+
+Native packaging changes also require the retained actual application build:
+
+```sh
+dart tools/adele.dart build linux --profile
+```
+
+That build must retain CodeForge, native TOML, and AppFlowy alongside credential
+code assets. Building a standalone probe or running the unrelated development
+runtime smoke does not establish this coexistence. Commands here specify validation
+owners, not completed results; Linux fixture/build evidence does not establish
+macOS/Windows support, cross-process credential CAS, cancellation, bounded keyring
+prompt duration, or portable release packaging.
 
 ## Application validation map
 

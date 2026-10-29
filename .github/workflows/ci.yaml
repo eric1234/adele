@@ -106,15 +106,23 @@ jobs:
         if: ${{ matrix.linuxDesktopDeps }}
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev binutils
 
       - name: Install Linux PTY test prerequisites
         if: ${{ matrix.name == 'git_backend' || matrix.name == 'adele_desktop' }}
         run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
 
       - name: Install pinned native compiler
-        if: ${{ matrix.nativeCodeEditor || matrix.nativeToml }}
+        if: ${{ matrix.nativeCodeEditor || matrix.nativeToml || matrix.name == 'adele_credential_store' || matrix.name == 'adele_credential_store_native' }}
         run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu
+
+      - name: Install credential native build tools
+        if: ${{ matrix.name == 'adele_credential_store' || matrix.name == 'adele_credential_store_native' }}
+        run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev binutils
+
+      - name: Install credential native linter
+        if: ${{ matrix.name == 'adele_credential_store_native' }}
+        run: rustup component add clippy --toolchain 1.93.0
 
       - name: Install pinned Flutter toolchain
         uses: subosito/flutter-action@v2
@@ -165,7 +173,7 @@ jobs:
       - name: Install Linux desktop dependencies
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev gcc libc6-dev
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev gcc libc6-dev binutils
 
       - name: Install pinned native compiler
         run: rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-gnu

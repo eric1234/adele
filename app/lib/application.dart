@@ -4,7 +4,9 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/native_credential_storage_adapter.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
@@ -49,6 +51,7 @@ final class AdeleApplication extends StatefulWidget {
   const AdeleApplication({
     super.key,
     this.createRuntime = NativeAdeleRuntime.new,
+    this.createCredentials = createNativeCredentialService,
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
@@ -60,6 +63,10 @@ final class AdeleApplication extends StatefulWidget {
 
   /// Called once when mounted; this application owns and closes the result.
   final NativeAdeleRuntime Function() createRuntime;
+
+  /// Trusted host owner, selected once at mount. Construction does not access the
+  /// OS vault. It is not passed to plugins or ordinary configuration records.
+  final CredentialService Function() createCredentials;
 
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
@@ -90,6 +97,7 @@ final class AdeleApplication extends StatefulWidget {
 
 final class _AdeleApplicationState extends State<AdeleApplication> {
   late final NativeAdeleRuntime _runtime;
+  late final CredentialService _credentials;
   late final AppLifecycleListener _lifecycleListener;
   late final StreamSubscription<ApplicationPluginState> _pluginSubscription;
   late final StreamSubscription<void> _extensionSubscription;
@@ -151,6 +159,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _configurationLocationError = error;
     }
     _runtime = widget.createRuntime();
+    _credentials = widget.createCredentials();
     _console = ConsoleController(
       _runtime.extensions,
       cleanupTimeout: const Duration(seconds: 3),
@@ -872,6 +881,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     );
     final closingCommands = _commandRegistrations.close();
     final closingSettings = _settings?.close();
+    final closingCredentials = _credentials.close();
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
@@ -887,6 +897,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       closingCommands,
       closingContextConsumer,
       ?closingSettings,
+      closingCredentials,
       settlingRuns,
       closingConsole,
       closingConsoleHost,

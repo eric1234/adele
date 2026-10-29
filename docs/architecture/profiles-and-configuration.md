@@ -10,8 +10,9 @@ from one shared startup snapshot; Source Editor folding and Chat's per-Run model
 invocation limit consume scalar settings. Declarative configuration records
 share scalar validation and conditional persistence and are browsable and manageable
 in Global Settings; the OpenAI plugin declares the first nonsecret provider record.
-Record creation, editing, and confirmed deletion are implemented; runtime record
-consumption, authentication, and Profiles remain unimplemented.
+Record creation, editing, and confirmed deletion are implemented. Standalone
+app-private credential storage supports Linux x64 Secret Service; runtime record
+consumption, provider authentication integration, and Profiles remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -387,8 +388,58 @@ The latter is live routing metadata, not the durable record; see
 
 Secrets are not ordinary serialized configuration values. Ordinary configuration
 should reference managed credentials or configured instances rather than embed
-secrets. Credential storage and account-management APIs remain deferred; this
-architecture does not choose a secure-storage technology.
+secrets. They do not belong in TOML, Project/plugin state, installation metadata,
+logs, or artifact identity inputs. The current OpenAI record schema remains
+nonsecret and contains no credential reference; existing authentication and provider
+selection are unchanged.
+
+The standalone app-private `CredentialService` owns serialized admission,
+validation, mutation verification, and shutdown. Its production adapter runs
+synchronous operations from the internal
+[`adele_credential_store`](../../packages/credential_store/README.md) in
+`Isolate.run`, off the Flutter UI isolate. The package is an OS-storage boundary,
+not a public Settings or plugin API, account manager, OAuth refresh store, or
+credential provider. Constructing or closing an idle service does not access the
+keyring, and normal application startup does not probe or load credentials.
+An explicit trusted host owner must drain the service before releasing it.
+
+A credential reference is a nonsecret, persistable association identity of the form
+`cred1_` followed by 32 lowercase hexadecimal digits. It is independent of record,
+plugin, account, display name, Profile, and runtime generation. Possession is not
+authorization to read or mutate a secret. A valid reference may have no local
+credential, for example on another machine; absence does not invalidate the
+reference. Secret values are nonempty, valid UTF-8 text without NUL, bounded to
+2560 encoded bytes. Redacted wrappers and fixed diagnostic categories limit
+accidental disclosure; Dart strings are not zeroizable and this is not isolation
+from other trusted host code in the process.
+
+The enabled native path is Linux x64 Secret Service through an explicit store,
+with an ADELE namespace and the reference as the item identity. It uses no plaintext
+file fallback or substitute in-memory store. The user's Secret Service provider
+owns persistence and at-rest policy; encrypted transport is not a guarantee about
+that provider's keyring configuration. macOS, Windows, and other architectures
+have no enabled backend and reject credential access as unavailable until
+separately implemented and validated. This does not disable the application's other
+functionality or desktop build paths.
+
+Confirmed absence remains distinct from inaccessible, locked, corrupt, ambiguous,
+or failed storage. Reads never delete or repair malformed values. A fresh explicit
+native store is constructed for each operation, so initial connection failure is
+not cached permanently. A later deliberate request may try again; a failed request
+is never automatically retried. Native calls may wait for the OS/keyring, including
+an unlock prompt. There is no cancellation or application timeout; shutdown fences
+new requests and drains admitted calls rather than abandoning native work.
+
+Create/replace/delete preconditions and postverification do not constitute
+cross-process compare-and-swap or a transaction with configuration persistence.
+An unconfirmed mutation is not proof of rollback: the host fences further mutations
+of that reference until an explicit successful read, or confirmed absence,
+reconciles it. Presence alone cannot verify replacement contents. No automatic
+retry, merge, secret enumeration, provider wiring, or plugin access grant is added.
+Account-management and future explicitly authorized plugin access remain separate
+design work. See the [application map](../../app/README.md) for local ownership and
+[credential validation](../development/testing.md#credential-storage-checks) for
+the distinction between deterministic tests, isolated keyring smoke, and packaging.
 
 ## Configuration persistence
 
@@ -412,7 +463,7 @@ Global persistence has separate ownership and lifetime domains:
 | Local application state | Frequently changing machine-local state, such as remembered layouts and recent Projects. Not portable configuration. |
 | Local application data | Other durable application-managed global data. |
 | Cache | Disposable, rebuildable data. |
-| Secrets | Separate from ordinary configuration; credential infrastructure remains deferred. |
+| Secrets | App-private OS-backed storage, separate from ordinary configuration and global filesystem roots; see [credentials and secrets](#credentials-and-secrets). |
 | Project/Session data | Existing per-Project product and plugin-owned storage, not a global settings store. |
 
 [`adele_platform_storage`](../../packages/platform_storage/README.md) resolves
@@ -634,6 +685,8 @@ Implemented foundations and current limits:
   deletion in Global Settings. OpenAI supplies a nonsecret API-key provider
   declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
+- Standalone host credential storage has a Linux x64 Secret Service adapter,
+  without record association, provider activation, or public/plugin access.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
 - Backend infrastructure access is generation-local, distinct from both
@@ -658,7 +711,8 @@ or production workbench-state persistence.
   semantics.
 - Exact narrower subject scopes and their override semantics.
 - Security/policy/approval composition.
-- Credential storage and account-management APIs.
+- Account-management and public/plugin credential-access APIs; additional native
+  credential platforms require separate implementation and validation.
 - Plugin reconfiguration/restart rules.
 - Richer provider suitability/default policy, including non-capability selection.
 - Remembered workbench-state keying and garbage collection.

@@ -73,6 +73,18 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_credential_store',
+    path: 'packages/credential_store',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_credential_store_native',
+    path: '.',
+    executable: 'dart',
+    arguments: <String>['tools/adele.dart', 'test-credential-store-native'],
+  ),
+  TestTarget(
     name: 'adele_toml_document',
     path: 'packages/toml_document',
     executable: 'dart',
@@ -421,6 +433,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'adele_toml_document', path: 'packages/toml_document', flutter: false),
+  (
+    name: 'adele_credential_store',
+    path: 'packages/credential_store',
+    flutter: false,
+  ),
   (
     name: 'adele_configuration_store',
     path: 'packages/configuration_store',
@@ -781,6 +798,33 @@ Future<void> main(List<String> arguments) async {
         exitCode = await _runTests(
           parseTestOptions(arguments.skip(1).toList(growable: false)),
         );
+        return;
+      case 'test-credential-store-native':
+        if (arguments.length != 1) {
+          throw const TestUsageException(
+            'test-credential-store-native takes no options.',
+          );
+        }
+        for (final command in <List<String>>[
+          ['test', '--locked'],
+          [
+            'clippy',
+            '--locked',
+            '--all-targets',
+            '--features',
+            'fixture-probe',
+            '--',
+            '-D',
+            'warnings',
+          ],
+        ]) {
+          await _run(
+            'credential store native ${command.first}',
+            'rustup',
+            ['run', '1.93.0', 'cargo', ...command],
+            workingDirectory: 'packages/credential_store/native',
+          );
+        }
         return;
       case 'test-plan':
         if (arguments.length != 2 || arguments[1] != '--json') {
@@ -1315,6 +1359,8 @@ Commands:
                       --shard N (or --shard=N) selects a 1-based CI shard;
                       requires --ci and a target declaring multiple CI shards.
   test-plan --json   Print the CI test matrix without resolving dependencies.
+  test-credential-store-native
+                     Run pinned locked Rust credential tests and Clippy.
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
                      Run the desktop app in an explicit mode.
