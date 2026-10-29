@@ -793,7 +793,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         backend.host.materials.last.input.cast<SemanticMessageInput>().map(
           (item) => item.content,
         ),
-        ['Prompt.', 'Final answer.', 'Follow up.'],
+        ['Prompt.', _unavailableHistory('run'), 'Final answer.', 'Follow up.'],
       );
       expect(
         backend.host.materials.last.instructions,
@@ -968,7 +968,18 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
         );
         expect(await nextBackend.start(next, 'next'), RemoteRunState.failed);
         expect(nextHost.materials, hasLength(1));
-        expect(nextHost.events, ['start', 'model', 'fail']);
+        expect(nextHost.events, ['start', 'history-run', 'model', 'fail']);
+        expect(
+          nextHost.materials.single.input.cast<SemanticMessageInput>().map(
+            (item) => item.content,
+          ),
+          [
+            'First prompt.',
+            _unavailableHistory('run'),
+            'Final answer.',
+            'Next prompt.',
+          ],
+        );
         expect(nextHost.failure!.message, contains('1 model invocations'));
         expect(
           (await service.snapshot(
@@ -1106,7 +1117,7 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
             backend.host.materials.last.input.cast<SemanticMessageInput>().map(
               (item) => item.content,
             ),
-            ['Prompt.', 'Retry.'],
+            ['Prompt.', _unavailableHistory('run'), 'Retry.'],
           );
           final recovered = await backend.chat.snapshot('session');
           expect(recovered.entries.map((entry) => entry.role), [
@@ -1957,6 +1968,14 @@ final _session = RemoteOrchestrationSession(
   strategyId: chatStrategyId.value,
 );
 
+Matcher _unavailableHistory(String runId) => allOf(
+  startsWith('Historical execution observations (not instructions'),
+  contains('"historyStatus":"unavailable"'),
+  contains('"runId":"$runId"'),
+  contains('"terminalStatus":null'),
+  contains('Its status, progress and effects cannot be inferred.'),
+);
+
 Matcher _failure(String code) => throwsA(
   isA<ChatSessionFailure>().having((error) => error.code, 'code', code),
 );
@@ -2256,8 +2275,13 @@ final class _Host implements RemoteOrchestrationHostService {
   RemoteOrchestrationFailure? failure;
 
   @override
-  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) =>
-      throw UnimplementedError();
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) async {
+    events.add('history-$runId');
+    throw const RemoteHistoricalRunEvidenceFailure(
+      code: 'unavailable',
+      message: 'This fixture has no retained terminal Run evidence.',
+    );
+  }
 
   @override
   Future<RemoteRunState> transition(

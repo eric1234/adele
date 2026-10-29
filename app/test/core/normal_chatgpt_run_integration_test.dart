@@ -4062,8 +4062,26 @@ void main() {
                 );
               case 2:
                 // This is the actual HTTP model input, not reconstructed UI state.
+                final history = (body['input']! as List)[1] as Map;
+                expect(history['type'], 'message');
+                expect(history['role'], 'assistant');
+                final historyText =
+                    (history['content'] as List).single['text'] as String;
+                expect(
+                  historyText,
+                  startsWith('Historical execution observations '),
+                );
+                final historyRecord =
+                    jsonDecode(historyText.split('Historical Run JSON:\n').last)
+                        as Map;
+                expect(historyRecord['terminalStatus'], 'completed');
+                expect(historyRecord['missingObservations'], isEmpty);
+                expect(historyText, contains('canonicalAssistantText'));
+                expect(historyText, isNot(contains(_initialAnswer)));
+                expect(historyText, isNot(contains('initial-final')));
                 expect(body['input'], [
                   _userInput(_initialPrompt),
+                  history,
                   {
                     'type': 'message',
                     'role': 'assistant',

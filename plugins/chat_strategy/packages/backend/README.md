@@ -87,8 +87,60 @@ association before updating canonical and execution-local staged caches. Associa
 failure releases the newly materialized execution and claim, without publishing
 the association or silently retrying. Starting and approval resume do not replace
 an already accepted association. An unstarted or waiting Run may never acquire
-terminal history; the association does not manufacture it. No provider-native
-historical evidence is loaded into Chat's future inference projection.
+terminal history; the association does not manufacture it. Historical native
+envelopes are never loaded into future inference.
+
+## Historical execution projection
+
+`lib/src/historical_projection.dart` is Chat-owned model-input construction, not
+another history store. At start, after `host.start()` and before the first model
+call, Chat captures canonical entries and uses public `readHistoricalRun` for each
+associated user entry except the current Run. Reads are sequential under the
+active host operation, never during materialization. One immutable input prefix
+is reused throughout the Run, including approval resume; `_runItems` continues
+to grow separately with current-Run model/tool items. Reads consume no model slots.
+
+Canonical entry order supplies chronology. Each earlier Run gets one semantic
+assistant message immediately after its initiating user entry. Original canonical
+message bytes and unassociated entries remain unchanged. The message labels its
+JSON as historical observations, not instructions, authorization, or current
+Environment state. Sorted JSON object keys and sequence-ordered events make
+identical evidence stable without timestamps or native provider reconstruction.
+Model text, proposals and arguments, resolved tool identity/canonical arguments,
+policy/approval/rejection facts, progress, actual model-visible outcomes, and
+failures retain Run-local sequence and correlation. Missing proposal resolution,
+model terminal, and tool outcome observations are explicit, not invented success.
+The actual terminal status and available failure classification are retained;
+generic `unknown` failures are not diagnosed as a specific invocation-budget cause.
+
+Final-answer deduplication requires a completed Run, its last settled answer or
+refusal, and an immediately following canonical assistant entry with exactly the
+concatenated text. Only those final text occurrences become references to that
+entry; earlier identical narration is not removed. If no matching committed entry
+exists, including after Chat SQL fails following host completion, the output stays
+in the historical record without becoming a canonical final answer. Native-only
+output, native attachments, provider item IDs, opaque reasoning/state, host-only
+data, and executable authority are not replayed.
+
+`unavailable` and `result_too_large` reads produce explicit incomplete-history
+notices identifying the Run, with unknown terminal status and no fabricated
+progress. Unexpected `current_run` is an invariant failure. Other declared codes
+and undeclared transport, lifecycle, or binding errors propagate, not absence.
+Valid terminal evidence with empty activity still retains its actual status.
+
+There is no truncation, paging, summarization, compaction, or file freshness check.
+M1's per-Run read bounds still apply; aggregate inference transport/provider bounds
+remain explicit failures, never a reason to discard old material. Aggregate
+transport failures currently surface through the generic orchestration
+error, not a context-size-specific diagnostic. Historical tool results retain only
+the model-visible content M1 supplies, not private full
+tool transcripts. The entire prefix is resent for each inference and grows across
+Runs. Semantic serialization changes the previous Run's native input shape, so
+stable ordering does not promise byte-identical native replay or provider cache
+reuse. Aggregate context management and more efficient/finer-fidelity projection
+require a later explicit design.
+
+## Draft Request
 
 `ChatSessionState` owns the generation-local exact draft string, exposed through
 `ChatSessionSnapshot.draftRequest`. `setDraftRequest` replaces it exactly, including
@@ -209,6 +261,13 @@ test-owned SQLite service, including real trigger rollback, exact draft row boun
 and stale-cache rejection; `chat_remote_backend_test.dart` also covers installed
 entrypoint draft operations and generation replacement, infrastructure routing,
 terminal acknowledgement, held commits, and close/hydration races.
+`chat_historical_projection_test.dart` inspects actual strategy inference material
+through generated host transport: ordered observations, final-answer matching,
+incomplete-history notices, failure distinctions, and frozen history across live
+continuations and approval resume. The application's
+`durable_chat_session_integration_test.dart` uses installed Chat with real terminal
+retention and Project reopening; `normal_chatgpt_run_integration_test.dart` also
+checks effective provider HTTP input with deterministic responses.
 `chat_feedback_test.dart` covers complete structured roundtrip, SQL identity/CAS
 concurrency across stores, busy reads, rollback, commit-then-lost-ack recovery,
 shutdown draining, independent Sessions/Projects, cache refresh, and byte/row
