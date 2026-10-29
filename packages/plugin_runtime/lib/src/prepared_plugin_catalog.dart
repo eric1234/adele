@@ -98,6 +98,7 @@ final class PreparedRecordsSchema {
   static const maxBytes = 1024 * 1024;
   static const maxRecordTypes = 256;
   static const maxFields = 128;
+  static const maxCredentialSlots = 128;
   static const maxEnumOptions = 128;
   static const maxIdLength = 256;
   static const maxLabelLength = 160;
@@ -1018,6 +1019,7 @@ RecordTypeDefinition _recordTypeDefinition(
     'description',
     'fields',
     'displayField',
+    'credentialSlots',
   });
   final fields = definition['fields'];
   if (fields is! List<Object?> ||
@@ -1025,6 +1027,16 @@ RecordTypeDefinition _recordTypeDefinition(
     throw FormatException(
       '$label.fields must be an array with at most '
       '${PreparedRecordsSchema.maxFields} entries.',
+    );
+  }
+  final credentialSlots = definition.containsKey('credentialSlots')
+      ? definition['credentialSlots']
+      : const <Object?>[];
+  if (credentialSlots is! List<Object?> ||
+      credentialSlots.length > PreparedRecordsSchema.maxCredentialSlots) {
+    throw FormatException(
+      '$label.credentialSlots must be an array with at most '
+      '${PreparedRecordsSchema.maxCredentialSlots} entries.',
     );
   }
   return RecordTypeDefinition(
@@ -1065,6 +1077,33 @@ RecordTypeDefinition _recordTypeDefinition(
             _text(definition['displayField'], '$label.displayField'),
           )
         : null,
+    credentialSlots: [
+      for (var index = 0; index < credentialSlots.length; index++)
+        _recordCredentialSlotDefinition(
+          credentialSlots[index],
+          '$label.credentialSlots[$index]',
+        ),
+    ],
+  );
+}
+
+RecordCredentialSlotDefinition _recordCredentialSlotDefinition(
+  Object? value,
+  String label,
+) {
+  final definition = _object(value, label, {'id', 'label', 'kind'});
+  final kind = _text(definition['kind'], '$label.kind');
+  return RecordCredentialSlotDefinition(
+    id: RecordCredentialSlotId(_text(definition['id'], '$label.id')),
+    label: _schemaText(
+      definition['label'],
+      '$label.label',
+      RecordCredentialSlotDefinition.maxLabelLength,
+    ),
+    kind: switch (kind) {
+      'secret-text' => RecordCredentialKind.secretText,
+      _ => throw FormatException('$label.kind is unsupported: $kind.'),
+    },
   );
 }
 

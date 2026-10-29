@@ -1887,6 +1887,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'label': 'OpenAI API',
             'description': 'An OpenAI API-key provider configuration.',
             'displayField': 'display-name',
+            'credentialSlots': [
+              {'id': 'api-key', 'label': 'API key', 'kind': 'secret-text'},
+            ],
             'fields': [
               {
                 'id': 'display-name',
@@ -1923,6 +1926,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(type.label, 'OpenAI API');
       expect(type.description, 'An OpenAI API-key provider configuration.');
       expect(type.displayField?.value, 'display-name');
+      expect(type.credentialSlots.single.id.value, 'api-key');
+      expect(type.credentialSlots.single.label, 'API key');
+      expect(type.credentialSlots.single.kind.name, 'secretText');
       expect(type.fields.map((field) => field.id.value), [
         'display-name',
         'endpoint',

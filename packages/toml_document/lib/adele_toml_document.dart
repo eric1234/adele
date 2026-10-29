@@ -24,6 +24,17 @@ final class TomlDocument {
   /// arrays at any segment fail with [TomlFailureKind.type]. No text is changed.
   void requireTable(List<String> path) => _invoke('requireTable', path);
 
+  /// Returns immutable direct keys, including nested tables and unsupported
+  /// values. Requires a regular table with the same errors as [requireTable].
+  List<String> tableKeys(List<String> path) => List<String>.unmodifiable(
+    (_invoke('tableKeys', path)['keys']! as List).cast<String>(),
+  );
+
+  /// Creates an explicit regular table at a missing leaf under existing regular
+  /// parents. An existing regular table is an exact no-op; other values fail.
+  TomlDocument ensureTable(List<String> path) =>
+      _edited(_invoke('ensureTable', path));
+
   /// Inserts or updates a string, integer, or boolean under an existing table.
   /// An existing value must have the same scalar type. No tables are created.
   /// An equal value is a text-preserving no-op.

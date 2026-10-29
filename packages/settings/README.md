@@ -85,14 +85,15 @@ values, executable registrations, live providers, or plugin instances.
 | `ConfigurationRecordId` | One named record within a collection, independent of its display name and type. |
 | `RecordTypeId` | ADELE public ID beneath the declaring `PluginId` namespace at a dot boundary. |
 | `RecordFieldId` | Local field identity, never a synthetic `SettingId`. |
+| `RecordCredentialSlotId` | Local credential-slot identity, distinct from scalar fields and credential references. |
 
-Collection, record, and field IDs use exact lowercase ASCII
+Collection, record, field and credential-slot IDs use exact lowercase ASCII
 `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`, at most 64 characters. Collection and record IDs
 additionally reject Windows device names `con`, `prn`, `aux`, `nul`, `com1` through
 `com9`, and `lpt1` through `lpt9`. Reserved aliases such as `CON`, `con.txt`,
 `conin$`, `conout$`, `clock$`, trailing dots/spaces, and superscript digits already
-fail the grammar; no trimming or case normalization occurs. Field IDs are not
-paths and do not have the device-name restriction. Invalid IDs throw
+fail the grammar; no trimming or case normalization occurs. Field and slot IDs are
+not paths and do not have the device-name restriction. Invalid IDs throw
 `FormatException`. Identity classes have value equality within their own type.
 
 `RecordFieldDefinition<T>` requires `id`, `label`, existing `SettingType<T>`, and
@@ -110,6 +111,17 @@ optional, or other scalar-type references, including enum fields. Omission is nu
 and makes no display-field assumption; presentation can fall back to the record ID.
 This metadata neither changes record identity nor adds string-value constraints:
 empty and multiline values remain ordinary strings.
+
+`RecordCredentialSlotDefinition` requires `id`, `label`, and `kind`; the only
+`RecordCredentialKind` is `secretText`. Labels use the existing nonblank single-line
+presentation rules and are bounded to 128 UTF-16 code units. Optional
+`RecordTypeDefinition.credentialSlots` defaults to an empty list, copies its input,
+retains declaration order, is immutable, and rejects duplicate slot IDs within the
+type. Slot identities are local to each type and independent of field identities.
+These declarations contain neither secrets nor credential references and do not
+participate in `validate(values)`. The app-private
+[association lifecycle](../../docs/architecture/profiles-and-configuration.md#record-association-lifecycle)
+owns storage and authorization.
 
 `type.validate(recordId, Map<String, Object?> values)` validates known fields and
 returns an immutable `Map<String, Object>` in declaration order. Required absence
@@ -141,8 +153,8 @@ Prepared JSON declaration discovery is owned by
 This package owns no persistence, TOML parsing/serialization, filesystem access,
 callbacks, schema transport, plugin registration/lifecycle, UI, or native code.
 It does not implement Profiles, Project/Session overrides, a generic cascade,
-secrets, policy, or workbench state. Host adapters own storage representation and
-must preserve their own unknown data. The broader ownership model is documented
+secret values or access, policy, or workbench state. Host adapters own storage
+representation and must preserve their own unknown data. The broader ownership model is documented
 in [profiles and configuration](../../docs/architecture/profiles-and-configuration.md)
 and [dependency rules](../../docs/architecture/dependency-rules.md).
 

@@ -1,13 +1,22 @@
 # Internal Credential Store
 
 `adele_credential_store` is Flutter-free internal host infrastructure, not a
-plugin API. It supplies the synchronous native boundary used by the application's
-credential service. Application admission, serialization, verification of mutations,
+plugin API. It supplies a pure credential-reference identity and the separate
+synchronous native boundary used by the application's credential service.
+Application admission, serialization, verification of mutations,
 uncertain outcomes, asynchronous dispatch, and shutdown belong to the app, not this
 package. See the global [dependency rules](../../docs/architecture/dependency-rules.md)
 and [credential ownership](../../docs/architecture/profiles-and-configuration.md).
 
 ## API and lifecycle
+
+`package:adele_credential_store/credential_reference.dart` is the SDK-only identity
+entrypoint. `CredentialReference.generate()` creates a secure random identity;
+`parse(String)` validates the exact format, exposing `.value`, value equality and
+hashing. Invalid parsing throws a fixed `FormatException` without the supplied
+value. This entrypoint imports no native code and grants no storage authority.
+`adele_settings_host` uses only this entrypoint for nonsecret associations; package
+build hooks and native backend availability are separate from Dart import access.
 
 Import `package:adele_credential_store/adele_credential_store.dart`.
 `NativeCredentialStore` exposes only static `read`, `contains`, `write`, `delete`,
@@ -36,6 +45,10 @@ restarting the Dart process. There is no `keyring::v1` facade, global default
 store, cached initialization failure, retained native handle, secret cache, or
 automatic retry. A failed mutation can still have an uncertain outcome; the app
 must reconcile it explicitly.
+
+Record binding envelopes and the attach/replace/forget lifecycle belong to the
+[app-private coordinator](../../docs/architecture/profiles-and-configuration.md#record-association-lifecycle),
+not this package. Native storage continues to treat its protected text as opaque.
 
 ## Backend and build
 

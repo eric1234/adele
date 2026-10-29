@@ -291,15 +291,18 @@ for declaration ownership, bounds, and diagnostics.
 [`CredentialService`](lib/core/credential_service.dart) at mount and retains it
 across widget rebuilds. Its injectable factory defaults to
 [`createNativeCredentialService`](lib/core/native_credential_storage_adapter.dart).
-Construction does not access the vault. Accepted exit fences new operations and
-awaits admitted work alongside the other application owners; canceled exit
-preflight leaves it usable. Widget disposal starts the same drain but cannot await.
+Construction does not access the vault. The lazily created Settings owner is paired
+with one `RecordCredentialService` through the mount-captured
+`createCredentialAssociations` factory. Accepted exit synchronously fences the
+coordinator and Settings public admission, then drains admitted workflows before
+releasing the Settings worker and closing the credential service. Canceled exit
+preflight leaves all owners usable. Widget disposal starts the same drain but cannot await.
 
 The adapter runs synchronous native calls in background Dart isolates, using the
 internal `adele_credential_store` code asset. Linux x64 uses the OS Secret Service;
 other platforms explicitly remain unavailable pending qualification. Credential
-references are nonsecret `cred1_<32 lowercase hex digits>` identities, not plugin
-authorization grants. Values are validated opaque text of at most 2,560 UTF-8
+references use the internal [pure identity entrypoint](../packages/credential_store/lib/credential_reference.dart),
+not plugin authorization grants. Values are validated opaque text of at most 2,560 UTF-8
 bytes. Presence returns no secret material, though the native backend reads the
 one entry internally. Failures carry only fixed categories; mutation uncertainty
 requires explicit reconciliation before retry.
@@ -307,13 +310,28 @@ requires explicit reconciliation before retry.
 OS prompts can keep an admitted call and shutdown pending. An isolate is not
 cancellation, and no timeout implies rollback. The service does not cache secrets,
 modify Settings/TOML, or provide cross-process CAS. It is not passed to plugins,
-provider records, OAuth, or Session execution. Those integrations remain deferred.
+OAuth, or Session execution.
 
-Focused checks are `test/core/credential_service_test.dart` and
-`test/credential_application_lifecycle_test.dart`. The opt-in
+[`RecordCredentialService`](lib/core/record_credential_service.dart) is a part of
+`global_settings_service.dart`, keeping association authority with private record
+handles. Its `inspect`, `reconcile`, `attach`, `replace`, `establishLocal`, and
+`forget` operations accept owner-bound views and declared slot IDs; writes also
+accept `CredentialSecret`. Results expose only a record view and local-storage
+status, not references or protected payloads. Failures have fixed categories and,
+when available, the latest acknowledged record handle. The existing Settings worker
+owns validation and reference persistence; a shared admission gate spans OS waits.
+See the canonical [association lifecycle](../docs/architecture/profiles-and-configuration.md#record-association-lifecycle)
+for exact binding, mutation ordering, partial failure, reconciliation and shutdown
+rules. No credential UI, provider authentication or runtime delivery is added.
+
+Focused checks are `test/core/credential_service_test.dart`,
+`test/core/record_credential_service_test.dart`,
+`test/credential_application_lifecycle_test.dart`, and
+`test/record_credential_application_lifecycle_test.dart`. The opt-in
 [`credential storage smoke`](../tools/credential_storage_smoke.dart) provisions a
 disposable real keyring and exercises the production adapter plus the gated
-`test/credential_storage_responsiveness_test.dart`; see the maintained
+`test/credential_storage_responsiveness_test.dart` and the process/daemon-restart
+association fixture `test/credential_association_smoke_test.dart`; see the maintained
 [testing procedure](../docs/development/testing.md).
 
 ### Global Settings
@@ -360,7 +378,9 @@ Duplicate IDs, including malformed or unknown-type occupants, are never overwrit
 Create and Save publish presented values only after worker acknowledgement. Delete
 requires a safe-default modal identifying the exact record and explaining that its
 entire configuration file, including unknown data, will be removed. Confirmed deletion
-removes only that record and its draft. No automatic collection refresh invalidates
+removes only that record and its draft. The host rejects deletion while any credential
+entry remains, including unknown entries; the dialog does not manage those
+associations. No automatic collection refresh invalidates
 unrelated edits. Conflicts and uncertain update/delete outcomes retain drafts and fence
 that record until explicit Reload; no retry or field merging occurs. Known pre-write
 validation failures remain correctable without Reload.
@@ -393,7 +413,7 @@ All configuration still uses one global layer. Provider records are nonsecret
 definitions, not consumed by the runtime: creating, editing, or deleting them does
 not request credentials, authenticate, activate a provider, change Chat, or alter
 temporary environment-variable startup. Restart guidance applies
-to scalar settings, not record activation. Profiles, scopes, credentials, OAuth,
+to scalar settings, not record activation. Profiles, scopes, credential UI, OAuth,
 runtime restart commands, and live editor reconfiguration remain unimplemented.
 
 ### Prepared Capability access
@@ -1907,7 +1927,8 @@ and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
 active Runs per Session. Global scalar settings and nonsecret configuration records
 are implemented, with startup-only scalar delivery to frontends and backends.
-Automatic selection/resume, Profiles, configured-provider/credential management,
+Host-only credential association lifecycle exists separately from runtime delivery.
+Automatic selection/resume, Profiles, configured-provider/credential UI,
 and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.

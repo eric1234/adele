@@ -52,6 +52,7 @@ final class AdeleApplication extends StatefulWidget {
     super.key,
     this.createRuntime = NativeAdeleRuntime.new,
     this.createCredentials = createNativeCredentialService,
+    this.createCredentialAssociations = RecordCredentialService.new,
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
@@ -65,8 +66,16 @@ final class AdeleApplication extends StatefulWidget {
   final NativeAdeleRuntime Function() createRuntime;
 
   /// Trusted host owner, selected once at mount. Construction does not access the
-  /// OS vault. It is not passed to plugins or ordinary configuration records.
+  /// OS vault. It is not passed to plugins or presentation.
   final CredentialService Function() createCredentials;
+
+  /// Trusted host composition, selected once at mount and invoked lazily with
+  /// this application's settings owner. Construction performs no credential I/O.
+  final RecordCredentialService Function({
+    required GlobalSettingsService settings,
+    required CredentialService credentials,
+  })
+  createCredentialAssociations;
 
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
@@ -98,6 +107,11 @@ final class AdeleApplication extends StatefulWidget {
 final class _AdeleApplicationState extends State<AdeleApplication> {
   late final NativeAdeleRuntime _runtime;
   late final CredentialService _credentials;
+  late final RecordCredentialService Function({
+    required GlobalSettingsService settings,
+    required CredentialService credentials,
+  })
+  _createCredentialAssociations;
   late final AppLifecycleListener _lifecycleListener;
   late final StreamSubscription<ApplicationPluginState> _pluginSubscription;
   late final StreamSubscription<void> _extensionSubscription;
@@ -139,6 +153,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   DialogRoute<ResolvedCommand>? _palette;
   DialogRoute<void>? _settingsDialog;
   GlobalSettingsService? _settings;
+  RecordCredentialService? _credentialAssociations;
   Object? _settingsCatalogFailure;
   Object? _recordsCatalogFailure;
   PlatformStorageRoots? _configurationRoots;
@@ -160,6 +175,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
     _runtime = widget.createRuntime();
     _credentials = widget.createCredentials();
+    _createCredentialAssociations = widget.createCredentialAssociations;
     _console = ConsoleController(
       _runtime.extensions,
       cleanupTimeout: const Duration(seconds: 3),
@@ -415,11 +431,16 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _recordsCatalogFailure = error;
       records = RecordCatalog([]);
     }
-    return _settings = GlobalSettingsService(
+    final service = _settings = GlobalSettingsService(
       catalog: settings,
       records: records,
       roots: _configurationRoots!,
     );
+    _credentialAssociations = _createCredentialAssociations(
+      settings: service,
+      credentials: _credentials,
+    );
+    return service;
   }
 
   Future<PreparedSettingsSnapshot> _loadStartupSettings(
@@ -880,8 +901,24 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       () => detachContext?.call(),
     );
     final closingCommands = _commandRegistrations.close();
-    final closingSettings = _settings?.close();
-    final closingCredentials = _credentials.close();
+    final Future<void> closingConfiguration;
+    if (_credentialAssociations case final associations?) {
+      // Fence both public entry points now. The settings drain includes admitted
+      // association workflows, whose private worker requests remain available.
+      final drainingSettings = Future.wait<void>([
+        associations.close(),
+        ?_settings?.close(),
+      ]);
+      closingConfiguration = closeResources([
+        () => drainingSettings,
+        _credentials.close,
+      ]);
+    } else {
+      closingConfiguration = Future.wait<void>([
+        ?_settings?.close(),
+        _credentials.close(),
+      ]);
+    }
     _frontends.stopStarting();
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
@@ -891,13 +928,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final settlingMainContent = _frontends.stopMainContentOperations();
     _inspection.removeListener(_inspectionChanged);
     if (!_retainingPresentations.value) _inspection.clear();
-    // All owners are fenced before waiting. Storage/backends remain available
-    // for normal admitted settlement, including hidden Session history writes.
+    // Application entry points are fenced before waiting. Credential access and
+    // runtime storage remain available for admitted workflow/history writes.
     final draining = Future.wait<void>([
       closingCommands,
       closingContextConsumer,
-      ?closingSettings,
-      closingCredentials,
+      closingConfiguration,
       settlingRuns,
       closingConsole,
       closingConsoleHost,

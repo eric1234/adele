@@ -286,7 +286,77 @@ void main() {
   );
 
   test(
-    'real OpenAI schema declares its display-name without executable code',
+    'credential slots are optional ordered metadata isolated by record type',
+    () async {
+      final directory = await install(
+        'plugin',
+        schema: _schema([
+          {
+            ..._type(id: 'org.example.plugin.z'),
+            'credentialSlots': [_slot(label: 'Other API key')],
+          },
+          {
+            ..._type(),
+            'credentialSlots': [
+              _slot(id: 'token', label: '  Token  '),
+              _slot(),
+            ],
+          },
+          _type(id: 'org.example.plugin.legacy'),
+          {
+            ..._type(id: 'org.example.plugin.empty'),
+            'credentialSlots': <Object>[],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final records = catalog.records;
+      final type = records.definition(RecordTypeId('org.example.plugin.api'));
+      expect(type.credentialSlots.map((slot) => slot.id.value), [
+        'token',
+        'api-key',
+      ]);
+      expect(type.credentialSlots.map((slot) => slot.label), [
+        '  Token  ',
+        'API key',
+      ]);
+      expect(
+        type.credentialSlots.every(
+          (slot) => slot.kind == RecordCredentialKind.secretText,
+        ),
+        isTrue,
+      );
+      expect(() => type.credentialSlots.clear(), throwsUnsupportedError);
+      expect(type.fields.single.id, RecordFieldId('display-name'));
+      expect(type.validate(ConfigurationRecordId('work'), {}), isEmpty);
+      expect(
+        records
+            .definition(RecordTypeId('org.example.plugin.z'))
+            .credentialSlots
+            .single
+            .label,
+        'Other API key',
+      );
+      for (final id in ['legacy', 'empty']) {
+        final slots = records
+            .definition(RecordTypeId('org.example.plugin.$id'))
+            .credentialSlots;
+        expect(slots, isEmpty);
+        expect(() => slots.clear(), throwsUnsupportedError);
+      }
+      await File.fromUri(
+        directory.uri.resolve('records.schema.json'),
+      ).writeAsString('{}');
+      expect(
+        catalog.records.definition(type.id).credentialSlots,
+        type.credentialSlots,
+      );
+    },
+  );
+
+  test(
+    'real OpenAI schema declares display-name and credential slot without code',
     () async {
       var repository = Directory.current;
       while (!File.fromUri(
@@ -312,6 +382,22 @@ void main() {
       final type = catalog.records.definitions.single;
       expect(type.id, RecordTypeId('dev.adele.openai.api-key'));
       expect(type.displayField, RecordFieldId('display-name'));
+      final slot = type.credentialSlots.single;
+      expect(slot.id, RecordCredentialSlotId('api-key'));
+      expect(slot.label, 'API key');
+      expect(slot.kind, RecordCredentialKind.secretText);
+      expect(type.fields.map((field) => field.id.value), [
+        'display-name',
+        'endpoint',
+      ]);
+      expect(
+        type.fields.every((field) => field.type is StringSettingType),
+        isTrue,
+      );
+      expect(type.fields.first.required, isTrue);
+      expect(type.fields.last.required, isFalse);
+      expect(catalog.installations.single.backendArtifactUri, isNull);
+      expect(catalog.installations.single.frontend, isNull);
       expect(
         type.validate(ConfigurationRecordId('work'), {'display-name': 'Work'}),
         {'display-name': 'Work'},
@@ -363,6 +449,7 @@ void main() {
           'fields': [
             {..._field(id: id), 'required': true},
           ],
+          'credentialSlots': [_slot(id: id)],
         },
       ]),
     );
@@ -371,6 +458,10 @@ void main() {
     expect(catalog.records.definitions.single.collection.value, id);
     expect(catalog.records.definitions.single.fields.single.id.value, id);
     expect(catalog.records.definitions.single.displayField, RecordFieldId(id));
+    expect(
+      catalog.records.definitions.single.credentialSlots.single.id.value,
+      id,
+    );
   });
 
   for (final value in [-9223372036854775808, 9223372036854775807]) {
@@ -522,6 +613,10 @@ void main() {
     'missing version': {'recordTypes': <Object?>[]},
     'missing types': {'schemaVersion': 1},
     'unknown envelope': {..._schema([]), 'owner': 'org.other'},
+    'slots at envelope': {
+      ..._schema([]),
+      'credentialSlots': [_slot()],
+    },
     'settings envelope': {'schemaVersion': 1, 'definitions': <Object?>[]},
     for (final version in [null, false, '1', 1.0, 0, -1, 2])
       'version $version ${version.runtimeType}': {
@@ -628,6 +723,12 @@ void main() {
       ..._type(),
       'fields': [_field(), _field()],
     },
+    for (final slots in <Object?>[null, false, {}, 'slots', 1])
+      'credentialSlots $slots': {..._type(), 'credentialSlots': slots},
+    'duplicate credential slots': {
+      ..._type(),
+      'credentialSlots': [_slot(), _slot(label: 'Different label')],
+    },
   };
   for (final entry in badTypes.entries) {
     test('rejects whole schema for record type ${entry.key}', () async {
@@ -648,6 +749,7 @@ void main() {
       'owner',
       'nullable',
       'secret',
+      'credentialSlots',
       'displayField',
       'validate',
       'unknown',
@@ -657,7 +759,15 @@ void main() {
       'unsupported $key': {..._field(), key: true},
     for (final id in [null, 1, 'UPPER', 'a.b', 'a_b', 'a-', 'x' * 65])
       'ID $id': {..._field(), 'id': id},
-    for (final type in [null, false, 'number', 'array', 'object', 'String'])
+    for (final type in [
+      null,
+      false,
+      'number',
+      'array',
+      'object',
+      'String',
+      'secret-text',
+    ])
       'type $type': {..._field(), 'type': type},
     for (final required in <Object?>[null, 0, 'true', [], {}])
       'required $required': {..._field(), 'required': required},
@@ -713,6 +823,92 @@ void main() {
           {
             ..._type(),
             'fields': [_field(id: 'valid'), entry.value],
+          },
+        ]),
+      );
+      rejected(await PreparedPluginCatalog.discover(root.path));
+    });
+  }
+
+  final badSlots = <String, Object?>{
+    'not object': [],
+    'null': null,
+    for (final key in _slot().keys) 'missing $key': _slot()..remove(key),
+    for (final key in [
+      'description',
+      'required',
+      'default',
+      'value',
+      'secret',
+      'reference',
+      'type',
+      'unknown',
+    ])
+      'unsupported $key': {..._slot(), key: true},
+    for (final id in <Object?>[
+      null,
+      false,
+      1,
+      '',
+      'UPPER',
+      'a.b',
+      'a_b',
+      'a-',
+      'a--b',
+      '1a',
+      '../a',
+      'a/b',
+      ' a',
+      'a ',
+      'a\n',
+      'a\u0000',
+      'caf\u00e9',
+      'x' * 65,
+    ])
+      'ID ${jsonEncode(id)}': {..._slot(), 'id': id},
+    for (final label in <Object?>[
+      null,
+      1,
+      '',
+      ' ',
+      '\t',
+      'a\nb',
+      'a\rb',
+      'a\u0000b',
+      'a\u007fb',
+      'a\u0085b',
+      'a\u2028b',
+      'a\u2029b',
+      'x' * 129,
+    ])
+      'label ${jsonEncode(label)}': {..._slot(), 'label': label},
+    for (final kind in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      'secretText',
+      'Secret-text',
+      ' secret-text',
+      'string',
+      'oauth',
+    ])
+      'kind ${jsonEncode(kind)}': {..._slot(), 'kind': kind},
+  };
+  for (final entry in badSlots.entries) {
+    test('rejects whole schema for credential slot ${entry.key}', () async {
+      await install(
+        'plugin',
+        schema: _schema([
+          {
+            ..._type(id: 'org.example.plugin.valid'),
+            'credentialSlots': [_slot()],
+          },
+          {
+            ..._type(),
+            'credentialSlots': [_slot(id: 'valid'), entry.value],
           },
         ]),
       );
@@ -824,6 +1020,34 @@ void main() {
   );
 
   for (final extra in [0, 1]) {
+    test('credential slot count boundary plus $extra', () async {
+      await install(
+        'plugin',
+        schema: _schema([
+          {
+            ..._type(),
+            'credentialSlots': [
+              for (
+                var index = 0;
+                index < PreparedRecordsSchema.maxCredentialSlots + extra;
+                index++
+              )
+                _slot(id: 'key-$index', label: 'x' * 128),
+            ],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      if (extra == 0) {
+        expect(catalog.issues, isEmpty);
+        expect(
+          catalog.records.definitions.single.credentialSlots,
+          hasLength(PreparedRecordsSchema.maxCredentialSlots),
+        );
+      } else {
+        rejected(catalog);
+      }
+    });
     for (final kind in ['types', 'fields', 'options']) {
       test('$kind count boundary plus $extra', () async {
         final count =
@@ -1112,6 +1336,9 @@ Map<String, Object?> _field({
   String id = 'display-name',
   String type = 'string',
 }) => {'id': id, 'label': 'Name', 'type': type, 'required': false};
+
+Map<String, Object?> _slot({String id = 'api-key', String label = 'API key'}) =>
+    {'id': id, 'label': label, 'kind': 'secret-text'};
 
 final class _UnreadableSchema extends IOOverrides {
   _UnreadableSchema(this.path);

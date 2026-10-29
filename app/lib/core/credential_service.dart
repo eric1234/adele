@@ -1,40 +1,8 @@
 import 'dart:convert';
-import 'dart:math';
 
-/// A persistable association identity, NOT a grant to read a credential.
-///
-/// Independent of plugin, record, account, display name and runtime generation.
-/// Only trusted host code may use this app-private API.
-final class CredentialReference {
-  CredentialReference._(this.value);
+import 'package:adele_credential_store/credential_reference.dart';
 
-  factory CredentialReference.generate() {
-    final random = Random.secure();
-    return CredentialReference._(
-      'cred1_${List.generate(16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join()}',
-    );
-  }
-
-  factory CredentialReference.parse(String value) {
-    if (value.length != 38 || !_format.hasMatch(value)) {
-      throw const CredentialFailure(CredentialFailureKind.invalidReference);
-    }
-    return CredentialReference._(value);
-  }
-
-  static final _format = RegExp(r'^cred1_[0-9a-f]{32}$');
-  final String value;
-
-  @override
-  bool operator ==(Object other) =>
-      other is CredentialReference && value == other.value;
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() => value;
-}
+export 'package:adele_credential_store/credential_reference.dart';
 
 /// Bounded opaque text. Deliberate host retrieval is through [reveal], not logs.
 /// Dart strings are not zeroizable and this is not host-process isolation.
@@ -122,6 +90,10 @@ final class CredentialService {
   Future<void> _pending = Future<void>.value();
   Future<void>? _closing;
 
+  /// Local mutation fence only; querying it performs no OS access or retry.
+  bool requiresReconciliation(CredentialReference reference) =>
+      _uncertain.contains(reference);
+
   /// No secret material is returned. An adapter may read one entry internally.
   /// Confirmed absence reconciles an uncertain mutation; presence alone cannot
   /// verify replacement contents.
@@ -132,28 +104,60 @@ final class CredentialService {
   });
 
   /// Trusted-host-only retrieval. A successful read reconciles uncertain work.
+  /// A protected-payload owner validates its envelope before the fence clears.
   /// A missing credential on this machine does not invalidate its reference.
-  Future<CredentialSecret?> read(CredentialReference reference) =>
-      _admit(() async {
-        final value = await _read(reference);
-        _uncertain.remove(reference);
-        return value;
-      });
+  Future<CredentialSecret?> read(
+    CredentialReference reference, {
+    void Function(CredentialSecret)? validate,
+    bool reconcile = true,
+  }) => _admit(() async {
+    if (!reconcile) _requireVerified(reference);
+    final value = await _read(reference);
+    if (value != null) validate?.call(value);
+    _uncertain.remove(reference);
+    return value;
+  });
 
   /// Establish a fresh association. The caller allocates/retains the reference
   /// before admission so even an unacknowledged create can be reconciled.
-  Future<void> store(CredentialReference reference, CredentialSecret secret) =>
-      _admit(() => _write(reference, secret, replacing: false));
+  Future<void> store(
+    CredentialReference reference,
+    CredentialSecret secret, {
+    Future<void> Function()? beforeMutation,
+  }) => _admit(
+    () => _write(
+      reference,
+      secret,
+      replacing: false,
+      beforeMutation: beforeMutation,
+    ),
+  );
 
   Future<void> replace(
     CredentialReference reference,
-    CredentialSecret secret,
-  ) => _admit(() => _write(reference, secret, replacing: true));
+    CredentialSecret secret, {
+    void Function(CredentialSecret)? validateExisting,
+    Future<void> Function()? beforeMutation,
+  }) => _admit(
+    () => _write(
+      reference,
+      secret,
+      replacing: true,
+      validateExisting: validateExisting,
+      beforeMutation: beforeMutation,
+    ),
+  );
 
   /// Already missing is a confirmed no-op. No other credential is touched.
-  Future<void> delete(CredentialReference reference) => _admit(() async {
+  Future<void> delete(
+    CredentialReference reference, {
+    void Function(CredentialSecret)? validateExisting,
+    Future<void> Function()? beforeMutation,
+  }) => _admit(() async {
     _requireVerified(reference);
     if (!await _storage.contains(reference)) return;
+    await _validateExisting(reference, validateExisting);
+    await beforeMutation?.call();
     await _mutation(reference, () async {
       await _storage.delete(reference);
       if (await _storage.contains(reference)) {
@@ -175,6 +179,8 @@ final class CredentialService {
     CredentialReference reference,
     CredentialSecret secret, {
     required bool replacing,
+    void Function(CredentialSecret)? validateExisting,
+    Future<void> Function()? beforeMutation,
   }) async {
     _requireVerified(reference);
     final present = await _storage.contains(reference);
@@ -185,12 +191,30 @@ final class CredentialService {
             : CredentialFailureKind.missing,
       );
     }
+    await _validateExisting(reference, validateExisting);
+    // A cross-service owner can revalidate after queue/preflight waits. A failed
+    // guard has not invoked a mutation and must not create an uncertain fence.
+    await beforeMutation?.call();
     await _mutation(reference, () async {
       await _storage.write(reference, secret);
       if ((await _read(reference))?.reveal() != secret.reveal()) {
         throw const CredentialFailure(CredentialFailureKind.failed);
       }
     });
+  }
+
+  Future<void> _validateExisting(
+    CredentialReference reference,
+    void Function(CredentialSecret)? validate,
+  ) async {
+    if (validate == null) return;
+    final value = await _read(reference);
+    if (value == null) {
+      throw const CredentialFailure(CredentialFailureKind.missing);
+    }
+    // Recheck within this queue: another admitted host operation may have
+    // changed the protected value since its association owner's earlier read.
+    validate(value);
   }
 
   void _requireVerified(CredentialReference reference) {

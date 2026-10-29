@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
+import 'package:adele_credential_store/credential_reference.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -18,6 +19,7 @@ void main() {
   final openai = RecordTypeId('dev.adele.openai.api-key');
   final work = ConfigurationRecordId('work-openai');
   final personal = ConfigurationRecordId('personal-openai');
+  final apiKey = RecordCredentialSlotId('api-key');
   late Directory installations;
   late RecordCatalog catalog;
   late Directory temporary;
@@ -48,6 +50,7 @@ void main() {
     expect(prepared.issues, isEmpty);
     catalog = prepared.records;
     expect(catalog.definition(openai).owner, PluginId('dev.adele.openai'));
+    expect(catalog.definition(openai).credentialSlots.single.id, apiKey);
   });
   tearDownAll(() => installations.deleteSync(recursive: true));
 
@@ -223,6 +226,407 @@ void main() {
     },
     skip: !Platform.isLinux,
   );
+
+  group('credential associations', () {
+    final reference = CredentialReference.parse('cred1_${'0' * 32}');
+    final replacement = CredentialReference.parse('cred1_${'1' * 32}');
+
+    test(
+      'absent and empty credentials tables are valid without materialization',
+      () async {
+        for (final suffix in ['', '\n[credentials] # keep empty\n']) {
+          final original = source('display-name = "Work"\n') + suffix;
+          seed(work, original);
+          final loaded = await host.load(providers, work);
+          expect(loaded.credentials, isEmpty);
+          expect(loaded.hasCredentialEntries, isFalse);
+          expect(
+            await host.setCredentialReference(loaded, apiKey, null),
+            same(loaded),
+          );
+          expect(await host.validateCurrent(loaded), same(loaded));
+          expect(file(work).readAsStringSync(), original);
+          expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+        }
+      },
+    );
+
+    test(
+      'real OpenAI associations survive rename reload and independent record changes',
+      () async {
+        final original =
+            '# header\n${source('display-name = "Work" # name\nunknown = { keep = [1, 2] } # untouched\n')}\n[future]\nflag = true # future\n';
+        seed(work, original);
+        var record = await host.load(providers, work);
+        final sibling = await host.create(openai, personal, {
+          'display-name': 'Personal',
+        });
+        final siblingBytes = file(personal).readAsBytesSync();
+        record = await host.setCredentialReference(record, apiKey, reference);
+        expect(record.credentials, {apiKey: reference});
+        expect(record.hasCredentialEntries, isTrue);
+        expect(record.values, {'display-name': 'Work'});
+        expect(() => record.credentials.clear(), throwsUnsupportedError);
+        record = await host.update(record, {
+          'display-name': 'Renamed',
+          'endpoint': '',
+        });
+        expect(record.id, work);
+        expect(record.credentials, {apiKey: reference});
+        expect(record.hasCredentialEntries, isTrue);
+        expect(record.values, {'display-name': 'Renamed', 'endpoint': ''});
+        var text = file(work).readAsStringSync();
+        for (final retained in [
+          '# header',
+          '# name',
+          'unknown = { keep = [1, 2] } # untouched',
+          '[future]\nflag = true # future',
+        ]) {
+          expect(text, contains(retained));
+        }
+        expect(file(personal).readAsBytesSync(), siblingBytes);
+        host = ConfigurationRecordStore(
+          store: ConfigurationStore(roots),
+          catalog: catalog,
+        );
+        record = await host.load(providers, work);
+        expect(record.credentials, {apiKey: reference});
+        final workBytes = file(work).readAsBytesSync();
+        await host.update(sibling, {'display-name': 'Other personal'});
+        expect(await host.validateCurrent(record), same(record));
+        expect(file(work).readAsBytesSync(), workBytes);
+        record = await host.setCredentialReference(record, apiKey, replacement);
+        expect(record.credentials, {apiKey: replacement});
+        record = await host.setCredentialReference(record, apiKey, null);
+        expect(record.credentials, isEmpty);
+        expect(record.hasCredentialEntries, isFalse);
+        record.document.requireTable(['credentials']);
+        text = file(work).readAsStringSync();
+        expect(text, contains('[credentials]'));
+        expect(text, isNot(contains(reference.value)));
+        expect(text, isNot(contains(replacement.value)));
+        expect((await host.load(providers, work)).credentials, isEmpty);
+        expect(record.values, {'display-name': 'Renamed', 'endpoint': ''});
+        await host.delete(record);
+        expect(file(work).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'known credential entries block whole-record deletion with safe identity',
+      () async {
+        var record = await host.create(openai, work, {'display-name': 'Work'});
+        record = await host.setCredentialReference(record, apiKey, reference);
+        final bytes = file(work).readAsBytesSync();
+        await expectLater(
+          host.delete(record),
+          throwsA(
+            isA<ConfigurationRecordCredentialsPresent>()
+                .having((error) => error.collection, 'collection', providers)
+                .having((error) => error.recordId, 'record', work)
+                .having(
+                  (error) => error.toString(),
+                  'safe text',
+                  isNot(contains(reference.value)),
+                ),
+          ),
+        );
+        expect(file(work).readAsBytesSync(), bytes);
+      },
+    );
+
+    test(
+      'multiple declared slots stay independent from same-named scalar fields',
+      () async {
+        final nameSlot = RecordCredentialSlotId('display-name');
+        final type = RecordTypeDefinition(
+          id: RecordTypeId('dev.example.credentials.record'),
+          owner: PluginId('dev.example.credentials'),
+          collection: providers,
+          collectionLabel: 'Providers',
+          label: 'Credential fixture',
+          fields: catalog.definition(openai).fields,
+          credentialSlots: [
+            for (final slot in [nameSlot, apiKey])
+              RecordCredentialSlotDefinition(
+                id: slot,
+                label: slot.value,
+                kind: RecordCredentialKind.secretText,
+              ),
+          ],
+        );
+        final generic = ConfigurationRecordStore(
+          store: persistence,
+          catalog: RecordCatalog([type]),
+        );
+        var record = await generic.create(type.id, work, {
+          'display-name': 'Public',
+        });
+        record = await generic.setCredentialReference(
+          record,
+          nameSlot,
+          reference,
+        );
+        record = await generic.setCredentialReference(
+          record,
+          apiKey,
+          replacement,
+        );
+        expect(record.credentials, {nameSlot: reference, apiKey: replacement});
+        record = await generic.update(record, {'display-name': 'Renamed'});
+        expect(record.values, {'display-name': 'Renamed'});
+        expect(
+          (await generic.load(providers, work)).credentials,
+          record.credentials,
+        );
+        record = await generic.setCredentialReference(record, nameSlot, null);
+        expect(record.credentials, {apiKey: replacement});
+        expect(record.hasCredentialEntries, isTrue);
+        expect(record.values, {'display-name': 'Renamed'});
+      },
+    );
+
+    for (final unknown in [
+      '[credentials]\nfuture = "not-a-reference" # retained\n',
+      '[credentials]\nfuture = "${replacement.value}" # retained\n',
+      '[credentials]\nfuture = { nested = [1, 2] } # retained\n',
+      '[credentials.future] # retained\n',
+      '[credentials.future.deep]\nvalue = "not-a-reference" # retained\n',
+      '[[credentials.future]] # retained\n',
+      '[credentials]\nfuture.nested.value = true # retained\n',
+      '[credentials]\n"future.with.dots" = [] # retained\n',
+    ]) {
+      test(
+        'unknown credential content is retained and blocks deletion: $unknown',
+        () async {
+          seed(work, '${source('display-name = "Work"\n')}\n$unknown');
+          var record = await host.load(providers, work);
+          expect(record.credentials, isEmpty);
+          expect(record.hasCredentialEntries, isTrue);
+          record = await host.update(record, {'display-name': 'Renamed'});
+          expect(record.credentials, isEmpty);
+          expect(record.hasCredentialEntries, isTrue);
+          record = await host.setCredentialReference(record, apiKey, reference);
+          expect(record.credentials, {apiKey: reference});
+          record = await host.setCredentialReference(record, apiKey, null);
+          expect(record.credentials, isEmpty);
+          expect(record.hasCredentialEntries, isTrue);
+          expect(file(work).readAsStringSync(), contains(unknown));
+          expect(
+            (await host.load(providers, work)).hasCredentialEntries,
+            isTrue,
+          );
+          final bytes = file(work).readAsBytesSync();
+          for (final desired in [null, replacement]) {
+            await expectLater(
+              host.setCredentialReference(
+                record,
+                RecordCredentialSlotId('future'),
+                desired,
+              ),
+              throwsA(isA<ConfigurationRecordFormatException>()),
+            );
+          }
+          await expectLater(
+            host.delete(record),
+            throwsA(isA<ConfigurationRecordCredentialsPresent>()),
+          );
+          expect(file(work).readAsBytesSync(), bytes);
+        },
+      );
+    }
+
+    for (final malformed in [
+      'api-key = "secret-canary"',
+      'api-key = ""',
+      'api-key = "CRED1_${'0' * 32}"',
+      'api-key = "cred1_${'0' * 31}"',
+      'api-key = "${reference.value}\\n"',
+      'api-key = "cred1_${'0' * 31}\\u0000"',
+      'api-key = false',
+      'api-key = 42',
+      'api-key = 1.5',
+      'api-key = ["secret-canary"]',
+      'api-key = { value = "secret-canary" }',
+      '[credentials.api-key]\nvalue = "secret-canary"',
+      '[[credentials.api-key]]\nvalue = "secret-canary"',
+    ]) {
+      test(
+        'malformed known association has safe attributable diagnostic: $malformed',
+        () async {
+          final original =
+              '${source('display-name = "Work"\n')}\n[credentials]\n$malformed\n';
+          seed(work, original);
+          seed(personal, source('display-name = "Personal"\n'));
+          final safe = isA<ConfigurationRecordFormatException>()
+              .having((error) => error.collection, 'collection', providers)
+              .having((error) => error.recordId, 'record', work)
+              .having(
+                (error) => error.message,
+                'fixed message',
+                'Credential slot "api-key" must contain a valid credential reference.',
+              );
+          await expectLater(host.load(providers, work), throwsA(safe));
+          final result = await host.enumerate(providers);
+          expect(result.records.single.id, personal);
+          expect(result.diagnostics.single.recordId, work);
+          expect(result.diagnostics.single.fileName, 'work-openai.toml');
+          expect(result.diagnostics.single.error, safe);
+          expect(
+            result.diagnostics.single.error.toString(),
+            isNot(contains('secret-canary')),
+          );
+          expect(file(work).readAsStringSync(), original);
+          expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+        },
+      );
+    }
+
+    for (final malformed in [
+      '"secret-canary"',
+      'true',
+      '42',
+      '[]',
+      '{}',
+      '{ "api-key" = "secret-canary" }',
+    ]) {
+      test(
+        'non-table credentials are unavailable without disclosing supplied content: $malformed',
+        () async {
+          final original =
+              'credentials = $malformed\n${source('display-name = "Work"\n')}';
+          seed(work, original);
+          final result = await host.enumerate(providers);
+          expect(result.records, isEmpty);
+          expect(result.diagnostics.single.recordId, work);
+          expect(
+            result.diagnostics.single.error,
+            isA<ConfigurationRecordFormatException>().having(
+              (error) => error.message,
+              'fixed message',
+              'credentials must be a regular table.',
+            ),
+          );
+          expect(file(work).readAsStringSync(), original);
+        },
+      );
+    }
+
+    test('array-of-tables credentials are not a regular table', () async {
+      final original =
+          '${source('display-name = "Work"\n')}\n[[credentials]]\napi-key = "${reference.value}"\n';
+      seed(work, original);
+      await expectLater(
+        host.load(providers, work),
+        throwsA(
+          isA<ConfigurationRecordFormatException>().having(
+            (error) => error.message,
+            'fixed message',
+            'credentials must be a regular table.',
+          ),
+        ),
+      );
+      expect(file(work).readAsStringSync(), original);
+    });
+
+    test(
+      'implicit credentials tables remain editable without synthetic text changes',
+      () async {
+        seed(
+          work,
+          'credentials.api-key = "${reference.value}" # association\n${source('display-name = "Work"\n')}',
+        );
+        var record = await host.load(providers, work);
+        expect(record.credentials, {apiKey: reference});
+        record = await host.setCredentialReference(record, apiKey, replacement);
+        expect(
+          file(work).readAsStringSync(),
+          contains(
+            'credentials.api-key = "${replacement.value}" # association',
+          ),
+        );
+        record = await host.setCredentialReference(record, apiKey, null);
+        expect(record.credentials, isEmpty);
+        expect(record.hasCredentialEntries, isFalse);
+        expect((await host.load(providers, work)).credentials, isEmpty);
+      },
+    );
+
+    test(
+      'association and value changes share stale byte baselines including no-ops',
+      () async {
+        final initial = await host.create(openai, work, {
+          'display-name': 'Work',
+        });
+        final associated = await host.setCredentialReference(
+          initial,
+          apiKey,
+          reference,
+        );
+        for (final operation in <Future<Object?> Function()>[
+          () => host.setCredentialReference(initial, apiKey, reference),
+          () => host.setCredentialReference(initial, apiKey, null),
+          () => host.validateCurrent(initial),
+          () => host.update(initial, initial.values),
+          () => host.delete(initial),
+        ]) {
+          await expectLater(
+            operation(),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+        }
+        final renamed = await host.update(associated, {
+          'display-name': 'Renamed',
+        });
+        for (final desired in [reference, replacement, null]) {
+          await expectLater(
+            host.setCredentialReference(associated, apiKey, desired),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+        }
+        final external = '${file(work).readAsStringSync()}# external bytes\n';
+        file(work).writeAsStringSync(external);
+        await expectLater(
+          host.validateCurrent(renamed),
+          throwsA(isA<ConfigurationConflictException>()),
+        );
+        await expectLater(
+          host.setCredentialReference(renamed, apiKey, reference),
+          throwsA(isA<ConfigurationConflictException>()),
+        );
+        expect(file(work).readAsStringSync(), external);
+        final reloaded = await host.load(providers, work);
+        expect(await host.validateCurrent(reloaded), same(reloaded));
+        file(work).deleteSync();
+        await expectLater(
+          host.validateCurrent(reloaded),
+          throwsA(isA<ConfigurationConflictException>()),
+        );
+        expect(file(work).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'equal association and validation preserve exact BOM CRLF bytes and mtime',
+      () async {
+        final original =
+            '\uFEFF# header\r\nrecordVersion = 0x1\r\nrecordType = "dev.adele.openai.api-key"\r\n[values]\r\ndisplay-name = \'Work\'\r\n[credentials]\r\napi-key = \'${reference.value}\' # keep\r\n';
+        seed(work, original);
+        final bytes = file(work).readAsBytesSync();
+        final modified = DateTime.utc(2001);
+        file(work).setLastModifiedSync(modified);
+        final loaded = await host.load(providers, work);
+        expect(
+          await host.setCredentialReference(loaded, apiKey, reference),
+          same(loaded),
+        );
+        expect(await host.validateCurrent(loaded), same(loaded));
+        expect(file(work).readAsBytesSync(), bytes);
+        expect(file(work).lastModifiedSync().toUtc(), modified);
+        expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+      },
+    );
+  }, skip: !Platform.isLinux);
 
   group('conditional record CRUD', () {
     group('exact directory capacity', () {
@@ -863,6 +1267,18 @@ void main() {
           throwsArgumentError,
         );
         await expectLater(otherCatalog.delete(loaded), throwsArgumentError);
+        await expectLater(
+          otherCatalog.validateCurrent(loaded),
+          throwsArgumentError,
+        );
+        await expectLater(
+          otherCatalog.setCredentialReference(
+            loaded,
+            apiKey,
+            CredentialReference.generate(),
+          ),
+          throwsArgumentError,
+        );
         final otherRoot = ConfigurationRecordStore(
           store: ConfigurationStore(
             PlatformStorageRoots(
@@ -880,6 +1296,18 @@ void main() {
           throwsArgumentError,
         );
         await expectLater(otherRoot.delete(loaded), throwsArgumentError);
+        await expectLater(
+          otherRoot.validateCurrent(loaded),
+          throwsArgumentError,
+        );
+        await expectLater(
+          otherRoot.setCredentialReference(
+            loaded,
+            apiKey,
+            CredentialReference.generate(),
+          ),
+          throwsArgumentError,
+        );
         expect(
           Directory(p.join(temporary.path, 'other-config')).existsSync(),
           isFalse,

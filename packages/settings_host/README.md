@@ -5,6 +5,9 @@
 [`ConfigurationStore`](../configuration_store/README.md) and
 [`TomlDocument`](../toml_document/README.md). It owns no file transaction, parser,
 native build, plugin discovery, or runtime reconfiguration mechanism.
+Its only credential-store import is the SDK-only
+`package:adele_credential_store/credential_reference.dart` identity entrypoint,
+not native storage operations.
 
 See [configuration architecture](../../docs/architecture/profiles-and-configuration.md)
 for ordinary settings versus Profiles, named records, and domain state, and
@@ -111,8 +114,8 @@ await records.delete(reloaded);
 
 `create` requires an unoccupied collection/record identity, including when another
 record type or malformed content occupies it. `load` returns an immutable
-`ConfigurationRecordSnapshot` with `id`, `type`, `collection`, typed known `values`,
-the native document, and a private conditional baseline. Absence is
+`ConfigurationRecordSnapshot` with `id`, `type`, `collection`, typed known `values`
+and `credentials`, the native document, and a private conditional baseline. Absence is
 `ConfigurationRecordNotFound`, not an empty valid record. Snapshots belong to the
 same catalog instance and exact file path; successful updates return the next
 baseline. Reconstructing the store and explicitly loading recovers persisted data.
@@ -122,7 +125,8 @@ present; omitted optional fields are removed, not defaulted. False, zero and emp
 strings remain explicit values. Unknown desired fields are rejected, while unknown
 persisted keys, tables and comments are retained by the native scalar editor. A
 snapshot cannot change its record type, collection or ID. Delete removes just that
-file, not credentials, other records, a mask or a cascading exclusion.
+file, not credentials, other records, a mask or a cascading exclusion. It rejects
+any remaining credential entries as described below.
 
 Desired-field validation happens before document edits or filesystem access.
 Unknown desired keys produce `ConfigurationRecordFormatException`; invalid known
@@ -142,6 +146,9 @@ recordType = "dev.adele.openai.api-key"
 [values]
 display-name = "Work OpenAI"
 endpoint = "https://api.openai.com/v1"
+
+[credentials]
+api-key = "cred1_00000000000000000000000000000000"
 ```
 
 The collection and filename supply stable identity; no editable ID is duplicated
@@ -157,6 +164,33 @@ dotted key can discard its implicit parent in the native editor. Such an update
 fails with `InvalidRecordValue` before saving, including when a later field edit
 encounters the missing parent. It never repairs the structure or publishes a
 record without the required table.
+
+### Credential References
+
+`[credentials]` is an optional regular table; absence and an empty table are valid
+and are not materialized by reads. Keys for declared slots must contain valid
+`CredentialReference` strings, never secret values. Missing slots remain absent.
+Malformed known references or a nonregular credentials table produce attributable
+`ConfigurationRecordFormatException` diagnostics without echoing the supplied
+credential value. Unknown keys and nested content are not parsed as references or
+adopted as declarations, and survive ordinary value and known-slot edits.
+
+`ConfigurationRecordSnapshot.credentials` is an immutable
+`Map<RecordCredentialSlotId, CredentialReference>` of known associations.
+`hasCredentialEntries` includes all direct entries, including unknown nested tables
+and arrays. `delete` throws `ConfigurationRecordCredentialsPresent` if any remain;
+there is no implicit OS deletion, unknown-reference cleanup or bypass flag.
+
+`setCredentialReference(expected, slot, reference)` changes only one declared slot;
+null removes it. The native document API creates a missing regular table explicitly,
+not by appending text, and preserves unrelated content. Changes, no-ops and removal
+use the same conditional whole-record baseline as ordinary values.
+`validateCurrent(expected)` checks that baseline without writing or replacing the
+snapshot, returning `expected` on success. Conflicts require deliberate reload.
+Neither operation accesses the keyring or authenticates a provider. The
+[app-private association coordinator](../../docs/architecture/profiles-and-configuration.md#record-association-lifecycle)
+owns authorization, protected bindings, OS mutation ordering and partial-failure
+recovery; this adapter owns only nonsecret persistence.
 
 ### Enumeration and Safety
 
@@ -201,9 +235,10 @@ whole result, not a successful truncated list. External path changes after the
 scan can still race observation; the established CFG2 uncooperative-writer and
 protected-root limitations below apply. This is not an OS sandbox.
 
-The real OpenAI declaration stores only nonsecret configuration and does not start
-or reconfigure a provider. Credentials remain external. No Profiles, record editing
-UI, secret entry, schema migrations, or runtime consumption is implemented here.
+The real OpenAI declaration stores only nonsecret configuration and references and
+does not start or reconfigure a provider. Secret values remain external. No Profiles,
+record editing UI, secret entry, schema migrations, or runtime consumption is
+implemented here.
 
 ## Preservation and Limits
 
@@ -242,6 +277,8 @@ public semantic target `adele_settings` needs no Rust/native preparation.
 `configuration_records_test.dart` publishes the actual OpenAI schema through the
 maintained stock preparation helper, discovers it without executable startup, and
 exercises independent records using real native TOML and conditional persistence.
+It also covers credential-reference edits, unknown-content preservation, malformed
+known entries, deletion guards, and conflicts shared with ordinary value edits.
 A test-only job declaration covers Boolean, bounded integer and enum reuse.
 The desktop's
 [`global_settings_service_test.dart`](../../app/test/core/global_settings_service_test.dart)

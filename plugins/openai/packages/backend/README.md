@@ -18,7 +18,8 @@ for startup/auth ownership and limitations.
 The plugin-root [`records.schema.json`](../../records.schema.json) is the
 authoritative data-only declaration for `dev.adele.openai.api-key` in the
 `providers` collection. It declares a required display name and optional API
-endpoint, with no API-key, credential, or secret field. Stock preparation copies
+endpoint, plus an `api-key` credential slot separate from ordinary fields. No
+secret or credential reference is embedded in the schema. Stock preparation copies
 the authored bytes into the installation and references them through the optional
 installation-level `recordsSchema`, independently of backend/frontend activation.
 The catalog can discover this metadata without starting the backend or loading
@@ -29,6 +30,9 @@ the stock ChatGPT-only startup policy, or supply runtime credentials. Backend
 startup/auth behavior is unchanged; record metadata is not a live provider
 registration. The preparation path belongs to the
 [toolchain guide](../../../../docs/development/toolchain.md#local-plugin-compilation).
+Nonsecret reference persistence and protected local credential bindings belong to
+the [host association lifecycle](../../../../docs/architecture/profiles-and-configuration.md#record-association-lifecycle),
+not this backend; no record credential is delivered to runtime authentication.
 
 ## Reasoning Summary Requests
 

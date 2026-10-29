@@ -74,13 +74,20 @@ void main() {
     };
     for (final entry in invalid.entries) {
       test('rejects ${entry.key} without storage access', () async {
-        await _expectFailure(
+        expect(
           () => service.store(
             CredentialReference.parse(entry.value),
             CredentialSecret(_firstValue),
           ),
-          CredentialFailureKind.invalidReference,
-          secret: _firstValue,
+          throwsA(
+            isA<FormatException>()
+                .having((error) => error.source, 'source', isNull)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  'Invalid credential reference.',
+                ),
+          ),
         );
         expect(storage.calls, isEmpty);
         expect(storage.values.isEmpty, isTrue);
