@@ -4,6 +4,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration_backend.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -31,6 +32,10 @@ void main() {
               expect(proxy.complete, throwsA(isA<InvalidRunOperation>()));
               expect(
                 () => proxy.fail(StateError('no authority')),
+                throwsA(isA<InvalidRunOperation>()),
+              );
+              await expectLater(
+                proxy.readHistoricalRun(RunId('history')),
                 throwsA(isA<InvalidRunOperation>()),
               );
               await expectLater(
@@ -86,6 +91,175 @@ void main() {
       expect(backend.executionCount, 0);
     },
   );
+
+  for (final code in ['unavailable', 'current_run', 'result_too_large']) {
+    test(
+      'declared history $code is catchable without poisoning the proxy',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        fixture.host.historyFailure = RemoteHistoricalRunEvidenceFailure(
+          code: code,
+          message: 'Safe historical read failure',
+        );
+        fixture.onStart = (host) async {
+          host.start();
+          await expectLater(
+            host.readHistoricalRun(RunId('missing')),
+            throwsA(
+              isA<HistoricalRunEvidenceFailure>()
+                  .having((error) => error.code, 'code', code)
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    'Safe historical read failure',
+                  ),
+            ),
+          );
+          host.validateBinding();
+          expect(host.state, RunState.running);
+          fixture.host.historyFailure = null;
+          final history = await host.readHistoricalRun(RunId('history'));
+          expect(history.record.id, RunId('history'));
+          expect(history.activity.models, isEmpty);
+          final turn = await host.invokeModel(_material());
+          expect(turn.settlement, ModelSettlement.completed);
+          host.complete();
+        };
+        final id = await fixture.materialize();
+        expect(
+          await fixture.backend.start(id, 'read-token'),
+          RemoteRunState.completed,
+        );
+        expect(fixture.host.events, [
+          'start',
+          'history:missing',
+          'history:history',
+          'model',
+          'complete',
+        ]);
+        expect(fixture.host.failure, isNull);
+        expect(fixture.backend.executionCount, 0);
+        expect(fixture.executions.single.closeCount, 1);
+        expect(
+          fixture.calls.every((call) => call.context == 'read-token'),
+          isTrue,
+        );
+      },
+    );
+  }
+
+  test(
+    'history is available only during active start/resume, not waiting or close',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      fixture.host.wait = true;
+      fixture.onStart = (host) async {
+        expect(host.state, RunState.created);
+        await host.readHistoricalRun(RunId('history'));
+        expect(host.state, RunState.created);
+        host.start();
+        final turn = await host.invokeModel(_material());
+        await host.processProposal(
+          tools: turn.tools,
+          proposal: (turn.output[2] as ModelToolProposalOutput).proposal,
+        );
+        expect(host.state, RunState.waiting);
+        await host.readHistoricalRun(RunId('history'));
+      };
+      fixture.onResume = (host, resolution) async {
+        expect(host.state, RunState.waiting);
+        await host.readHistoricalRun(RunId('history'));
+        await host.resolveApproval(resolution);
+        await host.readHistoricalRun(RunId('history'));
+        host.complete();
+      };
+      final id = await fixture.materialize();
+      final proxy = fixture.proxies.single;
+      fixture.executions.single.onClose = () async {
+        await expectLater(
+          proxy.readHistoricalRun(RunId('history')),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+      };
+      await expectLater(
+        proxy.readHistoricalRun(RunId('history')),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.calls, isEmpty);
+      expect(await fixture.backend.start(id, 'start'), RemoteRunState.waiting);
+      final callsBefore = fixture.calls.length;
+      await expectLater(
+        proxy.readHistoricalRun(RunId('history')),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.calls, hasLength(callsBefore));
+      expect(
+        await fixture.backend.resolveApproval(id, _approval(), 'resume'),
+        RemoteRunState.completed,
+      );
+      final reads = fixture.calls
+          .where(
+            (call) =>
+                call.method ==
+                remoteOrchestrationHostServiceReadHistoricalRunId,
+          )
+          .toList();
+      expect(reads.map((call) => call.context), [
+        'start',
+        'start',
+        'resume',
+        'resume',
+      ]);
+      expect(
+        reads.every(
+          (call) =>
+              call.payload.length == 1 && call.payload['runId'] == 'history',
+        ),
+        isTrue,
+      );
+      expect(fixture.executions.single.closeCount, 1);
+      final afterClose = fixture.calls.length;
+      await expectLater(
+        proxy.readHistoricalRun(RunId('history')),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.calls, hasLength(afterClose));
+    },
+  );
+
+  for (final primary in <Object>[
+    const _RpcFailure(),
+    const AdeleProtocolException('malformed historical response'),
+  ]) {
+    test(
+      'undeclared history ${primary.runtimeType} still poisons the proxy',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        fixture.rpcFailure = primary;
+        fixture.failMethod = remoteOrchestrationHostServiceReadHistoricalRunId;
+        fixture.onStart = (host) async {
+          host.start();
+          await expectLater(
+            host.readHistoricalRun(RunId('history')),
+            throwsA(same(primary)),
+          );
+          expect(host.validateBinding, throwsA(same(primary)));
+          expect(host.complete, throwsA(same(primary)));
+        };
+        final id = await fixture.materialize();
+        await expectLater(
+          fixture.backend.start(id, 'token'),
+          throwsA(same(primary)),
+        );
+        expect(fixture.host.events, ['start']);
+        expect(fixture.backend.executionCount, 0);
+        expect(fixture.executions.single.closeCount, 1);
+      },
+    );
+  }
 
   test(
     'synchronous lifecycle queues flush in order and complete before response',
@@ -840,9 +1014,31 @@ final class _Host implements RemoteOrchestrationHostService {
   Completer<void>? completeGate;
   RemoteRunState state = RemoteRunState.created;
   RemoteOrchestrationFailure? failure;
+  RemoteHistoricalRunEvidenceFailure? historyFailure;
   Object? modelFailure;
   bool wait = false;
   bool wrongTransition = false;
+
+  @override
+  Future<RemoteHistoricalRunEvidence> readHistoricalRun(String runId) async {
+    events.add('history:$runId');
+    if (historyFailure != null) throw historyFailure!;
+    return RemoteHistoricalRunEvidence.fromLocal(
+      HistoricalRunEvidence.fromActivity(
+        record: RunRecord(
+          id: RunId(runId),
+          sessionId: SessionId('session'),
+          state: RunTerminalState.completed,
+        ),
+        activity: RunActivitySnapshot(
+          runId: RunId(runId),
+          sessionId: SessionId('session'),
+          state: RunState.completed,
+          sequence: 0,
+        ),
+      ),
+    );
+  }
 
   @override
   Future<RemoteRunState> transition(
@@ -940,10 +1136,24 @@ final class _Channel implements AdeleRequestChannel {
       'payload': payload,
     });
     if (response['ok'] != true) {
-      throw StateError('Host dispatcher failed: ${response['error']}');
+      throw _WireFailure(response['error']! as Map);
     }
     return response['payload'];
   }
+}
+
+final class _WireFailure implements AdeleRemoteFailure {
+  _WireFailure(this.error);
+  final Map<Object?, Object?> error;
+  @override
+  String? get declaredFailureType => error['declaredFailureType'] as String?;
+  @override
+  String get code => error['code']! as String;
+  @override
+  String get message => error['message']! as String;
+  @override
+  Map<String, Object?> get details =>
+      Map<String, Object?>.from(error['details']! as Map);
 }
 
 final class _RpcFailure implements AdeleRemoteFailure {

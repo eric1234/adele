@@ -78,6 +78,7 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'order': 100,
       'initialize': 'initializeChatMainContent',
       'entrypoint': 'buildChat',
+      'richDocumentEditor': true,
       'sessionExecution': true,
       'backendServices': ['chat.session'],
       'strategyAffinity': 'owningBackend',

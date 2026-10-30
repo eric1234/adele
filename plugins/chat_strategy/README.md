@@ -50,7 +50,7 @@ materializes the resolved or explicitly pinned contribution with
 select another strategy ID after Session creation.
 The product `Session` retains its canonical identity and selected strategy;
 Chat owns conversation, configuration, and Draft Request separately in its backend
-store. The current Draft Request is exact plain text.
+store. The Draft Request is an exact String, used as Markdown by the rich frontend.
 The returned execution exposes only the public `start` and `resolveApproval`
 operations, not a Chat-specific loop implementation.
 
@@ -225,7 +225,8 @@ matches the public `chatStrategyId`. A mismatch opens nothing and acquires no
 execution or backend services. Chat needs no separate Agent Interaction plugin
 or exclusive renderer resolver to participate.
 
-The descriptor explicitly requests `sessionExecution: true`, allowlists
+The descriptor explicitly requests `sessionExecution: true` and
+`richDocumentEditor: true`, allowlists
 `chat.session`, and declares `strategyAffinity: 'owningBackend'`. For the actual
 pane, core `PreparedSessionServices` validates exact contribution/installation
 ownership, the sibling backend's actual strategy registration origin, and any

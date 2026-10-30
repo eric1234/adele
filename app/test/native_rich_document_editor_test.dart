@@ -177,6 +177,202 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test('blankness uses model text rather than Markdown scaffolding', () {
+    for (final source in [
+      '',
+      ' \t\n',
+      '# ',
+      '- ',
+      '1. ',
+      '> ',
+      '```dart\n\n```',
+      '```\n \t\n```',
+      '# \n\n- \n\n```\n\n```',
+    ]) {
+      final owner = NativeRichDocumentEditor(markdown: source);
+      expect(owner.unsupportedReason, isNull, reason: source);
+      expect(owner.snapshot()['isBlank'], isTrue, reason: source);
+      expect(owner.snapshot()['markdown'], source);
+      owner.dispose();
+    }
+    for (final source in [
+      '# title',
+      '- parent\n  - child',
+      '```\nx\n```',
+      '![unsupported](image.png)',
+    ]) {
+      final owner = NativeRichDocumentEditor(markdown: source);
+      expect(owner.snapshot()['isBlank'], isFalse, reason: source);
+      expect(owner.snapshot()['markdown'], source);
+      owner.dispose();
+    }
+  });
+
+  testWidgets(
+    'editing gate closes focused input and retains document and undo',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(markdown: 'Keep');
+      await tester.pumpWidget(
+        host(SizedBox(height: 140, child: owner.buildView())),
+      );
+      await frames(tester);
+      final state = await select(tester, 'Keep');
+      final undo = state.undoManager;
+      await append(tester, '!');
+      final snapshot = owner.snapshot();
+      final client = tester.testTextInput.log.lastWhere(
+        (call) => call.method == 'TextInput.setClient',
+      );
+      owner.setEditingEnabled(false);
+      expect(state.editable, isFalse);
+      expect(owner.editingEnabled, isFalse);
+      expect(owner.readOnly, isFalse);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.textInput.name,
+        SystemChannels.textInput.codec.encodeMethodCall(
+          MethodCall('TextInputClient.updateEditingState', [
+            (client.arguments as List).first,
+            const TextEditingValue(text: 'stale').toJSON(),
+          ]),
+        ),
+        (_) {},
+      );
+      // The old command list exists until rebuild: it must not pop undo history.
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      editor.commandShortcutEvents
+          .firstWhere((event) => event.key == 'undo')
+          .handler(state);
+      await frames(tester);
+      await select(tester, 'Keep!', start: 0, end: 4);
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      await control(tester, LogicalKeyboardKey.keyC);
+      expect(clipboard, 'Keep');
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], snapshot['markdown']);
+      expect(owner.revision, snapshot['revision']);
+      owner.setEditingEnabled(true);
+      await frames(tester);
+      expect(await select(tester, 'Keep!'), same(state));
+      expect(state.undoManager, same(undo));
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], 'Keep');
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(owner.snapshot()['markdown'], 'Keep!');
+      owner.dispose();
+      expect(() => owner.setEditingEnabled(true), throwsStateError);
+      expect(owner.editingEnabled, isFalse);
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final code in [false, true]) {
+    testWidgets('safe snapshots reject composing replacements (code: $code)', (
+      tester,
+    ) async {
+      final owner = NativeRichDocumentEditor(
+        markdown: code ? '```dart\nab\n```' : 'ab',
+      );
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'ab', start: 0, end: 1);
+      var value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+      final composing = TextEditingValue(
+        text: value.text.replaceRange(
+          value.selection.start,
+          value.selection.end,
+          'x',
+        ),
+        selection: TextSelection.collapsed(offset: value.selection.start + 1),
+        composing: TextRange(
+          start: value.selection.start,
+          end: value.selection.start + 1,
+        ),
+      );
+      tester.testTextInput.editingState = composing.toJSON();
+      tester.testTextInput.updateEditingValue(composing);
+      expect(owner.snapshot()['error'], 'composition_pending');
+      await frames(tester);
+      expect(state.document.root.children.single.delta!.toPlainText(), 'xb');
+      expect(owner.snapshot()['markdown'], isNull);
+      expect(owner.snapshot()['isBlank'], isNull);
+      expect(owner.snapshot()['error'], 'composition_pending');
+      final revision = owner.revision;
+      var notices = 0;
+      owner.addListener(() => notices++);
+      value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+      await input(tester, value.copyWith(composing: TextRange.empty));
+      expect(owner.snapshot()['markdown'], code ? '```dart\nxb\n```' : 'xb');
+      expect(owner.snapshot()['isBlank'], isFalse);
+      expect(owner.revision, revision);
+      expect(notices, greaterThan(0));
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(state.document.root.children.single.delta!.toPlainText(), 'ab');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('disable and blur do not silently finalize native composition', (
+    tester,
+  ) async {
+    final owner = NativeRichDocumentEditor(markdown: 'a');
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final state = await select(tester, 'a');
+    var value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      TextEditingValue(
+        text: '${value.text}x',
+        selection: TextSelection.collapsed(offset: value.text.length + 1),
+        composing: TextRange(
+          start: value.text.length,
+          end: value.text.length + 1,
+        ),
+      ),
+    );
+    expect(owner.snapshot()['error'], 'composition_pending');
+    tester
+        .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
+        .focusNode!
+        .unfocus();
+    await frames(tester);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
+    expect(owner.snapshot()['error'], 'composition_pending');
+    await tester.pumpWidget(host(const SizedBox.shrink()));
+    await frames(tester);
+    expect(owner.snapshot()['error'], 'composition_pending');
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    expect(await select(tester, 'ax'), same(state));
+    expect(owner.snapshot()['error'], 'composition_pending');
+    owner.setEditingEnabled(false);
+    expect(tester.testTextInput.hasAnyClients, isFalse);
+    await frames(tester);
+    expect(owner.snapshot()['error'], 'composition_pending');
+    expect(state.document.root.children.single.delta!.toPlainText(), 'ax');
+    owner.setEditingEnabled(true);
+    await frames(tester);
+    await select(tester, 'ax');
+    expect(owner.snapshot()['error'], 'composition_pending');
+    value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+    await input(
+      tester,
+      value.copyWith(composing: const TextRange(start: 2, end: 3)),
+    );
+    await input(tester, value.copyWith(composing: TextRange.empty));
+    expect(owner.snapshot()['markdown'], 'ax');
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'input, formatting, copy, cut, paste and undo use native routes',
     (tester) async {
@@ -316,6 +512,9 @@ void main() {
       await tester.pumpWidget(host(owner.buildView()));
       await frames(tester);
       final state = await select(tester, 'Read only', start: 0, end: 4);
+      owner.setEditingEnabled(false);
+      owner.setEditingEnabled(true);
+      expect(owner.editingEnabled, isFalse);
       await control(tester, LogicalKeyboardKey.keyB);
       await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
       await frames(tester);
@@ -1138,6 +1337,8 @@ void main() {
       final owner = NativeRichDocumentEditor(markdown: markdown);
       expect(owner.unsupportedReason, isNotNull);
       expect(owner.readOnly, isTrue);
+      owner.setEditingEnabled(true);
+      expect(owner.editingEnabled, isFalse);
       expect(owner.snapshot()['markdown'], markdown);
       await tester.pumpWidget(host(owner.buildView()));
       await frames(tester);

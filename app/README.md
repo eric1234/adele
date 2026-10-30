@@ -684,7 +684,7 @@ the dependency compatibility patches, licensing, and recovery commands belong to
 the [toolchain policy](../docs/development/toolchain.md#native-rich-editor-dependency).
 [`NativeRichDocumentEditor`](lib/editor/native_rich_document_editor.dart) owns one
 in-memory AppFlowy document, editor state, transaction observation, and undo history.
-It accepts supplied Markdown and a fixed read-only option, without a document ID,
+It accepts supplied Markdown and a fixed read-only ceiling, without a document ID,
 file path, storage service, or Session semantics. Ordinary rebuilding and complete
 native view unmount/remount preserve the document and undo; focus and viewport are
 view-local. Simultaneous mounts of one owner fail explicitly rather than taking over
@@ -713,11 +713,24 @@ reuse. A future consumer needing navigation-independent ownership must deliberat
 integrate with host retention; this primitive does not supply persistence.
 
 The public [UI bridge](../packages/ui/lib/rich_document_editor_bridge.dart) exposes
-creation, view construction, invalidation subscriptions, explicit Markdown
-snapshots, and release. Notifications carry no document and selection alone does
+creation, view construction, editing enablement, invalidation subscriptions,
+explicit Markdown snapshots, and release. Disabling native input closes an already
+focused input client without replacing the document or undo history. Re-enabling
+cannot override a fixed read-only or unsupported import, disposal, or retirement.
+Notifications carry no document and selection alone does
 not notify. The revision is document-transaction invalidation, not a dirty flag,
 plugin persistence version, or save acknowledgement. Snapshots copy scalar data
 across the evaluator boundary; AppFlowy state and native controllers never cross it.
+Snapshots report `isBlank` from model text rather than Markdown scaffolding.
+Native composition and settling input deltas return `markdown: null` with
+`composition_pending`; callers must wait for safe completion before finalizing.
+Pinned AppFlowy applies composing text to the model, but input closure does not
+establish a commit. The adapter retains that safety marker across blur, disabling,
+and remount, and notifies on composition completion even without a text revision.
+Prepared Main Content descriptors must explicitly opt into `richDocumentEditor`
+(default false). `PreparedMainContentHost` installs the bridge only for the admitted
+mounted pane, not initialization, input actions, finite operations, or other roles.
+Retirement synchronously revokes the exact presentation and its native owners.
 
 Only supported text block builders and editing shortcuts are installed. No slash
 menu, floating formatting menu, link navigation/menu, image/file insertion, native
@@ -804,8 +817,11 @@ round-trip fidelity or complete IME/composition semantics.
 The focused native, conversion, and compiled-EVC tests are automatically discovered
 by the desktop target; see [validation](../docs/development/testing.md#rich-document-editor-checks).
 These are pinned Linux Flutter widget-engine checks, not human keyboard/IME
-acceptance or macOS/Windows packaging evidence. Chat's composer, backend contracts,
-and persistent plain-text Draft Request semantics are unchanged.
+acceptance or macOS/Windows packaging evidence. Stock Chat uses this shared bridge
+through normal prepared Main Content hosting; its own generated backend service
+still stores a String and owns draft persistence/atomic acceptance. See the
+[Chat frontend map](../plugins/chat_strategy/packages/frontend/README.md#rich-composer)
+for composer lifecycle, snapshot failure handling, compact layout, and limitations.
 
 ### Native terminal surface
 
@@ -1742,12 +1758,17 @@ and is captured by Chat for each Run. Session snapshots and SQL do not retain it
 active or later Runs in the same application startup, and does not change host
 policy or approval behavior.
 
-The current Draft Request is plain text. Chat's prepared frontend restores it and
+The Draft Request is a Markdown String. Chat's prepared frontend hydrates the shared
+native rich editor only after canonical draft loading and
 sequentially saves coalesced edits through its own backend service. Send flushes
-the latest local text, atomically submits/clears the draft, then schedules a Run.
+the latest safe Markdown snapshot, atomically submits/clears the draft, then
+replaces the native owner with a fresh empty undo boundary and schedules a Run.
 Scheduling retry reuses the accepted entry without duplicating history. Save or
-submission failure preserves visible local text; refreshing history cannot erase
-newer edits. None of these semantics requires app-owned Chat storage or codecs.
+submission failure preserves the rich document and undo; refreshing history cannot
+erase newer edits. Unsafe serialization or pending composition refuses saving,
+submission, and ordinary departure. Unsupported imported Markdown stays unchanged
+and read-only, with unchanged submission available. None of these semantics requires
+app-owned Chat storage or codecs, and native editability grants no Run authority.
 
 `SessionExecutionController` resolves the currently selected provider binding and
 builds a Session-authorized tool catalog for each new Run. Continuations reuse

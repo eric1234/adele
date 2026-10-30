@@ -1,6 +1,7 @@
 import 'package:adele_ui/inspection_display.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/rich_document_editor_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
@@ -65,7 +66,13 @@ class ChatFrontend extends StatefulWidget {
 }
 
 class _ChatFrontendState extends State<ChatFrontend> {
-  TextEditingController controller = TextEditingController();
+  String editor = '';
+  String draftMarkdown = '';
+  String documentFailure = '';
+  String importWarning = '';
+  int editorRevision = 0;
+  bool draftIsBlank = true;
+  void Function() editorListener = () {};
   // The evaluator requires an explicit initializer to box nullable fields.
   // ignore: avoid_init_to_null
   ChatSessionSnapshot? snapshot = null;
@@ -97,10 +104,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
     final initial = snapshot;
     if (initial != null) {
       associateActivity(initial);
-      // The pinned evaluator's text setter falls through to an unimplemented
-      // superclass setter. Constructor text restores without that bridge bug.
-      controller.dispose();
-      controller = TextEditingController(text: initial.draftRequest);
+      createEditor(initial.draftRequest);
     }
     historyFailure = widget.initialFailure;
     sessionStateRevision = widget.initialStateRevision;
@@ -115,6 +119,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
 
   void executionChanged() {
     if (disposed) return;
+    reconcileEditing();
     setState(() {});
     reconcileSessionState();
   }
@@ -152,13 +157,13 @@ class _ChatFrontendState extends State<ChatFrontend> {
             // Only the first successful load restores the composer. Later
             // history reads must not replace this view's locally edited draft.
             if (snapshot == null && draftRevision == 0) {
-              controller.dispose();
-              controller = TextEditingController(text: next.draftRequest);
+              createEditor(next.draftRequest);
             }
             snapshot = next;
             associateActivity(next);
             historyFailure = '';
           });
+          reconcileEditing();
         }
       } else {
         setState(() {
@@ -179,10 +184,76 @@ class _ChatFrontendState extends State<ChatFrontend> {
     }
   }
 
-  void draftChanged(String value) {
-    if (disposed || submitting || acceptedEntry != null) return;
-    draftRevision++;
-    retryDraftSave();
+  void createEditor(String markdown) {
+    releaseEditor();
+    final handle = createRichDocumentEditor(markdown, false);
+    editor = handle;
+    final data = snapshotRichDocumentEditor(handle);
+    editorRevision = data['revision'] as int;
+    draftMarkdown = markdown;
+    draftIsBlank = data['isBlank'] == true;
+    documentFailure = '';
+    importWarning = data['unsupportedReason'] == null
+        ? ''
+        : 'This Markdown is not supported for rich editing. The original is '
+              'preserved read-only and can be sent unchanged.';
+    editorListener = () => editorChanged(handle);
+    subscribeRichDocumentEditor(handle, editorListener);
+    reconcileEditing();
+  }
+
+  void releaseEditor() {
+    final handle = editor;
+    editor = '';
+    if (handle.isEmpty) return;
+    unsubscribeRichDocumentEditor(handle, editorListener);
+    releaseRichDocumentEditor(handle);
+  }
+
+  void reconcileEditing() {
+    if (disposed || editor.isEmpty) return;
+    setRichDocumentEditorEditingEnabled(
+      editor,
+      snapshot != null &&
+          !submitting &&
+          acceptedEntry == null &&
+          readSessionExecution()['canStart'] == true,
+    );
+  }
+
+  bool captureDraft() {
+    if (editor.isEmpty) return true;
+    final data = snapshotRichDocumentEditor(editor);
+    final nextRevision = data['revision'] as int;
+    if (nextRevision != editorRevision) {
+      editorRevision = nextRevision;
+      draftRevision++;
+    }
+    if (data['markdown'] == null) {
+      documentFailure = data['error'] == 'composition_pending'
+          ? 'Finish text composition before saving, sending, or leaving Chat.'
+          : 'This edit cannot be saved as Markdown. Correct or Undo it before '
+                'sending or leaving Chat. The last saved draft is unchanged.';
+      return false;
+    }
+    documentFailure = '';
+    draftMarkdown = data['markdown'] as String;
+    draftIsBlank = data['isBlank'] == true;
+    return true;
+  }
+
+  void editorChanged(String handle) {
+    if (disposed || editor != handle) return;
+    // While a write is in flight, its settlement takes the next snapshot. Native
+    // notifications carry no content and cannot replace the latest document.
+    if (draftSave != null) return;
+    final previousRevision = draftRevision;
+    final wasUnsafe = documentFailure.isNotEmpty;
+    final safe = captureDraft();
+    setState(() {});
+    if (safe && (draftRevision != previousRevision || wasUnsafe)) {
+      retryDraftSave();
+    }
   }
 
   void retryDraftSave() {
@@ -191,6 +262,11 @@ class _ChatFrontendState extends State<ChatFrontend> {
   }
 
   Future<bool> saveDraft() async {
+    if (disposed) return false;
+    if (!captureDraft()) {
+      setState(() {});
+      return false;
+    }
     final pending = draftSave;
     if (pending != null) return await pending;
     if (savedDraftRevision == draftRevision) return true;
@@ -211,19 +287,20 @@ class _ChatFrontendState extends State<ChatFrontend> {
   Future<bool> persistDraft() async {
     while (!disposed && savedDraftRevision != draftRevision) {
       final int requestedRevision = draftRevision;
-      final String content = controller.text;
+      final String content = draftMarkdown;
       final ChatSessionServiceClient client = widget.client;
       final result = await settleSessionOperation(
         client.setDraftRequest(sessionId, content),
       );
       if (disposed) return false;
+      final safe = captureDraft();
       if (result[0] != true) {
         setState(() {
           draftFailure = 'Draft was not saved. Your text is preserved.';
         });
         // A newer queued edit still gets its own attempt. Never retry the same
         // failed revision automatically, including after session_busy.
-        if (requestedRevision == draftRevision) {
+        if (!safe || requestedRevision == draftRevision) {
           draftSave = null;
           return false;
         }
@@ -235,6 +312,11 @@ class _ChatFrontendState extends State<ChatFrontend> {
           });
         }
       }
+      if (!safe) {
+        setState(() {});
+        draftSave = null;
+        return false;
+      }
     }
     draftSave = null;
     return !disposed;
@@ -243,11 +325,17 @@ class _ChatFrontendState extends State<ChatFrontend> {
   Future<void> submit() async {
     if (disposed || submitting || snapshot == null) return;
     if (readSessionExecution()['canStart'] != true) return;
-    if (acceptedEntry == null && controller.text.trim().isEmpty) return;
+    // Read before disabling input: closing an input client is not an IME commit.
+    if (acceptedEntry == null) {
+      final safe = captureDraft();
+      setState(() {});
+      if (!safe || draftIsBlank || draftMarkdown.trim().isEmpty) return;
+    }
     setState(() {
       submitting = true;
       failure = '';
     });
+    reconcileEditing();
     if (acceptedEntry == null) {
       final saved = await saveDraft();
       if (disposed) return;
@@ -255,6 +343,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
         setState(() {
           submitting = false;
         });
+        reconcileEditing();
         return;
       }
       final ChatSessionServiceClient client = widget.client;
@@ -267,12 +356,15 @@ class _ChatFrontendState extends State<ChatFrontend> {
           failure = 'Message was not accepted. Your draft is preserved.';
           submitting = false;
         });
+        reconcileEditing();
         return;
       }
       final entry = result[1] as ChatEntry;
       revision++;
       acceptedEntry = entry;
-      controller.clear();
+      // Backend acceptance owns clearing. A new owner is an explicit undo and
+      // callback boundary: submitted content cannot become an unsent draft again.
+      createEditor('');
       draftRevision++;
       savedDraftRevision = draftRevision;
       final current = snapshot!;
@@ -297,6 +389,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
         failure = 'Message accepted, but Run could not start. Retry Send.';
         submitting = false;
       });
+      reconcileEditing();
       return;
     }
     final String runHandle = result[1] as String;
@@ -310,6 +403,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
       setState(() {
         submitting = false;
       });
+      reconcileEditing();
     }
   }
 
@@ -318,7 +412,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
     disposed = true;
     unregisterSessionPrepareToDeactivate(deactivation);
     unsubscribeSessionExecution(listener);
-    controller.dispose();
+    releaseEditor();
     super.dispose();
   }
 
@@ -445,16 +539,21 @@ class _ChatFrontendState extends State<ChatFrontend> {
         );
       }
     }
-    // flutter_eval 0.8.2 does not bridge TextField.decoration.
+    if (documentFailure.isNotEmpty) children.add(Text(documentFailure));
+    if (importWarning.isNotEmpty) children.add(Text(importWarning));
     children.add(Text('Ask ADELE...'));
-    children.add(
-      TextField(
-        controller: controller,
-        enabled: canSubmit && acceptedEntry == null,
-        onChanged: (String value) => draftChanged(value),
-        onSubmitted: (String value) => submit(),
-      ),
-    );
+    if (editor.isNotEmpty) {
+      children.add(
+        SizedBox(height: 180, child: buildRichDocumentEditor(editor)),
+      );
+      children.add(
+        Text(
+          'Enter adds content. Use Send to submit. Selections spanning code and '
+          'other blocks can be copied, but must be edited within one block.',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+      );
+    }
     if (canSubmit) {
       children.add(
         Align(

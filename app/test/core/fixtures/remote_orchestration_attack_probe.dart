@@ -244,6 +244,11 @@ final class _AttackProbe implements RemoteOrchestrationService {
             payload['proposal'] as String,
           );
           result = {'ok': true};
+        case 'history':
+          final evidence = await client(
+            payload['context'] as String,
+          ).readHistoricalRun(payload['runId'] as String);
+          result = {'ok': true, 'evidence': evidence.toLocal().toJson()};
         case 'approval':
           await client(payload['context'] as String).applyCurrentApproval();
           result = {'ok': true};

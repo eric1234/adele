@@ -5,12 +5,14 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
+import 'package:adele_desktop/frontend/rich_document_editor_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -45,6 +47,7 @@ void main() {
               ..addPlugin(const MainContentDeclarations())
               ..addPlugin(const ContributionDeclarations())
               ..addPlugin(const EnvironmentCapabilityAccessDeclarations())
+              ..addPlugin(const RichDocumentEditorDeclarations())
               ..entrypoints.add(_library))
             .compile({
               'prepared_panes': {'main.dart': _source},
@@ -56,6 +59,7 @@ void main() {
                   'main_content_bridge',
                   'contribution_bridge',
                   'environment_capability_bridge',
+                  'rich_document_editor_bridge',
                 ])
                   '$library.dart': await File(
                     '../packages/ui/lib/$library.dart',
@@ -100,6 +104,8 @@ void main() {
     bool actionCommand = false,
     String actionEntrypoint = 'buildInput',
     bool capabilityProbe = false,
+    bool? richDocumentEditor,
+    bool richOperation = false,
   }) async {
     final root = await Directory(
       '${temporary.path}/case-${sequence++}',
@@ -127,6 +133,9 @@ void main() {
                 'library': _library,
                 'initialize': initialize,
                 'entrypoint': entrypoint,
+                'richDocumentEditor': ?richDocumentEditor,
+                if (richOperation)
+                  'operations': {'rich': 'richEditorOperation'},
                 if (capabilityProbe) ...{
                   for (final field in [
                     'capabilities',
@@ -346,6 +355,300 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final granted in [null, false, true]) {
+    testWidgets(
+      'rich-document editor pane admission requires opt-in $granted',
+      (tester) async {
+        final records = <_Binding>[];
+        await tester.runAsync(
+          () => activate(
+            richDocumentEditor: granted,
+            entrypoint: 'buildRichPane',
+            host: _recordingHost(records),
+          ),
+        );
+        expect(records, isEmpty);
+        await tester.pumpWidget(host());
+        await _frames(tester);
+        expect(find.text('Independent content'), findsOneWidget);
+        if (granted == true) {
+          final editor = tester
+              .widget<NativeRichDocumentEditorView>(
+                find.byType(NativeRichDocumentEditorView),
+              )
+              .editor;
+          final handle = records.single.call('currentRichHandle') as String;
+          expect(editor.snapshot()['markdown'], 'draft a');
+          expect(
+            (records.single.call('snapshotRich', [$String(handle)])
+                as Map)['markdown'],
+            'draft a',
+          );
+          records.single.call('releaseRich', [$String(handle)]);
+          expect(editor.isDisposed, isTrue);
+          expect(
+            () => records.single.call('snapshotRich', [$String(handle)]),
+            throwsA(anything),
+          );
+        } else {
+          expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+          expect(find.text('Frontend unavailable.'), findsOneWidget);
+          expect(
+            () => records.single.call('createRich', [$String('denied')]),
+            throwsA(anything),
+          );
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _frames(tester);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'initializer has no rich-document editor authority despite opt-in',
+    (tester) async {
+      final records = <_Binding>[];
+      final bootstrap = await tester.runAsync(
+        () => activate(
+          richDocumentEditor: true,
+          initialize: 'initializeRichEditor',
+          entrypoint: 'buildRichPane',
+          host: _recordingHost(records),
+        ),
+      );
+      expect(
+        bootstrap!.generations.single.state,
+        InstalledFrontendState.active,
+      );
+      await tester.pumpWidget(host());
+      await _frames(tester);
+      expect(records, isEmpty);
+      expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+      expect(find.text('Independent content'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'input actions and finite operations cannot inherit rich editors',
+    (tester) async {
+      final records = <_Binding>[];
+      final prepared = _recordingHost(records);
+      await tester.runAsync(
+        () => activate(
+          host: prepared,
+          richDocumentEditor: true,
+          richOperation: true,
+          actionCommand: true,
+          actionEntrypoint: 'buildRichInput',
+          entrypoint: 'buildRichPane',
+        ),
+      );
+      await tester.pumpWidget(
+        host(actionCoordinator: prepared.actionCoordinator),
+      );
+      await _frames(tester);
+      final editor = tester
+          .widget<NativeRichDocumentEditorView>(
+            find.byType(NativeRichDocumentEditorView),
+          )
+          .editor;
+      final result = copyStructuredBridgeData(
+        await records.single.runtimes.single.executeLib(
+          _library,
+          'invokeCapabilityOperation',
+          [$String('rich')],
+        ),
+      );
+      expect(result, {
+        'ok': false,
+        'message': 'Contribution operation is unavailable.',
+      });
+      await CommandResolver(extensions).resolve(_commandId).invoke();
+      await _frames(tester);
+      expect(find.text('Unexpected rich input'), findsNothing);
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect(find.byType(NativeRichDocumentEditorView), findsOneWidget);
+      expect(editor.isDisposed, isFalse);
+      expect(editor.snapshot()['markdown'], 'draft a');
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _frames(tester);
+      expect(editor.isDisposed, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('rich editor handles stay in their exact pane runtime', (
+    tester,
+  ) async {
+    final records = <_Binding>[];
+    await tester.runAsync(
+      () => activate(
+        host: _recordingHost(records),
+        richDocumentEditor: true,
+        entrypoint: 'buildRichPane',
+      ),
+    );
+    await tester.pumpWidget(host());
+    await _frames(tester);
+    final first = records.single;
+    final firstHandle = first.call('currentRichHandle') as String;
+    final firstEditor = tester
+        .widget<NativeRichDocumentEditorView>(
+          find.byType(NativeRichDocumentEditorView),
+        )
+        .editor;
+    expect(
+      first.call('open', [$String('b'), $String('B'), $bool(true)]),
+      isTrue,
+    );
+    await _frames(tester);
+    final second = records.last;
+    final secondHandle = second.call('currentRichHandle') as String;
+    expect(secondHandle, isNot(firstHandle));
+    expect(
+      () => second.call('snapshotRich', [$String(firstHandle)]),
+      throwsA(anything),
+    );
+    expect(second.call('remove', [$String('a')]), isTrue);
+    expect(firstEditor.isDisposed, isTrue);
+    expect(
+      second.call('open', [$String('a'), $String('A'), $bool(true)]),
+      isTrue,
+    );
+    await _frames(tester);
+    final replacement = records.last;
+    expect(replacement.runtimes.single, isNot(same(first.runtimes.single)));
+    expect(
+      () => first.call('snapshotRich', [$String(firstHandle)]),
+      throwsA(anything),
+    );
+    expect(
+      () => replacement.call('snapshotRich', [$String(firstHandle)]),
+      throwsA(anything),
+    );
+    expect(
+      (second.call('snapshotRich', [$String(secondHandle)]) as Map)['markdown'],
+      'draft b',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _frames(tester);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final retirement in [
+    'raw registration',
+    'frontend',
+    'host',
+    'departure',
+    'unmount',
+    'failure',
+    'exit retention',
+  ]) {
+    testWidgets('rich editor $retirement disposes its exact owner', (
+      tester,
+    ) async {
+      final records = <_Binding>[];
+      final prepared = _recordingHost(records);
+      final bootstrap = (await tester.runAsync(
+        () => activate(
+          host: prepared,
+          richDocumentEditor: true,
+          entrypoint: 'buildRichPane',
+        ),
+      ))!;
+      await tester.pumpWidget(host());
+      await _frames(tester);
+      final captured = records.single;
+      final handle = captured.call('currentRichHandle') as String;
+      final editor = tester
+          .widget<NativeRichDocumentEditorView>(
+            find.byType(NativeRichDocumentEditorView),
+          )
+          .editor;
+      final activation = bootstrap.generations.single;
+      switch (retirement) {
+        case 'raw registration':
+          final binding = extensions
+              .discover(mainContentContributions)
+              .singleWhere((entry) => entry.id == _extensionId);
+          final registration = activation.registrations.singleWhere(
+            (entry) => entry.owns(binding),
+          );
+          final closing = registration.close();
+          expect(editor.isDisposed, isTrue);
+          await closing;
+        case 'frontend':
+          await tester.runAsync(() {
+            final closing = activation.close();
+            expect(editor.isDisposed, isTrue);
+            return closing;
+          });
+        case 'host':
+          await tester.runAsync(() {
+            final closing = prepared.close();
+            expect(editor.isDisposed, isTrue);
+            return closing;
+          });
+        case 'departure':
+          prepared.unbind(session);
+        case 'unmount':
+          await tester.pumpWidget(const SizedBox.shrink());
+        case 'failure':
+          _press(tester, 'Fail rich pane');
+          await _frames(tester);
+          expect(find.text('Frontend unavailable.'), findsOneWidget);
+        case 'exit retention':
+          bootstrap.retainPresentations();
+      }
+      expect(editor.isDisposed, isTrue);
+      expect(
+        () => captured.call('snapshotRich', [$String(handle)]),
+        throwsA(anything),
+      );
+      expect(
+        () => captured.call('createRich', [$String('retired')]),
+        throwsA(anything),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _frames(tester);
+      if (retirement == 'raw registration' || retirement == 'frontend') {
+        final replacement = (await tester.runAsync(
+          () => activate(
+            host: prepared,
+            richDocumentEditor: true,
+            entrypoint: 'buildRichPane',
+          ),
+        ))!;
+        expect(
+          replacement.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        await tester.pumpWidget(host());
+        await _frames(tester);
+        final fresh = tester
+            .widget<NativeRichDocumentEditorView>(
+              find.byType(NativeRichDocumentEditorView),
+            )
+            .editor;
+        expect(fresh, isNot(same(editor)));
+        expect(fresh.isDisposed, isFalse);
+        expect(
+          () => records.last.call('snapshotRich', [$String(handle)]),
+          throwsA(anything),
+        );
+        await tester.runAsync(activation.close);
+        expect(fresh.isDisposed, isFalse);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _frames(tester);
+        expect(fresh.isDisposed, isTrue);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   for (final kind in ['Read', 'Process']) {
     testWidgets('initializer cannot acquire $kind access declared for panes', (
@@ -1135,6 +1438,27 @@ void _press(WidgetTester tester, String label) => tester
     .widget<TextButton>(find.widgetWithText(TextButton, label))
     .onPressed!();
 
+Future<void> _frames(WidgetTester tester) async {
+  for (var i = 0; i < 8; i++) {
+    await tester.pump(const Duration(milliseconds: 25));
+  }
+}
+
+PreparedMainContentHost _recordingHost(List<_Binding> records) =>
+    PreparedMainContentHost(
+      createBinding:
+          ({
+            required installation,
+            required descriptor,
+            required session,
+            required paneId,
+          }) {
+            final record = _Binding(session, paneId);
+            records.add(record);
+            return record.binding;
+          },
+    );
+
 final class _Binding {
   _Binding(
     this.session,
@@ -1210,6 +1534,46 @@ import 'package:flutter/material.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/contribution_bridge.dart';
 import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/rich_document_editor_bridge.dart';
+
+String richHandle = '';
+String currentRichHandle() => richHandle;
+String createRich(String markdown) => createRichDocumentEditor(markdown, false);
+Map<String, dynamic> snapshotRich(String handle) => snapshotRichDocumentEditor(handle);
+void releaseRich(String handle) => releaseRichDocumentEditor(handle);
+void initializeRichEditor() {
+  createRich('initializer');
+  initializePanes();
+}
+Widget buildRichInput() {
+  createRich('input');
+  return Text('Unexpected rich input');
+}
+Map<String, dynamic> richEditorOperation() =>
+  <String, dynamic>{'handle': createRich('operation')};
+Widget buildRichPane() => RichPane();
+class RichPane extends StatefulWidget {
+  @override
+  State<RichPane> createState() => RichPaneState();
+}
+class RichPaneState extends State<RichPane> {
+  late Widget editor;
+  bool failed = false;
+  @override
+  void initState() {
+    super.initState();
+    richHandle = createRich('draft ' + readMainContentPaneId());
+    editor = buildRichDocumentEditor(richHandle);
+  }
+  @override
+  Widget build(BuildContext context) {
+    if (failed) throw StateError('private rich pane failure');
+    return Column(children: <Widget>[
+      TextButton(onPressed: () { setState(() { failed = true; }); }, child: Text('Fail rich pane')),
+      SizedBox(height: 240, child: editor),
+    ]);
+  }
+}
 
 void initializePanes() { openMainContentPane('a', 'A', true); }
 Future<String?> readCapability() =>

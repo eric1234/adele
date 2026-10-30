@@ -29,6 +29,8 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   lifecycle.validateResolvedStrategy(session.strategyId, binding);
   final KernelOrchestrationHost host = KernelOrchestrationHost(
     run: AgentRun(id: runId, sessionId: sessionId),
+    lifecycle: lifecycle,
+    session: session,
     strategy: binding,
     contextComposer: contextComposer,
     sourceContextFactory: () => SessionInferenceContextSourceContext(
@@ -237,6 +239,8 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
 final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   KernelOrchestrationHost({
     required AgentRun run,
+    required ProductLifecycleCoordinator lifecycle,
+    required Session session,
     required ResolvedOrchestrationStrategy strategy,
     required InferenceContextComposer contextComposer,
     required InferenceContextSourceContext Function() sourceContextFactory,
@@ -244,6 +248,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     required ToolCatalog toolCatalog,
     required ToolPolicy policy,
   }) : _run = run,
+       _lifecycle = lifecycle,
+       _session = session,
        _strategy = strategy,
        _contextComposer = contextComposer,
        _sourceContextFactory = sourceContextFactory,
@@ -252,6 +258,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
        _policy = policy;
 
   final AgentRun _run;
+  final ProductLifecycleCoordinator _lifecycle;
+  final Session _session;
   final ResolvedOrchestrationStrategy _strategy;
   final InferenceContextComposer _contextComposer;
   final InferenceContextSourceContext Function() _sourceContextFactory;
@@ -284,6 +292,45 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
 
   @override
   void validateBinding() => _strategy.validateBinding();
+
+  @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) async {
+    _requireIdle();
+    validateBinding();
+    _lifecycle.validateSessionInput(_session);
+    if (_session.id != sessionId) {
+      throw ArgumentError('History and Run Sessions must match.');
+    }
+    if (state == RunState.completed ||
+        state == RunState.failed ||
+        state == RunState.cancelled) {
+      throw InvalidRunOperation('Cannot read history while Run $id is $state.');
+    }
+    if (runId == id) {
+      throw const HistoricalRunEvidenceFailure(
+        code: 'current_run',
+        message: 'Historical evidence does not include the current Run.',
+      );
+    }
+    final record = _lifecycle.store.runRecord(runId);
+    final activity = record?.sessionId == _session.id
+        ? _lifecycle.runActivity(runId)
+        : null;
+    if (record == null ||
+        activity == null ||
+        activity.runId != record.id ||
+        activity.sessionId != record.sessionId ||
+        activity.state.name != record.state.name) {
+      throw const HistoricalRunEvidenceFailure(
+        code: 'unavailable',
+        message: 'Historical Run evidence is unavailable.',
+      );
+    }
+    return HistoricalRunEvidence.fromActivity(
+      record: record,
+      activity: activity,
+    );
+  }
 
   @override
   void start() {
