@@ -622,8 +622,35 @@ explicit design, not a generalized streaming framework in this boundary.
 Terminal retention and durable Project reopening remain unchanged. The read grants
 no authorization to repeat historical operations and promises no cross-Run
 chronology or file freshness. Core does not automatically add this evidence to
-inference context. A strategy owns its selection and future semantic projection;
-stock Chat's canonical history and inference construction are unchanged.
+inference context. A strategy owns its selection and semantic projection.
+
+Stock Chat uses canonical entry order, not Run-ID order or Session execution
+enumeration, to select earlier user-entry Run associations. After host start and
+before the first inference, it reads each associated Run except the current one
+and freezes a model-facing projection for the entire new Run. Each historical
+record follows its initiating canonical user entry, before later conversation.
+Tool continuations and approval resume append current-Run items without rereading
+history. Unassociated user entries remain ordinary conversation.
+
+These records are labeled historical observations in semantic assistant messages,
+not instruction sources, new user instructions, current Environment snapshots, or
+native tool-call replay. Retained Run-local sequences interleave model, tool,
+policy, approval, and rejection observations. Actual terminal status, failures,
+incomplete observations, model-visible tool results, effect certainty, and missing
+outcomes remain distinct. No historical observation grants execution authority.
+For a completed Run, only a final settled model answer/refusal whose exact text
+matches the immediately following canonical assistant entry is replaced by an entry
+reference. Host completion alone does not establish a committed Chat answer;
+otherwise the only retained final output stays historical evidence.
+
+Unavailable and oversized reads produce explicit incomplete-history notices at
+the same chronological position, without claiming a terminal status or successful
+empty activity. Unexpected current-Run reads are invariant failures; undeclared
+host, lifecycle, binding, and transport errors propagate. The projection changes
+neither Chat's durable schema/transcript nor generic inference preparation, tool
+materialization, instruction-source capture, or provider lowering. See the
+[Chat backend policy](../../plugins/chat_strategy/packages/backend/README.md#historical-execution-projection)
+for representation and context limits.
 
 ## Implementation scope
 

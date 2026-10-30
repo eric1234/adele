@@ -14,6 +14,8 @@ import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
 export 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
+part 'src/historical_projection.dart';
+
 /// Stock Session instructions belong to Chat, not its host or presentation.
 const String chatDefaultInstructions =
     'Inspect source with read/search tools as needed. Source mutations and '
@@ -1274,6 +1276,7 @@ final class _ChatExecution implements OrchestrationExecution {
   final String instructions;
   final int maxModelInvocations;
   final List<SemanticModelInputItem> _runItems = <SemanticModelInputItem>[];
+  late final List<SemanticModelInputItem> _historyItems;
   int _nextModelInvocation = 1;
   bool _busy = false;
   bool _closed = false;
@@ -1286,6 +1289,10 @@ final class _ChatExecution implements OrchestrationExecution {
   Future<void> start() async {
     await _exclusive(() async {
       host.start();
+      _historyItems = await _captureChatHistory(
+        host,
+        session.snapshot().entries,
+      );
       await _advanceModel();
     });
   }
@@ -1315,18 +1322,7 @@ final class _ChatExecution implements OrchestrationExecution {
     final StrategyModelTurn turn = await host.invokeModel(
       StrategyInferenceMaterial(
         instructions: instructions,
-        input: <SemanticModelInputItem>[
-          for (final ChatEntry entry in session.snapshot().entries)
-            SemanticMessageInput(
-              role: switch (entry.role) {
-                'user' => SemanticMessageRole.user,
-                'assistant' => SemanticMessageRole.assistant,
-                _ => throw StateError('Invalid canonical Chat role.'),
-              },
-              content: entry.content,
-            ),
-          ..._runItems,
-        ],
+        input: <SemanticModelInputItem>[..._historyItems, ..._runItems],
       ),
     );
     final StringBuffer text = StringBuffer();

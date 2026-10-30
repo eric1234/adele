@@ -159,8 +159,16 @@ rendering are outside this protocol.
 
 ## Execution Boundary
 
-Chat projects canonical conversation entries followed by private Run-local
-semantic items into each model request. It retains model output order and opaque
+Chat projects canonical conversation entries with earlier associated Run activity,
+followed by private current-Run semantic items, into each model request. It captures
+historical evidence once after host start, places labeled semantic observations
+after the initiating user entries in canonical order, and reuses that immutable
+prefix through continuations and approval resume. Matching committed final answers
+are not duplicated; missing or oversized evidence is explicitly incomplete, never
+fabricated successful work. The [backend policy](packages/backend/README.md#historical-execution-projection)
+owns representation, final-answer matching, error handling, and context limits.
+History is model-facing only and adds no canonical entries or instruction source.
+For current-Run continuation, Chat retains model output order and opaque
 native metadata, drains tool proposals sequentially against the exact snapshot
 returned with that model turn, and waits for each result before the next
 proposal. Approval pauses the batch; resolving it appends the host's semantic
@@ -201,12 +209,12 @@ composes normally after Chat's strategy instructions; zero-source rendering
 retains the exact bytes of Chat's composed instructions.
 
 Context-source freshness belongs to each source, not Chat. Chat still owns only
-its conversation/instructions, Run-local replay, and bounded sequencing; tool
-availability, policy, model controls, and Environment authority retain their
-existing owners. The host captures context before allocating model invocation
-identity or recording model-start evidence. A required source failure stops
-composition; an optional failure omits that source with diagnostics. Safely
-captured data survives later source retirement, unlike the unchanged exact-binding
+its conversation/instructions, historical execution projection, Run-local replay,
+and bounded sequencing; tool availability, policy, model controls, and Environment
+authority retain their existing owners. The host captures context before allocating
+model invocation identity or recording model-start evidence. A required source
+failure stops composition; an optional failure omits that source with diagnostics.
+Safely captured data survives later source retirement, unlike the unchanged exact-binding
 requirements on executable strategies and tools.
 
 ## Main Content Presentation
@@ -325,8 +333,8 @@ Missing or failed presentation does not invalidate the Session or backend execut
 
 ## Deferred Work
 
-The current context projection deliberately preserves the development loop's
-simple conversation-plus-Run-items behavior. Rich context selection, context
+The current context projection combines canonical conversation, recorded historical
+execution observations, and current-Run items. Rich context selection, context
 truncation and summarization, context sources beyond root AGENTS.md, provider-aware
 projection/cache planning, token budgets, richer Chat UI, broader tool/provider
 activity presentation, reasoning deltas, arbitrary plugin drill-down, active Run
