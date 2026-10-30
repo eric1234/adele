@@ -2,10 +2,14 @@ import 'dart:async';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_settings_host/adele_settings_host.dart'
+    show ConfigurationRecordCredentialsPresent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
+import 'record_credential_controls.dart';
 import 'scalar_input.dart';
 
 final class RecordCollectionPanel extends StatefulWidget {
@@ -13,11 +17,15 @@ final class RecordCollectionPanel extends StatefulWidget {
     super.key,
     required this.service,
     required this.collection,
+    this.credentialAssociations,
+    this.active = true,
     this.declarationIssues,
   });
 
   final GlobalSettingsService service;
   final RecordCollectionId collection;
+  final RecordCredentialService? credentialAssociations;
+  final bool active;
   final List<String> Function()? declarationIssues;
 
   @override
@@ -36,6 +44,14 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   final _drafts = <ConfigurationRecordId, _RecordDraft>{};
   final _recordErrors = <ConfigurationRecordId, String>{};
   final _fencedRecords = <ConfigurationRecordId>{};
+  final _credentialStatuses =
+      <
+        (ConfigurationRecordId, RecordCredentialSlotId),
+        RecordCredentialStatus
+      >{};
+  final _credentialErrors =
+      <(ConfigurationRecordId, RecordCredentialSlotId), String>{};
+  (ConfigurationRecordId, RecordCredentialSlotId)? _pendingCredential;
   List<RecordView> _records = const [];
   List<RecordDiagnosticView> _diagnostics = const [];
   bool _loaded = false;
@@ -67,6 +83,21 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   bool _current(RecordView record) =>
       _records.any((candidate) => identical(candidate, record));
 
+  void _invalidateCredentials(ConfigurationRecordId id) {
+    _credentialStatuses.removeWhere((key, _) => key.$1 == id);
+    _credentialErrors.removeWhere((key, _) => key.$1 == id);
+  }
+
+  // Keep siblings' handles and nonsecret drafts. Only acknowledged results may
+  // advance a record's baseline, including a partially completed attachment.
+  void _replaceRecord(RecordView previous, RecordView? saved) {
+    _records = [
+      for (final current in _records)
+        if (identical(current, previous)) ?saved else current,
+    ];
+    if (!identical(previous, saved)) _invalidateCredentials(previous.id);
+  }
+
   Future<void> _reload() async {
     if (!mounted || _busy) return;
     // Admission covers the confirmation as well as the eventual read.
@@ -92,6 +123,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       setState(() {
         _confirming = false;
         _error = null;
+        _credentialStatuses.clear();
+        _credentialErrors.clear();
       });
       final view = await widget.service.loadRecords(widget.collection);
       if (!mounted) return;
@@ -102,6 +135,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _drafts.clear();
         _recordErrors.clear();
         _fencedRecords.clear();
+        _credentialStatuses.clear();
+        _credentialErrors.clear();
         _records = view.records;
         _diagnostics = view.diagnostics;
         _loaded = true;
@@ -279,17 +314,24 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       }
       if (!mounted) return;
       setState(() {
-        _records = [
-          for (final current in _records)
-            if (identical(current, record)) ?saved else current,
-        ];
+        _replaceRecord(record, saved);
         _drafts.remove(record.id)?.dispose();
         _message = '${deleting ? 'Deleted' : 'Saved'} ${record.id}.';
+      });
+    } on ConfigurationRecordCredentialsPresent {
+      if (!mounted) return;
+      setState(() {
+        _recordErrors[record.id] =
+            'Record not deleted: credential associations must be removed first. '
+            'Use Check credential status and Forget credential for declared slots. '
+            'If unknown credential entries remain, manual TOML correction may be '
+            'necessary. No deletion was attempted; the record and drafts are kept.';
       });
     } on ConfigurationConflictException catch (error) {
       if (!mounted) return;
       setState(() {
         _fencedRecords.add(record.id);
+        _invalidateCredentials(record.id);
         _recordErrors[record.id] =
             'Not ${deleting ? 'deleted' : 'saved'}: this record changed on disk. '
             'Your draft is retained. Reload before changing this record again.\n$error';
@@ -304,6 +346,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       if (!mounted) return;
       setState(() {
         _fencedRecords.add(record.id);
+        _invalidateCredentials(record.id);
         _recordErrors[record.id] =
             'Could not confirm ${deleting ? 'deletion' : 'save'}. '
             'The operation may have been published. Your draft is retained. '
@@ -314,6 +357,128 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         setState(() {
           _busy = false;
           _confirming = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _credentialOperation(
+    RecordView record,
+    RecordCredentialSlotDefinition slot,
+    RecordCredentialAction action,
+    CredentialSecret? secret,
+  ) async {
+    final service = widget.credentialAssociations;
+    final key = (record.id, slot.id);
+    if (service == null ||
+        !_enabled ||
+        !_current(record) ||
+        _fencedRecords.contains(record.id) ||
+        !action.allowed(_credentialStatuses[key])) {
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _confirming = action == RecordCredentialAction.forget;
+      _pendingCredential = key;
+    });
+    try {
+      if (_confirming) {
+        final definition = widget.service.records.definition(record.type);
+        final confirmed = await _confirm(
+          context,
+          title: 'Forget credential?',
+          message:
+              'Title: ${_recordTitle(record, definition)}\n'
+              'Record ID: ${record.id}\n'
+              'Credential slot: ${slot.label}\n\n'
+              'This removes local protected credential material and detaches '
+              'the association. The configuration record and its ordinary '
+              'values are kept. This is not Delete Record.',
+          confirmLabel: 'Forget credential',
+          confirmKey:
+              'credential-forget-confirm-${record.collection}-${record.id}-${slot.id}',
+          cancelKey:
+              'credential-forget-cancel-${record.collection}-${record.id}-${slot.id}',
+        );
+        if (!mounted || !confirmed) return;
+      }
+      setState(() {
+        _confirming = false;
+        _credentialErrors.remove(key);
+      });
+      final result = await switch (action) {
+        RecordCredentialAction.check => service.inspect(record, slot.id),
+        RecordCredentialAction.reconcile => service.reconcile(record, slot.id),
+        RecordCredentialAction.attach => service.attach(
+          record,
+          slot.id,
+          secret!,
+        ),
+        RecordCredentialAction.replace => service.replace(
+          record,
+          slot.id,
+          secret!,
+        ),
+        RecordCredentialAction.establishLocal => service.establishLocal(
+          record,
+          slot.id,
+          secret!,
+        ),
+        RecordCredentialAction.forget => service.forget(record, slot.id),
+      };
+      if (!mounted) return;
+      setState(() {
+        _replaceRecord(record, result.record);
+        _credentialStatuses[key] = result.status;
+        _recordErrors.remove(record.id);
+      });
+    } on RecordCredentialFailure catch (failure) {
+      if (!mounted) return;
+      setState(() {
+        if (failure.record case final acknowledged?) {
+          _replaceRecord(record, acknowledged);
+        }
+        final kind = failure.kind;
+        if (kind == RecordCredentialFailureKind.staleRecord ||
+            kind == RecordCredentialFailureKind.configurationFailure) {
+          _fencedRecords.add(record.id);
+          _invalidateCredentials(record.id);
+        } else {
+          _credentialStatuses[key] = switch (kind) {
+            RecordCredentialFailureKind.noReference =>
+              RecordCredentialStatus.noReference,
+            RecordCredentialFailureKind.missingLocal =>
+              RecordCredentialStatus.missingLocal,
+            RecordCredentialFailureKind.unavailable =>
+              RecordCredentialStatus.unavailable,
+            RecordCredentialFailureKind.invalid ||
+            RecordCredentialFailureKind.invalidSlot =>
+              RecordCredentialStatus.invalid,
+            RecordCredentialFailureKind.reconciliationRequired =>
+              RecordCredentialStatus.reconciliationRequired,
+            _ => RecordCredentialStatus.failed,
+          };
+        }
+        _credentialErrors[key] = recordCredentialFailureMessage(kind);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        // An unexpected acknowledgement failure cannot establish a new baseline.
+        // Never render an exception that might contain native or secret data.
+        _fencedRecords.add(record.id);
+        _invalidateCredentials(record.id);
+        _credentialErrors[key] = recordCredentialFailureMessage(
+          RecordCredentialFailureKind.configurationFailure,
+        );
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _confirming = false;
+          _pendingCredential = null;
         });
       }
     }
@@ -496,6 +661,24 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       record: record,
       definition: widget.service.records.definition(record.type),
       error: _recordErrors[record.id],
+      credentials: (expanded) => [
+        for (final slot
+            in widget.service.records.definition(record.type).credentialSlots)
+          RecordCredentialControls(
+            key: ValueKey(
+              'credential-slot-${record.collection}-${record.id}-${slot.id}',
+            ),
+            record: record,
+            slot: slot,
+            active: widget.active && expanded,
+            enabled: enabled && widget.credentialAssociations != null,
+            pending: _pendingCredential == (record.id, slot.id) && !_confirming,
+            status: _credentialStatuses[(record.id, slot.id)],
+            error: _credentialErrors[(record.id, slot.id)],
+            onAction: (action, secret) =>
+                _credentialOperation(record, slot, action, secret),
+          ),
+      ],
       onEdit: enabled ? () => _edit(record) : null,
       onDelete: enabled ? () => _mutate(record) : null,
       editor: draft == null
@@ -714,6 +897,7 @@ final class _RecordDetails extends StatefulWidget {
     required this.definition,
     required this.onEdit,
     required this.onDelete,
+    required this.credentials,
     this.editor,
     this.error,
   });
@@ -722,6 +906,7 @@ final class _RecordDetails extends StatefulWidget {
   final RecordTypeDefinition definition;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final List<Widget> Function(bool expanded) credentials;
   final Widget? editor;
   final String? error;
 
@@ -774,6 +959,19 @@ final class _RecordDetailsState extends State<_RecordDetails> {
                       child: const Text('Edit'),
                     ),
                   ),
+                ],
+                if (definition.credentialSlots.isNotEmpty) ...[
+                  const Divider(),
+                  Text(
+                    'Credentials',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const Text(
+                    'Credentials use OS-protected storage. Stored locally does not '
+                    'mean authenticated. Provider runtime integration is not yet '
+                    'implemented; these records do not activate a backend.',
+                  ),
+                  ...widget.credentials(_expanded),
                 ],
                 Align(
                   alignment: Alignment.centerLeft,

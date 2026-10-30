@@ -11,9 +11,10 @@ invocation limit consume scalar settings. Declarative configuration records
 share scalar validation and conditional persistence and are browsable and manageable
 in Global Settings; the OpenAI plugin declares the first provider record and its
 credential slot. Record creation, editing, and guarded deletion are implemented.
-App-private record credential associations use nonsecret TOML references and Linux
-x64 Secret Service. Credential UI, runtime record consumption, provider authentication
-integration, and Profiles remain unimplemented.
+Global Settings manages declared credential slots through the app-private association
+coordinator, with nonsecret TOML references and Linux x64 Secret Service storage.
+Runtime record consumption, backend credential delivery, provider authentication
+integration, record-based OAuth, Profiles, and Agent configuration remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -462,6 +463,10 @@ references make that record unavailable rather than being treated as missing.
 Ordinary record deletion is blocked while **any** credential entry exists,
 including unknown nested content. Empty/absent tables do not block deletion.
 Ordinary value edits retain associations and use the same whole-record baseline.
+Declared associations must be explicitly forgotten before deletion. Unknown entries
+are neither adopted as slots nor automatically removed: the deletion guard reports
+safe guidance for deliberate manual correction and Reload, without echoing credential
+content. Removing a TOML entry manually does not delete its OS-stored value.
 
 The app-private `RecordCredentialService`, part of `GlobalSettingsService`, is the
 only association coordinator. Callers supply an owner-bound `RecordView`, a declared
@@ -478,7 +483,7 @@ Immediately before OS mutation, the coordinator revalidates the same configurati
 baseline after queued operations and native preflight/unlock waits; a failed guard
 does not perform a mutation or create an uncertain-outcome fence.
 
-OS storage contains a protected JSON envelope with exactly `version`, `owner`,
+The OS-protected value is a JSON envelope with exactly `version`, `owner`,
 `type`, `collection`, `record`, `slot`, `reference` and `secret`. Version is integer
 `1`; every binding value must match the validated record and reference. The whole
 encoded envelope, including metadata and JSON escaping, must fit the existing
@@ -517,10 +522,42 @@ drain without timeout, cancellation or an inferred rollback.
 
 This is a host-only lifecycle, not a cross-store transaction or cross-process
 keyring compare-and-swap. Manual filesystem edits remain outside it and can race
-conditional checks. It adds no secret-entry UI, runtime/backend delivery, OAuth,
-provider activation, Profile or Agent semantics. Generic record views expose no
-credential references or protected payloads. Linux x64 remains the only enabled
-native credential backend.
+conditional checks. It adds no runtime/backend delivery, OAuth, provider activation,
+Profile or Agent semantics. Generic record views expose no credential references
+or protected payloads. Linux x64 remains the only enabled native credential backend.
+
+### Record credential management
+
+Global Settings generates controls from each type's declared credential slots only
+after the record exists. Presentation uses the application's retained association
+coordinator, not a second credential service or direct native access. Opening,
+reopening, navigating or reloading Settings does not probe the vault. Each slot
+starts unchecked, which asserts neither presence nor absence. Explicit Check uses
+`inspect`; setting a new association uses `attach`; replacement, missing-local
+establishment, Forget and reconciliation use `replace`, `establishLocal`, `forget`
+and `reconcile` respectively. No operation authenticates or activates a provider.
+
+Status describes local storage only. A reference with confirmed missing-local data
+is recoverable through deliberate `establishLocal`, using the same reference, or
+Forget. Unavailable storage is not missing data and never permits implicit creation
+or overwrite; invalid bindings remain failures without repair. An uncertain mutation
+requires explicit reconciliation before a later deliberate mutation, not automatic
+retry or a successful-looking status inferred from persisted configuration.
+
+Secret input is masked and transient, never prefilled from OS storage or retained
+with ordinary scalar drafts. Cancel, operation settlement (success or failure),
+navigation away and dialog close clear it. Presentation displays only safe status
+and fixed diagnostics, never stored secrets, references or protected envelopes.
+Clearing controllers and dropping values limits retention; it does not guarantee
+zeroization of immutable Dart strings or runtime copies.
+
+Every returned owner-bound record view replaces only the corresponding record's
+handle, including the latest acknowledged view carried by a partial failure. This
+must preserve unsaved scalar field drafts and sibling record baselines; it is not a
+collection refresh or field merge. Stale-record and configuration failures fence the
+affected record until explicit Reload. Keyring reconciliation cannot repair a stale
+configuration baseline. Closing presentation does not cancel an admitted workflow;
+the application retains and drains its owners as described above.
 
 ## Configuration persistence
 
@@ -767,8 +804,8 @@ Implemented foundations and current limits:
   declaration, not runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
 - Host credential storage has a Linux x64 Secret Service adapter and an app-private
-  record association lifecycle, without credential UI, provider activation, runtime
-  delivery, or public/plugin access.
+  record association lifecycle with declaration-generated Global Settings controls,
+  without provider activation, runtime delivery, or public/plugin access.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
 - Backend infrastructure access is generation-local, distinct from both
