@@ -5032,134 +5032,153 @@ void main() {
         await server.close(force: true);
         await subscription.cancel();
       });
-      await fixture.launch(tester, prepared, endpoint: server);
-      addTearDown(() {
+      try {
+        await fixture.launch(tester, prepared, endpoint: server);
+        await fixture.openTask(tester);
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final session = _session(tester);
+        final runtime = fixture.runtime;
+        final chat = _chatClient(
+          runtime.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+        await chat.setDraftRequest(session.id.value, restored);
+        await _openSession(tester, session.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final owner = _composerOwner(tester);
+        final state = _composerState(tester);
+        expect(owner.snapshot()['markdown'], restored);
+        expect(owner.revision, 0);
+        expect(state.editable, isTrue);
+        expect(state.document.root.children.map((node) => node.type), [
+          'heading',
+          'paragraph',
+          RichDocumentMarkdown.codeBlockType,
+        ]);
+        final code = state.document.root.children.last;
+        expect(code.attributes['language'], 'dart');
+        expect(
+          code.delta!.toPlainText(),
+          '  final count = 1;\n  print(count);  ',
+        );
+        expect(fixture.runIds.values, isEmpty);
+        expect(outbound, isEmpty);
+        _composerNative(tester).focusNode!.requestFocus();
+        final offset = code.delta!.toPlainText().indexOf('1');
+        state.selection = rich.Selection.single(
+          path: [2],
+          startOffset: offset,
+          endOffset: offset + 1,
+        );
+        await _composerFrames(tester);
+        await _composerInput(tester, '2');
+        expect(_composerOwner(tester), same(owner));
+        expect(_composerState(tester), same(state));
+        expect(owner.snapshot()['markdown'], edited);
+        expect(code.attributes['language'], 'dart');
+        expect(
+          code.delta!.toPlainText(),
+          '  final count = 2;\n  print(count);  ',
+        );
+        final savedDocument = state.document.toJson();
+        await _pumpUntil(
+          tester,
+          () async =>
+              (await chat.snapshot(session.id.value)).draftRequest == edited,
+        );
+        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+        expect(owner.isDisposed, isTrue);
+        expect((await chat.snapshot(session.id.value)).draftRequest, edited);
+        await _openSession(tester, session.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final reopened = _composerOwner(tester);
+        expect(reopened, isNot(same(owner)));
+        expect(_session(tester), same(session));
+        expect(_composerMarkdown(tester), edited);
+        expect(_composerState(tester).editable, isTrue);
+        expect(_composerState(tester).document.toJson(), savedDocument);
+        expect(fixture.runIds.values, isEmpty);
+        expect(outbound, isEmpty);
+        await _tap(tester, 'Send');
+        await _pumpUntil(
+          tester,
+          () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
+        );
+        final runId = fixture.runIds.values.single;
+        final submitted = await chat.snapshot(session.id.value);
+        expect(submitted.draftRequest, '');
+        expect(submitted.entries.single.content, edited);
+        expect(submitted.entries.single.runId, runId.value);
+        expect(reopened.isDisposed, isTrue);
+        final blank = _composerOwner(tester);
+        expect(blank, isNot(same(reopened)));
+        expect(blank.snapshot()['isBlank'], isTrue);
+        expect(_composerMarkdown(tester), '');
+        expect(_composerState(tester).editable, isFalse);
+        release.complete();
+        await _pumpUntil(
+          tester,
+          () =>
+              find.text(answer).evaluate().isNotEmpty &&
+              !fixture.status(tester).isAdvancing &&
+              _composerState(tester).editable,
+        );
+        _rethrowEndpointFailure(failures);
+        expect(_composerOwner(tester), same(blank));
+        expect(_composerMarkdown(tester), '');
+        expect(blank.snapshot()['isBlank'], isTrue);
+        expect(blank.snapshot()['editingEnabled'], isTrue);
+        expect(
+          runtime.store.runRecord(runId)!.state,
+          RunTerminalState.completed,
+        );
+        expect(
+          (await chat.snapshot(
+            session.id.value,
+          )).entries.map((entry) => (entry.role, entry.content)),
+          [('user', edited), ('assistant', answer)],
+        );
+        await _enterComposer(
+          tester,
+          'The empty rich editor accepts the next draft.',
+        );
+        await _pumpUntil(
+          tester,
+          () async =>
+              (await chat.snapshot(session.id.value)).draftRequest ==
+              'The empty rich editor accepts the next draft.',
+        );
+        expect(_composerOwner(tester), same(blank));
+        expect(fixture.runIds.values, [runId]);
+        expect(outbound, hasLength(1));
+        expect(tester.takeException(), isNull);
+      } finally {
         if (!release.isCompleted) release.complete();
-      });
-      await fixture.openTask(tester);
-      await _tap(tester, 'New Chat Session');
-      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-      final session = _session(tester);
-      final runtime = fixture.runtime;
-      final chat = _chatClient(
-        runtime.plugins.backends
-            .singleWhere(
-              (backend) =>
-                  backend.installation.metadata.id.value == _chatPluginId,
-            )
-            .connection!,
-      );
-      await _breadcrumb(tester, 'task-breadcrumb');
-      await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
-      await chat.setDraftRequest(session.id.value, restored);
-      await _openSession(tester, session.id);
-      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-      final owner = _composerOwner(tester);
-      final state = _composerState(tester);
-      expect(owner.snapshot()['markdown'], restored);
-      expect(owner.revision, 0);
-      expect(state.editable, isTrue);
-      expect(state.document.root.children.map((node) => node.type), [
-        'heading',
-        'paragraph',
-        RichDocumentMarkdown.codeBlockType,
-      ]);
-      final code = state.document.root.children.last;
-      expect(code.attributes['language'], 'dart');
-      expect(
-        code.delta!.toPlainText(),
-        '  final count = 1;\n  print(count);  ',
-      );
-      expect(fixture.runIds.values, isEmpty);
-      expect(outbound, isEmpty);
-      _composerNative(tester).focusNode!.requestFocus();
-      final offset = code.delta!.toPlainText().indexOf('1');
-      state.selection = rich.Selection.single(
-        path: [2],
-        startOffset: offset,
-        endOffset: offset + 1,
-      );
-      await _composerFrames(tester);
-      await _composerInput(tester, '2');
-      expect(_composerOwner(tester), same(owner));
-      expect(_composerState(tester), same(state));
-      expect(owner.snapshot()['markdown'], edited);
-      expect(code.attributes['language'], 'dart');
-      expect(
-        code.delta!.toPlainText(),
-        '  final count = 2;\n  print(count);  ',
-      );
-      final savedDocument = state.document.toJson();
-      await _pumpUntil(
-        tester,
-        () async =>
-            (await chat.snapshot(session.id.value)).draftRequest == edited,
-      );
-      expect((await chat.snapshot(session.id.value)).entries, isEmpty);
-      await _breadcrumb(tester, 'task-breadcrumb');
-      await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
-      expect(owner.isDisposed, isTrue);
-      expect((await chat.snapshot(session.id.value)).draftRequest, edited);
-      await _openSession(tester, session.id);
-      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
-      final reopened = _composerOwner(tester);
-      expect(reopened, isNot(same(owner)));
-      expect(_session(tester), same(session));
-      expect(_composerMarkdown(tester), edited);
-      expect(_composerState(tester).editable, isTrue);
-      expect(_composerState(tester).document.toJson(), savedDocument);
-      expect(fixture.runIds.values, isEmpty);
-      expect(outbound, isEmpty);
-      await _tap(tester, 'Send');
-      await _pumpUntil(
-        tester,
-        () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
-      );
-      final runId = fixture.runIds.values.single;
-      final submitted = await chat.snapshot(session.id.value);
-      expect(submitted.draftRequest, '');
-      expect(submitted.entries.single.content, edited);
-      expect(submitted.entries.single.runId, runId.value);
-      expect(reopened.isDisposed, isTrue);
-      final blank = _composerOwner(tester);
-      expect(blank, isNot(same(reopened)));
-      expect(blank.snapshot()['isBlank'], isTrue);
-      expect(_composerMarkdown(tester), '');
-      expect(_composerState(tester).editable, isFalse);
-      release.complete();
-      await _pumpUntil(
-        tester,
-        () =>
-            find.text(answer).evaluate().isNotEmpty &&
-            !fixture.status(tester).isAdvancing &&
-            _composerState(tester).editable,
-      );
-      _rethrowEndpointFailure(failures);
-      expect(_composerOwner(tester), same(blank));
-      expect(_composerMarkdown(tester), '');
-      expect(blank.snapshot()['isBlank'], isTrue);
-      expect(blank.snapshot()['editingEnabled'], isTrue);
-      expect(runtime.store.runRecord(runId)!.state, RunTerminalState.completed);
-      expect(
-        (await chat.snapshot(
-          session.id.value,
-        )).entries.map((entry) => (entry.role, entry.content)),
-        [('user', edited), ('assistant', answer)],
-      );
-      await _enterComposer(
-        tester,
-        'The empty rich editor accepts the next draft.',
-      );
-      await _pumpUntil(
-        tester,
-        () async =>
-            (await chat.snapshot(session.id.value)).draftRequest ==
-            'The empty rich editor accepts the next draft.',
-      );
-      expect(_composerOwner(tester), same(blank));
-      expect(fixture.runIds.values, [runId]);
-      expect(outbound, hasLength(1));
-      expect(tester.takeException(), isNull);
+        // Drain inside runAsync, including after assertion failures. Automatic
+        // widget disposal starts unawaited shutdown in the fake-async zone;
+        // its stranded Settings queue would block the next test's startup.
+        expect(
+          await tester.binding.handleRequestAppExit().timeout(
+            const Duration(seconds: 15),
+          ),
+          AppExitResponse.exit,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(
+          IsolateNameServer.lookupPortByName('dev.adele.global-settings-owner'),
+          isNull,
+          reason: 'Application exit must release the shared Settings worker.',
+        );
+      }
     }),
   );
 
