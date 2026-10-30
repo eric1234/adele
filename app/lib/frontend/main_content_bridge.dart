@@ -44,6 +44,14 @@ class MainContentDeclarations implements EvalPlugin {
         const <BridgeParameter>[],
       ),
       ('readMainContentPaneId', string, const <BridgeParameter>[]),
+      (
+        'inspectSessionContent',
+        boolean,
+        const [
+          BridgeParameter('contentKind', string, false),
+          BridgeParameter('occurrenceId', string, false),
+        ],
+      ),
       ('sourceDisplayAvailability', string, const <BridgeParameter>[]),
       (
         'displaySourceFile',
@@ -97,12 +105,18 @@ final class MainContentBridge extends MainContentDeclarations
     String paneId = '',
     ExtensionBinding<DisplaySourceFileContribution> Function()?
     resolveSourceDisplay,
+    bool Function(
+      SessionContentKind kind,
+      SessionContentOccurrenceId occurrenceId,
+    )?
+    inspectSessionContent,
   }) : _access = access,
        _context = Map.unmodifiable(context),
        _isActive = isActive,
        _open = open,
        _paneId = paneId,
-       _resolveSourceDisplay = resolveSourceDisplay;
+       _resolveSourceDisplay = resolveSourceDisplay,
+       _inspectSessionContent = inspectSessionContent;
 
   final MainContentAccess? _access;
   final Map<String, Object?> _context;
@@ -111,6 +125,11 @@ final class MainContentBridge extends MainContentDeclarations
   final String _paneId;
   final ExtensionBinding<DisplaySourceFileContribution> Function()?
   _resolveSourceDisplay;
+  final bool Function(
+    SessionContentKind kind,
+    SessionContentOccurrenceId occurrenceId,
+  )?
+  _inspectSessionContent;
   final Zone _nativeZone = Zone.current;
   bool _active = true;
   bool _configured = false;
@@ -149,6 +168,20 @@ final class MainContentBridge extends MainContentDeclarations
   Map<String, Object?> readContext() {
     if (!isActive) return const {};
     return _context;
+  }
+
+  bool inspectSessionContent(String contentKind, String occurrenceId) {
+    try {
+      return _nativeZone.run(() {
+        if (!isActive || _inspectSessionContent == null) return false;
+        return _inspectSessionContent(
+          SessionContentKind(contentKind),
+          SessionContentOccurrenceId(occurrenceId),
+        );
+      });
+    } on Object {
+      return false;
+    }
   }
 
   String sourceDisplayAvailability() => _nativeZone.run(() {
@@ -226,6 +259,18 @@ final class MainContentBridge extends MainContentDeclarations
         'readMainContentPaneId',
         (_, _, _) => $String(readPaneId()),
       )
+      ..registerBridgeFunc(_library, 'inspectSessionContent', (_, _, args) {
+        try {
+          return $bool(
+            inspectSessionContent(
+              args[0]!.$value as String,
+              args[1]!.$value as String,
+            ),
+          );
+        } on Object {
+          return $bool(false);
+        }
+      })
       ..registerBridgeFunc(
         _library,
         'sourceDisplayAvailability',

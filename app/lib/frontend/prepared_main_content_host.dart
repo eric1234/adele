@@ -51,12 +51,19 @@ final class PreparedMainContentHost {
     this.createBinding,
     this.environmentRuntime,
     this.confirm,
+    this.inspectSessionContent,
     MainContentActionCoordinator? actionCoordinator,
   }) : actionCoordinator = actionCoordinator ?? MainContentActionCoordinator();
 
   final MainContentActionCoordinator actionCoordinator;
   final EnvironmentRuntime? environmentRuntime;
   final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final bool Function(
+    Session session,
+    SessionContentKind kind,
+    SessionContentOccurrenceId occurrenceId,
+  )?
+  inspectSessionContent;
   final _metadata = Expando<(PreparedPluginInstallation, PreparedFrontend)>();
   final _sourceDisplays = Expando<PreparedMainContentPresentation>();
   final Map<PreparedMainContentPresentation, _RetainedMainContent> _retained =
@@ -158,7 +165,8 @@ final class PreparedMainContentHost {
           }
         }
 
-        final context = _contextForSession(access.session);
+        final session = access.session;
+        final context = _contextForSession(session);
         late final _MainContentAttachment attachment;
 
         void open(String id, String title, bool canClose) {
@@ -229,7 +237,8 @@ final class PreparedMainContentHost {
                       throw StateError('Main Content pane is retired.');
                     }
                     bridges?.invalidate();
-                    final collection = MainContentBridge(
+                    late final MainContentBridge collection;
+                    collection = MainContentBridge(
                       access: access,
                       context: context,
                       isActive: paneActive,
@@ -237,6 +246,30 @@ final class PreparedMainContentHost {
                       paneId: id,
                       resolveSourceDisplay: descriptor.canRequestSourceDisplay
                           ? () => _resolveSourceDisplay(extensions, access)
+                          : null,
+                      inspectSessionContent: descriptor.canInspectSessionContent
+                          ? (kind, occurrenceId) {
+                              final store = environmentRuntime?.store;
+                              // Reversible admission gates must not latch the
+                              // presentation's permanent liveness check false.
+                              if (!collection.isActive ||
+                                  _closed ||
+                                  !_accepting ||
+                                  _preflighting ||
+                                  store == null ||
+                                  !identical(
+                                    store.session(session.id),
+                                    session,
+                                  )) {
+                                return false;
+                              }
+                              return inspectSessionContent?.call(
+                                    session,
+                                    kind,
+                                    occurrenceId,
+                                  ) ??
+                                  false;
+                            }
                           : null,
                     );
                     final richEditor = descriptor.richDocumentEditor

@@ -1,5 +1,6 @@
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
+import 'package:adele_desktop/ui/inspection/session_content_inspection_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/material.dart';
@@ -88,7 +89,8 @@ final class InspectionHost extends StatelessWidget {
     final target = card.target;
     final snapshot = activity;
     final model =
-        snapshot?.runId == target.runId &&
+        target is ActivityInspectionTarget &&
+            snapshot?.runId == target.runId &&
             snapshot?.sessionId == target.sessionId
         ? snapshot!.models
               .where((model) => model.id == target.modelInvocationId)
@@ -114,6 +116,23 @@ final class InspectionHost extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.all(4),
                     child: switch (target) {
+                      SessionContentInspectionTarget() => Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            target.kind.value,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                          Text(
+                            target.occurrenceId.value,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
                       ActivityGroupInspectionTarget() => Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -173,6 +192,13 @@ final class InspectionHost extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.all(12),
                   child: switch (target) {
+                    SessionContentInspectionTarget() =>
+                      card.content == null
+                          ? const Text('Content Inspection is unavailable.')
+                          : SessionContentInspectionHost(
+                              key: ValueKey(card.id),
+                              selection: card.content!,
+                            ),
                     ModelOutputInspectionTarget() => ActivityOutputPresentation(
                       extensions: extensions,
                       activity: activity,
@@ -204,7 +230,10 @@ final class InspectionHost extends StatelessWidget {
     );
   }
 
-  Widget _outputRow(ModelOutputActivity output, InspectionTarget group) {
+  Widget _outputRow(
+    ModelOutputActivity output,
+    ActivityGroupInspectionTarget group,
+  ) {
     final target = ModelOutputInspectionTarget(
       sessionId: group.sessionId,
       runId: group.runId,

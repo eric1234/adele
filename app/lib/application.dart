@@ -228,6 +228,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         PreparedMainContentHost(
           environmentRuntime: _runtime.lifecycle.environmentRuntime,
           confirm: _confirmContribution,
+          inspectSessionContent: _inspectSessionContent,
         );
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
@@ -588,7 +589,26 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     return controller;
   }
 
-  bool _inspectActivity(Session session, InspectionTarget target) {
+  bool _inspectSessionContent(
+    Session session,
+    SessionContentKind kind,
+    SessionContentOccurrenceId occurrenceId,
+  ) {
+    if (!_commandsInteractive ||
+        _workbench == null ||
+        !identical(_session, session) ||
+        !identical(_runtime.store.session(session.id), session)) {
+      return false;
+    }
+    return _inspection.inspectContent(
+      session: session,
+      kind: kind,
+      occurrenceId: occurrenceId,
+      extensions: _runtime.extensions,
+    );
+  }
+
+  bool _inspectActivity(Session session, ActivityInspectionTarget target) {
     final execution = _execution;
     if (!mounted ||
         _closing != null ||
@@ -896,6 +916,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _closeRuntime() => _closing ??= () {
     _workbench = null;
+    _inspection.retire();
     _sessionContext.close();
     final detachContext = _detachSessionContext;
     _detachSessionContext = null;
@@ -1089,7 +1110,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     cards: _inspection.cards,
                     cardBuilder: (context, card) => InspectionHost(
                       card: card,
-                      activity: _execution?.activityForRun(card.target.runId),
+                      activity: switch (card.target) {
+                        ActivityInspectionTarget(:final runId) =>
+                          _execution?.activityForRun(runId),
+                        SessionContentInspectionTarget() => null,
+                      },
                       heading: 'Run activity',
                       extensions: _runtime.extensions,
                       onCollapse: () => _inspection.collapse(card.id),

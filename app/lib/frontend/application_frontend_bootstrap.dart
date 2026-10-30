@@ -22,6 +22,7 @@ import 'prepared_frontend.dart';
 import 'prepared_main_content_host.dart';
 import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
+import 'session_content_inspection_bridge.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
 
@@ -525,6 +526,84 @@ final class InstalledFrontendActivation {
                     ),
                   ),
             );
+          case PreparedSessionContentInspection():
+            late final ExtensionBinding<SessionContentInspectionContribution>
+            binding;
+            final registration = _register(
+              point: sessionContentInspectionContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => SessionContentInspectionContribution(
+                kind: SessionContentKind(descriptor.contentKind),
+                createPresentation: (context) {
+                  void validate() {
+                    _requireActive(isActive);
+                    if (!context.isActive) {
+                      throw StateError(
+                        'Session content Inspection is unavailable.',
+                      );
+                    }
+                  }
+
+                  validate();
+                  OwningBackendChannel? backend;
+                  // Capture absence too, once per card, never on remount. These
+                  // declared services must be retrieval-only; the allowlist is
+                  // service-scoped and does not enforce method semantics.
+                  if (descriptor.backendServices.isNotEmpty) {
+                    try {
+                      backend = _backends
+                          ?.backendForInstallation(installation)
+                          ?.openPresentationChannel(
+                            backendServices: descriptor.backendServices,
+                            validatePresentation: validate,
+                          );
+                    } on Object {
+                      backend = null;
+                    }
+                  }
+                  validate();
+                  return generation.createPresentation(
+                    library: descriptor.library,
+                    entrypoint: descriptor.entrypoint,
+                    key: ObjectKey(context),
+                    createBridge: () {
+                      OwningBackendBridge? owning;
+                      VoidCallback? detach;
+                      final facts = SessionContentInspectionBridge(
+                        context: context,
+                        isActive: isActive,
+                        onInvalidate: () {
+                          detach?.call();
+                          owning?.invalidate();
+                        },
+                      );
+                      try {
+                        final backendBridge = switch (backend) {
+                          final captured? => OwningBackendBridge.channel(
+                            captured,
+                            validateBinding: facts.validate,
+                          ),
+                          null => OwningBackendBridge(
+                            channels: const {},
+                            validateBinding: facts.validate,
+                          ),
+                        };
+                        owning = backendBridge;
+                        detach = binding.onRetire(facts.invalidate);
+                        facts.validate();
+                        return PreparedFrontendBridges([facts, backendBridge]);
+                      } on Object {
+                        facts.invalidate();
+                        rethrow;
+                      }
+                    },
+                  );
+                },
+              ),
+            );
+            binding = _extensions
+                .discover(sessionContentInspectionContributions)
+                .singleWhere(registration.owns);
           case PreparedModelNativeActivityPresentation():
             Widget create(
               ModelNativePresentation presentation,

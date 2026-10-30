@@ -300,6 +300,7 @@ final class PreparedMainContentPresentation
     this.richDocumentEditor = false,
     this.environmentTextFiles = false,
     this.canRequestSourceDisplay = false,
+    this.canInspectSessionContent = false,
   }) : backendServices = List.unmodifiable(backendServices),
        optionalBackendServices = List.unmodifiable(optionalBackendServices),
        capabilities = List.unmodifiable(capabilities),
@@ -418,6 +419,10 @@ final class PreparedMainContentPresentation
   /// This grants no Environment file access to the requesting contribution.
   final bool canRequestSourceDisplay;
 
+  /// Pane-only requests to inspect content in the captured canonical Session.
+  /// Independent of Session execution and all backend or Environment grants.
+  final bool canInspectSessionContent;
+
   Map<String, Object?> toJson() => {
     'role': 'mainContent',
     'extensionId': extensionId.value,
@@ -460,6 +465,7 @@ final class PreparedMainContentPresentation
     'richDocumentEditor': richDocumentEditor,
     'environmentTextFiles': environmentTextFiles,
     'canRequestSourceDisplay': canRequestSourceDisplay,
+    'canInspectSessionContent': canInspectSessionContent,
   };
 }
 
@@ -543,6 +549,59 @@ final class PreparedTaskBrowserPresentation
   final ExtensionId extensionId;
   final String displayName;
   final String entrypoint;
+}
+
+/// Read-only Session content presentation with an explicit supporting-service
+/// allowlist, not a Session strategy or execution grant.
+final class PreparedSessionContentInspection
+    extends PreparedPresentationDescriptor {
+  PreparedSessionContentInspection({
+    required this.extensionId,
+    required this.contentKind,
+    required super.library,
+    required this.entrypoint,
+    Iterable<String> backendServices = const [],
+  }) : backendServices = List.unmodifiable(backendServices) {
+    if (contentKind.length > maxContentKindLength) {
+      throw const FormatException(
+        'contentKind must not exceed 128 ASCII characters.',
+      );
+    }
+    try {
+      validateAdelePublicId(contentKind, label: 'contentKind');
+    } on FormatException {
+      throw const FormatException(
+        'contentKind must be a lowercase reverse-domain ASCII identifier.',
+      );
+    }
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
+  }
+
+  static const maxContentKindLength = 128;
+
+  final ExtensionId extensionId;
+  final String contentKind;
+  final String entrypoint;
+  final List<String> backendServices;
+
+  Map<String, Object?> toJson() => {
+    'role': 'sessionContentInspection',
+    'extensionId': extensionId.value,
+    'contentKind': contentKind,
+    'library': library,
+    'entrypoint': entrypoint,
+    'backendServices': [...backendServices],
+  };
 }
 
 final class PreparedToolActivityPresentation
@@ -1451,6 +1510,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'richDocumentEditor',
         'environmentTextFiles',
         'canRequestSourceDisplay',
+        'canInspectSessionContent',
       });
       final order = value['order'];
       if (order is! int) {
@@ -1571,6 +1631,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         richDocumentEditor: permission('richDocumentEditor'),
         environmentTextFiles: permission('environmentTextFiles'),
         canRequestSourceDisplay: permission('canRequestSourceDisplay'),
+        canInspectSessionContent: permission('canInspectSessionContent'),
       );
     case 'console':
       _object(value, label, {
@@ -1645,6 +1706,33 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         displayName: text('displayName'),
         library: text('library'),
         entrypoint: text('entrypoint'),
+      );
+    case 'sessionContentInspection':
+      _object(value, label, {
+        'role',
+        'extensionId',
+        'contentKind',
+        'library',
+        'entrypoint',
+        'backendServices',
+      });
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      return PreparedSessionContentInspection(
+        extensionId: ExtensionId(text('extensionId')),
+        contentKind: _text(
+          value['contentKind'],
+          '$label.contentKind',
+          blank: true,
+        ),
+        library: _library(value['library'], '$label.library'),
+        entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+        backendServices: services.cast<String>(),
       );
     case 'toolActivity':
       _object(value, label, {

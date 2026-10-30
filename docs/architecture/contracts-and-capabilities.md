@@ -628,9 +628,10 @@ Missing, retired, or mismatched ownership fails explicitly, without retargeting 
 native/in-process fallback. Same-plugin identity alone grants no arbitrary service
 access.
 
-Rich activity Inspection and declared read-only console content reuse this routing
-without resolving or materializing a Session strategy. Their Session, Run, and
-tool-invocation identities select plugin-owned evidence as ordinary request data,
+Rich activity and Session-content Inspection and declared read-only console content
+reuse this routing without resolving or materializing a Session strategy. Their
+Session and occurrence identities (including Run/tool identities only for activity)
+select plugin-owned content as ordinary request data,
 not host-invocation authority. The host captures the owning installation's exact
 live backend/configuration route and applies that descriptor's service allowlist;
 frontend code cannot promote an identity into execution, Environment, or approval
@@ -639,6 +640,16 @@ Unavailable observation preserves independent factual presentation, not a backen
 fallback. Safe interpreted Future settlement preserves success values or reports
 failure without native diagnostics; it neither widens access nor changes the
 producer's domain outcome.
+
+Session-content Inspection captures the renderer's owning installation independently
+of the plugin that requested the view. Its fact bridge exposes no request channel
+or execution authority; optional `backendServices` is a separate explicit grant,
+captured with the exact backend generation or its absence. Only retrieval-only
+service contracts belong in that allowlist. The transport restricts service IDs,
+not a method's effects, so declaring a read/write service would not make it read-only.
+Providers retain content lookup/validation semantics; knowing an occurrence ID
+does not grant a route or host authority. No arbitrary backend discovery or
+Session/Environment host-service token is supplied.
 
 For explicitly resident console content, the owning-backend channel and
 subscriptions follow the resident lifetime, not the selected-tab interaction

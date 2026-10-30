@@ -595,6 +595,50 @@ view-local opaque handle; after hydration it can open historical activity only
 where a live handle is absent. Neither canonical Chat history nor Chat-specific
 interpretation lives in this package or the generic execution core.
 
+## Session Content Inspection
+
+[`session_content_inspection.dart`](lib/session_content_inspection.dart) defines
+`SessionContentInspectionContribution` and exact-kind resolution through
+`sessionContentInspectionContributions`. `SessionContentKind` uses ADELE's
+lowercase namespaced public-ID grammar, bounded to 128 ASCII characters.
+`SessionContentOccurrenceId` is an opaque 1..256-character ASCII reference: an
+initial letter/digit followed by letters, digits, `.`, `_`, `:`, `/`, or `-`.
+It is stable within the owning Session/domain, not a path, backend address, or
+authority token. No Run, model invocation, or tool identity is required.
+
+The resolver returns one exact `ExtensionBinding`; absence and ambiguity have
+distinct exceptions. A contribution receives `SessionContentInspectionContext`
+and may return a synchronous or asynchronous widget. The host-owned context exposes
+fixed canonical `session`, `kind`, and `occurrenceId` facts and read-only
+`isActive`/`Listenable` retirement. It has no execution, approval, navigation, or
+backend operations. Retired contexts never reactivate. The factory must not treat
+retirement as deletion of the referenced content.
+
+An opted-in mounted Main Content pane calls
+`inspectSessionContent(contentKind, occurrenceId)` from `main_content_bridge.dart`
+on explicit user selection. It supplies no Session or provider selector. `true`
+means stack admission, not proof that content exists or that rendering succeeded;
+`false` is a bounded rejection. Initializers, input actions, finite operations, and
+ordinary native imports receive no opening access. This operation is independent
+of `sessionExecution` and does not write history or start a Run.
+
+Compiled presenters use `readSessionContentInspectionContext()` from
+[`session_content_inspection_bridge.dart`](lib/session_content_inspection_bridge.dart).
+It returns only a frozen map of `sessionId`, `taskId`, `strategyId`, `contentKind`,
+and `occurrenceId` strings, not native Session objects or callable bindings.
+Optional retrieval-only owning-backend services use the existing channel and safe
+settlement API; the prepared descriptor explicitly allowlists them. Service-level
+allowlisting does not enforce method-level read-only behavior. Backend absence or
+retirement must remain unavailable, never cause replacement lookup or invented
+content. The fact map itself grants no service access.
+
+The existing window stack supplies chrome and independent card lifetimes. It keeps
+the exact selected presenter across collapse, revokes on dismissal/departure or
+presenter retirement, and fences late factories/reads. A card can outlive its
+originating pane, while that pane's retired callbacks cannot open more cards.
+See [ownership and planned accepted-feedback integration](../../docs/architecture/plugin-system.md#session-content-inspection)
+and [prepared ABI](../plugin_runtime/README.md#prepared-catalog).
+
 ## Activity Presentation
 
 Tool compact and rich Inspection contributions match exact `ToolId`; native

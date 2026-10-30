@@ -760,13 +760,61 @@ provenance, not a Terminal child. Concrete public types belong to
 behavior to [Terminal](../../plugins/terminal/README.md) and
 [Command Tools](../../plugins/command_tools/README.md).
 
-### Activity Inspection
+### Session content Inspection
 
-Inspection is intended as a general host for plugin-contributed inspectable
-content. The currently implemented activity-specific targets below are one source
-of that content, not the defining identity of Inspection. Future structured review
-feedback must not be encoded as a model output, tool proposal, or synthetic Run
-activity merely to fit those targets.
+Inspection hosts plugin-owned semantic occurrences as well as execution activity.
+A general content target identifies one canonical Session, a bounded namespaced
+semantic kind, and a bounded occurrence reference stable within that Session and
+domain. Only activity-specific targets require Run and model-invocation identities.
+Neither target carries content payloads, backend routes, executable bindings, or
+permission tokens. The application does not interpret the referenced content schema
+or introduce a core Review identity.
+
+The window owns cards, ordering, collapse, dismissal, and Session selection; the
+originating domain owns content and persistence. Explicit opening prepends a fresh
+card without replacing other cards. Collapse retains its target and presentation;
+dismissal removes the view, not domain data. Inspection is not a durable content
+store. A producer and renderer need not be the same plugin.
+
+The public `sessionContentInspectionContributions` extension point resolves exactly
+one presenter for the requested kind. Missing and ambiguous matches reject opening,
+without a native substitute. Each admitted card captures that exact registration
+separately from its semantic reference. Same-ID replacement cannot revive it; a
+fresh explicit opening may select a new generation. Failed factories remain failed
+instead of retrying on rebuild. Identity remains safely displayable when rich
+presentation retires or fails.
+
+Prepared Main Content must explicitly opt into `canInspectSessionContent`.
+Only its actual mounted pane receives the opening operation, using the native
+canonical Session and exact live attachment. Transported identities cannot select
+another Session, Project, strategy, or backend. Initialization, input actions,
+finite operations, and unrelated Commands do not inherit this access, and
+`sessionExecution` does not grant it. Plugins invoke opening on explicit user
+selection, never ordinary history hydration. Opening performs no execution,
+feedback acceptance, content mutation, or Environment materialization.
+
+After admission, the card does not retain the producer's evaluator or depend on
+its pane remaining mounted. Retiring that pane prevents further opens; the card
+has its own lifetime. Session departure, dismissal, and exact presenter retirement
+synchronously revoke card access, before widget reconciliation. Delayed factories
+and reads cannot publish after revocation, migrate to a replacement, or repopulate
+another Session. Retirement does not imply underlying content deletion.
+
+Prepared presenters receive frozen Session/context references through a narrow
+read-only bridge. Optional retrieval uses explicitly declared read-only services
+on the renderer's exact owning installation and backend generation, not a route
+selected by the producer. The route, including absence, is captured once per card.
+Service allowlisting is not method-level effect enforcement: a retrieval contract
+must not expose mutation methods. See [own-backend routing](contracts-and-capabilities.md#own-backend-frontend-requests)
+and the [public UI contract](../../packages/ui/README.md#session-content-inspection).
+
+The planned G7c2 consumer is Chat's compact accepted-review occurrence, using
+authoritative structured occurrence metadata and a separate read-only retrieval
+service. That presentation and service are not implemented by this hosting boundary.
+Accepted feedback remains strategy-owned durable data, not synthetic Run activity
+or content reconstructed from model-facing prose.
+
+### Activity Inspection
 
 Tool Inspection observes one canonical Session/Run/tool-invocation occurrence.
 Those immutable identities distinguish repeated aliases or provider call IDs and

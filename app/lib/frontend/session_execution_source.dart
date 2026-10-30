@@ -28,7 +28,7 @@ final class SessionExecutionPresentationSource
     required this.controller,
     required this.extensions,
     required bool Function() isActive,
-    required bool Function(Session, InspectionTarget) inspect,
+    required bool Function(Session, ActivityInspectionTarget) inspect,
     bool Function()? isInteractive,
     this.expectedStrategy,
   }) : _isActive = isActive,
@@ -40,13 +40,13 @@ final class SessionExecutionPresentationSource
   final ResolvedOrchestrationStrategy? expectedStrategy;
   final bool Function() _isActive;
   final bool Function() _isInteractive;
-  final bool Function(Session, InspectionTarget) _inspect;
+  final bool Function(Session, ActivityInspectionTarget) _inspect;
   static int _nextPresentation = 0;
   final int _presentation = _nextPresentation++;
   int _nextHandle = 0;
   bool _active = true;
   final Map<String, RunId> _runs = {};
-  final Map<String, InspectionTarget> _emitted = {};
+  final Map<String, ActivityInspectionTarget> _emitted = {};
   final Map<(RunId, ModelInvocationId, int?), String> _handles = {};
   Map<RunId, RunActivitySnapshot>? _retainedActivity;
   RunExecutionStatus? _retainedStatus;
@@ -265,7 +265,7 @@ final class SessionExecutionPresentationSource
         as Map<String, Object?>;
   }
 
-  InspectionTarget? _target(String handle) {
+  ActivityInspectionTarget? _target(String handle) {
     if (!_available && _retainedActivity == null) return null;
     final target = _emitted[handle];
     if (target == null) return null;

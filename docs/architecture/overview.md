@@ -155,10 +155,11 @@ For activity presentation, follow the local maps for
 [Inspection composition](../../app/README.md#activity-inspection) and
 [model-native presentation](../../app/README.md#model-native-activity-presentation).
 Inspection is a general plugin-extensible presentation role, not a synonym for
-model/tool activity. Its current activity consumers observe execution evidence;
-future accepted-feedback consumers can instead inspect strategy-owned structured
-input. Presentation neither defines canonical strategy state nor grants execution
-or approval authority.
+model/tool activity. Activity targets observe execution evidence;
+[Session-content targets](plugin-system.md#session-content-inspection) instead
+reference plugin-owned semantic occurrences without a Run. Future accepted-feedback
+consumers can use that boundary for strategy-owned structured input. Presentation
+neither defines canonical strategy state nor grants execution or approval authority.
 
 ## Configuration and persistence
 

@@ -2467,6 +2467,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(diffDescriptor.toJson(), {
           ...stockFrontendDescriptors['dev.adele.diff-viewer']!.single,
           'sessionExecution': false,
+          'canInspectSessionContent': false,
           'backendServices': <String>[],
           'capabilities': <Object?>[],
           'environmentReadCapabilities': <Object?>[],
