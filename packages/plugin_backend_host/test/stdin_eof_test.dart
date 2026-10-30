@@ -57,6 +57,7 @@ void main() {
           'artifactUri': pluginArtifact.uri.toString(),
           'arguments': <String>['acknowledge-hang'],
           'settings': <String, Object>{},
+          'records': <Object?>[],
         }),
       );
       await process.stdin.flush();

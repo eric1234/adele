@@ -191,6 +191,8 @@ final class PluginBackendHost {
   /// [settings] is copied and structurally validated before callbacks or awaits,
   /// then delivered only to this new generation. The caller owns resolution and
   /// declaration validation; this transport accepts only bool, int, and String.
+  /// [records] is likewise captured before callbacks or awaits, with strict bounded
+  /// nonsecret record shape validation. It grants no configuration or host access.
   /// [createInfrastructureServices] supplies only explicitly granted services for
   /// this exact connection. Dispatchers remain caller-owned. Capture the connection's
   /// [PluginBackendConnection.validateInfrastructureContext] for service-entry checks.
@@ -200,12 +202,14 @@ final class PluginBackendHost {
     List<String> arguments = const <String>[],
     bool startupArgumentsOnly = false,
     Map<String, Object> settings = const {},
+    List<Map<String, Object?>> records = const [],
     Map<String, AdeleBackendDispatcher> Function(
       PluginBackendConnection connection,
     )?
     createInfrastructureServices,
   }) async {
     final capturedSettings = adeleCopyBackendSettings(settings);
+    final capturedRecords = adeleCopyBackendRecords(records);
     if (_plugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already connected.');
     }
@@ -242,6 +246,7 @@ final class PluginBackendHost {
           'arguments': List<String>.of(arguments, growable: false),
           'startupArgumentsOnly': startupArgumentsOnly,
           'settings': capturedSettings,
+          'records': capturedRecords,
           'defaultConfigurationContext':
               connection.defaultConfigurationContext._wireValue,
         },

@@ -136,7 +136,9 @@ code. Prepared declaration availability is not plugin activation or Settings UI
 visibility, and user-editable values remain global TOML.
 
 Schema failure rejects that complete schema and records a schema-specific catalog
-issue without discarding a healthy sibling schema or executable components.
+issue without discarding a healthy sibling schema or independent executable
+components. A backend explicitly consuming types from a rejected record schema
+is not independent: that backend also fails closed with a component-local issue.
 Artifact references use the same installation-relative confinement as executable
 artifacts. Aggregating valid schemas into `SettingsCatalog` or `RecordCatalog`
 rejects identity conflicts explicitly rather than selecting by installation order.
@@ -183,6 +185,22 @@ frontend-only installations, and metadata-only installations retain their existi
 optional-component semantics. The [catalog schema](../../packages/plugin_runtime/README.md#prepared-catalog)
 owns exact fields, bounds, and validation; [backend Capability consumption](contracts-and-capabilities.md#prepared-backend-capability-consumption)
 owns resolution, lifetime, and the lack of operation authority.
+
+A backend may independently declare `consumesRecordTypes`, a default-empty list of
+exact record-type IDs for startup consumption. Each must be declared by the same
+prepared installation's valid `recordsSchema` and owned by that installation's
+`PluginId`. A namespace prefix, another installation's declaration, or shared
+collection membership is insufficient, including for nested owner namespaces.
+The declaration carries no configured records, provider selection, credentials,
+or frontend authority, and neither schema availability nor opt-in starts code.
+
+Invalid record opt-in omits only the backend, preserving healthy schemas and its
+frontend sibling. Nonempty opt-in fails closed when the record schema is absent
+or rejected; empty opt-in does not require a schema. Frontend-only and metadata-only
+installations can still publish record declarations without acquiring backend
+consumption. The [catalog schema](../../packages/plugin_runtime/README.md#component-declarations)
+owns exact representation, limits, and constructor behavior; application startup
+owns the read-only projection of configured data, not prepared discovery.
 
 ### Prepared frontend descriptors
 
@@ -288,7 +306,7 @@ Backend exposures cross a later boundary than installed metadata:
 
 | Boundary | Information established |
 | --- | --- |
-| Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability consumption requests. |
+| Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability or owned record-type consumption requests. |
 | Backend ready handshake | This live backend generation advertises its current public capability/extension contributions, possibly none. |
 | Host activation | Validated/adapted contributions enter the existing registries with exact-generation lifetime. |
 

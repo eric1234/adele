@@ -269,6 +269,19 @@ management are not established by these live routes. See
 [profiles and configuration](profiles-and-configuration.md), and
 [`capabilities`](../../packages/capabilities/README.md).
 
+Backend startup may additionally carry installation-owned nonsecret configuration
+records explicitly requested by `consumesRecordTypes`. The application captures
+these through its configuration worker after prepared discovery; the shared host
+validates and delivers the immutable payload to that exact spawned generation.
+This is startup data, not a callable capability, ready advertisement, provider
+registration or host-authority token. A stable record ID is not a
+`ConfigurationContextId`, `ProviderId` or credential authorization, and delivery
+does not create any of them. Credentials and their references are excluded.
+The [configuration model](profiles-and-configuration.md#backend-record-snapshots)
+owns projection, failure and snapshot-lifetime semantics; backend support owns
+the bounded transport representation. Credential access and configured provider
+materialization remain deferred.
+
 ### Strategy-compatible Session input
 
 The existing orchestration strategy exposure can explicitly opt into the supported

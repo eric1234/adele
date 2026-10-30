@@ -69,6 +69,24 @@ before startup dispatch. Real AOT delivery, peer isolation, replacement, and
 consumer-read startup failure are covered in
 [`plugin_backend_host/test/plugin_termination_test.dart`](../plugin_backend_host/test/plugin_termination_test.dart).
 
+## Bootstrap Records
+
+`PluginBackendHost.startPlugin(records: values)` separately accepts an already
+projected list of `{collection, type, id, values}` entries, defaulting to explicit
+`[]`. The host application binds the list to the exact installation's opted-in
+declarations and validates required/optional fields through the Settings record
+contract. Runtime does not enumerate files, resolve records, interpret plugin
+fields or contact the keyring.
+
+`adeleCopyBackendRecords` from public backend support performs bounded structural
+validation and deep immutable copying before callbacks/awaits. The shared AOT host
+revalidates before spawning, then supplies transferable copies to that isolate;
+`AdeleBackendRecords.fromBootstrap` validates and captures them again. Native
+documents, baselines, roots, credentials/references and host services are not part
+of the representation. See the [backend support contract](../plugin_backend_support/README.md)
+for exact limits. The snapshot is generation-local, with no live updates or record
+RPC; identity alone grants neither credential authority nor provider registration.
+
 ## Prepared Catalog
 
 This section maps the current installed schema and catalog behavior. The
@@ -86,7 +104,8 @@ The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
 `metadata` supplies `PluginMetadata`; optional installation-level `settingsSchema`
 and `recordsSchema` reference independent declarative assets. The required
 `components` object may be empty, retaining a metadata-only installation. A backend component supplies
-an `artifact` path and optional `consumesCapabilities`; a frontend supplies an
+an `artifact` path and optional `consumesCapabilities` and `consumesRecordTypes`;
+a frontend supplies an
 `artifact` path and descriptors.
 The in-memory catalog captures parsed metadata, setting/record declarations, and
 validated locations, not an atomic filesystem snapshot or executable artifact bytes. Later
@@ -265,7 +284,9 @@ mutate that snapshot. Missing/unreadable assets, malformed/unsupported schemas,
 duplicate type, field or slot IDs, and conflicting collection labels reject the **whole**
 record schema, never a partial set. `PreparedPluginCatalogIssue.isRecordsSchemaIssue`
 marks the failure (`component` is null), without discarding healthy settings or
-executable components. Failure in those siblings likewise preserves valid records.
+independent executable components. A backend explicitly consuming record types
+from a rejected schema is also omitted, with its own backend issue. Failure in
+those siblings likewise preserves valid records.
 Duplicate installation PluginIds still exclude all conflicting installations.
 
 `PreparedPluginCatalog.records` aggregates surviving schemas into `RecordCatalog`.
@@ -305,6 +326,36 @@ and returning fresh maps/lists. It is not a complete installation serializer or 
 source-builder manifest field. The app owns mediation and normal bootstrap wiring;
 plugins use the [public consumer facade](../plugin_backend_support/README.md#capability-consumption),
 not this internal package. See the [architectural boundary](../../docs/architecture/contracts-and-capabilities.md#prepared-backend-capability-consumption).
+
+`components.backend.consumesRecordTypes` independently opts into startup records:
+
+```json
+{
+  "artifact": "backend.aot",
+  "consumesRecordTypes": ["org.example.plugin.api"]
+}
+```
+
+Omission means empty. The array contains at most 128 exact public `RecordTypeId`
+strings, each at most 256 UTF-16 code units. Nulls, nonstrings, malformed IDs,
+duplicates, and unknown or foreign types are rejected. Every ID must match a
+definition owned by `metadata.id` in **this installation's** validated
+`recordsSchema`; a namespace prefix, shared collection, or another installation's
+definition cannot authorize consumption. Nonempty opt-in with an absent, unreadable,
+or rejected schema fails closed. Invalid opt-in omits only the backend, clearing
+its artifact and both consumption lists while preserving healthy schemas and the
+frontend. Empty opt-in requires no record schema.
+
+`PreparedPluginInstallation.backendConsumedRecordTypes` is an immutable
+`List<RecordTypeId>` in declared order. Construction applies the same exact-owner,
+definition, duplicate, and length checks and rejects nonempty opt-in without a
+backend. `maxBackendConsumedRecordTypes` owns the entry limit;
+`backendConsumedRecordTypesToJson()` returns a fresh string array. The field is
+backend-only, not installation/metadata/frontend/descriptor metadata. Discovery
+does not read persisted records, activate code, route providers, or grant credential
+access. Metadata-only and frontend-only declarations remain independently available.
+The maintained stock publisher opts the OpenAI backend into
+`dev.adele.openai.api-key` without changing its authored record schema.
 
 `PreparedCommandExtension` uses `kind: 'command'` and exactly these required fields:
 

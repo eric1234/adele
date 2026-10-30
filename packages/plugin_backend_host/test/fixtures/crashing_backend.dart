@@ -15,6 +15,15 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       ? AdeleBackendSettings.fromBootstrap(bootstrap)
       : null;
   settings?.read<int>('count');
+  final records = AdeleBackendRecords.fromBootstrap(bootstrap);
+  if (arguments.first == 'records') {
+    final raw = bootstrap['records'] as List;
+    for (final record in raw.cast<Map<Object?, Object?>>()) {
+      (record['values'] as Map).clear();
+      record.clear();
+    }
+    raw.clear();
+  }
   final ReceivePort commands = ReceivePort();
   if (arguments.first == 'reverse-streams') {
     _serveHostStreams(
@@ -313,6 +322,22 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'payload': settings == null
             ? bootstrap['settings']
             : Map<String, Object>.of(settings.values),
+      });
+    }
+    if (message['method'] == 'records') {
+      responsePort.send(<String, Object?>{
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': [
+          for (final record in records.records)
+            {
+              ...record,
+              'values': Map<String, Object>.of(
+                record['values'] as Map<String, Object>,
+              ),
+            },
+        ],
       });
     }
     if (message['method'] == 'forward-envelope') {

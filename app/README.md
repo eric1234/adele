@@ -115,6 +115,9 @@ bootstrap nor shared host interprets provider credentials or stock configuration
 Separately, it projects declared scalar values from the shared
 [startup settings snapshot](#prepared-settings) and passes them to each
 `startPlugin(settings: ...)` call before that backend advertises readiness.
+Backends opting into owned record types also receive a separately validated
+nonsecret `records` projection through the same startup call, not scalar Settings
+or a record service. See [startup records](#startup-records).
 Ready advertisements are adapted by `PluginBackendActivation.registerAdvertised`
 and `createRemoteExtensionAdapters` into existing registries, not an app-specific
 stock activation table.
@@ -138,6 +141,9 @@ registration retirement. Local startup failures are isolated to that attempt;
 shared-host failure affects all its backends. `ready` means bootstrap settled,
 not that every component or a model is usable. Close waits for startup, retires
 owned registrations before closing connections, then closes the shared host.
+Accepted application exit first calls `stopStarting` synchronously, so a pending
+configuration read cannot spawn a backend while admitted application work drains.
+Already active generations remain available until normal runtime retirement.
 Infrastructure access is revoked on retirement/rollback before asynchronous
 cleanup, as well as on stop/close/termination. The bootstrap does not retire
 registrations owned by external callers.
@@ -426,14 +432,48 @@ without hiding a healthy independent catalog; installation-wide issues appear in
 both. Missing/invalid schemas remain visible, and duplicate declarations or conflicting
 collection labels reject aggregation. Repairing declarations requires restart.
 
-All configuration still uses one global layer. Provider records contain nonsecret
-definitions and credential references, neither consumed by the runtime. Ordinary
+All configuration still uses one global layer. Opted-in backends receive nonsecret
+record definitions at startup; credential references stay in the host. Ordinary
 record CRUD does not access the vault; even explicit credential management does not
 authenticate or activate a provider, change Chat, or alter temporary
-environment-variable startup. Restart guidance applies to scalar settings, not
-record activation. Runtime/backend credential delivery, record-based OAuth, Profiles,
+environment-variable startup. Restart captures updated records without activating
+configured providers. Runtime/backend credential delivery, record-based OAuth, Profiles,
 Agent configuration, narrower scopes, runtime restart commands, and live editor
 reconfiguration remain unimplemented.
+
+### Startup records
+
+`AdeleApplication` binds `ApplicationPluginBootstrap.configureRecordsLoader` to
+`GlobalSettingsService.loadStartupRecords`, using the same captured configuration
+roots and retained serialized worker as editing. `StartupRecordsView` in
+[`prepared_records.dart`](lib/core/prepared_records.dart) validates and binds the
+projection to the exact catalog and installation objects and their declaration
+snapshot. Only `backendConsumedRecordTypes` are projected; namespaced strings alone
+cannot grant access. Standalone bootstrap users must supply a record loader when
+opting in. An undeclared backend receives `[]` without invoking a loader.
+
+The separate worker operation uses `ConfigurationRecordStore` enumeration and
+validation, not `loadRecords`: it neither publishes edit revisions nor replaces or
+revokes Settings baselines/drafts. Native documents and file baselines stay in the
+worker. Healthy records are ordered by collection, type and stable record ID;
+optional absence remains omission from `values`. Malformed siblings remain
+attributable host diagnostics and are omitted, while a whole-collection failure
+fails the affected backend attempt, never appearing as an empty collection.
+No startup read creates or repairs files or contacts the credential service.
+
+Only immutable `{collection, type, id, values}` entries cross the backend boundary.
+The projection excludes unknown TOML content, credential references, protected
+values, host paths, document/baseline objects and handles. Bootstrap checks the
+snapshot's exact owner and startup admission fence before `startPlugin(records: ...)`;
+the runtime, shared host and public `AdeleBackendRecords` decoder each validate
+and defensively copy the bounded payload. It lasts for one backend generation,
+with no live update, record RPC, file watcher or automatic restart.
+
+The stock OpenAI backend decodes Work/Personal metadata without creating providers
+or configuration contexts from records. Record IDs are configuration identities,
+not `ProviderId`s or credential authorization. Existing ChatGPT startup and ready
+advertisements are unchanged. Host-authorized credential delivery (P3b) and
+configured-provider materialization (P3c) remain separate work.
 
 ### Prepared Capability access
 

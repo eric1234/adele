@@ -24,6 +24,10 @@ const _stockSchemaSources = {
   'dev.adele.openai': {'records': 'plugins/openai/records.schema.json'},
 };
 
+const _stockBackendConsumedRecordTypes = {
+  'dev.adele.openai': ['dev.adele.openai.api-key'],
+};
+
 Future<Map<String, Object>> desktopPreparationToolStats(Directory root) =>
     buildInputStats([
       for (final path in [
@@ -563,7 +567,11 @@ Future<void> publishStockPluginInstallation({
       for (final schema in schemaSources.keys)
         '${schema}Schema': '$schema.schema.json',
       'components': <String, Object?>{
-        if (backend) 'backend': <String, Object?>{'artifact': 'backend.aot'},
+        if (backend)
+          'backend': <String, Object?>{
+            'artifact': 'backend.aot',
+            'consumesRecordTypes': ?_stockBackendConsumedRecordTypes[pluginId],
+          },
         if (frontend)
           'frontend': <String, Object?>{
             'artifact': 'frontend.evc',

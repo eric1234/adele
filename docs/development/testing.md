@@ -403,6 +403,52 @@ not silently default, settings-free components survive unrelated failures, and
 missing required consumed values fail explicitly. Schema discovery failure remains
 distinct from executable failure.
 
+Backend record opt-in uses the same maintained runtime target: discovery tests
+cover owned/multiple types, nested namespaces, same-collection foreign types,
+invalid requests and independently missing/malformed schemas without activating
+metadata-only or frontend-only installations. Stock publication assertions in
+`test/tools/backend_artifacts_test.dart` check OpenAI's maintained backend opt-in
+without modifying its record declaration.
+
+`app/test/core/startup_record_projection_test.dart` exercises real native TOML
+through the retained Settings worker: declared scalar presence, deterministic
+ordering, unknown content/reference stripping, diagnostics, collection failures,
+absence without writes, exact declaration ownership, immutable copies and UI
+baseline preservation through pending edits and failed projections. Transport
+bounds are enforced before the worker result crosses isolates. These checks use
+synthetic references and a credential adapter that rejects all operations, never
+a live keyring.
+
+`app/test/core/backend_record_startup_integration_test.dart` compiles the actual
+shared host and a generic AOT public-decoder fixture. It covers owner/peer isolation,
+explicit empty configuration, scalar Settings coexistence, shutdown during a read,
+directory-failure isolation, immutable running generations and a fresh subsequent
+generation. `app/test/core/openai_record_startup_integration_test.dart` additionally
+publishes actual stock metadata, creates Work/Personal through the host, attaches
+protected associations through the real coordinator with a deterministic adapter,
+and starts the actual OpenAI AOT backend. It asserts zero credential operations
+during projection/startup, stable record IDs, no new API-key provider, and unchanged
+ChatGPT advertisements. The generic observer verifies exact decoded values without
+adding inspection APIs to production OpenAI. Neither fixture performs network calls.
+
+Public decoder limits, strict shape, duplicates, immutable copies and bounded
+value-free errors belong to `adele_plugin_backend_support`. Raw malformed-frame
+rejection before plugin spawn and real-AOT generation delivery belong to
+`plugin_backend_host`; runtime pre-dispatch copying belongs to `plugin_runtime`.
+New app suites are discovered by the existing desktop target/shards. Focused app
+iteration after bootstrap uses:
+
+```sh
+# app/
+flutter test --no-pub --concurrency 1 test/core/startup_record_projection_test.dart test/core/backend_record_startup_integration_test.dart test/core/openai_record_startup_integration_test.dart test/core/application_plugin_bootstrap_test.dart
+```
+
+Retain existing Settings/credential service and application lifecycle suites,
+Source/Review retention tests and normal configured-provider/self-hosting tests.
+Production backend startup packaging changes also require the maintained
+`dart tools/adele.dart build linux --profile`; an isolated AOT fixture alone does
+not validate desktop packaging.
+
 Chat's declaration and bounded execution belong to `chat_strategy_contract` and
 `chat_strategy_backend`; real prepared application composition and durable reopen
 belong to `app/test/core/durable_chat_session_integration_test.dart`. Validate

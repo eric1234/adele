@@ -10,6 +10,7 @@ import 'package:adele_plugin_backend_support/capability_consumer.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'backend_capability_host.dart';
+import 'prepared_records.dart';
 import 'prepared_settings.dart';
 import 'remote_inference_context_host.dart';
 import 'resource_cleanup.dart';
@@ -179,7 +180,13 @@ final class ApplicationPluginBootstrap {
     this.createInfrastructureServices,
     Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)?
     loadSettings,
-  }) : _loadSettings = loadSettings ?? PreparedSettingsSnapshot.load;
+    Future<StartupRecordsView> Function(
+      PreparedPluginCatalog,
+      PreparedPluginInstallation,
+    )?
+    loadRecords,
+  }) : _loadSettings = loadSettings ?? PreparedSettingsSnapshot.load,
+       _loadRecords = loadRecords;
 
   final CapabilityRegistry registry;
   final ExtensionRegistry extensions;
@@ -198,9 +205,15 @@ final class ApplicationPluginBootstrap {
   Future<void>? _starting;
   Future<void>? _closing;
   Future<void>? _cleanup;
+  bool _startsStopped = false;
   Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)
   _loadSettings;
   Future<PreparedSettingsSnapshot>? _settings;
+  Future<StartupRecordsView> Function(
+    PreparedPluginCatalog,
+    PreparedPluginInstallation,
+  )?
+  _loadRecords;
 
   /// Binds the composition root's shared I/O owner before either component starts.
   void configureSettingsLoader(
@@ -210,6 +223,21 @@ final class ApplicationPluginBootstrap {
       throw StateError('Plugin settings must be configured before startup.');
     }
     _loadSettings = loader;
+  }
+
+  /// Binds the host-owned read-only record projection before backend startup.
+  /// Standalone hosts must supply this explicitly for opted-in installations.
+  void configureRecordsLoader(
+    Future<StartupRecordsView> Function(
+      PreparedPluginCatalog,
+      PreparedPluginInstallation,
+    )
+    loader,
+  ) {
+    if (_state != ApplicationPluginState.unconfigured) {
+      throw StateError('Plugin records must be configured before startup.');
+    }
+    _loadRecords = loader;
   }
 
   /// Both independent component owners consume one startup resolution.
@@ -319,6 +347,13 @@ final class ApplicationPluginBootstrap {
     }
   }
 
+  /// Fences new backend starts without retiring generations needed by draining
+  /// application work. Terminal cleanup still belongs to [close].
+  void stopStarting() => _startsStopped = true;
+
+  bool get _cannotStart =>
+      _startsStopped || _state == ApplicationPluginState.closing;
+
   /// Consumes prepared deployment artifacts only. An absent root is empty, not
   /// an instruction to discover source or prepare artifacts at runtime.
   Future<void> start({
@@ -336,7 +371,7 @@ final class ApplicationPluginBootstrap {
     ),
     Map<String, List<String>>? startupArguments,
   }) {
-    if (_state != ApplicationPluginState.unconfigured) {
+    if (_startsStopped || _state != ApplicationPluginState.unconfigured) {
       throw StateError('Application plugins have already started or closed.');
     }
     _setState(ApplicationPluginState.starting);
@@ -372,28 +407,43 @@ final class ApplicationPluginBootstrap {
           if (installation.backendArtifactUri != null)
             InstalledBackendActivation._(installation, _validateReady),
       ]);
-      if (_state == ApplicationPluginState.closing) return;
+      if (_cannotStart) return;
       if (_backends.isEmpty) {
         _setState(ApplicationPluginState.ready);
         return;
       }
       final Map<String, List<String>> startup =
           arguments ?? await _readStartupArguments(argumentsFile);
-      if (_state == ApplicationPluginState.closing) return;
+      if (_cannotStart) return;
       final PluginBackendHost host = _host = await PluginBackendHost.start(
         dartaotruntimeExecutable: executable,
         hostArtifactPath: artifact,
       );
       unawaited(host.terminated.then(_hostTerminated));
       for (final InstalledBackendActivation backend in _backends) {
-        if (_state == ApplicationPluginState.closing) return;
+        if (_cannotStart) return;
         if (_failure != null) throw _failure!;
         backend._state = InstalledBackendState.starting;
         try {
           final settings = (await settingsForCatalog(
             catalog,
           )).valuesForInstallation(backend.installation);
-          if (_state == ApplicationPluginState.closing) return;
+          if (_cannotStart) return;
+          final List<Map<String, Object?>> records;
+          if (backend.installation.backendConsumedRecordTypes.isEmpty) {
+            records = const [];
+          } else {
+            final loader = _loadRecords;
+            if (loader == null) {
+              throw StateError('Backend record loading is not configured.');
+            }
+            final snapshot = await loader(catalog, backend.installation);
+            records = snapshot.recordsForInstallation(
+              catalog,
+              backend.installation,
+            );
+          }
+          if (_cannotStart) return;
           final PluginBackendConnection
           connection = backend._connection = await host.startPlugin(
             pluginId: backend.installation.metadata.id.value,
@@ -402,6 +452,7 @@ final class ApplicationPluginBootstrap {
                 startup[backend.installation.metadata.id.value] ?? const [],
             startupArgumentsOnly: true,
             settings: settings,
+            records: records,
             createInfrastructureServices: (connection) {
               final services = <String, AdeleBackendDispatcher>{
                 ...?createInfrastructureServices?.call(connection),
@@ -463,7 +514,7 @@ final class ApplicationPluginBootstrap {
         _notify();
       }
       if (_failure != null) throw _failure!;
-      if (_state != ApplicationPluginState.closing) {
+      if (!_cannotStart) {
         _setState(ApplicationPluginState.ready);
       }
     } on Object catch (error) {
