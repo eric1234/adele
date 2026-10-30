@@ -57,7 +57,7 @@ The immutable contract includes:
 | `SessionFeedbackComment` | Original comment identity, optimistic version, creation sequence, exact user text, and anchor. Sequence gaps are retained. |
 | `SessionFeedbackAnchor` | Environment provenance, relative path, captured comparison layer/side/identity, inclusive line range, original excerpt, and hunk/line display coordinates. No filesystem or approval authority. |
 | `SessionFeedbackReceipt` | Submission ID, accepted Session ID, and strategy-owned occurrence ID. Identical deliveries return the same identities. |
-| `SessionFeedbackRecord` | Receipt plus the full structured immutable accepted submission, returned by bounded lookup. |
+| `SessionFeedbackRecord` | Receipt plus the full structured immutable accepted submission and optional current `runId` association, returned by bounded lookup. Association is separate from the stable receipt and does not prove that model execution started. |
 
 `encodeSessionFeedbackSubmission` defines complete canonical JSON with fixed field
 order, enum names, ordered comments, and exact unnormalized strings. Equality uses
@@ -108,6 +108,10 @@ See [acceptance semantics](../../docs/architecture/execution-model.md#session-fe
 `ResolvedOrchestrationStrategy.materialize(context)` invokes the retained
 contribution with `OrchestrationStrategyHostContext(session, host)`. The context
 contains the canonical product `Session` and an `OrchestrationExecutionHost`.
+Its optional `expectedFeedback` receipt constrains the normal Run to that exact
+accepted occurrence. A strategy must reject an ineligible or differently associated
+occurrence rather than silently consuming another input; null preserves normal
+strategy input selection. The context validates receipt Session identity.
 Materialization validates the exact binding and matching Session/host identities
 before and after the callback settles. Contributions return
 `FutureOr<OrchestrationExecution>` so local materializers may remain synchronous;
@@ -186,7 +190,9 @@ may freshly resolve replacement B under the unchanged semantic strategy ID.
 the native strategy facade. `RemoteOrchestrationService` provides unary
 `materialize`, `start`, `resolveApproval`, and `release`. Materialization receives
 only the implementation route and immutable Session/Task/strategy/Run identities,
-never an invocation token or host execution authority. It returns an opaque
+plus a required-nullable `RemoteExpectedSessionFeedback` carrying the expected
+submission/occurrence IDs when requested, never an invocation token or host
+execution authority. It returns an opaque
 backend execution route; actual strategy configuration is captured then, not
 deferred until start.
 

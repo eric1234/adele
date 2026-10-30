@@ -472,6 +472,7 @@ void main() {
           occurrenceId: 'entry',
         ),
         submission: submission,
+        runId: null,
       );
       await expectLater(
         fixture.capture().lookup('submission'),
@@ -501,6 +502,7 @@ void main() {
             SessionFeedbackRecord(
               receipt: _receipt(fixture.session, submission),
               submission: submission,
+              runId: null,
             ),
           );
         case 'failure':
@@ -658,6 +660,7 @@ final class _Target implements SessionFeedbackTarget {
     final record = SessionFeedbackRecord(
       receipt: _receipt(session, submission),
       submission: submission,
+      runId: null,
     );
     records[submission.submissionId] = record;
     return Future.value(record.receipt);

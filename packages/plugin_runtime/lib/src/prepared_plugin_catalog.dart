@@ -283,6 +283,7 @@ final class PreparedMainContentPresentation
     required this.initialize,
     required this.entrypoint,
     this.sessionExecution = false,
+    this.sessionFeedback = false,
     Iterable<String> backendServices = const [],
     Iterable<String> optionalBackendServices = const [],
     Iterable<CapabilityKey> capabilities = const [],
@@ -379,6 +380,10 @@ final class PreparedMainContentPresentation
   final String initialize;
   final String entrypoint;
   final bool sessionExecution;
+
+  /// Optional pane-only access to the current Session's compatible feedback
+  /// target. No initializers, input actions, or finite operations receive it.
+  final bool sessionFeedback;
   final List<String> backendServices;
 
   /// Pane-only access to a captured sibling backend, without requiring readiness
@@ -421,6 +426,7 @@ final class PreparedMainContentPresentation
     'initialize': initialize,
     'entrypoint': entrypoint,
     'sessionExecution': sessionExecution,
+    'sessionFeedback': sessionFeedback,
     'backendServices': [...backendServices],
     'optionalBackendServices': [...optionalBackendServices],
     'capabilities': [
@@ -1428,6 +1434,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'initialize',
         'entrypoint',
         'sessionExecution',
+        'sessionFeedback',
         'backendServices',
         'optionalBackendServices',
         'capabilities',
@@ -1530,6 +1537,7 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         initialize: _entrypoint(value['initialize'], '$label.initialize'),
         entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
         sessionExecution: execution,
+        sessionFeedback: permission('sessionFeedback'),
         backendServices: services.cast<String>(),
         optionalBackendServices: optionalServices.cast<String>(),
         capabilities: capabilityKeys('capabilities'),

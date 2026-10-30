@@ -142,6 +142,19 @@ require a later explicit design.
 
 ## Draft Request
 
+When ordinary materialization carries an expected feedback receipt, the same
+claim validates its durable submission and exact linked user occurrence. That
+occurrence must still be the eligible history tail and not belong to a different
+Run. The association transaction checks the captured Session counter/configuration,
+entry content, and immutable submission linkage together; a newer input or a stale
+generation fails closed without associating unrelated input. An uncertain association
+write invalidates cached state before subsequent mutations. Public feedback lookup
+exposes the current durable `runId` separately from its immutable receipt, including
+after backend replacement with no terminal Run record. A missing association after
+attempted scheduling is not proof of rollback or permission to schedule again.
+The explicit volatile native helper rejects expected feedback; this durable path
+uses the installed remote backend and needs no mounted Chat presentation.
+
 `ChatSessionState` owns the generation-local exact draft string, exposed through
 `ChatSessionSnapshot.draftRequest`. `setDraftRequest` replaces it exactly, including
 empty or whitespace-only text, committing before updating memory. `submitDraftRequest`

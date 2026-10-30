@@ -161,6 +161,7 @@ const _frontends =
           'main_content_bridge.dart',
           'owning_backend_bridge.dart',
           'session_presentation_lifecycle_bridge.dart',
+          'session_feedback_bridge.dart',
         ],
         contract: 'diff_viewer',
       ),

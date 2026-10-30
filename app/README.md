@@ -1561,6 +1561,14 @@ the generic host knows no stock editor kind or plugin implementation.
 
 [`PreparedSessionServices`](lib/frontend/prepared_session_services.dart) extracts
 existing generic execution/backend service binding, not a new privileged UI role.
+Its separate `sessionFeedback` opt-in binds
+[`SessionFeedbackPresentationSource`](lib/frontend/session_feedback_source.dart)
+and [`SessionFeedbackBridge`](lib/frontend/session_feedback_bridge.dart) only to a
+mounted interactive pane. The source uses canonical feedback decoding and
+`CapturedSessionFeedbackTarget`, never a concrete Diff or Chat contract. Finite
+admission records survive pane remount; fresh reconciliation does not redirect an
+older request. A normal lazy execution owner schedules the exact accepted occurrence
+through ordinary model/tool/policy composition, independently of Chat presentation.
 `ApplicationFrontendBootstrap` passes it to prepared Main Content hosting. Only
 explicit descriptor requests acquire these services, and only for an actual pane.
 The binder validates exact contribution registration and metadata, canonical

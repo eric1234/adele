@@ -295,6 +295,13 @@ native implementations supply their behavior; calling a stub natively throws
   [contextual admission boundary](../../docs/architecture/contracts-and-capabilities.md#contextual-unary-capability-invocation)
   owns the exact host grant and retirement semantics; the
   [catalog schema](../plugin_runtime/README.md#prepared-catalog) owns the opt-in.
+- `session_feedback_bridge.dart` supplies narrowly scoped acceptance, explicit
+  reconciliation, and ordinary Run scheduling for an immutable canonical feedback
+  payload. The host captures the Session and compatible strategy; no caller-selected
+  recipient, backend channel, or Environment authority crosses this interface.
+  Delivery and scheduling acknowledgements are distinct. Uncertain outcomes must
+  be reconciled without automatic replay; scheduling attempts retain their durable
+  counter so stale callbacks cannot authorize another Run.
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.

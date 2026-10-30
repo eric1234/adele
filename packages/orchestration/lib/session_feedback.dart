@@ -4,6 +4,7 @@ library;
 import 'dart:convert' as convert;
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_product/adele_product.dart' as product;
 
 part 'session_feedback.g.dart';
 
@@ -189,14 +190,23 @@ final class SessionFeedbackReceipt {
 
 @AdeleValue('dev.adele.session.feedback.record')
 final class SessionFeedbackRecord {
-  SessionFeedbackRecord({required this.receipt, required this.submission}) {
+  SessionFeedbackRecord({
+    required this.receipt,
+    required this.submission,
+    required this.runId,
+  }) {
     if (receipt.submissionId != submission.submissionId) {
       throw _invalidSubmission;
     }
+    if (runId case final value?) product.RunId(value);
   }
 
   final SessionFeedbackReceipt receipt;
   final SessionFeedbackSubmission submission;
+
+  /// Current durable association, not evidence that execution reached a model.
+  /// Kept separate from the stable acceptance receipt.
+  final String? runId;
 }
 
 /// An already-bound Session target. Accepting feedback does not start a Run.

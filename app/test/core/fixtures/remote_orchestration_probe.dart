@@ -211,7 +211,8 @@ final class _Service implements RemoteOrchestrationService {
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
-  ) => probe.backend.materialize(routeId, session, runId);
+    RemoteExpectedSessionFeedback? expectedFeedback,
+  ) => probe.backend.materialize(routeId, session, runId, expectedFeedback);
 
   @override
   Future<RemoteRunState> start(String executionId, String context) {

@@ -92,6 +92,7 @@ void main() {
       'owning_backend',
       'rich_document_editor',
       'session_execution',
+      'session_feedback',
       'session_presentation_lifecycle',
       'tool_activity_inspection',
       'console',

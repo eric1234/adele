@@ -2447,6 +2447,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             diff.frontend!.presentations.single
                 as PreparedMainContentPresentation;
         expect(diffDescriptor.canRequestSourceDisplay, isTrue);
+        expect(diffDescriptor.sessionFeedback, isTrue);
         expect(diffDescriptor.backendServices, isEmpty);
         expect(diffDescriptor.optionalBackendServices, ['diff.reviewDraft']);
         expect(

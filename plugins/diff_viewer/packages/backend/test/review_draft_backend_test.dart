@@ -23,7 +23,7 @@ void main() {
   });
 
   test(
-    'lazy v1 schema guard and fresh snapshots never create draft rows',
+    'lazy schema guard and fresh snapshots never create draft rows',
     () async {
       expect(storage.schemaChecks, 0);
       expect((await service.snapshot('session')).comments, isEmpty);
@@ -40,7 +40,7 @@ void main() {
         storage.database
             .select('SELECT version FROM test_owner_schema')
             .single['version'],
-        1,
+        2,
       );
       await service.snapshot('other');
       await service.snapshot('session');

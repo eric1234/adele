@@ -24,6 +24,7 @@ import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_services.dart';
 import 'rich_document_editor_bridge.dart';
+import 'session_feedback_bridge.dart';
 import 'session_presentation_lifecycle_bridge.dart';
 import 'structured_bridge_data.dart';
 
@@ -294,11 +295,14 @@ final class PreparedMainContentHost {
                         isActive: () => collection.isActive,
                       ),
                       EnvironmentAccessBridge(isActive: paneActive),
+                      if (descriptor.sessionFeedback && services == null)
+                        SessionFeedbackBridge(),
                       if (retained != null)
                         _dataBridge(retained, attachment, isActive: paneActive),
                     ];
                     try {
                       if (descriptor.sessionExecution ||
+                          (descriptor.sessionFeedback && services != null) ||
                           descriptor.backendServices.isNotEmpty ||
                           descriptor.strategyAffinity ==
                               PreparedStrategyAffinity.owningBackend ||

@@ -9,7 +9,8 @@ import 'package:flutter/foundation.dart';
 import 'session_execution_controller.dart';
 
 /// Window-owned executions, independent of which Session is presented.
-/// Lookup is passive; only explicit Session activation creates an owner.
+/// Lookup is passive; explicit execution-service acquisition creates an owner.
+/// Presentation is optional, including for accepted-feedback scheduling.
 final class SessionExecutionOwners extends ChangeNotifier {
   SessionExecutionOwners({
     required AdeleRuntime runtime,

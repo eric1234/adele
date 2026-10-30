@@ -21,6 +21,9 @@ void main() {
             materialize: (context) async {
               proxy = context.host;
               expect(context.session.taskId.value, 'task');
+              expect(context.expectedFeedback!.sessionId, 'session');
+              expect(context.expectedFeedback!.submissionId, 'review');
+              expect(context.expectedFeedback!.occurrenceId, 'entry-4');
               expect(proxy.id, RunId('run'));
               expect(proxy.sessionId, SessionId('session'));
               expect(proxy.state, RunState.created);
@@ -65,7 +68,7 @@ void main() {
       );
       addTearDown(backend.close);
       await expectLater(
-        backend.materialize('missing', _session(), 'run'),
+        backend.materialize('missing', _session(), 'run', null),
         throwsArgumentError,
       );
       await expectLater(
@@ -77,10 +80,19 @@ void main() {
             strategyId: 'dev.other.strategy',
           ),
           'run',
+          null,
         ),
         throwsArgumentError,
       );
-      final id = await backend.materialize('route', _session(), 'run');
+      final id = await backend.materialize(
+        'route',
+        _session(),
+        'run',
+        RemoteExpectedSessionFeedback(
+          submissionId: 'review',
+          occurrenceId: 'entry-4',
+        ),
+      );
       expect(backend.executionCount, 1);
       expect(channels, 0);
       expect(proxy.validateBinding, throwsA(isA<InvalidRunOperation>()));
@@ -699,7 +711,7 @@ void main() {
       expect(fixture.executions.single.closeCount, 1);
       expect(fixture.backend.executionCount, 0);
       await expectLater(
-        fixture.backend.materialize('route', _session(), 'other'),
+        fixture.backend.materialize('route', _session(), 'other', null),
         throwsStateError,
       );
     },
@@ -784,7 +796,7 @@ void main() {
         },
         hostChannel: (_) => throw StateError('no authority'),
       );
-      final pending = backend.materialize('route', _session(), 'run');
+      final pending = backend.materialize('route', _session(), 'run', null);
       final rejected = expectLater(pending, throwsStateError);
       await entered.future;
       bool closed = false;
@@ -979,7 +991,7 @@ final class _Fixture {
   }
 
   Future<String> materialize() =>
-      backend.materialize('route', _session(), 'run');
+      backend.materialize('route', _session(), 'run', null);
   Future<void> close() async {
     await backend.close();
     await dispatcher.close();

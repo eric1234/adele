@@ -26,6 +26,7 @@ void main() {
           'route',
           RemoteOrchestrationSession.fromLocal(session),
           'run',
+          null,
         ),
         'execution',
       );
@@ -38,10 +39,28 @@ void main() {
           'strategyId': 'dev.test.strategy',
         },
         'runId': 'run',
+        'expectedFeedback': null,
       });
       expect(service.session!.toLocal().id, session.id);
       expect(service.session!.toLocal().taskId, session.taskId);
       expect(service.session!.toLocal().strategyId, session.strategyId);
+      final receipt = SessionFeedbackReceipt(
+        submissionId: 'review',
+        sessionId: session.id.value,
+        occurrenceId: 'entry-7',
+      );
+      await client.materialize(
+        'route',
+        RemoteOrchestrationSession.fromLocal(session),
+        'feedback-run',
+        RemoteExpectedSessionFeedback.fromLocal(receipt),
+      );
+      expect(channel.payload!['expectedFeedback'], {
+        'submissionId': 'review',
+        'occurrenceId': 'entry-7',
+      });
+      expect(service.expectedFeedback!.submissionId, receipt.submissionId);
+      expect(service.expectedFeedback!.occurrenceId, receipt.occurrenceId);
       expect(
         await client.start('execution', 'fresh-start'),
         RemoteRunState.waiting,
@@ -593,6 +612,7 @@ void main() {
             'strategyId': 'dev.test.strategy',
           },
           'hostInvocationContext': 'not-allowed',
+          'expectedFeedback': null,
         },
         {
           'routeId': 'route',
@@ -602,6 +622,30 @@ void main() {
             'taskId': 'task',
             'strategyId': 'dev.test.strategy',
             'environmentId': 'not-allowed',
+          },
+          'expectedFeedback': null,
+        },
+        {
+          'routeId': 'route',
+          'runId': 'run',
+          'session': {
+            'sessionId': 'session',
+            'taskId': 'task',
+            'strategyId': 'dev.test.strategy',
+          },
+        },
+        {
+          'routeId': 'route',
+          'runId': 'run',
+          'session': {
+            'sessionId': 'session',
+            'taskId': 'task',
+            'strategyId': 'dev.test.strategy',
+          },
+          'expectedFeedback': {
+            'submissionId': 'review',
+            'occurrenceId': 'entry-0',
+            'sessionId': 'not-a-selector',
           },
         },
       ]) {
@@ -708,14 +752,17 @@ final class _Tools implements StrategyToolSnapshot {}
 
 final class _Service implements RemoteOrchestrationService {
   RemoteOrchestrationSession? session;
+  RemoteExpectedSessionFeedback? expectedFeedback;
   RemoteApprovalResolution? resolution;
   @override
   Future<String> materialize(
     String routeId,
     RemoteOrchestrationSession session,
     String runId,
+    RemoteExpectedSessionFeedback? expectedFeedback,
   ) async {
     this.session = session;
+    this.expectedFeedback = expectedFeedback;
     return 'execution';
   }
 

@@ -235,6 +235,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       sessionServices: PreparedSessionServices(
         extensions: _runtime.extensions,
         backends: _runtime.plugins,
+        lifecycle: _runtime.lifecycle,
         inspectActivity: _inspectActivity,
         lookupControllerForSession: (session) => _executions.lookup(session),
         controllerForSession: _controllerForPresentation,

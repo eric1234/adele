@@ -1901,6 +1901,7 @@ exit "$CLIPPY_EXIT"
             'entrypoint': 'buildDiffPane',
             'order': 200,
             'optionalBackendServices': ['diff.reviewDraft'],
+            'sessionFeedback': true,
             'canRequestSourceDisplay': true,
             'environmentBufferedProcessCapabilities': [
               {'id': 'adele.diff.change-set-source', 'majorVersion': 1},

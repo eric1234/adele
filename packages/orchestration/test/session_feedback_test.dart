@@ -191,13 +191,31 @@ void main() {
     final record = SessionFeedbackRecord(
       receipt: receipt,
       submission: submission,
+      runId: null,
     );
     expect(record.receipt, same(receipt));
     expect(record.submission, same(submission));
+    expect(record.runId, isNull);
+    final associated = SessionFeedbackRecord(
+      receipt: receipt,
+      submission: submission,
+      runId: 'run',
+    );
+    expect(associated.receipt, same(receipt));
+    expect(associated.runId, 'run');
+    expect(
+      () => SessionFeedbackRecord(
+        receipt: receipt,
+        submission: submission,
+        runId: ' invalid ',
+      ),
+      throwsFormatException,
+    );
     expect(
       () => SessionFeedbackRecord(
         receipt: _receipt(submissionId: 'other'),
         submission: submission,
+        runId: null,
       ),
       _fails(),
     );
@@ -398,6 +416,19 @@ void main() {
         encodeSessionFeedbackSubmission(submission),
       );
       expect(record.receipt, isNot(same(service.record!.receipt)));
+      expect(record.runId, isNull);
+      service.record = SessionFeedbackRecord(
+        receipt: service.record!.receipt,
+        submission: service.record!.submission,
+        runId: 'associated-run',
+      );
+      final associated = (await client.lookup(
+        'route',
+        'session',
+        'submission',
+      ))!;
+      expect(associated.receipt.occurrenceId, receipt.occurrenceId);
+      expect(associated.runId, 'associated-run');
       expect(await client.lookup('route', 'session', 'absent'), isNull);
     },
   );
@@ -736,7 +767,11 @@ final class _Service implements RemoteSessionFeedbackService {
       submissionId: submission.submissionId,
       sessionId: sessionId,
     );
-    record = SessionFeedbackRecord(receipt: receipt, submission: submission);
+    record = SessionFeedbackRecord(
+      receipt: receipt,
+      submission: submission,
+      runId: null,
+    );
     return receipt;
   }
 
