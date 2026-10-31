@@ -1117,6 +1117,7 @@ final class _Fixture {
         strategyId: chatStrategyId.value,
       ),
       'current',
+      null,
     );
     return backend.start(execution!, 'start-token');
   }

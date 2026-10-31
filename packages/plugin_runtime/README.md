@@ -410,6 +410,7 @@ Additional Main Content fields are explicit opt-ins:
 | `operations` | Empty by default; finite operation keys mapped to top-level entrypoints in the same `library`. |
 | `closeOperation`, `exitOperation`, `displaySourceFileOperation` | Optional keys naming declared operations for pane close, reversible application-exit preflight, and public source-file display. |
 | `canRequestSourceDisplay` | Strict boolean, false by default; requests pane-only consumption of the public source-display point, not a provider registration or direct file/editor access. |
+| `canInspectSessionContent` | Strict boolean, false by default; requests explicit opening of a semantic occurrence from a mounted pane in its captured canonical Session. Independent of execution and backend grants; unavailable to initializers, input actions, and finite operations. |
 | `retainedData` | False by default; requests copied contribution-owned records retained independently of attachment. |
 | `nativeCodeEditor` | False by default; requires `retainedData` and requests supplied-text native editor ownership, not filesystem access. |
 | `richDocumentEditor` | Strict boolean, false by default; requests presentation-owned rich-document editors from supplied Markdown only in mounted panes. Requires no retained data, backend, execution, or file grant. |
@@ -522,6 +523,25 @@ invoke `display` directly or duplicate the action label/entrypoint. Its descript
 remain in the build-side
 [`stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart),
 not a runtime Source policy table.
+
+`PreparedSessionContentInspection` uses `role: 'sessionContentInspection'` with
+required `extensionId`, `contentKind`, `library`, and `entrypoint`.
+`contentKind` is a namespaced public semantic ID bounded to 128 ASCII characters;
+`library` is a canonical `package:` Dart URI and `entrypoint` a top-level identifier.
+Optional `backendServices` defaults to an immutable empty service-ID allowlist;
+duplicates, invalid services, wrong types, and all foreign fields are rejected.
+There is no strategy, execution, Environment, Console, or producer-affinity field.
+`toJson()` preserves this exact declaration, including the explicit empty allowlist.
+The Main Content opening opt-in is separate and is rejected on this role.
+
+Frontend activation registers a presenter independently of any backend. Selection
+matches the exact semantic kind, not the producing plugin. A card captures that
+registration and an optional exact-installation owning-backend route, including
+absence, without strategy materialization. The declared services must be
+retrieval-only; service allowlisting is not method-level effect enforcement.
+Interpreted code receives only read-only occurrence/Session facts through the
+[UI bridge](../ui/README.md#session-content-inspection). Presentation-only EVC
+decode/entrypoint failures remain local to the view, as for activity roles.
 
 Tool activity descriptors use `role: 'toolActivity'` with `toolId`, `library`,
 `inspectionExtensionId`, `compactExtensionId`, `inspectionEntrypoint`, and

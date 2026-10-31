@@ -1846,6 +1846,45 @@ Public semantics belong to [orchestration](../packages/orchestration/README.md),
 Internal mechanics belong to [agent kernel](../packages/agent_kernel/README.md),
 not plugin APIs. Primary application paths are in the source map below.
 
+## Session Content Inspection
+
+`InspectionTarget` retains only Session identity. `ActivityInspectionTarget`
+adds the existing Run/model fields for group and model-output targets;
+`SessionContentInspectionTarget` instead retains a validated semantic kind and
+occurrence reference. The same `WindowInspection`, `InspectionCard`,
+`InspectionStackHost`, and `InspectionHost` compose both paths and common chrome.
+No production plugin schema or durable content store belongs to these hosts.
+
+`PreparedMainContentHost` grants `inspectSessionContent` only to opted-in mounted
+panes. Admission checks exact attachment/pane liveness and canonical store identity;
+`AdeleApplication` additionally validates its current Session and window interaction
+state. This path never obtains a `SessionExecutionController` or a Run. Temporary
+navigation/exit preflight blocks admission without permanently retiring a pane if
+departure is canceled. Committed departure clears cards through the existing
+`WindowSessionContext` observer.
+
+`SelectedSessionContentInspection` retains the exact public presenter binding and
+fixed context for one opening. `SessionContentInspectionHost` contains asynchronous
+factory failures and rejects late completion without rediscovery or retry.
+The factory result belongs to the card, so remounting the stack cannot recapture
+a backend or retry a failed factory. Accepted shutdown retires contexts and opening
+access immediately while retaining inert card identity for the closing display.
+`ApplicationFrontendBootstrap` adapts the prepared descriptor to the existing EVC
+host and captures optional exact-installation backend access once per card.
+`SessionContentInspectionBridge` freezes primitive context facts and synchronously
+revokes reads, backend observation, and late interpreted entrypoint publication
+when its context or presenter retires. The compact native header retains only
+bounded semantic identity; all domain-specific rendering stays contributed.
+
+The test-only independent compiled producer/renderer lives in
+`test/session_content_inspection_frontend_eval_test.dart`; optional real AOT
+retrieval is exercised by `test/session_content_inspection_backend_test.dart`.
+Public API/ABI details belong to [UI](../packages/ui/README.md#session-content-inspection)
+and the [prepared catalog](../packages/plugin_runtime/README.md#prepared-catalog).
+The [architecture](../docs/architecture/plugin-system.md#session-content-inspection)
+defines ownership, retirement, and the planned G7c2 Chat integration, which is not
+part of the generic host.
+
 ## Activity Inspection
 
 `RunActivityProjection` exposes read-only public execution snapshots. The execution

@@ -1,4 +1,4 @@
-/// Public semantic ADELE Task Browser, Main Content and activity contracts.
+/// Public semantic ADELE Task Browser, Main Content and Inspection contracts.
 library;
 
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -13,6 +13,7 @@ export 'display_source_file.dart';
 export 'main_content.dart';
 export 'model_native_activity_compact_presentation.dart';
 export 'model_native_activity_presentation.dart';
+export 'session_content_inspection.dart';
 export 'tool_activity_compact_presentation.dart';
 export 'tool_activity_inspection.dart';
 

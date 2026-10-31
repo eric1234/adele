@@ -1,12 +1,21 @@
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_ui/capability_bridge.dart';
 import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native imports grant no semantic Session Inspection opening', () {
+    final bool Function(String, String) inspect = inspectSessionContent;
+    expect(
+      () => inspect('test.content', 'occurrence-1'),
+      throwsUnsupportedError,
+    );
+  });
+
   test('Environment Capability channel is handle-only and request-only', () {
     const AdeleRequestChannel channel = EnvironmentCapabilityRequestChannel(
       'opaque-presentation-handle',

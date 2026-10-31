@@ -39,7 +39,7 @@ final class PreparedSessionServices {
   controllerForSession;
   final SessionExecutionController? Function(Session)?
   lookupControllerForSession;
-  final bool Function(Session, InspectionTarget) inspectActivity;
+  final bool Function(Session, ActivityInspectionTarget) inspectActivity;
   final bool Function(Session) isCurrent;
   final bool Function(Session)? isInteractive;
   final _metadata =

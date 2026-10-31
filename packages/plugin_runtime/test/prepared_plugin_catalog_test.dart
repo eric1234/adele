@@ -542,6 +542,7 @@ void main() {
       expect(session.richDocumentEditor, isFalse);
       expect(session.environmentTextFiles, isFalse);
       expect(session.canRequestSourceDisplay, isFalse);
+      expect(session.canInspectSessionContent, isFalse);
       expect(() => session.actions.clear(), throwsUnsupportedError);
       expect(() => session.operations.clear(), throwsUnsupportedError);
       final native =
@@ -661,6 +662,300 @@ void main() {
       expect(catalog.installations.single.frontend, isNull);
       expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     });
+  }
+
+  PreparedSessionContentInspection sessionContentInspection({
+    String contentKind = 'org.example.review-comments',
+    String library = 'package:example_frontend/inspection.dart',
+    String entrypoint = 'buildInspection',
+    Iterable<String> backendServices = const [],
+  }) => PreparedSessionContentInspection(
+    extensionId: ExtensionId('org.example.session-content-inspection'),
+    contentKind: contentKind,
+    library: library,
+    entrypoint: entrypoint,
+    backendServices: backendServices,
+  );
+
+  for (final explicitServices in [false, true]) {
+    test(
+      'Session content Inspection is frontend-only with explicit defaults=$explicitServices',
+      () async {
+        await install(
+          'inspection',
+          _manifest(
+            components: {
+              'frontend': _frontend(
+                presentations: [
+                  {
+                    ..._sessionContentInspection,
+                    if (explicitServices) 'backendServices': <String>[],
+                  },
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        final parsed =
+            installation.frontend!.presentations.single
+                as PreparedSessionContentInspection;
+        expect(
+          parsed.extensionId,
+          ExtensionId('org.example.session-content-inspection'),
+        );
+        expect(parsed.contentKind, _sessionContentInspection['contentKind']);
+        expect(parsed.library, _sessionContentInspection['library']);
+        expect(parsed.entrypoint, _sessionContentInspection['entrypoint']);
+        expect(parsed.backendServices, isEmpty);
+        expect(parsed.backendServices.clear, throwsUnsupportedError);
+        expect(parsed.toJson(), {
+          ..._sessionContentInspection,
+          'backendServices': <String>[],
+        });
+        expect(sessionContentInspection().toJson(), parsed.toJson());
+      },
+    );
+  }
+
+  test(
+    'Session content Inspection snapshots and roundtrips supporting services',
+    () async {
+      final services = ['example.read', 'example.watch'];
+      final descriptor = sessionContentInspection(backendServices: services);
+      services.clear();
+      expect(descriptor.backendServices, ['example.read', 'example.watch']);
+      expect(descriptor.backendServices.clear, throwsUnsupportedError);
+      final json = descriptor.toJson();
+      await install(
+        'inspection',
+        _manifest(
+          components: {
+            'frontend': _frontend(presentations: [json]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final parsed =
+          catalog.installations.single.frontend!.presentations.single
+              as PreparedSessionContentInspection;
+      expect(parsed.toJson(), json);
+      (json['backendServices']! as List).clear();
+      json.clear();
+      expect(descriptor.backendServices, ['example.read', 'example.watch']);
+      expect(parsed.backendServices, descriptor.backendServices);
+      expect(parsed.backendServices.clear, throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'Session content Inspection accepts the public content-kind bound',
+    () async {
+      expect(PreparedSessionContentInspection.maxContentKindLength, 128);
+      for (final kind in ['a.b', 'org.example.review-v2', 'a.${'b' * 126}']) {
+        final descriptor = sessionContentInspection(contentKind: kind);
+        expect(descriptor.contentKind, kind);
+        await install(
+          'kind-${kind.length}',
+          _manifest(
+            id: 'org.example.kind-${kind.length}',
+            components: {
+              'frontend': _frontend(presentations: [descriptor.toJson()]),
+            },
+          ),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(3));
+    },
+  );
+
+  for (final kind in [
+    '',
+    'review',
+    'Org.example.review',
+    'org.example.2review',
+    'org..review',
+    '.org.review',
+    'org.review.',
+    'org.review-',
+    'org.-review',
+    'org.re--view',
+    'org.re_view',
+    'org.re/view',
+    'org.re:view',
+    ' org.review',
+    'org.review ',
+    'org.review\n',
+    'org.re\tview',
+    'org.re\u0000view',
+    'org.re\u007fview',
+    'org.r\u00e9view',
+    'a.${'b' * 127}',
+    'private-payload' * 10000,
+  ]) {
+    test(
+      'Session content Inspection rejects kind ${kind.length > 128 ? 'length ${kind.length}' : jsonEncode(kind)} safely',
+      () async {
+        expect(
+          () => sessionContentInspection(contentKind: kind),
+          throwsA(
+            isA<FormatException>()
+                .having((error) => error.source, 'source', isNull)
+                .having(
+                  (error) => error.toString(),
+                  'safe diagnostic',
+                  kind.isEmpty ? isNotEmpty : isNot(contains(kind)),
+                ),
+          ),
+        );
+        await install(
+          'invalid-kind',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(
+                presentations: [
+                  {..._sessionContentInspection, 'contentKind': kind},
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+        expect(catalog.issues.single.message, contains('contentKind'));
+        if (kind.isNotEmpty) {
+          expect(catalog.issues.single.message, isNot(contains(kind)));
+        }
+      },
+    );
+  }
+
+  test(
+    'Session content Inspection constructor validates presentation and services',
+    () {
+      for (final create in <Object Function()>[
+        () => sessionContentInspection(library: 'inspection.dart'),
+        () => sessionContentInspection(
+          library: 'package:example/../inspection.dart',
+        ),
+        () => sessionContentInspection(entrypoint: 'Inspection.build'),
+        () => sessionContentInspection(entrypoint: 'build()'),
+        () => sessionContentInspection(backendServices: ['']),
+        () => sessionContentInspection(backendServices: ['example/read']),
+        () => sessionContentInspection(
+          backendServices: ['example.read', 'example.read'],
+        ),
+      ]) {
+        expect(create, throwsFormatException);
+      }
+    },
+  );
+
+  final invalidSessionContentInspection = <String, Object?>{
+    for (final field in _sessionContentInspection.keys)
+      'missing $field': {..._sessionContentInspection}..remove(field),
+    for (final field in _sessionContentInspection.keys)
+      for (final value in <Object?>[null, false, 1, [], {}])
+        'invalid $field ${jsonEncode(value)}': {
+          ..._sessionContentInspection,
+          field: value,
+        },
+    'unknown role': {..._sessionContentInspection, 'role': 'sessionInspection'},
+    'invalid extension': {
+      ..._sessionContentInspection,
+      'extensionId': 'inspection',
+    },
+    for (final library in [
+      'inspection.dart',
+      'file:///inspection.dart',
+      'package:example/../inspection.dart',
+      'package:example//inspection.dart',
+      'package:example/inspection.dart?query',
+    ])
+      'invalid library $library': {
+        ..._sessionContentInspection,
+        'library': library,
+      },
+    for (final entrypoint in [
+      'Inspection.build',
+      'build()',
+      '1build',
+      'build\n',
+    ])
+      'invalid entrypoint ${jsonEncode(entrypoint)}': {
+        ..._sessionContentInspection,
+        'entrypoint': entrypoint,
+      },
+    for (final services in <Object?>[
+      null,
+      'example.read',
+      false,
+      1,
+      {},
+      [null],
+      [1],
+      [''],
+      ['example/read'],
+      ['example.read', 'example.read'],
+    ])
+      'invalid services ${jsonEncode(services)}': {
+        ..._sessionContentInspection,
+        'backendServices': services,
+      },
+    for (final field in [
+      'unknown',
+      'libraryUri',
+      'sessionId',
+      'occurrenceId',
+      'sessionExecution',
+      'sessionFeedback',
+      'strategyId',
+      'strategyAffinity',
+      'environmentId',
+      'environmentTextFiles',
+      'optionalBackendServices',
+      'consoleExtensions',
+      'actions',
+      'operations',
+      'retainedData',
+      'nativeCodeEditor',
+    ])
+      'unsupported $field': {..._sessionContentInspection, field: true},
+  };
+  for (final entry in invalidSessionContentInspection.entries) {
+    test(
+      'Session content Inspection ${entry.key} rejects only frontend',
+      () async {
+        await install(
+          'invalid-inspection',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(presentations: [_session, entry.value]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+      },
+    );
   }
 
   test('Main Content is data-only, ordered and frontend-only', () async {
@@ -866,6 +1161,8 @@ void main() {
     bool richDocumentEditor = false,
     bool environmentTextFiles = false,
     bool canRequestSourceDisplay = false,
+    bool canInspectSessionContent = false,
+    bool sessionExecution = false,
     bool sessionFeedback = false,
   }) => PreparedMainContentPresentation(
     extensionId: ExtensionId('org.example.main-content'),
@@ -887,8 +1184,57 @@ void main() {
     richDocumentEditor: richDocumentEditor,
     environmentTextFiles: environmentTextFiles,
     canRequestSourceDisplay: canRequestSourceDisplay,
+    canInspectSessionContent: canInspectSessionContent,
+    sessionExecution: sessionExecution,
     sessionFeedback: sessionFeedback,
   );
+
+  test('Session content Inspection requests default denied', () {
+    expect(mainContent().canInspectSessionContent, isFalse);
+    expect(mainContent().toJson()['canInspectSessionContent'], isFalse);
+  });
+
+  for (final granted in [false, true]) {
+    for (final execution in [false, true]) {
+      test(
+        'Session content Inspection opt-in $granted is independent of execution $execution',
+        () async {
+          final descriptor = mainContent(
+            canInspectSessionContent: granted,
+            sessionExecution: execution,
+          );
+          await install(
+            'inspection-consumer',
+            _manifest(
+              components: {
+                'frontend': _frontend(presentations: [descriptor.toJson()]),
+              },
+            ),
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.issues, isEmpty);
+          final installation = catalog.installations.single;
+          final parsed =
+              installation.frontend!.presentations.single
+                  as PreparedMainContentPresentation;
+          expect(parsed.canInspectSessionContent, granted);
+          expect(parsed.sessionExecution, execution);
+          expect(parsed.toJson(), descriptor.toJson());
+          expect(installation.backendArtifactUri, isNull);
+          expect(parsed.backendServices, isEmpty);
+          expect(parsed.optionalBackendServices, isEmpty);
+          expect(parsed.strategyAffinity, PreparedStrategyAffinity.independent);
+          expect(parsed.capabilities, isEmpty);
+          expect(parsed.environmentReadCapabilities, isEmpty);
+          expect(parsed.environmentBufferedProcessCapabilities, isEmpty);
+          expect(parsed.environmentTextFiles, isFalse);
+          expect(parsed.sessionFeedback, isFalse);
+          expect(parsed.actions, isEmpty);
+          expect(parsed.operations, isEmpty);
+        },
+      );
+    }
+  }
 
   test('Session feedback defaults denied without an explicit declaration', () {
     expect(mainContent().sessionFeedback, isFalse);
@@ -1220,6 +1566,7 @@ void main() {
                 richDocumentEditor: true,
                 environmentTextFiles: true,
                 canRequestSourceDisplay: true,
+                canInspectSessionContent: true,
               )
             : mainContent();
         final json = descriptor.toJson();
@@ -1260,6 +1607,7 @@ void main() {
           'richDocumentEditor': populated,
           'environmentTextFiles': populated,
           'canRequestSourceDisplay': populated,
+          'canInspectSessionContent': populated,
         });
         expect(jsonEncode(descriptor.toJson()), jsonEncode(json));
         await install(
@@ -1435,6 +1783,7 @@ void main() {
       'richDocumentEditor',
       'environmentTextFiles',
       'canRequestSourceDisplay',
+      'canInspectSessionContent',
       'sessionFeedback',
     ])
       for (final value in <Object?>[null, 'true', 1, [], {}])
@@ -2009,6 +2358,7 @@ void main() {
     browser,
     _toolActivity,
     _modelNativeActivity,
+    _sessionContentInspection,
   ]) {
     for (final field in [
       'capabilities',
@@ -2016,6 +2366,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
+      'canInspectSessionContent',
       'richDocumentEditor',
     ]) {
       test('${descriptor['role']} rejects $field grants', () async {
@@ -2030,6 +2381,7 @@ void main() {
                     ...descriptor,
                     field:
                         field == 'canRequestSourceDisplay' ||
+                            field == 'canInspectSessionContent' ||
                             field == 'richDocumentEditor'
                         ? true
                         : <Object?>[],
@@ -2061,6 +2413,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'canRequestSourceDisplay',
+      'canInspectSessionContent',
       'richDocumentEditor',
     ]) {
       test('${descriptor['kind']} rejects $field declarations', () async {
@@ -2076,6 +2429,7 @@ void main() {
                     ...descriptor,
                     field:
                         field == 'canRequestSourceDisplay' ||
+                            field == 'canInspectSessionContent' ||
                             field == 'richDocumentEditor'
                         ? true
                         : <Object?>[],
@@ -4092,6 +4446,14 @@ const _mainContentActionCommand = {
   'commandId': 'org.example.open',
   'mainContentExtensionId': 'org.example.main-content',
   'actionId': 'open',
+};
+
+const _sessionContentInspection = {
+  'role': 'sessionContentInspection',
+  'extensionId': 'org.example.session-content-inspection',
+  'contentKind': 'org.example.review-comments',
+  'library': 'package:example_frontend/inspection.dart',
+  'entrypoint': 'buildInspection',
 };
 
 const _toolActivity = {

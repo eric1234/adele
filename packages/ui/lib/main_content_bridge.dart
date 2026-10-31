@@ -37,6 +37,14 @@ bool removeMainContentPane(String id) =>
 bool focusMainContentPane(String id, bool keyboardFocus) =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
 
+/// Opens semantic Inspection for content in this mounted pane's captured Session.
+/// Only panes declaring canInspectSessionContent receive access. The bounded kind
+/// and occurrence reference select content, not a Session, backend, Run or payload.
+/// Invalid identities, unavailable access and retired callbacks return false,
+/// without exposing native diagnostics.
+bool inspectSessionContent(String contentKind, String occurrenceId) =>
+    throw UnsupportedError('Main Content requires a prepared contribution.');
+
 /// Side-effect-free source-display discovery for this mounted pane. Returns
 /// available, unavailable (no provider/current attachment), ambiguous, denied
 /// (no consumer declaration), or retired. This does not reserve a provider.
