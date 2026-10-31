@@ -23,6 +23,8 @@ import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -31,6 +33,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:adele_ui/inspection_display.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:crypto/crypto.dart';
@@ -824,6 +827,9 @@ void main() {
         expect(chat.entries.single.id, frozen.occurrenceId);
         expect(chat.entries.single.role, 'user');
         expect(chat.entries.single.runId, frozen.runId);
+        expect(chat.entries.single.feedback!.kind, ChatFeedbackKind.codeReview);
+        expect(chat.entries.single.feedback!.submissionId, frozen.submissionId);
+        expect(chat.entries.single.feedback!.commentCount, saved.length);
         expect(chat.entries.single.content, endsWith(frozen.canonicalPayload));
         expect(chat.draftRequest, _reviewDraft);
         expect(fixture.feedbackRows(), [
@@ -842,8 +848,21 @@ void main() {
           isNot(contains(frozen.canonicalPayload)),
         );
         if (mountChat) {
-          await _visible(tester, chat.entries.single.content);
-          expect(find.text(chat.entries.single.content), findsOneWidget);
+          await _visible(tester, _compactFeedback(saved.length));
+          final descriptor = fixture.frontends.generations
+              .singleWhere(
+                (value) => value.installation.metadata.id.value == _chatPlugin,
+              )
+              .installation
+              .frontend!
+              .presentations
+              .whereType<PreparedSessionContentInspection>()
+              .single;
+          expect(descriptor.contentKind, chatFeedbackInspectionKind);
+          expect(descriptor.backendServices, [chatFeedbackInspectionServiceId]);
+          expect(find.text(chat.entries.single.content), findsNothing);
+          expect(find.textContaining(frozen.canonicalPayload), findsNothing);
+          expect(fixture.inspection.cards, isEmpty);
           final composer = tester.widget<NativeRichDocumentEditorView>(
             find.byType(NativeRichDocumentEditorView),
           );
@@ -911,6 +930,69 @@ void main() {
           hasLength(1),
         );
         expect(terminal.draftRequest, _reviewDraft);
+        if (mountChat) {
+          await _visible(tester, ReviewExecutionFixture.answer);
+          final compact = find.text(_compactFeedback(saved.length));
+          final activity = find.text('Tool: review_probe');
+          expect(activity, findsOneWidget);
+          expect(
+            tester.getTopLeft(compact).dy,
+            lessThan(tester.getTopLeft(activity).dy),
+          );
+          expect(
+            tester.getTopLeft(activity).dy,
+            lessThan(
+              tester.getTopLeft(find.text(ReviewExecutionFixture.answer)).dy,
+            ),
+          );
+          final otherWindow = WindowInspection()
+            ..presentSession(fixture.additionalSession);
+          final first = await _inspectFeedback(tester, fixture, frozen, saved);
+          final second = await _inspectFeedback(tester, fixture, frozen, saved);
+          expect(second.id, isNot(same(first.id)));
+          expect(fixture.inspection.cards.last.id, same(first.id));
+          expect(otherWindow.cards, isEmpty);
+          otherWindow.dispose();
+          await _inspectionControl(tester, first, 'Collapse Inspection');
+          expect(fixture.inspection.cards.last.isCollapsed, isTrue);
+          expect(second.content!.isActive, isTrue);
+          await _inspectionControl(tester, first, 'Expand Inspection');
+          expect(fixture.inspection.cards.last.content, same(first.content));
+          await _inspectionControl(tester, second, 'Dismiss Inspection');
+          expect(first.content!.isActive, isTrue);
+          expect(fixture.inspection.cards, hasLength(1));
+          final tool = controller
+              .retainedActivityForRun(RunId(frozen.runId!))!
+              .tools
+              .single;
+          // The compact label is inside IgnorePointer; its enclosing button is
+          // the actual activity-opening control, not the text render object.
+          final activityButton = find.widgetWithText(
+            TextButton,
+            'Tool: review_probe',
+          );
+          await tester.ensureVisible(activityButton);
+          await tester.pump();
+          expect(activityButton.hitTestable(), findsOneWidget);
+          await tester.tap(activityButton.hitTestable());
+          await tester.pump();
+          expect(fixture.inspection.cards, hasLength(2));
+          expect(
+            fixture.inspection.cards.first.target,
+            isA<ModelOutputInspectionTarget>(),
+          );
+          final inspected =
+              fixture.inspection.cards.first.target
+                  as ModelOutputInspectionTarget;
+          expect(inspected.sessionId, fixture.additionalSession.id);
+          expect(inspected.runId.value, frozen.runId);
+          expect(inspected.modelInvocationId, tool.modelInvocationId);
+          expect(inspected.outputSequence, tool.proposalSequence);
+          expect(fixture.inspection.cards.first.content, isNull);
+          expect(fixture.inspection.cards.last.id, same(first.id));
+          fixture.inspection.clear();
+          await tester.pump();
+        }
         for (final other in [peer, fixture.primarySession]) {
           final otherChat = (await tester.runAsync(
             () => fixture.chatClient.snapshot(other.id.value),
@@ -948,6 +1030,13 @@ void main() {
           'Review accepted. Run scheduled: ${frozen.runId}',
         );
         await _visible(tester, 'Next pending batch is independent');
+        if (mountChat) {
+          await _visible(tester, _compactFeedback(saved.length));
+          expect(fixture.inspection.cards, isEmpty);
+          await _inspectFeedback(tester, fixture, frozen, saved);
+          fixture.inspection.clear();
+          await tester.pump();
+        }
         expect(fixture.executionFixture.requests, hasLength(2));
         expect(fixture.feedbackRows(), hasLength(1));
         final durableComments = fixture.commentRows();
@@ -984,6 +1073,383 @@ void main() {
           _reviewDraft,
         );
         expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+        if (mountChat) {
+          await _visible(tester, _compactFeedback(saved.length));
+          expect(fixture.inspection.cards, isEmpty);
+          final rows = fixture.chatRows();
+          await tester.runAsync(() async {
+            await fixture.frontends.generations
+                .singleWhere(
+                  (generation) =>
+                      generation.installation.metadata.id.value == _diffPlugin,
+                )
+                .close();
+            await fixture.connectionFor(_diffPlugin).close();
+          });
+          await tester.pump();
+          expect(find.text('Diff'), findsNothing);
+          await _inspectFeedback(tester, fixture, frozen, saved);
+          expect(fixture.chatRows(), rows);
+          expect(fixture.commentRows(), durableComments);
+          expect(fixture.executionFixture.requests, isEmpty);
+          expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'G7c2 compiled feedback inspects before Run and survives scheduling, retrieval and renderer failures',
+    (tester) async {
+      await tester.runAsync(() async {
+        await fixture.close();
+        fixture = await _Fixture.create(
+          installations: installations,
+          host: host,
+          aotRuntime: aotRuntime,
+          feedback: true,
+        );
+        await fixture.write('a modified.txt', 'Unscheduled review target\n');
+      });
+      final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
+      await mount(
+        tester,
+        catalog: withMountedChat,
+        beforeMount: () => fixture.chatClient.setDraftRequest(
+          fixture.additionalSession.id.value,
+          _reviewDraft,
+        ),
+      );
+      tester.view.physicalSize = const Size(2400, 3000);
+      await tester.pump();
+      await _visible(tester, '+Unscheduled review target');
+      await _beginComment(tester, '+Unscheduled review target');
+      await _saveComment(tester, 'Keep this accepted comment without a Run.');
+      final session = fixture.additionalSession.id.value;
+      final saved = (await tester.runAsync(
+        () => fixture.draftClient.snapshot(session),
+      ))!.comments;
+      // The real dispatcher completes these futures while runAsync is awaiting
+      // them, so their completers must not belong to the widget fake-async zone.
+      final gate = (await tester.runAsync(
+        () async => fixture.storageProbes[_diffPlugin]!.holdTransaction(
+          afterCommit: true,
+          sqlContains: 'UPDATE adele_diff_review_handoffs',
+          parameters: {':status': 'schedulingPending'},
+        ),
+      ))!;
+      await _reviewReady(tester, 'Submit Review');
+      await tester.ensureVisible(_reviewAction('Submit Review'));
+      await tester.pump();
+      expect(_reviewAction('Submit Review').hitTestable(), findsOneWidget);
+      await tester.runAsync(
+        () => tester.tap(_reviewAction('Submit Review').hitTestable()),
+      );
+      await tester.runAsync(() => gate.entered.future.timeout(_bound));
+      await _visible(tester, _compactFeedback(1));
+      final pending = (await tester.runAsync(
+        () => fixture.draftClient.readReview(session),
+      ))!;
+      expect(pending.status, ReviewSubmissionStatus.schedulingPending);
+      expect(pending.runId, isNull);
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(fixture.executionFixture.requests, isEmpty);
+      final first = await _inspectFeedback(tester, fixture, pending, saved);
+      final acceptedRows = fixture.chatRows();
+      await tester.runAsync(() async {
+        await fixture.executionFixture.retireProvider();
+        gate.release();
+        await gate.settled.future.timeout(_bound);
+      });
+      await _visible(tester, 'Review accepted. Run not started.');
+      final accepted = (await tester.runAsync(
+        () => fixture.draftClient.readReview(session),
+      ))!;
+      expect(accepted.status, ReviewSubmissionStatus.accepted);
+      expect(accepted.schedulingAttempt, 1);
+      expect(accepted.runId, isNull);
+      expect(fixture.chatRows(), acceptedRows);
+      expect(fixture.feedbackRows(), hasLength(1));
+      expect(fixture.commentRows(), isEmpty);
+      final chat = (await tester.runAsync(
+        () => fixture.chatClient.snapshot(session),
+      ))!;
+      expect(chat.entries, hasLength(1));
+      expect(chat.entries.single.feedback!.commentCount, 1);
+      expect(chat.entries.single.content, endsWith(accepted.canonicalPayload));
+      expect(find.text(chat.entries.single.content), findsNothing);
+      expect(chat.draftRequest, _reviewDraft);
+      expect(
+        tester
+            .widget<NativeRichDocumentEditorView>(
+              find.byType(NativeRichDocumentEditorView),
+            )
+            .editor
+            .snapshot()['markdown'],
+        _reviewDraft,
+      );
+      expect(fixture.executionFixture.requests, isEmpty);
+      expect(
+        fixture.lifecycle.runActivitiesForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+
+      // A fresh card must fail locally rather than borrowing canonical snapshots
+      // or the retained successful card's full payload after storage retirement.
+      fixture.connectionFor(_chatPlugin).revokeInfrastructureContext();
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(TextButton, 'Inspect')),
+      );
+      await _visible(tester, 'Review feedback is unavailable.');
+      expect(fixture.inspection.cards, hasLength(2));
+      expect(first.content!.isActive, isTrue);
+      expect(find.text(_compactFeedback(1)), findsOneWidget);
+      expect(fixture.chatRows(), acceptedRows);
+
+      final renderer = first.content!.presenter;
+      final generation = fixture.frontends.generations.singleWhere(
+        (value) => value.installation.metadata.id.value == _chatPlugin,
+      );
+      await tester.runAsync(
+        () => generation.retire(
+          sessionContentInspectionContributions,
+          renderer.id,
+        ),
+      );
+      await _visible(tester, 'Content Inspection is unavailable.');
+      expect(first.content!.isActive, isFalse);
+      expect(renderer.validate, throwsA(isA<StaleExtensionBinding>()));
+      final previousCards = fixture.inspection.cards;
+      var factories = 0;
+      final replacement = fixture.extensions.register(
+        point: sessionContentInspectionContributions,
+        id: renderer.id,
+        value: SessionContentInspectionContribution(
+          kind: SessionContentKind(chatFeedbackInspectionKind),
+          createPresentation: (_) {
+            factories++;
+            throw StateError(
+              'Injected renderer failure must remain card-local.',
+            );
+          },
+        ),
+      );
+      await tester.pump();
+      expect(factories, 0, reason: 'Old cards cannot retarget a replacement.');
+      await tester.runAsync(
+        () => tester.tap(find.widgetWithText(TextButton, 'Inspect')),
+      );
+      await tester.pump();
+      expect(factories, 1);
+      expect(fixture.inspection.cards, hasLength(previousCards.length + 1));
+      expect(fixture.inspection.cards.last.id, same(first.id));
+      expect(find.text('Content Inspection is unavailable.'), findsWidgets);
+      expect(find.text(_compactFeedback(1)), findsOneWidget);
+      expect(find.text(chat.entries.single.content), findsNothing);
+      expect(fixture.chatRows(), acceptedRows);
+      expect(
+        fixture.store.runsForSession(fixture.additionalSession.id),
+        isEmpty,
+      );
+      expect(fixture.executionFixture.requests, isEmpty);
+      expect(await tester.runAsync(fixture.snapshotState), gitBefore);
+      await tester.runAsync(replacement.close);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+    skip: !Platform.isLinux,
+  );
+
+  for (final retirement in ['dismissal', 'backend', 'renderer']) {
+    testWidgets(
+      'G7c2 actual Chat AOT read after $retirement cannot publish late feedback',
+      (tester) async {
+        await tester.runAsync(() async {
+          await fixture.close();
+          fixture = await _Fixture.create(
+            installations: installations,
+            host: host,
+            aotRuntime: aotRuntime,
+            feedback: true,
+          );
+          await fixture.write('a modified.txt', 'Late feedback source\n');
+        });
+        await mount(
+          tester,
+          catalog: withMountedChat,
+          beforeMount: () => fixture.chatClient.setDraftRequest(
+            fixture.additionalSession.id.value,
+            _reviewDraft,
+          ),
+        );
+        tester.view.physicalSize = const Size(2400, 3000);
+        await tester.pump();
+        const body =
+            'Accepted feedback must not appear after its card retires.';
+        await _visible(tester, '+Late feedback source');
+        await _beginComment(tester, '+Late feedback source');
+        await _saveComment(tester, body);
+        final session = fixture.additionalSession.id.value;
+        final saved = (await tester.runAsync(
+          () => fixture.draftClient.snapshot(session),
+        ))!.comments;
+        await _reviewReady(tester, 'Submit Review');
+        await tester.ensureVisible(_reviewAction('Submit Review'));
+        await tester.pump();
+        expect(_reviewAction('Submit Review').hitTestable(), findsOneWidget);
+        await tester.runAsync(
+          () => tester.tap(_reviewAction('Submit Review').hitTestable()),
+        );
+        await _visible(tester, 'Review accepted. Run scheduled:');
+        await tester.runAsync(() async {
+          final controller = fixture.controllers[fixture.additionalSession.id]!;
+          await controller.activeRunFuture?.timeout(_bound);
+          expect(controller.failure, isNull);
+        });
+        await _visible(tester, ReviewExecutionFixture.answer);
+        await _visible(tester, _compactFeedback(1));
+        final review = (await tester.runAsync(
+          () => fixture.draftClient.readReview(session),
+        ))!;
+        expect(review.status, ReviewSubmissionStatus.scheduled);
+        expect(fixture.executionFixture.requests, hasLength(2));
+        expect(fixture.inspection.cards, isEmpty);
+        final rows = fixture.chatRows();
+        final comments = fixture.commentRows();
+        final core = fixture.coreRows();
+        final modelRequests = jsonEncode(fixture.executionFixture.requests);
+        final toolExecutions = [...fixture.executionFixture.executedSessions];
+        final git = (await tester.runAsync(fixture.snapshotState))!;
+        final probe = fixture.storageProbes[_chatPlugin]!;
+        final callsBefore = probe.calls.length;
+        final gate = (await tester.runAsync(
+          () async => probe.holdQueryResponse(
+            sqlContains:
+                'SELECT f.session_id, f.submission_id, f.canonical_payload',
+            parameters: {':session': session, ':identity': review.occurrenceId},
+          ),
+        ))!;
+        addTearDown(gate.release);
+        final inspect = find.widgetWithText(TextButton, 'Inspect');
+        await tester.ensureVisible(inspect);
+        await tester.pump();
+        expect(inspect.hitTestable(), findsOneWidget);
+        await tester.runAsync(() => tester.tap(inspect.hitTestable()));
+        await _waitFor(tester, () => gate.entered.isCompleted);
+        final response = (await tester.runAsync(
+          () => gate.entered.future.timeout(_bound),
+        ))!;
+        // The actual Chat AOT requested its joined durable payload, and real SQL
+        // has returned it. Only delivery across the captured grant remains held.
+        final row =
+            ((response['payload']! as List).single as Map)['values']! as Map;
+        expect(row['canonical_payload'], review.canonicalPayload);
+        expect(row['entry_id'], review.occurrenceId);
+        expect(row['run_id'], review.runId);
+        final card = fixture.inspection.cards.single;
+        final presenter = card.content!.presenter;
+        expect(card.content!.occurrenceId.value, review.occurrenceId);
+        expect(find.text('Comment text: $body'), findsNothing);
+        if (retirement == 'dismissal') {
+          await _inspectionControl(tester, card, 'Dismiss Inspection');
+          expect(card.content!.isActive, isFalse);
+          expect(fixture.inspection.cards, isEmpty);
+        } else if (retirement == 'backend') {
+          final connection = fixture.connectionFor(_chatPlugin);
+          await tester.runAsync(connection.close);
+          expect(connection.isClosed, isTrue);
+          await _visible(tester, 'Review feedback is unavailable.');
+        } else {
+          final generation = fixture.frontends.generations.singleWhere(
+            (value) => value.installation.metadata.id.value == _chatPlugin,
+          );
+          await tester.runAsync(
+            () => generation.retire(
+              sessionContentInspectionContributions,
+              presenter.id,
+            ),
+          );
+          expect(card.content!.isActive, isFalse);
+          expect(presenter.validate, throwsA(isA<StaleExtensionBinding>()));
+          await _visible(tester, 'Content Inspection is unavailable.');
+        }
+        expect(gate.settled.isCompleted, isFalse);
+        await tester.runAsync(() async {
+          gate.release();
+          await gate.settled.future.timeout(_bound);
+          // Round-trip the surviving AOT owner after releasing the response,
+          // rather than checking absence before the child runtime can settle it.
+          if (retirement == 'backend') {
+            expect(
+              (await fixture.draftClient.readReview(session))!.runId,
+              review.runId,
+            );
+          } else {
+            final accepted = await fixture.feedbackClient.readAcceptedFeedback(
+              session,
+              review.occurrenceId!,
+            );
+            expect(accepted.comments.single.text, body);
+          }
+        });
+        await tester.pump();
+        expect(find.text('Comment text: $body'), findsNothing);
+        expect(
+          find.text(
+            'Source excerpt: ${inspectionDisplayText(saved.single.anchor.sourceExcerpt)}',
+          ),
+          findsNothing,
+        );
+        expect(find.textContaining(review.canonicalPayload), findsNothing);
+        expect(
+          fixture.inspection.cards,
+          hasLength(retirement == 'dismissal' ? 0 : 1),
+        );
+        if (retirement != 'dismissal') {
+          expect(fixture.inspection.cards.single.id, same(card.id));
+          expect(
+            fixture.inspection.cards.single.content!.presenter,
+            same(presenter),
+          );
+        }
+        if (retirement != 'backend') {
+          expect(find.text(_compactFeedback(1)), findsOneWidget);
+          expect(
+            tester
+                .widget<NativeRichDocumentEditorView>(
+                  find.byType(NativeRichDocumentEditorView),
+                )
+                .editor
+                .snapshot()['markdown'],
+            _reviewDraft,
+          );
+        }
+        expect(
+          probe.calls.skip(callsBefore),
+          everyElement(
+            isIn([
+              projectStorageServiceIsDurableSessionId,
+              projectStorageServiceQueryForSessionId,
+            ]),
+          ),
+        );
+        expect(fixture.chatRows(), rows);
+        expect(fixture.commentRows(), comments);
+        expect(fixture.coreRows(), core);
+        expect(jsonEncode(fixture.executionFixture.requests), modelRequests);
+        expect(fixture.executionFixture.executedSessions, toolExecutions);
+        expect(await tester.runAsync(fixture.snapshotState), git);
+        if (retirement == 'dismissal') {
+          final fresh = await _inspectFeedback(tester, fixture, review, saved);
+          expect(fresh.id, isNot(same(card.id)));
+          expect(fresh.content, isNot(same(card.content)));
+        }
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
@@ -4419,6 +4885,162 @@ void main() {
   }
 }
 
+String _compactFeedback(int count) =>
+    'Review feedback \u00b7 $count ${count == 1 ? 'comment' : 'comments'}';
+
+Finder _inspectionCard(InspectionCard card) => find.byWidgetPredicate(
+  (widget) => widget is InspectionHost && identical(widget.card.id, card.id),
+);
+
+Future<void> _inspectionControl(
+  WidgetTester tester,
+  InspectionCard card,
+  String tooltip,
+) async {
+  final control = find.descendant(
+    of: _inspectionCard(card),
+    matching: find.byTooltip(tooltip),
+  );
+  await tester.ensureVisible(control);
+  await tester.tap(control);
+  await tester.pump();
+}
+
+Future<InspectionCard> _inspectFeedback(
+  WidgetTester tester,
+  _Fixture fixture,
+  PreparedReviewSubmission review,
+  List<PendingReviewComment> comments,
+) async {
+  final rows = fixture.chatRows();
+  final probe = fixture.storageProbes[_chatPlugin]!;
+  final callsBefore = probe.calls.length;
+  final feedback = (await tester.runAsync(
+    () => fixture.feedbackClient.readAcceptedFeedback(
+      fixture.additionalSession.id.value,
+      review.occurrenceId!,
+    ),
+  ))!;
+  expect(feedback.sessionId, fixture.additionalSession.id.value);
+  expect(feedback.occurrenceId, review.occurrenceId);
+  expect(feedback.submissionId, review.submissionId);
+  expect(feedback.kind, ChatFeedbackKind.codeReview);
+  expect(feedback.runId, review.runId);
+  expect(feedback.comments, hasLength(comments.length));
+  final beforeOpen = probe.calls.length;
+  final inspect = find.widgetWithText(TextButton, 'Inspect');
+  await tester.ensureVisible(inspect);
+  await tester.runAsync(() => tester.tap(inspect));
+  await tester.pump();
+  final card = fixture.inspection.cards.first;
+  final target = card.target as SessionContentInspectionTarget;
+  expect(target.sessionId, fixture.additionalSession.id);
+  expect(target.kind.value, chatFeedbackInspectionKind);
+  expect(target.occurrenceId.value, review.occurrenceId);
+  expect(card.content!.session, same(fixture.additionalSession));
+  expect(card.content!.isActive, isTrue);
+  final host = _inspectionCard(card);
+  Finder text(String value) =>
+      find.descendant(of: host, matching: find.text(value));
+  await _waitFor(tester, () => text('Review feedback').evaluate().isNotEmpty);
+  for (final value in [
+    'Session: ${feedback.sessionId}',
+    'Occurrence: ${feedback.occurrenceId}',
+    'Submission: ${feedback.submissionId}',
+    'Kind: codeReview',
+    'Run: ${feedback.runId ?? 'Not associated'}',
+    'Historical locations and excerpts captured when this feedback was '
+        'accepted. They may no longer match the current source.',
+  ]) {
+    expect(text(value), findsOneWidget);
+  }
+  double? previousY;
+  for (var index = 0; index < comments.length; index++) {
+    final expected = comments[index];
+    final actual = feedback.comments[index];
+    final anchor = expected.anchor;
+    expect(
+      [
+        actual.id,
+        actual.version,
+        actual.sequence,
+        actual.text,
+        actual.anchor.environmentId,
+        actual.anchor.relativePath,
+        actual.anchor.layer.name,
+        actual.anchor.side.name,
+        actual.anchor.startLine,
+        actual.anchor.endLine,
+        actual.anchor.comparisonIdentity,
+        actual.anchor.sourceExcerpt,
+        actual.anchor.hunkIndex,
+        actual.anchor.lineIndex,
+      ],
+      [
+        expected.id,
+        expected.version,
+        expected.sequence,
+        expected.text,
+        anchor.environmentId,
+        anchor.relativePath,
+        anchor.layer.name,
+        anchor.side.name,
+        anchor.startLine,
+        anchor.endLine,
+        anchor.comparisonIdentity,
+        anchor.sourceExcerpt,
+        anchor.hunkIndex,
+        anchor.lineIndex,
+      ],
+    );
+    for (final value in [
+      'Comment: ${expected.id}',
+      'Version: ${expected.version}; sequence: ${expected.sequence}',
+      'Comment text: ${inspectionDisplayText(expected.text)}',
+      'Environment: ${anchor.environmentId}',
+      'Path: ${inspectionDisplayText(anchor.relativePath)}',
+      'Layer: ${anchor.layer.name}; side: ${anchor.side.name}',
+      'Lines: ${anchor.startLine}-${anchor.endLine} (inclusive)',
+      'Comparison: ${inspectionDisplayText(anchor.comparisonIdentity)}',
+      'Hunk index: ${anchor.hunkIndex}; line index: ${anchor.lineIndex} (zero-based)',
+      'Source excerpt: ${inspectionDisplayText(anchor.sourceExcerpt)}',
+    ]) {
+      expect(text(value), findsWidgets);
+    }
+    final y = tester.getTopLeft(text('Comment: ${expected.id}')).dy;
+    if (previousY != null) expect(y, greaterThan(previousY));
+    previousY = y;
+  }
+  expect(
+    find.descendant(of: host, matching: find.byType(TextField)),
+    findsNothing,
+  );
+  expect(
+    find.descendant(of: host, matching: find.byType(TextButton)),
+    findsNothing,
+  );
+  expect(
+    tester.widget<InspectionHost>(host).activity,
+    isNull,
+    reason: 'Accepted feedback is Session content, not Run activity.',
+  );
+  expect(
+    probe.calls.skip(callsBefore),
+    isNot(contains(projectStorageServiceTransactionForSessionId)),
+  );
+  expect(
+    probe.calls.skip(callsBefore),
+    isNot(contains(projectStorageServiceEnsureSchemaForSessionId)),
+  );
+  expect(
+    probe.calls.skip(beforeOpen),
+    contains(projectStorageServiceQueryForSessionId),
+    reason: 'The compiled renderer retrieves through its dedicated service.',
+  );
+  expect(fixture.chatRows(), rows);
+  return card;
+}
+
 final class _Fixture {
   _Fixture(
     this.root,
@@ -4465,6 +5087,13 @@ final class _Fixture {
     if (runtime != null) executionFixture.register(runtime!);
     mainContent = PreparedMainContentHost(
       environmentRuntime: environmentRuntime,
+      inspectSessionContent: (session, kind, occurrenceId) =>
+          inspection.inspectContent(
+            session: session,
+            kind: kind,
+            occurrenceId: occurrenceId,
+            extensions: extensions,
+          ),
     );
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,
@@ -4475,7 +5104,7 @@ final class _Fixture {
         lifecycle: feedback ? lifecycle : null,
         controllerForSession: controllerFor,
         lookupControllerForSession: (session) => controllers[session.id],
-        inspectActivity: (_, _) => false,
+        inspectActivity: inspectActivity,
         isCurrent: (session) =>
             identical(currentSession, session) &&
             identical(store.session(session.id), session),
@@ -4714,6 +5343,7 @@ final class _Fixture {
   late final InMemoryProductStore store;
   final executionFixture = ReviewExecutionFixture();
   final controllers = <SessionId, SessionExecutionController>{};
+  final inspection = WindowInspection();
   final storageProbes = <String, GatedProjectStorage>{};
   late final ProductLifecycleCoordinator lifecycle;
   late final Session additionalSession;
@@ -4770,6 +5400,34 @@ final class _Fixture {
       ),
     );
   }
+
+  ChatFeedbackInspectionServiceClient get feedbackClient {
+    final connection = connectionFor(_chatPlugin);
+    return ChatFeedbackInspectionServiceClient(
+      connection.channelFor(
+        connection.defaultConfigurationContext,
+        chatFeedbackInspectionServiceId,
+      ),
+    );
+  }
+
+  Map<String, Object?> chatRows() => {
+    for (final table in [
+      'adele_chat_sessions',
+      'adele_chat_entries',
+      'adele_chat_feedback_submissions',
+    ])
+      table: [
+        for (final row
+            in lifecycle
+                .databaseForSession(additionalSession.id)!
+                .queryPluginRows(
+                  'SELECT * FROM $table ORDER BY 1, 2',
+                  const {},
+                ))
+          row.values,
+      ],
+  };
 
   List<Map<String, Object?>> feedbackRows() => [
     for (final row
@@ -4841,6 +5499,7 @@ final class _Fixture {
   }
 
   Future<_Fixture> reopen() async {
+    inspection.dispose();
     await frontends.close();
     await _closeExecution();
     await backends.close();
@@ -5178,15 +5837,70 @@ final class _Fixture {
   Widget widget(Session session) {
     expect(store.session(session.id), same(session));
     currentSession = session;
+    inspection.presentSession(session);
+    final content = MainContentHost(
+      session: session,
+      extensions: extensions,
+      actionCoordinator: mainContent.actionCoordinator,
+    );
     return MaterialApp(
       home: Scaffold(
-        body: MainContentHost(
-          session: session,
-          extensions: extensions,
-          actionCoordinator: mainContent.actionCoordinator,
-        ),
+        body: !feedback
+            ? content
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: content),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: ListenableBuilder(
+                        listenable: inspection,
+                        builder: (_, _) => InspectionStackHost(
+                          cards: inspection.cards,
+                          cardBuilder: (_, card) => InspectionHost(
+                            card: card,
+                            activity: card.target is ActivityInspectionTarget
+                                ? activityFor(
+                                    card.target as ActivityInspectionTarget,
+                                  )
+                                : null,
+                            heading: 'Review execution activity',
+                            extensions: extensions,
+                            onCollapse: () => inspection.collapse(card.id),
+                            onExpand: () => inspection.expand(card.id),
+                            onDismiss: () => inspection.dismiss(card.id),
+                            onInspectOutput: (target) =>
+                                inspectActivity(session, target),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
+  }
+
+  RunActivitySnapshot? activityFor(ActivityInspectionTarget target) =>
+      controllers[target.sessionId]?.retainedActivityForRun(target.runId) ??
+      lifecycle.runActivity(target.runId);
+
+  bool inspectActivity(Session session, ActivityInspectionTarget target) {
+    final activity = activityFor(target);
+    if (activity == null) return false;
+    return target is ModelOutputInspectionTarget
+        ? inspection.inspectOutput(
+            session: session,
+            activity: activity,
+            modelInvocationId: target.modelInvocationId,
+            outputSequence: target.outputSequence,
+          )
+        : inspection.inspectActivity(
+            session: session,
+            activity: activity,
+            modelInvocationId: target.modelInvocationId,
+          );
   }
 
   Future<void> navigate(
@@ -5207,6 +5921,7 @@ final class _Fixture {
   Future<void> close() async {
     if (!readRelease.isCompleted) readRelease.complete();
     await releaseGate();
+    inspection.dispose();
     await frontends.close();
     await _closeExecution();
     await backends.close();

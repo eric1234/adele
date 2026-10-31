@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_product/adele_product.dart' show TaskId;
@@ -15,12 +16,14 @@ void main() {
   late ChatSessionStore store;
   late ChatSessionBackend chat;
   late ChatSessionFeedbackService feedback;
+  late ChatFeedbackInspectionBackend inspection;
 
   setUp(() {
     storage = ChatTestStorage();
     store = ChatSessionStore(storage: storage);
     chat = ChatSessionBackend(store);
     feedback = ChatSessionFeedbackService(store);
+    inspection = ChatFeedbackInspectionBackend(storage);
   });
   tearDown(() async {
     await feedback.close();
@@ -46,6 +49,314 @@ void main() {
     addTearDown(backend.close);
     return backend;
   }
+
+  test(
+    'metadata is durable relationship data, never inferred from prose',
+    () async {
+      final submission = _submission();
+      final content = renderChatSessionFeedback(submission);
+      await chat.appendUserMessage('session', content);
+      await chat.setDraftRequest('session', '  Retained draft\r\n');
+      final receipt = await accept(submission);
+      await chat.appendUserMessage('session', content);
+      final reopened = ChatSessionBackend(ChatSessionStore(storage: storage));
+      final queries = storage.queries;
+      for (final reader in [chat, reopened]) {
+        final snapshot = await reader.snapshot('session');
+        expect(snapshot.entries.map((entry) => entry.id), [
+          'entry-0',
+          'entry-1',
+          'entry-2',
+        ]);
+        expect(snapshot.entries.map((entry) => entry.content), [
+          content,
+          content,
+          content,
+        ]);
+        expect(snapshot.entries.map((entry) => entry.runId), [
+          null,
+          null,
+          null,
+        ]);
+        expect(snapshot.draftRequest, '  Retained draft\r\n');
+        expect(snapshot.entries.first.feedback, isNull);
+        expect(snapshot.entries.last.feedback, isNull);
+        final metadata = snapshot.entries[1].feedback!;
+        expect(metadata.kind, ChatFeedbackKind.codeReview);
+        expect(metadata.submissionId, receipt.submissionId);
+        expect(metadata.commentCount, submission.comments.length);
+      }
+      final hydrationQueries = storage.querySql.skip(queries);
+      expect(
+        hydrationQueries.any((sql) => sql.contains('json_array_length')),
+        isTrue,
+      );
+      expect(
+        hydrationQueries.any((sql) => sql.contains('f.canonical_payload')),
+        isFalse,
+      );
+      for (final occurrence in ['entry-0', 'entry-2', 'entry-99']) {
+        await expectLater(
+          inspection.readAcceptedFeedback('session', occurrence),
+          _inspectionFailure('not_found'),
+        );
+      }
+      _expectInspected(
+        await inspection.readAcceptedFeedback('session', receipt.occurrenceId),
+        submission,
+        occurrenceId: receipt.occurrenceId,
+      );
+    },
+  );
+
+  test(
+    'Inspection is read-only before acceptance, while claimed and after reopen',
+    () async {
+      await expectLater(
+        inspection.readAcceptedFeedback('session', 'entry-0'),
+        _inspectionFailure('unavailable'),
+      );
+      expect(storage.schemaChecks, 0);
+      expect(storage.transactions, 0);
+      expect(
+        storage.database.select(
+          "SELECT name FROM sqlite_master WHERE name LIKE 'adele_chat_%'",
+        ),
+        isEmpty,
+      );
+      final submission = _submission();
+      final receipt = await accept(submission);
+      final before = await chat.snapshot('session');
+      final writes = storage.transactions;
+      final schemas = storage.schemaChecks;
+      _expectInspected(
+        await inspection.readAcceptedFeedback('session', receipt.occurrenceId),
+        submission,
+      );
+      expect(storage.transactions, writes);
+      expect(storage.schemaChecks, schemas);
+      final backend = guardedBackend(store);
+      final execution = await backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'later-run',
+        RemoteExpectedSessionFeedback.fromLocal(receipt),
+      );
+      final associated = (await chat.snapshot('session')).entries.single;
+      expect(associated.content, before.entries.single.content);
+      expect(associated.feedback!.submissionId, receipt.submissionId);
+      final associatedWrites = storage.transactions;
+      _expectInspected(
+        await inspection.readAcceptedFeedback('session', receipt.occurrenceId),
+        submission,
+        runId: 'later-run',
+      );
+      await backend.release(execution);
+      final reopened = ChatSessionBackend(ChatSessionStore(storage: storage));
+      final restored = (await reopened.snapshot('session')).entries.single;
+      expect(restored.feedback!.commentCount, 3);
+      expect(restored.feedback!.submissionId, receipt.submissionId);
+      expect(restored.runId, 'later-run');
+      _expectInspected(
+        await ChatFeedbackInspectionBackend(
+          storage,
+        ).readAcceptedFeedback('session', receipt.occurrenceId),
+        submission,
+        runId: 'later-run',
+      );
+      expect(storage.transactions, associatedWrites);
+    },
+  );
+
+  test(
+    'Inspection request, missing Session and storage failures are safe',
+    () async {
+      for (final (sessionId, occurrenceId) in [
+        ('', 'entry-0'),
+        (' session', 'entry-0'),
+        ('session', ''),
+        ('session', 'bad\u0000id'),
+        ('session', 'x' * 257),
+      ]) {
+        await expectLater(
+          inspection.readAcceptedFeedback(sessionId, occurrenceId),
+          _inspectionFailure('invalid_request'),
+        );
+      }
+      expect(storage.durabilityChecks, 0);
+      await expectLater(
+        inspection.readAcceptedFeedback('missing', 'entry-0'),
+        _inspectionFailure('unavailable'),
+      );
+      final volatile = ChatTestStorage(durable: false);
+      addTearDown(volatile.close);
+      for (final unavailable in [
+        ChatFeedbackInspectionBackend(null),
+        ChatFeedbackInspectionBackend(volatile),
+      ]) {
+        await expectLater(
+          unavailable.readAcceptedFeedback('session', 'entry-0'),
+          _inspectionFailure('unavailable'),
+        );
+      }
+      expect(volatile.schemaChecks, 0);
+      expect(volatile.transactions, 0);
+      expect(volatile.queries, 0);
+      await accept(_submission());
+      storage.failure = StateError('Secret SQL details and private text.');
+      await expectLater(
+        inspection.readAcceptedFeedback('session', 'entry-0'),
+        _inspectionFailure('unavailable'),
+      );
+    },
+  );
+
+  for (final (name, sql) in [
+    (
+      'malformed JSON',
+      "UPDATE adele_chat_feedback_submissions SET canonical_payload = '{broken'",
+    ),
+    (
+      'invalid structured payload',
+      "UPDATE adele_chat_feedback_submissions SET canonical_payload = '{}'",
+    ),
+    (
+      'noncanonical payload',
+      "UPDATE adele_chat_feedback_submissions SET canonical_payload = canonical_payload || ' '",
+    ),
+    (
+      'submission identity',
+      "UPDATE adele_chat_feedback_submissions SET submission_id = 'changed'",
+    ),
+    (
+      'canonical content',
+      "UPDATE adele_chat_entries SET content = 'Changed canonical content.'",
+    ),
+    (
+      'assistant relationship',
+      "UPDATE adele_chat_entries SET role = 'assistant'",
+    ),
+    ('canonical sequence', 'UPDATE adele_chat_entries SET sequence = 5'),
+    ('canonical counter', 'UPDATE adele_chat_sessions SET next_entry = 0'),
+    ('invalid Run', "UPDATE adele_chat_entries SET run_id = ' invalid '"),
+    (
+      'orphan relationship',
+      'PRAGMA foreign_keys = OFF; DELETE FROM adele_chat_entries;',
+    ),
+    (
+      'missing Chat Session',
+      'PRAGMA foreign_keys = OFF; DELETE FROM adele_chat_sessions;',
+    ),
+    (
+      'duplicate relationship',
+      '''
+PRAGMA foreign_keys = OFF;
+CREATE TABLE broken_feedback AS SELECT * FROM adele_chat_feedback_submissions;
+DROP TABLE adele_chat_feedback_submissions;
+ALTER TABLE broken_feedback RENAME TO adele_chat_feedback_submissions;
+INSERT INTO adele_chat_feedback_submissions SELECT * FROM adele_chat_feedback_submissions;
+''',
+    ),
+  ]) {
+    test('Inspection rejects $name without writes or cache refresh', () async {
+      await accept(_submission());
+      final cached = (await chat.snapshot('session')).entries.single;
+      storage.database.execute(sql);
+      final writes = storage.transactions;
+      final schemas = storage.schemaChecks;
+      await expectLater(
+        inspection.readAcceptedFeedback('session', 'entry-0'),
+        _inspectionFailure('corrupt'),
+      );
+      expect(storage.transactions, writes);
+      expect(storage.schemaChecks, schemas);
+      expect((await chat.snapshot('session')).entries.single, same(cached));
+    });
+  }
+
+  for (final sql in [
+    "UPDATE adele_chat_feedback_submissions SET canonical_payload = '{broken'",
+    "UPDATE adele_chat_feedback_submissions SET canonical_payload = '{}'",
+    "UPDATE adele_chat_feedback_submissions SET canonical_payload = json_set(canonical_payload, '\$.kind', 'unknown')",
+    "UPDATE adele_chat_feedback_submissions SET canonical_payload = json_set(canonical_payload, '\$.comments', json('[]'))",
+    "UPDATE adele_chat_feedback_submissions SET submission_id = 'changed'",
+    "UPDATE adele_chat_entries SET role = 'assistant'",
+    "PRAGMA foreign_keys = OFF; UPDATE adele_chat_feedback_submissions SET entry_id = 'missing';",
+  ]) {
+    test('hydration rejects invalid narrow metadata: $sql', () async {
+      await accept(_submission());
+      storage.database.execute(sql);
+      final writes = storage.transactions;
+      await expectLater(
+        ChatSessionBackend(
+          ChatSessionStore(storage: storage),
+        ).snapshot('session'),
+        throwsA(isA<ChatStateCorruption>()),
+      );
+      expect(storage.transactions, writes);
+    });
+  }
+
+  test(
+    '128 KiB canonical feedback is fully readable through both generated transports',
+    () async {
+      final storageDispatcher = ProjectStorageServiceDispatcher(storage);
+      addTearDown(storageDispatcher.close);
+      final client = ProjectStorageServiceClient(
+        _DirectChannel(storageDispatcher),
+      );
+      final remoteStore = ChatSessionStore(storage: client);
+      final acceptance = ChatSessionFeedbackService(remoteStore);
+      addTearDown(acceptance.close);
+      final dispatcher = ChatFeedbackInspectionServiceDispatcher(
+        ChatFeedbackInspectionBackend(client),
+      );
+      addTearDown(dispatcher.close);
+      final inspector = ChatFeedbackInspectionServiceClient(
+        _DirectChannel(dispatcher),
+      );
+      final comments = List.generate(
+        32,
+        (index) => _comment(index + 1, text: 'a'),
+      );
+      SessionFeedbackSubmission submission() => SessionFeedbackSubmission(
+        submissionId: 'review',
+        kind: SessionFeedbackKind.codeReview,
+        comments: comments,
+      );
+      var remaining =
+          SessionFeedbackLimits.maxSubmissionBytes -
+          utf8.encode(encodeSessionFeedbackSubmission(submission())).length;
+      for (var index = 0; index < comments.length; index++) {
+        final count = remaining < SessionFeedbackLimits.maxTextLength - 1
+            ? remaining
+            : SessionFeedbackLimits.maxTextLength - 1;
+        comments[index] = _comment(index + 1, text: 'a${'x' * count}');
+        remaining -= count;
+      }
+      expect(remaining, 0);
+      final value = submission();
+      expect(
+        utf8.encode(encodeSessionFeedbackSubmission(value)).length,
+        128 * 1024,
+      );
+      await acceptance.accept(chatStrategyRouteId, 'session', value);
+      final writes = storage.transactions;
+      final schemas = storage.schemaChecks;
+      final inspected = await inspector.readAcceptedFeedback(
+        'session',
+        'entry-0',
+      );
+      _expectInspected(inspected, value);
+      expect(storage.transactions, writes);
+      expect(storage.schemaChecks, schemas);
+      final restored = await ChatSessionBackend(
+        ChatSessionStore(storage: client),
+      ).snapshot('session');
+      expect(restored.entries.single.feedback!.commentCount, 32);
+      expect(restored.entries.single.content, renderChatSessionFeedback(value));
+    },
+  );
 
   test(
     'expected feedback retains durable association without starting',
@@ -375,7 +686,20 @@ void main() {
         (await accept(_submission(id: 'different'))).occurrenceId,
         'entry-1',
       );
-      expect((await chat.snapshot('session')).entries, hasLength(2));
+      final entries = (await chat.snapshot('session')).entries;
+      expect(entries, hasLength(2));
+      expect(entries.map((entry) => entry.feedback!.submissionId), [
+        submission.submissionId,
+        'different',
+      ]);
+      for (final entry in entries) {
+        expect(entry.feedback!.commentCount, submission.comments.length);
+        _expectInspected(
+          await inspection.readAcceptedFeedback('session', entry.id),
+          _submission(id: entry.feedback!.submissionId),
+          occurrenceId: entry.id,
+        );
+      }
     },
   );
 
@@ -1208,3 +1532,84 @@ Matcher _failure(String code) => throwsA(
       .having((error) => error.message, 'safe message', isNot(contains('SQL')))
       .having((error) => error.details, 'details', isEmpty),
 );
+
+Matcher _inspectionFailure(String code) => throwsA(
+  isA<ChatFeedbackInspectionFailure>()
+      .having((error) => error.code, 'code', code)
+      .having((error) => error.message, 'safe message', isNot(contains('SQL')))
+      .having((error) => error.details, 'details', isEmpty),
+);
+
+void _expectInspected(
+  ChatAcceptedFeedback actual,
+  SessionFeedbackSubmission expected, {
+  String occurrenceId = 'entry-0',
+  String? runId,
+}) {
+  expect(actual.sessionId, 'session');
+  expect(actual.occurrenceId, occurrenceId);
+  expect(actual.submissionId, expected.submissionId);
+  expect(actual.kind.name, expected.kind.name);
+  expect(actual.runId, runId);
+  expect(actual.comments.length, expected.comments.length);
+  for (var index = 0; index < expected.comments.length; index++) {
+    final a = actual.comments[index];
+    final e = expected.comments[index];
+    expect(
+      (a.id, a.text, a.version, a.sequence),
+      (e.id, e.text, e.version, e.sequence),
+    );
+    expect(
+      (
+        a.anchor.environmentId,
+        a.anchor.relativePath,
+        a.anchor.layer.name,
+        a.anchor.side.name,
+      ),
+      (
+        e.anchor.environmentId,
+        e.anchor.relativePath,
+        e.anchor.layer.name,
+        e.anchor.side.name,
+      ),
+    );
+    expect(
+      (
+        a.anchor.startLine,
+        a.anchor.endLine,
+        a.anchor.comparisonIdentity,
+        a.anchor.sourceExcerpt,
+        a.anchor.hunkIndex,
+        a.anchor.lineIndex,
+      ),
+      (
+        e.anchor.startLine,
+        e.anchor.endLine,
+        e.anchor.comparisonIdentity,
+        e.anchor.sourceExcerpt,
+        e.anchor.hunkIndex,
+        e.anchor.lineIndex,
+      ),
+    );
+  }
+}
+
+final class _DirectChannel implements AdeleRequestChannel {
+  _DirectChannel(this.dispatcher);
+  final AdeleBackendDispatcher dispatcher;
+  int nextRequest = 0;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    final response = await dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': nextRequest++,
+      'method': method,
+      'payload': payload,
+    });
+    if (response['ok'] != true) {
+      throw StateError('Generated transport failed: ${response['error']}');
+    }
+    return response['payload'];
+  }
+}

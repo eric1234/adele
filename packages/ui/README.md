@@ -636,7 +636,7 @@ The existing window stack supplies chrome and independent card lifetimes. It kee
 the exact selected presenter across collapse, revokes on dismissal/departure or
 presenter retirement, and fences late factories/reads. A card can outlive its
 originating pane, while that pane's retired callbacks cannot open more cards.
-See [ownership and planned accepted-feedback integration](../../docs/architecture/plugin-system.md#session-content-inspection)
+See [ownership and stock accepted-feedback integration](../../docs/architecture/plugin-system.md#session-content-inspection)
 and [prepared ABI](../plugin_runtime/README.md#prepared-catalog).
 
 ## Activity Presentation

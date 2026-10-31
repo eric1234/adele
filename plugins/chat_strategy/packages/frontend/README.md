@@ -1,6 +1,7 @@
 # Chat Frontend
 
-`chat_strategy_frontend` is the installed Chat Main Content EVC. It depends on Flutter,
+`chat_strategy_frontend` is the installed Chat Main Content and accepted-feedback
+Inspection EVC. It depends on Flutter,
 the plugin-owned Chat contract, and public `adele_ui` bridges, not the application,
 kernel, or Chat backend implementation.
 
@@ -123,6 +124,39 @@ fresh handles; the prior view's actions and handles stay revoked. Missing eviden
 invent activity. Fresh rendering reconstructs placement, not open cards, expansion
 state, subscriptions, or other workbench state. Historical native data is never
 continuation input, and the bridge still exposes only safe presentation data.
+
+## Accepted Feedback
+
+Canonical entries with authoritative `ChatEntry.feedback` code-review metadata
+render as a compact `Review feedback` comment-count row and an explicit `Inspect`
+button, never their model-facing `content`. Ordinary user/assistant entries,
+activity placement, and the Draft Request retain their existing paths. Text that
+resembles a feedback summary does not become a feedback occurrence. Only Chat's
+stock Main Content descriptor opts into `canInspectSessionContent`; an opening
+uses `dev.adele.chat.review-feedback` and the exact canonical entry ID, not the
+submission ID or a Run handle. Missing/ambiguous presentation rejects that opening
+without discarding the row. Snapshot refresh and remount restore metadata without
+opening cards automatically; disposed or retired pane callbacks cannot reopen one.
+
+`buildChatFeedbackInspection` receives the frozen Session/content references from
+`readSessionContentInspectionContext` and reads the exact owning backend through
+generated `ChatFeedbackInspectionServiceClient`. Its separate prepared descriptor
+allowlists only `chat.feedbackInspection`, not mutation-capable `chat.session`,
+execution, or Environment services. The host captures that backend generation (or
+its absence) once per card and fences late reads on card/presenter retirement.
+No strategy materialization, mutation, source navigation, or Run start is involved.
+
+The renderer displays all retained comments in their original order, with identity,
+version/sequence, complete text/excerpt, every anchor field, and a historical-location
+notice. Display-only escaping makes controls, invisible formatting, and literal
+backslashes distinguishable; no Markdown or source links are executed. Safe failed
+retrieval remains unavailable rather than reconstructing data from canonical prose.
+
+The actual compiled checks in `test/chat_frontend_eval_test.dart` cover metadata
+selection, exact Inspect targets, missing renderers, narrow panes, refresh/remount
+and late callbacks, full typed retrieval and display safety, and card/frontend/
+backend retirement. They use the maintained frontend compiler and native bridges,
+not a native replacement of the Chat widgets.
 
 Preparation uses `app/tool/chat_frontend_compiler.dart` and generic contract-codegen
 eval projection from the annotated Chat contract. The pinned evaluator's rejected

@@ -94,6 +94,7 @@ void main() {
       role: 'user',
       content: 'Inspect.',
       runId: null,
+      feedback: null,
     );
     final List<ChatEntry> entries = <ChatEntry>[user];
     final ChatSessionSnapshot snapshot = ChatSessionSnapshot(

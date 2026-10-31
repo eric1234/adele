@@ -2039,9 +2039,13 @@ exit "$CLIPPY_EXIT"
           descriptors,
           hasLength(
             identical(
-                  descriptors,
-                  stockFrontendDescriptors['dev.adele.plugin.command-tools'],
-                )
+                      descriptors,
+                      stockFrontendDescriptors['dev.adele.plugin.command-tools'],
+                    ) ||
+                    identical(
+                      descriptors,
+                      stockFrontendDescriptors['dev.adele.plugin.chat-strategy'],
+                    )
                 ? 2
                 : 1,
           ),

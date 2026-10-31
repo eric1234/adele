@@ -1922,8 +1922,10 @@ retrieval is exercised by `test/session_content_inspection_backend_test.dart`.
 Public API/ABI details belong to [UI](../packages/ui/README.md#session-content-inspection)
 and the [prepared catalog](../packages/plugin_runtime/README.md#prepared-catalog).
 The [architecture](../docs/architecture/plugin-system.md#session-content-inspection)
-defines ownership, retirement, and the planned G7c2 Chat integration, which is not
-part of the generic host.
+defines ownership and retirement. Stock Chat's compact review occurrence and
+compiled feedback renderer consume this hosting through their own generated
+retrieval-only service; no Chat schema or native fallback belongs to the generic
+host. See the [Chat frontend](../plugins/chat_strategy/packages/frontend/README.md).
 
 ## Activity Inspection
 
