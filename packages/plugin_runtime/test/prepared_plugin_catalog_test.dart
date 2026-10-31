@@ -157,6 +157,7 @@ void main() {
           backend ? directory.uri.resolve('backend.aot') : isNull,
         );
         expect(installation.backendConsumedCapabilities, isEmpty);
+        expect(installation.backendConsumedRecordTypes, isEmpty);
         expect(
           () => installation.backendConsumedCapabilities.clear(),
           throwsUnsupportedError,
@@ -450,6 +451,21 @@ void main() {
   });
 
   for (final location in ['manifest', 'metadata', 'components']) {
+    test('record consumption is rejected at $location level', () async {
+      final manifest = _manifest();
+      final target = location == 'manifest'
+          ? manifest
+          : Map<String, Object?>.of(
+              manifest[location]! as Map<String, Object?>,
+            );
+      target['consumesRecordTypes'] = <Object?>[];
+      if (location != 'manifest') manifest[location] = target;
+      await install('misplaced', manifest);
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations, isEmpty);
+      expect(catalog.issues.single.component, isNull);
+      expect(catalog.issues.single.message, contains('unsupported fields'));
+    });
     test('backend consumption is rejected at $location level', () async {
       final manifest = _manifest();
       final target = location == 'manifest'
@@ -466,6 +482,25 @@ void main() {
       expect(catalog.issues.single.message, contains('unsupported fields'));
     });
   }
+
+  test(
+    'frontend component cannot request records or activate a backend',
+    () async {
+      await install(
+        'frontend-only',
+        _manifest(
+          components: {
+            'frontend': {..._frontend(), 'consumesRecordTypes': <Object?>[]},
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.backendArtifactUri, isNull);
+      expect(catalog.installations.single.backendConsumedRecordTypes, isEmpty);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    },
+  );
 
   test(
     'decodes ordered typed descriptors without decoding EVC bytes',
@@ -1756,6 +1791,7 @@ void main() {
       'panes',
       'displayName',
       'consumesCapabilities',
+      'consumesRecordTypes',
       'unknown',
     ])
       'unsupported $field': {..._mainContent, field: 'unsupported'},
@@ -2365,6 +2401,7 @@ void main() {
       'environmentReadCapabilities',
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
+      'consumesRecordTypes',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',
@@ -2412,6 +2449,7 @@ void main() {
       'environmentReadCapabilities',
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
+      'consumesRecordTypes',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',

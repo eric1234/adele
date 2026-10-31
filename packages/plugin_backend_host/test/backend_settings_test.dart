@@ -24,6 +24,7 @@ void main() {
         'defaultConfigurationContext': 'default',
         'artifactUri': Uri.file('/nonexistent-settings-fixture.aot').toString(),
         'arguments': <String>[],
+        'records': <Object?>[],
       };
       for (final fields in <Map<String, Object?>>[
         {},

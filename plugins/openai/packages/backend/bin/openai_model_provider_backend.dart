@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_plugin_backend_support/adele_backend_records.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 
@@ -22,6 +23,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (defaultConfigurationContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
+  // Decode the immutable startup records without activating configured providers.
+  AdeleBackendRecords.fromBootstrap(bootstrapMessage);
   final bool startupArgumentsOnly =
       bootstrapMessage['startupArgumentsOnly'] == true;
   final Map<String, String> environment = _configurationEnvironment(

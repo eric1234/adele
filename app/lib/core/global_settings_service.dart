@@ -6,10 +6,15 @@ import 'dart:ui' show IsolateNameServer, RootIsolateToken;
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
+import 'package:adele_plugin_backend_support/adele_backend_records.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'credential_service.dart';
+import 'prepared_records.dart';
+
+export 'prepared_records.dart' show RecordDiagnosticView, StartupRecordsView;
 
 part 'record_credential_service.dart';
 
@@ -65,6 +70,51 @@ base class GlobalSettingsService {
         collection: collection,
       ).then((loaded) => RecordCollectionView._(_identity, loaded));
 
+  /// Read-only startup values for this exact installation's opted-in types.
+  /// Unlike [loadRecords], this neither publishes nor invalidates edit handles.
+  Future<StartupRecordsView> loadStartupRecords(
+    PreparedPluginCatalog prepared,
+    PreparedPluginInstallation installation,
+  ) {
+    if (_closing != null) {
+      return Future.error(StateError('The settings service is closed.'));
+    }
+    try {
+      if (!prepared.installations.any(
+        (entry) => identical(entry, installation),
+      )) {
+        throw ArgumentError(
+          'Records belong to another prepared catalog snapshot.',
+        );
+      }
+      final definitions =
+          installation.recordsSchema?.definitions ??
+          const <RecordTypeDefinition>[];
+      for (final id in installation.backendConsumedRecordTypes) {
+        final definition = records.definition(id);
+        if (definition.owner != installation.metadata.id ||
+            !definitions.any((entry) => identical(entry, definition))) {
+          throw ArgumentError(
+            'Records belong to another prepared declaration snapshot.',
+          );
+        }
+      }
+      return _enqueue<_StartupRecordValues>(
+        _Operation.loadStartupRecords,
+        startupRecordTypes: installation.backendConsumedRecordTypes,
+      ).then(
+        (loaded) => StartupRecordsView.fromProjection(
+          prepared,
+          installation,
+          records: loaded.records,
+          diagnostics: loaded.diagnostics,
+        ),
+      );
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
+    }
+  }
+
   Future<RecordView> createRecord(
     RecordTypeId type,
     ConfigurationRecordId id,
@@ -117,6 +167,7 @@ base class GlobalSettingsService {
     RecordTypeId? recordType,
     ConfigurationRecordId? recordId,
     Map<String, Object?>? recordValues,
+    List<RecordTypeId>? startupRecordTypes,
   }) {
     if (_closing != null) {
       return Future.error(StateError('The settings service is closed.'));
@@ -143,6 +194,7 @@ base class GlobalSettingsService {
               recordType: recordType ?? expectedRecord?.type,
               recordId: recordId ?? expectedRecord?.id,
               recordValues: recordValues,
+              startupRecordTypes: startupRecordTypes,
             ),
           )
           as T;
@@ -204,22 +256,40 @@ final class RecordView {
   final int _revision;
 }
 
-final class RecordDiagnosticView {
-  RecordDiagnosticView._(ConfigurationRecordDiagnostic diagnostic)
-    : fileName = diagnostic.fileName,
-      recordId = diagnostic.recordId,
-      message = diagnostic.error.toString();
+final class _StartupRecordValues {
+  _StartupRecordValues(
+    Iterable<ConfigurationRecordSnapshot> snapshots,
+    Iterable<RecordDiagnosticView> diagnostics,
+  ) : records = adeleCopyBackendRecords([
+        for (final record in snapshots)
+          {
+            'collection': record.collection.value,
+            'type': record.type.id.value,
+            'id': record.id.value,
+            'values': record.values,
+          },
+      ]),
+      diagnostics = List.unmodifiable(diagnostics);
 
-  final String fileName;
-  final ConfigurationRecordId? recordId;
-  final String message;
+  final List<Map<String, Object?>> records;
+  final List<RecordDiagnosticView> diagnostics;
 }
+
+RecordDiagnosticView _recordDiagnostic(
+  ConfigurationRecordDiagnostic diagnostic,
+) => RecordDiagnosticView(
+  collection: diagnostic.collection,
+  fileName: diagnostic.fileName,
+  recordId: diagnostic.recordId,
+  message: diagnostic.error.toString(),
+);
 
 enum _Operation {
   load,
   save,
   reset,
   loadRecords,
+  loadStartupRecords,
   createRecord,
   updateRecord,
   deleteRecord,
@@ -243,6 +313,7 @@ final class _Request {
     this.recordType,
     this.recordId,
     this.recordValues,
+    this.startupRecordTypes,
     this.credentialSlot,
     this.credentialReference,
   });
@@ -259,6 +330,7 @@ final class _Request {
   final RecordTypeId? recordType;
   final ConfigurationRecordId? recordId;
   final Map<String, Object?>? recordValues;
+  final List<RecordTypeId>? startupRecordTypes;
   final RecordCredentialSlotId? credentialSlot;
   final CredentialReference? credentialReference;
 }
@@ -491,12 +563,39 @@ final class _SettingsOwner {
 
   Future<Object?> apply(_Request request) async {
     switch (request.operation) {
+      case _Operation.loadStartupRecords:
+        final types = {
+          for (final id in request.startupRecordTypes!)
+            id: records.catalog.definition(id),
+        };
+        final collections =
+            types.values.map((type) => type.collection).toSet().toList()
+              ..sort((a, b) => a.value.compareTo(b.value));
+        final projected = <ConfigurationRecordSnapshot>[];
+        final diagnostics = <RecordDiagnosticView>[];
+        for (final collection in collections) {
+          final loaded = await records.enumerate(collection);
+          projected.addAll(
+            loaded.records.where(
+              (record) => identical(types[record.type.id], record.type),
+            ),
+          );
+          diagnostics.addAll(loaded.diagnostics.map(_recordDiagnostic));
+        }
+        projected.sort((a, b) {
+          final collection = a.collection.value.compareTo(b.collection.value);
+          if (collection != 0) return collection;
+          final type = a.type.id.value.compareTo(b.type.id.value);
+          return type != 0 ? type : a.id.value.compareTo(b.id.value);
+        });
+        // Native snapshots are discarded here, never retained as UI baselines.
+        return _StartupRecordValues(projected, diagnostics);
       case _Operation.loadRecords:
         recordBaselines.removeWhere((key, _) => key.$1 == request.collection);
         final loaded = await records.enumerate(request.collection!);
         return _RecordCollectionValues(
           loaded.records.map(_publishRecord).toList(),
-          loaded.diagnostics.map(RecordDiagnosticView._).toList(),
+          loaded.diagnostics.map(_recordDiagnostic).toList(),
         );
       case _Operation.createRecord:
         final type = records.catalog.definition(request.recordType!);

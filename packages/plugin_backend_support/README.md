@@ -2,7 +2,7 @@
 
 `adele_plugin_backend_support` is an experimental public, pure-Dart package with
 only `adele_contract` as a production dependency. It provides immutable backend
-bootstrap settings and `AdeleHostRequestMultiplexer` for generated unary and
+bootstrap settings/records and `AdeleHostRequestMultiplexer` for generated unary and
 server-streaming clients calling explicitly scoped host services. It imports
 neither Flutter nor internal host implementations. Its public Capability consumer
 facade lets generated plugin
@@ -31,6 +31,39 @@ not consume settings need not construct the reader.
 copies, typed reads, and shared structural validation. Real AOT bootstrap and
 generation isolation are tested by the internal
 [`plugin_backend_host`](../plugin_backend_host/README.md).
+
+## Bootstrap Records
+
+`AdeleBackendRecords.fromBootstrap(bootstrapMessage)` requires an explicit
+`records` list, including `[]`. `AdeleBackendRecords(records)` supports native
+construction. Both use `adeleCopyBackendRecords(Object?)` and expose a deeply
+copied, unmodifiable `records` list. Import the package root or
+`package:adele_plugin_backend_support/adele_backend_records.dart`.
+
+Each entry has exactly `collection`, `type`, `id`, and `values`. The first three
+are strings; `values` is a string-keyed map of ordinary bool/int/String scalars.
+Unknown entry keys, nulls, doubles, nested values, and duplicate `(collection, id)`
+pairs across any types fail. Identities follow the
+[R1 record grammar](../settings/README.md#named-records), including portable device
+name rejection for collections/records, without normalization. Type IDs use the
+public reverse-domain grammar. Limits are 256 records, 128 fields per record,
+64-character local IDs, 256-character type IDs, 64 Ki UTF-16 units per scalar
+string, and 1 MiB of total UTF-8 JSON including escaping and container overhead.
+The `AdeleBackendRecords.max*` constants own these transport bounds. Empty values,
+false, zero, and optional absence remain distinct; integer semantics are unchanged.
+Failures use fixed bounded messages without supplied values or identities.
+
+Declaration ownership, opted-in types, allowed/required fields, and scalar semantic
+constraints are validated by the host owner where declarations are available, not
+by this transport. Inputs are already nonsecret projections: credential references,
+documents, storage roots, baseline handles, and authorization are not part of the
+contract. Records confer no persistence, mutation, lookup, credential access, live
+provider registration, or routing authority. The snapshot belongs only to its
+captured generation and does not change readiness or exposures.
+
+[`backend_records_test.dart`](test/backend_records_test.dart) covers strict shape,
+identities, duplicate rejection, all bounds, safe errors, and immutable copies.
+The shared host exercises real AOT transport and independent generation capture.
 
 ## Host Calls
 

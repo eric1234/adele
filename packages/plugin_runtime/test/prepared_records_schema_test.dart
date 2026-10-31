@@ -124,6 +124,11 @@ void main() {
                 settings ? isNotNull : isNull,
               );
               expect(installation.recordsSchema, records ? isNotNull : isNull);
+              expect(installation.backendConsumedRecordTypes, isEmpty);
+              expect(
+                () => installation.backendConsumedRecordTypes.clear(),
+                throwsUnsupportedError,
+              );
               expect(catalog.records.definitions, hasLength(records ? 1 : 0));
               if (records) {
                 expect(
@@ -155,6 +160,397 @@ void main() {
     expect(catalog.installations.single.recordsSchema, isNotNull);
     expect(catalog.records.definitions, isEmpty);
   });
+
+  test(
+    'backend record opt-in snapshots and roundtrips exact owned IDs',
+    () async {
+      final ids = ['org.example.plugin.z', 'org.example.plugin.api'];
+      final directory = await install(
+        'plugin',
+        schema: _schema([for (final id in ids) _type(id: id)]),
+        components: _recordConsumer(ids),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final parsed = catalog.installations.single;
+      expect(parsed.backendArtifactUri, isNotNull);
+      expect(parsed.frontend, isNotNull);
+      expect(parsed.backendConsumedCapabilities, hasLength(1));
+      expect(parsed.backendConsumedRecordTypes.map((id) => id.value), ids);
+      final input = parsed.backendConsumedRecordTypes.toList();
+      PreparedPluginInstallation construct({
+        Iterable<RecordTypeId>? types,
+        String owner = 'org.example.plugin',
+        bool backend = true,
+        bool schema = true,
+      }) => PreparedPluginInstallation(
+        metadata: PluginMetadata(
+          id: PluginId(owner),
+          version: '1',
+          displayName: 'Consumer',
+        ),
+        installationDirectory: directory,
+        backendArtifactUri: backend ? parsed.backendArtifactUri : null,
+        backendConsumedRecordTypes: types ?? input,
+        recordsSchema: schema ? parsed.recordsSchema : null,
+      );
+      final installation = construct();
+      input.clear();
+      expect(
+        installation.backendConsumedRecordTypes,
+        parsed.backendConsumedRecordTypes,
+      );
+      expect(
+        () => parsed.backendConsumedRecordTypes.clear(),
+        throwsUnsupportedError,
+      );
+      expect(
+        () =>
+            installation.backendConsumedRecordTypes[0] = RecordTypeId(ids.last),
+        throwsUnsupportedError,
+      );
+      final json = installation.backendConsumedRecordTypesToJson();
+      expect(json, ids);
+      await File.fromUri(
+        directory.uri.resolve('adele_plugin.installation.json'),
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'org.example.plugin',
+            'version': '1',
+            'displayName': 'Example',
+          },
+          'recordsSchema': 'records.schema.json',
+          'components': _recordConsumer(json),
+        }),
+      );
+      final roundtrip = await PreparedPluginCatalog.discover(root.path);
+      expect(roundtrip.issues, isEmpty);
+      expect(
+        roundtrip.installations.single.backendConsumedRecordTypesToJson(),
+        ids,
+      );
+      json[0] = 'org.other.type';
+      json.clear();
+      expect(installation.backendConsumedRecordTypesToJson(), ids);
+      final id = parsed.backendConsumedRecordTypes.first;
+      for (final invalid in [
+        () => construct(types: [id, id]),
+        () => construct(types: [id], backend: false),
+        () => construct(types: [id], schema: false),
+        () => construct(types: [id], owner: 'org.example'),
+        () => construct(types: [id], owner: 'org.other'),
+        () => construct(types: [RecordTypeId('org.example.plugin.unknown')]),
+      ]) {
+        expect(invalid, throwsFormatException);
+      }
+      expect(
+        construct(
+          types: [],
+          backend: false,
+          schema: false,
+        ).backendConsumedRecordTypes,
+        isEmpty,
+      );
+    },
+  );
+
+  final invalidConsumption = <String, Object?>{
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'non-array ${jsonEncode(value)}': value,
+    for (final value in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      ' ',
+      'api',
+      'Org.example.api',
+      'org.example..api',
+      'org.example.plugin.api ',
+      'org.example.plugin.api\n',
+      {'id': 'org.example.plugin.api'},
+      {'collection': 'providers'},
+      {'type': 'org.example.plugin.api', 'owner': 'org.example.plugin'},
+    ])
+      'entry ${jsonEncode(value)}': ['org.example.plugin.api', value],
+    'duplicate IDs': ['org.example.plugin.api', 'org.example.plugin.api'],
+    'unknown same-namespace type': ['org.example.plugin.unknown'],
+  };
+  for (final entry in invalidConsumption.entries) {
+    test('invalid record opt-in ${entry.key} disables only backend', () async {
+      await install(
+        'plugin',
+        schema: _schema([_type()]),
+        components: _recordConsumer(entry.value),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.backendConsumedCapabilities, isEmpty);
+      expect(installation.backendConsumedRecordTypes, isEmpty);
+      expect(installation.frontend, isNotNull);
+      expect(catalog.records.definitions, hasLength(1));
+      expect(catalog.settings.definitions, hasLength(1));
+      expect(catalog.issues.single.component, PreparedPluginComponent.backend);
+      expect(catalog.issues.single.isRecordsSchemaIssue, isFalse);
+    });
+  }
+
+  for (final reverse in [false, true]) {
+    for (final foreign in [
+      'org.example.plugin.child.api',
+      'org.example.plugin-other.api',
+      'org.other.plugin.api',
+    ]) {
+      test('record opt-in rejects foreign $foreign reverse=$reverse', () async {
+        await install(
+          reverse ? 'z' : 'a',
+          schema: _schema([_type()]),
+          components: _recordConsumer([foreign]),
+        );
+        await install(
+          reverse ? 'a' : 'z',
+          id: foreign.substring(0, foreign.lastIndexOf('.')),
+          schema: _schema([_type(id: foreign)]),
+          components: _recordConsumer([foreign]),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations, hasLength(2));
+        expect(catalog.records.definitions, hasLength(2));
+        expect(
+          catalog.records.definitions
+              .map((type) => type.collection.value)
+              .toSet(),
+          {'providers'},
+        );
+        final owner = catalog.installations.singleWhere(
+          (item) => item.metadata.id.value == 'org.example.plugin',
+        );
+        final sibling = catalog.installations.singleWhere(
+          (item) => !identical(item, owner),
+        );
+        expect(owner.backendArtifactUri, isNull);
+        expect(owner.backendConsumedRecordTypes, isEmpty);
+        expect(owner.frontend, isNotNull);
+        expect(owner.settingsSchema, isNotNull);
+        expect(owner.recordsSchema, isNotNull);
+        expect(sibling.backendArtifactUri, isNotNull);
+        expect(sibling.backendConsumedRecordTypesToJson(), [foreign]);
+        expect(catalog.issues.single.pluginId, owner.metadata.id);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+      });
+    }
+  }
+
+  test(
+    'multiple owners share collections with exact nested declarations',
+    () async {
+      const owners = {
+        'org.example.plugin': 'org.example.plugin.child.parent-type',
+        'org.example.plugin.child': 'org.example.plugin.child.api',
+        'org.other.plugin': 'org.other.plugin.api',
+      };
+      for (final entry in owners.entries) {
+        await install(
+          entry.key,
+          id: entry.key,
+          schema: _schema([_type(id: entry.value)]),
+          components: _recordConsumer([entry.value]),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.records.definitions, hasLength(3));
+      for (final installation in catalog.installations) {
+        expect(installation.backendConsumedRecordTypesToJson(), [
+          owners[installation.metadata.id.value],
+        ]);
+        expect(
+          installation.recordsSchema!.definitions.single.owner,
+          installation.metadata.id,
+        );
+        expect(installation.backendArtifactUri, isNotNull);
+      }
+    },
+  );
+
+  for (final failure in [
+    'absent',
+    'missing',
+    'malformed',
+    'partial',
+    'unreadable',
+  ]) {
+    for (final optIn in [false, true]) {
+      test(
+        'record schema $failure with opt-in=$optIn fails closed locally',
+        () async {
+          final directory = await install(
+            'plugin',
+            declareRecords: failure != 'absent',
+            reference: failure == 'missing'
+                ? 'missing.json'
+                : 'records.schema.json',
+            schema: failure == 'malformed'
+                ? false
+                : _schema([_type(), if (failure == 'partial') false]),
+            components: _recordConsumer([if (optIn) 'org.example.plugin.api']),
+          );
+          final catalog = failure == 'unreadable'
+              ? await IOOverrides.runWithIOOverrides(
+                  () => PreparedPluginCatalog.discover(root.path),
+                  _UnreadableSchema(
+                    directory.uri.resolve('records.schema.json').toFilePath(),
+                  ),
+                )
+              : await PreparedPluginCatalog.discover(root.path);
+          final installation = catalog.installations.single;
+          expect(installation.recordsSchema, isNull);
+          expect(installation.frontend, isNotNull);
+          expect(installation.settingsSchema, isNotNull);
+          expect(installation.backendArtifactUri, optIn ? isNull : isNotNull);
+          expect(installation.backendConsumedRecordTypes, isEmpty);
+          expect(
+            catalog.issues.where((issue) => issue.isRecordsSchemaIssue),
+            hasLength(failure == 'absent' ? 0 : 1),
+          );
+          expect(
+            catalog.issues.where(
+              (issue) => issue.component == PreparedPluginComponent.backend,
+            ),
+            hasLength(optIn ? 1 : 0),
+          );
+        },
+      );
+    }
+  }
+
+  for (final count in [
+    0,
+    PreparedPluginInstallation.maxBackendConsumedRecordTypes,
+    PreparedPluginInstallation.maxBackendConsumedRecordTypes + 1,
+  ]) {
+    test('record opt-in count $count at discovery and construction', () async {
+      final ids = [
+        for (var index = 0; index < count; index++)
+          'org.example.plugin.t-$index',
+      ];
+      final directory = await install(
+        'plugin',
+        schema: _schema([for (final id in ids) _type(id: id)]),
+        components: _recordConsumer(ids),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final parsed = catalog.installations.single;
+      PreparedPluginInstallation construct() => PreparedPluginInstallation(
+        metadata: parsed.metadata,
+        installationDirectory: directory,
+        backendArtifactUri: directory.uri.resolve('backend.aot'),
+        recordsSchema: parsed.recordsSchema,
+        backendConsumedRecordTypes: ids.map(RecordTypeId.new),
+      );
+      expect(parsed.recordsSchema!.definitions, hasLength(count));
+      expect(parsed.frontend, isNotNull);
+      if (count <= PreparedPluginInstallation.maxBackendConsumedRecordTypes) {
+        expect(catalog.issues, isEmpty);
+        expect(parsed.backendConsumedRecordTypesToJson(), ids);
+        expect(construct().backendConsumedRecordTypesToJson(), ids);
+      } else {
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+        expect(catalog.issues.single.message, contains('must not exceed'));
+        expect(parsed.backendArtifactUri, isNull);
+        expect(parsed.backendConsumedRecordTypes, isEmpty);
+        expect(construct, throwsFormatException);
+      }
+    });
+  }
+
+  for (final extra in [0, 1]) {
+    test('record opt-in ID length boundary plus $extra', () async {
+      final id =
+          'org.example.plugin.${'x' * (PreparedRecordsSchema.maxIdLength - 'org.example.plugin.'.length)}';
+      final requested = '$id${'x' * extra}';
+      final directory = await install(
+        'plugin',
+        schema: _schema([_type(id: id)]),
+        components: _recordConsumer([requested]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final parsed = catalog.installations.single;
+      PreparedPluginInstallation construct() => PreparedPluginInstallation(
+        metadata: parsed.metadata,
+        installationDirectory: directory,
+        backendArtifactUri: directory.uri.resolve('backend.aot'),
+        recordsSchema: parsed.recordsSchema,
+        backendConsumedRecordTypes: [RecordTypeId(requested)],
+      );
+      if (extra == 0) {
+        expect(catalog.issues, isEmpty);
+        expect(construct().backendConsumedRecordTypesToJson(), [id]);
+      } else {
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+        expect(catalog.issues.single.message, contains('UTF-16'));
+        expect(construct, throwsFormatException);
+      }
+    });
+  }
+
+  for (final failure in ['artifact', 'capabilities', 'frontend']) {
+    test(
+      'record opt-in remains component-local with invalid $failure',
+      () async {
+        final components = _recordConsumer(['org.example.plugin.api']);
+        if (failure == 'frontend') {
+          components['frontend'] = {
+            'artifact': 'frontend.evc',
+            'presentations': false,
+          };
+        } else {
+          (components['backend']! as Map<String, Object?>)[failure == 'artifact'
+              ? 'artifact'
+              : 'consumesCapabilities'] = failure == 'artifact'
+              ? 'missing.aot'
+              : false;
+        }
+        await install(
+          'plugin',
+          schema: _schema([_type()]),
+          components: components,
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final parsed = catalog.installations.single;
+        expect(
+          parsed.backendArtifactUri,
+          failure == 'frontend' ? isNotNull : isNull,
+        );
+        expect(
+          parsed.backendConsumedRecordTypesToJson(),
+          failure == 'frontend' ? ['org.example.plugin.api'] : isEmpty,
+        );
+        expect(parsed.recordsSchema, isNotNull);
+        expect(parsed.settingsSchema, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          failure == 'frontend'
+              ? PreparedPluginComponent.frontend
+              : PreparedPluginComponent.backend,
+        );
+      },
+    );
+  }
 
   test(
     'all field types retain ordered metadata and shared scalar validation',
@@ -1320,6 +1716,16 @@ void main() {
 const _components = <String, Object?>{
   'backend': {'artifact': 'backend.aot'},
   'frontend': {'artifact': 'frontend.evc', 'presentations': <Object?>[]},
+};
+Map<String, Object?> _recordConsumer(Object? types) => {
+  ..._components,
+  'backend': {
+    'artifact': 'backend.aot',
+    'consumesRecordTypes': types,
+    'consumesCapabilities': [
+      {'id': 'org.example.read', 'majorVersion': 1},
+    ],
+  },
 };
 Map<String, Object?> _schema(List<Object?> types) => {
   'schemaVersion': 1,

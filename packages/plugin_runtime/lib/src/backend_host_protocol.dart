@@ -7,6 +7,9 @@ import 'dart:typed_data';
 /// Rebuild a coherent runtime/host/backend set; prior development artifacts are
 /// unsupported even when their protocol version matches. Increment only when
 /// released artifacts establish a compatibility boundary.
+/// `startPlugin` requires explicit `settings` and `records`, even when empty.
+/// Record shape/bounds are owned by public backend support, not framing or ready
+/// advertisements; all participating artifacts must be rebuilt together.
 const int backendHostProtocolVersion = 1;
 const int backendHostStreamWindow = 1;
 const int maximumBackendHostFrameLength = 8 * 1024 * 1024;

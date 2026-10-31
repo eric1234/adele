@@ -46,6 +46,25 @@ consumer types fail that startup without affecting peers or a corrected retry.
 `test/plugin_termination_test.dart` uses the real shared-host/backend AOT fixture
 for scalar roundtrips, immutable capture, peer isolation, and same-ID replacement.
 
+Every `startPlugin` frame also requires an explicit nonsecret `records` list,
+including `[]`. Public
+[`AdeleBackendRecords`](../plugin_backend_support/README.md#bootstrap-records)
+owns its strict shape, identity grammar, duplicate rejection, scalar and size
+bounds. The runtime captures it before startup callbacks/awaits; the host validates
+and makes a fresh immutable copy before spawning. `spawnUri` requires fresh plain
+list/map containers rather than unmodifiable wrappers, and the plugin-side decoder
+validates and copies those again. No mutable caller container survives a boundary.
+Malformed records fail before isolate creation with fixed bounded errors that do
+not echo record contents. Declaration-specific ownership, allowed fields and
+required values remain the upstream host owner's responsibility.
+
+Records contain no credential references, native documents, filesystem roots,
+baseline handles or authorization, and do not affect settings, ready advertisements,
+exposures, or registration. `test/backend_records_test.dart` sends malformed raw
+frames and proves rejection precedes spawn. The maintained AOT fixture in
+`test/plugin_termination_test.dart` covers roundtrips, explicit emptiness, caller
+and bootstrap mutation, settings coexistence, peers, and same-ID replacements.
+
 Both shared-host and plugin-backend protocols use version 1 with exact
 protocol-version matching. Before the first release, unstable wire changes may
 retain that version; rebuild coherent runtime/host/backend snapshots rather than

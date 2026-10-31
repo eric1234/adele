@@ -9,7 +9,7 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'captures and validates settings before startup callbacks or awaits',
+    'captures and validates settings and records before callbacks or awaits',
     () async {
       final fake = _FakeHost.create('''
 import 'dart:io';
@@ -27,7 +27,7 @@ void main() {
         send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': pluginId});
       } else if (message['kind'] == 'request') {
         send({'kind': 'response', 'requestId': message['requestId'], 'pluginId': pluginId, 'ok': true,
-          'payload': {'starts': starts.length, 'settings': starts[pluginId]!['settings']}});
+          'payload': {'starts': starts.length, 'settings': starts[pluginId]!['settings'], 'records': starts[pluginId]!['records']}});
       } else if (message['kind'] == 'shutdownHost') {
         send({'kind': 'hostStopped', 'requestId': message['requestId']});
         exit(0);
@@ -55,6 +55,34 @@ void main() {
         );
       }
       expect(callbacks, 0);
+      final recordValues = <String, Object?>{'label': 'original', 'count': 7};
+      final record = <String, Object?>{
+        'collection': 'providers',
+        'type': 'dev.adele.fixture.provider',
+        'id': 'work',
+        'values': recordValues,
+      };
+      for (final invalid in <Object?>[null, 1.5, [], {}, Object()]) {
+        await expectLater(
+          host.startPlugin(
+            pluginId: 'records',
+            artifactUri: Uri.file('/unused'),
+            records: [
+              {
+                ...record,
+                'values': {'count': invalid},
+              },
+            ],
+            createInfrastructureServices: (_) {
+              callbacks++;
+              return {};
+            },
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(callbacks, 0);
+      final records = [record];
       final source = <String, Object>{
         'count': 7,
         'enabled': true,
@@ -64,9 +92,13 @@ void main() {
         pluginId: 'settings',
         artifactUri: Uri.file('/unused'),
         settings: source,
+        records: records,
         createInfrastructureServices: (_) {
           callbacks++;
           source['count'] = 19;
+          recordValues['count'] = 19;
+          record['id'] = 'changed';
+          records.clear();
           return {};
         },
       );
@@ -76,6 +108,14 @@ void main() {
       expect(await connection.request('bootstrap', {}), {
         'starts': 1,
         'settings': {'count': 7, 'enabled': true, 'label': 'first'},
+        'records': [
+          {
+            'collection': 'providers',
+            'type': 'dev.adele.fixture.provider',
+            'id': 'work',
+            'values': {'label': 'original', 'count': 7},
+          },
+        ],
       });
       final empty = await host.startPlugin(
         pluginId: 'empty',
@@ -84,6 +124,7 @@ void main() {
       expect(await empty.request('bootstrap', {}), {
         'starts': 2,
         'settings': <String, Object>{},
+        'records': <Object?>[],
       });
     },
   );

@@ -11,6 +11,7 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/prepared_records.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -6005,6 +6006,13 @@ void main() {
         addTearDown(runtime.close);
         runtime.plugins.configureSettingsLoader(
           (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+        );
+        runtime.plugins.configureRecordsLoader(
+          (catalog, installation) async => StartupRecordsView.fromProjection(
+            catalog,
+            installation,
+            records: const [],
+          ),
         );
         await prepared.start(
           runtime,

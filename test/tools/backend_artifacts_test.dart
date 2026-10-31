@@ -1912,6 +1912,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(catalog.issues, isEmpty);
       final installation = catalog.installations.single;
       expect(installation.backendArtifactUri, isNull);
+      expect(installation.backendConsumedRecordTypes, isEmpty);
       expect(installation.frontend, isNull);
       expect(installation.settingsSchema, isNull);
       expect(catalog.settings.definitions, isEmpty);
@@ -1994,6 +1995,72 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(commands.existsSync(), isFalse);
     },
   );
+
+  for (final backend in [false, true]) {
+    for (final frontend in [false, true]) {
+      test(
+        'stock OpenAI record opt-in backend=$backend frontend=$frontend',
+        () async {
+          final installations = Directory('${root.path}/published');
+          final directory = Directory.fromUri(
+            installations.uri.resolve('openai/'),
+          );
+          await publishStockPluginInstallation(
+            repositoryRoot: root,
+            installationDirectory: directory,
+            pluginId: 'dev.adele.openai',
+            displayName: 'OpenAI',
+            backend: backend,
+            frontend: frontend,
+          );
+          for (final artifact in [
+            if (backend) 'backend.aot',
+            if (frontend) 'frontend.evc',
+          ]) {
+            await File.fromUri(
+              directory.uri.resolve(artifact),
+            ).writeAsString('Not executable; discovery must not activate it.');
+          }
+          final manifest =
+              jsonDecode(
+                    await File.fromUri(
+                      directory.uri.resolve('adele_plugin.installation.json'),
+                    ).readAsString(),
+                  )
+                  as Map<String, Object?>;
+          final components = manifest['components']! as Map<String, Object?>;
+          expect(components.containsKey('backend'), backend);
+          if (backend) {
+            expect(components['backend'], {
+              'artifact': 'backend.aot',
+              'consumesRecordTypes': ['dev.adele.openai.api-key'],
+            });
+          }
+          final catalog = await PreparedPluginCatalog.discover(
+            installations.path,
+          );
+          expect(catalog.issues, isEmpty);
+          final installation = catalog.installations.single;
+          expect(installation.backendArtifactUri, backend ? isNotNull : isNull);
+          expect(installation.frontend, frontend ? isNotNull : isNull);
+          expect(installation.backendConsumedRecordTypesToJson(), [
+            if (backend) 'dev.adele.openai.api-key',
+          ]);
+          expect(
+            catalog.records.definitions.single.id.value,
+            'dev.adele.openai.api-key',
+          );
+          expect(
+            await File.fromUri(
+              installation.recordsSchema!.artifactUri,
+            ).readAsBytes(),
+            await File('plugins/openai/records.schema.json').readAsBytes(),
+          );
+          expect(commands.existsSync(), isFalse);
+        },
+      );
+    }
+  }
 
   test(
     'Linux development launcher prepares evaluator and existing stock catalog without opt-in',
@@ -2337,7 +2404,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             if (plugin.directory == 'openai')
               'recordsSchema': 'records.schema.json',
             'components': {
-              if (plugin.backend) 'backend': {'artifact': 'backend.aot'},
+              if (plugin.backend)
+                'backend': {
+                  'artifact': 'backend.aot',
+                  if (plugin.directory == 'openai')
+                    'consumesRecordTypes': ['dev.adele.openai.api-key'],
+                },
               if (hasFrontend)
                 'frontend': {
                   'artifact': 'frontend.evc',
@@ -2395,6 +2467,16 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           (installation) => installation.recordsSchema != null,
         );
         expect(recordsInstallation.metadata.id.value, 'dev.adele.openai');
+        expect(recordsInstallation.backendConsumedRecordTypesToJson(), [
+          'dev.adele.openai.api-key',
+        ]);
+        expect(
+          catalog.installations.where(
+            (installation) =>
+                installation.backendConsumedRecordTypes.isNotEmpty,
+          ),
+          [recordsInstallation],
+        );
         final recordsSchema = recordsInstallation.recordsSchema!;
         expect(
           recordsSchema.artifactUri,

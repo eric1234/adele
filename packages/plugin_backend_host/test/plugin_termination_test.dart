@@ -75,6 +75,136 @@ void main() {
   };
 
   test(
+    'AOT records capture exact generations alongside unchanged settings',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final values = <String, Object>{
+        'display-name': 'Work',
+        'enabled': false,
+        'count': 9007199254740993,
+        'empty': '',
+      };
+      final record = <String, Object?>{
+        'collection': 'providers',
+        'type': 'dev.adele.fixture.provider',
+        'id': 'work',
+        'values': values,
+      };
+      final source = [record];
+      final expected = jsonDecode(jsonEncode(source));
+      final starting = host.startPlugin(
+        pluginId: 'records-owner',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['records'],
+        records: source,
+        settings: {'unchanged': 17},
+      );
+      values['display-name'] = 'Personal';
+      record['id'] = 'personal';
+      final first = await starting;
+      expect(first.capabilityExposures, isEmpty);
+      expect(first.extensionExposures, isEmpty);
+      final peer = await host.startPlugin(
+        pluginId: 'records-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['records'],
+        records: source,
+      );
+      final secondExpected = jsonDecode(jsonEncode(source));
+      final empty = await host.startPlugin(
+        pluginId: 'records-empty',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['records'],
+        records: [],
+      );
+      values.clear();
+      record.clear();
+      source.clear();
+      expect(await first.request('records', {}), expected);
+      expect(await first.request('settings', {}), {'unchanged': 17});
+      expect(await peer.request('records', {}), secondExpected);
+      expect(await peer.request('settings', {}), isEmpty);
+      expect(await empty.request('records', {}), isEmpty);
+      await first.close();
+      final replacement = await host.startPlugin(
+        pluginId: 'records-owner',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['records'],
+        records: [],
+      );
+      expect(await replacement.request('records', {}), isEmpty);
+      expect(await replacement.request('settings', {}), isEmpty);
+      await expectLater(
+        first.request('records', {}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(await peer.request('records', {}), secondExpected);
+      expect(await peer.request('ping', {}), {'alive': true});
+    },
+  );
+
+  test(
+    'shared host copies records before asynchronous isolate startup',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final response = Completer<Object?>();
+      final host = AdeleBackendHost(
+        send: (message) {
+          sent.add(message);
+          if (message['kind'] == 'response') {
+            response.complete(message['payload']);
+          }
+          return true;
+        },
+        diagnostic: (_) {},
+      );
+      addTearDown(() => host.shutdown(notify: false));
+      final values = <String, Object>{'label': 'captured'};
+      final record = <String, Object?>{
+        'collection': 'providers',
+        'type': 'dev.adele.fixture.provider',
+        'id': 'work',
+        'values': values,
+      };
+      final records = [record];
+      final expected = jsonDecode(jsonEncode(records));
+      final starting = host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'captured-records',
+        'generation': 'generation',
+        'hostInfrastructureContext': 'infrastructure',
+        'defaultConfigurationContext': 'default',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': ['records'],
+        'settings': <String, Object>{},
+        'records': records,
+      });
+      values.clear();
+      record.clear();
+      records.clear();
+      await starting;
+      expect(sent.single['kind'], 'pluginReady');
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'request',
+        'requestId': 2,
+        'pluginId': 'captured-records',
+        'configurationContext': 'default',
+        'serviceId': 'fixture',
+        'method': 'records',
+        'payload': <String, Object>{},
+      });
+      expect(
+        await response.future.timeout(const Duration(seconds: 3)),
+        expected,
+      );
+    },
+  );
+
+  test(
     'AOT settings are isolated snapshots for exact backend generations',
     () async {
       final host = await _startHost(dartaotruntime, hostArtifact);
@@ -316,6 +446,7 @@ void main() {
           'requestId': 1,
           'pluginId': 'missing-token',
           'settings': <String, Object>{},
+          'records': <Object?>[],
           'generation': 'generation',
           'defaultConfigurationContext': 'default',
           'artifactUri': pluginKernel.uri.toString(),
@@ -363,6 +494,7 @@ void main() {
         'requestId': 1,
         'pluginId': 'contextual',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'generation': 'generation',
         'hostInfrastructureContext': 'infrastructure',
         'defaultConfigurationContext': 'default',
@@ -1338,6 +1470,7 @@ void main() {
           'requestId': 1,
           'pluginId': 'captured',
           'settings': <String, Object>{},
+          'records': <Object?>[],
           'generation': generation,
           'hostInfrastructureContext': 'infrastructure-$generation',
           'defaultConfigurationContext': 'default',
@@ -1649,6 +1782,7 @@ void main() {
         'requestId': 1,
         'pluginId': 'invalid-startup-mode',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -1766,6 +1900,7 @@ void main() {
         'requestId': 1,
         'pluginId': 'send-failure',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2547,6 +2682,7 @@ void main() {
         'requestId': 1,
         'pluginId': 'invalid-credit',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2638,6 +2774,7 @@ void main() {
         'requestId': 1,
         'pluginId': 'double-send-failure',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2650,6 +2787,7 @@ void main() {
         'requestId': 2,
         'pluginId': 'healthy-peer',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-peer-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2768,6 +2906,7 @@ void main() {
       'requestId': 30,
       'pluginId': 'cancel-forwarding',
       'settings': <String, Object>{},
+      'records': <Object?>[],
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
@@ -2836,6 +2975,7 @@ void main() {
         'requestId': 40,
         'pluginId': 'ingress-cancel',
         'settings': <String, Object>{},
+        'records': <Object?>[],
         'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
@@ -2914,6 +3054,7 @@ void main() {
       'requestId': 50,
       'pluginId': 'pre-admission-cancel',
       'settings': <String, Object>{},
+      'records': <Object?>[],
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
@@ -3016,6 +3157,7 @@ void main() {
       'requestId': 60,
       'pluginId': 'discard-cancel',
       'settings': <String, Object>{},
+      'records': <Object?>[],
       'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',

@@ -49,7 +49,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_plugin_api`](../../packages/plugin_api/pubspec.yaml) | Public: generic plugin identity, extension registration, and binding liveness | No Flutter, host implementations, app, or concrete plugins. |
 | [`adele_core_extensions`](../../packages/core_extensions/pubspec.yaml) | Public: core-owned extension contracts and window selection observation without another domain owner | Not a catch-all for public APIs; no Flutter or implementation dependencies. |
 | [`adele_contract`](../../packages/contract/pubspec.yaml) | Public: declarations, channels, and exposure values | No Flutter, analyzer/compiler, generation tooling, or host/runtime implementation dependencies. |
-| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels and immutable backend startup settings | No Flutter, host internals, configuration persistence, or domain-specific orchestration semantics. |
+| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels and immutable backend startup settings/records | No Flutter, host internals, configuration persistence, or domain-specific orchestration semantics. |
 | [`adele_capabilities`](../../packages/capabilities/pubspec.yaml) | Public: capability/provider identities and routing | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_model_provider`](../../packages/model_provider/pubspec.yaml) | Public: provider-neutral model-provider contract | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_product`](../../packages/product/pubspec.yaml) | Public: product identities and immutable values | No executable orchestration, extension registration, UI, host, or plugin implementation concerns. |
@@ -131,6 +131,13 @@ generic `PluginBackendHost.startPlugin(settings: ...)` transport. Neither receiv
 host persistence APIs or cross-plugin settings access. Declaration resolution and
 validation remain in the existing Settings contracts, not a plugin-specific app
 adapter or a second transport-level resolver.
+
+Explicitly opted-in record types follow the same direction through a separate
+nonsecret startup representation, not scalar Settings. The existing host worker
+owns record reads/semantic validation and exact-installation projection; backend
+support owns bounded structural copying/decoding. Runtime transport never imports
+the record store, native TOML or credential services, and record identity grants no
+credential access. See [record snapshots](profiles-and-configuration.md#backend-record-snapshots).
 
 Native presentation primitives accept generic construction options; application
 code must not interpret a concrete plugin's setting ID. Backend AOT preparation,

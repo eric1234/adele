@@ -16,16 +16,28 @@ final class PreparedPluginInstallation {
     required this.installationDirectory,
     required this.backendArtifactUri,
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
+    Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
     this.frontend,
     this.settingsSchema,
     this.recordsSchema,
   }) : backendConsumedCapabilities = _backendConsumedCapabilityKeys(
          backendConsumedCapabilities,
+       ),
+       backendConsumedRecordTypes = _backendConsumedRecordTypeIds(
+         backendConsumedRecordTypes,
+         owner: metadata.id,
+         schema: recordsSchema,
        ) {
     if (backendArtifactUri == null &&
         this.backendConsumedCapabilities.isNotEmpty) {
       throw const FormatException(
         'consumesCapabilities requires a backend component.',
+      );
+    }
+    if (backendArtifactUri == null &&
+        this.backendConsumedRecordTypes.isNotEmpty) {
+      throw const FormatException(
+        'consumesRecordTypes requires a backend component.',
       );
     }
     if (settingsSchema?.definitions.any(
@@ -43,6 +55,7 @@ final class PreparedPluginInstallation {
   }
 
   static const maxBackendConsumedCapabilities = 128;
+  static const maxBackendConsumedRecordTypes = 128;
 
   final PluginMetadata metadata;
   final Directory installationDirectory;
@@ -51,6 +64,10 @@ final class PreparedPluginInstallation {
   /// Backend-only consumption declarations, not provider advertisements,
   /// activation dependencies, or authority grants.
   final List<CapabilityKey> backendConsumedCapabilities;
+
+  /// Exact types declared by this installation, requested for backend startup.
+  /// This grants no credential access, provider activation, or frontend access.
+  final List<RecordTypeId> backendConsumedRecordTypes;
   final PreparedFrontendComponent? frontend;
 
   /// Installation-level declarations, independent of executable components.
@@ -63,6 +80,11 @@ final class PreparedPluginInstallation {
   List<Map<String, Object?>> backendConsumedCapabilitiesToJson() => [
     for (final key in backendConsumedCapabilities)
       {'id': key.id.value, 'majorVersion': key.majorVersion},
+  ];
+
+  /// Encodes the backend's consumesRecordTypes array, preserving authored order.
+  List<String> backendConsumedRecordTypesToJson() => [
+    for (final id in backendConsumedRecordTypes) id.value,
   ];
 }
 
@@ -804,61 +826,10 @@ final class PreparedPluginCatalog {
         });
         Uri? backendArtifactUri;
         List<CapabilityKey> backendConsumedCapabilities = const [];
+        List<RecordTypeId> backendConsumedRecordTypes = const [];
         PreparedFrontendComponent? frontend;
         PreparedSettingsSchema? settingsSchema;
         PreparedRecordsSchema? recordsSchema;
-        for (final component in PreparedPluginComponent.values) {
-          if (!components.containsKey(component.name)) continue;
-          try {
-            switch (component) {
-              case PreparedPluginComponent.backend:
-                final backend = _object(
-                  components['backend'],
-                  'components.backend',
-                  {'artifact', 'consumesCapabilities'},
-                );
-                final consumedCapabilities = _backendConsumedCapabilityKeys(
-                  _capabilityKeys(
-                    backend.containsKey('consumesCapabilities')
-                        ? backend['consumesCapabilities']
-                        : const <Object?>[],
-                    'backend.consumesCapabilities',
-                    maxEntries: PreparedPluginInstallation
-                        .maxBackendConsumedCapabilities,
-                  ),
-                );
-                backendArtifactUri = await _artifact(
-                  backend['artifact'],
-                  'backend.artifact',
-                  resolvedDirectory,
-                );
-                backendConsumedCapabilities = consumedCapabilities;
-              case PreparedPluginComponent.frontend:
-                frontend = await _frontend(
-                  components['frontend'],
-                  resolvedDirectory,
-                );
-            }
-          } on FormatException catch (error) {
-            issues.add(
-              PreparedPluginCatalogIssue(
-                installationDirectory: directory,
-                pluginId: id,
-                component: component,
-                message: error.message,
-              ),
-            );
-          } on FileSystemException catch (error) {
-            issues.add(
-              PreparedPluginCatalogIssue(
-                installationDirectory: directory,
-                pluginId: id,
-                component: component,
-                message: 'Unable to read ${component.name} component: $error',
-              ),
-            );
-          }
-        }
         if (document.containsKey('settingsSchema')) {
           try {
             settingsSchema = await _settingsSchema(
@@ -913,12 +884,87 @@ final class PreparedPluginCatalog {
             );
           }
         }
+        for (final component in PreparedPluginComponent.values) {
+          if (!components.containsKey(component.name)) continue;
+          try {
+            switch (component) {
+              case PreparedPluginComponent.backend:
+                final backend = _object(
+                  components['backend'],
+                  'components.backend',
+                  {'artifact', 'consumesCapabilities', 'consumesRecordTypes'},
+                );
+                final consumedCapabilities = _backendConsumedCapabilityKeys(
+                  _capabilityKeys(
+                    backend.containsKey('consumesCapabilities')
+                        ? backend['consumesCapabilities']
+                        : const <Object?>[],
+                    'backend.consumesCapabilities',
+                    maxEntries: PreparedPluginInstallation
+                        .maxBackendConsumedCapabilities,
+                  ),
+                );
+                final recordTypes = backend.containsKey('consumesRecordTypes')
+                    ? backend['consumesRecordTypes']
+                    : const <Object?>[];
+                if (recordTypes is! List<Object?>) {
+                  throw const FormatException(
+                    'backend.consumesRecordTypes must be an array.',
+                  );
+                }
+                final consumedRecordTypes = _backendConsumedRecordTypeIds(
+                  recordTypes.map(
+                    (value) => RecordTypeId(
+                      _schemaText(
+                        value,
+                        'backend.consumesRecordTypes entry',
+                        PreparedRecordsSchema.maxIdLength,
+                      ),
+                    ),
+                  ),
+                  owner: pluginMetadata.id,
+                  schema: recordsSchema,
+                );
+                backendArtifactUri = await _artifact(
+                  backend['artifact'],
+                  'backend.artifact',
+                  resolvedDirectory,
+                );
+                backendConsumedCapabilities = consumedCapabilities;
+                backendConsumedRecordTypes = consumedRecordTypes;
+              case PreparedPluginComponent.frontend:
+                frontend = await _frontend(
+                  components['frontend'],
+                  resolvedDirectory,
+                );
+            }
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                component: component,
+                message: error.message,
+              ),
+            );
+          } on FileSystemException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                component: component,
+                message: 'Unable to read ${component.name} component: $error',
+              ),
+            );
+          }
+        }
         installations.add(
           PreparedPluginInstallation(
             metadata: pluginMetadata,
             installationDirectory: directory,
             backendArtifactUri: backendArtifactUri,
             backendConsumedCapabilities: backendConsumedCapabilities,
+            backendConsumedRecordTypes: backendConsumedRecordTypes,
             frontend: frontend,
             settingsSchema: settingsSchema,
             recordsSchema: recordsSchema,
@@ -1816,6 +1862,45 @@ List<CapabilityKey> _backendConsumedCapabilityKeys(
     keys.add(key);
   }
   return List.unmodifiable(keys);
+}
+
+List<RecordTypeId> _backendConsumedRecordTypeIds(
+  Iterable<RecordTypeId> recordTypes, {
+  required PluginId owner,
+  required PreparedRecordsSchema? schema,
+}) {
+  final ids = <RecordTypeId>[];
+  final seen = <RecordTypeId>{};
+  final owned = {
+    for (final definition in schema?.definitions ?? <RecordTypeDefinition>[])
+      if (definition.owner == owner) definition.id,
+  };
+  for (final id in recordTypes) {
+    if (ids.length ==
+        PreparedPluginInstallation.maxBackendConsumedRecordTypes) {
+      throw const FormatException(
+        'backend.consumesRecordTypes must not exceed '
+        '${PreparedPluginInstallation.maxBackendConsumedRecordTypes} entries.',
+      );
+    }
+    _schemaText(
+      id.value,
+      'backend.consumesRecordTypes entry',
+      PreparedRecordsSchema.maxIdLength,
+    );
+    if (!seen.add(id)) {
+      throw const FormatException(
+        'backend.consumesRecordTypes must not contain duplicates.',
+      );
+    }
+    if (!owned.contains(id)) {
+      throw const FormatException(
+        'backend.consumesRecordTypes must name exact owned recordsSchema definitions.',
+      );
+    }
+    ids.add(id);
+  }
+  return List.unmodifiable(ids);
 }
 
 List<CapabilityKey> _capabilityKeys(

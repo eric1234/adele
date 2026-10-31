@@ -160,6 +160,7 @@ final class AdeleBackendHost {
       throw const FormatException('startupArgumentsOnly must be a boolean.');
     }
     final settings = adeleCopyBackendSettings(message['settings']);
+    final records = adeleCopyBackendRecords(message['records']);
     final _PluginIsolate plugin = await _PluginIsolate.start(
       pluginId: pluginId,
       generation: generation,
@@ -171,6 +172,7 @@ final class AdeleBackendHost {
       defaultConfigurationContext: defaultConfigurationContext,
       startupArgumentsOnly: startupArgumentsOnly,
       settings: settings,
+      records: records,
       send: _send,
       diagnostic: _diagnostic,
       onTerminated: _pluginTerminated,
@@ -576,6 +578,7 @@ final class _PluginIsolate {
     required String defaultConfigurationContext,
     required bool startupArgumentsOnly,
     required Map<String, Object> settings,
+    required List<Map<String, Object>> records,
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
@@ -601,6 +604,15 @@ final class _PluginIsolate {
           'startupArgumentsOnly': startupArgumentsOnly,
           // spawnUri cannot transfer the immutable snapshot's map wrapper.
           'settings': Map<String, Object>.of(settings),
+          'records': <Map<String, Object>>[
+            for (final record in records)
+              <String, Object>{
+                ...record,
+                'values': Map<String, Object>.of(
+                  record['values'] as Map<String, Object>,
+                ),
+              },
+          ],
         },
         onError: errorPort.sendPort,
         onExit: exitPort.sendPort,

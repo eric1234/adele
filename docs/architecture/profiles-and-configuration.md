@@ -13,8 +13,9 @@ in Global Settings; the OpenAI plugin declares the first provider record and its
 credential slot. Record creation, editing, and guarded deletion are implemented.
 Global Settings manages declared credential slots through the app-private association
 coordinator, with nonsecret TOML references and Linux x64 Secret Service storage.
-Runtime record consumption, backend credential delivery, provider authentication
-integration, record-based OAuth, Profiles, and Agent configuration remain unimplemented.
+Opted-in backends receive immutable nonsecret record metadata at startup. Backend
+credential delivery, configured-provider materialization/authentication,
+record-based OAuth, Profiles, and Agent configuration remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -238,12 +239,55 @@ canceled application exit preserves the original dialog and its drafts.
 
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
 strings, plus an `api-key` credential slot, never a secret under ordinary values.
-These records and associations are not consumed by the runtime, including after
-restart. Existing OpenAI authentication, Chat selection and startup behavior are
-unchanged. Future Profiles may contain the same
+Its backend opts into startup record metadata but does not materialize providers
+from it. Credential associations remain host-only. Existing OpenAI authentication,
+Chat selection and startup behavior are unchanged. Future Profiles may contain the same
 kinds of collections, but no Profile identity, ordered record composition or merge
 rules exist yet. Record UI uses the established host-owned serialized I/O boundary,
 not another writer isolate or persistence service.
+
+### Backend record snapshots
+
+A prepared backend's optional `consumesRecordTypes` list requests only exact type
+IDs declared by its own installation snapshot. Absence means no access and no
+record read. Missing/malformed schemas cannot satisfy an opt-in; invalid requests
+fail the backend component without suppressing independent metadata or frontend
+discovery. Neither namespace-prefix matching nor another installation's declaration
+can confer ownership. See [prepared layout](plugin-layout.md#prepared-installation-snapshot).
+
+After discovery establishes ownership, the application uses the existing
+`GlobalSettingsService` serialized worker and authoritative `ConfigurationRecordStore`
+to capture a read-only startup projection. This is not editable collection loading:
+it publishes no UI revision and never replaces or revokes loaded edit baselines.
+Native TOML documents, protected associations and conditional file baselines remain
+worker-private. Ordinary CRUD and projection share admission/serialization; no
+second writer, filesystem parser or backend file access is introduced.
+
+Each delivered entry contains exactly a collection ID, record-type ID, stable
+record ID and validated declared ordinary scalar `values`. Optional absence is
+omission, not null, a default, false, zero or an empty string. Records of other types
+in the same collection, unknown fields/comments, credential references, protected
+credential values, roots and worker/revision handles are excluded. The immutable
+projection is ordered by collection, type and ID, never display name. Public backend
+support structurally validates bounded data at runtime, shared-host and plugin
+bootstrap boundaries; declaration-specific validation remains host-owned.
+
+Malformed individual records are omitted, not partially parsed or repaired, with
+existing attributable diagnostics available in Settings. Healthy siblings remain
+eligible. Whole-directory failures fail the affected backend's configuration read
+explicitly; unrelated installations remain eligible to start. Missing/empty valid
+collections yield an explicit empty list without creating directories or files.
+There is no keyring operation, even when valid credential associations exist.
+
+The snapshot belongs to one exact installation and backend generation. Accepted
+application shutdown synchronously fences new starts before draining existing work;
+bootstrap rechecks this fence after pending reads so shutdown cannot spawn a late backend. Later
+record edits do not update running generations; a subsequent generation may capture
+new values. No live notification, record RPC, watcher or restart automation exists.
+Record identity is neither configured-provider identity nor credential authority.
+OpenAI decodes independent Work and Personal metadata but registers no API-key
+providers or configuration contexts from these records. Credential delivery and
+provider materialization remain subsequent, separate boundaries.
 
 ## Shared context, distinct composition
 
@@ -800,8 +844,9 @@ Implemented foundations and current limits:
   save/reset, explicit reload, and non-destructive error/conflict handling.
 - Plugin-declared records support generic validation and headless independent-file
   CRUD in the same global layer, with browsing, creation, editing, and confirmed
-  deletion in Global Settings. OpenAI supplies a nonsecret API-key provider
-  declaration, not runtime activation or authentication.
+  deletion in Global Settings. Opted-in backends receive exact-installation
+  nonsecret startup snapshots without changing UI baselines. OpenAI decodes its
+  API-key record metadata without runtime activation or authentication.
 - Capability endpoints have generation-bound configuration contexts.
 - Host credential storage has a Linux x64 Secret Service adapter and an app-private
   record association lifecycle with declaration-generated Global Settings controls,
