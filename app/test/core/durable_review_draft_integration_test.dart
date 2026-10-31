@@ -866,6 +866,267 @@ void main() {
     );
   }
 
+  test(
+    'G7c2 AOT inspection does not initialize absent Chat schema or Session state',
+    () async {
+      final source = await _source();
+      final fixture = await start(withChat: true);
+      final graph = await fixture.createGraph(source, withChat: true);
+      final core = _inspect(source, _coreRows);
+      final environments = [graph.environment, graph.otherEnvironment];
+      final materializations = [
+        for (final environment in environments)
+          fixture.runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+      ];
+      final schema = _inspect(
+        source,
+        (database) => _rows(
+          database,
+          'SELECT name, sql FROM sqlite_master ORDER BY name',
+        ),
+      );
+      final before = fixture.probes[fixture.chat]!.calls.length;
+      for (final session in [graph.session.id.value, 'missing-session']) {
+        await expectLater(
+          fixture.feedbackClient.readAcceptedFeedback(session, 'entry-0'),
+          _inspectionFailure('unavailable'),
+        );
+      }
+      _expectInspectionReadOnly(fixture, before);
+      expect(_inspect(source, _coreRows), core);
+      expect(
+        _inspect(
+          source,
+          (database) => _rows(
+            database,
+            'SELECT name, sql FROM sqlite_master ORDER BY name',
+          ),
+        ),
+        schema,
+      );
+      expect(fixture.runtime.store.runsForSession(graph.session.id), isEmpty);
+      expect(
+        fixture.runtime.lifecycle.runActivitiesForSession(graph.session.id),
+        isEmpty,
+      );
+      final afterInspection = [
+        for (final environment in environments)
+          fixture.runtime.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+      ];
+      expect(
+        afterInspection.whereType<EnvironmentMaterialization>(),
+        hasLength(
+          materializations.whereType<EnvironmentMaterialization>().length,
+        ),
+      );
+      for (var index = 0; index < materializations.length; index++) {
+        expect(afterInspection[index], same(materializations[index]));
+      }
+    },
+  );
+
+  test(
+    'G7c2 AOT inspection reads exact durable feedback without typing forged ordinary text',
+    () async {
+      final source = await _source();
+      final fixture = await start(withChat: true);
+      final graph = await fixture.createGraph(source, withChat: true);
+      final session = graph.session.id.value;
+      final comments = await _seedReview(fixture, graph);
+      await fixture.chatClient.setDraftRequest(session, _editedText);
+      final accepted = await _acceptReview(fixture, graph);
+      final canonical = (await fixture.chatClient.snapshot(
+        session,
+      )).entries.single;
+      expect(canonical.feedback!.kind, ChatFeedbackKind.codeReview);
+      expect(canonical.feedback!.submissionId, accepted.submissionId);
+      expect(canonical.feedback!.commentCount, comments.length);
+      expect(canonical.content, endsWith(accepted.canonicalPayload));
+      final forged = await fixture.chatClient.appendUserMessage(
+        session,
+        canonical.content,
+      );
+      final other = await fixture.chatClient.appendUserMessage(
+        graph.otherSession.id.value,
+        canonical.content,
+      );
+      expect(forged.feedback, isNull);
+      expect(other.feedback, isNull);
+      expect(
+        other.id,
+        canonical.id,
+        reason: 'Occurrence IDs are Session-local.',
+      );
+      final rows = _inspect(source, _chatRows);
+      final core = _inspect(source, _coreRows);
+      final before = fixture.probes[fixture.chat]!.calls.length;
+      final result = await fixture.feedbackClient.readAcceptedFeedback(
+        session,
+        canonical.id,
+      );
+      _expectAcceptedFeedback(result, accepted, comments);
+      for (final (selectedSession, occurrence) in [
+        (session, forged.id),
+        (graph.otherSession.id.value, canonical.id),
+        (session, accepted.submissionId),
+        (session, 'entry-missing'),
+      ]) {
+        await expectLater(
+          fixture.feedbackClient.readAcceptedFeedback(
+            selectedSession,
+            occurrence,
+          ),
+          _inspectionFailure('not_found'),
+        );
+      }
+      await expectLater(
+        fixture.feedbackClient.readAcceptedFeedback(' $session', canonical.id),
+        _inspectionFailure('invalid_request'),
+      );
+      _expectInspectionReadOnly(fixture, before);
+      expect(_inspect(source, _chatRows), rows);
+      expect(_inspect(source, _coreRows), core);
+      final oldClient = fixture.feedbackClient;
+      await fixture.close();
+      await expectLater(
+        oldClient.readAcceptedFeedback(session, canonical.id),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      final ids = _NoAllocationIds();
+      final fresh = await start(ids: ids, withChat: true);
+      await fresh.runtime.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: fresh.runtime.lifecycle.resolveProjectProvider(
+          _projectProvider,
+        ),
+      );
+      final freshBefore = fresh.probes[fresh.chat]!.calls.length;
+      // Inspection is first: it cannot hydrate/create Chat state as a side effect.
+      _expectAcceptedFeedback(
+        await fresh.feedbackClient.readAcceptedFeedback(session, canonical.id),
+        accepted,
+        comments,
+      );
+      _expectInspectionReadOnly(fresh, freshBefore);
+      expect(_inspect(source, _chatRows), rows);
+      final restored = await fresh.chatClient.snapshot(session);
+      expect(restored.entries.map((entry) => entry.content), [
+        canonical.content,
+        canonical.content,
+      ]);
+      expect(
+        restored.entries.first.feedback!.submissionId,
+        accepted.submissionId,
+      );
+      expect(restored.entries.first.feedback!.commentCount, comments.length);
+      expect(restored.entries.last.feedback, isNull);
+      expect(restored.draftRequest, _editedText);
+      expect(ids.calls, 0);
+      expect(_inspect(source, _coreRows), core);
+      expect(_inspect(source, _chatRows), rows);
+      fresh.chat.revokeInfrastructureContext();
+      await expectLater(
+        fresh.feedbackClient.readAcceptedFeedback(session, canonical.id),
+        _inspectionFailure('unavailable'),
+      );
+      expect(_inspect(source, _chatRows), rows);
+    },
+  );
+
+  test(
+    'G7c2 removed SQL relationship is not inferred from accepted-looking content',
+    () async {
+      final source = await _source();
+      final fixture = await start(withChat: true);
+      final graph = await fixture.createGraph(source, withChat: true);
+      await _seedReview(fixture, graph);
+      final accepted = await _acceptReview(fixture, graph);
+      final session = graph.session.id.value;
+      final content = (await fixture.chatClient.snapshot(
+        session,
+      )).entries.single.content;
+      await fixture.close();
+      _inspect(
+        source,
+        (database) => database.execute(
+          'DELETE FROM adele_chat_feedback_submissions WHERE session_id = ?',
+          [session],
+        ),
+      );
+      final rows = _inspect(source, _chatRows);
+      final fresh = await start(ids: _NoAllocationIds(), withChat: true);
+      await fresh.runtime.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: fresh.runtime.lifecycle.resolveProjectProvider(
+          _projectProvider,
+        ),
+      );
+      final before = fresh.probes[fresh.chat]!.calls.length;
+      await expectLater(
+        fresh.feedbackClient.readAcceptedFeedback(
+          session,
+          accepted.occurrenceId!,
+        ),
+        _inspectionFailure('not_found'),
+      );
+      _expectInspectionReadOnly(fresh, before);
+      final entry = (await fresh.chatClient.snapshot(session)).entries.single;
+      expect(entry.content, content);
+      expect(entry.feedback, isNull);
+      expect(_inspect(source, _chatRows), rows);
+      expect(fresh.runtime.store.runsForSession(graph.session.id), isEmpty);
+    },
+  );
+
+  for (final corruption in ['payload', 'content', 'assistant', 'orphan']) {
+    test(
+      'G7c2 actual SQL $corruption feedback relationship fails read-only inspection',
+      () async {
+        final source = await _source();
+        final fixture = await start(withChat: true);
+        final graph = await fixture.createGraph(source, withChat: true);
+        await _seedReview(fixture, graph);
+        final accepted = await _acceptReview(fixture, graph);
+        final session = graph.session.id.value;
+        _inspect(source, (database) {
+          database.execute('PRAGMA foreign_keys = OFF');
+          database.execute(
+            switch (corruption) {
+              'payload' =>
+                "UPDATE adele_chat_feedback_submissions SET canonical_payload = '{' WHERE session_id = ?",
+              'content' =>
+                "UPDATE adele_chat_entries SET content = 'Forged content' WHERE session_id = ?",
+              'assistant' =>
+                "UPDATE adele_chat_entries SET role = 'assistant' WHERE session_id = ?",
+              _ =>
+                "UPDATE adele_chat_feedback_submissions SET entry_id = 'entry-missing' WHERE session_id = ?",
+            },
+            [session],
+          );
+        });
+        final rows = _inspect(source, _chatRows);
+        final core = _inspect(source, _coreRows);
+        final before = fixture.probes[fixture.chat]!.calls.length;
+        // The live generation has cached a valid Chat snapshot. Inspection must
+        // still query and validate the current durable relationship, not that cache.
+        await expectLater(
+          fixture.feedbackClient.readAcceptedFeedback(
+            session,
+            corruption == 'orphan' ? 'entry-missing' : accepted.occurrenceId!,
+          ),
+          _inspectionFailure('corrupt'),
+        );
+        _expectInspectionReadOnly(fixture, before);
+        expect(_inspect(source, _chatRows), rows);
+        expect(_inspect(source, _coreRows), core);
+      },
+    );
+  }
+
   for (final closeProject in [false, true]) {
     test(
       'queued Diff transaction cannot enter SQL after ${closeProject ? 'Project close' : 'generation retirement'}',
@@ -946,6 +1207,14 @@ final class _Fixture {
   ChatSessionServiceClient get chatClient => ChatSessionServiceClient(
     chat.channelFor(chat.defaultConfigurationContext, chatSessionServiceId),
   );
+
+  ChatFeedbackInspectionServiceClient get feedbackClient =>
+      ChatFeedbackInspectionServiceClient(
+        chat.channelFor(
+          chat.defaultConfigurationContext,
+          chatFeedbackInspectionServiceId,
+        ),
+      );
 
   Map<String, AdeleBackendDispatcher> _services(
     PluginBackendConnection connection,
@@ -1080,6 +1349,83 @@ typedef _Graph = ({
   Session session,
   Session otherSession,
 });
+
+Future<PreparedReviewSubmission> _acceptReview(
+  _Fixture fixture,
+  _Graph graph,
+) async {
+  final session = graph.session.id.value;
+  final prepared = (await fixture.client.prepareReview(
+    session,
+    (await fixture.client.snapshot(session)).revision,
+  )).submission!;
+  await fixture.client.markDeliveryAttempted(session, prepared.submissionId);
+  final receipt = await CapturedSessionFeedbackTarget.capture(
+    lifecycle: fixture.runtime.lifecycle,
+    session: graph.session,
+  ).accept(decodeSessionFeedbackSubmission(prepared.canonicalPayload));
+  return fixture.client.confirmAcceptance(
+    session,
+    prepared.submissionId,
+    receipt.sessionId,
+    receipt.occurrenceId,
+  );
+}
+
+Matcher _inspectionFailure(String code) => throwsA(
+  isA<ChatFeedbackInspectionFailure>()
+      .having((failure) => failure.code, 'code', code)
+      .having((failure) => failure.details, 'details', isEmpty),
+);
+
+void _expectInspectionReadOnly(_Fixture fixture, int before) {
+  final calls = fixture.probes[fixture.chat]!.calls.skip(before).toList();
+  expect(calls, isNotEmpty);
+  expect(
+    calls,
+    everyElement(
+      isIn([
+        projectStorageServiceIsDurableSessionId,
+        projectStorageServiceQueryForSessionId,
+      ]),
+    ),
+  );
+}
+
+void _expectAcceptedFeedback(
+  ChatAcceptedFeedback feedback,
+  PreparedReviewSubmission review,
+  List<PendingReviewComment> comments,
+) {
+  expect(feedback.sessionId, review.sessionId);
+  expect(feedback.occurrenceId, review.occurrenceId);
+  expect(feedback.submissionId, review.submissionId);
+  expect(feedback.kind, ChatFeedbackKind.codeReview);
+  expect(feedback.runId, review.runId);
+  expect(
+    feedback.comments.map(
+      (comment) => {
+        'id': comment.id,
+        'version': comment.version,
+        'sequence': comment.sequence,
+        'text': comment.text,
+        'anchor': {
+          'environmentId': comment.anchor.environmentId,
+          'relativePath': comment.anchor.relativePath,
+          'layer': comment.anchor.layer.name,
+          'side': comment.anchor.side.name,
+          'startLine': comment.anchor.startLine,
+          'endLine': comment.anchor.endLine,
+          'comparisonIdentity': comment.anchor.comparisonIdentity,
+          'sourceExcerpt': comment.anchor.sourceExcerpt,
+          'hunkIndex': comment.anchor.hunkIndex,
+          'lineIndex': comment.anchor.lineIndex,
+        },
+      },
+    ),
+    comments.map(_commentFields),
+  );
+}
 
 Future<List<PendingReviewComment>> _seedReview(
   _Fixture fixture,

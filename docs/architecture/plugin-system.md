@@ -808,11 +808,14 @@ Service allowlisting is not method-level effect enforcement: a retrieval contrac
 must not expose mutation methods. See [own-backend routing](contracts-and-capabilities.md#own-backend-frontend-requests)
 and the [public UI contract](../../packages/ui/README.md#session-content-inspection).
 
-The planned G7c2 consumer is Chat's compact accepted-review occurrence, using
-authoritative structured occurrence metadata and a separate read-only retrieval
-service. That presentation and service are not implemented by this hosting boundary.
-Accepted feedback remains strategy-owned durable data, not synthetic Run activity
-or content reconstructed from model-facing prose.
+Stock Chat uses this boundary for compact accepted-review occurrences. Its own
+snapshot metadata identifies the accepted submission and comment count; an explicit
+Inspect action references the canonical Chat entry with semantic kind
+`dev.adele.chat.review-feedback`. Its prepared renderer declares only the separate
+retrieval-only `chat.feedbackInspection` service. Accepted feedback remains
+strategy-owned durable data, not synthetic Run activity or content reconstructed
+from model-facing prose. Missing or retired presentation does not erase that
+factual occurrence. See the [Chat presentation map](../../plugins/chat_strategy/packages/frontend/README.md).
 
 ### Activity Inspection
 
@@ -1002,6 +1005,18 @@ existing claim rejects new feedback during execution but permits accepted receip
 lookup. Draft Request is neither consumed nor rewritten. See the
 [Chat backend](../../plugins/chat_strategy/packages/backend/README.md) for storage,
 bounds and uncertain-result handling.
+
+Canonical snapshots attach only feedback kind, stable submission identity, and
+original comment count to the linked user entry. Chat derives this metadata from
+the retained submission relationship, without a second stored projection or
+parsing the model-facing content. The entry's content, identity, ordering and Run
+association remain canonical inference input; the compact human label is never
+written back. For presentation, full structured feedback is read only when an
+Inspection requests the occurrence. The dedicated service validates its Session, user
+entry and immutable submission relationship using the same generation-scoped
+Project storage client. It grants no acceptance, draft mutation, scheduling or
+Environment authority. Inspection shows captured historical anchors and excerpts,
+not refreshed source or a claim that the original locations still exist.
 
 The invocation budget is [global configuration](profiles-and-configuration.md#chat-invocation-budget),
 not a Session field, snapshot value, or SQL column. Backend construction requires

@@ -157,8 +157,8 @@ For activity presentation, follow the local maps for
 Inspection is a general plugin-extensible presentation role, not a synonym for
 model/tool activity. Activity targets observe execution evidence;
 [Session-content targets](plugin-system.md#session-content-inspection) instead
-reference plugin-owned semantic occurrences without a Run. Future accepted-feedback
-consumers can use that boundary for strategy-owned structured input. Presentation
+reference plugin-owned semantic occurrences without a Run. Stock Chat uses that
+boundary for read-only accepted-feedback Inspection. Presentation
 neither defines canonical strategy state nor grants execution or approval authority.
 
 ## Configuration and persistence

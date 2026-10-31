@@ -685,6 +685,17 @@ orchestration strategy through extension exposures. Explicit native consumers,
 including self-hosting, likewise use the captured backend/context rather than
 Capability resolution.
 
+Chat's separate generated `ChatFeedbackInspectionService` exposes only
+`readAcceptedFeedback(sessionId, occurrenceId)` on `chat.feedbackInspection`.
+Its prepared Session-content renderer allowlists that service, never the mutable
+`chat.session` or remote feedback acceptance service. The captured Session and
+canonical user-entry reference select retained data; the backend validates the
+persisted relationship independently. Structured return values are Chat-owned
+generated DTOs projected from the existing public feedback semantics, not another
+JSON representation. Absence, invalid requests, unavailable storage and corrupt
+retained data are distinct safe declared failures. A failed read is not evidence
+that acceptance never occurred.
+
 Exact channel and descriptor behavior belongs to
 [`plugin_runtime`](../../packages/plugin_runtime/README.md#own-backend-requests)
 and [`ui`](../../packages/ui/README.md#interpreted-bridges). Chat-specific ownership

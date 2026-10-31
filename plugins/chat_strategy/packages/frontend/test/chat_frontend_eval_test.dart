@@ -9,8 +9,10 @@ import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/rich_document_editor_bridge.dart';
 import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
+import 'package:adele_desktop/frontend/session_content_inspection_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/main_content/main_content_controller.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -48,7 +50,7 @@ void main() {
     addTearDown(generation.invalidate);
   });
 
-  test('stock Chat declares one ordinary Main Content contribution', () {
+  test('stock Chat declares compact content and retrieval-only Inspection', () {
     expect(stockFrontendDescriptors[chatStrategyPluginId.value], [
       {
         'role': 'mainContent',
@@ -59,10 +61,25 @@ void main() {
         'entrypoint': 'buildChat',
         'sessionExecution': true,
         'richDocumentEditor': true,
+        'canInspectSessionContent': true,
         'backendServices': [chatSessionServiceId],
         'strategyAffinity': 'owningBackend',
       },
+      {
+        'role': 'sessionContentInspection',
+        'library': chatFrontendLibrary,
+        'extensionId': 'dev.adele.plugin.chat-strategy.feedback-inspection',
+        'contentKind': chatFeedbackInspectionKind,
+        'entrypoint': 'buildChatFeedbackInspection',
+        'backendServices': [chatFeedbackInspectionServiceId],
+      },
     ]);
+    expect(
+      stockFrontendDescriptors.values
+          .expand((values) => values)
+          .where((value) => value['canInspectSessionContent'] == true),
+      hasLength(1),
+    );
   });
 
   for (final matching in [true, false]) {
@@ -254,12 +271,14 @@ void main() {
           role: 'user',
           content: 'First question',
           runId: null,
+          feedback: null,
         ),
         ChatEntry(
           id: 'a1',
           role: 'assistant',
           content: 'First answer',
           runId: null,
+          feedback: null,
         ),
       ]);
       await tester.pumpWidget(_host(generation, source));
@@ -286,6 +305,457 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'feedback metadata alone selects compact rows and exact Inspect',
+    (tester) async {
+      source.entries.addAll([
+        _feedbackEntry('review-first', 1, runId: 'review-run'),
+        const ChatEntry(
+          id: 'ordinary',
+          role: 'user',
+          content: 'Review feedback: 99 comments (ordinary user text)',
+          runId: null,
+          feedback: null,
+        ),
+        _feedbackEntry('review-second', 12),
+        const ChatEntry(
+          id: 'assistant',
+          role: 'assistant',
+          content: 'Ordinary assistant answer',
+          runId: null,
+          feedback: null,
+        ),
+      ]);
+      source.draftRequest = 'Unchanged draft';
+      source.historicalHandles['review-run'] = 'feedback-activity';
+      source.activities['feedback-activity'] = [
+        _model('review-model', [_tool('review-tool', 'read_file')]),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      expect(find.text('Frontend unavailable.'), findsNothing);
+      expect(find.text('Review feedback \u00b7 1 comment'), findsOneWidget);
+      expect(find.text('Review feedback \u00b7 12 comments'), findsOneWidget);
+      expect(find.text('You'), findsNWidgets(3));
+      expect(
+        find.textContaining('Hidden canonical model content'),
+        findsNothing,
+      );
+      expect(
+        find.text('Review feedback: 99 comments (ordinary user text)'),
+        findsOneWidget,
+      );
+      expect(find.text('Ordinary assistant answer'), findsOneWidget);
+      expect(find.text('COMPACT review-tool'), findsOneWidget);
+      expect(_draft(tester), 'Unchanged draft');
+      expect(source.contentInspections, isEmpty);
+      expect(source.calls.map((call) => call.$1), ['chat.session.snapshot']);
+      final inspect = tester
+          .widgetList<TextButton>(find.widgetWithText(TextButton, 'Inspect'))
+          .toList();
+      inspect[0].onPressed!();
+      inspect[1].onPressed!();
+      await _frames(tester);
+      expect(source.contentInspections, [
+        (chatFeedbackInspectionKind, 'review-first'),
+        (chatFeedbackInspectionKind, 'review-second'),
+      ]);
+      expect(source.starts, 0);
+      expect(source.submitted, isEmpty);
+      expect(source.writes, isEmpty);
+      expect(source.calls, hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final invalid in [
+    (
+      name: 'assistant role',
+      role: 'assistant',
+      count: 1,
+      submissionId: 'valid',
+    ),
+    (name: 'zero count', role: 'user', count: 0, submissionId: 'valid'),
+    (name: 'negative count', role: 'user', count: -1, submissionId: 'valid'),
+    (name: 'oversized count', role: 'user', count: 129, submissionId: 'valid'),
+    (name: 'empty ID', role: 'user', count: 1, submissionId: ''),
+    (name: 'blank ID', role: 'user', count: 1, submissionId: '   '),
+    (name: 'untrimmed ID', role: 'user', count: 1, submissionId: ' valid '),
+    (name: 'control ID', role: 'user', count: 1, submissionId: 'bad\nID'),
+    (name: 'C1 ID', role: 'user', count: 1, submissionId: 'bad\u0085ID'),
+    (
+      name: 'unpaired surrogate ID',
+      role: 'user',
+      count: 1,
+      submissionId: 'bad\uD800ID',
+    ),
+    (name: 'oversized ID', role: 'user', count: 1, submissionId: 'x' * 257),
+  ]) {
+    testWidgets(
+      'typed feedback metadata rejects ${invalid.name} without raw fallback',
+      (tester) async {
+        source.entries.add(
+          _feedbackEntry(
+            'invalid',
+            invalid.count,
+            role: invalid.role,
+            submissionId: invalid.submissionId,
+          ),
+        );
+        source.draftRequest = 'Preserved draft';
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(find.text('Review feedback is unavailable.'), findsOneWidget);
+        expect(find.text('Inspect'), findsNothing);
+        expect(find.text('You'), findsNothing);
+        expect(
+          find.textContaining('Hidden canonical model content'),
+          findsNothing,
+        );
+        expect(find.textContaining('Review feedback \u00b7'), findsNothing);
+        expect(_draft(tester), 'Preserved draft');
+        expect(source.contentInspections, isEmpty);
+        expect(source.calls.map((call) => call.$1), ['chat.session.snapshot']);
+        expect(source.starts, 0);
+        expect(source.submitted, isEmpty);
+        expect(source.writes, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'missing and ambiguous renderers preserve compact occurrence and permit retry',
+    (tester) async {
+      final extensions = ExtensionRegistry();
+      final window = WindowInspection();
+      addTearDown(window.dispose);
+      final session = Session(
+        id: SessionId('session-opaque'),
+        taskId: TaskId('task'),
+        strategyId: chatStrategyId,
+      );
+      window.presentSession(session);
+      source.inspectContent = (kind, occurrence) => window.inspectContent(
+        session: session,
+        kind: kind,
+        occurrenceId: occurrence,
+        extensions: extensions,
+      );
+      source.entries.add(_feedbackEntry('review-first', 2));
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      await tester.tap(find.text('Inspect'));
+      await _frames(tester);
+      expect(window.cards, isEmpty);
+      expect(find.text('Review feedback \u00b7 2 comments'), findsOneWidget);
+      expect(find.text('Feedback Inspection is unavailable.'), findsOneWidget);
+      expect(
+        find.textContaining('Hidden canonical model content'),
+        findsNothing,
+      );
+      extensions.register(
+        point: sessionContentInspectionContributions,
+        id: ExtensionId('test.feedback-inspection'),
+        value: SessionContentInspectionContribution(
+          kind: SessionContentKind(chatFeedbackInspectionKind),
+          createPresentation: (_) => const SizedBox.shrink(),
+        ),
+      );
+      final ambiguous = extensions.register(
+        point: sessionContentInspectionContributions,
+        id: ExtensionId('test.other-feedback-inspection'),
+        value: SessionContentInspectionContribution(
+          kind: SessionContentKind(chatFeedbackInspectionKind),
+          createPresentation: (_) => const SizedBox.shrink(),
+        ),
+      );
+      await tester.tap(find.text('Inspect'));
+      await _frames(tester);
+      expect(window.cards, isEmpty);
+      expect(find.text('Review feedback \u00b7 2 comments'), findsOneWidget);
+      expect(find.text('Feedback Inspection is unavailable.'), findsOneWidget);
+      await ambiguous.close();
+      await tester.tap(find.text('Inspect'));
+      await _frames(tester);
+      final target =
+          window.cards.single.target as SessionContentInspectionTarget;
+      expect(target.sessionId, session.id);
+      expect(target.kind.value, chatFeedbackInspectionKind);
+      expect(target.occurrenceId.value, 'review-first');
+      expect(find.text('Feedback Inspection is unavailable.'), findsNothing);
+      expect(find.text('Review feedback \u00b7 2 comments'), findsOneWidget);
+      expect(source.starts, 0);
+      expect(source.writes, isEmpty);
+      expect(source.submitted, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('compact feedback remains narrow and refreshes across remounts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    source.entries.add(
+      _feedbackEntry(
+        'retained-review',
+        128,
+        submissionId: '${'a' * 254}\u{1F600}',
+      ),
+    );
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    final label = tester.widget<Text>(
+      find.text('Review feedback \u00b7 128 comments'),
+    );
+    expect(label.data!.length, lessThan(40));
+    expect(
+      tester.getTopRight(find.text('You')).dx,
+      closeTo(
+        tester.getTopRight(find.byType(SingleChildScrollView).first).dx - 24,
+        0.1,
+      ),
+    );
+    final oldInspect = tester
+        .widget<TextButton>(find.widgetWithText(TextButton, 'Inspect'))
+        .onPressed!;
+    final editor = _owner(tester);
+    source.entries.add(_feedbackEntry('new-review', 1));
+    source.finish();
+    await _frames(tester);
+    expect(find.text('Review feedback \u00b7 128 comments'), findsOneWidget);
+    expect(find.text('Review feedback \u00b7 1 comment'), findsOneWidget);
+    expect(_owner(tester), same(editor));
+    expect(source.contentInspections, isEmpty);
+    final gate = Completer<void>();
+    source.snapshotGate = gate;
+    source.finish();
+    await _frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(source.hasSubscriptions, isFalse);
+    source.active = true;
+    source.entries.add(_feedbackEntry('fresh-review', 3));
+    await tester.pumpWidget(_host(generation, source));
+    await _frames(tester);
+    gate.complete();
+    oldInspect();
+    await _frames(tester);
+    expect(find.text('Review feedback \u00b7 3 comments'), findsOneWidget);
+    expect(find.textContaining('Hidden canonical model content'), findsNothing);
+    expect(source.contentInspections, isEmpty);
+    expect(source.starts, 0);
+    expect(source.writes, isEmpty);
+    expect(source.submitted, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'frontend retirement fences cached feedback Inspect immediately',
+    (tester) async {
+      source.entries.add(_feedbackEntry('review', 1));
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final inspect = tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Inspect'))
+          .onPressed!;
+      generation.invalidate();
+      inspect();
+      await _frames(tester);
+      expect(source.contentInspections, isEmpty);
+      expect(source.starts, 0);
+      expect(source.writes, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compiled feedback Inspection renders full ordered safe provenance',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final context = _FeedbackContext();
+      final backend = _FeedbackSource(_acceptedFeedback());
+      await tester.pumpWidget(_inspectionHost(generation, context, backend));
+      await _frames(tester);
+      expect(backend.calls, hasLength(1));
+      expect(
+        backend.calls.single.$1,
+        'chat.feedbackInspection.readAcceptedFeedback',
+      );
+      expect(backend.calls.single.$2, {
+        'sessionId': 'session-opaque',
+        'occurrenceId': 'review',
+      });
+      expect(find.text('Review feedback'), findsOneWidget);
+      expect(find.text('3 comments'), findsOneWidget);
+      expect(
+        find.textContaining('Historical locations and excerpts'),
+        findsOneWidget,
+      );
+      expect(find.text('Session: session-opaque'), findsOneWidget);
+      expect(find.text('Occurrence: review'), findsOneWidget);
+      expect(find.text('Submission: submission'), findsOneWidget);
+      expect(find.text('Kind: codeReview'), findsOneWidget);
+      expect(find.text('Run: historical-run'), findsOneWidget);
+      final comments = backend.feedback.comments;
+      final displayed = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((text) => text.data)
+          .toList();
+      expect(
+        displayed.where((text) => text?.startsWith('Comment: ') ?? false),
+        ['Comment: first', 'Comment: second', 'Comment: third'],
+      );
+      expect(
+        find.text(r'Comment text: A\nB\r\t\u001B\u202E\u200B\\literal'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(r'Source excerpt: old\r\n\u2066source\uFEFF'),
+        findsOneWidget,
+      );
+      expect(find.text(r'Path: lib/\u200Bfirst.dart'), findsOneWidget);
+      expect(find.text('Comment text: ${comments[1].text}'), findsOneWidget);
+      expect(comments[1].text.length, greaterThan(2000));
+      for (var index = 0; index < comments.length; index++) {
+        final comment = comments[index];
+        final anchor = comment.anchor;
+        expect(
+          find.text(
+            'Version: ${comment.version}; sequence: ${comment.sequence}',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Environment: ${anchor.environmentId}'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Layer: ${anchor.layer.name}; side: ${anchor.side.name}'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Lines: ${anchor.startLine}-${anchor.endLine} (inclusive)'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Comparison: ${anchor.comparisonIdentity}'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            'Hunk index: ${anchor.hunkIndex}; line index: ${anchor.lineIndex} (zero-based)',
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(find.byType(TextButton), findsNothing);
+      expect(find.byType(NativeRichDocumentEditorView), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('feedback Inspection reports a singular comment total', (
+    tester,
+  ) async {
+    final context = _FeedbackContext();
+    final backend = _FeedbackSource(_acceptedFeedback(commentCount: 1));
+    await tester.pumpWidget(_inspectionHost(generation, context, backend));
+    await _frames(tester);
+    expect(find.text('Review feedback'), findsOneWidget);
+    expect(find.text('1 comment'), findsOneWidget);
+    expect(find.text('Comment: first'), findsOneWidget);
+    expect(find.text('Comment: second'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final failure in [
+    'absent',
+    'not_found',
+    'corrupt',
+    'native',
+    'malformed',
+    'wrong-session',
+    'wrong-occurrence',
+    'zero-count',
+    'oversized-count',
+    'invalid-submission',
+  ]) {
+    testWidgets('feedback Inspection safely contains $failure retrieval', (
+      tester,
+    ) async {
+      final context = _FeedbackContext();
+      final backend = _FeedbackSource(
+        _acceptedFeedback(
+          sessionId: failure == 'wrong-session' ? 'other' : 'session-opaque',
+          occurrenceId: failure == 'wrong-occurrence' ? 'other' : 'review',
+          commentCount: failure == 'zero-count'
+              ? 0
+              : failure == 'oversized-count'
+              ? 129
+              : 3,
+          submissionId: failure == 'invalid-submission' ? ' ' : 'submission',
+        ),
+      );
+      if (failure == 'not_found' || failure == 'corrupt') {
+        backend.failure = ChatFeedbackInspectionFailure(
+          code: failure,
+          message: 'PRIVATE diagnostic with source text',
+          details: const {},
+        );
+      }
+      if (failure == 'native') {
+        backend.failure = StateError('PRIVATE native failure');
+      }
+      await tester.pumpWidget(
+        _inspectionHost(
+          generation,
+          context,
+          failure == 'malformed'
+              ? _ResponseChannel({'comments': <Object?>[]})
+              : backend,
+          backendAvailable: failure != 'absent',
+        ),
+      );
+      await _frames(tester);
+      expect(find.text('Review feedback is unavailable.'), findsOneWidget);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(find.textContaining('Comment text:'), findsNothing);
+      expect(find.byType(TextButton), findsNothing);
+      if (failure == 'absent') expect(backend.calls, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final retirement in ['card', 'frontend', 'backend', 'unmount']) {
+    testWidgets('feedback Inspection fences late $retirement retrieval', (
+      tester,
+    ) async {
+      final context = _FeedbackContext();
+      final backend = _FeedbackSource(_acceptedFeedback());
+      final gate = Completer<void>();
+      backend.gate = gate;
+      await tester.pumpWidget(_inspectionHost(generation, context, backend));
+      await _frames(tester);
+      expect(backend.calls, hasLength(1));
+      if (retirement == 'card') context.retire();
+      if (retirement == 'frontend') generation.invalidate();
+      if (retirement == 'backend') backend.active = false;
+      if (retirement == 'unmount') {
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+      gate.complete();
+      await _frames(tester);
+      expect(find.textContaining('Comment text:'), findsNothing);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(backend.calls, hasLength(1));
+      if (retirement == 'card') expect(context.hasSubscriptions, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'restores exact draft and saves edits across presentation reopen',
@@ -1267,6 +1737,7 @@ void main() {
             role: 'assistant',
             content: 'Answer',
             runId: null,
+            feedback: null,
           ),
         );
         source.finish();
@@ -1377,6 +1848,7 @@ void main() {
             role: 'assistant',
             content: 'Canonical final answer',
             runId: null,
+            feedback: null,
           ),
         );
         source.finish();
@@ -1435,6 +1907,7 @@ void main() {
           role: 'assistant',
           content: 'Inspection complete',
           runId: null,
+          feedback: null,
         ),
       );
       source.finish();
@@ -1505,24 +1978,28 @@ void main() {
           role: 'user',
           content: 'Historical question',
           runId: 'historical-run',
+          feedback: null,
         ),
         ChatEntry(
           id: 'a1',
           role: 'assistant',
           content: 'Historical answer',
           runId: null,
+          feedback: null,
         ),
         ChatEntry(
           id: 'u2',
           role: 'user',
           content: 'Evidence unavailable',
           runId: 'missing-run',
+          feedback: null,
         ),
         ChatEntry(
           id: 'u3',
           role: 'user',
           content: 'Not associated',
           runId: null,
+          feedback: null,
         ),
       ]);
       source.historicalHandles['historical-run'] = 'retained-handle';
@@ -1582,6 +2059,7 @@ void main() {
         role: entry.role,
         content: entry.content,
         runId: 'recorded-run',
+        feedback: entry.feedback,
       );
       source.historicalHandles['recorded-run'] = 'retained-handle';
       source.activities['retained-handle'] = [
@@ -1618,6 +2096,7 @@ void main() {
               role: 'user',
               content: 'Retained request',
               runId: null,
+              feedback: null,
             ),
           );
           final gate = Completer<void>();
@@ -1630,6 +2109,7 @@ void main() {
             role: 'user',
             content: 'Retained request',
             runId: 'retained-live',
+            feedback: null,
           );
           source.historicalHandles['retained-live'] = 'fresh-live-handle';
           source.activities['fresh-live-handle'] = [
@@ -1673,6 +2153,7 @@ void main() {
             role: 'user',
             content: 'Finishing request',
             runId: null,
+            feedback: null,
           ),
         );
         final gate = Completer<void>();
@@ -1685,6 +2166,7 @@ void main() {
           role: 'user',
           content: 'Finishing request',
           runId: 'finishing-run',
+          feedback: null,
         );
         source.historicalHandles['finishing-run'] = 'fresh-finished-handle';
         source.activities['fresh-finished-handle'] = [
@@ -1699,6 +2181,7 @@ void main() {
             role: 'assistant',
             content: 'Final canonical answer',
             runId: null,
+            feedback: null,
           ),
         );
         source.finish();
@@ -1929,6 +2412,7 @@ Future<bool> configure() async {
         ..addPlugin(const ScrollViewBridge())
         ..addPlugin(const MainContentDeclarations())
         ..addPlugin(const RichDocumentEditorDeclarations())
+        ..addPlugin(const SessionContentInspectionDeclarations())
         ..addPlugin(const OwningBackendDeclarations())
         ..addPlugin(const SessionExecutionDeclarations())
         ..addPlugin(const SessionPresentationLifecycleDeclarations())
@@ -1940,13 +2424,42 @@ Future<bool> configure() async {
       final program = compiler.compile(sources);
       final valid = <String, Object?>{
         'entries': [
-          {'id': 'entry', 'role': 'user', 'content': 'decoded', 'runId': null},
+          {
+            'id': 'entry',
+            'role': 'user',
+            'content': 'decoded',
+            'runId': null,
+            'feedback': null,
+          },
         ],
         'instructions': '',
         'draftRequest': '',
       };
       for (final data in <Object?>[
         valid,
+        for (final feedback in <Object?>[
+          'review',
+          {'kind': 'unknown', 'submissionId': 'submission', 'commentCount': 1},
+          {'kind': 'codeReview', 'submissionId': 42, 'commentCount': 1},
+          {
+            'kind': 'codeReview',
+            'submissionId': 'submission',
+            'commentCount': '1',
+          },
+          {'kind': 'codeReview', 'submissionId': 'submission'},
+        ])
+          {
+            ...valid,
+            'entries': [
+              {
+                'id': 'entry',
+                'role': 'user',
+                'content': 'decoded',
+                'runId': null,
+                'feedback': feedback,
+              },
+            ],
+          },
         {...valid, 'unknown': true},
         {'entries': valid['entries'], 'instructions': ''},
         {...valid, 'maxModelInvocations': 3},
@@ -2024,6 +2537,163 @@ Future<bool> configure() async {
   );
 }
 
+ChatEntry _feedbackEntry(
+  String id,
+  int count, {
+  String? runId,
+  String role = 'user',
+  String? submissionId,
+}) => ChatEntry(
+  id: id,
+  role: role,
+  content: 'Hidden canonical model content for $id',
+  runId: runId,
+  feedback: ChatEntryFeedback(
+    kind: ChatFeedbackKind.codeReview,
+    submissionId: submissionId ?? 'submission-$id',
+    commentCount: count,
+  ),
+);
+
+ChatAcceptedFeedback _acceptedFeedback({
+  String sessionId = 'session-opaque',
+  String occurrenceId = 'review',
+  String submissionId = 'submission',
+  int commentCount = 3,
+}) => ChatAcceptedFeedback(
+  sessionId: sessionId,
+  occurrenceId: occurrenceId,
+  submissionId: submissionId,
+  kind: ChatFeedbackKind.codeReview,
+  runId: 'historical-run',
+  comments: [
+    for (var index = 0; index < commentCount; index++)
+      ChatFeedbackComment(
+        id: index < 3 ? ['first', 'second', 'third'][index] : 'comment-$index',
+        text: index == 0
+            ? 'A\nB\r\t\u001B\u202E\u200B\\literal'
+            : index == 1
+            ? 'Full long comment ${'x' * 2200} end'
+            : 'Final original comment',
+        version: index + 2,
+        sequence: index * 3 + 1,
+        anchor: ChatFeedbackAnchor(
+          environmentId: 'environment-$index',
+          relativePath: index == 0
+              ? 'lib/\u200Bfirst.dart'
+              : 'lib/file-$index.dart',
+          layer: ChatFeedbackComparisonLayer.values[index % 3],
+          side: index == 0
+              ? ChatFeedbackComparisonSide.oldSide
+              : ChatFeedbackComparisonSide.newSide,
+          startLine: index + 10,
+          endLine: index + 12,
+          comparisonIdentity: 'comparison-$index',
+          sourceExcerpt: index == 0
+              ? 'old\r\n\u2066source\uFEFF'
+              : 'original excerpt $index',
+          hunkIndex: index,
+          lineIndex: index * 2,
+        ),
+      ),
+  ],
+);
+
+Widget _inspectionHost(
+  PreparedFrontend generation,
+  _FeedbackContext context,
+  AdeleRequestChannel backend, {
+  bool backendAvailable = true,
+}) => MaterialApp(
+  home: Scaffold(
+    body: SingleChildScrollView(
+      child: generation.createPresentation(
+        library: chatFrontendLibrary,
+        entrypoint: 'buildChatFeedbackInspection',
+        key: ObjectKey(context),
+        createBridge: () {
+          OwningBackendBridge? owning;
+          final facts = SessionContentInspectionBridge(
+            context: context,
+            isActive: () => true,
+            onInvalidate: () => owning?.invalidate(),
+          );
+          final backendBridge = OwningBackendBridge(
+            channels: {
+              if (backendAvailable) chatFeedbackInspectionServiceId: backend,
+            },
+            validateBinding: () {
+              facts.validate();
+              if (backend is _FeedbackSource && !backend.active) {
+                throw StateError('PRIVATE backend retired');
+              }
+            },
+          );
+          owning = backendBridge;
+          return PreparedFrontendBridges([facts, backendBridge]);
+        },
+      ),
+    ),
+  ),
+);
+
+final class _FeedbackContext extends ChangeNotifier
+    implements SessionContentInspectionContext {
+  @override
+  final session = Session(
+    id: SessionId('session-opaque'),
+    taskId: TaskId('task'),
+    strategyId: chatStrategyId,
+  );
+  @override
+  final kind = SessionContentKind(chatFeedbackInspectionKind);
+  @override
+  final occurrenceId = SessionContentOccurrenceId('review');
+  @override
+  bool isActive = true;
+  bool get hasSubscriptions => hasListeners;
+
+  void retire() {
+    isActive = false;
+    notifyListeners();
+  }
+}
+
+final class _FeedbackSource
+    implements ChatFeedbackInspectionService, AdeleRequestChannel {
+  _FeedbackSource(this.feedback);
+  final ChatAcceptedFeedback feedback;
+  late final dispatcher = ChatFeedbackInspectionServiceDispatcher(this);
+  final calls = <(String, Map<String, Object?>)>[];
+  Completer<void>? gate;
+  Object? failure;
+  bool active = true;
+
+  @override
+  Future<ChatAcceptedFeedback> readAcceptedFeedback(
+    String sessionId,
+    String occurrenceId,
+  ) async {
+    await gate?.future;
+    final error = failure;
+    if (error != null) throw error;
+    return feedback;
+  }
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    calls.add((method, payload));
+    final response = await dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': calls.length,
+      'method': method,
+      'payload': payload,
+    });
+    if (response['ok'] != true) throw StateError('PRIVATE rejected retrieval');
+    return response['payload'];
+  }
+}
+
 Future<void> _submit(
   WidgetTester tester,
   PreparedFrontend generation,
@@ -2054,6 +2724,14 @@ Widget _presentation(
     source.serviceAcquisitions++;
     if (!backendAvailable) throw StateError('Backend unavailable');
     return PreparedFrontendBridges([
+      MainContentBridge(
+        context: const {'sessionId': 'session-opaque'},
+        isActive: () => source.active,
+        inspectSessionContent: (kind, occurrence) {
+          source.contentInspections.add((kind.value, occurrence.value));
+          return source.inspectContent?.call(kind, occurrence) ?? true;
+        },
+      ),
       source.lifecycle = SessionPresentationLifecycleBridge(
         isActive: () => source.active,
       ),
@@ -2191,6 +2869,8 @@ class _Source extends ChangeNotifier
   final writes = <String>[];
   final events = <String>[];
   final inspected = <String>[];
+  final contentInspections = <(String, String)>[];
+  bool Function(SessionContentKind, SessionContentOccurrenceId)? inspectContent;
   final built = <String>[];
   final opened = <String>[];
   final historicalHandles = <String, String>{};
@@ -2291,6 +2971,7 @@ class _Source extends ChangeNotifier
       role: 'user',
       content: content,
       runId: null,
+      feedback: null,
     );
     entries.add(entry);
     draftRequest = '';
@@ -2344,6 +3025,7 @@ class _Source extends ChangeNotifier
           role: 'assistant',
           content: 'Quick canonical answer',
           runId: null,
+          feedback: null,
         ),
       );
       running = false;

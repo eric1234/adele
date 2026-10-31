@@ -725,10 +725,13 @@ ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
       final queries = storage.queries;
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
-      expect(storage.queries - queries, 1108);
+      expect(storage.queries - queries, 1109);
       expect(
         storage.querySql.last,
-        'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
+        'SELECT COUNT(*) AS entry_count, '
+        '(SELECT COUNT(*) FROM adele_chat_feedback_submissions '
+        'WHERE session_id = :session) AS feedback_count '
+        'FROM adele_chat_entries '
         'WHERE session_id = :session',
       );
       final historyQueries = storage.querySql
@@ -813,7 +816,7 @@ ALTER TABLE corrupt_sessions RENAME TO adele_chat_sessions;
       final queries = storage.queries;
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
-      expect(storage.queries - queries, 131);
+      expect(storage.queries - queries, 132);
       expect(snapshot.entries, hasLength(128));
       for (var index = 0; index < snapshot.entries.length; index++) {
         expect(snapshot.entries[index].id, 'entry-$index');

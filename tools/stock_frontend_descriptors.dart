@@ -81,8 +81,17 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'entrypoint': 'buildChat',
       'richDocumentEditor': true,
       'sessionExecution': true,
+      'canInspectSessionContent': true,
       'backendServices': ['chat.session'],
       'strategyAffinity': 'owningBackend',
+    },
+    {
+      'role': 'sessionContentInspection',
+      'library': 'package:chat_strategy_frontend/chat_strategy_frontend.dart',
+      'extensionId': 'dev.adele.plugin.chat-strategy.feedback-inspection',
+      'contentKind': 'dev.adele.chat.review-feedback',
+      'entrypoint': 'buildChatFeedbackInspection',
+      'backendServices': ['chat.feedbackInspection'],
     },
   ],
   'dev.adele.plugin.filesystem-tools': [

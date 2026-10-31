@@ -15,6 +15,7 @@ import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 export 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
 part 'src/historical_projection.dart';
+part 'src/feedback_inspection.dart';
 
 /// Stock Session instructions belong to Chat, not its host or presentation.
 const String chatDefaultInstructions =
@@ -353,63 +354,10 @@ final class ChatSessionFeedbackService implements RemoteSessionFeedbackService {
       await storage.ensureSchemaForSession(id.value, const [
         _chatSchema,
       ], ProjectStorageAccessMode.durable);
-      final rows = await storage.queryForSession(
-        id.value,
-        'SELECT session_id, submission_id, canonical_payload, entry_id '
-        'FROM adele_chat_feedback_submissions '
-        'WHERE session_id = :session AND submission_id = :submission LIMIT 2',
-        {':session': id.value, ':submission': submissionId},
-        ProjectStorageAccessMode.durable,
-      );
-      if (rows.isEmpty) return null;
-      if (rows.length != 1) throw _feedbackStorageFailure;
-      final row = rows.single.values;
-      _requireReadableRow(row);
-      final payload = row['canonical_payload'];
-      final entryId = row['entry_id'];
-      if (row['session_id'] != id.value ||
-          row['submission_id'] != submissionId ||
-          payload is! String ||
-          entryId is! String) {
-        throw _feedbackStorageFailure;
-      }
-      final submission = decodeSessionFeedbackSubmission(payload);
-      if (submission.submissionId != submissionId ||
-          encodeSessionFeedbackSubmission(submission) != payload) {
-        throw _feedbackStorageFailure;
-      }
-      final entries = await storage.queryForSession(
-        id.value,
-        'SELECT session_id, sequence, entry_id, role, content, run_id '
-        'FROM adele_chat_entries '
-        'WHERE session_id = :session AND entry_id = :entry LIMIT 2',
-        {':session': id.value, ':entry': entryId},
-        ProjectStorageAccessMode.durable,
-      );
-      if (entries.length != 1) throw _feedbackStorageFailure;
-      final entry = entries.single.values;
-      _requireReadableRow(entry);
-      final sequence = entry['sequence'];
-      final runId = entry['run_id'];
-      if (entry['session_id'] != id.value ||
-          entry['entry_id'] != entryId ||
-          sequence is! int ||
-          sequence < 0 ||
-          entryId != 'entry-$sequence' ||
-          entry['role'] != 'user' ||
-          (runId != null && runId is! String) ||
-          entry['content'] != renderChatSessionFeedback(submission)) {
-        throw _feedbackStorageFailure;
-      }
-      if (runId is String) RunId(runId);
-      return SessionFeedbackRecord(
-        receipt: SessionFeedbackReceipt(
-          submissionId: submissionId,
-          sessionId: id.value,
-          occurrenceId: entryId,
-        ),
-        submission: submission,
-        runId: runId as String?,
+      return await _readAcceptedChatFeedback(
+        storage,
+        id,
+        submissionId: submissionId,
       );
     } on Object {
       // Missing data and failed/corrupt reads are not interchangeable.
@@ -752,6 +700,7 @@ final class _ChatHistoryTransaction {
       role: entry.role,
       content: entry.content,
       runId: runId.value,
+      feedback: entry.feedback,
     );
     if (source._storage case final storage?) {
       _requireReadableRow({
@@ -940,6 +889,21 @@ final class ChatSessionStore {
         .._draftRequest = draft;
       state._requireReadableConfiguration(instructions, counter, draft);
     }
+    // Ordinary histories need no per-entry feedback reads. Keep this separate
+    // from canonical rows so maximum-sized accepted content still fits unchanged.
+    final feedbackPresence = await storage.queryForSession(
+      id.value,
+      'SELECT EXISTS(SELECT 1 FROM adele_chat_feedback_submissions '
+      'WHERE session_id = :session) AS has_feedback',
+      parameters,
+      ProjectStorageAccessMode.durable,
+    );
+    if (feedbackPresence.length != 1 ||
+        (feedbackPresence.single.values['has_feedback'] != 0 &&
+            feedbackPresence.single.values['has_feedback'] != 1)) {
+      throw ChatStateCorruption(id, 'Invalid feedback relationship presence.');
+    }
+    final hasFeedback = feedbackPresence.single.values['has_feedback'] == 1;
     final runIds = <RunId>{};
     while (true) {
       final entries = await storage.queryForSession(
@@ -986,6 +950,9 @@ final class ChatSessionStore {
           role: role as String,
           content: content,
           runId: runId as String?,
+          feedback: hasFeedback && role == 'user'
+              ? await _readChatEntryFeedback(storage, id, entryId, role)
+              : null,
         ),
       );
     }
@@ -994,16 +961,21 @@ final class ChatSessionStore {
     }
     final count = await storage.queryForSession(
       id.value,
-      'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
+      'SELECT COUNT(*) AS entry_count, '
+      '(SELECT COUNT(*) FROM adele_chat_feedback_submissions '
+      'WHERE session_id = :session) AS feedback_count '
+      'FROM adele_chat_entries '
       'WHERE session_id = :session',
       parameters,
       ProjectStorageAccessMode.durable,
     );
     if (count.length != 1 ||
-        count.single.values['entry_count'] != state._entries.length) {
+        count.single.values['entry_count'] != state._entries.length ||
+        count.single.values['feedback_count'] !=
+            state._entries.where((entry) => entry.feedback != null).length) {
       throw ChatStateCorruption(
         id,
-        'Retained entry count does not match history.',
+        'Retained entry or feedback count does not match history.',
       );
     }
     if (rows.isEmpty) {
@@ -1117,6 +1089,7 @@ final class ChatSessionState {
       role: role,
       content: content,
       runId: null,
+      feedback: null,
     );
     _entries.add(entry);
     return entry;
@@ -1141,6 +1114,7 @@ final class ChatSessionState {
         role: 'user',
         content: content,
         runId: null,
+        feedback: null,
       );
       await _persistEntries([entry], _nextEntry + 1, clearDraft: clearDraft);
       _entries.add(entry);

@@ -835,10 +835,13 @@ departure and retirement prevent further requests and stale publication.
 The Source read gate likewise holds a real provider response, not substituted file contents;
 neither gate adds a production testing hook. These tests do not need a PTY.
 Review-submission cases in the same prepared integration file add actual Diff and
-Chat AOT with compiled Diff EVC, canonical Project storage, and deterministic
-normal model/tool execution. They check complete feedback and correct occurrence
-association, mounted-Chat notifications, independent Git/Source state, waiting
-occupancy, retired acknowledgements, remount, and durable Project reopen. The
+Chat AOT with compiled Diff, Chat, and Chat feedback Inspection EVC, canonical
+Project storage, and deterministic normal model/tool execution. They check complete
+model-facing feedback, compact authoritative Chat occurrences, explicit structured
+Inspection through the dedicated read-only service, and correct occurrence
+association. They also retain mounted-Chat notifications, independent Git/Source
+state, waiting occupancy, retired acknowledgements, remount, and durable Project
+reopen. The
 durable draft integration suite separately gates real storage commits around
 preparation, acceptance and local finalization. Run the public orchestration and
 Chat contract/backend/frontend targets alongside these app selections when

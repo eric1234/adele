@@ -70,6 +70,12 @@ and `String draftRequest`. Each `ChatEntry` contains
 `String id`, `String role` (`user` or `assistant`), `String content`, and required
 nullable `String? runId`. The Run association can be non-null only for a user entry;
 it is semantic identity, not a live execution or opaque presentation handle.
+An optional `ChatEntryFeedback` carries only `kind`, `submissionId`, and
+`commentCount` for accepted structured reviews. It comes from the durable accepted
+submission's link to that user occurrence, never from text recognition. Ordinary
+user/assistant entries have no feedback metadata, even if their content looks like
+a formatted review. This metadata survives acceptance without a Run, later Run
+association, backend replacement, and durable reopening.
 `ChatEntryId` is a plugin-owned opaque occurrence identity, transported as a string
 to keep interpreted DTOs
 simple. IDs are allocated at append, unique within a retained Session, and
@@ -132,6 +138,15 @@ and remote integration tests create `ChatSessionServiceClient` from
 `connection.channelFor(defaultConfigurationContext, chatSessionServiceId)` on
 the captured connection/context, not through the capability registry. Generic
 app activation therefore registers no semantic Chat Session service.
+
+`ChatFeedbackInspectionService.readAcceptedFeedback(sessionId, occurrenceId)` is
+a separate generated retrieval-only service, `chat.feedbackInspection`, on that
+same installation. It returns the complete accepted review after validating the
+canonical Session/user entry and immutable submission relationship. Its generated
+Chat DTOs preserve public Session feedback semantics; persistence still uses the
+existing canonical feedback codec, not a second JSON format. See the
+[backend map](packages/backend/README.md#structured-feedback) for validation and
+safe declared failures.
 
 ## Tool Narration Protocol
 
@@ -290,6 +305,23 @@ Session-validated historical lookup, not arbitrary activity access or approval
 authority. Plugin frontend generations and individual presentation instances are
 distinct; view resources follow widget
 lifecycle and exact registration liveness.
+
+Accepted review user occurrences show a compact `Review feedback` label and the
+original comment count instead of their model-facing payload. The complete
+`ChatEntry.content` remains unchanged for ordinary Chat sequencing and future
+inference. Only an explicit **Inspect** invokes `inspectSessionContent` with
+`dev.adele.chat.review-feedback` and the canonical entry ID. The stock Chat Main
+Content descriptor alone opts into this opening authority. Acceptance, hydration,
+and Run updates never automatically open a card or imply that execution started.
+
+Chat also contributes the prepared `dev.adele.plugin.chat-strategy.feedback-inspection`
+renderer. Its sole backend allowance is `chat.feedbackInspection`, not mutable
+Chat, feedback acceptance, storage or execution services. The normal window-owned
+Inspection card outlives the producing pane and displays all original ordered
+comments and captured source provenance as historical data, without reading or
+re-anchoring current source. Missing/ambiguous renderers fail opening safely; a
+retired renderer/backend does not retarget an existing card or delete its compact
+occurrence. A new explicit opening can capture a fresh eligible generation.
 
 The host projects the Run through public `adele_orchestration`'s read-only
 `RunActivitySource`, not by passing a journal to the frontend. Chat's interpreted

@@ -12,6 +12,8 @@ final class GatedProjectStorage implements AdeleBackendDispatcher {
   final calls = <String>[];
   StorageTransactionGate? _next;
   final _gates = <StorageTransactionGate>[];
+  StorageQueryResponseGate? _nextQuery;
+  final _queryGates = <StorageQueryResponseGate>[];
 
   StorageTransactionGate holdTransaction({
     bool afterCommit = false,
@@ -24,11 +26,39 @@ final class GatedProjectStorage implements AdeleBackendDispatcher {
     return _next = gate;
   }
 
+  StorageQueryResponseGate holdQueryResponse({
+    required String sqlContains,
+    required Map<String, Object?> parameters,
+  }) {
+    expect(_nextQuery, isNull);
+    final gate = StorageQueryResponseGate._(sqlContains, parameters);
+    _queryGates.add(gate);
+    return _nextQuery = gate;
+  }
+
   @override
   Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async {
     final method = request['method']! as String;
     calls.add(method);
     final payload = request['payload']! as Map;
+    final query = _nextQuery;
+    if (query != null &&
+        method == projectStorageServiceQueryForSessionId &&
+        (payload['sql']! as String).contains(query.sqlContains) &&
+        query.parameters.entries.every(
+          (entry) => (payload['parameters']! as Map)[entry.key] == entry.value,
+        )) {
+      _nextQuery = null;
+      try {
+        final response = await delegate.dispatch(request);
+        expect(response['ok'], isTrue);
+        query.entered.complete(response);
+        await query._release.future;
+        return response;
+      } finally {
+        query.settled.complete();
+      }
+    }
     final next = _next;
     final statements = payload['statements'] as List?;
     final matches =
@@ -74,7 +104,25 @@ final class GatedProjectStorage implements AdeleBackendDispatcher {
     for (final gate in _gates) {
       gate.release();
     }
+    for (final gate in _queryGates) {
+      gate.release();
+    }
     await delegate.close();
+  }
+}
+
+/// Holds only a successful response after the selected real SQL query completes.
+final class StorageQueryResponseGate {
+  StorageQueryResponseGate._(this.sqlContains, this.parameters);
+
+  final String sqlContains;
+  final Map<String, Object?> parameters;
+  final entered = Completer<Map<String, Object?>>();
+  final settled = Completer<void>();
+  final _release = Completer<void>();
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
   }
 }
 

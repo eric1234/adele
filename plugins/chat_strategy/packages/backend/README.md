@@ -2,7 +2,8 @@
 
 `chat_strategy_backend` owns canonical Chat history, Draft Request, configuration,
 and sequencing. Its AOT entrypoint exposes the generated Chat Session, public
-Session feedback, and remote orchestration services over one backend router and
+Session feedback, dedicated read-only feedback Inspection, and remote orchestration
+services over one backend router and
 one retained `ChatSessionStore`. It advertises only its orchestration strategy
 contribution, whose `feedbackServiceId` opts the same exact Chat route into the
 public feedback contract.
@@ -220,6 +221,38 @@ data, not system instructions. Existing Session/system instructions are unchange
 The public 128 KiB canonical submission bound, 144 KiB model-content bound, and
 actual encoded storage-row bounds are enforced before creating an occurrence.
 
+`ChatEntry.feedback` is a nullable typed summary derived from the unique durable
+submission-to-entry relationship. Hydration reads only the relationship identities,
+kind, and comment-array count using guarded SQLite JSON extraction; it does not
+load complete payloads for labels or parse model-facing content. One indexed
+existence check avoids per-entry feedback queries for ordinary histories. When
+feedback exists, separate narrow lookups for user entries preserve the existing
+exact canonical-content row bound.
+Invalid metadata, assistant relationships, duplicates, and orphan relationship
+counts fail hydration explicitly. The summary is not another stored column or
+projection. Acceptance refreshes it through the canonical load path, and later Run
+association preserves it alongside the unchanged content and occurrence order.
+
+`ChatFeedbackInspectionBackend` implements the separately generated
+`ChatFeedbackInspectionService` using the same exact infrastructure storage client
+as the store. It only validates durable Session access and queries the requested
+occurrence; it never ensures schema, initializes Chat state, hydrates or refreshes
+the cache, or acquires a mutation/execution claim. The read-only service is registered
+independently in the AOT router, so a renderer need not receive a mutation-capable
+Chat or public feedback service.
+
+Inspection and public receipt lookup share one authoritative relationship reader.
+One joined read validates the actual canonical user occurrence, Chat Session row
+and counter, submission/occurrence identities, public canonical payload encoding,
+exact model-content projection, and nullable Run identity before returning complete
+structured review data. Inspection maps failures to safe declared
+`invalid_request`, `not_found`, `unavailable`, or `corrupt` results. An unavailable
+schema or storage grant is not absence and is never repaired by reading. The
+typed Chat transport DTOs mirror public Session feedback fields only because the
+generator requires library-local value declarations; public decoding/encoding
+remains the only canonical JSON codec. All accepted data through the public 128 KiB
+bound is returned without truncation, including before a Run and after reopen.
+
 ## Sequencing and lifecycle
 
 Service mutations hold the same Session claim while SQL is pending and are
@@ -286,6 +319,10 @@ concurrency across stores, busy reads, rollback, commit-then-lost-ack recovery,
 shutdown draining, independent Sessions/Projects, cache refresh, and byte/row
 bounds. The remote suite additionally exercises generated feedback routing and
 retirement uncertainty and checks the later model input remains a user message.
+The feedback suite also checks narrow metadata, identical ordinary prose,
+read-only Inspection, corrupt relationships, and the exact 128 KiB boundary over
+both generated storage and Inspection transport. The remote suite checks the
+dedicated entrypoint route before association and after backend replacement.
 Focused backend checks after contract generation, from this package:
 
 ```sh
