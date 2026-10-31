@@ -13,9 +13,12 @@ in Global Settings; the OpenAI plugin declares the first provider record and its
 credential slot. Record creation, editing, and guarded deletion are implemented.
 Global Settings manages declared credential slots through the app-private association
 coordinator, with nonsecret TOML references and Linux x64 Secret Service storage.
-Opted-in backends receive immutable nonsecret record metadata at startup. Backend
-credential delivery, configured-provider materialization/authentication,
-record-based OAuth, Profiles, and Agent configuration remain unimplemented.
+Opted-in backends receive immutable nonsecret record metadata at startup and may
+explicitly retrieve captured credentials through generation-scoped host access.
+OpenAI materializes independently addressable API-key providers from its records,
+with lazy credential retrieval on each invocation. Advertisement is not proof of
+successful authentication. Session provider/model selection, record-based OAuth,
+Profiles, and Agent configuration remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -239,13 +242,13 @@ canceled application exit preserves the original dialog and its drafts.
 
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
 strings, plus an `api-key` credential slot, never a secret under ordinary values.
-Its backend separately opts into startup record metadata and its `api-key` slot,
-but does not request those secrets or materialize providers from the records.
-Credential associations remain host-only. Existing OpenAI authentication,
-Chat selection and startup behavior are unchanged. Future Profiles may contain the same
-kinds of collections, but no Profile identity, ordered record composition or merge
-rules exist yet. Record UI uses the established host-owned serialized I/O boundary,
-not another writer isolate or persistence service.
+Its backend separately opts into startup record metadata and its `api-key` slot;
+the [configured-provider lifecycle](#configured-openai-providers) consumes these
+distinct grants without exposing credential associations to plugins. Record editing
+does not change the running generation or select an account for Chat. Future Profiles
+may contain the same kinds of collections, but no Profile identity, ordered record
+composition or merge rules exist yet. Record UI uses the established host-owned
+serialized I/O boundary, not another writer isolate or persistence service.
 
 ### Backend record snapshots
 
@@ -286,9 +289,10 @@ bootstrap rechecks this fence after pending reads so shutdown cannot spawn a lat
 record edits do not update running generations; a subsequent generation may capture
 new values. No live notification, record RPC, watcher or restart automation exists.
 Record identity is neither configured-provider identity nor credential authority.
-OpenAI decodes independent Work and Personal metadata but registers no API-key
-providers or configuration contexts from these records. The separate credential
-permission below does not change that activation boundary.
+The receiving plugin owns any interpretation into configured providers and live
+routing contexts. OpenAI uses that boundary for independent API-key routes; neither
+the generic snapshot transport nor the separate credential permission registers a
+provider on its behalf.
 
 ### Backend credential delivery
 
@@ -357,10 +361,10 @@ be established; ordinary startup metadata remains independently usable.
 
 A successfully delivered secret exists in backend memory and cannot be revoked
 retroactively. Transport copying and immutable Dart strings do not provide zero-copy
-transfer or complete zeroization. Provider materialization must separately define
-retirement/restart when credential changes must take effect. Credential availability
-alone creates no provider, routing context, model selection or authenticated network
-request; OpenAI configured-provider construction remains separate work.
+transfer or complete zeroization. Provider consumers must define retirement/restart
+when credential changes must take effect; OpenAI's policy is described
+[below](#configured-openai-providers). Credential availability alone creates no
+provider, routing context, model selection or authenticated network request.
 
 ## Shared context, distinct composition
 
@@ -512,12 +516,59 @@ A persistent configured instance is not a generation-bound `configurationContext
 The latter is live routing metadata, not the durable record; see
 [configuration contexts](contracts-and-capabilities.md#configuration-context).
 
+### Configured OpenAI providers
+
+The OpenAI backend interprets its captured API-key records into separate model-provider
+registrations and configuration contexts within **one AOT backend generation**.
+The plugin owns this interpretation and identity mapping, not the application or a
+new generic provider registry. These identities remain distinct:
+
+| Identity | Meaning and lifetime |
+| --- | --- |
+| Configuration record ID | Stable durable identity within the `providers` collection, independent of display name, endpoint and credential association. |
+| `ProviderId` | Stable semantic discovery/selection identity derived by OpenAI from the record ID. It does not prove a live binding, credential presence or authentication. |
+| `configurationContext` | Backend-local route to that record's model service in one exact generation. Reusing its spelling after restart does not revive an old binding. |
+
+Each valid record is advertised without reading credentials. Plugin-specific invalid
+configuration is rejected without advertising that instance or disabling healthy
+siblings. The [OpenAI backend](../../plugins/openai/packages/backend/README.md#configured-api-key-instances)
+owns exact mapping, endpoint policy and safe diagnostics. The host retains credential
+references and protected associations; no key or reference enters startup records or
+provider descriptors.
+
+Each subscribed configured-provider invocation explicitly reads only its record's
+`api-key` slot through the existing generation-scoped credential client before HTTP.
+The logical route does not cache a key for future invocations. Missing configuration
+or local data, unavailable storage, invalid binding, reconciliation-required state,
+stale configuration and retired generation produce explicit safe failures. They are
+not OpenAI HTTP authentication rejections when no request was sent. No error selects
+another configured account, the legacy environment key or ChatGPT; there is no
+automatic retry, repair or reconciliation. Waiting for a keyring prompt does not
+authorize later HTTP after invocation cancellation or generation retirement.
+
+Record creation/deletion, identity/type, display name, endpoint, credential
+association, replacement and Forget require a fresh backend generation. The supported
+workflow is to **restart ADELE after configuration changes**. Existing registrations
+retain their startup snapshot; new records are not added live, and subsequent reads
+against changed captures fail stale instead of retargeting the route. A new generation
+can retain the same semantic Provider ID without inheriting an old live binding or
+credential association. No watcher, hot reload or backend restart control is supplied.
+
+An HTTP request already started with a delivered credential may continue; Forget
+cannot retract network authorization already in flight or erase immutable backend
+strings. Existing cancellation/retirement mechanisms remain distinct from that limit.
+Advertisement therefore means an invocable route for a valid record, not a successful
+credential check or externally authenticated account. The independent experimental
+ChatGPT credential-file path and explicit legacy API-key development mode remain
+separate. Normal Chat still explicitly selects ChatGPT; Session selection UI and
+provider preference are not established by these new registrations.
+
 ## Credentials and secrets
 
 Secrets are not ordinary serialized configuration values. Configuration may retain
 nonsecret credential references, never secrets in TOML, Project/plugin state,
-installation metadata, logs, or artifact identity inputs. OpenAI's declared slot
-does not change existing authentication or provider selection.
+installation metadata, logs, or artifact identity inputs. A declared slot alone
+grants no read access, performs no authentication and changes no provider selection.
 
 The standalone app-private `CredentialService` owns serialized admission,
 validation, mutation verification, and shutdown. Its production adapter runs
@@ -564,8 +615,8 @@ cross-process compare-and-swap or a transaction with configuration persistence.
 An unconfirmed mutation is not proof of rollback: the host fences further mutations
 of that reference until an explicit successful read, or confirmed absence,
 reconciles it. Presence alone cannot verify replacement contents. Backend reads are
-explicitly nonreconciling; no automatic retry, merge, secret enumeration or provider
-wiring is added. [Backend delivery](#backend-credential-delivery) is a separate,
+explicitly nonreconciling; no automatic retry, merge or secret enumeration is added.
+[Backend delivery](#backend-credential-delivery) is a separate,
 exact-generation authorization boundary, not direct plugin access to OS storage.
 See the [application map](../../app/README.md) for local ownership and
 [credential validation](../development/testing.md#credential-storage-checks) for
@@ -921,12 +972,14 @@ Implemented foundations and current limits:
 - Plugin-declared records support generic validation and headless independent-file
   CRUD in the same global layer, with browsing, creation, editing, and confirmed
   deletion in Global Settings. Opted-in backends receive exact-installation
-  nonsecret startup snapshots without changing UI baselines. OpenAI decodes its
-  API-key record metadata without runtime activation or authentication.
+  nonsecret startup snapshots without changing UI baselines. OpenAI maps valid
+  API-key records to independent providers in one generation, without startup
+  credential reads; invocation retrieves the exact captured record's credential.
 - Capability endpoints have generation-bound configuration contexts.
 - Host credential storage has a Linux x64 Secret Service adapter and an app-private
   record association lifecycle with declaration-generated Global Settings controls,
-  without provider activation, runtime delivery, or public/plugin access.
+  separately from narrow host-authorized backend credential delivery. Plugins have
+  no direct native storage or association-management access.
 - Durable product records and plugin-owned relational Session state provide no
   Profile, general settings, configured-instance, credential, or workbench storage.
 - Backend infrastructure access is generation-local, distinct from both
@@ -937,8 +990,8 @@ Implemented foundations and current limits:
   do not implement this architecture; operational details belong in the
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
-Not implemented: Profile manager/persistence, profile-aware activation,
-configured-provider activation/authentication, profile-aware provider routing,
+Not implemented: Profile manager/persistence, profile-aware activation/routing,
+Session provider/model selection, record-based OAuth, live provider reconfiguration,
 or production workbench-state persistence.
 
 ## Deferred decisions
@@ -951,9 +1004,9 @@ or production workbench-state persistence.
   semantics.
 - Exact narrower subject scopes and their override semantics.
 - Security/policy/approval composition.
-- Account-management and public/plugin credential-access APIs; additional native
-  credential platforms require separate implementation and validation.
-- Plugin reconfiguration/restart rules.
+- Account-management and general public/plugin credential-storage APIs; additional
+  native credential platforms require separate implementation and validation.
+- Live plugin reconfiguration and automated restart mechanisms.
 - Richer provider suitability/default policy, including non-capability selection.
 - Remembered workbench-state keying and garbage collection.
 

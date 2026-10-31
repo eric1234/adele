@@ -18,6 +18,9 @@ manual, remote-extension implementation guide, or stock-provider inventory.
 | Capability | Which compatible provider handles callable semantic work? |
 | Extension Point | Where and how may components participate in typed composition? |
 | Live binding | Which exact active generation is this resolved operation bound to? |
+| Configuration record | Which durable declared configuration is stored, independently of activation? |
+| Provider identity | Which semantic callable provider is being discovered or selected? |
+| Configuration context | Which backend-local configured service state does this exact generation route to? |
 | Host invocation authority | Which host services may this exact remote operation call right now? |
 | Host infrastructure access | Which explicit non-execution services may this exact backend generation call? |
 
@@ -119,6 +122,10 @@ Compatible providers may number zero, one, or many; callers cannot assume exactl
 one. ADELE owns default-provider selection, and a provider cannot declare itself
 globally primary. Where the domain exposes alternatives, callers can explicitly
 choose one. Explicit resolution must fail rather than silently fall back.
+An advertised configured provider establishes a route, not proof that a credential
+exists locally or that an external service accepts it. Credential/authentication
+failure belongs to that selected invocation; it is not permission to resolve another
+account or provider.
 
 The current registry uses exact Capability-major matching and deterministic
 rank/provider-ID ordering. That implementation is not the final preference or
@@ -282,6 +289,17 @@ owns projection, failure and snapshot-lifetime semantics; backend support owns
 the bounded transport representation. Credential access requires the separate
 [generation grant](#backend-credential-access); configured provider materialization
 remains a distinct boundary.
+
+OpenAI implements that materialization inside its backend: each valid captured
+API-key record has its own stable semantic Provider ID and independent live context,
+with a `modelProviderServiceId` dispatcher in the existing
+`AdeleConfigurationContextRouter`. All such routes share one backend generation;
+model IDs and generated method payloads never select the configured account.
+Unknown contexts or services fail closed, without routing through the default,
+another record or the independent ChatGPT context. Mapping belongs to the
+[OpenAI backend](../../plugins/openai/packages/backend/README.md#configured-api-key-instances),
+while immutable snapshots and restart requirements belong to the
+[configuration lifecycle](profiles-and-configuration.md#configured-openai-providers).
 
 ### Strategy-compatible Session input
 
@@ -1041,6 +1059,17 @@ Late secrets are discarded rather than published to a retired backend. This does
 not cancel an OS unlock prompt or reclaim a secret already delivered in backend
 memory. There is no zeroization guarantee or automatic provider restart. These host
 API restrictions are not an OS sandbox for native AOT code.
+
+The configured OpenAI consumer binds `AdeleCredentialClient` through the existing
+`AdeleHostRequestMultiplexer`, separately from its configuration router. Each new
+subscribed model invocation requests the captured record's exact declared slot
+before HTTP; startup and uninvoked siblings perform no credential reads. The backend
+maps fixed credential failures to safe model-provider failure terminals, never raw
+credential exceptions or an alternate account. Cancellation or generation retirement
+while the read is pending must fence subsequent HTTP without pretending to cancel
+the OS operation. The [backend README](../../plugins/openai/packages/backend/README.md#credential-failures)
+owns provider-specific codes and resource behavior; no public model-provider failure
+enum or semantic request fields are added for credential selection.
 
 <a id="session-scoped-relational-storage"></a>
 

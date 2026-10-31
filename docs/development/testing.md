@@ -426,10 +426,12 @@ directory-failure isolation, immutable running generations and a fresh subsequen
 generation. `app/test/core/openai_record_startup_integration_test.dart` additionally
 publishes actual stock metadata, creates Work/Personal through the host, attaches
 protected associations through the real coordinator with a deterministic adapter,
-and starts the actual OpenAI AOT backend. It asserts zero credential operations
-during projection/startup, stable record IDs, no new API-key provider, and unchanged
-ChatGPT advertisements. The generic observer verifies exact decoded values without
-adding inspection APIs to production OpenAI. Neither fixture performs network calls.
+and starts the actual OpenAI AOT backend. It checks independently advertised
+configured providers, stable record IDs and zero credential operations during
+projection/startup. The generic observer verifies exact decoded values without
+adding inspection APIs to production OpenAI. The stock suite also exercises actual
+provider HTTP against loopback synthetic Responses SSE, as described
+[below](#configured-openai-provider-checks); no external provider is contacted.
 
 Public decoder limits, strict shape, duplicates, immutable copies and bounded
 value-free errors belong to `adele_plugin_backend_support`. Raw malformed-frame
@@ -478,9 +480,10 @@ installations through normal bootstrap, and resolves independent Work/Personal
 credentials using the real coordinator. It covers absent grants, unknown/new/foreign
 records and slots, stolen grants, no startup reads, fixed failures, concurrent edits,
 late-response fencing and fresh subsequent generations. The stock OpenAI startup
-suite additionally resolves its actual declarations through that controlled fixture
-while retaining actual OpenAI/ChatGPT advertisement and no-provider-activation checks.
-All secrets are synthetic; these suites perform no model-provider network requests.
+suite retains that controlled observer over its actual declarations, independently
+of the configured-provider HTTP cases below. All secrets are synthetic. The generic
+credential-host/authority fixtures perform no model-provider network requests;
+the stock-provider cases use loopback HTTP only.
 Both direct connection revocation and normal bootstrap close settle pending reverse
 requests before the OS gate is released. An actual accepted `AdeleApplication` exit
 also proves admission fencing and dependency draining with a live AOT read.
@@ -546,8 +549,8 @@ application's real retained
 association coordinator with a deterministic storage adapter to check independent
 OpenAI associations, explicit storage checks, replacement, Forget before deletion,
 and reopening without automatic vault reads. It also saves ordinary scalar Settings
-and checks no provider activation, alongside independent schema and
-catalog-aggregation failures.
+and checks no immediate provider activation from Settings edits, alongside independent
+schema and catalog-aggregation failures.
 Pipe-gated locks verify accepted application exit drains admitted record updates and
 deletes before releasing the settings worker.
 
@@ -574,6 +577,56 @@ The small native ABI suite can be run from `packages/toml_document/native/` with
 `cargo test --locked`, and its formatting with `cargo fmt --check`, using that
 directory's pinned toolchain. Native ABI checks do not cover Settings semantics
 or host persistence integration.
+
+### Configured OpenAI provider checks
+
+The maintained `openai_model_provider_backend` target owns plugin configuration,
+endpoint policy, credential-failure mapping and Responses behavior.
+`test/openai_configured_provider_test.dart` uses the real credential client with
+controlled reverse responses and HTTP objects for identity/endpoint validation,
+safe diagnostics, all credential-failure mappings, fresh per-invocation reads,
+cancellation/pause propagation and temporary-client cleanup.
+`test/openai_record_startup_test.dart` covers startup decoding and advertisements;
+`test/openai_configuration_context_integration_test.dart` compiles the real shared
+host and OpenAI backend and invokes the ordinary generated model-provider service.
+Its deterministic credential dispatcher exercises the real backend client and
+reverse transport, not the app's protected-storage authorization. It checks exact
+Work/Personal routes and headers, ChatGPT coexistence, wrong-context/service rejection,
+safe pre-HTTP failure terminals, independent streams, pause/resume, pending-read and
+active-SSE cancellation, and generation retirement/replacement. The existing combined
+environment API-key/ChatGPT scenario remains a distinct compatibility check.
+
+`app/test/core/openai_record_startup_integration_test.dart` owns the full
+configuration-to-HTTP path: maintained stock installation metadata, actual TOML
+records, real association coordinator/protected envelopes and generation-scoped host
+authorization, actual compiled host/OpenAI artifacts, and local Responses SSE.
+The injected protected-storage adapter is deterministic, not a real keyring. Cases
+check independent Work/Personal keys and endpoints in one generation, no startup or
+uninvoked-sibling reads, payload/model IDs unable to select an account, safe missing,
+invalid, unavailable and reconciliation-required outcomes without fallback, and
+stale-after-edit/Replace/Forget/delete-recreate behavior followed by a fresh
+generation. Pending credential gates check cancellation/retirement before HTTP and
+continued Settings I/O; they do not establish a bound on OS unlock prompts.
+
+After bootstrap/current generation, use the pinned toolchain:
+
+```sh
+# Repository root
+dart tools/adele.dart test --target openai_model_provider_backend
+dart tools/adele.dart test --target adele_capabilities
+dart test test/tools/app_plugin_boundary_test.dart test/tools/backend_artifacts_test.dart test/tools/adele_test.dart
+# app/
+flutter test --no-pub --concurrency 1 test/core/openai_record_startup_integration_test.dart test/core/backend_credential_integration_test.dart test/core/startup_credential_authority_test.dart test/session_execution_test.dart
+```
+
+Keep the existing experimental ChatGPT authorization regressions and generic runtime
+generation/registry checks. `app/test/session_execution_test.dart` owns explicit
+selected-provider failure without fallback and retained bindings across retirement;
+the app's temporary selection still explicitly names ChatGPT, regardless of new
+configured providers in the registry. These fixtures add no Session selection UI,
+preference policy, live rotation or external OpenAI validation. Test paths describe
+coverage owners, not recorded passing results. Production backend AOT changes also
+require the maintained Linux profile build, not only isolated AOT fixtures.
 
 ## Credential storage checks
 

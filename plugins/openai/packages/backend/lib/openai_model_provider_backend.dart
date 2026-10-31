@@ -8,7 +8,10 @@ import 'package:openai_contract/openai_contract.dart'
     show openAiResponsesItemKind, openAiResponsesItemVersion;
 
 import 'src/openai_chatgpt_auth.dart';
+import 'src/openai_endpoint.dart';
 import 'src/openai_native_presentation.dart';
+
+export 'src/openai_configured_provider.dart';
 
 // Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
 // Future discovery/activation metadata should replace that hard-coded app knowledge.
@@ -40,11 +43,11 @@ final class OpenAiModelProvider implements ModelProviderService {
   }) : _apiKey = _validateApiKey(apiKey),
        _chatGptAuth = null,
        _profile = _OpenAiRequestProfile.apiKey,
-       _endpoint = endpoint ?? Uri.parse('https://api.openai.com/v1/responses'),
+       _endpoint = validateOpenAiEndpoint(
+         endpoint ?? Uri.parse('https://api.openai.com/v1/responses'),
+       ),
        _httpClient = httpClient ?? HttpClient(),
-       _ownsHttpClient = httpClient == null {
-    _validateEndpoint(_endpoint, endpoint);
-  }
+       _ownsHttpClient = httpClient == null;
 
   OpenAiModelProvider.chatGpt({
     required OpenAiChatGptAuth auth,
@@ -53,27 +56,12 @@ final class OpenAiModelProvider implements ModelProviderService {
   }) : _apiKey = null,
        _chatGptAuth = auth,
        _profile = _OpenAiRequestProfile.chatGpt,
-       _endpoint =
-           endpoint ??
-           Uri.parse('https://chatgpt.com/backend-api/codex/responses'),
+       _endpoint = validateOpenAiEndpoint(
+         endpoint ??
+             Uri.parse('https://chatgpt.com/backend-api/codex/responses'),
+       ),
        _httpClient = httpClient ?? HttpClient(),
-       _ownsHttpClient = httpClient == null {
-    _validateEndpoint(_endpoint, endpoint);
-  }
-
-  static void _validateEndpoint(Uri value, Uri? argument) {
-    if (!value.isAbsolute ||
-        (value.scheme != 'http' && value.scheme != 'https')) {
-      throw ArgumentError.value(argument, 'endpoint', 'Must be HTTP(S).');
-    }
-    if (value.scheme == 'http' && !_isLoopbackHost(value.host)) {
-      throw ArgumentError.value(
-        argument,
-        'endpoint',
-        'Plaintext OpenAI endpoints must be loopback.',
-      );
-    }
-  }
+       _ownsHttpClient = httpClient == null;
 
   final String? _apiKey;
   final OpenAiChatGptAuth? _chatGptAuth;
@@ -96,7 +84,7 @@ final class OpenAiModelProvider implements ModelProviderService {
     bool settled = false;
     Future<void>? stoppingFuture;
     _ChatGptAffinity? affinity;
-    final List<String> affinitySecrets = <String>[];
+    final List<String> affinitySecrets = <String>[?_apiKey];
 
     Future<void> stopNetwork() {
       final Future<void>? existing = stoppingFuture;
@@ -231,6 +219,11 @@ final class OpenAiModelProvider implements ModelProviderService {
             return;
           }
           outboundRequest = outgoing;
+          // API keys and affinity headers belong to this endpoint, never a
+          // redirect or downgrade. Preserve the legacy non-affinity ChatGPT path.
+          if (_profile == _OpenAiRequestProfile.apiKey || affinity != null) {
+            outgoing.followRedirects = false;
+          }
           outgoing.headers.contentType = ContentType.json;
           outgoing.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
           outgoing.headers.set(
@@ -247,8 +240,6 @@ final class OpenAiModelProvider implements ModelProviderService {
             }
           }
           if (affinity case final _ChatGptAffinity value) {
-            // Custom affinity headers must not escape the envelope's endpoint.
-            outgoing.followRedirects = false;
             outgoing.headers.set('session-id', value.id);
             if (value.state?.data['turnState'] case final String token) {
               outgoing.headers.set('x-codex-turn-state', token);
@@ -1304,12 +1295,6 @@ final class _BoundedBodyCapture {
     utf8.decode(_bytes.takeBytes(), allowMalformed: true),
     truncated,
   );
-}
-
-bool _isLoopbackHost(String host) {
-  if (host.toLowerCase() == 'localhost') return true;
-  final InternetAddress? address = InternetAddress.tryParse(host);
-  return address?.isLoopback ?? false;
 }
 
 _HttpFailure _classifyHttpFailure(
