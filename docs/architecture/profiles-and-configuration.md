@@ -239,8 +239,9 @@ canceled application exit preserves the original dialog and its drafts.
 
 The OpenAI schema contains required `display-name` and optional nonsecret `endpoint`
 strings, plus an `api-key` credential slot, never a secret under ordinary values.
-Its backend opts into startup record metadata but does not materialize providers
-from it. Credential associations remain host-only. Existing OpenAI authentication,
+Its backend separately opts into startup record metadata and its `api-key` slot,
+but does not request those secrets or materialize providers from the records.
+Credential associations remain host-only. Existing OpenAI authentication,
 Chat selection and startup behavior are unchanged. Future Profiles may contain the same
 kinds of collections, but no Profile identity, ordered record composition or merge
 rules exist yet. Record UI uses the established host-owned serialized I/O boundary,
@@ -286,8 +287,80 @@ record edits do not update running generations; a subsequent generation may capt
 new values. No live notification, record RPC, watcher or restart automation exists.
 Record identity is neither configured-provider identity nor credential authority.
 OpenAI decodes independent Work and Personal metadata but registers no API-key
-providers or configuration contexts from these records. Credential delivery and
-provider materialization remain subsequent, separate boundaries.
+providers or configuration contexts from these records. The separate credential
+permission below does not change that activation boundary.
+
+### Backend credential delivery
+
+`consumesCredentialSlots` is a separate backend-only opt-in, not implied by
+`consumesRecordTypes` or by the presence of credential-slot declarations. Each
+entry names one exact installation-owned, already consumed record type and a
+list of its declared slots. Invalid, duplicate or foreign requests fail the
+backend component, not independent schemas/frontends. An absent or effectively
+empty permission registers no credential service and performs no vault access.
+The [prepared catalog](../../packages/plugin_runtime/README.md) owns declaration
+syntax and limits; the [transport boundary](contracts-and-capabilities.md#backend-credential-access)
+owns the narrow request contract.
+
+For opted-in installations the Settings worker captures a separate private
+authority batch from the **same validated record snapshots** used for startup
+projection. Native documents, file baselines and association references stay in
+the trusted host; no authority token is added to `{collection,type,id,values}`.
+An ordinary constructed/copy of that presentation view cannot acquire the worker
+batch. The host binds it once to the actual `PluginBackendConnection` and its
+current infrastructure grant, with exact installation/type/collection/record/slot
+checks. Stable IDs and matching plugin namespaces are selectors, not authority.
+Omitted/malformed records and records created after capture are never eligible.
+
+An explicit backend read first verifies the captured association and current
+configuration in the worker, then uses the existing `CredentialService` with
+`reconcile: false`. Protected-envelope decoding is shared with the association
+coordinator: version, owner, type, collection, record, slot, exact reference and
+bounded inner secret must all match. After the OS wait the worker validates the
+same original capture again, and generation/owner liveness is checked before
+release. This read never replaces its baseline, repairs configuration, mutates
+the vault, or clears an uncertain-mutation fence. The explicit Settings Reconcile
+workflow remains authoritative.
+
+Ordinary field changes, reference changes, Forget, deletion, type changes and
+record replacement invalidate the old capture. Worker-shared record mutation
+epochs also fence host-managed change-and-restore and same-reference credential
+replacement, whose TOML may be byte-identical. Strict startup file observations
+include device/inode and nanosecond change/modification metadata on the maintained
+Linux path; the capture brackets native loads and validation brackets baseline
+checks. Editable Settings handles retain their existing byte-baseline semantics.
+Once observed stale, a capture cannot become current again by restoring old bytes.
+A new backend generation must capture fresh authority; no live retargeting occurs.
+Epoch keys resolve supported configuration-root aliases to the same canonical
+record path; retargeting an alias does not transfer captured authority. The worker
+also mirrors opaque mutation markers/epochs to the root isolate through its
+existing event channel and waits for acknowledgment before a mutation proceeds.
+Final root-side checks therefore catch a mutation even if it commits after the
+worker postcheck but before the credential read's continuation publishes its result.
+No native baseline or path is needed in that root-side fence. A transient inability
+to observe file identity fails closed as unavailable, not as a proven permanently
+stale record.
+
+The two worker checks are short serialized operations, not an exclusive Settings
+lock held through a keyring unlock prompt. Unrelated configuration work can proceed
+while the OS read waits. Existing association mutations retain their guarded
+workflow; the retained owners track and drain admitted backend reads independently.
+Accepted application exit fences new reads synchronously, suppresses late successful
+delivery and drains native work before releasing its owners. Retirement revokes only
+that generation, without waiting for or falsely canceling a stalled OS operation.
+
+These are read-only observations and in-process mutation fences, not a cross-process
+transaction or keyring CAS. An uncooperative filesystem writer can still race a
+completed check, and arbitrary external keyring changes are not a credential-rotation
+subscription. Strict credential access fails closed when its file identity cannot
+be established; ordinary startup metadata remains independently usable.
+
+A successfully delivered secret exists in backend memory and cannot be revoked
+retroactively. Transport copying and immutable Dart strings do not provide zero-copy
+transfer or complete zeroization. Provider materialization must separately define
+retirement/restart when credential changes must take effect. Credential availability
+alone creates no provider, routing context, model selection or authenticated network
+request; OpenAI configured-provider construction remains separate work.
 
 ## Shared context, distinct composition
 
@@ -490,10 +563,11 @@ Create/replace/delete preconditions and postverification do not constitute
 cross-process compare-and-swap or a transaction with configuration persistence.
 An unconfirmed mutation is not proof of rollback: the host fences further mutations
 of that reference until an explicit successful read, or confirmed absence,
-reconciles it. Presence alone cannot verify replacement contents. No automatic
-retry, merge, secret enumeration, provider wiring, or plugin access grant is added.
-Account-management and future explicitly authorized plugin access remain separate
-design work. See the [application map](../../app/README.md) for local ownership and
+reconciles it. Presence alone cannot verify replacement contents. Backend reads are
+explicitly nonreconciling; no automatic retry, merge, secret enumeration or provider
+wiring is added. [Backend delivery](#backend-credential-delivery) is a separate,
+exact-generation authorization boundary, not direct plugin access to OS storage.
+See the [application map](../../app/README.md) for local ownership and
 [credential validation](../development/testing.md#credential-storage-checks) for
 the distinction between deterministic tests, isolated keyring smoke, and packaging.
 
@@ -513,11 +587,11 @@ safe guidance for deliberate manual correction and Reload, without echoing crede
 content. Removing a TOML entry manually does not delete its OS-stored value.
 
 The app-private `RecordCredentialService`, part of `GlobalSettingsService`, is the
-only association coordinator. Callers supply an owner-bound `RecordView`, a declared
+only association coordinator. Management callers supply an owner-bound `RecordView`, a declared
 slot, and a secret for writes, not an owner, record type, native key or reference.
 The existing Settings worker verifies the exact owner/revision, declaration and
 conditional byte baseline. A shared worker admission gate spans the entire
-workflow, including OS waits, so ordinary configuration operations and other owners
+management workflow, including OS waits, so ordinary configuration operations and other owners
 cannot interleave with it. Every TOML operation still runs on that worker; there is
 no second writer or native-document transfer to presentation. `CredentialService`
 retains its independent OS-operation queue and uncertain-outcome fence.
@@ -566,8 +640,10 @@ drain without timeout, cancellation or an inferred rollback.
 
 This is a host-only lifecycle, not a cross-store transaction or cross-process
 keyring compare-and-swap. Manual filesystem edits remain outside it and can race
-conditional checks. It adds no runtime/backend delivery, OAuth, provider activation,
-Profile or Agent semantics. Generic record views expose no credential references
+conditional checks. The separate read-only [backend delivery](#backend-credential-delivery)
+path reuses its binding validation without granting management operations. Neither
+path adds OAuth, provider activation, Profile or Agent semantics.
+Generic record views expose no credential references
 or protected payloads. Linux x64 remains the only enabled native credential backend.
 
 ### Record credential management

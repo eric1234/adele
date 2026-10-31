@@ -6,6 +6,71 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'remote failure formatting never prints remote payload or native errors',
+    () async {
+      final host = AdeleHostRequestMultiplexer(send: (_) {});
+      addTearDown(host.close);
+      final result = host
+          .bindInfrastructure(
+            hostInfrastructureContext: 'generation',
+            serviceId: 'fixture',
+          )
+          .request('read', {});
+      final check = expectLater(
+        result,
+        throwsA(
+          isA<AdeleRemoteFailure>().having(
+            (error) => error.toString(),
+            'redacted diagnostic',
+            'Host request failed.',
+          ),
+        ),
+      );
+      host.handleResponse({
+        'kind': 'hostResponse',
+        'requestId': 0,
+        'ok': false,
+        'error': {
+          'code': 'private-code',
+          'message': 'private-native-error',
+          'details': {'secret': 'private-secret'},
+        },
+      });
+      await check;
+    },
+  );
+
+  test('malformed response snapshot never retains the invalid value', () async {
+    final host = AdeleHostRequestMultiplexer(send: (_) {});
+    addTearDown(host.close);
+    final result = host
+        .bindInfrastructure(
+          hostInfrastructureContext: 'generation',
+          serviceId: 'fixture',
+        )
+        .request('read', {});
+    final check = expectLater(
+      result,
+      throwsA(
+        isA<AdeleProtocolException>().having(
+          (error) => error.message,
+          'fixed message',
+          'Malformed host response.',
+        ),
+      ),
+    );
+    final cyclic = <String, Object?>{'secret': 'private-secret'};
+    cyclic['cycle'] = cyclic;
+    host.handleResponse({
+      'kind': 'hostResponse',
+      'requestId': 0,
+      'ok': true,
+      'payload': cyclic,
+    });
+    await check;
+  });
+
+  test(
     'generated-style stream is lazy, ordered, one-credit and pausable',
     () async {
       final sent = <Map<String, Object?>>[];

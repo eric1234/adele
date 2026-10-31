@@ -55,7 +55,7 @@ final class RecordCredentialFailure implements Exception {
 /// secret. They cannot select a plugin owner, native key or credential reference.
 /// No construction/startup I/O, automatic recovery, cross-store transaction or
 /// cross-process keyring CAS is implied. Close this owner before its dependencies.
-final class RecordCredentialService {
+final class RecordCredentialService implements StartupCredentialReader {
   RecordCredentialService({
     required GlobalSettingsService settings,
     required CredentialService credentials,
@@ -67,6 +67,189 @@ final class RecordCredentialService {
   final Set<(RecordCollectionId, ConfigurationRecordId)> _active = {};
   Future<void> _pending = Future<void>.value();
   Future<void>? _closing;
+  final Set<Future<void>> _startupReads = {};
+
+  @override
+  Future<void> releaseStartupRecords(StartupRecordsView snapshot) =>
+      _settings.releaseStartupRecords(snapshot);
+
+  /// Reads only an exact captured startup association. A keyring wait does not
+  /// reserve the Settings writer; both sides are checked on that writer instead.
+  @override
+  Future<String> readStartupCredential(
+    StartupRecordsView snapshot, {
+    required String collection,
+    required String recordType,
+    required String recordId,
+    required String slot,
+    required void Function() validateGeneration,
+  }) {
+    final authority = _settings._startupAuthorities[snapshot];
+    (int, int)? publicationEpoch;
+    void validate() {
+      if (_closing != null || _settings._closing != null) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.generationUnavailable,
+        );
+      }
+      try {
+        validateGeneration();
+      } on Object {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.generationUnavailable,
+        );
+      }
+      if (_closing != null || _settings._closing != null) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.generationUnavailable,
+        );
+      }
+      if (authority == null) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.notAuthorized,
+        );
+      }
+      if (authority.released) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.staleConfiguration,
+        );
+      }
+      if (publicationEpoch case final captured?) {
+        if ((_settings._worker._mutationEpochs[captured.$1] ?? 0) !=
+            captured.$2) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.staleConfiguration,
+          );
+        }
+      }
+    }
+
+    Future<T> guarded<T>(
+      Future<T> Function() operation, {
+      bool drain = false,
+    }) async {
+      try {
+        validate();
+      } on AdeleCredentialFailure {
+        if (!drain) rethrow;
+        // An admitted OS call still owes its serial postcheck after retirement.
+      }
+      try {
+        return await operation();
+      } finally {
+        validate();
+      }
+    }
+
+    final result = () async {
+      try {
+        validate();
+        final RecordCollectionId collectionId;
+        final RecordTypeId typeId;
+        final ConfigurationRecordId id;
+        final RecordCredentialSlotId slotId;
+        try {
+          collectionId = RecordCollectionId(collection);
+          typeId = RecordTypeId(recordType);
+          id = ConfigurationRecordId(recordId);
+          slotId = RecordCredentialSlotId(slot);
+        } on Object {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.notAuthorized,
+          );
+        }
+        Future<_CredentialValues> checkRecord() async =>
+            await _settings._worker.request(
+                  _Request(
+                    owner: _settings._owner,
+                    operation: _Operation.inspectStartupCredential,
+                    startupBatch: authority!.batch,
+                    collection: collectionId,
+                    recordType: typeId,
+                    recordId: id,
+                    credentialSlot: slotId,
+                  ),
+                )
+                as _CredentialValues;
+
+        final bound = await guarded(checkRecord);
+        publicationEpoch = bound.mutation;
+        validate();
+        final reference = bound.reference;
+        if (reference == null) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.notConfigured,
+          );
+        }
+        final CredentialSecret? protected;
+        try {
+          protected = await guarded(
+            () => _credentials.read(
+              reference,
+              beforeRead: validate,
+              reconcile: false,
+            ),
+          );
+        } finally {
+          await guarded(checkRecord, drain: true);
+          validate();
+        }
+        if (protected == null) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.missingLocally,
+          );
+        }
+        final secret = _verifyEnvelope(
+          protected,
+          _credentialBinding(
+            owner: bound.owner,
+            type: recordType,
+            collection: collection,
+            record: recordId,
+            slot: slot,
+            reference: reference,
+          ),
+        );
+        validate();
+        return secret.reveal();
+      } on AdeleCredentialFailure {
+        rethrow;
+      } on CredentialFailure catch (failure) {
+        throw AdeleCredentialFailure(
+          failure.outcomeUncertain ||
+                  failure.kind == CredentialFailureKind.verificationRequired
+              ? AdeleCredentialFailureKind.reconciliationRequired
+              : switch (failure.kind) {
+                  CredentialFailureKind.missing =>
+                    AdeleCredentialFailureKind.missingLocally,
+                  CredentialFailureKind.unavailable =>
+                    AdeleCredentialFailureKind.storageUnavailable,
+                  CredentialFailureKind.corruptData =>
+                    AdeleCredentialFailureKind.invalidCredentialBinding,
+                  _ => AdeleCredentialFailureKind.credentialAccessFailed,
+                },
+        );
+      } on Object {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.credentialAccessFailed,
+        );
+      }
+    }();
+    final settled = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _startupReads.add(settled);
+    authority?.reads.add(settled);
+    _settings._trackStartupRead(settled);
+    unawaited(
+      settled.then((_) {
+        _startupReads.remove(settled);
+        authority?.reads.remove(settled);
+      }),
+    );
+    return result;
+  }
 
   Future<RecordCredentialResult> inspect(
     RecordView record,
@@ -104,7 +287,7 @@ final class RecordCredentialService {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  });
+  }, mutating: true);
 
   Future<RecordCredentialResult> replace(
     RecordView record,
@@ -132,7 +315,7 @@ final class RecordCredentialService {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  });
+  }, mutating: true);
 
   /// Establishes a transferred/partially attached reference only after confirmed
   /// local absence. Reuses that reference and never overwrites an existing value.
@@ -160,7 +343,7 @@ final class RecordCredentialService {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  });
+  }, mutating: true);
 
   Future<RecordCredentialResult> forget(
     RecordView record,
@@ -184,7 +367,7 @@ final class RecordCredentialService {
       workflow.record,
       RecordCredentialStatus.noReference,
     );
-  });
+  }, mutating: true);
 
   Future<RecordCredentialResult> _inspect(
     _RecordCredentialWorkflow workflow, {
@@ -243,32 +426,16 @@ final class RecordCredentialService {
     _RecordCredentialWorkflow workflow,
     CredentialSecret protected,
   ) {
-    try {
-      final value = jsonDecode(protected.reveal());
-      final binding = workflow.binding(workflow.requireReference());
-      if (value is! Map<String, dynamic> ||
-          value.length != binding.length + 1) {
-        throw const FormatException();
-      }
-      for (final entry in binding.entries) {
-        if (value[entry.key] != entry.value ||
-            (entry.key == 'version' && value[entry.key] is! int)) {
-          throw const FormatException();
-        }
-      }
-      CredentialSecret(value['secret'] as String);
-    } on Object {
-      // Never retain decoder errors: FormatException may contain the input.
-      throw const CredentialFailure(CredentialFailureKind.corruptData);
-    }
+    _verifyEnvelope(protected, workflow.binding(workflow.requireReference()));
   }
 
   Future<RecordCredentialResult> _admit(
     RecordView record,
     RecordCredentialSlotId slot,
     Future<RecordCredentialResult> Function(_RecordCredentialWorkflow)
-    operation,
-  ) {
+    operation, {
+    bool mutating = false,
+  }) {
     if (_closing != null || _settings._closing != null) {
       return Future.error(
         const RecordCredentialFailure(RecordCredentialFailureKind.closed),
@@ -290,7 +457,7 @@ final class RecordCredentialService {
           (_) => _settings._worker.exclusive(() async {
             final workflow = _RecordCredentialWorkflow(_settings, record, slot);
             try {
-              await workflow.validate();
+              await workflow.validate(mutating: mutating);
               return await operation(workflow);
             } on RecordCredentialFailure catch (error) {
               throw RecordCredentialFailure(
@@ -357,7 +524,8 @@ final class RecordCredentialService {
 
   /// Fence immediately, then drain admitted workflows before closing dependencies.
   /// A blocked OS unlock prompt cannot be canceled or rolled back by a timeout.
-  Future<void> close() => _closing ??= _pending;
+  Future<void> close() =>
+      _closing ??= Future.wait([_pending, ..._startupReads]).then((_) {});
 }
 
 /// No native documents cross this boundary. Each request retains the same owner
@@ -404,9 +572,14 @@ final class _RecordCredentialWorkflow {
     ),
   );
 
-  Future<void> validate() async {
+  Future<void> validate({bool mutating = false}) async {
     final value =
-        await _request(_Operation.inspectCredential) as _CredentialValues;
+        await _request(
+              mutating
+                  ? _Operation.beginCredentialMutation
+                  : _Operation.inspectCredential,
+            )
+            as _CredentialValues;
     owner = value.owner;
     reference = value.reference;
   }
@@ -430,15 +603,15 @@ final class _RecordCredentialWorkflow {
         RecordCredentialFailureKind.noReference,
       ));
 
-  Map<String, Object> binding(CredentialReference reference) => {
-    'version': 1,
-    'owner': owner,
-    'type': record.type.value,
-    'collection': record.collection.value,
-    'record': record.id.value,
-    'slot': slot.value,
-    'reference': reference.value,
-  };
+  Map<String, Object> binding(CredentialReference reference) =>
+      _credentialBinding(
+        owner: owner,
+        type: record.type.value,
+        collection: record.collection.value,
+        record: record.id.value,
+        slot: slot.value,
+        reference: reference,
+      );
 
   CredentialSecret payload(
     CredentialReference reference,
@@ -446,4 +619,43 @@ final class _RecordCredentialWorkflow {
   ) => CredentialSecret(
     jsonEncode({...binding(reference), 'secret': secret.reveal()}),
   );
+}
+
+Map<String, Object> _credentialBinding({
+  required String owner,
+  required String type,
+  required String collection,
+  required String record,
+  required String slot,
+  required CredentialReference reference,
+}) => {
+  'version': 1,
+  'owner': owner,
+  'type': type,
+  'collection': collection,
+  'record': record,
+  'slot': slot,
+  'reference': reference.value,
+};
+
+CredentialSecret _verifyEnvelope(
+  CredentialSecret protected,
+  Map<String, Object> binding,
+) {
+  try {
+    final value = jsonDecode(protected.reveal());
+    if (value is! Map<String, dynamic> || value.length != binding.length + 1) {
+      throw const FormatException();
+    }
+    for (final entry in binding.entries) {
+      if (value[entry.key] != entry.value ||
+          (entry.key == 'version' && value[entry.key] is! int)) {
+        throw const FormatException();
+      }
+    }
+    return CredentialSecret(value['secret'] as String);
+  } on Object {
+    // Never retain decoder errors: FormatException may contain the input.
+    throw const CredentialFailure(CredentialFailureKind.corruptData);
+  }
 }

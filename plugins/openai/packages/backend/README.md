@@ -25,6 +25,12 @@ installation-level `recordsSchema`, independently of backend/frontend activation
 The catalog can discover this metadata without starting the backend or loading
 credentials.
 
+Stock preparation separately opts this backend into `dev.adele.openai.api-key`
+startup metadata and only its `api-key` credential slot. The generic
+[host-authorized credential client](../../../../packages/plugin_backend_support/README.md#credential-reads)
+is available to an eligible generation, but this backend does not call it or
+construct providers from the stored records yet.
+
 This declaration does not activate a configured provider, select a model, change
 the stock ChatGPT-only startup policy, or supply runtime credentials. Backend
 startup/auth behavior is unchanged; record metadata is not a live provider

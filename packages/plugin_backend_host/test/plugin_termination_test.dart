@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
 import 'package:plugin_backend_host/plugin_backend_host.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
@@ -73,6 +75,51 @@ void main() {
       ],
     },
   };
+
+  test('public credential client crosses real AOT reverse ports', () async {
+    final host = await _startHost(dartaotruntime, hostArtifact);
+    addTearDown(host.close);
+    Object? result = {'secret': 'transport-fixture-secret'};
+    final dispatcher = _HostDispatcher((request) async {
+      expect(request['method'], 'readCredential');
+      expect(request['payload'], {
+        'collection': 'providers',
+        'recordType': 'dev.adele.fixture.provider',
+        'recordId': 'work',
+        'slot': 'api-key',
+      });
+      return {
+        'kind': 'response',
+        'requestId': request['requestId'],
+        'ok': true,
+        'payload': result,
+      };
+    });
+    final plugin = await host.startPlugin(
+      pluginId: 'credential-transport',
+      artifactUri: pluginArtifact.uri,
+      arguments: ['reverse-streams'],
+      createInfrastructureServices: (_) => {
+        backendCredentialServiceId: dispatcher,
+      },
+    );
+    expect(await plugin.request('credential', {}), result);
+    result = {'failure': 'staleConfiguration'};
+    expect(await plugin.request('credential', {}), result);
+    result = {'secret': 'private-secret', 'native': 'private-native-error'};
+    expect(await plugin.request('credential', {}), {
+      'failure': 'credentialAccessFailed',
+    });
+    final ungranted = await host.startPlugin(
+      pluginId: 'credential-ungranted',
+      artifactUri: pluginArtifact.uri,
+      arguments: ['reverse-streams'],
+    );
+    expect(await ungranted.request('credential', {}), {
+      'failure': 'notAuthorized',
+    });
+    expect(dispatcher.calls, 3);
+  });
 
   test(
     'AOT records capture exact generations alongside unchanged settings',
@@ -1537,6 +1584,106 @@ void main() {
         'payload': {},
       });
       expect((await next('response'))['payload'], 0);
+    },
+  );
+
+  test(
+    'malformed reverse responses settle without payload diagnostics',
+    () async {
+      final events = StreamController<Map<String, Object?>>();
+      final diagnostics = <String>[];
+      final host = AdeleBackendHost(
+        send: (message) {
+          events.add(message);
+          return true;
+        },
+        diagnostic: diagnostics.add,
+      );
+      final iterator = StreamIterator(events.stream);
+      addTearDown(() async {
+        await host.shutdown(notify: false);
+        await iterator.cancel();
+        await events.close();
+      });
+      Future<Map<String, Object?>> next(String kind) async {
+        while (await iterator.moveNext().timeout(const Duration(seconds: 3))) {
+          if (iterator.current['kind'] == kind) return iterator.current;
+        }
+        throw StateError('Missing $kind');
+      }
+
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'redaction',
+        'settings': <String, Object>{},
+        'records': <Object?>[],
+        'generation': 'generation',
+        'hostInfrastructureContext': 'infrastructure',
+        'defaultConfigurationContext': 'default',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': ['wait'],
+      });
+      await next('pluginReady');
+      const marker = 'private-secret-or-native-error';
+      final cyclic = <String, Object?>{'secret': marker};
+      cyclic['cycle'] = cyclic;
+      for (final fields in <Map<String, Object?>>[
+        {
+          'ok': true,
+          'payload': {'secret': marker},
+          'extra': marker,
+        },
+        {
+          'ok': marker,
+          'payload': {'secret': marker},
+        },
+        {'ok': false, 'error': marker},
+        {
+          'ok': false,
+          'error': {
+            'code': marker,
+            'message': marker,
+            'details': [marker],
+          },
+        },
+        {'ok': true, 'payload': cyclic},
+        {'ok': true, 'payload': ReceivePort()},
+      ]) {
+        final payload = fields['payload'];
+        if (payload is ReceivePort) addTearDown(payload.close);
+        await host.handle({
+          'protocolVersion': backendHostProtocolVersion,
+          'kind': 'request',
+          'requestId': 2,
+          'pluginId': 'redaction',
+          'configurationContext': 'default',
+          'serviceId': 'fixture',
+          'method': 'reverse',
+          'payload': {'contextKind': 'infrastructure'},
+        });
+        final request = await next('hostRequest');
+        expect(
+          await host.handle({
+            'protocolVersion': backendHostProtocolVersion,
+            'kind': 'hostResponse',
+            'requestId': request['requestId'],
+            'pluginId': 'redaction',
+            'generation': 'generation',
+            ...fields,
+          }),
+          isTrue,
+        );
+        final response = (await next('response'))['payload'] as Map;
+        expect(response['ok'], false);
+        expect(response['error'], {
+          'code': 'invalid_host_response',
+          'message': 'Malformed runtime host response.',
+        });
+        expect(response.toString(), isNot(contains(marker)));
+        expect(diagnostics.join(), isNot(contains(marker)));
+      }
     },
   );
 

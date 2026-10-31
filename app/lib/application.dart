@@ -673,6 +673,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     try {
       _runtime.plugins.configureSettingsLoader(_loadStartupSettings);
       _runtime.plugins.configureRecordsLoader(_loadStartupRecords);
+      _runtime.plugins.configureCredentialAssociations(
+        () => _credentialAssociations!,
+      );
       if (widget.bootstrapPlugins case final bootstrap?) {
         await bootstrap(_runtime.plugins);
       } else {

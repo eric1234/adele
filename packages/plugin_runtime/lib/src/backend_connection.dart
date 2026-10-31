@@ -29,7 +29,7 @@ final class PluginRemoteFailure implements AdeleRemoteFailure {
   final Map<String, Object?> details;
 
   @override
-  String toString() => 'PluginRemoteFailure($code): $message';
+  String toString() => 'Plugin request failed.';
 }
 
 final class PluginConnectionClosed implements Exception {
@@ -113,13 +113,10 @@ final class PluginBackendHost {
             }
             host._handleMessage(message);
           }
-        } on Object catch (error, stackTrace) {
-          if (!hello.isCompleted) hello.completeError(error, stackTrace);
-          unawaited(
-            host._terminateAfterFailure(
-              PluginConnectionClosed('Malformed host output: $error'),
-            ),
-          );
+        } on Object {
+          const failure = PluginConnectionClosed('Malformed host output.');
+          if (!hello.isCompleted) hello.completeError(failure);
+          unawaited(host._terminateAfterFailure(failure));
         }
       },
       onDone: () {
@@ -614,7 +611,7 @@ final class PluginBackendHost {
         );
         return;
       }
-      _onDiagnostic?.call('Host message without request ID ignored: $message');
+      _onDiagnostic?.call('Host message without request ID ignored.');
       return;
     }
     if (_streams.containsKey(rawRequestId)) {

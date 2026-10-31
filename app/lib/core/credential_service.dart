@@ -109,12 +109,16 @@ final class CredentialService {
   Future<CredentialSecret?> read(
     CredentialReference reference, {
     void Function(CredentialSecret)? validate,
+    void Function()? beforeRead,
     bool reconcile = true,
   }) => _admit(() async {
+    // Admission may wait behind another native call. Recheck synchronous owner
+    // liveness here, never await another service while holding the P1 queue.
+    beforeRead?.call();
     if (!reconcile) _requireVerified(reference);
     final value = await _read(reference);
     if (value != null) validate?.call(value);
-    _uncertain.remove(reference);
+    if (reconcile) _uncertain.remove(reference);
     return value;
   });
 

@@ -2,6 +2,22 @@ import 'package:adele_plugin_backend_support/adele_backend_records.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+/// App-private seam keeping Flutter's Settings worker out of the runtime graph.
+/// Implementations accept only their own genuine worker captures, never a copied
+/// presentation view. No native persistence authority crosses this interface.
+abstract interface class StartupCredentialReader {
+  Future<String> readStartupCredential(
+    StartupRecordsView snapshot, {
+    required String collection,
+    required String recordType,
+    required String recordId,
+    required String slot,
+    required void Function() validateGeneration,
+  });
+
+  Future<void> releaseStartupRecords(StartupRecordsView snapshot);
+}
+
 /// One immutable, exact-installation startup projection, never an edit baseline.
 final class StartupRecordsView {
   factory StartupRecordsView.fromProjection(
