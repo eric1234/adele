@@ -437,7 +437,8 @@ record definitions at startup; credential references stay in the host. Ordinary
 record CRUD does not access the vault; even explicit credential management does not
 authenticate or activate a provider, change Chat, or alter temporary
 environment-variable startup. Restart captures updated records without activating
-configured providers. Runtime/backend credential delivery, record-based OAuth, Profiles,
+configured providers. Explicit backend credential retrieval is separately scoped
+as described below; record-based OAuth, Profiles,
 Agent configuration, narrower scopes, runtime restart commands, and live editor
 reconfiguration remain unimplemented.
 
@@ -472,8 +473,42 @@ with no live update, record RPC, file watcher or automatic restart.
 The stock OpenAI backend decodes Work/Personal metadata without creating providers
 or configuration contexts from records. Record IDs are configuration identities,
 not `ProviderId`s or credential authorization. Existing ChatGPT startup and ready
-advertisements are unchanged. Host-authorized credential delivery (P3b) and
-configured-provider materialization (P3c) remain separate work.
+advertisements are unchanged. Credential availability does not materialize a
+configured provider or activate a stored API-key instance.
+
+### Backend credentials
+
+`AdeleApplication` also binds `configureCredentialAssociations` to its retained
+`RecordCredentialService`. Bootstrap appends
+[`BackendCredentialHost`](lib/core/backend_credential_host.dart) only when the exact
+installation requests nonempty `backendConsumedCredentialSlots`; a standalone
+bootstrap must explicitly supply the matching coordinator. The app-private
+`StartupCredentialReader` seam keeps the Flutter worker out of `AdeleRuntime`'s
+pure-Dart graph. Registration performs no vault access.
+
+The Settings worker retains a separate authority batch alongside its startup
+projection, never replacing editable record handles. The coordinator accepts only
+genuine captures owned by that worker. The dispatcher binds one capture to one
+actual connection and permits only captured records and declared slots, through
+the existing reverse infrastructure transport. The backend chooses four selectors,
+never a credential reference or native key.
+
+`readStartupCredential` reuses protected-envelope decoding and P1 nonreconciling
+reads, with worker checks before/after storage and generation checks after waits.
+Separate drain tracking allows ordinary Settings operations while a backend read
+waits for OS unlock. Same-reference replacement and ordinary configuration changes
+invalidate old authority instead of rebinding a running backend. Close revokes
+publication synchronously and releases its batch without pretending to cancel the
+native operation; the application drains admitted operations before owner disposal.
+
+The [canonical credential model](../docs/architecture/profiles-and-configuration.md#backend-credential-delivery)
+owns capture, staleness, external-writer limits and the inability to revoke a secret
+already delivered in memory. The [public contract](../packages/plugin_backend_support/README.md)
+owns usage and fixed failures. Local test ownership is split between
+[`backend_credential_host_test.dart`](test/core/backend_credential_host_test.dart),
+[`startup_credential_authority_test.dart`](test/core/startup_credential_authority_test.dart)
+and the real compiled
+[`backend_credential_integration_test.dart`](test/core/backend_credential_integration_test.dart).
 
 ### Prepared Capability access
 

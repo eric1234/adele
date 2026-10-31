@@ -11,7 +11,8 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_desktop/core/prepared_records.dart';
+import 'package:adele_desktop/core/credential_service.dart';
+import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -6003,17 +6004,42 @@ void main() {
       '$pluginId failure preserves installed Chat and sibling backends',
       () async {
         final runtime = AdeleRuntime();
-        addTearDown(runtime.close);
+        final configuration = await Directory.systemTemp.createTemp(
+          'installed-tool-configuration-',
+        );
+        final storage = _UnusedCredentialStorage();
+        final credentials = CredentialService(storage);
+        GlobalSettingsService? settings;
+        RecordCredentialService? associations;
+        addTearDown(() async {
+          await runtime.close();
+          await associations?.close();
+          await settings?.close();
+          await credentials.close();
+          await configuration.delete(recursive: true);
+        });
         runtime.plugins.configureSettingsLoader(
           (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
         );
-        runtime.plugins.configureRecordsLoader(
-          (catalog, installation) async => StartupRecordsView.fromProjection(
-            catalog,
-            installation,
-            records: const [],
-          ),
-        );
+        runtime.plugins.configureRecordsLoader((catalog, installation) async {
+          settings ??= GlobalSettingsService(
+            catalog: catalog.settings,
+            records: catalog.records,
+            roots: PlatformStorageRoots(
+              operatingSystem: Platform.operatingSystem,
+              configurationRoot: '${configuration.path}/config',
+              localStateRoot: '${configuration.path}/state',
+              localDataRoot: '${configuration.path}/data',
+              cacheRoot: '${configuration.path}/cache',
+            ),
+          );
+          associations ??= RecordCredentialService(
+            settings: settings!,
+            credentials: credentials,
+          );
+          return settings!.loadStartupRecords(catalog, installation);
+        });
+        runtime.plugins.configureCredentialAssociations(() => associations!);
         await prepared.start(
           runtime,
           startupArguments: {
@@ -6060,8 +6086,20 @@ void main() {
           hasLength(1),
         );
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(storage.calls, 0);
       },
     );
+  }
+}
+
+final class _UnusedCredentialStorage extends Fake
+    implements CredentialStorageAdapter {
+  var calls = 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    calls++;
+    throw StateError('The empty startup fixture must not access credentials.');
   }
 }
 

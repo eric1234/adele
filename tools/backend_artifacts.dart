@@ -28,6 +28,15 @@ const _stockBackendConsumedRecordTypes = {
   'dev.adele.openai': ['dev.adele.openai.api-key'],
 };
 
+const _stockBackendConsumedCredentialSlots = {
+  'dev.adele.openai': [
+    {
+      'recordType': 'dev.adele.openai.api-key',
+      'slots': ['api-key'],
+    },
+  ],
+};
+
 Future<Map<String, Object>> desktopPreparationToolStats(Directory root) =>
     buildInputStats([
       for (final path in [
@@ -571,6 +580,8 @@ Future<void> publishStockPluginInstallation({
           'backend': <String, Object?>{
             'artifact': 'backend.aot',
             'consumesRecordTypes': ?_stockBackendConsumedRecordTypes[pluginId],
+            'consumesCredentialSlots':
+                ?_stockBackendConsumedCredentialSlots[pluginId],
           },
         if (frontend)
           'frontend': <String, Object?>{

@@ -1913,6 +1913,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final installation = catalog.installations.single;
       expect(installation.backendArtifactUri, isNull);
       expect(installation.backendConsumedRecordTypes, isEmpty);
+      expect(installation.backendConsumedCredentialSlots, isEmpty);
       expect(installation.frontend, isNull);
       expect(installation.settingsSchema, isNull);
       expect(catalog.settings.definitions, isEmpty);
@@ -1999,7 +2000,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   for (final backend in [false, true]) {
     for (final frontend in [false, true]) {
       test(
-        'stock OpenAI record opt-in backend=$backend frontend=$frontend',
+        'stock OpenAI record and credential opt-in backend=$backend frontend=$frontend',
         () async {
           final installations = Directory('${root.path}/published');
           final directory = Directory.fromUri(
@@ -2034,6 +2035,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             expect(components['backend'], {
               'artifact': 'backend.aot',
               'consumesRecordTypes': ['dev.adele.openai.api-key'],
+              'consumesCredentialSlots': [
+                {
+                  'recordType': 'dev.adele.openai.api-key',
+                  'slots': ['api-key'],
+                },
+              ],
             });
           }
           final catalog = await PreparedPluginCatalog.discover(
@@ -2045,6 +2052,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           expect(installation.frontend, frontend ? isNotNull : isNull);
           expect(installation.backendConsumedRecordTypesToJson(), [
             if (backend) 'dev.adele.openai.api-key',
+          ]);
+          expect(installation.backendConsumedCredentialSlotsToJson(), [
+            if (backend)
+              {
+                'recordType': 'dev.adele.openai.api-key',
+                'slots': ['api-key'],
+              },
           ]);
           expect(
             catalog.records.definitions.single.id.value,
@@ -2409,6 +2423,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   'artifact': 'backend.aot',
                   if (plugin.directory == 'openai')
                     'consumesRecordTypes': ['dev.adele.openai.api-key'],
+                  if (plugin.directory == 'openai')
+                    'consumesCredentialSlots': [
+                      {
+                        'recordType': 'dev.adele.openai.api-key',
+                        'slots': ['api-key'],
+                      },
+                    ],
                 },
               if (hasFrontend)
                 'frontend': {
@@ -2470,6 +2491,19 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(recordsInstallation.backendConsumedRecordTypesToJson(), [
           'dev.adele.openai.api-key',
         ]);
+        expect(recordsInstallation.backendConsumedCredentialSlotsToJson(), [
+          {
+            'recordType': 'dev.adele.openai.api-key',
+            'slots': ['api-key'],
+          },
+        ]);
+        expect(
+          catalog.installations.where(
+            (installation) =>
+                installation.backendConsumedCredentialSlots.isNotEmpty,
+          ),
+          [recordsInstallation],
+        );
         expect(
           catalog.installations.where(
             (installation) =>

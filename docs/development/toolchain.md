@@ -243,6 +243,10 @@ The host-only [`adele_configuration_store`](../../packages/configuration_store/R
 uses that same transitive hook and compiler requirement, not another native build.
 Its Linux write path uses coreutils `chmod`; its filesystem tests also use GNU
 `stat` and require an unprivileged user for permission-denied coverage.
+Host-authorized backend credential reads additionally use GNU `stat` for strict
+startup file-identity observations. Missing observation support fails credential
+access closed, not ordinary nonsecret record startup; see
+[backend credential delivery](../architecture/profiles-and-configuration.md#backend-credential-delivery).
 
 The hook maps native-host Linux/macOS/Windows x64 and arm64, rejecting unsupported
 targets, cross-compilation, static-only linking, and sanitizers. Only Linux x64 is

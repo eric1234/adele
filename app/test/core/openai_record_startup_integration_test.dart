@@ -53,7 +53,7 @@ void main() {
         artifact: openaiArtifact,
       ),
       (
-        entrypoint: 'app/test/fixtures/backend_record_observer.dart',
+        entrypoint: 'app/test/fixtures/backend_credential_consumer.dart',
         artifact: observerArtifact,
       ),
     ]) {
@@ -101,6 +101,12 @@ void main() {
       final installation = catalog.installations.single;
       expect(installation.backendConsumedRecordTypes, [
         RecordTypeId(_recordType),
+      ]);
+      expect(installation.backendConsumedCredentialSlotsToJson(), [
+        {
+          'recordType': _recordType,
+          'slots': ['api-key'],
+        },
       ]);
       final definition = catalog.records.definition(RecordTypeId(_recordType));
       expect(definition.owner, PluginId(_openai));
@@ -168,8 +174,8 @@ void main() {
         );
       }
 
-      // Explicit association writes above may verify the keyring. Projection
-      // and both subsequent backend starts must perform no credential I/O.
+      // Explicit association writes above may verify the keyring. Projection and
+      // backend startup must not read it; only controlled requests below may do so.
       storage.calls.clear();
       final projected = await settings.loadStartupRecords(
         catalog,
@@ -210,6 +216,8 @@ void main() {
       final extensions = ExtensionRegistry();
       var loads = 0;
       late StartupRecordsView startupRecords;
+      GlobalSettingsService? reader;
+      RecordCredentialService? backendAssociations;
       final bootstrap = ApplicationPluginBootstrap(
         registry,
         extensions,
@@ -217,22 +225,27 @@ void main() {
             PreparedSettingsSnapshot.resolve(prepared),
         loadRecords: (prepared, owner) async {
           loads++;
-          final reader = GlobalSettingsService(
+          reader = GlobalSettingsService(
             catalog: prepared.settings,
             records: prepared.records,
             roots: roots,
           );
-          try {
-            return startupRecords = await reader.loadStartupRecords(
-              prepared,
-              owner,
-            );
-          } finally {
-            await reader.close();
-          }
+          backendAssociations = RecordCredentialService(
+            settings: reader!,
+            credentials: credentials,
+          );
+          return startupRecords = await reader!.loadStartupRecords(
+            prepared,
+            owner,
+          );
         },
+        credentialAssociations: () => backendAssociations!,
       );
-      addTearDown(bootstrap.close);
+      addTearDown(() async {
+        await bootstrap.close();
+        await backendAssociations?.close();
+        await reader?.close();
+      });
       final chatGptFile = File(
         '${temporary.path}/absent-chatgpt-credentials.json',
       );
@@ -299,6 +312,17 @@ void main() {
       expect(await observer.request('records', {}), {
         'records': projected.records,
       });
+      final denied = await observer.request('read', {
+        'collection': 'providers',
+        'recordType': _recordType,
+        'recordId': 'work-openai',
+        'slot': 'api-key',
+      });
+      _expectCredentialRedacted(denied);
+      expect(denied, {
+        'failure': 'notAuthorized',
+        'display': 'Credential access failed (notAuthorized).',
+      });
       expect(storage.calls, isEmpty);
       for (final id in ['work', 'personal']) {
         expect(
@@ -319,7 +343,116 @@ void main() {
         'records': projected.records,
       });
       expect(storage.calls, isEmpty);
+
+      // Keep the exact stock declaration/schema, replacing only executable test
+      // code. Stock OpenAI itself intentionally does not read these credentials.
+      await bootstrap.close();
+      await observerArtifact.copy('${installationDirectory.path}/backend.aot');
+      GlobalSettingsService? controlledReader;
+      RecordCredentialService? controlledAssociations;
+      final controlled = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        ExtensionRegistry(),
+        loadSettings: (prepared) async =>
+            PreparedSettingsSnapshot.resolve(prepared),
+        loadRecords: (prepared, owner) async {
+          controlledReader = GlobalSettingsService(
+            catalog: prepared.settings,
+            records: prepared.records,
+            roots: roots,
+          );
+          controlledAssociations = RecordCredentialService(
+            settings: controlledReader!,
+            credentials: credentials,
+          );
+          return controlledReader!.loadStartupRecords(prepared, owner);
+        },
+        credentialAssociations: () => controlledAssociations!,
+      );
+      addTearDown(() async {
+        await controlled.close();
+        await controlledAssociations?.close();
+        await controlledReader?.close();
+      });
+      await controlled.start(
+        installationRoot: installationRoot.path,
+        dartaotruntimeExecutable: runtime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      final controlledBackend = controlled.backends.single;
+      expect(
+        controlledBackend.state,
+        InstalledBackendState.active,
+        reason: '${controlledBackend.failure}',
+      );
+      expect(
+        controlledBackend.installation.backendConsumedCredentialSlotsToJson(),
+        installation.backendConsumedCredentialSlotsToJson(),
+      );
+      expect(storage.calls, isEmpty);
+      final credentialConsumer = controlledBackend.connection!;
+      expect(credentialConsumer.capabilityExposures, isEmpty);
+      expect(credentialConsumer.extensionExposures, isEmpty);
+      final snapshot = await credentialConsumer.request('snapshot', {}) as Map;
+      _expectCredentialRedacted(snapshot);
+      expect(
+        snapshot['records'],
+        unorderedEquals([
+          expectedRecords.first,
+          {
+            ...expectedRecords.last,
+            'values': {
+              ...expectedRecords.last['values']! as Map,
+              'display-name': 'Work After Startup',
+            },
+          },
+        ]),
+      );
+      for (final id in ['work', 'personal']) {
+        final result =
+            await credentialConsumer.request('read', {
+                  'collection': 'providers',
+                  'recordType': _recordType,
+                  'recordId': '$id-openai',
+                  'slot': 'api-key',
+                })
+                as Map;
+        expect(
+          result.length == 1 && result['secret'] == 'test-only-$id-api-key',
+          isTrue,
+          reason: 'The stock declaration must authorize its exact association.',
+        );
+      }
+      expect(storage.calls, ['read', 'read']);
+      final foreign = await controlled.host!.startPlugin(
+        pluginId: 'dev.adele.test.credential-consumer',
+        artifactUri: observerArtifact.uri,
+      );
+      addTearDown(foreign.close);
+      final foreignResult = await foreign.request('read', {
+        'collection': 'providers',
+        'recordType': _recordType,
+        'recordId': 'personal-openai',
+        'slot': 'api-key',
+      });
+      _expectCredentialRedacted(foreignResult);
+      expect(foreignResult, {
+        'failure': 'notAuthorized',
+        'display': 'Credential access failed (notAuthorized).',
+      });
+      expect(storage.calls, ['read', 'read']);
     });
+  }
+}
+
+void _expectCredentialRedacted(Object? result) {
+  final text = '$result';
+  for (final forbidden in ['test-only-', 'cred1_', '"secret"', '"reference"']) {
+    expect(
+      text.contains(forbidden),
+      isFalse,
+      reason: 'Credential content escaped its explicit authorized response.',
+    );
   }
 }
 

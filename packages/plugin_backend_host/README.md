@@ -95,6 +95,19 @@ request-ID sequence, replay watermark, and captured-generation response routing.
 There is no compatibility interpretation of missing fields; semantic operation
 payloads that use `hostInvocationContext` are unchanged.
 
+Reverse unary responses are shape- and JSON-validated before isolate forwarding;
+malformed responses settle with a fixed `invalid_host_response` failure rather
+than logging their contents or a raw isolate-send exception. Framing failures use
+fixed messages without parser source text or native error interpolation. Generic
+runtime/backend failure formatting also omits remote error fields, while preserving
+those structured fields for deliberate generated-client decoding. This protects
+the existing reverse path used by the public
+[`AdeleCredentialClient`](../plugin_backend_support/README.md#credential-reads);
+the shared host adds no credential policy, native storage dependency, or new
+transport. `test/plugin_termination_test.dart` covers malformed reverse replies
+with secret-bearing payloads and continued generation-local response correlation,
+plus the real AOT credential client's success, fixed failures, and grant denial.
+
 Reverse server streaming uses the same ports/framed transport and captured
 generation routing, with one-item credit and cancellation forwarded between the
 backend consumer and host producer. Invocation settlement, cancellation, or

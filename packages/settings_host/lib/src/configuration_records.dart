@@ -24,10 +24,21 @@ final class ConfigurationRecordStore {
   /// Returns valid records and attributable failures, each in filename order.
   /// Directory-wide failures reject the operation, never an empty replacement.
   Future<ConfigurationRecordEnumeration> enumerate(
-    RecordCollectionId collection,
-  ) async {
+    RecordCollectionId collection, {
+    bool captureStartupIdentity = false,
+  }) async {
     catalog.collectionLabel(collection);
     final entries = await store.listCollection(collection.value);
+    final paths = [
+      if (captureStartupIdentity)
+        for (final entry in entries)
+          File(store.filePath).parent.uri
+              .resolve('${collection.value}/${Uri.encodeComponent(entry.name)}')
+              .toFilePath(),
+    ];
+    final before = captureStartupIdentity
+        ? await _startupIdentities(paths)
+        : const <String, String?>{};
     final names = <String, int>{};
     for (final entry in entries) {
       names.update(_alias(entry.name), (count) => count + 1, ifAbsent: () => 1);
@@ -73,6 +84,15 @@ final class ConfigurationRecordStore {
           maxEnumerationBytes,
           'enumerated record bytes',
         );
+      }
+    }
+    if (captureStartupIdentity) {
+      final after = await _startupIdentities(paths);
+      for (final record in records) {
+        final path = _file(record.collection, record.id).filePath;
+        record._startupIdentity = before == null || after == null
+            ? null
+            : (before[path], after[path]);
       }
     }
     return ConfigurationRecordEnumeration._(records, diagnostics);
@@ -212,6 +232,33 @@ final class ConfigurationRecordStore {
       expected.id,
     ).save(expected._baseline, expected.document);
     return expected;
+  }
+
+  /// Startup authority additionally pins the file incarnation. Ordinary UI
+  /// handles deliberately retain their existing byte-equivalence semantics.
+  Future<void> validateStartupCurrent(
+    ConfigurationRecordSnapshot expected,
+  ) async {
+    _checkCatalog(expected);
+    final identity = expected._startupIdentity;
+    if (identity == null) {
+      throw const ConfigurationStartupIdentityUnavailable();
+    }
+    final path = _file(expected.collection, expected.id).filePath;
+    if (identity.$1 == null || identity.$1 != identity.$2) {
+      throw ConfigurationConflictException(path);
+    }
+    final before = await _startupIdentities([path]);
+    if (before == null) throw const ConfigurationStartupIdentityUnavailable();
+    if (before[path] != identity.$1) {
+      throw ConfigurationConflictException(path);
+    }
+    await validateCurrent(expected);
+    final after = await _startupIdentities([path]);
+    if (after == null) throw const ConfigurationStartupIdentityUnavailable();
+    if (after[path] != identity.$1) {
+      throw ConfigurationConflictException(path);
+    }
   }
 
   /// Removes only this record in this layer, conditional on its observed bytes.
@@ -393,6 +440,79 @@ final class ConfigurationRecordStore {
   }
 }
 
+/// GNU stat preserves nanosecond change times and device/inode identity that
+/// Dart FileStat does not expose. Batch the collection, never spawn a worker or
+/// process per configured record. Unsupported platforms/tools fail closed for
+/// credential authority without preventing nonsecret startup projection.
+Future<Map<String, String?>?> _startupIdentities(List<String> paths) async {
+  if (!Platform.isLinux) return null;
+  bool missing(String path) {
+    if (FileSystemEntity.typeSync(path, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      return false;
+    }
+    // typeSync collapses all lookup errors to notFound. Only native absence,
+    // not permission/tool failure or a racing replacement, proves staleness.
+    try {
+      File(path).resolveSymbolicLinksSync();
+    } on FileSystemException catch (error) {
+      if (error.osError?.errorCode == 2 || error.osError?.errorCode == 20) {
+        return true;
+      }
+    }
+    throw const ConfigurationStartupIdentityUnavailable();
+  }
+
+  try {
+    final identities = <String, String?>{};
+    final existing = <String>[];
+    for (final path in paths) {
+      if (missing(path)) {
+        identities[path] = null;
+      } else {
+        existing.add(path);
+      }
+    }
+    if (existing.isEmpty) return identities;
+    final result = await Process.run(
+      'stat',
+      [r'--printf=%n\0%d:%i:%z:%y:%s:%f\0', '--', ...existing],
+      environment: {'LC_ALL': 'C', 'TZ': 'UTC'},
+    );
+    final fields = (result.stdout as String).split('\x00');
+    if (fields.last != '' || fields.length.isEven) return null;
+    final requested = existing.toSet();
+    for (var i = 0; i < fields.length - 1; i += 2) {
+      if (!requested.remove(fields[i]) ||
+          !RegExp(
+            r'^\d+:\d+:.*\.\d{9} \+0000:.*\.\d{9} \+0000:\d+:[0-9a-f]+$',
+          ).hasMatch(fields[i + 1])) {
+        return null;
+      }
+      identities[fields[i]] = fields[i + 1];
+    }
+    if (result.exitCode != 0 && requested.isEmpty) return null;
+    // Missing tool/output is not proof of a changed file. Only confirmed
+    // absence has a null member; unavailable observation has a null result.
+    for (final path in requested) {
+      if (!missing(path)) {
+        return null;
+      }
+      identities[path] = null;
+    }
+    return identities;
+  } on Object {
+    return null;
+  }
+}
+
+final class ConfigurationStartupIdentityUnavailable implements Exception {
+  const ConfigurationStartupIdentityUnavailable();
+
+  @override
+  String toString() => 'Strict startup record identity is unavailable.';
+}
+
 String _alias(String name) =>
     name.toLowerCase().replaceFirst(RegExp(r'[ .]+$'), '');
 
@@ -411,6 +531,7 @@ final class ConfigurationRecordSnapshot {
 
   final RecordCatalog _catalog;
   final ConfigurationSnapshot _baseline;
+  (String?, String?)? _startupIdentity;
   final ConfigurationRecordId id;
   final RecordTypeDefinition type;
   final Map<String, Object> values;

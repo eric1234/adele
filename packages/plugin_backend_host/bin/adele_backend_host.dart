@@ -30,8 +30,8 @@ Future<void> main() async {
             messages.add(message);
           }
         }
-      } on Object catch (error, stackTrace) {
-        stderr.writeln('backend-host protocol failure: $error\n$stackTrace');
+      } on Object {
+        stderr.writeln('backend-host protocol failure.');
         exitCode = 65;
         messages.close();
       }
@@ -68,8 +68,8 @@ bool _send(Map<String, Object?> message) {
   try {
     stdout.add(encodeBackendHostFrame(message));
     return true;
-  } on BackendHostProtocolException catch (error) {
-    stderr.writeln('backend-host response encoding failure: $error');
+  } on BackendHostProtocolException {
+    stderr.writeln('backend-host response encoding failure.');
     return false;
   }
 }

@@ -192,6 +192,18 @@ Neither operation accesses the keyring or authenticates a provider. The
 owns authorization, protected bindings, OS mutation ordering and partial-failure
 recovery; this adapter owns only nonsecret persistence.
 
+`enumerate(collection, captureStartupIdentity: true)` separately captures strict
+file observations for host-authorized backend reads. `validateStartupCurrent`
+checks that original observation around the ordinary conditional baseline check,
+without refreshing the snapshot or writing record contents. The maintained Linux
+implementation batches GNU `stat` calls around enumeration and retains device/inode,
+nanosecond change/modification times, size and mode privately. Unavailable identity
+is a fixed `ConfigurationStartupIdentityUnavailable`, not permission to use a weaker
+baseline. Ordinary enumeration and editable `validateCurrent` semantics are unchanged.
+This adds no vault access, second configuration writer or cross-process CAS. Exact
+generation permissions, mutation fencing and protected-envelope decoding remain
+with the [application coordinator](../../docs/architecture/profiles-and-configuration.md#backend-credential-delivery).
+
 ### Enumeration and Safety
 
 All record operations return Futures and first perform a bounded, nonrecursive

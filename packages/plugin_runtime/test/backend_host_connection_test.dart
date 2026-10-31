@@ -9,6 +9,102 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'reverse dispatch and malformed diagnostics redact private contents',
+    () async {
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  void send(Map<String, Object?> message) => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, ...message}));
+  send({'kind': 'hostHello'});
+  final decoder = BackendHostFrameDecoder();
+  final generations = <String, String>{};
+  final pending = <int, Map<String, Object?>>{};
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        generations[message['pluginId'] as String] = message['generation'] as String;
+        send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
+      } else if (message['kind'] == 'request') {
+        pending[message['requestId'] as int] = message;
+        send({'kind': 'response', 'payload': 'private-secret-or-native-error'});
+        send({'kind': 'hostRequest', 'requestId': message['requestId'], 'pluginId': message['pluginId'],
+          'generation': generations[message['pluginId']], 'hostContextKind': 'invocation',
+          'hostContext': (message['payload'] as Map)['context'], 'serviceId': 'fixture', 'method': 'read', 'payload': {}});
+      } else if (message['kind'] == 'hostResponse') {
+        final original = pending.remove(message['requestId'])!;
+        send({'kind': 'response', 'requestId': original['requestId'], 'pluginId': original['pluginId'], 'ok': true, 'payload': message});
+      } else if (message['kind'] == 'shutdownHost') {
+        send({'kind': 'hostStopped', 'requestId': message['requestId']});
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final diagnostics = <String>[];
+      final host = await fake.start(onDiagnostic: diagnostics.add);
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'redaction',
+        artifactUri: Uri.file('/unused'),
+      );
+      const marker = 'private-secret-or-native-error';
+      for (final fields in <Map<String, Object?>?>[
+        null,
+        {'ok': true, 'private': marker},
+        {
+          'ok': false,
+          'error': {
+            'code': marker,
+            'message': marker,
+            'details': [marker],
+          },
+        },
+        {
+          'ok': true,
+          'payload': {'secret': marker, 'invalid': Object()},
+        },
+      ]) {
+        final dispatcher = _PendingHostDispatcher();
+        final invocation = connection.openHostInvocation({
+          'fixture': dispatcher,
+        });
+        addTearDown(invocation.close);
+        final pending = connection.request('reverse', {
+          'context': invocation.id,
+        });
+        await dispatcher.entered.future;
+        if (fields == null) {
+          dispatcher.result.completeError(StateError(marker));
+        } else {
+          dispatcher.result.complete({
+            'kind': 'response',
+            'requestId': dispatcher.requestId,
+            ...fields,
+          });
+        }
+        final response = await pending as Map;
+        expect(response['ok'], false);
+        expect(response['payload'], isNull);
+        expect(response.toString(), isNot(contains(marker)));
+        expect(
+          (response['error'] as Map)['code'],
+          anyOf('internal_error', 'response_encoding_failed'),
+        );
+      }
+      expect(diagnostics, isNotEmpty);
+      expect(diagnostics.join(), isNot(contains(marker)));
+      expect(
+        const PluginRemoteFailure(code: marker, message: marker).toString(),
+        'Plugin request failed.',
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
     'captures and validates settings and records before callbacks or awaits',
     () async {
       final fake = _FakeHost.create('''

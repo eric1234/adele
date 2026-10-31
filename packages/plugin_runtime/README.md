@@ -104,7 +104,8 @@ The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
 `metadata` supplies `PluginMetadata`; optional installation-level `settingsSchema`
 and `recordsSchema` reference independent declarative assets. The required
 `components` object may be empty, retaining a metadata-only installation. A backend component supplies
-an `artifact` path and optional `consumesCapabilities` and `consumesRecordTypes`;
+an `artifact` path and optional `consumesCapabilities`, `consumesRecordTypes`, and
+`consumesCredentialSlots`;
 a frontend supplies an
 `artifact` path and descriptors.
 The in-memory catalog captures parsed metadata, setting/record declarations, and
@@ -343,7 +344,7 @@ definition owned by `metadata.id` in **this installation's** validated
 `recordsSchema`; a namespace prefix, shared collection, or another installation's
 definition cannot authorize consumption. Nonempty opt-in with an absent, unreadable,
 or rejected schema fails closed. Invalid opt-in omits only the backend, clearing
-its artifact and both consumption lists while preserving healthy schemas and the
+its artifact and all consumption lists while preserving healthy schemas and the
 frontend. Empty opt-in requires no record schema.
 
 `PreparedPluginInstallation.backendConsumedRecordTypes` is an immutable
@@ -356,6 +357,53 @@ does not read persisted records, activate code, route providers, or grant creden
 access. Metadata-only and frontend-only declarations remain independently available.
 The maintained stock publisher opts the OpenAI backend into
 `dev.adele.openai.api-key` without changing its authored record schema.
+
+`components.backend.consumesCredentialSlots` separately requests credential slots
+of already-consumed record types:
+
+```json
+{
+  "artifact": "backend.aot",
+  "consumesRecordTypes": ["org.example.plugin.api"],
+  "consumesCredentialSlots": [
+    {"recordType": "org.example.plugin.api", "slots": ["api-key"]}
+  ]
+}
+```
+
+Omission means empty. Each entry accepts exactly `recordType` and `slots`. There
+may be at most 128 distinct types and 128 distinct slots per type. Types use the
+same bounded public record-type identity as record consumption; slots use public
+`RecordCredentialSlotId` identities, bounded to 64 ASCII characters. Duplicate
+type entries (even with disjoint slots), duplicate slots, nulls, malformed shapes,
+unknown fields, unknown slots, and foreign or unconsumed types reject only the
+backend. Every type must match an exact definition owned by this installation in
+its validated `recordsSchema` and already appear in `consumesRecordTypes`; each
+slot must be declared on that exact definition. Neither nested owner namespaces,
+another installation's matching type/slot, nor collection membership supplies
+authority. Nonempty declarations fail closed without a valid schema. An empty
+top-level array needs no schema; an empty per-type slot array requests no slots
+but still requires that exact consumed definition.
+
+`PreparedPluginInstallation.backendConsumedCredentialSlots` is an immutable
+`List<PreparedBackendCredentialSlots>`. Each entry contains `RecordTypeId recordType`
+and an immutable `List<RecordCredentialSlotId> slots`, both lists preserving authored
+order. Programmatic construction uses the same bounds and exact validation and
+rejects nonempty declarations without a backend. The limit is
+`maxBackendConsumedCredentialSlotTypes`; the per-type limit reuses
+`PreparedRecordsSchema.maxCredentialSlots`. `backendConsumedCredentialSlotsToJson()`
+returns fresh nested maps/lists. Invalid backend metadata clears all its consumption
+lists while preserving healthy settings, records, and frontend components. Frontend
+failure likewise preserves a valid backend declaration. The field is rejected at
+installation, metadata, frontend, and frontend-descriptor scope.
+
+Schema availability and ordinary record opt-in never imply credential consumption.
+Discovery neither reads credentials or references nor activates code or grants
+frontend access; actual generation-bound mediation belongs to the application.
+The stock publisher opts OpenAI into exactly `dev.adele.openai.api-key` / `api-key`,
+without changing its authored record schema or backend behavior. The
+[record declaration tests](test/prepared_records_schema_test.dart) exercise the
+separate opt-in, immutable snapshots, bounds, and exact-installation checks.
 
 `PreparedCommandExtension` uses `kind: 'command'` and exactly these required fields:
 
