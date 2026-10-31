@@ -159,6 +159,22 @@ void main() {
         encodeSessionFeedbackSubmission(submission),
       );
       expect(record.runId, isNull);
+      final writes = storage.transactions;
+      final schemas = storage.schemaChecks;
+      final inspected = await backend.inspection.readAcceptedFeedback(
+        'session',
+        receipts.first.occurrenceId,
+      );
+      expect(inspected.submissionId, submission.submissionId);
+      expect(inspected.comments.single.text, submission.comments.single.text);
+      expect(inspected.runId, isNull);
+      final accepted = (await backend.chat.snapshot('session')).entries.single;
+      expect(accepted.feedback!.kind, ChatFeedbackKind.codeReview);
+      expect(accepted.feedback!.submissionId, submission.submissionId);
+      expect(accepted.feedback!.commentCount, 1);
+      expect(accepted.content, renderChatSessionFeedback(submission));
+      expect(storage.transactions, writes);
+      expect(storage.schemaChecks, schemas);
       final execution = await backend.materialize(
         expectedFeedback: receipts.first,
       );
@@ -168,6 +184,13 @@ void main() {
           'session',
           submission.submissionId,
         ))!.runId,
+        'run',
+      );
+      expect(
+        (await backend.inspection.readAcceptedFeedback(
+          'session',
+          'entry-0',
+        )).runId,
         'run',
       );
       await expectLater(
@@ -232,6 +255,26 @@ void main() {
         ['user', 'assistant'],
       );
       expect(replacement.host.events, isEmpty);
+      final reloaded = await replacement.inspection.readAcceptedFeedback(
+        'session',
+        'entry-0',
+      );
+      expect(reloaded.submissionId, submission.submissionId);
+      expect(reloaded.comments.single.text, inspected.comments.single.text);
+      expect(reloaded.runId, 'run');
+      final history = (await replacement.chat.snapshot('session')).entries;
+      expect(history.first.feedback!.submissionId, submission.submissionId);
+      expect(history.last.feedback, isNull);
+      await expectLater(
+        replacement.inspection.readAcceptedFeedback('session', history.last.id),
+        throwsA(
+          isA<ChatFeedbackInspectionFailure>().having(
+            (error) => error.code,
+            'code',
+            'not_found',
+          ),
+        ),
+      );
     },
   );
 
@@ -2085,6 +2128,9 @@ final class _RunningBackend {
   );
   late final feedback = RemoteSessionFeedbackServiceClient(
     _Channel(this, remoteSessionFeedbackServiceId),
+  );
+  late final inspection = ChatFeedbackInspectionServiceClient(
+    _Channel(this, chatFeedbackInspectionServiceId),
   );
   int nextRequest = 0;
   bool stopped = false;

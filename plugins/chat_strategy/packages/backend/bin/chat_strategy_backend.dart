@@ -29,14 +29,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
 
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
-  final sessions = ChatSessionStore(
-    storage: ProjectStorageServiceClient(
-      hostRequests.bindInfrastructure(
-        hostInfrastructureContext: hostInfrastructureContext,
-        serviceId: projectStorageServiceId,
-      ),
+  final storage = ProjectStorageServiceClient(
+    hostRequests.bindInfrastructure(
+      hostInfrastructureContext: hostInfrastructureContext,
+      serviceId: projectStorageServiceId,
     ),
   );
+  final sessions = ChatSessionStore(storage: storage);
   final orchestration = ChatRemoteOrchestrationBackend(
     sessions: sessions,
     maxModelInvocations: AdeleBackendSettings.fromBootstrap(
@@ -55,6 +54,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           ChatSessionBackend(sessions),
           concurrent: true,
         ),
+        chatFeedbackInspectionServiceId:
+            ChatFeedbackInspectionServiceDispatcher(
+              ChatFeedbackInspectionBackend(storage),
+              concurrent: true,
+            ),
         remoteOrchestrationServiceId: RemoteOrchestrationServiceDispatcher(
           orchestration,
           concurrent: true,

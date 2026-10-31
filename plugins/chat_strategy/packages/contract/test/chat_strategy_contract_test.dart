@@ -40,6 +40,8 @@ void main() {
         'dev.adele.plugin.chat-strategy.orchestration',
       );
       expect(chatSessionServiceId, 'chat.session');
+      expect(chatFeedbackInspectionServiceId, 'chat.feedbackInspection');
+      expect(chatFeedbackInspectionKind, 'dev.adele.chat.review-feedback');
       expect(ChatEntryId('entry-1'), ChatEntryId('entry-1'));
       expect(ChatEntryId('entry-1').hashCode, ChatEntryId('entry-1').hashCode);
       expect(ChatEntryId('entry-1'), isNot(ChatEntryId('entry-2')));
@@ -63,6 +65,7 @@ void main() {
       expect(accepted.role, 'user');
       expect(accepted.content, '  Prompt.\n');
       expect(accepted.runId, isNull);
+      expect(accepted.feedback, isNull);
       expect(snapshot.entries.single.id, accepted.id);
       expect(snapshot.entries.single, isNot(same(accepted)));
       expect(snapshot.instructions, '  exact\r\n');
@@ -187,6 +190,7 @@ void main() {
               role: 'user',
               content: 'Prompt.',
               runId: runId,
+              feedback: null,
             ),
           );
         final snapshot = await client.snapshot('session');
@@ -203,6 +207,7 @@ void main() {
           'role': 'user',
           'content': 'Prompt.',
           'runId': runId,
+          'feedback': null,
         });
       }
       for (final fields in <Map<String, Object?>>[
@@ -216,6 +221,7 @@ void main() {
                 'id': 'entry-0',
                 'role': 'user',
                 'content': 'Prompt.',
+                'feedback': null,
                 ...fields,
               },
             ],
@@ -226,6 +232,138 @@ void main() {
         await expectLater(
           client.snapshot('session'),
           throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'feedback metadata is typed and requires its nullable wire field',
+    () async {
+      final service = _Service();
+      final dispatcher = ChatSessionServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final client = ChatSessionServiceClient(_Channel(dispatcher));
+      service.entries.add(
+        const ChatEntry(
+          id: 'entry-0',
+          role: 'user',
+          content: 'Canonical model content.',
+          runId: null,
+          feedback: ChatEntryFeedback(
+            kind: ChatFeedbackKind.codeReview,
+            submissionId: 'review',
+            commentCount: 3,
+          ),
+        ),
+      );
+      final entry = (await client.snapshot('session')).entries.single;
+      expect(entry.content, service.entries.single.content);
+      expect(entry.runId, isNull);
+      expect(entry.feedback!.kind, ChatFeedbackKind.codeReview);
+      expect(entry.feedback!.submissionId, 'review');
+      expect(entry.feedback!.commentCount, 3);
+      for (final fields in <Map<String, Object?>>[
+        {},
+        {'feedback': 'codeReview'},
+        {
+          'feedback': {
+            'kind': 'unknown',
+            'submissionId': 'review',
+            'commentCount': 3,
+          },
+        },
+        {
+          'feedback': {'kind': 'codeReview', 'submissionId': 'review'},
+        },
+      ]) {
+        final malformed = ChatSessionServiceClient(
+          _SnapshotChannel({
+            'entries': [
+              {
+                'id': 'entry-0',
+                'role': 'user',
+                'content': 'Canonical model content.',
+                'runId': null,
+                ...fields,
+              },
+            ],
+            'instructions': '',
+            'draftRequest': '',
+          }),
+        );
+        await expectLater(
+          malformed.snapshot('session'),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'dedicated generated Inspection transport is typed and read-only',
+    () async {
+      final service = _InspectionService();
+      final dispatcher = ChatFeedbackInspectionServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final client = ChatFeedbackInspectionServiceClient(channel);
+      final record = await client.readAcceptedFeedback('session', 'entry-0');
+      expect(record.sessionId, 'session');
+      expect(record.occurrenceId, 'entry-0');
+      expect(record.submissionId, 'review');
+      expect(record.kind, ChatFeedbackKind.codeReview);
+      expect(record.runId, isNull);
+      expect(record.comments.single.text, '  Exact\r\n\t\u00e9\u{1f600}');
+      expect(record.comments.single.version, 2);
+      expect(record.comments.single.sequence, 8);
+      final anchor = record.comments.single.anchor;
+      expect(anchor.environmentId, 'environment');
+      expect(anchor.relativePath, 'lib/source.dart');
+      expect(anchor.layer, ChatFeedbackComparisonLayer.committed);
+      expect(anchor.side, ChatFeedbackComparisonSide.oldSide);
+      expect((anchor.startLine, anchor.endLine), (3, 6));
+      expect(anchor.comparisonIdentity, 'comparison');
+      expect(anchor.sourceExcerpt, '  source();\r\n');
+      expect((anchor.hunkIndex, anchor.lineIndex), (2, 7));
+      expect(() => record.comments.clear(), throwsUnsupportedError);
+      expect(
+        channel.calls.single.$1,
+        chatFeedbackInspectionServiceReadAcceptedFeedbackId,
+      );
+      expect(channel.calls.single.$2, {
+        'sessionId': 'session',
+        'occurrenceId': 'entry-0',
+      });
+      for (final method in [
+        'accept',
+        'snapshot',
+        'appendUserMessage',
+        'setDraftRequest',
+      ]) {
+        final response = await dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 2,
+          'method': method,
+          'payload': <String, Object?>{},
+        });
+        expect(response['ok'], isFalse);
+      }
+      expect(service.calls, 1);
+      for (final code in [
+        'invalid_request',
+        'not_found',
+        'unavailable',
+        'corrupt',
+      ]) {
+        service.failure = code;
+        await expectLater(
+          client.readAcceptedFeedback('session', 'entry-0'),
+          throwsA(
+            isA<ChatFeedbackInspectionFailure>()
+                .having((error) => error.code, 'code', code)
+                .having((error) => error.details, 'details', isEmpty),
+          ),
         );
       }
     },
@@ -268,7 +406,7 @@ final class _SnapshotChannel implements AdeleRequestChannel {
 
 final class _Channel implements AdeleRequestChannel {
   _Channel(this.dispatcher);
-  final ChatSessionServiceDispatcher dispatcher;
+  final AdeleBackendDispatcher dispatcher;
   final calls = <(String, Map<String, Object?>)>[];
 
   @override
@@ -315,6 +453,7 @@ final class _Service implements ChatSessionService {
       role: 'user',
       content: content,
       runId: null,
+      feedback: null,
     );
     entries.add(entry);
     return entry;
@@ -335,6 +474,53 @@ final class _Service implements ChatSessionService {
   @override
   Future<void> configureSession(String sessionId, String instructions) async {
     this.instructions = instructions;
+  }
+}
+
+final class _InspectionService implements ChatFeedbackInspectionService {
+  int calls = 0;
+  String? failure;
+
+  @override
+  Future<ChatAcceptedFeedback> readAcceptedFeedback(
+    String sessionId,
+    String occurrenceId,
+  ) async {
+    calls++;
+    if (failure case final code?) {
+      throw ChatFeedbackInspectionFailure(
+        code: code,
+        message: 'Safe failure.',
+        details: {},
+      );
+    }
+    return ChatAcceptedFeedback(
+      sessionId: sessionId,
+      occurrenceId: occurrenceId,
+      submissionId: 'review',
+      kind: ChatFeedbackKind.codeReview,
+      runId: null,
+      comments: const [
+        ChatFeedbackComment(
+          id: 'comment',
+          anchor: ChatFeedbackAnchor(
+            environmentId: 'environment',
+            relativePath: 'lib/source.dart',
+            layer: ChatFeedbackComparisonLayer.committed,
+            side: ChatFeedbackComparisonSide.oldSide,
+            startLine: 3,
+            endLine: 6,
+            comparisonIdentity: 'comparison',
+            sourceExcerpt: '  source();\r\n',
+            hunkIndex: 2,
+            lineIndex: 7,
+          ),
+          text: '  Exact\r\n\t\u00e9\u{1f600}',
+          version: 2,
+          sequence: 8,
+        ),
+      ],
+    );
   }
 }
 

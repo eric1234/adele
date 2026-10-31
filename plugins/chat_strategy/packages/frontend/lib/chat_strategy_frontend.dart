@@ -2,6 +2,7 @@ import 'package:adele_ui/inspection_display.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/rich_document_editor_bridge.dart';
+import 'package:adele_ui/session_content_inspection_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
@@ -81,6 +82,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
   // ignore: avoid_init_to_null
   Future<bool>? draftSave = null;
   final Map<String, String> runs = <String, String>{};
+  final Map<String, bool> feedbackInspectionFailures = <String, bool>{};
   void Function() listener = () {};
   Future<bool> Function() deactivation = () async => false;
   String sessionId = '';
@@ -473,6 +475,62 @@ class _ChatFrontendState extends State<ChatFrontend> {
     ),
   );
 
+  // A separate frame captures this canonical occurrence, not a recycled loop local.
+  Widget feedbackOccurrence(ChatEntry entry, ChatEntryFeedback feedback) {
+    if (entry.role != 'user' ||
+        feedback.kind != ChatFeedbackKind.codeReview ||
+        !_validFeedbackSummary(feedback.submissionId, feedback.commentCount)) {
+      return Padding(
+        padding: EdgeInsets.only(bottom: 16),
+        child: Text('Review feedback is unavailable.'),
+      );
+    }
+    return Padding(
+      padding: EdgeInsets.only(bottom: 16),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text('You', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 4),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  // The eval bridge does not supply Flutter's default flex.
+                  flex: 1,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      'Review feedback \u00b7 ${feedback.commentCount} '
+                      '${feedback.commentCount == 1 ? 'comment' : 'comments'}',
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    if (disposed) return;
+                    final opened = inspectSessionContent(
+                      chatFeedbackInspectionKind,
+                      entry.id,
+                    );
+                    setState(() {
+                      feedbackInspectionFailures[entry.id] = !opened;
+                    });
+                  },
+                  child: Text('Inspect'),
+                ),
+              ],
+            ),
+            if (feedbackInspectionFailures[entry.id] == true)
+              Text('Feedback Inspection is unavailable.'),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final current = snapshot;
@@ -486,30 +544,35 @@ class _ChatFrontendState extends State<ChatFrontend> {
     ];
     if (current != null) {
       for (final ChatEntry entry in current.entries) {
-        children.add(
-          Padding(
-            padding: EdgeInsets.only(bottom: 16),
-            child: Align(
-              alignment: entry.role == 'user'
-                  ? Alignment.centerRight
-                  : Alignment.centerLeft,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: entry.role == 'user'
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    entry.role == 'user' ? 'You' : 'ADELE',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 4),
-                  Text(entry.content),
-                ],
+        final feedback = entry.feedback;
+        if (feedback != null) {
+          children.add(feedbackOccurrence(entry, feedback));
+        } else {
+          children.add(
+            Padding(
+              padding: EdgeInsets.only(bottom: 16),
+              child: Align(
+                alignment: entry.role == 'user'
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: entry.role == 'user'
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      entry.role == 'user' ? 'You' : 'ADELE',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 4),
+                    Text(entry.content),
+                  ],
+                ),
               ),
             ),
-          ),
-        );
+          );
+        }
         final runHandle = runs[entry.id];
         if (runHandle != null) children.addAll(activity(runHandle));
       }
@@ -580,4 +643,106 @@ class _ChatFrontendState extends State<ChatFrontend> {
       children: children,
     );
   }
+}
+
+// Match the public feedback summary bounds without importing execution services.
+// Generated DTO decoding checks types, not these semantic invariants.
+bool _validFeedbackSummary(String submissionId, int commentCount) {
+  if (commentCount < 1 ||
+      commentCount > 128 ||
+      submissionId.isEmpty ||
+      submissionId.length > 256 ||
+      submissionId.trim() != submissionId) {
+    return false;
+  }
+  return !RegExp(
+    r'[\u0000-\u001F\u007F-\u009F\uD800-\uDFFF]',
+    unicode: true,
+  ).hasMatch(submissionId);
+}
+
+Future<Widget> buildChatFeedbackInspection() async {
+  final context = readSessionContentInspectionContext();
+  final sessionId = context['sessionId'] as String;
+  final occurrenceId = context['occurrenceId'] as String;
+  if (context['contentKind'] != chatFeedbackInspectionKind) {
+    return Text('Review feedback is unavailable.');
+  }
+  final client = ChatFeedbackInspectionServiceClient(
+    OwningBackendRequestChannel(chatFeedbackInspectionServiceId),
+  );
+  final result = await settleOwningBackendOperation(
+    client.readAcceptedFeedback(sessionId, occurrenceId),
+  );
+  if (result[0] != true) return Text('Review feedback is unavailable.');
+  final feedback = result[1] as ChatAcceptedFeedback;
+  if (feedback.sessionId != sessionId ||
+      feedback.occurrenceId != occurrenceId ||
+      feedback.kind != ChatFeedbackKind.codeReview ||
+      !_validFeedbackSummary(feedback.submissionId, feedback.comments.length)) {
+    return Text('Review feedback is unavailable.');
+  }
+  // The host fences this asynchronous factory against the exact card lifetime.
+  // These are historical facts, never current source-location or execution grants.
+  final children = <Widget>[
+    Text('Review feedback', style: TextStyle(fontWeight: FontWeight.bold)),
+    Text(
+      '${feedback.comments.length} '
+      '${feedback.comments.length == 1 ? 'comment' : 'comments'}',
+    ),
+    Text(
+      'Historical locations and excerpts captured when this feedback was '
+      'accepted. They may no longer match the current source.',
+    ),
+    Text('Display escapes make controls and invisible formatting visible.'),
+    Text('Session: ${inspectionDisplayText(feedback.sessionId)}'),
+    Text('Occurrence: ${inspectionDisplayText(feedback.occurrenceId)}'),
+    Text('Submission: ${inspectionDisplayText(feedback.submissionId)}'),
+    Text('Kind: codeReview'),
+    Text('Run: ${inspectionDisplayText(feedback.runId ?? 'Not associated')}'),
+  ];
+  for (final ChatFeedbackComment comment in feedback.comments) {
+    final anchor = comment.anchor;
+    String layer = 'unstaged';
+    if (anchor.layer == ChatFeedbackComparisonLayer.staged) layer = 'staged';
+    if (anchor.layer == ChatFeedbackComparisonLayer.committed) {
+      layer = 'committed';
+    }
+    final side = anchor.side == ChatFeedbackComparisonSide.oldSide
+        ? 'oldSide'
+        : 'newSide';
+    children.add(
+      Padding(
+        padding: EdgeInsets.only(top: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text('Comment: ${inspectionDisplayText(comment.id)}'),
+            Text('Version: ${comment.version}; sequence: ${comment.sequence}'),
+            Text('Comment text: ${inspectionDisplayText(comment.text)}'),
+            Text('Environment: ${inspectionDisplayText(anchor.environmentId)}'),
+            Text('Path: ${inspectionDisplayText(anchor.relativePath)}'),
+            Text('Layer: $layer; side: $side'),
+            Text('Lines: ${anchor.startLine}-${anchor.endLine} (inclusive)'),
+            Text(
+              'Comparison: ${inspectionDisplayText(anchor.comparisonIdentity)}',
+            ),
+            Text(
+              'Hunk index: ${anchor.hunkIndex}; line index: ${anchor.lineIndex} '
+              '(zero-based)',
+            ),
+            Text(
+              'Source excerpt: ${inspectionDisplayText(anchor.sourceExcerpt)}',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: children,
+  );
 }

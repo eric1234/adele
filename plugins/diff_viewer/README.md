@@ -344,6 +344,13 @@ retained state without replay; an uncertain `schedulingPending` handoff stays pe
 until positive reconciliation. The backend stores no live controller, binding or
 execution authority and does not itself accept feedback or schedule Runs.
 
+Once accepted, the compatible strategy owns the structured review and its
+presentation independently of this pending collection. Stock Chat displays one
+compact occurrence with an explicit Inspection action; its own read-only service
+retrieves the accepted originals, even after Diff closes or starts a new draft.
+Diff has no implementation dependency on that renderer. See
+[Chat presentation](../chat_strategy/packages/frontend/README.md).
+
 ### Comment Workflow
 
 Each eligible source line offers a compact **Comment** action. An addition anchors

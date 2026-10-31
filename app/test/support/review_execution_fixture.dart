@@ -169,6 +169,8 @@ final class ReviewExecutionFixture
     if (modelGate case final gate? when !gate.isCompleted) gate.complete();
   }
 
+  Future<void> retireProvider() => _provider.close();
+
   Future<void> close() async {
     release();
     await _tools.close();

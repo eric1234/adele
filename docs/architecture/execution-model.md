@@ -134,8 +134,11 @@ An exact repeat returns the original occurrence; reusing the ID with any differe
 canonical content fails. Different IDs remain distinct even when their comments
 are identical. The accepting strategy atomically retains the occurrence, complete
 structured payload, receipt relationship, and counters. Human-facing compact
-presentation and future rich Inspection must not reconstruct accepted feedback by
-parsing model-facing prose.
+presentation and rich Inspection must not reconstruct accepted feedback by parsing
+model-facing prose. Stock Chat retains the complete deterministic feedback text as
+its canonical user content and ordinary model input, while authoritative feedback
+metadata supplies a compact human label. Its separate read-only Inspection service
+returns the accepted structured record without acceptance or execution authority.
 
 An unacknowledged mutation is uncertain, not rejected or automatically retried.
 Explicit lookup uses the original submission identity, and a retained receipt is

@@ -12,6 +12,9 @@ final ExtensionId chatStrategyExtensionId = ExtensionId(
 );
 const String chatStrategyRouteId = 'chat';
 
+/// Session-content Inspection kind for an accepted Chat review occurrence.
+const String chatFeedbackInspectionKind = 'dev.adele.chat.review-feedback';
+
 /// Chat's declared per-Run budget, supplied explicitly by backend callers.
 const String chatMaxModelInvocationsSettingId =
     'dev.adele.plugin.chat-strategy.max-model-invocations';

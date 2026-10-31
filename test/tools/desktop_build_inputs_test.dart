@@ -91,6 +91,7 @@ void main() {
       'main_content',
       'owning_backend',
       'rich_document_editor',
+      'session_content_inspection',
       'session_execution',
       'session_feedback',
       'session_presentation_lifecycle',
@@ -411,6 +412,12 @@ part 'missing_part.dart';
       expect(
         inputs['chat-frontend-compilation'],
         contains(absolute('packages/ui/lib/rich_document_editor_bridge.dart')),
+      );
+      expect(
+        inputs['chat-frontend-compilation'],
+        contains(
+          absolute('packages/ui/lib/session_content_inspection_bridge.dart'),
+        ),
       );
       expect(
         inputs['filesystem-frontend-compilation'],

@@ -5,6 +5,7 @@ import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/rich_document_editor_bridge.dart';
 import 'package:adele_desktop/frontend/scroll_view_bridge.dart';
+import 'package:adele_desktop/frontend/session_content_inspection_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart' as chat;
@@ -41,6 +42,7 @@ class _ChatStrategyIdentity {
   final String value;
 }
 final chatStrategyId = _ChatStrategyIdentity(${jsonEncode(chat.chatStrategyId.value)});
+const chatFeedbackInspectionKind = ${jsonEncode(chat.chatFeedbackInspectionKind)};
 ''',
     },
     'adele_contract': {'adele_contract.dart': evalContractSupportSource},
@@ -49,6 +51,7 @@ final chatStrategyId = _ChatStrategyIdentity(${jsonEncode(chat.chatStrategyId.va
         'main_content_bridge.dart',
         'owning_backend_bridge.dart',
         'rich_document_editor_bridge.dart',
+        'session_content_inspection_bridge.dart',
         'session_execution_bridge.dart',
         'session_presentation_lifecycle_bridge.dart',
         'inspection_display.dart',
@@ -82,6 +85,7 @@ Future<void> compileChatFrontend({
     ..addPlugin(const MainContentDeclarations())
     ..addPlugin(const OwningBackendDeclarations())
     ..addPlugin(const RichDocumentEditorDeclarations())
+    ..addPlugin(const SessionContentInspectionDeclarations())
     ..addPlugin(const SessionExecutionDeclarations())
     ..addPlugin(const SessionPresentationLifecycleDeclarations())
     ..entrypoints.add('package:adele_contract/adele_contract.dart')
