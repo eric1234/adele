@@ -105,7 +105,12 @@ void main() {
                 'plugin',
                 declareRecords: records,
                 settings: settings,
-                schema: _schema([_type()]),
+                schema: _schema([
+                  {
+                    ..._type(),
+                    'credentialSlots': [_slot()],
+                  },
+                ]),
                 components: {
                   if (backend) 'backend': _components['backend'],
                   if (frontend) 'frontend': _components['frontend'],
@@ -125,6 +130,11 @@ void main() {
               );
               expect(installation.recordsSchema, records ? isNotNull : isNull);
               expect(installation.backendConsumedRecordTypes, isEmpty);
+              expect(installation.backendConsumedCredentialSlots, isEmpty);
+              expect(
+                () => installation.backendConsumedCredentialSlots.clear(),
+                throwsUnsupportedError,
+              );
               expect(
                 () => installation.backendConsumedRecordTypes.clear(),
                 throwsUnsupportedError,
@@ -167,7 +177,13 @@ void main() {
       final ids = ['org.example.plugin.z', 'org.example.plugin.api'];
       final directory = await install(
         'plugin',
-        schema: _schema([for (final id in ids) _type(id: id)]),
+        schema: _schema([
+          for (final id in ids)
+            {
+              ..._type(id: id),
+              'credentialSlots': [_slot()],
+            },
+        ]),
         components: _recordConsumer(ids),
       );
       final catalog = await PreparedPluginCatalog.discover(root.path);
@@ -177,6 +193,7 @@ void main() {
       expect(parsed.frontend, isNotNull);
       expect(parsed.backendConsumedCapabilities, hasLength(1));
       expect(parsed.backendConsumedRecordTypes.map((id) => id.value), ids);
+      expect(parsed.backendConsumedCredentialSlots, isEmpty);
       final input = parsed.backendConsumedRecordTypes.toList();
       PreparedPluginInstallation construct({
         Iterable<RecordTypeId>? types,
@@ -545,6 +562,652 @@ void main() {
         expect(
           catalog.issues.single.component,
           failure == 'frontend'
+              ? PreparedPluginComponent.frontend
+              : PreparedPluginComponent.backend,
+        );
+      },
+    );
+  }
+
+  test(
+    'credential opt-in snapshots and roundtrips exact types and slots',
+    () async {
+      const types = ['org.example.plugin.z', 'org.example.plugin.api'];
+      final declarations = [
+        _credentialDeclaration(
+          recordType: types.first,
+          slots: ['token', 'api-key'],
+        ),
+        _credentialDeclaration(),
+      ];
+      final directory = await install(
+        'plugin',
+        schema: _schema([
+          for (final id in types)
+            {
+              ..._type(id: id),
+              'credentialSlots': [
+                _slot(),
+                _slot(id: 'token'),
+                _slot(id: 'unused'),
+              ],
+            },
+        ]),
+        components: _credentialConsumer(declarations, types: types),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final parsed = catalog.installations.single;
+      expect(parsed.backendArtifactUri, isNotNull);
+      expect(parsed.frontend, isNotNull);
+      expect(parsed.backendConsumedCapabilities, hasLength(1));
+      expect(parsed.backendConsumedRecordTypesToJson(), types);
+      expect(parsed.backendConsumedCredentialSlotsToJson(), declarations);
+      final slots = [
+        RecordCredentialSlotId('token'),
+        RecordCredentialSlotId('api-key'),
+      ];
+      final entry = PreparedBackendCredentialSlots(
+        recordType: RecordTypeId(types.first),
+        slots: slots,
+      );
+      final input = [entry, parsed.backendConsumedCredentialSlots.last];
+      PreparedPluginInstallation construct({
+        Iterable<PreparedBackendCredentialSlots>? credentials,
+        Iterable<RecordTypeId>? consumedTypes,
+        String owner = 'org.example.plugin',
+        bool backend = true,
+        bool schema = true,
+      }) => PreparedPluginInstallation(
+        metadata: PluginMetadata(
+          id: PluginId(owner),
+          version: '1',
+          displayName: 'Consumer',
+        ),
+        installationDirectory: directory,
+        backendArtifactUri: backend ? parsed.backendArtifactUri : null,
+        recordsSchema: schema ? parsed.recordsSchema : null,
+        backendConsumedRecordTypes:
+            consumedTypes ?? parsed.backendConsumedRecordTypes,
+        backendConsumedCredentialSlots: credentials ?? input,
+      );
+      final installation = construct();
+      slots.clear();
+      input.clear();
+      expect(installation.backendConsumedCredentialSlotsToJson(), declarations);
+      expect(
+        () => installation.backendConsumedCredentialSlots.clear(),
+        throwsUnsupportedError,
+      );
+      expect(() => entry.slots.clear(), throwsUnsupportedError);
+      expect(
+        () => entry.slots[0] = RecordCredentialSlotId('unused'),
+        throwsUnsupportedError,
+      );
+      final json = installation.backendConsumedCredentialSlotsToJson();
+      await File.fromUri(
+        directory.uri.resolve('adele_plugin.installation.json'),
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'org.example.plugin',
+            'version': '1',
+            'displayName': 'Example',
+          },
+          'recordsSchema': 'records.schema.json',
+          'components': _credentialConsumer(json, types: types),
+        }),
+      );
+      final roundtrip = await PreparedPluginCatalog.discover(root.path);
+      expect(roundtrip.issues, isEmpty);
+      expect(
+        roundtrip.installations.single.backendConsumedCredentialSlotsToJson(),
+        declarations,
+      );
+      (json.first['slots']! as List<String>).clear();
+      json.first['recordType'] = 'org.other.api';
+      json.clear();
+      expect(installation.backendConsumedCredentialSlotsToJson(), declarations);
+      for (final invalid in [
+        () => construct(credentials: [entry, entry]),
+        () => construct(credentials: [entry], backend: false),
+        () => construct(credentials: [entry], schema: false),
+        () => construct(credentials: [entry], owner: 'org.example'),
+        () => construct(credentials: [entry], consumedTypes: []),
+        () => construct(
+          credentials: [
+            PreparedBackendCredentialSlots(
+              recordType: entry.recordType,
+              slots: [RecordCredentialSlotId('unknown')],
+            ),
+          ],
+        ),
+        () => PreparedBackendCredentialSlots(
+          recordType: entry.recordType,
+          slots: [entry.slots.first, entry.slots.first],
+        ),
+      ]) {
+        expect(invalid, throwsFormatException);
+      }
+      expect(
+        construct(
+          credentials: [],
+          consumedTypes: [],
+          backend: false,
+          schema: false,
+        ).backendConsumedCredentialSlots,
+        isEmpty,
+      );
+      await File.fromUri(
+        directory.uri.resolve('records.schema.json'),
+      ).writeAsString('{}');
+      expect(installation.backendConsumedCredentialSlotsToJson(), declarations);
+    },
+  );
+
+  final invalidCredentialConsumption = <String, Object?>{
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'non-array ${jsonEncode(value)}': value,
+    for (final value in <Object?>[null, false, '', 1, [], {}])
+      'entry ${jsonEncode(value)}': [_credentialDeclaration(), value],
+    for (final key in ['recordType', 'slots'])
+      'missing $key': [_credentialDeclaration()..remove(key)],
+    for (final key in [
+      'owner',
+      'collection',
+      'type',
+      'reference',
+      'secret',
+      'unknown',
+    ])
+      'extra $key': [
+        {..._credentialDeclaration(), key: 'not metadata'},
+      ],
+    for (final value in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      'api',
+      'Org.example.api',
+      'org.example..api',
+      'org.example.plugin.api ',
+      'org.example.plugin.api\n',
+      'org.example.plugin.${'x' * 257}',
+    ])
+      'recordType ${jsonEncode(value)}': [
+        {..._credentialDeclaration(), 'recordType': value},
+      ],
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'slots ${jsonEncode(value)}': [_credentialDeclaration(slots: value)],
+    for (final value in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      ' ',
+      'API-key',
+      'api.key',
+      'api_key',
+      'api--key',
+      'api-key ',
+      'api-key\n',
+      'x' * 65,
+    ])
+      'slot ${jsonEncode(value)}': [
+        _credentialDeclaration(slots: ['api-key', value]),
+      ],
+    'duplicate slots': [
+      _credentialDeclaration(slots: ['api-key', 'api-key']),
+    ],
+    'duplicate types disjoint slots': [
+      _credentialDeclaration(),
+      _credentialDeclaration(slots: ['token']),
+    ],
+    'duplicate types empty slots': [
+      _credentialDeclaration(slots: []),
+      _credentialDeclaration(slots: []),
+    ],
+    'unknown slot': [
+      _credentialDeclaration(slots: ['unknown']),
+    ],
+    'ordinary field is not a slot': [
+      _credentialDeclaration(slots: ['display-name']),
+    ],
+    'unknown type': [
+      _credentialDeclaration(recordType: 'org.example.plugin.unknown'),
+    ],
+    'unconsumed declared type': [
+      _credentialDeclaration(recordType: 'org.example.plugin.other'),
+    ],
+    'slot of another type': [
+      _credentialDeclaration(slots: ['foreign-slot']),
+    ],
+  };
+  for (final entry in invalidCredentialConsumption.entries) {
+    test(
+      'invalid credential opt-in ${entry.key} disables only backend',
+      () async {
+        await install(
+          'plugin',
+          schema: _schema([
+            {
+              ..._type(),
+              'credentialSlots': [_slot(), _slot(id: 'token')],
+            },
+            {
+              ..._type(id: 'org.example.plugin.other'),
+              'credentialSlots': [_slot(id: 'foreign-slot')],
+            },
+          ]),
+          components: _credentialConsumer(entry.value),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        expect(installation.backendConsumedCapabilities, isEmpty);
+        expect(installation.backendConsumedRecordTypes, isEmpty);
+        expect(installation.backendConsumedCredentialSlots, isEmpty);
+        expect(installation.frontend, isNotNull);
+        expect(catalog.records.definitions, hasLength(2));
+        expect(catalog.settings.definitions, hasLength(1));
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+        expect(catalog.issues.single.isRecordsSchemaIssue, isFalse);
+        expect(catalog.issues.single.message.length, lessThan(256));
+      },
+    );
+  }
+
+  for (final omitted in [false, true]) {
+    test(
+      'credential opt-in requires record consumption omitted=$omitted',
+      () async {
+        final components = _credentialConsumer([
+          _credentialDeclaration(),
+        ], types: []);
+        if (omitted) {
+          (components['backend']! as Map<String, Object?>).remove(
+            'consumesRecordTypes',
+          );
+        }
+        await install(
+          'plugin',
+          schema: _schema([
+            {
+              ..._type(),
+              'credentialSlots': [_slot()],
+            },
+          ]),
+          components: components,
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.backendArtifactUri, isNull);
+        expect(catalog.installations.single.frontend, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+      },
+    );
+  }
+
+  for (final reverse in [false, true]) {
+    test(
+      'credential opt-in cannot borrow a nested owner slot reverse=$reverse',
+      () async {
+        await install(
+          reverse ? 'z' : 'a',
+          id: 'org.example',
+          schema: _schema([
+            {
+              ..._type(),
+              'credentialSlots': [_slot()],
+            },
+          ]),
+          components: _credentialConsumer([
+            _credentialDeclaration(slots: ['token']),
+          ]),
+        );
+        await install(
+          reverse ? 'a' : 'z',
+          schema: _schema([
+            {
+              ..._type(),
+              'credentialSlots': [_slot(id: 'token')],
+            },
+          ]),
+          components: _credentialConsumer([
+            _credentialDeclaration(slots: ['token']),
+          ]),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final parent = catalog.installations.singleWhere(
+          (item) => item.metadata.id.value == 'org.example',
+        );
+        final child = catalog.installations.singleWhere(
+          (item) => item.metadata.id.value == 'org.example.plugin',
+        );
+        expect(parent.backendArtifactUri, isNull);
+        expect(parent.frontend, isNotNull);
+        expect(parent.recordsSchema, isNotNull);
+        expect(child.backendArtifactUri, isNotNull);
+        expect(
+          child.backendConsumedCredentialSlots.single.slots.single.value,
+          'token',
+        );
+        expect(catalog.issues.single.pluginId, parent.metadata.id);
+        expect(() => catalog.records, throwsA(isA<DuplicateRecordTypeId>()));
+      },
+    );
+    for (final foreign in [
+      'org.example.plugin.child.api',
+      'org.example.plugin-other.api',
+      'org.other.plugin.api',
+    ]) {
+      test(
+        'credential opt-in rejects foreign $foreign reverse=$reverse',
+        () async {
+          await install(
+            reverse ? 'z' : 'a',
+            schema: _schema([
+              {
+                ..._type(),
+                'credentialSlots': [_slot()],
+              },
+            ]),
+            components: _credentialConsumer([
+              _credentialDeclaration(recordType: foreign),
+            ]),
+          );
+          await install(
+            reverse ? 'a' : 'z',
+            id: foreign.substring(0, foreign.lastIndexOf('.')),
+            schema: _schema([
+              {
+                ..._type(id: foreign),
+                'credentialSlots': [_slot()],
+              },
+            ]),
+            components: _credentialConsumer(
+              [_credentialDeclaration(recordType: foreign)],
+              types: [foreign],
+            ),
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.records.definitions, hasLength(2));
+          final owner = catalog.installations.singleWhere(
+            (item) => item.metadata.id.value == 'org.example.plugin',
+          );
+          final sibling = catalog.installations.singleWhere(
+            (item) => !identical(item, owner),
+          );
+          expect(owner.backendArtifactUri, isNull);
+          expect(owner.frontend, isNotNull);
+          expect(sibling.backendArtifactUri, isNotNull);
+          expect(
+            sibling.backendConsumedCredentialSlots.single.recordType.value,
+            foreign,
+          );
+          expect(catalog.issues.single.pluginId, owner.metadata.id);
+        },
+      );
+    }
+  }
+
+  for (final failure in [
+    'absent',
+    'missing',
+    'malformed',
+    'partial',
+    'unreadable',
+  ]) {
+    for (final optIn in [false, true]) {
+      test(
+        'credential schema $failure with opt-in=$optIn fails locally',
+        () async {
+          final directory = await install(
+            'plugin',
+            declareRecords: failure != 'absent',
+            reference: failure == 'missing'
+                ? 'missing.json'
+                : 'records.schema.json',
+            schema: failure == 'malformed'
+                ? false
+                : _schema([
+                    {
+                      ..._type(),
+                      'credentialSlots': [_slot()],
+                    },
+                    if (failure == 'partial') false,
+                  ]),
+            components: _credentialConsumer([
+              if (optIn) _credentialDeclaration(),
+            ], types: []),
+          );
+          final catalog = failure == 'unreadable'
+              ? await IOOverrides.runWithIOOverrides(
+                  () => PreparedPluginCatalog.discover(root.path),
+                  _UnreadableSchema(
+                    directory.uri.resolve('records.schema.json').toFilePath(),
+                  ),
+                )
+              : await PreparedPluginCatalog.discover(root.path);
+          final installation = catalog.installations.single;
+          expect(installation.recordsSchema, isNull);
+          expect(installation.settingsSchema, isNotNull);
+          expect(installation.frontend, isNotNull);
+          expect(installation.backendArtifactUri, optIn ? isNull : isNotNull);
+          expect(installation.backendConsumedCredentialSlots, isEmpty);
+          expect(
+            catalog.issues.where((issue) => issue.isRecordsSchemaIssue),
+            hasLength(failure == 'absent' ? 0 : 1),
+          );
+          expect(
+            catalog.issues.where(
+              (issue) => issue.component == PreparedPluginComponent.backend,
+            ),
+            hasLength(optIn ? 1 : 0),
+          );
+        },
+      );
+    }
+  }
+
+  for (final dimension in ['types', 'slots']) {
+    final limit = dimension == 'types'
+        ? PreparedPluginInstallation.maxBackendConsumedCredentialSlotTypes
+        : PreparedRecordsSchema.maxCredentialSlots;
+    for (final count in [0, limit, limit + 1]) {
+      test(
+        'credential opt-in $dimension count $count at discovery and construction',
+        () async {
+          final ids = [
+            for (
+              var index = 0;
+              index < (dimension == 'types' ? count.clamp(0, limit) : 1);
+              index++
+            )
+              'org.example.plugin.t-$index',
+          ];
+          final slots = [
+            for (
+              var index = 0;
+              index < (dimension == 'slots' ? count.clamp(0, limit) : 1);
+              index++
+            )
+              'slot-$index',
+          ];
+          final declarations = [
+            for (
+              var index = 0;
+              index < (dimension == 'types' ? count : 1);
+              index++
+            )
+              _credentialDeclaration(
+                recordType: ids[index % ids.length],
+                slots: dimension == 'slots' && count > limit
+                    ? [...slots, 'overflow']
+                    : slots,
+              ),
+          ];
+          final directory = await install(
+            'plugin',
+            schema: _schema([
+              for (final id in ids)
+                {
+                  ..._type(id: id),
+                  'credentialSlots': [
+                    for (final slot in slots) _slot(id: slot),
+                  ],
+                },
+            ]),
+            components: _credentialConsumer(declarations, types: ids),
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          final parsed = catalog.installations.single;
+          PreparedPluginInstallation construct() => PreparedPluginInstallation(
+            metadata: parsed.metadata,
+            installationDirectory: directory,
+            backendArtifactUri: directory.uri.resolve('backend.aot'),
+            recordsSchema: parsed.recordsSchema,
+            backendConsumedRecordTypes: ids.map(RecordTypeId.new),
+            backendConsumedCredentialSlots: declarations.map(
+              (value) => PreparedBackendCredentialSlots(
+                recordType: RecordTypeId(value['recordType']! as String),
+                slots: (value['slots']! as List<String>).map(
+                  RecordCredentialSlotId.new,
+                ),
+              ),
+            ),
+          );
+          expect(parsed.recordsSchema, isNotNull);
+          expect(parsed.frontend, isNotNull);
+          if (count <= limit) {
+            expect(catalog.issues, isEmpty);
+            expect(parsed.backendConsumedCredentialSlotsToJson(), declarations);
+            expect(
+              construct().backendConsumedCredentialSlotsToJson(),
+              declarations,
+            );
+          } else {
+            expect(
+              catalog.issues.single.component,
+              PreparedPluginComponent.backend,
+            );
+            expect(parsed.backendArtifactUri, isNull);
+            expect(parsed.backendConsumedCredentialSlots, isEmpty);
+            expect(construct, throwsFormatException);
+          }
+        },
+      );
+    }
+  }
+
+  test(
+    'credential opt-in accepts exact type and slot ID length bounds',
+    () async {
+      final type =
+          'org.example.plugin.${'x' * (PreparedRecordsSchema.maxIdLength - 'org.example.plugin.'.length)}';
+      final slot = 'x' * 64;
+      await install(
+        'plugin',
+        schema: _schema([
+          {
+            ..._type(id: type),
+            'credentialSlots': [_slot(id: slot)],
+          },
+        ]),
+        components: _credentialConsumer(
+          [
+            _credentialDeclaration(recordType: type, slots: [slot]),
+          ],
+          types: [type],
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final parsed = catalog.installations.single;
+      expect(
+        parsed.backendConsumedCredentialSlots.single.recordType.value,
+        type,
+      );
+      expect(
+        parsed.backendConsumedCredentialSlots.single.slots.single.value,
+        slot,
+      );
+      expect(
+        () => PreparedBackendCredentialSlots(
+          recordType: RecordTypeId('${type}x'),
+          slots: [],
+        ),
+        throwsFormatException,
+      );
+    },
+  );
+
+  for (final failure in [
+    'artifact',
+    'capabilities',
+    'recordTypes',
+    'frontend',
+    'settings',
+  ]) {
+    test(
+      'credential opt-in remains component-local with invalid $failure',
+      () async {
+        final components = _credentialConsumer([_credentialDeclaration()]);
+        if (failure == 'frontend') {
+          components['frontend'] = {
+            'artifact': 'frontend.evc',
+            'presentations': false,
+          };
+        } else if (failure != 'settings') {
+          (components['backend']! as Map<String, Object?>)[switch (failure) {
+            'artifact' => 'artifact',
+            'capabilities' => 'consumesCapabilities',
+            _ => 'consumesRecordTypes',
+          }] = failure == 'artifact'
+              ? 'missing.aot'
+              : false;
+        }
+        final directory = await install(
+          'plugin',
+          schema: _schema([
+            {
+              ..._type(),
+              'credentialSlots': [_slot()],
+            },
+          ]),
+          components: components,
+        );
+        if (failure == 'settings') {
+          await File.fromUri(
+            directory.uri.resolve('settings.schema.json'),
+          ).writeAsString('{}');
+        }
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final parsed = catalog.installations.single;
+        final healthyBackend = failure == 'frontend' || failure == 'settings';
+        expect(parsed.backendArtifactUri, healthyBackend ? isNotNull : isNull);
+        expect(
+          parsed.backendConsumedCredentialSlotsToJson(),
+          healthyBackend ? [_credentialDeclaration()] : isEmpty,
+        );
+        expect(parsed.recordsSchema, isNotNull);
+        expect(catalog.issues, hasLength(1));
+        expect(
+          catalog.issues.single.component,
+          failure == 'settings'
+              ? isNull
+              : failure == 'frontend'
               ? PreparedPluginComponent.frontend
               : PreparedPluginComponent.backend,
         );
@@ -1727,6 +2390,20 @@ Map<String, Object?> _recordConsumer(Object? types) => {
     ],
   },
 };
+Map<String, Object?> _credentialDeclaration({
+  String recordType = 'org.example.plugin.api',
+  Object? slots = const ['api-key'],
+}) => {'recordType': recordType, 'slots': slots};
+Map<String, Object?> _credentialConsumer(
+  Object? declarations, {
+  Object? types = const ['org.example.plugin.api'],
+}) {
+  final components = _recordConsumer(types);
+  (components['backend']! as Map<String, Object?>)['consumesCredentialSlots'] =
+      declarations;
+  return components;
+}
+
 Map<String, Object?> _schema(List<Object?> types) => {
   'schemaVersion': 1,
   'recordTypes': types,

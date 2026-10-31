@@ -27,9 +27,9 @@ Uint8List encodeBackendHostFrame(Map<String, Object?> message) {
   late final Uint8List payload;
   try {
     payload = utf8.encode(jsonEncode(message));
-  } on Object catch (error) {
-    throw BackendHostProtocolException(
-      'Frame payload is not JSON serializable: $error',
+  } on Object {
+    throw const BackendHostProtocolException(
+      'Frame payload is not JSON serializable.',
     );
   }
   if (payload.length > maximumBackendHostFrameLength) {
@@ -59,11 +59,19 @@ final class BackendHostFrameDecoder {
         );
       }
       if (available.length - offset - 4 < length) break;
-      final String encoded = utf8.decode(
-        available.sublist(offset + 4, offset + 4 + length),
-        allowMalformed: false,
-      );
-      final Object? decoded = jsonDecode(encoded);
+      final Object? decoded;
+      try {
+        final String encoded = utf8.decode(
+          available.sublist(offset + 4, offset + 4 + length),
+          allowMalformed: false,
+        );
+        decoded = jsonDecode(encoded);
+      } on Object {
+        // Parser exceptions can retain and print the secret-bearing source frame.
+        throw const BackendHostProtocolException(
+          'Frame payload is not valid JSON.',
+        );
+      }
       if (decoded is! Map) {
         throw const BackendHostProtocolException(
           'Frame payload is not an object.',

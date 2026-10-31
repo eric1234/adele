@@ -202,6 +202,24 @@ consumption. The [catalog schema](../../packages/plugin_runtime/README.md#compon
 owns exact representation, limits, and constructor behavior; application startup
 owns the read-only projection of configured data, not prepared discovery.
 
+Credential consumption requires a separate default-empty
+`consumesCredentialSlots` declaration on the backend. Each entry names an exact
+record type already in that backend's `consumesRecordTypes` and explicit local
+slot IDs declared on the same installation's owned schema definition. Record
+availability, ordinary record consumption, namespace prefixes (including nested
+owners), shared collections, and another installation's declarations cannot
+substitute for that opt-in. Malformed or unresolved declarations omit only the
+backend, retaining independent schemas and frontend components. Metadata-only
+and frontend-only installations acquire no credential consumption from publishing
+record or slot declarations.
+
+This is data-only requested consumption, not a secret or reference, a credential
+read at discovery/startup, or authority for frontend code. Actual access must be
+bound by the host to the exact live backend generation and its captured record
+authority; prepared declarations alone establish no such binding. The
+[catalog schema](../../packages/plugin_runtime/README.md#component-declarations)
+owns the exact representation, bounds, and immutable typed API.
+
 ### Prepared frontend descriptors
 
 Prepared frontend metadata tells the host which supported interpreted entrypoints
@@ -306,7 +324,7 @@ Backend exposures cross a later boundary than installed metadata:
 
 | Boundary | Information established |
 | --- | --- |
-| Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability or owned record-type consumption requests. |
+| Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability, owned record-type, or separate exact credential-slot consumption requests. |
 | Backend ready handshake | This live backend generation advertises its current public capability/extension contributions, possibly none. |
 | Host activation | Validated/adapted contributions enter the existing registries with exact-generation lifetime. |
 

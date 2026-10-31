@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:adele_contract/adele_contract.dart';
 
+export 'adele_backend_credentials.dart';
 export 'adele_backend_records.dart';
 export 'adele_backend_settings.dart';
 export 'adele_capability_consumer.dart';
@@ -232,15 +233,26 @@ final class AdeleHostRequestMultiplexer {
         : null;
     if (pending == null) return true;
     try {
+      if (message.length != 4) {
+        throw const AdeleProtocolException('Malformed host response.');
+      }
       if (message['ok'] == true && message.containsKey('payload')) {
-        pending.complete(message['payload']);
+        // Capture before completing: callers may mutate local response containers
+        // before the pending future resumes, even without an isolate boundary.
+        pending.complete(
+          adeleSnapshotJsonMap({
+            'payload': message['payload'],
+          }, maxNodes: adelePluginBackendJsonMaxNodes)['payload'],
+        );
       } else if (message['ok'] == false) {
         pending.completeError(_parseFailure(message['error']));
       } else {
         throw const AdeleProtocolException('Malformed host response.');
       }
-    } on Object catch (error, stackTrace) {
-      pending.completeError(error, stackTrace);
+    } on Object {
+      pending.completeError(
+        const AdeleProtocolException('Malformed host response.'),
+      );
     }
     return true;
   }
@@ -528,5 +540,5 @@ final class _HostRemoteFailure implements AdeleRemoteFailure {
   final Map<String, Object?> details;
 
   @override
-  String toString() => 'Host request failed ($code): $message';
+  String toString() => 'Host request failed.';
 }

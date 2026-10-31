@@ -6,6 +6,7 @@ import 'dart:ui' show IsolateNameServer, RootIsolateToken;
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
+import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
 import 'package:adele_plugin_backend_support/adele_backend_records.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart';
@@ -44,6 +45,8 @@ base class GlobalSettingsService {
   late final int _owner = _worker.nextOwner++;
   Future<void> _pending = Future<void>.value();
   Future<void>? _closing;
+  final _startupAuthorities = Expando<_StartupAuthority>();
+  final Set<Future<void>> _startupReads = {};
 
   /// A failed load invalidates this owner's previous edit baseline.
   Future<GlobalSettingsView> load() => _enqueueSettings(_Operation.load);
@@ -102,17 +105,58 @@ base class GlobalSettingsService {
       return _enqueue<_StartupRecordValues>(
         _Operation.loadStartupRecords,
         startupRecordTypes: installation.backendConsumedRecordTypes,
-      ).then(
-        (loaded) => StartupRecordsView.fromProjection(
+        startupCredentialSlots: {
+          for (final declaration in installation.backendConsumedCredentialSlots)
+            if (declaration.slots.isNotEmpty)
+              declaration.recordType: declaration.slots,
+        },
+      ).then((loaded) {
+        final view = StartupRecordsView.fromProjection(
           prepared,
           installation,
           records: loaded.records,
           diagnostics: loaded.diagnostics,
-        ),
-      );
+        );
+        if (loaded.batch case final batch?) {
+          _startupAuthorities[view] = _StartupAuthority(batch);
+        }
+        return view;
+      });
     } on Object catch (error, stack) {
       return Future.error(error, stack);
     }
+  }
+
+  /// Retires only this genuine startup capture, then drains its admitted reads.
+  /// It never publishes, refreshes or invalidates ordinary UI edit handles.
+  Future<void> releaseStartupRecords(StartupRecordsView snapshot) {
+    final authority = _startupAuthorities[snapshot];
+    if (authority == null) return Future<void>.value();
+    if (authority.release case final release?) return release;
+    authority.released = true;
+    if (_closing != null) return _closing!;
+    final release = () async {
+      await _worker.request(
+        _Request(
+          owner: _owner,
+          operation: _Operation.releaseStartupRecords,
+          startupBatch: authority.batch,
+        ),
+      );
+      await Future.wait(authority.reads);
+    }();
+    authority.release = release;
+    _trackStartupRead(release);
+    return release;
+  }
+
+  void _trackStartupRead(Future<void> result) {
+    final settled = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _startupReads.add(settled);
+    unawaited(settled.then((_) => _startupReads.remove(settled)));
   }
 
   Future<RecordView> createRecord(
@@ -168,6 +212,7 @@ base class GlobalSettingsService {
     ConfigurationRecordId? recordId,
     Map<String, Object?>? recordValues,
     List<RecordTypeId>? startupRecordTypes,
+    Map<RecordTypeId, List<RecordCredentialSlotId>>? startupCredentialSlots,
   }) {
     if (_closing != null) {
       return Future.error(StateError('The settings service is closed.'));
@@ -195,6 +240,7 @@ base class GlobalSettingsService {
               recordId: recordId ?? expectedRecord?.id,
               recordValues: recordValues,
               startupRecordTypes: startupRecordTypes,
+              startupCredentialSlots: startupCredentialSlots,
             ),
           )
           as T;
@@ -209,8 +255,18 @@ base class GlobalSettingsService {
 
   Future<void> _close() async {
     await _pending;
+    await Future.wait(_startupReads);
     await _worker.release(_owner);
   }
+}
+
+final class _StartupAuthority {
+  _StartupAuthority(this.batch);
+
+  final int batch;
+  bool released = false;
+  Future<void>? release;
+  final Set<Future<void>> reads = {};
 }
 
 /// Immutable display values, not a TOML edit buffer or a transferable baseline.
@@ -260,6 +316,7 @@ final class _StartupRecordValues {
   _StartupRecordValues(
     Iterable<ConfigurationRecordSnapshot> snapshots,
     Iterable<RecordDiagnosticView> diagnostics,
+    this.batch,
   ) : records = adeleCopyBackendRecords([
         for (final record in snapshots)
           {
@@ -273,6 +330,7 @@ final class _StartupRecordValues {
 
   final List<Map<String, Object?>> records;
   final List<RecordDiagnosticView> diagnostics;
+  final int? batch;
 }
 
 RecordDiagnosticView _recordDiagnostic(
@@ -290,10 +348,13 @@ enum _Operation {
   reset,
   loadRecords,
   loadStartupRecords,
+  inspectStartupCredential,
+  releaseStartupRecords,
   createRecord,
   updateRecord,
   deleteRecord,
   inspectCredential,
+  beginCredentialMutation,
   setCredentialReference,
   refreshRecord,
   release,
@@ -314,6 +375,8 @@ final class _Request {
     this.recordId,
     this.recordValues,
     this.startupRecordTypes,
+    this.startupCredentialSlots,
+    this.startupBatch,
     this.credentialSlot,
     this.credentialReference,
   });
@@ -331,6 +394,8 @@ final class _Request {
   final ConfigurationRecordId? recordId;
   final Map<String, Object?>? recordValues;
   final List<RecordTypeId>? startupRecordTypes;
+  final Map<RecordTypeId, List<RecordCredentialSlotId>>? startupCredentialSlots;
+  final int? startupBatch;
   final RecordCredentialSlotId? credentialSlot;
   final CredentialReference? credentialReference;
 }
@@ -366,10 +431,11 @@ final class _RecordCollectionValues {
 
 /// Only the trusted coordinator receives this projection, not generic views.
 final class _CredentialValues {
-  const _CredentialValues(this.owner, this.reference);
+  const _CredentialValues(this.owner, this.reference, [this.mutation]);
 
   final String owner;
   final CredentialReference? reference;
+  final (int, int)? mutation;
 }
 
 /// The lease registry is main-isolate-only: Dart's Unix locks do not serialize
@@ -404,6 +470,7 @@ final class _SettingsWorker {
   final _ready = Completer<SendPort>();
   final _exited = Completer<void>();
   final _requests = <int, Completer<Object?>>{};
+  final _mutationEpochs = <int, int>{};
   ReceivePort? _events;
   Object? _failure;
   StackTrace? _failureStack;
@@ -456,6 +523,11 @@ final class _SettingsWorker {
     switch (event) {
       case SendPort():
         _ready.complete(event);
+      case (final int marker, final int epoch, final SendPort acknowledge):
+        // The writer waits for this root-visible fence before touching storage.
+        // A completed worker postcheck alone cannot protect later root awaits.
+        _mutationEpochs[marker] = epoch;
+        acknowledge.send(null);
       case (
         final int id,
         final Object? value,
@@ -539,7 +611,7 @@ final class _SettingsWorker {
 }
 
 final class _SettingsOwner {
-  _SettingsOwner(_Request request)
+  _SettingsOwner(_Request request, this.mutationEpochs, this.mutationUpdates)
     : store = GlobalSettingsStore(
         store: ConfigurationStore(request.roots!),
         catalog: request.catalog!,
@@ -560,10 +632,62 @@ final class _SettingsOwner {
         (int, ConfigurationRecordSnapshot)
       >{};
   int recordRevision = 0;
+  final Map<String, (int, int)> mutationEpochs;
+  final SendPort mutationUpdates;
+  final startupBatches = <int, _StartupBatch>{};
+  int startupRevision = 0;
+
+  String _recordPath(RecordCollectionId collection, ConfigurationRecordId id) {
+    var directory = File(
+      store.store
+          .recordFile(collectionId: collection.value, recordId: id.value)
+          .filePath,
+    ).absolute.parent;
+    final suffix = ['${id.value}.toml'];
+    // Roots may be symlinked. Resolve afresh, never cache an alias that can be
+    // retargeted. A pre-create attempt must not create missing directories.
+    while (!directory.existsSync()) {
+      final parent = directory.parent;
+      if (parent.path == directory.path) {
+        throw const FileSystemException(
+          'Record directory identity is unavailable.',
+        );
+      }
+      suffix.insert(
+        0,
+        directory.uri.pathSegments.where((part) => part.isNotEmpty).last,
+      );
+      directory = parent;
+    }
+    return Directory(
+      directory.resolveSymbolicLinksSync(),
+    ).uri.resolveUri(Uri(pathSegments: suffix)).toFilePath();
+  }
+
+  (int, int) _recordMutation(String path) =>
+      mutationEpochs.putIfAbsent(path, () => (mutationEpochs.length, 0));
+
+  Future<void> _mutating(
+    RecordCollectionId collection,
+    ConfigurationRecordId id,
+  ) async {
+    final path = _recordPath(collection, id);
+    final previous = _recordMutation(path);
+    final next = (previous.$1, previous.$2 + 1);
+    mutationEpochs[path] = next;
+    final acknowledged = ReceivePort();
+    try {
+      mutationUpdates.send((next.$1, next.$2, acknowledged.sendPort));
+      await acknowledged.first;
+    } finally {
+      acknowledged.close();
+    }
+  }
 
   Future<Object?> apply(_Request request) async {
     switch (request.operation) {
       case _Operation.loadStartupRecords:
+        final slots = request.startupCredentialSlots!;
         final types = {
           for (final id in request.startupRecordTypes!)
             id: records.catalog.definition(id),
@@ -574,7 +698,12 @@ final class _SettingsOwner {
         final projected = <ConfigurationRecordSnapshot>[];
         final diagnostics = <RecordDiagnosticView>[];
         for (final collection in collections) {
-          final loaded = await records.enumerate(collection);
+          final loaded = await records.enumerate(
+            collection,
+            captureStartupIdentity: slots.keys.any(
+              (id) => types[id]?.collection == collection,
+            ),
+          );
           projected.addAll(
             loaded.records.where(
               (record) => identical(types[record.type.id], record.type),
@@ -588,8 +717,81 @@ final class _SettingsOwner {
           final type = a.type.id.value.compareTo(b.type.id.value);
           return type != 0 ? type : a.id.value.compareTo(b.id.value);
         });
-        // Native snapshots are discarded here, never retained as UI baselines.
-        return _StartupRecordValues(projected, diagnostics);
+        final batch = slots.isEmpty ? null : ++startupRevision;
+        final result = _StartupRecordValues(projected, diagnostics, batch);
+        if (batch != null) {
+          final captured =
+              <
+                (RecordCollectionId, ConfigurationRecordId),
+                _CapturedStartupRecord
+              >{};
+          for (final record in projected) {
+            if (!slots.containsKey(record.type.id)) continue;
+            final path = _recordPath(record.collection, record.id);
+            captured[(record.collection, record.id)] = _CapturedStartupRecord(
+              record,
+              path,
+              _recordMutation(path),
+            );
+          }
+          startupBatches[batch] = _StartupBatch(slots, captured);
+        }
+        return result;
+      case _Operation.releaseStartupRecords:
+        startupBatches.remove(request.startupBatch);
+        return null;
+      case _Operation.inspectStartupCredential:
+        final batch = startupBatches[request.startupBatch];
+        if (batch == null) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.staleConfiguration,
+          );
+        }
+        final key = (request.collection!, request.recordId!);
+        final captured = batch.records[key];
+        if (captured == null ||
+            captured.record.type.id != request.recordType ||
+            !(batch.slots[request.recordType]?.contains(
+                  request.credentialSlot,
+                ) ??
+                false)) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.notAuthorized,
+          );
+        }
+        final record = captured.record;
+        if (batch.stale.contains(key) ||
+            _recordPath(record.collection, record.id) != captured.path ||
+            mutationEpochs[captured.path] != captured.mutation) {
+          batch.stale.add(key);
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.staleConfiguration,
+          );
+        }
+        try {
+          await records.validateStartupCurrent(record);
+        } on ConfigurationStartupIdentityUnavailable {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.storageUnavailable,
+          );
+        } on Object catch (error) {
+          if (error is ConfigurationConflictException ||
+              error is ConfigurationRecordFormatException ||
+              error is ConfigurationSymlinkException) {
+            batch.stale.add(key);
+            throw const AdeleCredentialFailure(
+              AdeleCredentialFailureKind.staleConfiguration,
+            );
+          }
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.credentialAccessFailed,
+          );
+        }
+        return _CredentialValues(
+          record.type.owner.value,
+          record.credentials[request.credentialSlot],
+          captured.mutation,
+        );
       case _Operation.loadRecords:
         recordBaselines.removeWhere((key, _) => key.$1 == request.collection);
         final loaded = await records.enumerate(request.collection!);
@@ -600,6 +802,7 @@ final class _SettingsOwner {
       case _Operation.createRecord:
         final type = records.catalog.definition(request.recordType!);
         _validateRecordValues(type, request.recordId!, request.recordValues!);
+        await _mutating(type.collection, request.recordId!);
         try {
           return _publishRecord(
             await records.create(
@@ -617,6 +820,7 @@ final class _SettingsOwner {
       case _Operation.updateRecord:
       case _Operation.deleteRecord:
       case _Operation.inspectCredential:
+      case _Operation.beginCredentialMutation:
       case _Operation.setCredentialReference:
       case _Operation.refreshRecord:
         final key = (request.collection!, request.recordId!);
@@ -647,12 +851,20 @@ final class _SettingsOwner {
           );
         }
         try {
-          if (request.operation == _Operation.inspectCredential) {
+          if (request.operation == _Operation.inspectCredential ||
+              request.operation == _Operation.beginCredentialMutation) {
             await records.validateCurrent(expected);
+            if (request.operation == _Operation.beginCredentialMutation) {
+              await _mutating(expected.collection, expected.id);
+            }
             return _CredentialValues(
               expected.type.owner.value,
               expected.credentials[request.credentialSlot!],
             );
+          }
+          if (request.operation != _Operation.refreshRecord) {
+            await records.validateCurrent(expected);
+            await _mutating(expected.collection, expected.id);
           }
           if (request.operation == _Operation.setCredentialReference) {
             return _publishRecord(
@@ -750,9 +962,27 @@ final class _SettingsOwner {
   }
 }
 
+final class _StartupBatch {
+  _StartupBatch(this.slots, this.records);
+
+  final Map<RecordTypeId, List<RecordCredentialSlotId>> slots;
+  final Set<(RecordCollectionId, ConfigurationRecordId)> stale = {};
+  final Map<(RecordCollectionId, ConfigurationRecordId), _CapturedStartupRecord>
+  records;
+}
+
+final class _CapturedStartupRecord {
+  const _CapturedStartupRecord(this.record, this.path, this.mutation);
+
+  final ConfigurationRecordSnapshot record;
+  final String path;
+  final (int, int) mutation;
+}
+
 Future<void> _settingsWorkerMain(SendPort reply) async {
   final requests = ReceivePort();
   final owners = <int, _SettingsOwner>{};
+  final mutationEpochs = <String, (int, int)>{};
   reply.send(requests.sendPort);
   // Await the entire operation across all owners, including asynchronous scans.
   // An async listen callback would admit overlapping record and scalar work.
@@ -769,7 +999,10 @@ Future<void> _settingsWorkerMain(SendPort reply) async {
         result = null;
       } else {
         result = await owners
-            .putIfAbsent(request.owner, () => _SettingsOwner(request))
+            .putIfAbsent(
+              request.owner,
+              () => _SettingsOwner(request, mutationEpochs, reply),
+            )
             .apply(request);
       }
       reply.send((id, result, null, null));

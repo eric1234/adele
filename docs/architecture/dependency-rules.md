@@ -145,11 +145,13 @@ bootstrap scalar transport, and pure-Dart prepared schema parsing remain indepen
 of native TOML. A plugin reads its delivered values, not configuration files or an
 app-private Settings service.
 
-Credential access is app-private. The desktop's asynchronous credential adapter
+Native credential access is app-private. The desktop's asynchronous credential adapter
 runs `adele_credential_store` operations off the UI isolate; native storage does
 not belong to public Settings contracts, plugin runtime, or backend AOT preparation.
-Possession of a credential reference grants no authority, and no public plugin
-credential capability is implied. See [credentials and secrets](profiles-and-configuration.md#credentials-and-secrets).
+Possession of a credential reference grants no authority. The narrow public backend
+client uses existing reverse infrastructure calls for captured record selectors;
+it cannot access native storage or references. Authorization and protected binding
+remain in the app. See [credentials and secrets](profiles-and-configuration.md#credentials-and-secrets).
 
 `adele_settings_host` may import only the pure `credential_reference.dart`
 entrypoint from `adele_credential_store` to validate and persist nonsecret record

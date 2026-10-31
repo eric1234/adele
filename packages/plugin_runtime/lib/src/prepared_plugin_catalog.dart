@@ -17,6 +17,8 @@ final class PreparedPluginInstallation {
     required this.backendArtifactUri,
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
+    Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
+        const [],
     this.frontend,
     this.settingsSchema,
     this.recordsSchema,
@@ -27,7 +29,18 @@ final class PreparedPluginInstallation {
          backendConsumedRecordTypes,
          owner: metadata.id,
          schema: recordsSchema,
+       ),
+       backendConsumedCredentialSlots = List.unmodifiable(
+         backendConsumedCredentialSlots.take(
+           maxBackendConsumedCredentialSlotTypes + 1,
+         ),
        ) {
+    _validateBackendCredentialSlots(
+      this.backendConsumedCredentialSlots,
+      owner: metadata.id,
+      schema: recordsSchema,
+      consumedRecordTypes: this.backendConsumedRecordTypes,
+    );
     if (backendArtifactUri == null &&
         this.backendConsumedCapabilities.isNotEmpty) {
       throw const FormatException(
@@ -38,6 +51,12 @@ final class PreparedPluginInstallation {
         this.backendConsumedRecordTypes.isNotEmpty) {
       throw const FormatException(
         'consumesRecordTypes requires a backend component.',
+      );
+    }
+    if (backendArtifactUri == null &&
+        this.backendConsumedCredentialSlots.isNotEmpty) {
+      throw const FormatException(
+        'consumesCredentialSlots requires a backend component.',
       );
     }
     if (settingsSchema?.definitions.any(
@@ -56,6 +75,7 @@ final class PreparedPluginInstallation {
 
   static const maxBackendConsumedCapabilities = 128;
   static const maxBackendConsumedRecordTypes = 128;
+  static const maxBackendConsumedCredentialSlotTypes = 128;
 
   final PluginMetadata metadata;
   final Directory installationDirectory;
@@ -68,6 +88,10 @@ final class PreparedPluginInstallation {
   /// Exact types declared by this installation, requested for backend startup.
   /// This grants no credential access, provider activation, or frontend access.
   final List<RecordTypeId> backendConsumedRecordTypes;
+
+  /// Separately requested slots of exact consumed record types. This carries no
+  /// secrets, references, namespace authority, or frontend access.
+  final List<PreparedBackendCredentialSlots> backendConsumedCredentialSlots;
   final PreparedFrontendComponent? frontend;
 
   /// Installation-level declarations, independent of executable components.
@@ -86,6 +110,46 @@ final class PreparedPluginInstallation {
   List<String> backendConsumedRecordTypesToJson() => [
     for (final id in backendConsumedRecordTypes) id.value,
   ];
+
+  /// Encodes only the backend's consumesCredentialSlots array with fresh copies.
+  List<Map<String, Object?>> backendConsumedCredentialSlotsToJson() => [
+    for (final declaration in backendConsumedCredentialSlots)
+      {
+        'recordType': declaration.recordType.value,
+        'slots': [for (final slot in declaration.slots) slot.value],
+      },
+  ];
+}
+
+/// Backend-only credential consumption metadata for one exact record type.
+/// Installation construction validates ownership and the declared type/slots.
+final class PreparedBackendCredentialSlots {
+  PreparedBackendCredentialSlots({
+    required this.recordType,
+    required Iterable<RecordCredentialSlotId> slots,
+  }) : slots = List.unmodifiable(
+         slots.take(PreparedRecordsSchema.maxCredentialSlots + 1),
+       ) {
+    _schemaText(
+      recordType.value,
+      'backend.consumesCredentialSlots recordType',
+      PreparedRecordsSchema.maxIdLength,
+    );
+    if (this.slots.length > PreparedRecordsSchema.maxCredentialSlots) {
+      throw const FormatException(
+        'backend.consumesCredentialSlots slots must not exceed '
+        '${PreparedRecordsSchema.maxCredentialSlots} entries.',
+      );
+    }
+    if (this.slots.toSet().length != this.slots.length) {
+      throw const FormatException(
+        'backend.consumesCredentialSlots slots must not contain duplicates.',
+      );
+    }
+  }
+
+  final RecordTypeId recordType;
+  final List<RecordCredentialSlotId> slots;
 }
 
 /// Validated declarative settings captured without executing plugin code.
@@ -827,6 +891,8 @@ final class PreparedPluginCatalog {
         Uri? backendArtifactUri;
         List<CapabilityKey> backendConsumedCapabilities = const [];
         List<RecordTypeId> backendConsumedRecordTypes = const [];
+        List<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
+            const [];
         PreparedFrontendComponent? frontend;
         PreparedSettingsSchema? settingsSchema;
         PreparedRecordsSchema? recordsSchema;
@@ -889,11 +955,13 @@ final class PreparedPluginCatalog {
           try {
             switch (component) {
               case PreparedPluginComponent.backend:
-                final backend = _object(
-                  components['backend'],
-                  'components.backend',
-                  {'artifact', 'consumesCapabilities', 'consumesRecordTypes'},
-                );
+                final backend =
+                    _object(components['backend'], 'components.backend', {
+                      'artifact',
+                      'consumesCapabilities',
+                      'consumesRecordTypes',
+                      'consumesCredentialSlots',
+                    });
                 final consumedCapabilities = _backendConsumedCapabilityKeys(
                   _capabilityKeys(
                     backend.containsKey('consumesCapabilities')
@@ -925,6 +993,17 @@ final class PreparedPluginCatalog {
                   owner: pluginMetadata.id,
                   schema: recordsSchema,
                 );
+                final consumedCredentialSlots = _backendCredentialSlots(
+                  backend.containsKey('consumesCredentialSlots')
+                      ? backend['consumesCredentialSlots']
+                      : const <Object?>[],
+                );
+                _validateBackendCredentialSlots(
+                  consumedCredentialSlots,
+                  owner: pluginMetadata.id,
+                  schema: recordsSchema,
+                  consumedRecordTypes: consumedRecordTypes,
+                );
                 backendArtifactUri = await _artifact(
                   backend['artifact'],
                   'backend.artifact',
@@ -932,6 +1011,7 @@ final class PreparedPluginCatalog {
                 );
                 backendConsumedCapabilities = consumedCapabilities;
                 backendConsumedRecordTypes = consumedRecordTypes;
+                backendConsumedCredentialSlots = consumedCredentialSlots;
               case PreparedPluginComponent.frontend:
                 frontend = await _frontend(
                   components['frontend'],
@@ -965,6 +1045,7 @@ final class PreparedPluginCatalog {
             backendArtifactUri: backendArtifactUri,
             backendConsumedCapabilities: backendConsumedCapabilities,
             backendConsumedRecordTypes: backendConsumedRecordTypes,
+            backendConsumedCredentialSlots: backendConsumedCredentialSlots,
             frontend: frontend,
             settingsSchema: settingsSchema,
             recordsSchema: recordsSchema,
@@ -1901,6 +1982,105 @@ List<RecordTypeId> _backendConsumedRecordTypeIds(
     ids.add(id);
   }
   return List.unmodifiable(ids);
+}
+
+List<PreparedBackendCredentialSlots> _backendCredentialSlots(Object? value) {
+  if (value is! List<Object?> ||
+      value.length >
+          PreparedPluginInstallation.maxBackendConsumedCredentialSlotTypes) {
+    throw const FormatException(
+      'backend.consumesCredentialSlots must be an array with at most '
+      '${PreparedPluginInstallation.maxBackendConsumedCredentialSlotTypes} entries.',
+    );
+  }
+  return [
+    for (var index = 0; index < value.length; index++)
+      _backendCredentialSlotDeclaration(
+        value[index],
+        'backend.consumesCredentialSlots[$index]',
+      ),
+  ];
+}
+
+PreparedBackendCredentialSlots _backendCredentialSlotDeclaration(
+  Object? value,
+  String label,
+) {
+  final declaration = _object(value, label, {'recordType', 'slots'});
+  final slots = declaration['slots'];
+  if (slots is! List<Object?> ||
+      slots.length > PreparedRecordsSchema.maxCredentialSlots) {
+    throw FormatException(
+      '$label.slots must be an array with at most '
+      '${PreparedRecordsSchema.maxCredentialSlots} entries.',
+    );
+  }
+  final RecordTypeId recordType;
+  try {
+    recordType = RecordTypeId(
+      _schemaText(
+        declaration['recordType'],
+        '$label.recordType',
+        PreparedRecordsSchema.maxIdLength,
+      ),
+    );
+  } on FormatException {
+    throw FormatException(
+      '$label.recordType must be a bounded record type ID.',
+    );
+  }
+  final slotIds = <RecordCredentialSlotId>[];
+  for (final slot in slots) {
+    try {
+      slotIds.add(RecordCredentialSlotId(_text(slot, '$label.slots entry')));
+    } on FormatException {
+      throw FormatException(
+        '$label.slots entries must be bounded local slot IDs.',
+      );
+    }
+  }
+  return PreparedBackendCredentialSlots(recordType: recordType, slots: slotIds);
+}
+
+void _validateBackendCredentialSlots(
+  List<PreparedBackendCredentialSlots> declarations, {
+  required PluginId owner,
+  required PreparedRecordsSchema? schema,
+  required List<RecordTypeId> consumedRecordTypes,
+}) {
+  if (declarations.length >
+      PreparedPluginInstallation.maxBackendConsumedCredentialSlotTypes) {
+    throw const FormatException(
+      'backend.consumesCredentialSlots must not exceed '
+      '${PreparedPluginInstallation.maxBackendConsumedCredentialSlotTypes} entries.',
+    );
+  }
+  final consumed = consumedRecordTypes.toSet();
+  final owned = {
+    for (final definition in schema?.definitions ?? <RecordTypeDefinition>[])
+      if (definition.owner == owner) definition.id: definition,
+  };
+  final seen = <RecordTypeId>{};
+  for (final declaration in declarations) {
+    if (!seen.add(declaration.recordType)) {
+      throw const FormatException(
+        'backend.consumesCredentialSlots must not repeat record types.',
+      );
+    }
+    final definition = owned[declaration.recordType];
+    if (definition == null || !consumed.contains(declaration.recordType)) {
+      throw const FormatException(
+        'backend.consumesCredentialSlots must name exact owned recordsSchema '
+        'definitions already in consumesRecordTypes.',
+      );
+    }
+    final declared = definition.credentialSlots.map((slot) => slot.id).toSet();
+    if (declaration.slots.any((slot) => !declared.contains(slot))) {
+      throw const FormatException(
+        'backend.consumesCredentialSlots must name declared slots of that record type.',
+      );
+    }
+  }
 }
 
 List<CapabilityKey> _capabilityKeys(

@@ -79,6 +79,104 @@ void main() {
   String source(String values, {String type = 'dev.adele.openai.api-key'}) =>
       'recordVersion = 1\nrecordType = "$type"\n\n[values]\n$values';
 
+  test('ordinary snapshots do not confer strict startup identity', () async {
+    seed(work, source('display-name = "Work"\n'));
+    final ordinary = await host.load(providers, work);
+    await expectLater(
+      host.validateStartupCurrent(ordinary),
+      throwsA(isA<ConfigurationStartupIdentityUnavailable>()),
+    );
+    expect(await host.validateCurrent(ordinary), same(ordinary));
+  });
+
+  test(
+    'transient identity observation failure is unavailable, not stale',
+    () async {
+      seed(work, source('display-name = "Work"\n'));
+      final startup = (await host.enumerate(
+        providers,
+        captureStartupIdentity: true,
+      )).records.single;
+      await expectLater(
+        IOOverrides.runZoned(
+          () => host.validateStartupCurrent(startup),
+          fseGetTypeSync: (path, followLinks) =>
+              throw const FileSystemException(
+                'injected identity observation failure',
+              ),
+        ),
+        throwsA(isA<ConfigurationStartupIdentityUnavailable>()),
+      );
+      await host.validateStartupCurrent(startup);
+      await expectLater(
+        IOOverrides.runZoned(
+          () => host.validateStartupCurrent(startup),
+          fseGetTypeSync: (path, followLinks) => FileSystemEntityType.notFound,
+        ),
+        throwsA(isA<ConfigurationStartupIdentityUnavailable>()),
+      );
+      await host.validateStartupCurrent(startup);
+      file(work).deleteSync();
+      await expectLater(
+        host.validateStartupCurrent(startup),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
+    'startup batch pins each incarnation without changing UI equivalence',
+    () async {
+      seed(work, source('display-name = "Work"\n'));
+      seed(personal, source('display-name = "Personal"\n'));
+      final ordinary = await host.load(providers, work);
+      final startup = await host.enumerate(
+        providers,
+        captureStartupIdentity: true,
+      );
+      final captured = startup.records.singleWhere(
+        (record) => record.id == work,
+      );
+      final sibling = startup.records.singleWhere(
+        (record) => record.id == personal,
+      );
+      await host.validateStartupCurrent(captured);
+      await host.validateStartupCurrent(sibling);
+      final bytes = file(work).readAsBytesSync();
+      final modified = file(work).lastModifiedSync();
+      file(work).deleteSync();
+      file(work).writeAsBytesSync(bytes);
+      file(work).setLastModifiedSync(modified);
+      await expectLater(
+        host.validateStartupCurrent(captured),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+      await host.validateStartupCurrent(sibling);
+      expect(await host.validateCurrent(ordinary), same(ordinary));
+      expect(file(work).readAsBytesSync(), bytes);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test('startup identity rejects same-file edit and restore', () async {
+    seed(work, source('display-name = "Work"\n'));
+    final startup = (await host.enumerate(
+      providers,
+      captureStartupIdentity: true,
+    )).records.single;
+    final bytes = file(work).readAsBytesSync();
+    final modified = file(work).lastModifiedSync();
+    file(work).writeAsStringSync(source('display-name = "Edited"\n'));
+    file(work).writeAsBytesSync(bytes);
+    file(work).setLastModifiedSync(modified);
+    await expectLater(
+      host.validateStartupCurrent(startup),
+      throwsA(isA<ConfigurationConflictException>()),
+    );
+    expect(await host.validateCurrent(startup), same(startup));
+  }, skip: !Platform.isLinux);
+
   test('absent collection enumerates without creating artifacts', () async {
     final result = await host.enumerate(providers);
     expect(result.records, isEmpty);

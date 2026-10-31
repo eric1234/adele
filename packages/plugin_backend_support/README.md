@@ -7,6 +7,8 @@ server-streaming clients calling explicitly scoped host services. It imports
 neither Flutter nor internal host implementations. Its public Capability consumer
 facade lets generated plugin
 clients use declared context-free unary access without importing runtime packages.
+Its credential client reads explicitly declared record slots through the existing
+generation infrastructure grant, without native credential-store dependencies.
 
 ## Bootstrap Settings
 
@@ -75,7 +77,10 @@ supporting both unary requests and server streams. Pass command messages to
 `handleResponse` before normal dispatcher routing; it consumes reverse-call
 responses and stream events. Successful unary responses use `ok: true` and
 `payload`, not `result`.
-Correlation and declared remote failures are preserved for generated clients.
+Correlation and declared remote failure fields are preserved for generated clients;
+generic failure `toString()` does not print remote codes, messages, or details.
+Unary responses are validated and defensively copied before completing callers.
+Malformed responses produce fixed protocol errors without retaining their payload.
 Call `close()` before awaiting forward-dispatcher shutdown so pending reverse
 calls and stream consumers settle. Host grant revocation and connection
 shutdown own cancellation of host producers.
@@ -112,6 +117,42 @@ replacement generation and grant no execution or other services implicitly.
 It supplies no client/bidirectional streaming, ambient callbacks, or general
 symmetric RPC and is not a sandbox.
 See [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+## Credential Reads
+
+`AdeleCredentialClient(hostRequests: ..., hostInfrastructureContext: ...)` binds
+the generation's existing multiplexer to the dedicated `adele.credentials`
+infrastructure service (`backendCredentialServiceId`). Import the package root or
+[`adele_backend_credentials.dart`](lib/adele_backend_credentials.dart).
+Binding grants no access: the host owns declaration, record binding, configuration
+freshness, and exact-generation authorization. No secrets or references are added
+to bootstrap settings or records.
+
+`readCredential(collection: ..., recordType: ..., recordId: ..., slot: ...)`
+returns `Future<String>`. The method is `readCredential`; its fresh request
+payload contains exactly those four string fields. There is no reference, key,
+owner, generation, or service override. Successful transport payloads have exactly
+`{'secret': String}` or `{'failure': String}`. The client validates secrets as
+nonempty, NUL-free, strict Unicode with at most 2560 UTF-8 bytes using only the SDK.
+Response containers are copied before asynchronous publication; callers must not
+log returned secrets. Requests use fresh plain maps rather than unmodifiable map
+wrappers so they can cross spawned AOT isolate groups.
+
+Failures throw `AdeleCredentialFailure` with one `AdeleCredentialFailureKind`:
+`notAuthorized`, `notConfigured`, `missingLocally`, `storageUnavailable`,
+`invalidCredentialBinding`, `reconciliationRequired`, `staleConfiguration`,
+`generationUnavailable`, or `credentialAccessFailed`. The exception retains only
+the kind and formats a fixed bounded diagnostic. Missing-service transport denial
+maps to `notAuthorized`; transport grant revocation maps to `generationUnavailable`.
+Malformed responses and other transport failures map to `credentialAccessFailed`,
+never a raw native error or payload-bearing decoder exception.
+
+The facade supplies no enumeration, mutation, filesystem, keyring, Flutter, or host
+implementation access, and never renews a retired grant. See the
+[configuration architecture](../../docs/architecture/profiles-and-configuration.md#credentials-and-secrets)
+for host ownership. [`backend_credentials_test.dart`](test/backend_credentials_test.dart)
+covers exact wire shape, defensive copying, all failure kinds, secret bounds, and
+redaction through the existing maintained backend-support test target.
 
 ## Capability Consumption
 

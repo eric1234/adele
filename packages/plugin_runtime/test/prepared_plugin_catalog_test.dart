@@ -451,6 +451,21 @@ void main() {
   });
 
   for (final location in ['manifest', 'metadata', 'components']) {
+    test('credential consumption is rejected at $location level', () async {
+      final manifest = _manifest();
+      final target = location == 'manifest'
+          ? manifest
+          : Map<String, Object?>.of(
+              manifest[location]! as Map<String, Object?>,
+            );
+      target['consumesCredentialSlots'] = <Object?>[];
+      if (location != 'manifest') manifest[location] = target;
+      await install('misplaced', manifest);
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations, isEmpty);
+      expect(catalog.issues.single.component, isNull);
+      expect(catalog.issues.single.message, contains('unsupported fields'));
+    });
     test('record consumption is rejected at $location level', () async {
       final manifest = _manifest();
       final target = location == 'manifest'
@@ -501,6 +516,35 @@ void main() {
       expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     },
   );
+
+  for (final backend in [false, true]) {
+    test(
+      'frontend cannot request credential slots with backend=$backend',
+      () async {
+        await install(
+          'frontend',
+          _manifest(
+            components: {
+              if (backend) 'backend': {'artifact': 'backend.aot'},
+              'frontend': {
+                ..._frontend(),
+                'consumesCredentialSlots': <Object?>[],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, backend ? isNotNull : isNull);
+        expect(installation.backendConsumedCredentialSlots, isEmpty);
+        expect(installation.frontend, isNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+      },
+    );
+  }
 
   test(
     'decodes ordered typed descriptors without decoding EVC bytes',
@@ -1792,6 +1836,7 @@ void main() {
       'displayName',
       'consumesCapabilities',
       'consumesRecordTypes',
+      'consumesCredentialSlots',
       'unknown',
     ])
       'unsupported $field': {..._mainContent, field: 'unsupported'},
@@ -2402,6 +2447,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'consumesRecordTypes',
+      'consumesCredentialSlots',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',
@@ -2450,6 +2496,7 @@ void main() {
       'environmentBufferedProcessCapabilities',
       'consumesCapabilities',
       'consumesRecordTypes',
+      'consumesCredentialSlots',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',

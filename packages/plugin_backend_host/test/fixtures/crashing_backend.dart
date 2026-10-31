@@ -446,6 +446,30 @@ void _serveHostStreams(
     } else if (message['kind'] == 'streamCancel') {
       await iterators.remove(id)?.cancel();
       responses.send({'kind': 'streamCancelled', 'requestId': id});
+    } else if (message['method'] == 'credential') {
+      final client = AdeleCredentialClient(
+        hostRequests: host,
+        hostInfrastructureContext: infrastructureContext,
+      );
+      Object result;
+      try {
+        result = {
+          'secret': await client.readCredential(
+            collection: 'providers',
+            recordType: 'dev.adele.fixture.provider',
+            recordId: 'work',
+            slot: 'api-key',
+          ),
+        };
+      } on AdeleCredentialFailure catch (failure) {
+        result = {'failure': failure.kind.name};
+      }
+      responses.send({
+        'kind': 'response',
+        'requestId': id,
+        'ok': true,
+        'payload': result,
+      });
     } else if (message['method'] == 'raw') {
       responses.send(Map<String, Object?>.from(payload!));
     } else if (message['method'] == 'shutdown') {

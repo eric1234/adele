@@ -433,7 +433,26 @@ final class AdeleBackendHost {
       return;
     }
     _hostRequests.remove(message['requestId']);
-    plugin.hostResponse(requestId, message);
+    try {
+      if (message.length != 7 ||
+          (message['ok'] != true && message['ok'] != false) ||
+          (message['ok'] == true
+              ? !message.containsKey('payload')
+              : !plugin._validStreamFailureError(message['error']))) {
+        throw const FormatException('Malformed runtime host response.');
+      }
+      adeleSnapshotJsonMap(message, maxNodes: adelePluginBackendJsonMaxNodes);
+      plugin.hostResponse(requestId, message);
+    } on Object {
+      // Never let response contents or an isolate send error reach diagnostics.
+      plugin.hostResponse(requestId, {
+        'ok': false,
+        'error': {
+          'code': 'invalid_host_response',
+          'message': 'Malformed runtime host response.',
+        },
+      });
+    }
   }
 
   void _revokeHostRequests(_PluginIsolate plugin) {
@@ -1065,7 +1084,7 @@ final class _PluginIsolate {
       _finishStream(stream, raw);
       return;
     }
-    _diagnostic('Malformed stream response from $pluginId: $raw');
+    _diagnostic('Malformed stream response from $pluginId.');
     _abortStream(
       stream,
       code: 'stream_protocol_violation',

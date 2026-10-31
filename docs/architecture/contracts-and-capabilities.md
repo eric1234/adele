@@ -279,8 +279,9 @@ registration or host-authority token. A stable record ID is not a
 does not create any of them. Credentials and their references are excluded.
 The [configuration model](profiles-and-configuration.md#backend-record-snapshots)
 owns projection, failure and snapshot-lifetime semantics; backend support owns
-the bounded transport representation. Credential access and configured provider
-materialization remain deferred.
+the bounded transport representation. Credential access requires the separate
+[generation grant](#backend-credential-access); configured provider materialization
+remains a distinct boundary.
 
 ### Strategy-compatible Session input
 
@@ -962,7 +963,8 @@ transport contracts, and their tests.
 ## Generation-scoped infrastructure access
 
 Infrastructure services support non-execution access outside a Run operation,
-including Project storage and declared [backend Capability consumption](#prepared-backend-capability-consumption).
+including Project storage, declared [backend Capability consumption](#prepared-backend-capability-consumption),
+and explicitly authorized [record credentials](#backend-credential-access).
 `PluginBackendHost.startPlugin` accepts a generic
 `createInfrastructureServices` factory called with the actual connection, not a
 plugin ID detached from its generation. Bootstrap carries one required opaque
@@ -989,6 +991,56 @@ grant supplies no execution, orchestration, model/tool, Environment-facet, or
 filesystem services. [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
 narrowly amends ADR 0032's invocation-only host-access rule without widening
 semantic operation authority.
+
+### Backend credential access
+
+`AdeleCredentialClient` in the Flutter-free backend-support package binds the
+existing infrastructure context to the fixed `adele.credentials` service. Its sole
+`readCredential` method accepts exactly `collection`, `recordType`, `recordId` and
+`slot`. These select within a captured authorization scope; they cannot specify a
+credential reference, native key, owner override, path, service, generation or
+configuration context. There is no enumeration, mutation, filesystem access or
+general plugin secret-storage API.
+
+Normal bootstrap registers `BackendCredentialHost` only for nonempty exact slot
+permissions, alongside independently configured infrastructure services. The outer
+transport validates the actual connection generation, current grant and service
+allowlist. The dispatcher validates its captured installation and record/slot set,
+then the existing association coordinator checks worker-owned current configuration
+and the complete protected binding. See [configuration authority](profiles-and-configuration.md#backend-credential-delivery)
+for coherent capture, stale-state detection and nonreconciling reads.
+
+The existing bounded reverse-host transport carries an ordinary successful response
+payload of exactly `{"secret":"..."}` or `{"failure":"<fixed-code>"}`. The client
+returns only validated secret text or throws `AdeleCredentialFailure`; it retains no
+raw response, native exception or private reference in failure objects. Secrets are
+nonempty, NUL-free strict UTF-8, at most 2560 bytes, with the existing protected
+envelope imposing its own whole-value bound. They are never truncated or transformed.
+
+| Fixed Code | Meaning |
+| --- | --- |
+| `notAuthorized` | Undeclared or uncaptured record/slot, malformed request or absent service grant. |
+| `notConfigured` | Captured current record has no attached reference for that slot. |
+| `missingLocally` | Reference exists, but local protected storage confirms absence. |
+| `storageUnavailable` | Storage is unavailable/locked, or strict local authority cannot be established. |
+| `invalidCredentialBinding` | Malformed, unsupported, foreign or invalid protected value. |
+| `reconciliationRequired` | A prior uncertain mutation requires explicit Settings reconciliation. |
+| `staleConfiguration` | Captured record or association no longer matches. |
+| `generationUnavailable` | Connection or authorization owner has retired/closed. |
+| `credentialAccessFailed` | Other storage/transport failure or malformed response. |
+
+Errors are fixed and bounded; malformed requests are not echoed. Frame parsing,
+reverse-response validation and transport exception `toString()` paths do not
+serialize rejected payloads. Only the explicitly authorized successful response
+contains the secret: no startup records/Settings, argv/environment, ready metadata,
+descriptors, logs, TOML or history channel carries it.
+
+Infrastructure revocation settles pending transport responses before asynchronous
+cleanup; the credential owner also checks liveness after waits and before returning.
+Late secrets are discarded rather than published to a retired backend. This does
+not cancel an OS unlock prompt or reclaim a secret already delivered in backend
+memory. There is no zeroization guarantee or automatic provider restart. These host
+API restrictions are not an OS sandbox for native AOT code.
 
 <a id="session-scoped-relational-storage"></a>
 
