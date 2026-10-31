@@ -183,6 +183,7 @@ class _RichEditorState extends EditorState {
   bool inputEnabled = true;
   bool viewActive = false;
   bool _retired = false;
+  int selectionSequence = 0;
   final _inputGuard = _CodeInputGuard();
   AppFlowyKeyboardService? _guardedService;
 
@@ -216,6 +217,7 @@ class _RichEditorState extends EditorState {
     // AppFlowy attaches input on selection, even without focus or editability.
     // Fence queued selection callbacks before the retired subtree is removed.
     if (isDisposed || (value != null && (!viewActive || _retired))) return;
+    if (value != selection) selectionSequence++;
     final keyboard = service.keyboardService;
     if (value != null && !identical(keyboard, _guardedService)) {
       detachInputGuard();
@@ -398,12 +400,15 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
   bool _attached = false;
   bool _active = true;
   bool _focusDisposed = false;
+  int _clipboardEpoch = 0;
+  String? _pasteError;
 
   NativeRichDocumentEditor get owner => widget.editor;
 
   @override
   void initState() {
     super.initState();
+    _focus.addListener(() => _clipboardEpoch++);
     owner._checkLive();
     if (owner._view?._active == true || owner._pendingView != null) {
       throw StateError(
@@ -436,6 +441,7 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
   }
 
   void editingChanged() {
+    _clipboardEpoch++;
     if (!owner.editingEnabled) _releaseInput();
     if (SchedulerBinding.instance.schedulerPhase ==
         SchedulerPhase.persistentCallbacks) {
@@ -484,6 +490,7 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
 
   @override
   void deactivate() {
+    _clipboardEpoch++;
     _active = false;
     if (_attached) {
       owner._state?.viewActive = false;
@@ -527,48 +534,120 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
     super.dispose();
   }
 
-  Future<void> _paste() async {
+  void _rejectPaste(String reason) {
+    setState(() => _pasteError = 'Paste rejected: $reason Draft unchanged.');
+  }
+
+  Future<void> _paste({bool literal = false}) async {
     final state = owner._state;
-    if (state == null ||
-        !state.acceptsInput ||
-        !mounted ||
-        owner.isDisposed ||
-        _crossesCode(state)) {
+    if (state == null || !state.acceptsInput || !mounted || owner.isDisposed) {
       return;
     }
     final selection = state.selection;
+    if (selection == null) return;
+    if (owner._compositionPending || owner._inputSettling) {
+      _rejectPaste('Finish the current text composition before pasting.');
+      return;
+    }
+    if (!selection.isSingle) {
+      _rejectPaste('Paste within one block instead of across blocks.');
+      return;
+    }
     final revision = owner.revision;
+    final inputSequence = owner._inputSequence;
+    final selectionSequence = state.selectionSequence;
+    final epoch = _clipboardEpoch;
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (!mounted ||
         !_active ||
         owner.isDisposed ||
         !state.acceptsInput ||
         !_focus.hasFocus ||
+        _clipboardEpoch != epoch ||
+        state.selectionSequence != selectionSequence ||
+        owner._inputSequence != inputSequence ||
+        owner._compositionPending ||
+        owner._inputSettling ||
         owner.revision != revision ||
         state.selection != selection ||
         data?.text == null ||
         data!.text!.isEmpty) {
       return;
     }
-    if (_touchesCode(state)) {
-      final range = selection!.normalized;
-      await state.apply(
-        state.transaction..replaceText(
-          state.getNodeAtPath(range.start.path)!,
-          range.startIndex,
-          range.length,
-          data.text!.replaceAll('\r\n', '\n'),
-          attributes: {},
-        ),
+    final range = selection.normalized;
+    final node = state.getNodeAtPath(range.start.path);
+    if (node == null || node.delta == null) return;
+    final text = data.text!.replaceAll('\r\n', '\n');
+    // Only an empty top-level paragraph is an unambiguous document-import site.
+    // Existing prose/list/code selections and explicit Shift+Paste stay literal.
+    final importMarkdown =
+        !literal &&
+        node.type == ParagraphBlockKeys.type &&
+        node.delta!.isEmpty &&
+        node.path.length == 1 &&
+        node.children.isEmpty &&
+        RegExp(
+          r'^(?:[ \t]*\n)* {0,3}(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|>\s|`{3,}|~{3,}|!\[|\||<)',
+        ).hasMatch(text);
+    final candidate = Document(root: state.document.root.deepCopy());
+    Document? imported;
+    late final Transaction transaction;
+    try {
+      if (importMarkdown) {
+        imported = RichDocumentMarkdown.decode(text);
+        candidate.delete(node.path);
+        candidate.insert(node.path, [
+          for (final block in imported.root.children) block.deepCopy(),
+        ]);
+        RichDocumentMarkdown.encode(candidate);
+        final last = imported.last!;
+        transaction = state.transaction
+          ..insertNodes(node.path, imported.root.children)
+          ..deleteNode(node)
+          ..afterSelection = Selection.collapsed(
+            Position(
+              path: [node.path.first + last.path.first, ...last.path.skip(1)],
+              offset: last.delta!.length,
+            ),
+          );
+      } else {
+        final replacement = node.delta!.compose(
+          Delta()
+            ..retain(range.startIndex)
+            ..delete(range.length)
+            ..insert(text),
+        );
+        candidate.update(node.path, {'delta': replacement.toJson()});
+        RichDocumentMarkdown.encode(candidate);
+        transaction = state.transaction
+          ..replaceText(
+            node,
+            range.startIndex,
+            range.length,
+            text,
+            attributes: {},
+          );
+      }
+    } on FormatException catch (error) {
+      _rejectPaste(
+        '${error.message} '
+        'Use Ctrl/Cmd+Shift+V to paste literally, or a plain paragraph/code block.',
       );
       return;
+    } finally {
+      candidate.dispose();
+      imported?.dispose();
     }
-    // Deliberately paste text, never HTML, files, image URLs, or native blocks.
-    // Keep line breaks within this block. The upstream multi-block paste helper
-    // reparents existing list children before recording Undo, losing them on Undo.
-    await state.pasteSingleLineNode(
-      paragraphNode(text: data.text!.replaceAll('\r\n', '\n')),
-    );
+    // Validate before touching live nodes or Undo. In particular, never use the
+    // upstream multi-block helper: it reparents list children before recording Undo.
+    if (_pasteError != null) setState(() => _pasteError = null);
+    if (state.undoManager.undoStack.isNonEmpty) {
+      state.undoManager.undoStack.last.seal();
+    }
+    // Pinned AppFlowy clears Redo for new edits only if Undo is nonempty. A new
+    // paste after undo-all must also invalidate that abandoned history branch.
+    state.undoManager.redoStack.clear();
+    await state.apply(transaction, skipHistoryDebounce: true);
   }
 
   Future<void> _copyCode({bool cut = false}) async {
@@ -622,7 +701,7 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
         ),
       );
     }
-    return Localizations.override(
+    final editor = Localizations.override(
       context: context,
       delegates: const [AppFlowyEditorLocalizations.delegate],
       child: AppFlowyEditor(
@@ -817,12 +896,22 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
                 },
               ),
               CommandShortcutEvent(
-                key: 'paste plain text',
-                command: 'ctrl+v,ctrl+shift+v',
-                macOSCommand: 'cmd+v,cmd+shift+v',
-                getDescription: () => 'Paste plain text',
+                key: 'paste',
+                command: 'ctrl+v',
+                macOSCommand: 'cmd+v',
+                getDescription: () => 'Paste Markdown in an empty paragraph',
                 handler: (_) {
                   unawaited(_paste());
+                  return KeyEventResult.handled;
+                },
+              ),
+              CommandShortcutEvent(
+                key: 'paste plain text',
+                command: 'ctrl+shift+v',
+                macOSCommand: 'cmd+shift+v',
+                getDescription: () => 'Paste literal text',
+                handler: (_) {
+                  unawaited(_paste(literal: true));
                   return KeyEventResult.handled;
                 },
               ),
@@ -835,6 +924,14 @@ class _RichDocumentViewState extends State<NativeRichDocumentEditorView> {
           ],
         ],
       ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_pasteError != null)
+          Flexible(child: SingleChildScrollView(child: Text(_pasteError!))),
+        Expanded(flex: 2, child: editor),
+      ],
     );
   }
 }

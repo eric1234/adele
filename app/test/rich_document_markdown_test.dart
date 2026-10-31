@@ -2,6 +2,8 @@ import 'package:adele_desktop/editor/rich_document_markdown.dart';
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/markdown_paste_fixture.dart';
+
 Document decode(String source) {
   final document = RichDocumentMarkdown.decode(source);
   addTearDown(document.dispose);
@@ -100,6 +102,10 @@ void main() {
     ' leading  and trailing \t',
     'first\nsecond',
     'first\n\nsecond',
+    '`identifier()`\n\nnext paragraph',
+    '```sh\ncommand\n```\n\nnext',
+    '`backtick` \n\n\n',
+    markdownPasteFixture,
     '\nfirst\n',
     'Windows C:\\path\\name and | table |',
     '\u00e9 \u4e2d\u6587 \ud83d\ude42 e\u0301',
@@ -109,14 +115,17 @@ void main() {
     'text\ufeff',
     '\u000btext\u000c',
   ]) {
-    test('edited plain text remains literal: $text', () {
-      final document = documentWith(paragraphNode(text: text));
-      final output = RichDocumentMarkdown.encode(document);
-      final restored = decode(output);
-      expect(restored.root.children, hasLength(1));
-      expect(restored.first!.type, 'paragraph');
-      expect(restored.first!.delta, document.first!.delta);
-    });
+    test(
+      'edited plain text remains literal: ${text.length > 200 ? 'full implementation prompt' : text}',
+      () {
+        final document = documentWith(paragraphNode(text: text));
+        final output = RichDocumentMarkdown.encode(document);
+        final restored = decode(output);
+        expect(restored.root.children, hasLength(1));
+        expect(restored.first!.type, 'paragraph');
+        expect(restored.first!.delta, document.first!.delta);
+      },
+    );
   }
 
   test('style runs and inline code delimiters survive edited content', () {

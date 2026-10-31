@@ -843,9 +843,32 @@ and paste recheck the captured selection, content revision and live focused view
 after the asynchronous clipboard operation. Undo/redo uses the existing document
 history, including code creation and exit, without reparenting surrounding lists.
 
-Multiline plain-text paste keeps line breaks inside the current block. It does
-not use AppFlowy's multi-block paste helper, which moves original nested list
-children before recording Undo. Cut requires an explicit text selection rather
+**Ctrl/Cmd+V** imports clipboard text as Markdown when the target is an empty
+top-level paragraph and the first nonblank line starts with a recognized block
+marker (ATX heading, list, quote, fence, image, table or HTML opener). Supported
+headings, emphasis, inline code, lists and fenced code become native blocks using
+the same Markdown adapter as hydration. Unsupported imports are rejected, not
+partially imported or silently retried as literal text. Import uses the documented
+post-edit normalization below, including canonical paragraph spacing rather than
+retaining source-only leading/trailing blank lines.
+
+**Ctrl/Cmd+Shift+V** always pastes literal text. Ordinary paste into existing text,
+headings, lists or code also stays literal; it replaces a selection within one
+block, preserving surrounding text and nested list ownership. Literal multiline
+paste keeps all line breaks and whitespace inside that block, with CRLF normalized
+to LF. It does not infer inline formatting from Markdown-looking punctuation.
+Cross-block paste is rejected with feedback; select within one block instead.
+
+Every paste validates the complete prospective document before changing live nodes
+or Undo. Rejection displays a reason and recovery guidance, leaves the clipboard
+and document intact, and emits no document invalidation/save. Explicit literal
+paste is the recovery path for unsupported Markdown; it is not a second editor or
+an automatic read-only replacement. Unsupported *restored* source still follows
+the read-only policy below. Paste also fences composition, selection/focus changes,
+content revisions, disabling, unmount and retirement across the clipboard read.
+A successful paste is one transaction and a separate undo step. Neither paste
+path uses AppFlowy's multi-block helper, which moves original nested list children
+before recording Undo. Cut requires an explicit text selection rather
 than deleting the last block at a collapsed cursor. Tab indentation and conversion
 of nested/container blocks to paragraphs are not enabled; those transformations
 can produce structures outside the supported Markdown subset. Read-only selection
@@ -865,7 +888,7 @@ JSON as the portable representation.
 | --- | --- |
 | Import without a document mutation | Snapshot returns the exact original string, including empty input, CRLF, blank lines and trailing whitespace. Selection and rebuilding do not switch to exported Markdown. |
 | Editable subset | Paragraphs, headings 1-6, bold/italic (including nested runs), inline code with backticks, inert links without titles, bulleted/numbered/nested lists, single-paragraph blockquotes, and top-level fenced code. Unicode remains text. |
-| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal prose punctuation is escaped; numeric entities protect edge whitespace and otherwise ambiguous newlines. Empty paragraph spacers become blank block separation. Code exports with collision-safe backtick fences without escaping or trimming its literal contents. |
+| Normalization after editing | LF, ATX headings, `-` bullets, sequential list numbering from the initial number, canonical paragraph spacing, emphasis delimiters and inline link destinations. Literal prose punctuation is escaped; numeric entities protect literal backticks, edge whitespace and otherwise ambiguous newlines. Empty paragraph spacers become blank block separation. Code exports with collision-safe backtick fences without escaping or trimming its literal contents. |
 | Unsupported imports | Indented or nested code, unclosed fences, complex/unsafe fence info strings, images, tables, HTML, task lists, strikethrough, hard breaks, reference/footnote definitions, link titles, complex quote/list bodies and separate adjacent same-kind lists. Outside literal code bodies, raw Unicode/control whitespace that the block parser can trim is rejected; entity-spelled whitespace is supported. The entire original source remains visible and snapshot-readable, with an explicit read-only reason; no partially decoded document replaces it. |
 | Unsupported edited state | Export fails explicitly, including styled code, invalid code language/delta, CR-bearing code text, ambiguous emphasis, multiline inline-code spans, unknown attributes, unsupported nested structure or an empty paragraph whose removal would merge separate same-kind lists. The bridge returns `markdown: null` with `error: 'unsupported_serialization'`; callers must not save this as content. The native document remains available for correction/Undo. |
 

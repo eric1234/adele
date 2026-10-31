@@ -74,6 +74,7 @@ import '../../tool/source_editor_frontend_compiler.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
+import '../support/markdown_paste_fixture.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
 const _agentsMdPluginId = 'dev.adele.plugin.agents-md';
@@ -5168,6 +5169,264 @@ void main() {
         // Drain inside runAsync, including after assertion failures. Automatic
         // widget disposal starts unawaited shutdown in the fake-async zone;
         // its stranded Settings queue would block the next test's startup.
+        expect(
+          await tester.binding.handleRequestAppExit().timeout(
+            const Duration(seconds: 15),
+          ),
+          AppExitResponse.exit,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(
+          IsolateNameServer.lookupPortByName('dev.adele.global-settings-owner'),
+          isNull,
+          reason: 'Application exit must release the shared Settings worker.',
+        );
+      }
+    }),
+  );
+
+  testWidgets(
+    'normal Chat imports a full clipboard Markdown prompt and sends exact model input in one Run',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      // The expected wire text is independent of the native Markdown codec.
+      final markdown = markdownPasteFixture
+          .trimRight()
+          .replaceAll(':', r'\:')
+          .replaceAllMapped(
+            RegExp(r'^(## [1-7])\.', multiLine: true),
+            (match) => '${match[1]}\\.',
+          );
+      const answer =
+          'The complete clipboard prompt reached the local provider.';
+      final release = Completer<void>();
+      final outbound = <Map<String, Object?>>[];
+      final failures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          expect(body['input'], [
+            {
+              'type': 'message',
+              'role': 'user',
+              'content': [
+                {'type': 'input_text', 'text': markdown},
+              ],
+            },
+          ]);
+          await release.future;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _output(
+            request.response,
+            _message('clipboard-request-answer', answer),
+          );
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {'id': 'clipboard-request-run', 'model': 'gpt-6-astra'},
+          });
+        } on Object catch (error, stack) {
+          failures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+      try {
+        await fixture.launch(tester, prepared, endpoint: server);
+        await fixture.openTask(tester);
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final session = _session(tester);
+        final runtime = fixture.runtime;
+        final chat = _chatClient(
+          runtime.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        final owner = _composerOwner(tester);
+        final state = _composerState(tester);
+        expect(owner.revision, 0);
+        expect(_composerMarkdown(tester), '');
+        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        _composerNative(tester).focusNode!.requestFocus();
+        state.selection = rich.Selection.collapsed(rich.Position(path: [0]));
+        await _composerFrames(tester);
+        expect(tester.testTextInput.hasAnyClients, isTrue);
+        final messenger = tester.binding.defaultBinaryMessenger;
+        final previous = messenger.allMessagesHandler;
+        final channel = SystemChannels.platform;
+        var reads = 0;
+        messenger.allMessagesHandler = (name, handler, message) {
+          if (name == channel.name && message != null) {
+            final call = channel.codec.decodeMethodCall(message);
+            if (call.method == 'Clipboard.getData') {
+              expect(call.arguments, Clipboard.kTextPlain);
+              reads++;
+              return Future.value(
+                channel.codec.encodeSuccessEnvelope({
+                  'text': markdownPasteFixture,
+                }),
+              );
+            }
+          }
+          if (previous != null) return previous(name, handler, message);
+          return handler != null
+              ? handler(message)
+              : messenger.delegate.send(name, message);
+        };
+        try {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await _composerFrames(tester);
+          expect(reads, 1);
+        } finally {
+          messenger.allMessagesHandler = previous;
+        }
+
+        final blocks = state.document.root.children;
+        expect(blocks.first.type, rich.HeadingBlockKeys.type);
+        expect(blocks.first.attributes['level'], 1);
+        expect(
+          blocks.first.delta!.toJson(),
+          (rich.Delta()
+                ..insert('ADELE \u2014 Implement Custom ')
+                ..insert('read_file', attributes: {'code': true})
+                ..insert(' Inspection Card'))
+              .toJson(),
+        );
+        expect(
+          blocks.where((node) => node.type == rich.HeadingBlockKeys.type),
+          hasLength(13),
+        );
+        expect(
+          blocks.where((node) => node.type == rich.BulletedListBlockKeys.type),
+          hasLength(12),
+        );
+        expect(
+          blocks.where((node) => node.type == rich.NumberedListBlockKeys.type),
+          hasLength(11),
+        );
+        expect(
+          blocks
+              .singleWhere(
+                (node) => node.delta!.toPlainText().startsWith(
+                  'ADELE has already created',
+                ),
+              )
+              .delta!
+              .toJson(),
+          (rich.Delta()..insert(
+                'ADELE has already created and selected the isolated Git worktree and Task branch.',
+                attributes: {'bold': true},
+              ))
+              .toJson(),
+        );
+        final code = blocks.singleWhere(
+          (node) => node.type == RichDocumentMarkdown.codeBlockType,
+        );
+        expect(code.attributes['language'], 'sh');
+        expect(
+          code.delta!.toJson(),
+          (rich.Delta()..insert(
+                'dart tools/adele.dart test --target filesystem_tools_frontend\n'
+                'dart tools/adele.dart analyze\n'
+                'dart tools/adele.dart format --check\n'
+                'dart tools/adele.dart generate --check\n'
+                'git diff --check',
+              ))
+              .toJson(),
+        );
+        expect(owner.snapshot, returnsNormally);
+        expect(_composerOwner(tester), same(owner));
+        expect(_composerState(tester), same(state));
+        expect(owner.revision, 1);
+        expect(owner.snapshot()['isBlank'], isFalse);
+        expect(owner.snapshot()['error'], isNull);
+        expect(owner.readOnly, isFalse);
+        expect(_composerMarkdown(tester), markdown);
+        await _pumpUntil(
+          tester,
+          () async =>
+              (await chat.snapshot(session.id.value)).draftRequest == markdown,
+        );
+        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        expect(fixture.runIds.values, isEmpty);
+        expect(outbound, isEmpty);
+        await _tap(tester, 'Send');
+        await _pumpUntil(
+          tester,
+          () => outbound.isNotEmpty && fixture.status(tester).isAdvancing,
+        );
+        _rethrowEndpointFailure(failures);
+        final runId = fixture.runIds.values.single;
+        final accepted = await chat.snapshot(session.id.value);
+        expect(accepted.draftRequest, '');
+        expect(accepted.entries.single.role, 'user');
+        expect(accepted.entries.single.content, markdown);
+        expect(accepted.entries.single.runId, runId.value);
+        expect(owner.isDisposed, isTrue);
+        expect(state.isDisposed, isTrue);
+        final blank = _composerOwner(tester);
+        expect(blank, isNot(same(owner)));
+        expect(_composerState(tester), isNot(same(state)));
+        expect(_composerMarkdown(tester), '');
+        expect(_composerState(tester).editable, isFalse);
+        release.complete();
+        await _pumpUntil(
+          tester,
+          () =>
+              find.text(answer).evaluate().isNotEmpty &&
+              !fixture.status(tester).isAdvancing &&
+              _composerState(tester).editable,
+        );
+        _rethrowEndpointFailure(failures);
+        expect(
+          runtime.store.runRecord(runId)!.state,
+          RunTerminalState.completed,
+        );
+        expect(
+          (await chat.snapshot(
+            session.id.value,
+          )).entries.map((entry) => (entry.role, entry.content)),
+          [('user', markdown), ('assistant', answer)],
+        );
+        _composerNative(tester).focusNode!.requestFocus();
+        _composerState(tester).selection = rich.Selection.collapsed(
+          rich.Position(path: [0]),
+        );
+        await _composerFrames(tester);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await _composerFrames(tester);
+        expect(_composerOwner(tester), same(blank));
+        expect(_composerMarkdown(tester), '');
+        expect((await chat.snapshot(session.id.value)).draftRequest, '');
+        expect(fixture.runIds.values, [runId]);
+        expect(outbound, hasLength(1));
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        // Await shutdown here, not in fake-async automatic widget disposal.
         expect(
           await tester.binding.handleRequestAppExit().timeout(
             const Duration(seconds: 15),
