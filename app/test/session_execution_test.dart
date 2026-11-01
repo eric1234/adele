@@ -1889,6 +1889,115 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
     },
   );
 
+  for (final preparation in ['scheduled', 'tools', 'strategy']) {
+    test(
+      'application exit deadline fences late $preparation preparation',
+      () async {
+        final gate = Completer<void>();
+        if (preparation == 'tools') fixture.tool.materializeGate = gate;
+        if (preparation == 'strategy') fixture.materialization = gate;
+        final owners = fixture.owners();
+        final controller = owners.getOrCreate(fixture.session);
+        expect(owners.hasActiveWork, isFalse);
+        final accepted = controller.startRun();
+        final active = controller.activeRunFuture!;
+        expect(owners.hasActiveWork, isTrue);
+        if (preparation == 'tools') await fixture.tool.materializing.future;
+        if (preparation == 'strategy') await fixture.materializing.future;
+        final closing = owners.close();
+        owners.interruptForApplicationExit();
+        owners.interruptForApplicationExit();
+        await fixture.runtime.close();
+        gate.complete();
+        await accepted;
+        await active;
+        await closing;
+        expect(owners.close(), same(closing));
+        expect(owners.hasActiveWork, isFalse);
+        expect(controller.currentRun, isNull);
+        expect(controller.failure, isNull);
+        expect(controller.activitySnapshots, isEmpty);
+        expect(fixture.model.calls, isEmpty);
+        expect(fixture.tool.executions, 0);
+        expect(
+          fixture.runtime.store.runRecord(controller.latestRunId!),
+          isNull,
+        );
+        expect(
+          fixture.executions,
+          hasLength(preparation == 'strategy' ? 1 : 0),
+        );
+        if (fixture.executions.isNotEmpty) {
+          expect(fixture.executions.single.host.state, RunState.created);
+          expect(fixture.executions.single.closeCalls, 1);
+        }
+      },
+    );
+  }
+
+  test(
+    'application exit deadline fences every retained owner despite hanging provider cancellation',
+    () async {
+      final owners = fixture.owners();
+      owners.getOrCreate(fixture.session); // An idle presented Session.
+      final waiting = owners.getOrCreate(fixture.anotherSession());
+      final streaming = owners.getOrCreate(fixture.anotherSession());
+      expect(owners.hasActiveWork, isFalse);
+      await waiting.startRun();
+      final preparing = waiting.activeRunFuture!;
+      final waitingCall = await fixture.model.callFor(waiting.session);
+      waitingCall.propose('unresolved');
+      waitingCall.settle();
+      await preparing;
+      expect(waiting.isAdvancing, isFalse);
+      expect(owners.hasActiveWork, isTrue);
+      final approval = waiting.pendingApproval!;
+      final waitingRun = waiting.currentRun!.run;
+      final waitingEvidence = waitingRun.journal.records;
+
+      await streaming.startRun();
+      final active = streaming.activeRunFuture!;
+      final call = await fixture.model.callFor(streaming.session);
+      final cancellation = Completer<void>();
+      var cancellations = 0;
+      call.events.onCancel = () {
+        cancellations++;
+        return cancellation.future;
+      };
+      final streamingRun = streaming.currentRun!.run;
+      final streamingEvidence = streamingRun.journal.records;
+      final closing = owners.close();
+      owners.interruptForApplicationExit();
+      expect(cancellations, 1);
+      owners.interruptForApplicationExit();
+      expect(() => owners.getOrCreate(fixture.session), throwsStateError);
+      expect(waiting.resolveApproval(approval, approved: false), isFalse);
+      expect(waiting.resolveApproval(approval, approved: true), isFalse);
+      await fixture.runtime.close();
+      await active.timeout(const Duration(seconds: 1));
+      await closing.timeout(const Duration(seconds: 1));
+      expect(cancellation.isCompleted, isFalse);
+      expect(owners.hasActiveWork, isFalse);
+      call.propose('too-late');
+      call.settle();
+      cancellation.completeError(StateError('late cancellation failure'));
+      await Future<void>.delayed(Duration.zero);
+      expect(cancellations, 1);
+      expect(streamingRun.state, RunState.running);
+      expect(waitingRun.state, RunState.waiting);
+      expect(waitingRun.journal.records, waitingEvidence);
+      expect(streamingRun.journal.records, streamingEvidence);
+      expect(fixture.runtime.store.runRecord(waitingRun.id), isNull);
+      expect(fixture.runtime.store.runRecord(streamingRun.id), isNull);
+      expect(fixture.tool.executions, 0);
+      expect(fixture.model.calls, hasLength(2));
+      expect(fixture.executions.map((execution) => execution.closeCalls), [
+        1,
+        1,
+      ]);
+    },
+  );
+
   test(
     'owner lookup is passive and rejects equivalent noncanonical Sessions',
     () async {

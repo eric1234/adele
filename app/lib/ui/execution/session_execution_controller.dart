@@ -74,6 +74,8 @@ final class SessionExecutionController extends ChangeNotifier {
   // Session routing survives Runs; provider state belongs to each fresh adapter.
   final ModelProviderRoutingAffinity _routingAffinity =
       ModelProviderRoutingAffinity();
+  final ApplicationExitExecutionFence _applicationExitFence =
+      ApplicationExitExecutionFence();
   final String? configurationUnavailableReason;
   final VoidCallback? onChanged;
   final VoidCallback? onActivityChanged;
@@ -343,10 +345,12 @@ final class SessionExecutionController extends ChangeNotifier {
     SessionOrchestrationRun? execution;
     var materializationAttempted = false;
     try {
+      _applicationExitFence.throwIfInterrupted();
       if (resolution == null) {
         // Terminal execution may retain backend mutation guards until close.
         await _ownedExecution?.close();
         _ownedExecution = null;
+        _applicationExitFence.throwIfInterrupted();
         final binding = _capturedProvider!;
         final adapter = ModelProviderCapabilityAdapter(
           binding,
@@ -358,6 +362,7 @@ final class SessionExecutionController extends ChangeNotifier {
           environmentRuntime: _runtime.lifecycle.environmentRuntime,
           extensions: _runtime.extensions,
         );
+        _applicationExitFence.throwIfInterrupted();
         materializationAttempted = true;
         execution = await createSessionOrchestrationRun(
           lifecycle: _runtime.lifecycle,
@@ -369,8 +374,10 @@ final class SessionExecutionController extends ChangeNotifier {
           model: adapter,
           toolCatalog: tools,
           policy: const ApprovalGatedToolPolicy(),
+          applicationExitFence: _applicationExitFence,
         );
         _ownedExecution = execution;
+        _applicationExitFence.throwIfInterrupted();
         if (feedbackAdmission != null) {
           feedbackAdmission._state =
               SessionFeedbackRunAdmissionState.associated;
@@ -560,5 +567,11 @@ final class SessionExecutionController extends ChangeNotifier {
         super.dispose();
       },
     ]);
+  }
+
+  /// Deadline-only hard fence; normal close continues to drain cooperatively.
+  void interruptForApplicationExit() {
+    unawaited(close().catchError((Object _) {}));
+    _applicationExitFence.interruptForApplicationExit();
   }
 }

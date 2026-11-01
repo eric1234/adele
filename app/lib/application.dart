@@ -60,6 +60,7 @@ final class AdeleApplication extends StatefulWidget {
     this.attachSessionContext,
     this.navigatorKey,
     this.configurationRoots,
+    this.exitTimeout = const Duration(seconds: 5),
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -100,6 +101,10 @@ final class AdeleApplication extends StatefulWidget {
   /// Optional caller-owned UI access, selected once at mount.
   final GlobalKey<NavigatorState>? navigatorKey;
 
+  /// One total budget after exit acceptance, not a deadline for user preflight.
+  /// Native tests can shorten it without changing resource-owner deadlines.
+  final Duration exitTimeout;
+
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
 }
@@ -117,6 +122,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   late final StreamSubscription<void> _extensionSubscription;
   late final StreamSubscription<void> _providerSubscription;
   Future<void>? _closing;
+  Future<void>? _exiting;
   bool _closeFailureReported = false;
   Object? _bootstrapError;
   Project? _project;
@@ -245,6 +251,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         isInteractive: (session) =>
             mounted &&
             _closing == null &&
+            !_preparingExit &&
             !_navigating &&
             identical(_session, session),
       ),
@@ -302,19 +309,48 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     unawaited(_bootstrapPlugins());
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
+        if (_exiting != null || _closing != null) {
+          await _closeAndReport(acceptedExit: true);
+          return AppExitResponse.exit;
+        }
         if (_preparingExit) return AppExitResponse.cancel;
         setState(() => _preparingExit = true);
+        _executions.refresh();
         _dismissCommandPalette();
         try {
-          if (!await _frontends.prepareToExit()) return AppExitResponse.cancel;
-          _retainingPresentations.value = true;
-          _frontends.retainPresentations();
-          await _closeAndReport();
+          final prepared = await _frontends.prepareToExit(
+            confirmActiveWork: () async {
+              if (!_executions.hasActiveWork &&
+                  !_runtime.terminals.hasActiveWork) {
+                return true;
+              }
+              return _confirmContribution({
+                'title': 'Exit with active work?',
+                'message':
+                    'Runs or interactive terminals may still be active, including '
+                    'work outside the current Session. Exiting may interrupt work '
+                    'or leave its outcome uncertain. ADELE will allow a brief '
+                    'cleanup period, then exit even if cleanup is incomplete. '
+                    'Interrupted work will not resume automatically.',
+                'cancelLabel': 'Keep Working',
+                'acceptLabel': 'Exit ADELE',
+              });
+            },
+          );
+          if (_closing != null) {
+            await _closeAndReport(acceptedExit: true);
+            return AppExitResponse.exit;
+          }
+          if (!prepared) return AppExitResponse.cancel;
+          await _closeAndReport(acceptedExit: true);
           // Keep text-field lifecycle observers alive through async cleanup.
           _dismissSettings();
           return AppExitResponse.exit;
         } finally {
-          if (mounted) setState(() => _preparingExit = false);
+          if (mounted && _closing == null) {
+            setState(() => _preparingExit = false);
+            _executions.refresh();
+          }
         }
       },
       onDetach: () {
@@ -567,6 +603,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   bool _hasWorkbenchAuthority(Session session, Object? workbench) =>
       mounted &&
       _closing == null &&
+      !_preparingExit &&
       !_navigating &&
       workbench != null &&
       identical(_workbench, workbench) &&
@@ -576,7 +613,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     Session session,
     ResolvedOrchestrationStrategy? strategy,
   ) {
-    if (!mounted || _closing != null || !identical(_session, session)) {
+    if (!mounted ||
+        _closing != null ||
+        _exiting != null ||
+        !identical(_session, session)) {
       throw StateError(
         'This Session is not presented in the current workbench.',
       );
@@ -621,6 +661,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final execution = _execution;
     if (!mounted ||
         _closing != null ||
+        _preparingExit ||
         execution == null ||
         !identical(_session, session) ||
         execution.isClosed ||
@@ -703,7 +744,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           _session == null &&
           !_navigating,
       selectedTask: () => _task,
-      isBusy: () => _creatingTask || _navigating,
+      isBusy: () => _creatingTask || _navigating || _preparingExit,
       onSelectTask: _selectTask,
       establishTask: _createTask,
       activateSession: _activateSession,
@@ -722,7 +763,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   void _selectTask(Task? task) {
-    if (!mounted || _closing != null || _session != null || _creatingTask) {
+    if (!mounted ||
+        _closing != null ||
+        _preparingExit ||
+        _session != null ||
+        _creatingTask) {
       throw StateError('Task selection is currently unavailable.');
     }
     if (task != null &&
@@ -748,6 +793,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final task = _task;
     if (!mounted ||
         _closing != null ||
+        _preparingExit ||
         _session != null ||
         _navigating ||
         _creatingTask ||
@@ -811,6 +857,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         project == null ||
         _creatingTask ||
         _session != null ||
+        _preparingExit ||
         _closing != null) {
       throw StateError('Task creation is currently unavailable.');
     }
@@ -841,6 +888,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Future<void> _showBrowser({required bool keepTask}) async {
     if (!mounted ||
         _closing != null ||
+        _preparingExit ||
         _navigating ||
         _creatingTask ||
         _project == null) {
@@ -927,7 +975,56 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
   }
 
-  Future<void> _closeRuntime() => _closing ??= () {
+  Future<void> _closeRuntime() {
+    if (_closing case final closing?) return closing;
+    // Publish the irreversible fence before invoking any resource callbacks.
+    final completion = Completer<void>();
+    _closing = completion.future;
+    completion.complete(Future<void>.sync(_drainAndCloseRuntime));
+    return completion.future;
+  }
+
+  Future<void> _closeForExit() {
+    if (_exiting case final exiting?) return exiting;
+    final completion = Completer<void>();
+    // Install the one deadline before invoking even synchronous retention hooks.
+    _exiting = completion.future.timeout(
+      widget.exitTimeout,
+      onTimeout: () {
+        // A timeout alone does not cancel work. Fence execution before backend
+        // retirement can deliver failures, then request independent teardown.
+        _executions.interruptForApplicationExit();
+        unawaited(
+          Future.wait<void>([
+            Future<void>.sync(_runtime.plugins.close),
+            Future<void>.sync(_runtime.close),
+            Future<void>.sync(_frontends.close),
+            Future<void>.sync(_credentials.close),
+          ]).then<void>((_) {}).catchError((Object error, StackTrace stack) {
+            _reportCloseFailure(error, stack);
+          }),
+        );
+        throw TimeoutException(
+          'Application exit deadline reached; resource release and '
+          'in-flight work may be incomplete.',
+          widget.exitTimeout,
+        );
+      },
+    );
+    // Snapshot reads need their existing bindings until retention completes.
+    // Acceptance already fences interaction/owner acquisition and repeat exits;
+    // a retention failure must not skip the independent resource closes below.
+    final retaining = Future<void>.sync(() {
+      _retainingPresentations.value = true;
+      _frontends.retainPresentations();
+    });
+    completion.complete(
+      Future.wait<void>([retaining, _closeRuntime()]).then<void>((_) {}),
+    );
+    return _exiting!;
+  }
+
+  Future<void> _drainAndCloseRuntime() {
     _runtime.plugins.stopStarting();
     _workbench = null;
     _inspection.retire();
@@ -937,14 +1034,14 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final closingContextConsumer = Future<void>.sync(
       () => detachContext?.call(),
     );
-    final closingCommands = _commandRegistrations.close();
+    final closingCommands = Future<void>.sync(_commandRegistrations.close);
     final Future<void> closingConfiguration;
     if (_credentialAssociations case final associations?) {
       // Fence both public entry points now. The settings drain includes admitted
       // association workflows, whose private worker requests remain available.
       final drainingSettings = Future.wait<void>([
-        associations.close(),
-        ?_settings?.close(),
+        Future<void>.sync(associations.close),
+        if (_settings case final settings?) Future<void>.sync(settings.close),
       ]);
       closingConfiguration = closeResources([
         () => drainingSettings,
@@ -952,26 +1049,31 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       ]);
     } else {
       closingConfiguration = Future.wait<void>([
-        ?_settings?.close(),
-        _credentials.close(),
+        if (_settings case final settings?) Future<void>.sync(settings.close),
+        Future<void>.sync(_credentials.close),
       ]);
     }
-    _frontends.stopStarting();
+    final stoppingFrontends = Future<void>.sync(_frontends.stopStarting);
     _execution?.removeListener(_executionChanged);
     _execution?.activityChanges.removeListener(_activityChanged);
-    final settlingRuns = _executions.close();
-    final closingConsole = _console.close();
-    final closingConsoleHost = _consoleHost.close();
-    final settlingMainContent = _frontends.stopMainContentOperations();
+    final settlingRuns = Future<void>.sync(_executions.close);
+    final closingTerminals = Future<void>.sync(_runtime.terminals.close);
+    final closingConsole = Future<void>.sync(_console.close);
+    final closingConsoleHost = Future<void>.sync(_consoleHost.close);
+    final settlingMainContent = Future<void>.sync(
+      _frontends.stopMainContentOperations,
+    );
     _inspection.removeListener(_inspectionChanged);
     if (!_retainingPresentations.value) _inspection.clear();
     // Application entry points are fenced before waiting. Credential access and
     // runtime storage remain available for admitted workflow/history writes.
     final draining = Future.wait<void>([
+      stoppingFrontends,
       closingCommands,
       closingContextConsumer,
       closingConfiguration,
       settlingRuns,
+      closingTerminals,
       closingConsole,
       closingConsoleHost,
       settlingMainContent,
@@ -980,32 +1082,43 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     ]);
     return closeResources([
       () async => await draining,
-      _runtime.close,
-      _frontends.close,
+      () => Future.wait<void>([
+        Future<void>.sync(_runtime.close),
+        Future<void>.sync(_frontends.close),
+      ]),
     ]);
-  }();
+  }
 
-  Future<void> _closeAndReport() async {
+  Future<void> _closeAndReport({bool acceptedExit = false}) async {
     try {
-      await _closeRuntime();
+      await (acceptedExit ? _closeForExit() : _exiting ?? _closeRuntime());
     } on Object catch (error, stackTrace) {
-      if (_closeFailureReported) return;
-      _closeFailureReported = true;
-      FlutterError.reportError(
-        FlutterErrorDetails(
-          exception: error,
-          stack: stackTrace,
-          library: 'ADELE application',
-          context: ErrorDescription('while closing the application runtime'),
-        ),
-      );
+      _reportCloseFailure(error, stackTrace);
     }
+  }
+
+  void _reportCloseFailure(Object error, StackTrace stackTrace) {
+    if (_closeFailureReported) return;
+    _closeFailureReported = true;
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'ADELE application',
+        context: ErrorDescription('while closing the application runtime'),
+      ),
+    );
   }
 
   Future<void> _openProject(
     ExtensionBinding<ProjectSelectorContribution> selector,
   ) async {
-    if (_openingProject || _closing != null || _project != null) return;
+    if (_openingProject ||
+        _closing != null ||
+        _preparingExit ||
+        _project != null) {
+      return;
+    }
     setState(() {
       _openingProject = true;
       _projectError = null;
@@ -1087,9 +1200,32 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       valueListenable: _retainingPresentations,
       builder: (context, retaining, child) => PreparedFrontendRetention(
         notifier: _retainingPresentations,
-        child: IgnorePointer(
-          ignoring: retaining,
-          child: ExcludeFocus(excluding: retaining, child: child!),
+        child: Stack(
+          alignment: Alignment.topLeft,
+          children: [
+            IgnorePointer(
+              ignoring: retaining,
+              child: ExcludeFocus(excluding: retaining, child: child!),
+            ),
+            if (retaining)
+              const Positioned.fill(
+                child: ColoredBox(
+                  color: Colors.black54,
+                  child: Center(
+                    child: Directionality(
+                      textDirection: TextDirection.ltr,
+                      child: Material(
+                        borderRadius: BorderRadius.all(Radius.circular(8)),
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text('Exiting ADELE...'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
       child: MaterialApp(

@@ -143,7 +143,8 @@ not that every component or a model is usable. Close waits for startup, retires
 owned registrations before closing connections, then closes the shared host.
 Accepted application exit first calls `stopStarting` synchronously, so a pending
 configuration read cannot spawn a backend while admitted application work drains.
-Already active generations remain available until normal runtime retirement.
+Already active generations remain available during cooperative settlement, until
+normal runtime retirement or the accepted application-exit deadline.
 Infrastructure access is revoked on retirement/rollback before asynchronous
 cleanup, as well as on stop/close/termination. The bootstrap does not retire
 registrations owned by external callers.
@@ -300,9 +301,10 @@ across widget rebuilds. Its injectable factory defaults to
 Construction does not access the vault. The lazily created Settings owner is paired
 with one `RecordCredentialService` through the mount-captured
 `createCredentialAssociations` factory. Accepted exit synchronously fences the
-coordinator and Settings public admission, then drains admitted workflows before
-releasing the Settings worker and closing the credential service. Canceled exit
-preflight leaves all owners usable. Widget disposal starts the same drain but cannot await.
+coordinator and Settings public admission, then cooperatively drains admitted
+workflows before releasing the Settings worker and closing the credential service.
+Canceled exit preflight leaves all owners usable. Widget disposal starts the same
+drain but cannot await.
 
 The adapter runs synchronous native calls in background Dart isolates, using the
 internal `adele_credential_store` code asset. Linux x64 uses the OS Secret Service;
@@ -313,7 +315,8 @@ bytes. Presence returns no secret material, though the native backend reads the
 one entry internally. Failures carry only fixed categories; mutation uncertainty
 requires explicit reconciliation before retry.
 
-OS prompts can keep an admitted call and shutdown pending. An isolate is not
+OS prompts can keep an admitted call and service close pending, but not the
+accepted application-exit response beyond its total budget. An isolate is not
 cancellation, and no timeout implies rollback. The service does not cache secrets,
 modify Settings/TOML, or provide cross-process CAS. It is not passed to plugins,
 OAuth, or Session execution.
@@ -1214,9 +1217,10 @@ confirmation and releases no process resource. Command-specific reads, status,
 history, and follow behavior remain in its stock EVC.
 
 Close fences console actions immediately and starts forced content cleanup without
-waiting for plugin advice or a confirmation dialog. After accepted Task/Run work
-drains, the app joins bounded console cleanup before `NativeAdeleRuntime.close`;
-runtime teardown still runs on cleanup failure and owns remaining terminal cleanup.
+waiting for plugin advice or another confirmation dialog. Accepted application exit
+starts canonical terminal cleanup alongside Console and Task/Run drains, rather
+than waiting for execution first. The application deadline bounds collective
+waiting and requests runtime teardown even when a cleanup action stalls.
 Frontend retirement also removes its exact content. Cleanup warnings do not claim
 that a process stopped. Session navigation releases resident presentation/readers,
 not independent execution, capture, terminal resources, or retained lightweight
@@ -1441,10 +1445,10 @@ See [Project opening tests](test/project_opening_test.dart),
 
 `AdeleRuntime.close` stops new lifecycle work and joins in-flight Project opens and
 database closure with backend teardown. Starting teardown allows normal connection
-revocation to settle pending remote opens. Window disposal/exit still owns existing
-Task establishment and Run draining; this is not general cancellation or a bounded
-shutdown deadline. Closing rejects late Project publication without replacing a
-provider or serializing its binding.
+revocation to settle pending remote opens. The application owns Task establishment
+and Run draining, with a separate bound on accepted exit; runtime close itself is
+not general cancellation. Closing rejects late Project publication without
+replacing a provider or serializing its binding.
 
 ### Task Browser
 
@@ -1752,9 +1756,9 @@ through `FlutterError.reportError`; it does not imply that the revoked workspace
 can be retried in place. Returning deliberately creates fresh presentation access
 without replacing or cancelling the core-owned Run.
 New presentations admitted during settlement require a fresh departure attempt.
-After retained-contribution exit preflight accepts, orderly exit freezes service
-display before revoking collection authority, keeping inert status/activity
-visible while core-owned accepted work drains.
+After all exit confirmations accept, orderly exit establishes its admission fence
+and deadline before freezing service display and revoking collection authority,
+keeping inert status/activity visible behind an explicit exit indicator.
 
 The development-only [`main_content_fixture.dart`](tool/main_content_fixture.dart)
 supplies independent in-memory native editors to the interpreted
@@ -1834,6 +1838,12 @@ Browser is shown; no current Environment is fabricated from browser selection.
 Rejection or failure cancels exit without disposing retained documents; acceptance
 does not dispose early while other contributions can still reject. Forced disposal
 is not this cancellable preflight. There is no Project-switch feature.
+After preflight, canonical Session execution and terminal owners supply the host's
+active-work risk, independently of presented content. Declining that confirmation
+also leaves Source documents and plugin authority intact. Accepted exit uses one
+five-second budget, exposed as `AdeleApplication.exitTimeout` for deterministic
+tests. The [execution architecture](../docs/architecture/execution-model.md#accepted-application-exit)
+defines its cooperative ordering, forced cutoff, uncertainty, and preflight limits.
 Forced OS termination, crashes, hot plugin replacement with unsaved state, and
 cross-window/restart recovery are not protected by this current-window lifetime.
 See [focused Source checks](../docs/development/testing.md#focused-source-checks)

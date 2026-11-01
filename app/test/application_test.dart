@@ -2037,6 +2037,75 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final cleanup in ['throws', 'pending', 'late failure']) {
+    testWidgets('application exit bounds $cleanup cleanup and joins repeats', (
+      tester,
+    ) async {
+      final runtime = NativeAdeleRuntime();
+      final credentials = CredentialService(_CredentialStorage());
+      final gate = Completer<void>();
+      late WindowSessionContext context;
+      var detachments = 0;
+      var exited = false;
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: () => runtime,
+          createCredentials: () => credentials,
+          bootstrapPlugins: (_) async {},
+          exitTimeout: const Duration(milliseconds: 100),
+          attachSessionContext: (value) {
+            context = value;
+            return () {
+              detachments++;
+              if (cleanup == 'throws') throw StateError('cleanup fixture');
+              return gate.future;
+            };
+          },
+        ),
+      );
+      final exiting = tester.binding.handleRequestAppExit().then((response) {
+        exited = true;
+        return response;
+      });
+      await tester.pump();
+      expect(find.text('Exit with active work?'), findsNothing);
+      expect(find.text('Exiting ADELE...'), findsOneWidget);
+      expect(context.isActive, isFalse);
+      expect(detachments, 1);
+      // This independent owner fences immediately even if native detach stalls.
+      await expectLater(
+        credentials.contains(CredentialReference.generate()),
+        throwsA(isA<CredentialFailure>()),
+      );
+      final repeated = tester.binding.handleRequestAppExit();
+      if (cleanup != 'throws') {
+        expect(exited, isFalse);
+        await tester.pump(const Duration(milliseconds: 99));
+        expect(exited, isFalse);
+        expect(runtime.plugins.state, isNot(ApplicationPluginState.closed));
+        await tester.pump(const Duration(milliseconds: 1));
+      }
+      expect(await exiting, AppExitResponse.exit);
+      expect(await repeated, AppExitResponse.exit);
+      expect(
+        tester.takeException(),
+        cleanup == 'throws' ? isA<StateError>() : isA<TimeoutException>(),
+      );
+      await tester.pump();
+      expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(detachments, 1);
+      if (cleanup == 'late failure') {
+        gate.completeError(StateError('late cleanup fixture'));
+        await tester.pump();
+      }
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(detachments, 1);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'Session choices are explicit, usable and revalidated before publication',
     (tester) async {

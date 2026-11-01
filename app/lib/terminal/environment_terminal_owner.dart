@@ -32,6 +32,7 @@ final class EnvironmentTerminalCoordinator {
   final Set<EnvironmentTerminalOwner> _owners = Set.identity();
   final Map<EnvironmentTerminalOwner, Future<void>> _removals = Map.identity();
   final _changes = _TerminalChanges();
+  bool _hasUncertainRemoval = false;
   Future<void>? _closing;
 
   /// Coalesced collection invalidations only, never owner output or lifecycle.
@@ -63,6 +64,15 @@ final class EnvironmentTerminalCoordinator {
   List<EnvironmentTerminalOwner> forEnvironment(EnvironmentId id) =>
       List.unmodifiable(_owners.where((owner) => owner.environmentId == id));
 
+  /// Exit risk across owned resources and pending or uncertain removals.
+  /// Independent of Session, Console, or presentation visibility; inspection
+  /// neither starts an idle owner nor fences existing work.
+  /// Settled removal uncertainty lasts for this coordinator's lifetime.
+  bool get hasActiveWork =>
+      _hasUncertainRemoval ||
+      _owners.any((owner) => owner.hasExitRisk) ||
+      _removals.keys.any((owner) => owner.hasExitRisk);
+
   /// Synchronously removes and fences only this exact owner, not its siblings.
   /// Repeated removal joins the same pending cleanup, including during shutdown.
   Future<void> remove(EnvironmentTerminalOwner owner) {
@@ -70,6 +80,8 @@ final class EnvironmentTerminalCoordinator {
     if (pending != null) return pending;
     if (!_owners.remove(owner)) return Future<void>.value();
     final removing = owner.dispose().whenComplete(() {
+      // Forget the owner, not the uncertainty about its remote resource.
+      if (owner.hasExitRisk) _hasUncertainRemoval = true;
       _removals.remove(owner);
     });
     _removals[owner] = removing;
@@ -86,6 +98,7 @@ final class EnvironmentTerminalCoordinator {
     _owners.clear();
     for (final owner in owners) {
       _removals[owner] = owner.dispose().whenComplete(() {
+        if (owner.hasExitRisk) _hasUncertainRemoval = true;
         _removals.remove(owner);
       });
     }
@@ -157,6 +170,14 @@ final class EnvironmentTerminalOwner {
   /// A pre-open stream failure/cancellation cannot prove remote resource release.
   bool get launchFailedWithoutResources =>
       _error != null && !_terminalRequested && cleanupSucceeded;
+
+  /// Conservative exit risk, not a claim that the shell is still running.
+  /// Never-started owners are harmless; otherwise only actual shell exit with
+  /// successful cleanup or a proven resource-free launch failure is safe.
+  bool get hasExitRisk =>
+      _starting != null &&
+      !launchFailedWithoutResources &&
+      !(shellCompleted && cleanupSucceeded);
 
   final _changes = _TerminalChanges();
   late final void Function() _detachTitle;
