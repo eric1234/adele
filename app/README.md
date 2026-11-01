@@ -435,10 +435,12 @@ collection labels reject aggregation. Repairing declarations requires restart.
 All configuration still uses one global layer. Opted-in backends receive nonsecret
 record definitions at startup; credential references stay in the host. Ordinary
 record CRUD does not access the vault; even explicit credential management does not
-authenticate or activate a provider, change Chat, or alter temporary
-environment-variable startup. Restart captures updated records without activating
-configured providers. Explicit backend credential retrieval is separately scoped
-as described below; record-based OAuth, Profiles,
+authenticate a provider, change Chat selection, or alter temporary
+environment-variable startup. Restart captures updated records; the OpenAI backend
+then materializes its valid API-key records into independent provider routes without
+reading credentials. Explicit backend credential retrieval is separately scoped
+as described below. Record/credential changes require restart, not Settings Reload
+alone; record-based OAuth, Profiles,
 Agent configuration, narrower scopes, runtime restart commands, and live editor
 reconfiguration remain unimplemented.
 
@@ -470,11 +472,15 @@ the runtime, shared host and public `AdeleBackendRecords` decoder each validate
 and defensively copy the bounded payload. It lasts for one backend generation,
 with no live update, record RPC, file watcher or automatic restart.
 
-The stock OpenAI backend decodes Work/Personal metadata without creating providers
-or configuration contexts from records. Record IDs are configuration identities,
-not `ProviderId`s or credential authorization. Existing ChatGPT startup and ready
-advertisements are unchanged. Credential availability does not materialize a
-configured provider or activate a stored API-key instance.
+The stock OpenAI backend materializes valid API-key records into independent
+provider/context routes in that single backend generation. The plugin owns the
+[record-to-provider mapping](../plugins/openai/packages/backend/README.md#configured-api-key-instances);
+the app neither derives OpenAI IDs nor inspects endpoints. Record IDs remain
+configuration identities, not credentials or host authorization. These advertisements
+do not prove local key availability or successful authentication. The separately
+configured ChatGPT route remains independent, and normal Session execution still
+selects it explicitly. See the [configuration lifecycle](../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+for restart and no-fallback rules.
 
 ### Backend credentials
 
@@ -503,7 +509,10 @@ native operation; the application drains admitted operations before owner dispos
 
 The [canonical credential model](../docs/architecture/profiles-and-configuration.md#backend-credential-delivery)
 owns capture, staleness, external-writer limits and the inability to revoke a secret
-already delivered in memory. The [public contract](../packages/plugin_backend_support/README.md)
+already delivered in memory. OpenAI invokes this existing boundary lazily for each
+subscribed configured-provider request; it does not receive the app-private service
+or native storage access. Failure remains with that selected instance, never an
+account fallback. The [public contract](../packages/plugin_backend_support/README.md)
 owns usage and fixed failures. Local test ownership is split between
 [`backend_credential_host_test.dart`](test/core/backend_credential_host_test.dart),
 [`startup_credential_authority_test.dart`](test/core/startup_credential_authority_test.dart)
@@ -1222,9 +1231,16 @@ are mapped in [console validation](../docs/development/testing.md#focused-consol
 
 Normal application composition currently selects
 `dev.adele.openai.chatgpt-experimental`; it has no API-key provider selector.
-API-key and multiple configured contexts remain available to other development
-consumers. This launcher/backend-startup seam and app model choice are temporary,
-not the [Profile/settings architecture](../docs/architecture/profiles-and-configuration.md).
+Configured API-key records are independently advertised and can be resolved explicitly
+through the ordinary capability registry, without changing the selected ChatGPT path.
+`SessionExecutionOwners` passes that explicit provider ID to every
+`SessionExecutionController`; both availability and Run capture resolve that ID, not
+the registry's first provider. Adding configured records therefore does not prefer
+Work or Personal, and missing ChatGPT remains unavailable even when an API-key route
+exists. Default resolution elsewhere retains the registry's provisional rank/ID
+ordering, not an account preference policy. This launcher/backend-startup seam and app
+model choice are temporary, not the
+[Profile/settings architecture](../docs/architecture/profiles-and-configuration.md).
 
 Set backend configuration before invoking the Linux repository launcher. It
 snapshots references/public options into the startup-argv file, not tokens or
@@ -1235,7 +1251,7 @@ only while building is not embedded; supply it when launching the built app too.
 
 | Environment variable | Current use |
 | --- | --- |
-| `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE` | Credential-store reference; use an absolute path. No reference means no normal model capability. |
+| `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE` | Credential-store reference; use an absolute path. No reference means no ChatGPT capability; configured API-key routes are independent. |
 | `ADELE_OPENAI_CHATGPT_MODEL` | App model selection; missing/blank defaults to `gpt-6-astra`. |
 | `ADELE_OPENAI_CHATGPT_CLIENT_ID` | Optional public OAuth client ID; omission selects the experimental Codex-client opt-in. |
 | `ADELE_OPENAI_CHATGPT_INSTANCE_ID` | Optional configured credential instance; backend default `development-chatgpt`. |
@@ -1243,9 +1259,13 @@ only while building is not embedded; supply it when launching the built app too.
 | `ADELE_OPENAI_CHATGPT_REDIRECT_URI` | Optional OAuth redirect override. |
 | `ADELE_OPENAI_CHATGPT_ENDPOINT` | Optional experimental Responses endpoint override. |
 
-The launcher supplies `--chatgpt-only`. Normal bootstrap's argv-only mode also
-prevents OpenAI from exposing an inherited API-key provider when startup arguments
-are absent. No valid selected provider context means unavailable, not fallback.
+The launcher supplies `--chatgpt-only` for the legacy startup-argument path; it does
+not suppress independently delivered configured API-key records. Normal bootstrap's
+argv-only mode also prevents OpenAI from exposing an inherited environment API-key
+provider when startup arguments are absent. The explicit direct/development
+`OPENAI_API_KEY` / `ADELE_OPENAI_ENDPOINT` route remains separate and never supplies
+a configured record's missing key. No valid selected provider context means
+unavailable, not fallback.
 A configured file reference does not prove usable credentials: the backend can
 advertise the provider before invocation discovers credential failure. That failure
 does not invalidate the Project, Task, Environment, or Session.
@@ -2115,8 +2135,10 @@ and one presented Session with multiple independently active Sessions, not multi
 active Runs per Session. Global scalar settings and nonsecret configuration records
 are implemented, with startup-only scalar delivery to frontends and backends.
 Global Settings manages host-only credential associations separately from runtime
-delivery. Automatic selection/resume, Profiles, configured-provider activation,
-and workbench persistence remain absent.
+delivery. OpenAI's configured API-key providers use that delivery lazily, with a
+restart required after record or credential changes. Automatic selection/resume,
+Profiles, Session provider/model selection, live provider reconfiguration, and
+workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.
 Intended UX belongs to

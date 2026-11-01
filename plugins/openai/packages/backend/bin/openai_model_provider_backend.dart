@@ -5,7 +5,7 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
-import 'package:adele_plugin_backend_support/adele_backend_records.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 
@@ -23,8 +23,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (defaultConfigurationContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
-  // Decode the immutable startup records without activating configured providers.
-  AdeleBackendRecords.fromBootstrap(bootstrapMessage);
+  final configurations = OpenAiApiKeyConfiguration.fromRecords(
+    AdeleBackendRecords.fromBootstrap(bootstrapMessage),
+    onRejected: (id, code) =>
+        stderr.writeln('OpenAI provider record "$id" rejected ($code).'),
+  );
   final bool startupArgumentsOnly =
       bootstrapMessage['startupArgumentsOnly'] == true;
   final Map<String, String> environment = _configurationEnvironment(
@@ -57,7 +60,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (!startupArgumentsOnly &&
       arguments.isEmpty &&
       apiKey == null &&
-      !chatGptConfigured) {
+      !chatGptConfigured &&
+      configurations.isEmpty) {
     throw StateError(
       'The OpenAI backend requires a nonblank OPENAI_API_KEY or an experimental '
       'ChatGPT credential file with an OAuth client ID or explicit Codex client '
@@ -121,25 +125,52 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     );
   }
   final ReceivePort requests = ReceivePort();
+  final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
+  AdeleConfigurationContextRouter? router;
   try {
-    final AdeleConfigurationContextRouter router =
-        AdeleConfigurationContextRouter(
-          contexts: <String, Map<String, AdeleBackendDispatcher>>{
-            if (apiKeyProvider != null)
-              defaultConfigurationContext: <String, AdeleBackendDispatcher>{
-                modelProviderServiceId: ModelProviderServiceDispatcher(
-                  apiKeyProvider,
-                ),
-              },
-            if (chatGptProvider != null)
-              openAiChatGptConfigurationContext:
-                  <String, AdeleBackendDispatcher>{
-                    modelProviderServiceId: ModelProviderServiceDispatcher(
-                      chatGptProvider,
-                    ),
-                  },
+    if (apiKeyProvider != null &&
+        ((chatGptProvider != null &&
+                defaultConfigurationContext ==
+                    openAiChatGptConfigurationContext) ||
+            configurations.any(
+              (value) =>
+                  value.configurationContext == defaultConfigurationContext,
+            ))) {
+      throw StateError('Conflicting OpenAI configuration contexts.');
+    }
+    final infrastructureContext = bootstrapMessage['hostInfrastructureContext'];
+    final credentials =
+        infrastructureContext is String && infrastructureContext.isNotEmpty
+        ? AdeleCredentialClient(
+            hostRequests: hostRequests,
+            hostInfrastructureContext: infrastructureContext,
+          )
+        : null;
+    router = AdeleConfigurationContextRouter(
+      contexts: <String, Map<String, AdeleBackendDispatcher>>{
+        if (apiKeyProvider != null)
+          defaultConfigurationContext: <String, AdeleBackendDispatcher>{
+            modelProviderServiceId: ModelProviderServiceDispatcher(
+              apiKeyProvider,
+            ),
           },
-        );
+        if (chatGptProvider != null)
+          openAiChatGptConfigurationContext: <String, AdeleBackendDispatcher>{
+            modelProviderServiceId: ModelProviderServiceDispatcher(
+              chatGptProvider,
+            ),
+          },
+        for (final configuration in configurations)
+          configuration.configurationContext: <String, AdeleBackendDispatcher>{
+            modelProviderServiceId: ModelProviderServiceDispatcher(
+              OpenAiConfiguredModelProvider(
+                configuration: configuration,
+                credentials: credentials,
+              ),
+            ),
+          },
+      },
+    );
     bootstrapPort.send(<String, Object?>{
       'kind': 'ready',
       'commandPort': requests.sendPort,
@@ -163,11 +194,22 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             displayName: 'Experimental ChatGPT',
             configurationContext: openAiChatGptConfigurationContext,
           ).toMap(),
+        for (final configuration in configurations)
+          AdeleCapabilityExposure(
+            providerId: configuration.providerId.value,
+            capabilityId: modelProviderCapability.id.value,
+            capabilityMajorVersion: modelProviderCapability.majorVersion,
+            serviceId: modelProviderServiceId,
+            displayName: configuration.displayName,
+            configurationContext: configuration.configurationContext,
+          ).toMap(),
       ],
     });
     await for (final Object? request in requests) {
+      if (hostRequests.handleResponse(request)) continue;
       if (request is! Map) continue;
       if (request['method'] == 'shutdown' && request['requestId'] is int) {
+        hostRequests.close();
         await router.close();
         responsePort.send(<String, Object?>{
           'kind': 'response',
@@ -181,10 +223,15 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       unawaited(router.handle(request, responsePort.send));
     }
   } finally {
-    requests.close();
-    apiKeyProvider?.close();
-    chatGptProvider?.close();
-    oauth?.close();
+    hostRequests.close();
+    try {
+      await router?.close();
+    } finally {
+      requests.close();
+      apiKeyProvider?.close();
+      chatGptProvider?.close();
+      oauth?.close();
+    }
   }
 }
 

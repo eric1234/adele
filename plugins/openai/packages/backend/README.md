@@ -7,8 +7,10 @@ public API-key route and a separately configured, explicitly experimental ChatGP
 subscription-backed classic Responses route. The latter is interoperability
 support, not a stable third-party OpenAI integration contract.
 
-Normal stock composition exposes only the ChatGPT context; other consumers may
-activate the API-key context or both. Credential loading belongs to this backend.
+Normal stock composition exposes configured API-key records alongside the separately
+configured ChatGPT context. Normal Chat still selects ChatGPT explicitly; there is
+no Session provider picker. The backend owns OpenAI protocol/authentication behavior,
+while the host owns record credential authorization and OS storage.
 See [app configuration](../../../../app/README.md#chatgpt-source-checkout-configuration)
 and [ADR 0028](../../../../docs/adr/0028-experimental-chatgpt-openai-configured-instance.md)
 for startup/auth ownership and limitations.
@@ -28,17 +30,112 @@ credentials.
 Stock preparation separately opts this backend into `dev.adele.openai.api-key`
 startup metadata and only its `api-key` credential slot. The generic
 [host-authorized credential client](../../../../packages/plugin_backend_support/README.md#credential-reads)
-is available to an eligible generation, but this backend does not call it or
-construct providers from the stored records yet.
+is available to an eligible generation; the backend uses it lazily for configured
+provider invocations, never to preload secrets at startup.
 
-This declaration does not activate a configured provider, select a model, change
-the stock ChatGPT-only startup policy, or supply runtime credentials. Backend
-startup/auth behavior is unchanged; record metadata is not a live provider
-registration. The preparation path belongs to the
+The schema itself neither registers a provider nor selects a model. The backend
+interprets captured nonsecret records into the routes below. Preparation belongs to the
 [toolchain guide](../../../../docs/development/toolchain.md#local-plugin-compilation).
 Nonsecret reference persistence and protected local credential bindings belong to
 the [host association lifecycle](../../../../docs/architecture/profiles-and-configuration.md#record-association-lifecycle),
-not this backend; no record credential is delivered to runtime authentication.
+not this backend. No record files, credential references, protected envelopes, TOML
+API or native keyring access are exposed to the AOT plugin.
+
+## Configured API-Key Instances
+
+[`OpenAiApiKeyConfiguration.fromRecords`](lib/src/openai_configured_provider.dart)
+interprets only `providers` records of type `dev.adele.openai.api-key`. It retains
+each stable record ID and configured display name. Display names must be nonblank
+and contain no ASCII control characters;
+unknown fields and invalid ordinary values reject that instance rather than repair
+it. An absent `endpoint` uses `https://api.openai.com/v1/responses`. An explicit
+endpoint must be an absolute HTTP(S) URI with a valid nonempty host, no user
+information or fragment, and HTTP only for loopback destinations. An invalid supplied
+endpoint never becomes the default. Rejection leaves healthy siblings and the
+independent ChatGPT route eligible; rejected records are not advertised.
+The entrypoint reports only the validated record ID and fixed rejection code
+(`openai_record_invalid_values` or `openai_record_invalid_configuration`), never the
+supplied endpoint, ordinary values or raw exception.
+
+The plugin owns this deterministic identity mapping, independent of display name,
+endpoint, key, credential reference and backend generation:
+
+| Record ID | Stable `ProviderId` | Live Configuration Context |
+| --- | --- | --- |
+| `work-openai` | `dev.adele.openai.api-key.work-openai` | `api-key-record:work-openai` |
+| `personal-openai` | `dev.adele.openai.api-key.personal-openai` | `api-key-record:personal-openai` |
+
+Provider IDs and context strings use the existing public validators. Records retain
+stable record-ID advertisement order and separate dispatchers for
+`modelProviderServiceId` within one
+`AdeleConfigurationContextRouter`, all in **one OpenAI AOT backend generation**.
+The exact capability binding selects the context; generated model request payloads,
+model IDs and provider options cannot select another account. Unknown contexts and
+services fail closed. Duplicate record identities fail structural decoding rather
+than selecting a winner. An empty record list creates no configured providers.
+
+Advertisement establishes a valid configured route, not local credential presence
+or successful OpenAI authentication. `OpenAiConfiguredModelProvider` creates a
+single-subscription lazy stream. On every subscription it uses `AdeleCredentialClient`
+through the generation's `AdeleHostRequestMultiplexer` and infrastructure grant to
+request exactly `collection: providers`, `recordType: dev.adele.openai.api-key`, that
+configuration's `recordId`, and `slot: api-key`. No uninvoked sibling is read and no
+HTTP begins until the selected credential read succeeds. A logical provider does not
+retain a decrypted key for reuse by later invocations.
+
+Each invocation creates and owns a temporary `OpenAiModelProvider` and its HTTP
+client, reusing the existing Responses implementation and generated dispatcher.
+Output, observations and terminal events pass through that stream; pause/resume and
+active-request cancellation propagate to it. Cancellation while a credential read
+waits fences provider construction and late HTTP, without claiming to cancel the OS
+prompt. Completion/cancellation releases the temporary provider. The entrypoint
+handles reverse responses independently of forward dispatch, and closes its host
+multiplexer before draining the router on shutdown. Configured requests do not
+follow redirects to another endpoint or downgrade to HTTP.
+
+The [configuration lifecycle](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+owns restart semantics: record creation/deletion, display name, endpoint, identity/type,
+credential association, replacement and Forget require a new backend generation.
+Restart ADELE to apply them. There is no live refresh or automatic restart; a later
+credential read can fail stale instead of retargeting the old route. Already-started
+HTTP may continue with a delivered key. Forget does not retract network authorization
+already in flight, and dropping Dart strings is not a zeroization guarantee.
+
+The legacy explicit development `OPENAI_API_KEY` / `ADELE_OPENAI_ENDPOINT` mode keeps
+`dev.adele.openai.api-key` in the default context. Experimental ChatGPT keeps
+`dev.adele.openai.chatgpt-experimental` in `chatgpt-experimental`, with its independent
+credential-file/OAuth flow. Neither is a fallback for configured records, and records
+cannot override their credentials or routes. `startupArgumentsOnly` continues to
+suppress inherited environment configuration; `--chatgpt-only` constrains that legacy
+startup path, not independently delivered records. The app's explicit ChatGPT
+selection and the registry's provisional default rank/ID ordering are unchanged.
+
+## Credential Failures
+
+Host credential failures become one safe failed model-provider terminal before HTTP,
+with fixed messages and no references, envelopes, native errors or secrets. Provider
+codes use the `openai_credential_` prefix:
+
+| Host Outcome | Provider Code Suffix | Required Recovery / Meaning |
+| --- | --- | --- |
+| `notAuthorized` | `not_authorized` | The exact record/slot access is not authorized. |
+| `notConfigured` | `not_configured` | Attach the record's API key and restart. |
+| `missingLocally` | `missing_locally` | The referenced key is absent on this machine; recover through Settings. |
+| `storageUnavailable` | `storage_unavailable` | OS storage or strict authority validation is unavailable. |
+| `invalidCredentialBinding` | `invalid_binding` | The stored protected binding is invalid; no repair is attempted. |
+| `reconciliationRequired` | `reconciliation_required` | Explicit Settings reconciliation is required. |
+| `staleConfiguration` | `stale_configuration` | Restart ADELE to capture current record/credential state. |
+| `generationUnavailable` | `generation_unavailable` | The generation cannot use its credential grant. |
+| `credentialAccessFailed` | `access_failed` | Credential access could not be completed. |
+
+`notAuthorized` maps to the existing `ModelProviderFailureKind.permission`; the
+other credential outcomes map to `unavailable`, not `authentication`. These are
+pre-HTTP failures, not remote OpenAI authentication responses. An incompatible
+delivered API-key value also uses `unavailable`, with `openai_credential_invalid_api_key`;
+unexpected wrapper failures use `openai_configured_invocation_failed` without raw
+exception text. No failure automatically retries, reconciles storage, consults the
+environment key or switches to another record/ChatGPT. Existing OpenAI HTTP failures
+remain separate outcomes after a request actually reaches the endpoint.
 
 ## Reasoning Summary Requests
 
@@ -239,7 +336,19 @@ dart tools/adele.dart test --target openai_contract
 ```
 
 Run these from the repository root. Contract tests cover stable identities, not
-algorithms. Backend tests in `test/openai_native_presentation_test.dart` and
+algorithms. `test/openai_configured_provider_test.dart` owns record interpretation,
+endpoint validation, safe credential failures and per-invocation resource lifecycle.
+Configured-record startup and real AOT routing belong to
+`test/openai_record_startup_test.dart` and
+`test/openai_configuration_context_integration_test.dart`. The app's
+`test/core/openai_record_startup_integration_test.dart` additionally uses maintained
+stock metadata, real TOML records and protected associations through host credential
+authorization, with deterministic storage and loopback HTTP. See
+[configured-provider checks](../../../../docs/development/testing.md#configured-openai-provider-checks)
+for ownership, lifecycle/failure coverage and commands; these are not live OpenAI or
+real Secret Service tests.
+
+Backend tests in `test/openai_native_presentation_test.dart` and
 `test/openai_model_provider_backend_test.dart` cover raw classification,
 projection, processing bounds, preservation, guarded summary request lowering in
 both profiles, unchanged requests for unlisted models,
@@ -264,5 +373,5 @@ API key. Existing opt-in live smokes remain separate and do not establish summar
 support. Generated transport and app adapter tests cover safe-payload mapping,
 the required nullable key, and raw-only replay. Hidden chain-of-thought and
 encrypted reasoning are never user-presented. Reasoning deltas, compaction UI,
-provider/model configuration UI, and broader Source/Diff/Console,
+Session provider/model selection UI, and broader Source/Diff/Console,
 terminal/PTY/full-output presentation remain deferred.
