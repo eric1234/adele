@@ -78,10 +78,17 @@ void main() {
         expect(remote.summary, description.summary);
         expect(remote.uncertainty, RemoteEffectUncertainty.uncertain);
       }
+      for (final timeout in [601, 1800]) {
+        final arguments = await fixture.client.validateAndNormalize(
+          runCommandToolId.value,
+          {..._proposed, 'timeoutSeconds': timeout},
+        );
+        expect(arguments.snapshot['timeoutSeconds'], timeout);
+      }
       for (final invalid in <Map<String, Object?>>[
         {},
         {..._proposed, 'environmentId': 'forged'},
-        {..._proposed, 'timeoutSeconds': 601},
+        {..._proposed, 'timeoutSeconds': 1801},
         {..._proposed, 'workingDirectory': '../outside'},
         {
           ..._proposed,

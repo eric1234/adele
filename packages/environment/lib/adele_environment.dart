@@ -32,6 +32,9 @@ const int environmentTerminalTextLimit = 8192;
 /// Foreground output message bound in UTF-16 code units, not a transcript limit.
 const int environmentProcessTextLimit = 16 * 1024;
 
+/// Maximum foreground execution timeout, independent of buffered processes.
+const int environmentForegroundProcessTimeoutLimitSeconds = 1800;
+
 /// Establishment-only relational initialization bounds.
 const int environmentInitialInsertLimit = 32;
 const int environmentInitialExpectedRowsLimit = 1000;
@@ -394,9 +397,11 @@ final class EnvironmentForegroundProcessRequest {
       'Process relative working directory',
       relativeWorkingDirectory,
     );
-    if (timeoutSeconds < 1 || timeoutSeconds > 600) {
+    if (timeoutSeconds < 1 ||
+        timeoutSeconds > environmentForegroundProcessTimeoutLimitSeconds) {
       throw const FormatException(
-        'Process timeout must be between 1 and 600 seconds.',
+        'Process timeout must be between 1 and '
+        '$environmentForegroundProcessTimeoutLimitSeconds seconds.',
       );
     }
   }

@@ -812,7 +812,7 @@ void main() {
           'arguments_json':
               '[ "", "  spaced  ", "\\t", "\\u00e9", "\\ud83d\\ude00" ]',
           'working_directory': 'source/with space',
-          'timeout_seconds': 600,
+          'timeout_seconds': 1800,
         },
       );
       storage.commandRun(header: header);
@@ -1269,7 +1269,7 @@ void main() {
           '\ud800',
         ],
       ),
-      ('timeout_seconds', [null, '30', 0, 601]),
+      ('timeout_seconds', [null, '30', 0, 1801]),
       ('version', [null, '1', 0, -1]),
       ('high_water', [null, '0', -1, 1]),
       ('total_code_units', [null, '0', -1, 1]),

@@ -290,7 +290,19 @@ void main() {
         throwsFormatException,
       );
     }
-    for (final int timeoutSeconds in <int>[0, 601]) {
+    expect(environmentForegroundProcessTimeoutLimitSeconds, 1800);
+    for (final int timeoutSeconds in <int>[1, 120, 600, 601, 1800]) {
+      expect(
+        EnvironmentForegroundProcessRequest(
+          program: 'git',
+          arguments: const <String>[],
+          relativeWorkingDirectory: '',
+          timeoutSeconds: timeoutSeconds,
+        ).timeoutSeconds,
+        timeoutSeconds,
+      );
+    }
+    for (final int timeoutSeconds in <int>[0, 1801]) {
       expect(
         () => EnvironmentForegroundProcessRequest(
           program: 'git',

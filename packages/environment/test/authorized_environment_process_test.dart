@@ -13,7 +13,7 @@ void main() {
     program: 'git',
     arguments: ['diff', '--check', 'literal | argument'],
     relativeWorkingDirectory: 'src',
-    timeoutSeconds: 17,
+    timeoutSeconds: 1800,
   );
 
   setUp(() {
@@ -42,11 +42,12 @@ void main() {
         'program': 'git',
         'arguments': ['diff', '--check', 'literal | argument'],
         'relativeWorkingDirectory': 'src',
-        'timeoutSeconds': 17,
+        'timeoutSeconds': 1800,
       },
     });
     expect(service.requests.single, isNot(same(request)));
     expect(service.requests.single.arguments, request.arguments);
+    expect(service.requests.single.timeoutSeconds, 1800);
     expect(events.map((event) => event.kind), [
       EnvironmentProcessEventKind.output,
       EnvironmentProcessEventKind.output,
@@ -138,6 +139,10 @@ void main() {
         {
           'request': {...encoded, 'timeoutSeconds': 0},
         },
+        for (final timeout in [1801, 1.5, null])
+          {
+            'request': {...encoded, 'timeoutSeconds': timeout},
+          },
         {
           'request': {...encoded, 'program': ''},
         },
