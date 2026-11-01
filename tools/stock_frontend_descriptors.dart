@@ -99,6 +99,18 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'role': 'toolActivity',
       'library':
           'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
+      'inspectionExtensionId':
+          'dev.adele.plugin.filesystem-tools.read-file-inspection',
+      'compactExtensionId':
+          'dev.adele.plugin.filesystem-tools.read-file-compact',
+      'toolId': 'dev.adele.plugin.filesystem-tools.read-file',
+      'inspectionEntrypoint': 'buildReadFileInspection',
+      'compactEntrypoint': 'buildReadFileCompact',
+    },
+    {
+      'role': 'toolActivity',
+      'library':
+          'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
       'inspectionExtensionId': 'dev.adele.plugin.filesystem-tools.inspection',
       'compactExtensionId': 'dev.adele.plugin.filesystem-tools.compact',
       'toolId': 'dev.adele.plugin.filesystem-tools.apply-patch',

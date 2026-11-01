@@ -133,6 +133,25 @@ focus on adaptation, generated calls, identity-only description, failures, and
 entrypoint routing rather than duplicating those semantic cases. The independent
 frontend package does not depend on this backend.
 
+## Read File Inspection
+
+The Filesystem frontend also provides rich and compact `read_file` presentations
+from the same compiled artifact. The read-only Inspection card distinguishes the
+canonical requested scope (whole file, start/count, or through EOF) from recorded
+returned and total line counts. It shows lifecycle and outcome, and on success
+available size, revision, continuation line, and a safely escaped text preview
+bounded to 2,000 displayed characters. An ellipsis indicates preview truncation;
+empty selections remain successful. Failure diagnostics are safely escaped.
+Metadata is not inferred when absent. The compact summary contains only the
+requested path and optional range, with bounded escaped display text.
+
+Both views consume captured activity snapshots, subscribe to live changes, and
+unsubscribe on disposal using the same lifecycle as the patch presentation.
+They do not read files, execute tools, navigate, edit, or supply approval controls.
+The preview is not a source editor or a further read, and cannot retrieve content
+beyond the recorded selection. Missing or retired presentations retain the
+existing generic host unavailable/fallback behavior.
+
 ## Apply Patch Inspection
 
 The separate Flutter package `packages/frontend` (`filesystem_tools_frontend`)

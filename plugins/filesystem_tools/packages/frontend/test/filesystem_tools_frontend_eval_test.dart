@@ -13,6 +13,9 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../../../app/test/support/prepared_frontend_installations.dart';
 import '../../../../../app/tool/tool_inspection_frontend_compiler.dart';
+import '../../../../../tools/stock_frontend_descriptors.dart';
+
+final readFileToolId = ToolId('dev.adele.plugin.filesystem-tools.read-file');
 
 void main() {
   late Directory temporary;
@@ -64,6 +67,237 @@ void main() {
         source: source,
         fallback: Text(fallback),
       );
+
+  for (final range in <Map<String, Object?>>[
+    {},
+    {'startLine': 3},
+    {'lineCount': 5},
+    {'startLine': 3, 'lineCount': 5},
+  ]) {
+    testWidgets('read request scope $range and successful empty selection', (
+      tester,
+    ) async {
+      final source = _Source(
+        _activity(
+          readFile: true,
+          arguments: {'relativePath': 'lib/main.dart', ...range},
+        ),
+      );
+      await tester.pumpWidget(
+        _host(Column(children: [compact(source), presentation(source)])),
+      );
+      final scope = range.isEmpty
+          ? 'whole file'
+          : 'start ${range['startLine'] ?? 1}, ${range['lineCount'] == null ? 'through EOF' : 'count 5'}';
+      expect(find.text('Read File'), findsOneWidget);
+      expect(find.text('Requested scope: $scope'), findsOneWidget);
+      expect(
+        find.text(
+          'Read File: "lib/main.dart"${range.isEmpty ? '' : ' / $scope'}',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Returned lines:'), findsNothing);
+      expect(source.subscriptions, 2);
+      for (final stage in const [
+        (ToolActivityKind.prepared, 'Prepared'),
+        (ToolActivityKind.executionStarted, 'Running'),
+        (ToolActivityKind.approvalRequested, 'Waiting for approval'),
+      ]) {
+        source.value = _activity(
+          readFile: true,
+          arguments: {'relativePath': 'lib/main.dart', ...range},
+          kind: stage.$1,
+        );
+        source.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(find.text('Status: ${stage.$2}'), findsOneWidget);
+      }
+      source.value = _activity(
+        readFile: true,
+        arguments: {'relativePath': 'lib/main.dart', ...range},
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.success,
+        data: {
+          'text': '',
+          'returnedLineCount': 0,
+          'totalLines': 2,
+          'sizeBytes': 4,
+          'revision': 'r1',
+        },
+      );
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('Status: Succeeded'), findsOneWidget);
+      expect(find.text('Requested scope: $scope'), findsOneWidget);
+      expect(find.text('Returned lines: 0'), findsOneWidget);
+      expect(find.text('Total lines: 2'), findsOneWidget);
+      expect(find.text('File size (bytes): 4'), findsOneWidget);
+      expect(find.text('Revision: r1'), findsOneWidget);
+      expect(find.textContaining('Continuation line:'), findsNothing);
+      expect(find.byType(TextButton), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(source.listening, isFalse);
+      final reads = source.reads;
+      source.notifyListeners();
+      await tester.pump();
+      expect(source.reads, reads);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('read safe bounded preview, continuation and failure', (
+    tester,
+  ) async {
+    const unsafe = 'a"\n\u202E\\n';
+    final text = unsafe * 1000;
+    final source = _Source(
+      _activity(
+        readFile: true,
+        arguments: {'relativePath': unsafe, 'lineCount': 5},
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.success,
+        data: {
+          'text': text,
+          'revision': unsafe,
+          'returnedLineCount': 3,
+          'totalLines': 10,
+          'nextStartLine': 4,
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      _host(Column(children: [compact(source), presentation(source)])),
+    );
+    expect(
+      find.text(
+        'Read File: ${compactDisplayText(unsafe, maximumCharacters: 120, quoted: true)} / start 1, count 5',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Revision: ${inspectionDisplayText(unsafe)}'),
+      findsOneWidget,
+    );
+    expect(find.text('Returned lines: 3'), findsOneWidget);
+    expect(find.text('Continuation line: 4'), findsOneWidget);
+    final preview = compactDisplayText(text, maximumCharacters: 2000);
+    expect(preview.length, lessThanOrEqualTo(2000));
+    expect(preview, endsWith('...'));
+    expect(find.text(preview), findsOneWidget);
+    source.value = _activity(
+      readFile: true,
+      kind: ToolActivityKind.completed,
+      disposition: ToolOutcomeDisposition.failure,
+      data: {'code': unsafe},
+      content: unsafe,
+    );
+    source.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('Status: Failed'), findsOneWidget);
+    expect(find.text('Failure kind: domain'), findsOneWidget);
+    expect(
+      find.text('Failure code: ${inspectionDisplayText(unsafe)}'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Outcome: ${inspectionDisplayText(unsafe)}'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Revision:'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('read descriptors grant no execution or filesystem access', () {
+    final descriptor =
+        stockFrontendDescriptors['dev.adele.plugin.filesystem-tools']!
+            .singleWhere((entry) => entry['toolId'] == readFileToolId.value);
+    expect(
+      descriptor.keys,
+      unorderedEquals([
+        'role',
+        'library',
+        'inspectionExtensionId',
+        'compactExtensionId',
+        'toolId',
+        'inspectionEntrypoint',
+        'compactEntrypoint',
+      ]),
+    );
+    expect(descriptor['inspectionEntrypoint'], 'buildReadFileInspection');
+    expect(descriptor['compactEntrypoint'], 'buildReadFileCompact');
+    expect(
+      descriptor['inspectionExtensionId'],
+      isNot(descriptor['compactExtensionId']),
+    );
+    // The eval fixture activates only a frontend artifact, without a backend
+    // or Environment services. All rendered content comes from _Source.
+  });
+
+  testWidgets('read compact remains bounded on narrow rows', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(360, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final source = _Source(
+      _activity(
+        readFile: true,
+        arguments: {
+          'relativePath': 'a\u202E${'x' * 5000}',
+          'startLine': 10,
+          'lineCount': 20,
+        },
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.success,
+        data: {'text': 'PRIVATE CONTENT'},
+      ),
+    );
+    await tester.pumpWidget(_host(compact(source)));
+    final title = tester.widget<Text>(find.textContaining('Read File:')).data!;
+    expect(title.length, lessThanOrEqualTo(198));
+    expect(title, contains('..." / start 10, count 20'));
+    expect(title, isNot(contains('\u202E')));
+    expect(find.textContaining('PRIVATE CONTENT'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final rich in [true, false]) {
+    testWidgets('read retirement rich=$rich', (tester) async {
+      final source = _Source(_activity(readFile: true));
+      final richBinding = ToolActivityInspectionResolver(
+        extensions,
+      ).resolve(readFileToolId);
+      final compactBinding = ToolActivityCompactPresentationResolver(
+        extensions,
+      ).resolve(readFileToolId);
+      await tester.pumpWidget(
+        _host(Column(children: [compact(source), presentation(source)])),
+      );
+      await filesystem.retire(
+        rich
+            ? toolActivityInspectionContributions
+            : toolActivityCompactPresentationContributions,
+        rich ? richBinding.id : compactBinding.id,
+      );
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      if (rich) {
+        expect(richBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(
+          () => richBinding.value.createPresentation(source),
+          throwsA(anything),
+        );
+        compactBinding.validate();
+        expect(find.text('Read File: "lib/main.dart"'), findsOneWidget);
+      } else {
+        expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        richBinding.validate();
+        expect(find.text('Factual tool fallback'), findsOneWidget);
+        expect(find.text('Read File'), findsOneWidget);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(source.listening, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'same patch artifact has independent live compact and rich views',
@@ -363,6 +597,7 @@ Widget _host(Widget child) => MaterialApp(
 );
 
 ToolInvocationActivity _activity({
+  bool readFile = false,
   int proposalSequence = 1,
   ToolActivityKind kind = ToolActivityKind.prepared,
   bool progress = false,
@@ -375,8 +610,8 @@ ToolInvocationActivity _activity({
   preparedSequence: proposalSequence + 10,
   modelInvocationId: ModelInvocationId('model-1'),
   proposalSequence: proposalSequence,
-  toolId: applyPatchToolId,
-  alias: 'apply_patch',
+  toolId: readFile ? readFileToolId : applyPatchToolId,
+  alias: readFile ? 'read_file' : 'apply_patch',
   providerCallId: 'call-1',
   canonicalArguments:
       arguments ??
