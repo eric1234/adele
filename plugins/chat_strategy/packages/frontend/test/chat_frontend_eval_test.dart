@@ -26,6 +26,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../../../app/test/support/markdown_paste_fixture.dart';
 import '../../../../../app/tool/chat_frontend_compiler.dart';
 import '../../../../../tools/stock_frontend_descriptors.dart';
 
@@ -884,6 +885,263 @@ void main() {
       expect(source.entries.single.content, markdown);
       expect(source.starts, 1);
       expect(_draft(tester), isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compiled Chat imports a full clipboard Markdown prompt and submits it once',
+    (tester) async {
+      final saved = Completer<void>();
+      source.saveGate = saved;
+      addTearDown(() {
+        if (!saved.isCompleted) saved.complete();
+      });
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final owner = _owner(tester);
+      final state = _state(tester);
+      expect(owner.revision, 0);
+      expect(source.writes, isEmpty);
+      await _select(tester, Selection.collapsed(Position(path: [0])));
+      await _pasteClipboard(tester, markdownPasteFixture);
+
+      final blocks = state.document.root.children;
+      expect(
+        blocks
+            .where((node) => node.type == HeadingBlockKeys.type)
+            .map(
+              (node) => (node.attributes['level'], node.delta!.toPlainText()),
+            ),
+        [
+          (1, 'ADELE \u2014 Implement Custom read_file Inspection Card'),
+          (2, 'Goal'),
+          (3, 'Tool approvals'),
+          (2, '1. Rich Inspection card'),
+          (3, 'Ownership and boundaries'),
+          (2, '2. Compact activity summary'),
+          (3, 'Examples'),
+          (2, '3. Preview fidelity'),
+          (2, '4. Lifecycle and safety'),
+          (2, '5. Regression coverage'),
+          (3, 'Native and evaluated presentation'),
+          (2, '6. Validation'),
+          (2, '7. Delivery'),
+        ],
+      );
+      expect(
+        blocks.first.delta!.toJson(),
+        (Delta()
+              ..insert('ADELE \u2014 Implement Custom ')
+              ..insert('read_file', attributes: {'code': true})
+              ..insert(' Inspection Card'))
+            .toJson(),
+      );
+      expect(
+        blocks
+            .singleWhere(
+              (node) => node.delta!.toPlainText().startsWith(
+                'ADELE has already created',
+              ),
+            )
+            .delta!
+            .toJson(),
+        (Delta()..insert(
+              'ADELE has already created and selected the isolated Git worktree and Task branch.',
+              attributes: {'bold': true},
+            ))
+            .toJson(),
+      );
+      expect(
+        blocks.where((node) => node.type == BulletedListBlockKeys.type),
+        hasLength(12),
+      );
+      expect(
+        blocks.where((node) => node.type == NumberedListBlockKeys.type),
+        hasLength(11),
+      );
+      final code = blocks.singleWhere(
+        (node) => node.type == RichDocumentMarkdown.codeBlockType,
+      );
+      const commands =
+          'dart tools/adele.dart test --target filesystem_tools_frontend\n'
+          'dart tools/adele.dart analyze\n'
+          'dart tools/adele.dart format --check\n'
+          'dart tools/adele.dart generate --check\n'
+          'git diff --check';
+      expect(code.attributes['language'], 'sh');
+      expect(code.delta!.toJson(), (Delta()..insert(commands)).toJson());
+      // Independently spell the adapter's punctuation normalization, not a
+      // decode/encode round trip that could hide missing prompt content.
+      final markdown = markdownPasteFixture
+          .trimRight()
+          .replaceAll(':', r'\:')
+          .replaceAllMapped(
+            RegExp(r'^(## [1-7])\.', multiLine: true),
+            (match) => '${match[1]}\\.',
+          );
+      expect(owner.snapshot, returnsNormally);
+      expect(owner.snapshot(), {
+        'markdown': markdown,
+        'revision': 1,
+        'readOnly': false,
+        'editingEnabled': true,
+        'isBlank': false,
+        'unsupportedReason': null,
+      });
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      expect(source.writes, [markdown]);
+      final writes = source.calls.where(
+        (call) => call.$1 == 'chat.session.setDraftRequest',
+      );
+      expect(writes, hasLength(1));
+      expect(writes.single.$2, {
+        'sessionId': 'session-opaque',
+        'content': markdown,
+      });
+      expect(source.inFlightSaves, 1);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      await tester.tap(find.text('Send'));
+      await _frames(tester);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      saved.complete();
+      await _frames(tester);
+      expect(source.events, [
+        'save:$markdown',
+        'saved:$markdown',
+        'submit:$markdown',
+        'accepted:$markdown',
+        'start',
+      ]);
+      expect(source.submitted, [markdown]);
+      expect(source.entries.single.role, 'user');
+      expect(source.entries.single.content, markdown);
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, [markdown]);
+      expect(source.starts, 1);
+      expect(source.maxInFlightSaves, 1);
+      expect(owner.isDisposed, isTrue);
+      expect(state.isDisposed, isTrue);
+      final replacement = _owner(tester);
+      expect(replacement, isNot(same(owner)));
+      expect(_state(tester), isNot(same(state)));
+      expect(_draft(tester), isEmpty);
+      source.finish();
+      await _frames(tester);
+      await _select(tester, Selection.collapsed(Position(path: [0])));
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      expect(_owner(tester), same(replacement));
+      expect(_draft(tester), isEmpty);
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, [markdown]);
+      expect(source.submitted, [markdown]);
+      expect(source.starts, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compiled Chat rejects unsupported clipboard Markdown without mutation and allows literal recovery',
+    (tester) async {
+      source.draftRequest = 'Keep for Undo';
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      await _enterText(tester, '');
+      final owner = _owner(tester);
+      final state = _state(tester);
+      final undo = state.undoManager;
+      final snapshot = owner.snapshot();
+      final document = state.document.toJson();
+      final selection = state.selection;
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, ['']);
+      const unsupported = '![unsupported](image.png)';
+      await _pasteClipboard(tester, unsupported);
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      expect(state.undoManager, same(undo));
+      expect(state.document.toJson(), document);
+      expect(state.selection, selection);
+      expect(owner.snapshot(), snapshot);
+      expect(state.editable, isTrue);
+      expect(owner.readOnly, isFalse);
+      expect(
+        find.descendant(
+          of: find.byType(NativeRichDocumentEditorView),
+          matching: find.textContaining(
+            'Use Ctrl/Cmd+Shift+V to paste literally',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Paste rejected:'), findsOneWidget);
+      expect(find.textContaining('Draft unchanged.'), findsOneWidget);
+      expect(find.text('Frontend unavailable.'), findsNothing);
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, ['']);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      await tester.tap(find.text('Send'));
+      await _frames(tester);
+      expect(source.writes, ['']);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      await _select(tester, Selection.collapsed(Position(path: [0])));
+      await _control(tester, LogicalKeyboardKey.keyZ);
+      expect(_draft(tester), 'Keep for Undo');
+      await _control(tester, LogicalKeyboardKey.keyY);
+      expect(_draft(tester), isEmpty);
+      expect(source.writes, ['', 'Keep for Undo', '']);
+      await _pasteClipboard(tester, unsupported, literal: true);
+      expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+      expect(
+        state.document.root.children.single.delta!.toJson(),
+        (Delta()..insert(unsupported)).toJson(),
+      );
+      expect(_draft(tester), r'!\[unsupported\](image.png)');
+      expect(source.draftRequest, r'!\[unsupported\](image.png)');
+      expect(source.writes, [
+        '',
+        'Keep for Undo',
+        '',
+        r'!\[unsupported\](image.png)',
+      ]);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      expect(source.maxInFlightSaves, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compiled Chat keeps clipboard Markdown literal in existing text',
+    (tester) async {
+      source.draftRequest = 'Prefix&#32;';
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final owner = _owner(tester);
+      final state = _state(tester);
+      await _select(
+        tester,
+        Selection.collapsed(Position(path: [0], offset: 7)),
+      );
+      const clipboard = '# literal\n**not bold**';
+      await _pasteClipboard(tester, clipboard);
+      expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+      expect(
+        state.document.root.children.single.delta!.toJson(),
+        (Delta()..insert('Prefix $clipboard')).toJson(),
+      );
+      const markdown = 'Prefix \\# literal\n\\*\\*not bold\\*\\*';
+      expect(_draft(tester), markdown);
+      expect(owner.revision, 1);
+      expect(source.draftRequest, markdown);
+      expect(source.writes, [markdown]);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
       expect(tester.takeException(), isNull);
     },
   );
@@ -2813,6 +3071,41 @@ Future<void> _control(WidgetTester tester, LogicalKeyboardKey key) async {
   await tester.sendKeyEvent(key);
   await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
   await _frames(tester);
+}
+
+Future<void> _pasteClipboard(
+  WidgetTester tester,
+  String text, {
+  bool literal = false,
+}) async {
+  final messenger = tester.binding.defaultBinaryMessenger;
+  final previous = messenger.allMessagesHandler;
+  final channel = SystemChannels.platform;
+  var reads = 0;
+  messenger.allMessagesHandler = (name, handler, message) {
+    if (name == channel.name && message != null) {
+      final call = channel.codec.decodeMethodCall(message);
+      if (call.method == 'Clipboard.getData') {
+        expect(call.arguments, Clipboard.kTextPlain);
+        reads++;
+        return Future.value(
+          channel.codec.encodeSuccessEnvelope({'text': text}),
+        );
+      }
+    }
+    if (previous != null) return previous(name, handler, message);
+    return handler != null
+        ? handler(message)
+        : messenger.delegate.send(name, message);
+  };
+  try {
+    if (literal) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await _control(tester, LogicalKeyboardKey.keyV);
+    expect(reads, 1);
+  } finally {
+    if (literal) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    messenger.allMessagesHandler = previous;
+  }
 }
 
 Map<String, Object?> _model(

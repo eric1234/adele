@@ -92,12 +92,22 @@ during asynchronous settlement, without replacing the owner or its undo history.
 The composer has a bounded 180-pixel editing viewport with native vertical scrolling;
 auto-growth is a later UI refinement. Enter edits document content, and in fenced
 code inserts a literal newline. The visible Send button is the submission path;
-Ctrl/Cmd+Enter is not assigned in this slice. Normal selection, plain-text clipboard,
+Ctrl/Cmd+Enter is not assigned in this slice. Normal selection, text clipboard,
 formatting and undo/redo use the shared editor's supported subset and safeguards.
 Paragraphs, headings, basic inline styles, lists, quotes, inline code, and top-level
 fenced code are supported; see the [native Markdown boundary](../../../../app/README.md#markdown-boundary)
 for exact limits and normalization after editing. Blank native text cannot submit
 empty heading/list/code scaffolding; legitimate nonblank Markdown is not trimmed.
+
+Normal paste of a block-marked Markdown prompt into an empty paragraph imports
+supported structure rather than one literal paragraph. Existing prose/list/code
+insertion stays literal, and Ctrl/Cmd+Shift+V explicitly requests literal paste.
+The native editor validates the prospective document before a single undoable
+transaction; Chat observes one invalidation and saves it through the same sequential
+draft queue. An unsafe paste is rejected with native feedback and literal-paste
+recovery guidance, without changing the document, Undo, or acknowledged draft.
+The [native clipboard policy](../../../../app/README.md#native-rich-document-editor)
+owns detection, normalization, cross-block restrictions and asynchronous safeguards.
 
 Unsupported restored Markdown remains the exact original in the native read-only
 representation, with an explanation and unchanged submission available. It is not

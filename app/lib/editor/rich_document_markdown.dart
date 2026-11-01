@@ -507,7 +507,10 @@ String _edgeSpaces(String text) => text
 String _escapeText(String text) => text
     .replaceAllMapped(
       RegExp(r'[\\`*_\[\]<>#&~|:@]'),
-      (match) => '\\${match[0]}',
+      // The pinned parser refuses to decode an entity immediately after a raw
+      // backtick, even an escaped one. Entity-spell literal backticks so following
+      // protected whitespace/newlines still round-trip; code spans keep fences.
+      (match) => match[0] == '`' ? '&#96;' : '\\${match[0]}',
     )
     .replaceAll('www.', r'www\.')
     .replaceAll('\r', '&#13;')

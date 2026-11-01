@@ -9,6 +9,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/markdown_paste_fixture.dart';
+
 Future<void> frames(WidgetTester tester) async {
   for (var i = 0; i < 5; i++) {
     await tester.pump(const Duration(milliseconds: 30));
@@ -300,6 +302,12 @@ void main() {
       expect(owner.snapshot()['isBlank'], isNull);
       expect(owner.snapshot()['error'], 'composition_pending');
       final revision = owner.revision;
+      await Clipboard.setData(const ClipboardData(text: '# Not yet\n\ntext'));
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(owner.revision, revision);
+      expect(state.document.root.children.single.delta!.toPlainText(), 'xb');
+      // AppFlowy itself consumes keyboard shortcuts while actively composing.
+      expect(owner.snapshot()['error'], 'composition_pending');
       var notices = 0;
       owner.addListener(() => notices++);
       value = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
@@ -594,6 +602,87 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('full Markdown prompt clipboard paste has a safe snapshot', (
+    tester,
+  ) async {
+    final owner = NativeRichDocumentEditor(markdown: '');
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+    editor.focusNode!.requestFocus();
+    editor.editorState.selection = Selection.collapsed(Position(path: [0]));
+    await frames(tester);
+    var notices = 0;
+    owner.addListener(() => notices++);
+    await Clipboard.setData(const ClipboardData(text: markdownPasteFixture));
+    await control(tester, LogicalKeyboardKey.keyV);
+    final blocks = editor.editorState.document.root.children;
+    expect(owner.revision, 1);
+    expect(notices, 1);
+    expect(blocks.first.type, HeadingBlockKeys.type);
+    expect(blocks.first.attributes['level'], 1);
+    expect(
+      blocks.first.delta!.toPlainText(),
+      'ADELE \u2014 Implement Custom read_file Inspection Card',
+    );
+    expect(
+      blocks
+          .where((node) => node.type == HeadingBlockKeys.type)
+          .map((node) => node.attributes['level']),
+      containsAll([1, 2, 3]),
+    );
+    expect(
+      blocks.where((node) => node.type == BulletedListBlockKeys.type),
+      isNotEmpty,
+    );
+    expect(
+      blocks
+          .where((node) => node.type == NumberedListBlockKeys.type)
+          .map((node) => node.delta!.toPlainText()),
+      containsAllInOrder([
+        'Review the working-tree diff.',
+        'Commit the focused changes.',
+        'Push the branch.',
+        'Open a PR against main.',
+      ]),
+    );
+    final code = blocks.singleWhere(
+      (node) => node.type == RichDocumentMarkdown.codeBlockType,
+    );
+    expect(code.attributes['language'], 'sh');
+    expect(
+      code.delta!.toPlainText(),
+      'dart tools/adele.dart test --target filesystem_tools_frontend\n'
+      'dart tools/adele.dart analyze\n'
+      'dart tools/adele.dart format --check\n'
+      'dart tools/adele.dart generate --check\n'
+      'git diff --check',
+    );
+    final imported = RichDocumentMarkdown.decode(markdownPasteFixture);
+    expect(editor.editorState.document.toJson(), imported.toJson());
+    imported.dispose();
+    await frames(tester);
+    final markdown = owner.snapshot()['markdown']! as String;
+    expect(markdown, contains('# ADELE \u2014 Implement Custom `read_file`'));
+    expect(markdown, contains('**Do not ask for general permission'));
+    expect(markdown, contains('```sh\n${code.delta!.toPlainText()}\n```'));
+    final restored = RichDocumentMarkdown.decode(markdown);
+    expect(restored.toJson(), editor.editorState.document.toJson());
+    restored.dispose();
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(owner.snapshot()['markdown'], '');
+    expect(
+      editor.editorState.document.root.children.single.type,
+      ParagraphBlockKeys.type,
+    );
+    await control(tester, LogicalKeyboardKey.keyY);
+    expect(owner.snapshot()['markdown'], markdown);
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'code typing and formatting shortcuts retain literal plain text',
     (tester) async {
@@ -668,6 +757,159 @@ void main() {
         (Delta()..insert('```dart!')).toJson(),
       );
       expect(owner.snapshot()['markdown'], '````dart\n```dart!\n````');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('plain multiline clipboard preserves whitespace and backticks', (
+    tester,
+  ) async {
+    const pasted = '\n  first  \n`identifier()`\n\n\tlast\t \n\n';
+    final owner = NativeRichDocumentEditor(markdown: '');
+    await tester.pumpWidget(host(owner.buildView()));
+    await frames(tester);
+    final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+    editor.focusNode!.requestFocus();
+    editor.editorState.selection = Selection.collapsed(Position(path: [0]));
+    await frames(tester);
+    await Clipboard.setData(
+      ClipboardData(text: pasted.replaceAll('\n', '\r\n')),
+    );
+    await control(tester, LogicalKeyboardKey.keyV);
+    final node = editor.editorState.document.root.children.single;
+    expect(node.type, ParagraphBlockKeys.type);
+    expect(node.delta!.toPlainText(), pasted);
+    final markdown = owner.snapshot()['markdown']! as String;
+    final decoded = RichDocumentMarkdown.decode(markdown);
+    expect(decoded.root.children.single.delta!.toPlainText(), pasted);
+    decoded.dispose();
+    await control(tester, LogicalKeyboardKey.keyZ);
+    expect(owner.snapshot()['markdown'], '');
+    await control(tester, LogicalKeyboardKey.keyY);
+    expect(owner.snapshot()['markdown'], markdown);
+    owner.dispose();
+    await frames(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'replacement paste is literal and one undo retains list children',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(
+        markdown: '- before after\n  - child',
+      );
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'before after', start: 3, end: 9);
+      final node = state.document.root.children.single;
+      final child = node.children.single;
+      const pasted = '# not a heading\n`literal`\n\n**not bold**\n';
+      await Clipboard.setData(const ClipboardData(text: pasted));
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(owner.revision, 1);
+      expect(node.delta!.toPlainText(), 'bef${pasted}ter');
+      expect(node.children.single, same(child));
+      final restored = RichDocumentMarkdown.decode(
+        owner.snapshot()['markdown']! as String,
+      );
+      expect(restored.toJson(), state.document.toJson());
+      restored.dispose();
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(node.delta!.toPlainText(), 'before after');
+      expect(node.children.single, same(child));
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(node.delta!.toPlainText(), 'bef${pasted}ter');
+      expect(node.children.single, same(child));
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'unsafe Markdown paste rejects before mutation with literal recovery',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(markdown: '');
+      await tester.pumpWidget(
+        host(
+          MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(1.5)),
+            child: SizedBox(width: 200, height: 180, child: owner.buildView()),
+          ),
+        ),
+      );
+      await frames(tester);
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      final state = editor.editorState;
+      editor.focusNode!.requestFocus();
+      state.selection = Selection.collapsed(Position(path: [0]));
+      await frames(tester);
+      final selection = state.selection;
+      for (final text in [
+        '# Heading\n\n![image](image.png)',
+        '# Heading\n\n```sh\nunclosed',
+        '# Heading\n\n- parent\n\n    ```sh\n    nested\n    ```',
+      ]) {
+        await Clipboard.setData(ClipboardData(text: text));
+        await control(tester, LogicalKeyboardKey.keyV);
+        expect(find.textContaining('Paste rejected:'), findsOneWidget);
+        expect(find.textContaining('Ctrl/Cmd+Shift+V'), findsOneWidget);
+        expect(owner.snapshot()['markdown'], '');
+        expect(owner.revision, 0);
+        expect(state.selection, selection);
+        expect(state.undoManager.undoStack.isEmpty, isTrue);
+      }
+      const text = '# Heading\n\n![image](image.png)\n\n`literal`\n';
+      await Clipboard.setData(const ClipboardData(text: text));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await control(tester, LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await frames(tester);
+      expect(find.textContaining('Paste rejected:'), findsNothing);
+      expect(state.document.root.children.single.type, ParagraphBlockKeys.type);
+      expect(state.document.root.children.single.delta!.toPlainText(), text);
+      final decoded = RichDocumentMarkdown.decode(
+        owner.snapshot()['markdown']! as String,
+      );
+      expect(decoded.first!.delta!.toPlainText(), text);
+      decoded.dispose();
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'unsafe code paste preserves the previous edit and undo history',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(markdown: '```sh\nkeep\n```');
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final state = await select(tester, 'keep');
+      await insertAtSelection(tester, '!');
+      final snapshot = owner.snapshot();
+      final history = state.undoManager.undoStack.last;
+      state.selection = Selection.single(
+        path: [0],
+        startOffset: 0,
+        endOffset: 5,
+      );
+      await frames(tester);
+      await Clipboard.setData(const ClipboardData(text: 'bad\rcarriage'));
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(find.textContaining('Paste rejected:'), findsOneWidget);
+      expect(owner.snapshot(), snapshot);
+      expect(state.undoManager.undoStack.last, same(history));
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '```sh\nkeep\n```');
       owner.dispose();
       await frames(tester);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -797,6 +1039,49 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'accepted paste after undo-all discards only the abandoned redo',
+    (tester) async {
+      final owner = NativeRichDocumentEditor(markdown: '');
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      final state = editor.editorState;
+      editor.focusNode!.requestFocus();
+      state.selection = Selection.collapsed(Position(path: [0]));
+      await frames(tester);
+      await Clipboard.setData(
+        const ClipboardData(text: '# First\n\n- parent\n  - child'),
+      );
+      await control(tester, LogicalKeyboardKey.keyV);
+      final first = owner.snapshot()['markdown'];
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '');
+      final redo = state.undoManager.redoStack.last;
+      await Clipboard.setData(
+        const ClipboardData(text: '![unsupported](image.png)'),
+      );
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(state.undoManager.redoStack.last, same(redo));
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(owner.snapshot()['markdown'], first);
+      await control(tester, LogicalKeyboardKey.keyZ);
+      await Clipboard.setData(
+        const ClipboardData(text: '# Replacement\n\nsecond'),
+      );
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(state.undoManager.redoStack.isEmpty, isTrue);
+      await control(tester, LogicalKeyboardKey.keyY);
+      expect(owner.snapshot()['markdown'], '# Replacement\n\nsecond');
+      await control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '');
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   for (final readOnly in [false, true]) {
     testWidgets(
@@ -1302,6 +1587,103 @@ void main() {
       },
     );
   }
+
+  testWidgets('pending Markdown clipboard cannot outlive input context', (
+    tester,
+  ) async {
+    for (final invalidation in [
+      'selection roundtrip',
+      'revision',
+      'focus roundtrip',
+      'disabled',
+      'disable reenable',
+      'unmount',
+      'retirement',
+      'disposal',
+      'composition',
+    ]) {
+      final pending = Completer<Object?>();
+      var requests = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            if (call.method == 'Clipboard.getData') {
+              requests++;
+              return pending.future;
+            }
+            return null;
+          });
+      final owner = NativeRichDocumentEditor(
+        markdown: invalidation == 'composition' ? 'keep' : '',
+      );
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      final state = editor.editorState;
+      editor.focusNode!.requestFocus();
+      final selection = Selection.collapsed(Position(path: [0]));
+      state.selection = selection;
+      await frames(tester);
+      await control(tester, LogicalKeyboardKey.keyV);
+      expect(requests, 1, reason: invalidation);
+      switch (invalidation) {
+        case 'selection roundtrip':
+          state.selection = null;
+          state.selection = selection;
+        case 'revision':
+          await insertAtSelection(tester, 'newer');
+          state.selection = selection;
+        case 'focus roundtrip':
+          editor.focusNode!.unfocus();
+          await frames(tester);
+          editor.focusNode!.requestFocus();
+          state.selection = selection;
+        case 'disabled':
+          owner.setEditingEnabled(false);
+        case 'disable reenable':
+          owner.setEditingEnabled(false);
+          owner.setEditingEnabled(true);
+          editor.focusNode!.requestFocus();
+          state.selection = selection;
+        case 'unmount':
+          await tester.pumpWidget(host(const SizedBox.shrink()));
+        case 'retirement':
+          owner.dispose();
+        case 'disposal':
+          await tester.pumpWidget(host(const SizedBox.shrink()));
+          owner.dispose();
+        case 'composition':
+          final value = TextEditingValue.fromJSON(
+            tester.testTextInput.editingState!,
+          );
+          await input(
+            tester,
+            value.copyWith(composing: const TextRange(start: 1, end: 3)),
+          );
+          expect(owner.snapshot()['error'], 'composition_pending');
+      }
+      await frames(tester);
+      final revision = owner.revision;
+      pending.complete({'text': markdownPasteFixture});
+      await frames(tester);
+      expect(owner.revision, revision, reason: invalidation);
+      if (!owner.isDisposed) {
+        expect(
+          state.document.root.children.single.delta!.toPlainText(),
+          invalidation == 'revision'
+              ? 'newer'
+              : invalidation == 'composition'
+              ? 'keep'
+              : '',
+          reason: invalidation,
+        );
+        owner.dispose();
+      }
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(tester.takeException(), isNull);
+    }
+  });
 
   testWidgets('competing mount fails without replacing the first attachment', (
     tester,
