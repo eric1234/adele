@@ -81,7 +81,8 @@ final class ApplicationFrontendBootstrap {
 
   void unbind(Session session) => _mainContentHost.unbind(session);
 
-  Future<bool> prepareToExit() => _mainContentHost.prepareToExit();
+  Future<bool> prepareToExit({Future<bool> Function()? confirmActiveWork}) =>
+      _mainContentHost.prepareToExit(confirmActiveWork: confirmActiveWork);
 
   Future<void> stopMainContentOperations() => _mainContentHost.stopOperations();
 

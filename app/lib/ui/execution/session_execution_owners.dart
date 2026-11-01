@@ -34,6 +34,10 @@ final class SessionExecutionOwners extends ChangeNotifier {
 
   int get length => _owners.length;
   bool get isClosed => _closed;
+  bool get hasActiveWork => _owners.values.any(
+    (owner) =>
+        owner.activeRunFuture != null || (!owner.isClosed && owner.isRunning),
+  );
 
   SessionExecutionController? lookup(Session session) {
     if (!identical(_runtime.store.session(session.id), session)) {
@@ -114,5 +118,14 @@ final class SessionExecutionOwners extends ChangeNotifier {
       for (final controller in _owners.values)
         Future<void>.sync(controller.close),
     ]).whenComplete(super.dispose).then((_) {});
+  }
+
+  /// Synchronous deadline boundary across all retained Sessions, not just the
+  /// presented one. Runtime/backend retirement may begin immediately afterward.
+  void interruptForApplicationExit() {
+    unawaited(close().catchError((Object _) {}));
+    for (final controller in _owners.values) {
+      controller.interruptForApplicationExit();
+    }
   }
 }

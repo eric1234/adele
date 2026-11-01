@@ -725,7 +725,9 @@ final class PreparedMainContentHost {
 
   /// Reversible opt-in preflight, before frontend or execution shutdown. Hidden
   /// collections are checked by fresh operations without mounting their views.
-  Future<bool> prepareToExit() async {
+  Future<bool> prepareToExit({
+    Future<bool> Function()? confirmActiveWork,
+  }) async {
     if (_preflighting || !_accepting) return false;
     _preflighting = true;
     try {
@@ -742,7 +744,9 @@ final class PreparedMainContentHost {
         );
         if (result['accepted'] != true) return false;
       }
-      return true;
+      // Keep the reversible finite-operation gate through the host's final
+      // active-work decision, so new Save/Close work cannot bypass preflight.
+      return await confirmActiveWork?.call() ?? true;
     } on Object {
       return false;
     } finally {

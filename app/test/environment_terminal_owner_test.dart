@@ -67,6 +67,133 @@ EnvironmentTerminalEvent _completed({
 Future<void> _turn() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  test('exit risk inspection leaves never-started owners harmless', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.close);
+    final owner = fixture.owner;
+    final coordinator = fixture.coordinator;
+    for (var i = 0; i < 3; i++) {
+      expect(owner.hasExitRisk, isFalse);
+      expect(coordinator.hasActiveWork, isFalse);
+    }
+    await _turn();
+    expect(owner.state, EnvironmentTerminalState.idle);
+    expect(owner.cleanupPending, isFalse);
+    expect(owner.cleanupSettled, isFalse);
+    expect(fixture.provider.restores, 0);
+    expect(fixture.provider.opens, 0);
+    expect(fixture.provider.closes, isEmpty);
+    expect(fixture.provider.cancellations, 0);
+
+    await owner.close();
+    expect(owner.hasExitRisk, isFalse);
+    expect(coordinator.hasActiveWork, isFalse);
+    await coordinator.remove(owner);
+    expect(owner.hasExitRisk, isFalse);
+    expect(coordinator.hasActiveWork, isFalse);
+  });
+
+  test(
+    'exit risk inspection leaves opening and running hidden owners usable',
+    () async {
+      final provider = _Provider()..restoreGate = Completer<void>();
+      final fixture = _Fixture(provider: provider);
+      addTearDown(fixture.close);
+      final owner = fixture.owner;
+      final coordinator = fixture.coordinator;
+      final opening = owner.open();
+      expect(owner.state, EnvironmentTerminalState.opening);
+      expect(owner.hasExitRisk, isTrue);
+      expect(coordinator.hasActiveWork, isTrue);
+      await _turn();
+      expect(provider.opens, 0);
+      expect(owner.cleanupPending, isFalse);
+      provider.restoreGate!.complete();
+      await provider.listening.future;
+      expect(owner.hasExitRisk, isTrue);
+      expect(coordinator.hasActiveWork, isTrue);
+      provider.events.add(_opened());
+      await opening;
+      await _turn();
+
+      var changes = 0;
+      owner.observe(() => changes++);
+      coordinator.observe(() => changes++);
+      for (var i = 0; i < 3; i++) {
+        expect(owner.hasExitRisk, isTrue);
+        expect(coordinator.hasActiveWork, isTrue);
+      }
+      await _turn();
+      expect(changes, 0);
+      expect(owner.state, EnvironmentTerminalState.running);
+      expect(owner.cleanupPending, isFalse);
+      expect(owner.cleanupSettled, isFalse);
+      expect(owner.surface.isDisposed, isFalse);
+      expect(owner.surface.readOnly, isFalse);
+      expect(provider.closes, isEmpty);
+      expect(provider.cancellations, 0);
+      expect(fixture.store.sessionsForTask(TaskId('terminal-task')), isEmpty);
+
+      // Declining exit after inspection leaves input and creation admitted.
+      expect(owner.write('still live', isActive: () => true), isTrue);
+      owner.resize(_size(100), isActive: () => true);
+      await _turn();
+      expect(provider.writes, ['still live']);
+      expect(provider.sizes, [(100, 24)]);
+      final second = coordinator.create(_environmentId, request: _request());
+      expect(second.hasExitRisk, isFalse);
+      expect(coordinator.hasActiveWork, isTrue);
+    },
+  );
+
+  for (final outcome in [
+    'running',
+    'exited',
+    'closed',
+    'disconnected',
+    'timeout',
+  ]) {
+    test(
+      'settled removal preserves only uncertain exit risk ($outcome)',
+      () async {
+        final provider = _Provider()..closeGate = Completer<void>();
+        final fixture = _Fixture(
+          provider: provider,
+          cleanupTimeout: const Duration(milliseconds: 20),
+        );
+        addTearDown(fixture.close);
+        await fixture.open();
+        switch (outcome) {
+          case 'exited':
+            provider.events.add(_completed());
+          case 'closed':
+            provider.events.add(
+              _completed(termination: EnvironmentTerminalTermination.closed),
+            );
+          case 'disconnected':
+            provider.events.addError(StateError('Transport lost.'));
+        }
+        final removing = fixture.coordinator.remove(fixture.owner);
+        expect(fixture.coordinator.remove(fixture.owner), same(removing));
+        expect(fixture.coordinator.forEnvironment(_environmentId), isEmpty);
+        expect(fixture.coordinator.hasActiveWork, isTrue);
+        if (outcome != 'timeout') provider.closeGate!.complete();
+        await removing;
+        expect(fixture.owner.hasExitRisk, outcome != 'exited');
+        expect(fixture.coordinator.hasActiveWork, outcome != 'exited');
+        await fixture.coordinator.remove(fixture.owner);
+        expect(provider.closes, ['opaque-handle']);
+        expect(provider.cancellations, 1);
+        if (outcome == 'timeout') {
+          expect(fixture.owner.cleanupError, isA<TimeoutException>());
+          provider.closeGate!.complete();
+          await _turn();
+          expect(fixture.coordinator.hasActiveWork, isTrue);
+        }
+      },
+    );
+  }
+
   test(
     'owner observation excludes output and exposes hidden title and cleanup failure',
     () async {
@@ -128,6 +255,8 @@ void main() {
       expect(owner.cleanupError, same(failure));
       expect(owner.shellCompleted, isFalse);
       expect(owner.launchFailedWithoutResources, isFalse);
+      expect(owner.hasExitRisk, isTrue);
+      expect(fixture.coordinator.hasActiveWork, isTrue);
       expect(states, [
         EnvironmentTerminalState.closed,
         EnvironmentTerminalState.closed,
@@ -188,6 +317,8 @@ void main() {
       final removing = coordinator.remove(fixture.owner);
       expect(coordinator.remove(fixture.owner), same(removing));
       expect(fixture.owner.state, EnvironmentTerminalState.disposed);
+      expect(fixture.owner.hasExitRisk, isTrue);
+      expect(coordinator.hasActiveWork, isTrue);
       await _turn();
       expect(snapshots, [
         [second, third],
@@ -198,6 +329,7 @@ void main() {
       expect(coordinator.close(), same(closing));
       expect(coordinator.remove(fixture.owner), same(removing));
       expect(coordinator.forEnvironment(_environmentId), isEmpty);
+      expect(coordinator.hasActiveWork, isTrue);
       expect(second.state, EnvironmentTerminalState.disposed);
       expect(third.state, EnvironmentTerminalState.disposed);
       final secondRemoval = coordinator.remove(second);
@@ -237,6 +369,8 @@ void main() {
         );
         expect(fixture.owner.cleanupPending, isTrue);
         expect(fixture.owner.cleanupSucceeded, isFalse);
+        expect(fixture.owner.hasExitRisk, isTrue);
+        expect(fixture.coordinator.hasActiveWork, isTrue);
         expect(fixture.owner.surface.isDisposed, isFalse);
         expect(fixture.coordinator.forEnvironment(_environmentId), [
           fixture.owner,
@@ -245,9 +379,54 @@ void main() {
         await fixture.owner.close();
         expect(fixture.owner.cleanupSucceeded, isTrue);
         expect(fixture.owner.completion!.termination, termination);
+        expect(
+          fixture.owner.hasExitRisk,
+          termination != EnvironmentTerminalTermination.exited,
+        );
+        expect(
+          fixture.coordinator.hasActiveWork,
+          termination != EnvironmentTerminalTermination.exited,
+        );
         expect(fixture.coordinator.forEnvironment(_environmentId), [
           fixture.owner,
         ]);
+      },
+    );
+  }
+
+  for (final timesOut in [false, true]) {
+    test(
+      'shell exit remains risky after cleanup ${timesOut ? 'timeout' : 'failure'}',
+      () async {
+        final provider = _Provider()..closeGate = Completer<void>();
+        final fixture = _Fixture(
+          provider: provider,
+          cleanupTimeout: const Duration(milliseconds: 20),
+        );
+        addTearDown(fixture.close);
+        await fixture.open();
+        provider.events.add(_completed());
+        final closing = fixture.owner.close();
+        await _turn();
+        if (!timesOut) {
+          provider.closeGate!.completeError(StateError('Close failed.'));
+        }
+        await closing;
+        expect(fixture.owner.close(), same(closing));
+        expect(fixture.owner.shellCompleted, isTrue);
+        expect(fixture.owner.cleanupSettled, isTrue);
+        expect(fixture.owner.cleanupSucceeded, isFalse);
+        expect(fixture.owner.hasExitRisk, isTrue);
+        expect(fixture.coordinator.hasActiveWork, isTrue);
+        expect(provider.closes, ['opaque-handle']);
+        expect(provider.cancellations, 1);
+        if (timesOut) {
+          expect(fixture.owner.cleanupError, isA<TimeoutException>());
+          provider.closeGate!.complete();
+          await _turn();
+          expect(fixture.owner.hasExitRisk, isTrue);
+          expect(fixture.coordinator.hasActiveWork, isTrue);
+        }
       },
     );
   }
@@ -287,6 +466,8 @@ void main() {
       await fixture.owner.close();
       expect(fixture.owner.cleanupSucceeded, isTrue);
       expect(fixture.owner.launchFailedWithoutResources, isFalse);
+      expect(fixture.owner.hasExitRisk, isTrue);
+      expect(fixture.coordinator.hasActiveWork, isTrue);
       expect(fixture.provider.cancellations, 0);
       expect(fixture.provider.closes, isEmpty);
     },
@@ -318,6 +499,8 @@ void main() {
         expect(fixture.owner.cleanupSettled, isTrue);
         expect(fixture.owner.cleanupSucceeded, !cancellationFails);
         expect(fixture.owner.launchFailedWithoutResources, isFalse);
+        expect(fixture.owner.hasExitRisk, isTrue);
+        expect(fixture.coordinator.hasActiveWork, isTrue);
         expect(provider.closes, isEmpty);
         expect(provider.cancellations, 1);
         expect(fixture.owner.surface.isDisposed, isFalse);
@@ -348,6 +531,8 @@ void main() {
       expect(fixture.owner.launchFailedWithoutResources, isFalse);
       expect(fixture.owner.shellCompleted, isFalse);
       expect(provider.cancellations, 1);
+      expect(fixture.owner.hasExitRisk, isTrue);
+      expect(fixture.coordinator.hasActiveWork, isTrue);
     },
   );
 
@@ -409,6 +594,8 @@ void main() {
     await owner.close();
     expect(owner.cleanupSucceeded, isTrue);
     expect(owner.launchFailedWithoutResources, isTrue);
+    expect(owner.hasExitRisk, isFalse);
+    expect(coordinator.hasActiveWork, isFalse);
   });
 
   test(
@@ -582,6 +769,8 @@ void main() {
       expect(provider.writes, isEmpty);
       expect(provider.opens, 1);
       expect(fixture.owner.cleanupError, isNull);
+      expect(fixture.owner.hasExitRisk, isTrue);
+      expect(fixture.coordinator.hasActiveWork, isTrue);
     },
   );
 
@@ -836,6 +1025,10 @@ void main() {
         expect(fixture.owner.error, isNotNull);
         expect(fixture.owner.surface.isDisposed, isFalse);
         expect(fixture.owner.surface.readOnly, isTrue);
+        await fixture.owner.close();
+        expect(fixture.owner.cleanupSucceeded, isTrue);
+        expect(fixture.owner.hasExitRisk, isTrue);
+        expect(fixture.coordinator.hasActiveWork, isTrue);
       },
     );
   }
@@ -871,6 +1064,7 @@ void main() {
     expect(fixture.owner.cleanupPending, isFalse);
     expect(fixture.owner.cleanupSettled, isTrue);
     expect(fixture.owner.cleanupSucceeded, isFalse);
+    expect(fixture.owner.hasExitRisk, isTrue);
     await _turn();
     expect(cleanup, [(true, false), (false, true)]);
     final timeout = fixture.owner.cleanupError;
@@ -954,6 +1148,157 @@ void main() {
         expect(owner.surface.isDisposed, isTrue);
         expect(runtime.plugins.state, ApplicationPluginState.closed);
         expect(runtime.terminals.forEnvironment(_environmentId), isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final uncertain in [false, true]) {
+    testWidgets(
+      'application confirms ${uncertain ? 'uncertain' : 'active'} terminal exit and closes independently',
+      (tester) async {
+        final runtime = NativeAdeleRuntime();
+        _publish(runtime.store);
+        final channel = _TerminalChannel()..cancelGate = Completer<void>();
+        runtime.registry.register(
+          provider: _descriptor(),
+          endpoint: AdeleRequestChannelEndpoint(
+            channel: channel,
+            serviceId: environmentProviderServiceId,
+            isAvailable: () => true,
+          ),
+        );
+        final owner = runtime.terminals.create(
+          _environmentId,
+          request: _request(),
+        );
+        final cleanup = Completer<void>();
+        var detachments = 0;
+        addTearDown(() async {
+          if (!cleanup.isCompleted) cleanup.complete();
+          if (!channel.closeGate.isCompleted) channel.closeGate.complete();
+          if (!channel.cancelGate!.isCompleted) channel.cancelGate!.complete();
+          final closing = runtime.close();
+          await tester.pump(const Duration(seconds: 2));
+          await tester.runAsync(
+            () => closing.timeout(const Duration(seconds: 5)),
+          );
+        });
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            bootstrapPlugins: (_) async {},
+            readChatGptConfiguration: () => null,
+            exitTimeout: const Duration(milliseconds: 100),
+            attachSessionContext: (_) => () {
+              detachments++;
+              return cleanup.future;
+            },
+          ),
+        );
+        final opening = owner.open();
+        await tester.pump();
+        await opening;
+        if (uncertain) {
+          channel.closeGate.complete();
+          channel.cancelGate!.complete();
+          channel.events.addError(StateError('Terminal transport lost.'));
+          await tester.pump();
+          expect(owner.state, EnvironmentTerminalState.disconnected);
+          await owner.close();
+          expect(owner.cleanupSucceeded, isTrue);
+          expect(owner.shellCompleted, isFalse);
+        }
+        expect(runtime.terminals.hasActiveWork, isTrue);
+        expect(runtime.store.sessionsForTask(TaskId('terminal-task')), isEmpty);
+
+        final declining = tester.binding.handleRequestAppExit();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(find.text('Exit with active work?'), findsOneWidget);
+        expect(detachments, 0);
+        expect(owner.surface.isDisposed, isFalse);
+        await tester.tap(find.text('Keep Working'));
+        await tester.pump();
+        expect(await declining, AppExitResponse.cancel);
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(runtime.terminals.forEnvironment(_environmentId), [same(owner)]);
+        expect(
+          owner.state,
+          uncertain
+              ? EnvironmentTerminalState.disconnected
+              : EnvironmentTerminalState.running,
+        );
+        expect(owner.surface.isDisposed, isFalse);
+        expect(owner.surface.readOnly, uncertain);
+        expect(owner.write('still live', isActive: () => true), !uncertain);
+        await tester.pump();
+        expect(channel.writes, uncertain ? isEmpty : ['still live']);
+        expect(channel.closes, uncertain ? 1 : 0);
+        expect(detachments, 0);
+
+        AppExitResponse? response;
+        final accepting = tester.binding.handleRequestAppExit().then((value) {
+          response = value;
+          return value;
+        });
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(find.text('Exit with active work?'), findsOneWidget);
+        await tester.tap(find.text('Exit ADELE'));
+        await tester.pump();
+        expect(detachments, 1);
+        expect(cleanup.isCompleted, isFalse);
+        expect(owner.state, EnvironmentTerminalState.disposed);
+        expect(owner.surface.isDisposed, isTrue);
+        expect(owner.write('blocked', isActive: () => true), isFalse);
+        expect(runtime.terminals.forEnvironment(_environmentId), isEmpty);
+        expect(channel.closing.isCompleted, isTrue);
+        expect(channel.cancelled, isTrue);
+        if (!uncertain) {
+          channel.closeGate.complete();
+          await tester.pump();
+          expect(owner.cleanupSettled, isFalse);
+          channel.cancelGate!.complete();
+        }
+        await tester.pump();
+        await owner.close();
+        expect(
+          owner.cleanupSucceeded,
+          isTrue,
+          reason: '${owner.cleanupError}, settled: ${owner.cleanupSettled}',
+        );
+        expect(response, isNull);
+        expect(runtime.plugins.state, isNot(ApplicationPluginState.closed));
+
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(await accepting, AppExitResponse.exit);
+        expect(
+          tester.takeException(),
+          isA<TimeoutException>()
+              .having(
+                (error) => error.message,
+                'message',
+                'Application exit deadline reached; resource release and '
+                    'in-flight work may be incomplete.',
+              )
+              .having(
+                (error) => error.duration,
+                'duration',
+                const Duration(milliseconds: 100),
+              ),
+        );
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+        expect(detachments, 1);
+        expect(channel.closes, 1);
+        expect(tester.takeException(), isNull);
+        cleanup.complete();
+        await tester.pump();
+        expect(runtime.plugins.state, ApplicationPluginState.closed);
         await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.takeException(), isNull);
       },
@@ -1340,11 +1685,20 @@ class _MultiTerminalProvider extends _EnvironmentProvider
 class _TerminalChannel implements AdeleStreamChannel {
   final closing = Completer<void>();
   final closeGate = Completer<void>();
+  Completer<void>? cancelGate;
+  final writes = <String>[];
+  late final StreamController<Object?> events;
+  int closes = 0;
   bool cancelled = false;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (method == environmentProviderServiceWriteTerminalId) {
+      writes.add(payload['text'] as String);
+      return null;
+    }
     if (method == environmentProviderServiceCloseTerminalId) {
+      closes++;
       closing.complete();
       await closeGate.future;
       return null;
@@ -1354,7 +1708,6 @@ class _TerminalChannel implements AdeleStreamChannel {
 
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
-    late StreamController<Object?> events;
     events = StreamController<Object?>(
       onListen: () => events.add({
         'kind': 'opened',
@@ -1365,7 +1718,12 @@ class _TerminalChannel implements AdeleStreamChannel {
         'output': null,
         'completed': null,
       }),
-      onCancel: () => cancelled = true,
+      // A fixture-owned future keeps decoder cancellation in the test's zone,
+      // rather than using Dart's shared synchronous-cancellation future.
+      onCancel: () async {
+        cancelled = true;
+        await cancelGate?.future;
+      },
     );
     return events.stream;
   }

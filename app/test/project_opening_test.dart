@@ -873,6 +873,9 @@ void main() {
             );
             await tester.pumpWidget(const SizedBox.shrink());
             await retired.timeout(const Duration(seconds: 10));
+            // Revocation precedes asynchronous backend release; join its
+            // existing close rather than depending on a microtask count.
+            await runtime.plugins.close().timeout(const Duration(seconds: 10));
           });
         }
         await tester.pump();

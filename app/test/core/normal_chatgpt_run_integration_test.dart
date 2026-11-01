@@ -1065,6 +1065,7 @@ void main() {
           tester,
           'Discard unsaved changes in 1 Source Document(s) and exit?\n$_sourcePath (${environmentA.id.value})',
         );
+        expect(find.text('Exit with active work?'), findsNothing);
         expectRetainedSettings();
         expect(settingsRoute.isCurrent, isFalse);
         expect(connection.isClosed, isFalse);
@@ -1116,6 +1117,7 @@ void main() {
           'Review-owned confirmation after accepted Source advice',
         );
         _expectReviewConfirmation();
+        expect(find.text('Exit with active work?'), findsNothing);
         expectRetainedSettings();
         expect(settingsRoute.isCurrent, isFalse);
         await _terminalTap(
@@ -3258,7 +3260,10 @@ void main() {
         '--porcelain',
       ]);
       final marker = await File('$worktree/.git').readAsBytes();
-      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      final exiting = tester.binding.handleRequestAppExit();
+      await _expectActiveWorkExitConfirmation(tester);
+      await _terminalTap(tester, find.text('Exit ADELE'));
+      expect(await exiting, AppExitResponse.exit);
       expect(console.residentPresentations, isEmpty);
       expect(commandBackend.connection!.isClosed, isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -5664,17 +5669,50 @@ void main() {
     );
   }
 
-  // Retain the application-level shutdown boundary as well as controller-unit
-  // draining: an accepted remote call must finish before its backend is retired,
-  // while an unresolved approval must never be silently allowed during disposal.
-  for (final waiting in [false, true]) {
+  // Exercise the actual application callback with work owned by an unpresented
+  // Session, including retirement of its frontend independently of execution.
+  for (final shutdown in [
+    'cooperative',
+    'deadline',
+    'keep working',
+    'approval disposal',
+    'approval exit',
+  ]) {
+    final waiting = shutdown.startsWith('approval');
+    final forced = shutdown == 'deadline';
+    final decline = shutdown == 'keep working';
+    final dispose = shutdown == 'approval disposal';
     testWidgets(
-      'hidden installed Session ${waiting ? 'disposal abandons waiting approval' : 'frontend retirement preserves accepted model work until exit drains before backend shutdown'}',
+      'hidden installed Session ${switch (shutdown) {
+        'cooperative' => 'frontend retirement preserves accepted model work until exit drains before backend shutdown',
+        'deadline' => 'confirmed hung model exit reaches one deadline without fabricated outcomes or late duplicates',
+        'keep working' => 'Keep Working declines hung model exit and the same Run completes',
+        'approval disposal' => 'disposal abandons waiting approval',
+        _ => 'confirmed exit abandons waiting approval without deciding or executing it',
+      }}',
       (tester) => tester.runAsync(() async {
         final fixture = await _ProductFixture.create();
         final arrived = Completer<void>();
         final release = Completer<void>();
+        final responseSettled = Completer<void>();
         final errors = <(Object, StackTrace)>[];
+        final diagnostics = <FlutterErrorDetails>[];
+        final originalOnError = FlutterError.onError;
+        const deadlineMessage =
+            'Application exit deadline reached; resource release and in-flight work may be incomplete.';
+        FlutterError.onError = (details) {
+          if (details.exception case TimeoutException(
+            message: deadlineMessage,
+          )) {
+            diagnostics.add(details);
+          } else {
+            originalOnError?.call(details);
+          }
+        };
+        addTearDown(() => FlutterError.onError = originalOnError);
+        final exitTimeout = forced
+            ? const Duration(milliseconds: 250)
+            : const Duration(seconds: 30);
         var requests = 0;
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final subscription = server.listen((request) async {
@@ -5712,10 +5750,22 @@ void main() {
               'response': {'id': 'shutdown-response', 'model': 'gpt-6-astra'},
             });
           } on Object catch (error, stack) {
-            errors.add((error, stack));
+            if (!forced ||
+                (error is! SocketException && error is! HttpException)) {
+              errors.add((error, stack));
+            }
             if (!arrived.isCompleted) arrived.complete();
           } finally {
-            await request.response.close();
+            try {
+              await request.response.close();
+            } on Object catch (error, stack) {
+              if (!forced ||
+                  (error is! SocketException && error is! HttpException)) {
+                errors.add((error, stack));
+              }
+            } finally {
+              if (!responseSettled.isCompleted) responseSettled.complete();
+            }
           }
         });
         addTearDown(() async {
@@ -5732,6 +5782,7 @@ void main() {
             tester,
             prepared,
             endpoint: server,
+            exitTimeout: exitTimeout,
             attachSessionContext: (access) {
               context = access;
               detach = access.observe(selections.add);
@@ -5765,6 +5816,7 @@ void main() {
             'Shutdown fixture',
           );
           expect(fixture.runIds.values, hasLength(1));
+          final runId = fixture.runIds.values.single;
           if (waiting) {
             await _pumpUntil(
               tester,
@@ -5806,44 +5858,46 @@ void main() {
           expect(selections.map((snapshot) => snapshot.revision), [1, 2, 3]);
           expect(fixture.status(tester).pendingApproval, isNull);
           expect(fixture.status(tester).isAdvancing, isFalse);
-          if (waiting) {
+          var finalSnapshot = selectedSnapshot;
+          var selectionCount = selections.length;
+          if (dispose) {
             final approval = hiddenStatus.pendingApproval!;
             await tester.pumpWidget(const SizedBox.shrink());
             expect(context.isActive, isFalse);
             hiddenStatus.onDecision(approval, true);
             hiddenStatus.onDecision(approval, false);
           } else {
-            PreparedFrontend? generation;
-            // Prepared views key their exact generation. Retire the shared Chat
-            // frontend through B's actual pane while A's accepted Run is hidden.
-            tester.element(_chatView()).visitAncestorElements((element) {
-              if (element.widget.key case ValueKey(
-                value: (
-                  final PreparedFrontend owner,
-                  String _,
-                  String _,
-                  Key? _,
-                ),
-              )) {
-                generation = owner;
-                return false;
-              }
-              return true;
-            });
-            expect(generation, isNotNull);
-            generation!.invalidate();
-            await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+            if (!decline && !waiting) {
+              PreparedFrontend? generation;
+              // Retire the shared Chat frontend through B's actual pane while
+              // A's accepted Run is hidden. Neither pane owns that Run.
+              tester.element(_chatView()).visitAncestorElements((element) {
+                if (element.widget.key case ValueKey(
+                  value: (
+                    final PreparedFrontend owner,
+                    String _,
+                    String _,
+                    Key? _,
+                  ),
+                )) {
+                  generation = owner;
+                  return false;
+                }
+                return true;
+              });
+              expect(generation, isNotNull);
+              generation!.invalidate();
+              await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+              expect(find.text('Frontend unavailable.'), findsOneWidget);
+            }
             expect(_session(tester), same(selected));
             expect(context.isActive, isTrue);
             expect(context.snapshot, same(selectedSnapshot));
             expect(selections, hasLength(3));
-            expect(find.text('Frontend unavailable.'), findsOneWidget);
             expect(connection.isClosed, isFalse);
             expect(runtime.plugins.state, ApplicationPluginState.ready);
-            expect(
-              runtime.store.runRecord(fixture.runIds.values.single),
-              isNull,
-            );
+            expect(runtime.store.runRecord(runId), isNull);
+            expect(runtime.lifecycle.runActivity(runId), isNull);
             expect(
               (await chat.snapshot(session.id.value)).entries,
               hasLength(1),
@@ -5857,26 +5911,128 @@ void main() {
               exited = true;
               return result;
             });
-            await Future<void>.delayed(Duration.zero);
-            await tester.pump();
+            await _expectActiveWorkExitConfirmation(tester);
             expect(exited, isFalse);
-            expect(context.isActive, isFalse);
-            expect(cleanups, 1);
-            expect(activeDuringCleanup, isFalse);
-            expect(runtime.plugins.state, ApplicationPluginState.ready);
+            expect(context.isActive, isTrue);
+            expect(context.snapshot, same(selectedSnapshot));
+            expect(cleanups, 0);
             expect(connection.isClosed, isFalse);
-            expect(_session(tester), same(selected));
-            expect(find.text('Frontend unavailable.'), findsOneWidget);
-            expect(
-              (await chat.snapshot(session.id.value)).entries,
-              hasLength(1),
-            );
-            release.complete();
-            expect(
-              await exiting.timeout(const Duration(seconds: 15)),
-              AppExitResponse.exit,
-            );
-            expect(find.text('Late accepted answer.'), findsNothing);
+            expect(runtime.plugins.state, ApplicationPluginState.ready);
+            expect(release.isCompleted, isFalse);
+            expect(diagnostics, isEmpty);
+            if (decline) {
+              await _terminalTap(tester, find.text('Keep Working'));
+              expect(await exiting, AppExitResponse.cancel);
+              expect(context.isActive, isTrue);
+              expect(cleanups, 0);
+              expect(connection.isClosed, isFalse);
+              expect(runtime.store.runRecord(runId), isNull);
+              expect(runtime.lifecycle.runActivity(runId), isNull);
+              await _breadcrumb(tester, 'task-breadcrumb');
+              await _openSession(tester, session.id);
+              await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+              expect(_session(tester), same(session));
+              expect(fixture.status(tester).isAdvancing, isTrue);
+              expect(fixture.status(tester).failureMessage, isNull);
+              release.complete();
+              await _terminalUntil(
+                tester,
+                () =>
+                    find.text('Late accepted answer.').evaluate().isNotEmpty &&
+                    !fixture.status(tester).isAdvancing,
+                'same gated Run completes after Keep Working',
+              );
+              const draft = 'Still editable after Keep Working.';
+              await _enterComposer(tester, draft);
+              await _terminalUntil(
+                tester,
+                () async =>
+                    (await chat.snapshot(session.id.value)).draftRequest ==
+                    draft,
+                'same Session remains usable after declining active-work exit',
+              );
+              expect(fixture.runIds.values, [runId]);
+              expect(requests, 1);
+              final snapshot = await chat.snapshot(session.id.value);
+              expect(snapshot.entries.map((entry) => entry.content), [
+                'Shutdown fixture',
+                'Late accepted answer.',
+              ]);
+              expect(snapshot.entries.map((entry) => entry.runId), [
+                runId.value,
+                null,
+              ]);
+              finalSnapshot = context.snapshot;
+              selectionCount = selections.length;
+              expect(
+                await tester.binding.handleRequestAppExit().timeout(
+                  const Duration(seconds: 30),
+                ),
+                AppExitResponse.exit,
+              );
+              expect(find.text('Exit with active work?'), findsNothing);
+            } else {
+              final exitClock = Stopwatch()..start();
+              await _terminalTap(tester, find.text('Exit ADELE'));
+              if (forced) {
+                expect(
+                  await exiting.timeout(const Duration(seconds: 5)),
+                  AppExitResponse.exit,
+                );
+                expect(exitClock.elapsed, greaterThanOrEqualTo(exitTimeout));
+                expect(exitClock.elapsed, lessThan(const Duration(seconds: 5)));
+                expect(release.isCompleted, isFalse);
+                expect(diagnostics, hasLength(1));
+                expect(
+                  (diagnostics.single.exception as TimeoutException).duration,
+                  exitTimeout,
+                );
+                expect(runtime.store.runRecord(runId), isNull);
+                expect(runtime.lifecycle.runActivity(runId), isNull);
+                expect(
+                  runtime.plugins.state,
+                  anyOf(
+                    ApplicationPluginState.closing,
+                    ApplicationPluginState.closed,
+                  ),
+                  reason: 'Backend retirement must start before model release.',
+                );
+                // Delivery after the deadline cannot invent completion/failure,
+                // start another turn, or publish another selection or warning.
+                release.complete();
+                await responseSettled.future.timeout(
+                  const Duration(seconds: 15),
+                );
+              } else if (waiting) {
+                final approval = hiddenStatus.pendingApproval!;
+                hiddenStatus.onDecision(approval, true);
+                hiddenStatus.onDecision(approval, false);
+                expect(
+                  await exiting.timeout(const Duration(seconds: 30)),
+                  AppExitResponse.exit,
+                );
+              } else {
+                expect(exited, isFalse);
+                expect(context.isActive, isFalse);
+                expect(cleanups, 1);
+                expect(activeDuringCleanup, isFalse);
+                expect(runtime.plugins.state, ApplicationPluginState.ready);
+                expect(connection.isClosed, isFalse);
+                expect(_session(tester), same(selected));
+                expect(find.text('Frontend unavailable.'), findsOneWidget);
+                expect(
+                  (await chat.snapshot(session.id.value)).entries,
+                  hasLength(1),
+                );
+                release.complete();
+                expect(
+                  await exiting.timeout(const Duration(seconds: 30)),
+                  AppExitResponse.exit,
+                );
+              }
+              expect(find.text('Late accepted answer.'), findsNothing);
+            }
+            expect(context.isActive, isFalse);
           }
           expect(context.isActive, isFalse);
           expect(() => context.snapshot, throwsStateError);
@@ -5888,17 +6044,26 @@ void main() {
             () => runtime.plugins.state == ApplicationPluginState.closed,
           );
           _rethrowEndpointFailure(errors);
-          expect(selections, hasLength(3));
-          expect(selections.last, same(selectedSnapshot));
-          expect(selectedSnapshot.session, same(selected));
+          expect(selections, hasLength(selectionCount));
+          expect(selections.last, same(finalSnapshot));
           detach();
           detach();
           expect(requests, 1);
           expect(fixture.runIds.values, hasLength(1));
           expect(
-            runtime.store.runRecord(fixture.runIds.values.single)?.state,
-            waiting ? isNull : RunTerminalState.completed,
+            runtime.store.runRecord(runId)?.state,
+            waiting || forced ? isNull : RunTerminalState.completed,
           );
+          expect(
+            runtime.lifecycle.runActivitiesForSession(session.id),
+            waiting || forced ? isEmpty : hasLength(1),
+          );
+          expect(runtime.store.runsForSession(selected.id), isEmpty);
+          if (waiting) {
+            final approval = hiddenStatus.pendingApproval!;
+            hiddenStatus.onDecision(approval, true);
+            hiddenStatus.onDecision(approval, false);
+          }
           expect(connection.isClosed, isTrue);
           expect(
             runtime.extensions.discover(orchestrationStrategyContributions),
@@ -5908,18 +6073,26 @@ void main() {
             chat.snapshot(session.id.value),
             throwsA(isA<PluginConnectionClosed>()),
           );
+          expect(
+            await tester.binding.handleRequestAppExit(),
+            AppExitResponse.exit,
+          );
           await tester.pumpWidget(const SizedBox.shrink());
           expect(cleanups, 1);
+          expect(selections, hasLength(selectionCount));
+          expect(requests, 1);
+          expect(fixture.runIds.values, [runId]);
+          expect(diagnostics, hasLength(forced ? 1 : 0));
           expect(tester.takeException(), isNull);
         } finally {
           if (!release.isCompleted) release.complete();
-          await tester.binding.handleRequestAppExit().timeout(
-            const Duration(seconds: 30),
-          );
+          // A failed assertion must not leave the new confirmation blocking
+          // fixture teardown. Release the gate and use ordinary disposal cleanup.
           await tester.pumpWidget(const SizedBox.shrink());
+          await fixture.runtime.close();
         }
       }),
-      timeout: const Timeout(Duration(seconds: 45)),
+      timeout: const Timeout(Duration(seconds: 90)),
     );
   }
 
@@ -7021,6 +7194,7 @@ final class _ProductFixture {
     FutureOr<void> Function() Function(WindowSessionContext)?
     attachSessionContext,
     bool configureModel = true,
+    Duration exitTimeout = const Duration(seconds: 30),
     Map<String, List<String>> startupArguments = const {},
   }) async {
     final runtime = usingRuntime ?? this.runtime;
@@ -7076,6 +7250,7 @@ final class _ProductFixture {
         runIds: usingRunIds ?? runIds,
         mainContentHost: mainContentHost,
         attachSessionContext: attachSessionContext,
+        exitTimeout: exitTimeout,
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,
@@ -7314,6 +7489,17 @@ Future<void> _terminalTap(WidgetTester tester, Finder target) async {
   await tester.tap(target);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 350));
+}
+
+Future<void> _expectActiveWorkExitConfirmation(WidgetTester tester) async {
+  await _terminalUntil(
+    tester,
+    () => find.text('Exit with active work?').evaluate().isNotEmpty,
+    'host confirmation for retained active or uncertain work',
+  );
+  expect(find.byType(AlertDialog), findsOneWidget);
+  expect(find.text('Keep Working'), findsOneWidget);
+  expect(find.text('Exit ADELE'), findsOneWidget);
 }
 
 Future<void> _settingsSection(WidgetTester tester, String label) async {

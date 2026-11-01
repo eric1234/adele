@@ -10,6 +10,8 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
 import 'package:adele_desktop/frontend/session_content_inspection_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/frontend/task_browser_bridge.dart';
@@ -25,6 +27,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval.dart';
+import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -81,11 +84,19 @@ void main() {
             .write();
   });
 
-  Future<_Fixture> mount(WidgetTester tester) async {
+  Future<_Fixture> mount(
+    WidgetTester tester, {
+    PreparedMainContentHost? mainContentHost,
+    Duration exitTimeout = const Duration(seconds: 5),
+  }) async {
     await tester.binding.setSurfaceSize(const Size(1400, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final fixture = await _Fixture.create(producer, renderer);
-    await fixture.mount(tester);
+    await fixture.mount(
+      tester,
+      mainContentHost: mainContentHost,
+      exitTimeout: exitTimeout,
+    );
     return fixture;
   }
 
@@ -289,6 +300,123 @@ void main() {
       }
     }),
   );
+
+  testWidgets(
+    'accepted application exit retains the ordinary Task Browser snapshot before closing authority',
+    (tester) => tester.runAsync(() async {
+      final f = await mount(tester);
+      try {
+        tester.widget<AdeleShell>(find.byType(AdeleShell)).onTask!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Leave now'));
+        await tester.pumpAndSettle();
+        expect(f.window.snapshot.session, isNull);
+        final browser = tester.element(find.text('Open canonical Session'));
+
+        final exiting = tester.binding.handleRequestAppExit();
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Leave now'));
+        await f.closeEntered.future.timeout(const Duration(seconds: 2));
+        expect(f.window.isActive, isFalse);
+        expect(f.cleanup.isCompleted, isFalse);
+        await tester.pumpAndSettle();
+        expect(
+          tester.element(find.text('Open canonical Session')),
+          same(browser),
+        );
+        expect(tester.takeException(), isNull);
+
+        f.cleanup.complete();
+        expect(await exiting, AppExitResponse.exit);
+        expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await f.close(tester);
+      }
+    }),
+  );
+
+  testWidgets(
+    'accepted application exit bounds throwing retention and independently retires resources',
+    (tester) => tester.runAsync(() async {
+      final failure = StateError('fixture presentation retention failed');
+      final released = Completer<void>();
+      late _Fixture f;
+      Future<AppExitResponse>? repeated;
+      final bridge = _RetentionBridge(() {
+        // Snapshot readers remain live, but a reentrant exit already joins the
+        // accepted deadline instead of reentering reversible preflight.
+        expect(f.window.snapshot.session, same(f.session));
+        repeated = tester.binding.handleRequestAppExit();
+        throw failure;
+      });
+      final host = PreparedMainContentHost(
+        confirm: (_) async => true,
+        createBinding:
+            ({
+              required installation,
+              required descriptor,
+              required session,
+              required paneId,
+            }) => PreparedMainContentPaneBinding(
+              createBridge: (_) => bridge,
+              release: released.complete,
+            ),
+      );
+      const deadline = Duration(milliseconds: 100);
+      f = await mount(tester, mainContentHost: host, exitTimeout: deadline);
+      try {
+        final exiting = tester.binding.handleRequestAppExit();
+        await f.closeEntered.future.timeout(const Duration(seconds: 2));
+        expect(f.window.isActive, isFalse);
+        expect(f.cleanup.isCompleted, isFalse);
+        expect(bridge.retentions, 1);
+        expect(repeated, isNotNull);
+
+        expect(
+          await exiting.timeout(const Duration(seconds: 2)),
+          AppExitResponse.exit,
+        );
+        expect(await repeated!, AppExitResponse.exit);
+        expect(f.cleanup.isCompleted, isFalse);
+        expect(
+          tester.takeException(),
+          isA<TimeoutException>().having(
+            (error) => error.duration,
+            'duration',
+            deadline,
+          ),
+        );
+        await released.future.timeout(const Duration(seconds: 2));
+        await f.runtime.close().timeout(const Duration(seconds: 2));
+        expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+        expect(
+          f.runtime.extensions.discover(mainContentContributions),
+          isEmpty,
+        );
+        expect(
+          f.runtime.extensions.discover(sessionContentInspectionContributions),
+          isEmpty,
+        );
+
+        // The eventual retention failure is observed without reopening shutdown
+        // or reporting a second error after the deadline already won.
+        f.cleanup.complete();
+        await tester.pumpAndSettle();
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+        expect(bridge.retentions, 1);
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!f.cleanup.isCompleted) f.cleanup.complete();
+        await tester.pumpWidget(const SizedBox.shrink());
+        await f.close(tester);
+      }
+    }),
+  );
 }
 
 List<InspectionCard> _cards(WidgetTester tester) =>
@@ -414,7 +542,11 @@ final class _Fixture {
     );
   }
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    PreparedMainContentHost? mainContentHost,
+    Duration exitTimeout = const Duration(seconds: 5),
+  }) async {
     final registered = runtime.extensions.changes.firstWhere(
       (_) =>
           runtime.extensions.discover(mainContentContributions).isNotEmpty &&
@@ -427,6 +559,8 @@ final class _Fixture {
     await tester.pumpWidget(
       AdeleApplication(
         createRuntime: () => runtime,
+        mainContentHost: mainContentHost,
+        exitTimeout: exitTimeout,
         readChatGptConfiguration: () => null,
         configurationRoots: PlatformStorageRoots(
           operatingSystem: Platform.operatingSystem,
@@ -505,6 +639,29 @@ final class _Fixture {
     await provider.close();
     await tester.pumpAndSettle();
     await directory.delete(recursive: true);
+  }
+}
+
+final class _RetentionBridge
+    implements PreparedFrontendBridge, PreparedFrontendRetainable {
+  _RetentionBridge(this.retain);
+
+  final VoidCallback retain;
+  int retentions = 0;
+
+  @override
+  String get identifier => 'test.application-retention';
+  @override
+  void configureForCompile(BridgeDeclarationRegistry registry) {}
+  @override
+  void configureForRuntime(Runtime runtime) {}
+  @override
+  void invalidate() {}
+  @override
+  void retainPresentation() {
+    if (retentions != 0) return;
+    retentions++;
+    retain();
   }
 }
 
