@@ -484,6 +484,56 @@ void main() {
     );
 
     test(
+      'transport retry retains one credential read and temporary client',
+      () async {
+        final host = _CredentialHost();
+        addTearDown(host.mux.close);
+        final retryResponse = _HttpResponse();
+        final client = _HttpClient(retryResponse: retryResponse);
+        var allocations = 0;
+        await HttpOverrides.runZoned(
+          () async {
+            final result = _provider(host).invoke(_request()).toList();
+            host.reply(0, {'secret': 'retry-sentinel-key'});
+            await _pump();
+            client.response.controller.addError(
+              const SocketException(
+                'retry-sentinel-key private socket message',
+              ),
+            );
+            await client.secondSend.future.timeout(const Duration(seconds: 2));
+            await _pump();
+            expect(client.request.aborts, 1);
+            expect(client.response.cancels, 1);
+            expect(client.closes, 0);
+            expect(host.requests, hasLength(1));
+            expect(allocations, 1);
+            expect(
+              client.retryRequest.headers.value(
+                HttpHeaders.authorizationHeader,
+              ),
+              'Bearer retry-sentinel-key',
+            );
+            retryResponse.complete();
+            final events = await result;
+            expect(events, hasLength(1));
+            expect(
+              events.single.terminal!.settlement,
+              ModelProviderSettlement.completed,
+            );
+            expect(client.sends, 2);
+            expect(client.closes, 1);
+            expect(retryResponse.cancels, 1);
+          },
+          createHttpClient: (_) {
+            allocations++;
+            return client;
+          },
+        );
+      },
+    );
+
+    test(
       'pause before key propagates to HTTP and resume restores delivery',
       () async {
         final host = _CredentialHost();
@@ -681,8 +731,13 @@ final class _CredentialHost {
 }
 
 final class _HttpClient implements HttpClient {
+  _HttpClient({this.retryResponse});
   final response = _HttpResponse();
+  final _HttpResponse? retryResponse;
   late final request = _HttpRequest(response);
+  late final retryRequest = _HttpRequest(retryResponse!);
+  final secondSend = Completer<void>();
+  var sends = 0;
   Uri? endpoint;
   Object? setupFailure;
   var closes = 0;
@@ -690,6 +745,11 @@ final class _HttpClient implements HttpClient {
   @override
   Future<HttpClientRequest> postUrl(Uri url) async {
     endpoint = url;
+    sends++;
+    if (sends == 2 && retryResponse != null) {
+      secondSend.complete();
+      return retryRequest;
+    }
     if (setupFailure case final Object failure) throw failure;
     return request;
   }

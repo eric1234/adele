@@ -22,6 +22,30 @@ void main() {
       );
     });
 
+    test(
+      'invalid endpoint query fails through the lazy stream before HTTP',
+      () async {
+        final provider = OpenAiModelProvider(
+          apiKey: 'sentinel-secret',
+          endpoint: Uri.parse('https://example.test/responses?token=%FF'),
+        );
+        addTearDown(provider.close);
+        final stream = provider.invoke(_request());
+        final terminal = (await stream.toList()).single.terminal!;
+        expect(terminal.settlement, ModelProviderSettlement.failed);
+        expect(terminal.failure!.providerCode, 'invalid_endpoint_query');
+        expect(terminal.failure!.providerDetails['httpAttemptCount'], 0);
+        expect(
+          terminal.failure!.providerDetails['transportStage'],
+          'request_validation',
+        );
+        expect(
+          terminal.failure!.providerMessage,
+          'The OpenAI endpoint query is not valid UTF-8.',
+        );
+      },
+    );
+
     for (final bool chatGpt in <bool>[false, true]) {
       final String profile = chatGpt ? 'ChatGPT' : 'API key';
       for (final ModelProviderSettlement settlement
@@ -424,7 +448,7 @@ void main() {
                 expect(request.headers.value('x-codex-turn-state'), isNull);
                 requests.add(await _jsonBody(request));
                 request.response.headers.set('x-request-id', 'req_metadata');
-                if (requests.length > 1) {
+                if (requests.length > 1 && ending == 'completed') {
                   _sse(request.response, _completed('resp_replay'));
                   await request.response.close();
                   return;
@@ -593,7 +617,21 @@ void main() {
                 'failed' || 'error' => 'Test failure.',
                 _ => null,
               });
-              expect(terminal.failure?.providerDetails, anyOf(isNull, isEmpty));
+              final bool retried = ending == 'eof' && !withOutput;
+              expect(
+                terminal.failure?.providerDetails,
+                terminal.failure == null
+                    ? isNull
+                    : <String, Object?>{
+                        'transportStage': 'sse',
+                        'cause': ending == 'eof'
+                            ? 'premature_eof'
+                            : 'provider_terminal',
+                        'httpAttemptCount': retried ? 2 : 1,
+                        'transportRetryCount': retried ? 1 : 0,
+                        'outputPublished': withOutput,
+                      },
+              );
               expect(terminal.failure?.providerCode, switch (ending) {
                 'eof' => 'missing_terminal',
                 'failed' || 'error' => 'test_failure',
@@ -636,7 +674,10 @@ void main() {
                   withOutput ? <Object?>[message, call] : isEmpty,
                 );
               }
-              expect(requests, hasLength(ending == 'completed' ? 2 : 1));
+              expect(
+                requests,
+                hasLength(ending == 'completed' || retried ? 2 : 1),
+              );
               expect(jsonEncode(requests), isNot(contains('PRIVATE-METADATA')));
               expect(
                 requests.map((body) => body['model']),
@@ -797,7 +838,13 @@ void main() {
             terminal.failure!.providerMessage,
             isNot(contains('PRIVATE-METADATA')),
           );
-          expect(terminal.failure!.providerDetails, isEmpty);
+          expect(terminal.failure!.providerDetails, <String, Object?>{
+            'transportStage': 'sse',
+            'cause': 'invalid_sse',
+            'httpAttemptCount': 1,
+            'transportRetryCount': 0,
+            'outputPublished': false,
+          });
           expect(terminal.nativeState, isNull);
           expect(terminal.affinityState, isNull);
         });
@@ -1508,7 +1555,7 @@ void main() {
       });
 
       test(
-        'affinity headers never follow redirects beyond their endpoint',
+        'ChatGPT never follows redirects with or without affinity',
         () async {
           int targetRequests = 0;
           final _FakeServer target = await _FakeServer.start((request) async {
@@ -1579,9 +1626,9 @@ void main() {
           }
           final ModelProviderTerminal withoutAffinity =
               (await provider.invoke(_request()).toList()).single.terminal!;
-          expect(withoutAffinity.settlement, ModelProviderSettlement.completed);
+          expect(withoutAffinity.failure!.providerCode, 'http_303');
           expect(withoutAffinity.affinityState, isNull);
-          expect(targetRequests, 1);
+          expect(targetRequests, 0);
         },
       );
 
@@ -2291,7 +2338,7 @@ void main() {
         'invalid-utf8',
         'transport',
       ]) {
-        test('learns state before $path settlement without retry', () async {
+        test('learns state before $path settlement with bounded retry', () async {
           int requests = 0;
           final _FakeServer server = await _FakeServer.start((request) async {
             requests++;
@@ -2390,7 +2437,10 @@ void main() {
             isNot(contains('learned-token')),
           );
           expect(events.where((event) => event.terminal != null), hasLength(1));
-          expect(requests, 1);
+          expect(
+            requests,
+            path == 'missing-terminal' || path == 'transport' ? 2 : 1,
+          );
         });
       }
     });
@@ -3235,6 +3285,11 @@ void main() {
         expect(terminal.failure?.providerCode, 'safe_code');
         expect(terminal.failure?.providerMessage, 'Safe provider message.');
         expect(terminal.failure?.providerDetails, <String, Object?>{
+          'transportStage': 'error_body',
+          'cause': 'provider_terminal',
+          'httpAttemptCount': 1,
+          'transportRetryCount': 0,
+          'outputPublished': false,
           'status': status,
           'requestId': 'req_failure',
           'retryAfter': '3',
@@ -3273,6 +3328,11 @@ void main() {
         'The requested ChatGPT model is no longer available.',
       );
       expect(terminal.failure?.providerDetails, <String, Object?>{
+        'transportStage': 'error_body',
+        'cause': 'provider_terminal',
+        'httpAttemptCount': 1,
+        'transportRetryCount': 0,
+        'outputPublished': false,
         'status': HttpStatus.badRequest,
         'requestId': 'req_chatgpt',
       });
@@ -3313,6 +3373,11 @@ void main() {
         'Rejected Authorization: Bearer [REDACTED].',
       );
       expect(failure.providerDetails, <String, Object?>{
+        'transportStage': 'error_body',
+        'cause': 'provider_terminal',
+        'httpAttemptCount': 1,
+        'transportRetryCount': 0,
+        'outputPublished': false,
         'status': HttpStatus.badRequest,
         'requestId': 'req_[REDACTED]',
         'retryAfter': 'retry_[REDACTED]',
