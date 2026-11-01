@@ -19,6 +19,7 @@ import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -1665,7 +1666,12 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
       (await fixture.model.callAt(0)).settle(fails: true);
       await starting;
       expect(controller.currentRun!.run.state, RunState.failed);
-      expect(controller.failureMessage, contains('rateLimited'));
+      expect(
+        controller.failureMessage,
+        'Run failed: model rateLimited.\n'
+        'Last failed model invocation: rateLimited (provider code: 429).\n'
+        'Fixture failure',
+      );
       expect(controller.canStart, isTrue);
       final failed = controller.currentRun!.run.id;
       expect(
@@ -1673,6 +1679,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
         RunTerminalState.failed,
       );
       await controller.startRun();
+      expect(controller.failureMessage, isNull);
       final retry = controller.activeRunFuture!;
       final next = await fixture.model.callAt(1);
       expect(next.request['input'], isEmpty);
@@ -1689,6 +1696,208 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
       );
     },
   );
+
+  testWidgets(
+    'remote Run failure presents its own model evidence without private data',
+    (tester) => tester.runAsync(() async {
+      fixture.gatesFor(fixture.session).onStart = (host) async {
+        host.start();
+        final turn = await host.invokeModel(
+          StrategyInferenceMaterial(input: []),
+        );
+        final remote = RemoteStrategyModelTurn.fromLocal(
+          turn,
+          toolSnapshotHandle: 'fixture-snapshot',
+          proposalHandle: (_) => throw StateError('No proposals expected.'),
+        ).toLocal(tools: turn.tools);
+        host.fail(
+          RemoteOrchestrationFailure.fromLocal(remote.failure!).toLocal(),
+        );
+      };
+      final controller = fixture.controller();
+      final source = SessionExecutionPresentationSource(
+        controller: controller,
+        extensions: fixture.runtime.extensions,
+        isActive: () => true,
+        inspect: (_, _) => false,
+      );
+      addTearDown(source.invalidate);
+      final runId = await controller.startRun();
+      final starting = controller.activeRunFuture!;
+      final call = await fixture.model.callAt(0);
+      call.native();
+      call.settle(
+        fails: true,
+        failure: {
+          'kind': 'unavailable',
+          'providerCode': 'service_busy',
+          'providerMessage': 'The model service is temporarily unavailable.',
+          'providerDetails': {'private': 'private-provider-details'},
+        },
+      );
+      await starting;
+      expect(controller.failure, isA<RemoteStrategyFailure>());
+      final activity = controller.activityForRun(runId)!;
+      expect(activity.failure!.kind, 'unknown');
+      expect(activity.models.single.failure!.kind, 'unavailable');
+      const message =
+          'Run failed. Check strategy, model and Task Environment availability.\n'
+          'Last failed model invocation: unavailable (provider code: service_busy).\n'
+          'The model service is temporarily unavailable.';
+      expect(controller.failureMessage, message);
+      expect(source.readExecution()['failure'], message);
+      expect(
+        controller.failureMessage,
+        isNot(contains('private-provider-details')),
+      );
+      expect(controller.failureMessage, isNot(contains('private-replay-data')));
+      expect(
+        controller.failureMessage,
+        isNot(contains('RemoteStrategyFailure')),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RunExecutionStatus(
+              pendingApproval: null,
+              enabled: true,
+              isAdvancing: false,
+              failureMessage: controller.failureMessage,
+              unavailableReason: null,
+              onDecision: (_, _) => fail('No approval expected.'),
+            ),
+          ),
+        ),
+      );
+      expect(find.text(message), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }),
+  );
+
+  for (final failedRun in [true, false]) {
+    test(
+      'last failed model is context only for a failed Run (failed=$failedRun)',
+      () async {
+        fixture.gatesFor(fixture.session).onStart = (host) async {
+          host.start();
+          for (var index = 0; index < 3; index++) {
+            await host.invokeModel(StrategyInferenceMaterial(input: []));
+          }
+          // A strategy may recover from model failures, then fail independently.
+          if (!failedRun) host.complete();
+          throw StateError('private-unrelated-strategy-error');
+        };
+        final controller = fixture.controller();
+        final runId = await controller.startRun();
+        final starting = controller.activeRunFuture!;
+        (await fixture.model.callAt(0)).settle(fails: true);
+        (await fixture.model.callAt(1)).settle(
+          fails: true,
+          failure: {
+            'kind': 'capacity',
+            'providerCode': 'model_busy',
+            'providerMessage': 'The requested model is busy.',
+            'providerDetails': <String, Object?>{},
+          },
+        );
+        (await fixture.model.callAt(2)).settle();
+        await starting;
+        final activity = controller.activityForRun(runId)!;
+        expect(
+          activity.state,
+          failedRun ? RunState.failed : RunState.completed,
+        );
+        expect(activity.models, hasLength(3));
+        expect(activity.models.last.failure, isNull);
+        const generic =
+            'Run failed. Check strategy, model and Task Environment availability.';
+        expect(
+          controller.failureMessage,
+          failedRun
+              ? '$generic\n'
+                    'Last failed model invocation: capacity (provider code: model_busy).\n'
+                    'The requested model is busy.'
+              : generic,
+        );
+        expect(controller.failureMessage, isNot(contains('rateLimited')));
+        expect(controller.failureMessage, isNot(contains('private-unrelated')));
+      },
+    );
+  }
+
+  for (final typedFailure in [true, false]) {
+    test(
+      'missing safe model details use public fallback (typed=$typedFailure)',
+      () async {
+        final controller = fixture.controller();
+        await controller.startRun();
+        final starting = controller.activeRunFuture!;
+        final call = await fixture.model.callAt(0);
+        if (typedFailure) {
+          call.settle(
+            fails: true,
+            failure: {
+              'kind': 'transport',
+              'providerCode': null,
+              'providerMessage': null,
+              'providerDetails': {'private': 'private-provider-details'},
+            },
+          );
+        } else {
+          call.events.addError(StateError('private-transport-error'));
+        }
+        await starting;
+        expect(
+          controller.failureMessage,
+          endsWith(
+            'Last failed model invocation: ${typedFailure ? 'transport' : 'unknown'}.\n'
+            'Model invocation failed.',
+          ),
+        );
+        expect(controller.failureMessage, isNot(contains('provider code:')));
+        expect(controller.failureMessage, isNot(contains('private-')));
+      },
+    );
+  }
+
+  test('model failure details never cross Run or Session boundaries', () async {
+    final controller = fixture.controller();
+    final first = await controller.startRun();
+    final starting = controller.activeRunFuture!;
+    (await fixture.model.callAt(0)).settle(fails: true);
+    await starting;
+    expect(controller.failureMessage, contains('Fixture failure'));
+
+    final foreign = fixture.controller(session: fixture.anotherSession());
+    await foreign.startRun();
+    final foreignStarting = foreign.activeRunFuture!;
+    (await fixture.model.callAt(1)).settle(
+      fails: true,
+      failure: {
+        'kind': 'permission',
+        'providerCode': 'foreign_session_code',
+        'providerMessage': 'Foreign Session failure.',
+        'providerDetails': <String, Object?>{},
+      },
+    );
+    await foreignStarting;
+    expect(foreign.failureMessage, contains('Foreign Session failure.'));
+    expect(controller.failureMessage, isNot(contains('foreign_session_code')));
+
+    fixture.gatesFor(fixture.session).startError = StateError('private-start');
+    final second = await controller.startRun();
+    expect(controller.failureMessage, isNull);
+    await controller.activeRunFuture;
+    expect(controller.stateForRun(second), RunState.failed);
+    expect(controller.activityForRun(second)!.models, isEmpty);
+    expect(controller.activityForRun(first)!.models.single.failure, isNotNull);
+    expect(
+      controller.failureMessage,
+      'Run failed. Check strategy, model and Task Environment availability.',
+    );
+    expect(fixture.model.calls, hasLength(2));
+  });
 
   test(
     'failure before host start remains failed after reentry and retry',
@@ -2525,6 +2734,7 @@ final class _Fixture {
           gates.closeGate ?? executionCloseGate,
           closeError: gates.closeError,
           startError: gates.startError,
+          onStart: gates.onStart,
         );
         executions.add(execution);
         return execution;
@@ -2606,16 +2816,24 @@ final class _SessionGates {
   Completer<void>? closeGate;
   Object? closeError;
   Object? startError;
+  Future<void> Function(OrchestrationExecutionHost host)? onStart;
 }
 
 // Only the public host facade is used, without Chat or frontend dependencies.
 // The Session marker routes model requests by identity, not arrival order.
 final class _Execution implements OrchestrationExecution {
-  _Execution(this.host, this.closeGate, {this.closeError, this.startError});
+  _Execution(
+    this.host,
+    this.closeGate, {
+    this.closeError,
+    this.startError,
+    this.onStart,
+  });
   final OrchestrationExecutionHost host;
   final Completer<void>? closeGate;
   final Object? closeError;
   final Object? startError;
+  final Future<void> Function(OrchestrationExecutionHost host)? onStart;
   final closing = Completer<void>();
   final outcomes = <SemanticModelInputItem>[];
   late StrategyModelTurn turn;
@@ -2625,6 +2843,10 @@ final class _Execution implements OrchestrationExecution {
   @override
   Future<void> start() async {
     if (startError case final error?) throw error;
+    if (onStart case final operation?) {
+      await operation(host);
+      return;
+    }
     host.start();
     await nextTurn();
   }
@@ -2906,29 +3128,30 @@ final class _ModelCall {
       'nativePresentation': null,
     },
   });
-  void settle({bool fails = false, Map<String, Object?>? affinityState}) =>
-      events.add({
-        'kind': 'terminal',
-        'observation': null,
-        'output': null,
-        'terminal': {
-          'settlement': fails ? 'failed' : 'completed',
-          'incompleteReason': null,
-          'failure': fails
-              ? {
-                  'kind': 'rateLimited',
-                  'providerCode': '429',
-                  'providerMessage': 'Fixture failure',
-                  'providerDetails': <String, Object?>{},
-                }
-              : null,
-          'providerStopReason': 'stop',
-          'usage': null,
-          'effectiveModel': 'fixture-model',
-          'responseId': 'fixture-response',
-          'requestId': null,
-          'nativeState': null,
-          'affinityState': affinityState,
-        },
-      });
+  void settle({
+    bool fails = false,
+    Map<String, Object?>? affinityState,
+    Map<String, Object?> failure = const {
+      'kind': 'rateLimited',
+      'providerCode': '429',
+      'providerMessage': 'Fixture failure',
+      'providerDetails': <String, Object?>{},
+    },
+  }) => events.add({
+    'kind': 'terminal',
+    'observation': null,
+    'output': null,
+    'terminal': {
+      'settlement': fails ? 'failed' : 'completed',
+      'incompleteReason': null,
+      'failure': fails ? failure : null,
+      'providerStopReason': 'stop',
+      'usage': null,
+      'effectiveModel': 'fixture-model',
+      'responseId': 'fixture-response',
+      'requestId': null,
+      'nativeState': null,
+      'affinityState': affinityState,
+    },
+  });
 }

@@ -137,6 +137,83 @@ exception text. No failure automatically retries, reconciles storage, consults t
 environment key or switches to another record/ChatGPT. Existing OpenAI HTTP failures
 remain separate outcomes after a request actually reaches the endpoint.
 
+## Streaming Reliability
+
+Each logical `ModelProviderService.invoke` uses a separate HTTP-attempt lifecycle
+inside this provider. Production defaults are a **30-second response-opening
+deadline**, a **five-minute rolling SSE inactivity deadline**, a **200 ms transport
+retry delay**, and a **one-second cleanup wait**. Constructor-injected durations
+support deterministic local tests; these are not generalized provider settings.
+
+The opening deadline spans connection acquisition (`postUrl`), request submission,
+and response-header waiting, independently of SSE consumption. Once headers arrive,
+every received byte resets inactivity before UTF-8, line, or SSE decoding. Comments,
+`keepalive`, metadata, and partial records therefore keep slow reasoning alive.
+There is no total-inference deadline. Downstream pause propagates to the response
+subscription and suspends the SSE timer; resume starts a fresh idle interval.
+Non-success HTTP bodies retain their existing size bound and additionally have a
+30-second capture deadline; body failure cannot turn a known HTTP rejection into a
+transport retry.
+
+At most **one transport retry** is allowed, and only before any semantic event has
+been published. Eligible interruptions are socket/HTTP transport exceptions,
+timeouts (including SSE inactivity), and EOF at a complete SSE-record boundary
+without a semantic terminal. Malformed JSON/SSE, incomplete SSE records, invalid
+UTF-8, unsupported events/items, explicit provider error terminals, TLS handshake
+errors (which may indicate certificate/configuration problems), and unrecognized
+exceptions are nonretryable. HTTP statuses do not trigger transport retries.
+The existing ChatGPT 401 authorization recovery remains independently at most
+once. Together these permit **at most three Responses HTTP attempts**, without
+resetting either allowance. Redirects are disabled for both profiles, including
+ChatGPT without affinity, so redirects cannot escape the endpoint or attempt bound.
+
+**Any observation or completed output is a publication barrier**, including text
+deltas, native reasoning, and tool proposals. A subsequent interruption preserves
+that evidence, emits one failed terminal, and never retries. Ignored metadata and
+keepalives are not publication. There is no output buffering/rollback, model
+fallback, tool execution, or orchestration retry. A retry reuses the already encoded
+request and captured endpoint, model, configuration and authorization; only the
+explicit 401 path may recover that same authentication instance. It neither creates
+another model invocation/Run nor reloads context or repeats earlier tool effects.
+Configured API-key invocations retain one credential read and one temporary client
+through their internal attempts, releasing the client at completion/cancellation.
+
+Each abandoned attempt is fenced before cleanup or replacement. Request abort and
+subscription cancellation are initiated, and cleanup is awaited up to its bound;
+late cleanup errors are contained. Cancellation/provider disposal fences delayed
+retries. No attempt force-closes a client shared with unrelated invocations.
+**Residual limitation:** Dart exposes no per-request cancellation handle while
+`postUrl` is acquiring a connection (including DNS). The invocation's wait is
+bounded, but that underlying acquisition can remain pending; a late request is
+aborted before headers/body submission. Likewise, a platform cancellation future
+may outlive the cleanup wait, but has no publication or retry authority. Credential
+store/OS-prompt and ChatGPT authorization/refresh waits are outside these inference
+transport deadlines; this is not bounded application shutdown or Run cancellation.
+
+Failures retain the existing semantic kinds and OpenAI-owned codes:
+
+| Provider Code | Meaning |
+| --- | --- |
+| `sse_inactivity` | No received SSE transport bytes before the rolling deadline. |
+| `response_open_timeout` | HTTP response opening exceeded its deadline. |
+| `stream_transport` | A response-stream exception, distinct from inactivity. |
+| `missing_terminal` | Premature EOF without semantic settlement; retains `malformedResponse`. |
+| `invalid_utf8`, `unterminated_sse_event`, other strict parser codes | Nonretryable malformed/unsupported protocol. |
+| `invalid_response_headers` | Ambiguous diagnostic headers; nonretryable, with response cleanup. |
+| `network_error`, `http_transport`, `tls_error`, `transport_error` | Classified opening failure; TLS and unknown errors are not retried. |
+
+Failure `providerDetails` adds fixed `transportStage`, classified `cause`,
+`httpAttemptCount`, `transportRetryCount`, and `outputPublished`, with an optional
+numeric `osErrorCode` for socket failures. Existing safe HTTP/authentication details
+remain. Diagnostic strings are capped at 4,096 UTF-16 code units after full-secret
+redaction; semantic/native output is not truncated. Raw exception messages/stacks,
+credentials, request/native payloads and affinity tokens are not diagnostic fields.
+The host's existing model-invocation
+activity and Session Evaluator evidence retain these details without a new schema.
+Failed-Run presentation may show safe classification/message/code from that Run's
+last failed model invocation, explicitly labeled as such rather than claiming
+unproven causality through the remote strategy failure.
+
 ## Reasoning Summary Requests
 
 The backend requests provider-supplied reasoning summaries with
@@ -219,10 +296,9 @@ Diagnostics never include notification payload values. Untyped informational key
 are not interpreted; this is not a guarantee of support for future metadata
 directives or other unknown events.
 
-The existing strict authoritative-event/item validation, hosted-tool rejection,
-streaming observations, explicit terminals, EOF-before-terminal failure, and
-cancellation/retirement paths remain in place. No retry, model switch, desktop
-error-presentation change, or provider-neutral contract change is introduced.
+Strict authoritative-event/item validation, hosted-tool rejection, streaming
+observations and explicit terminals remain in place. Metadata itself never requests
+a retry or model switch; transport recovery follows the publication rules above.
 
 ## Session Routing, Run State, And Cache Usage
 
@@ -232,7 +308,10 @@ The same Session keeps that ID across Runs, but each Run starts with null provid
 turn state. Different live Sessions use different IDs; neither identity nor state
 is persisted. A standalone single-Run caller can allocate its own routing ID.
 The backend captures the first usable `x-codex-turn-state` header from a successful
-HTTP response before consuming SSE. It returns that token only through
+HTTP response before consuming SSE, including an attempt that later needs a
+pre-publication transport retry. Subsequent attempts replay that first usable token
+unchanged; an unusable first header does not prevent a later usable capture. It
+returns that token only through
 `ModelProviderTerminal.affinityState`, including on incomplete, refused, failed,
 and malformed/transport stream terminals when available. Later requests replay
 the first token unchanged within that Run; later response headers do not rotate
@@ -253,7 +332,8 @@ diagnostics; failure text and diagnostic IDs redact known affinity values.
 Null affinity and the API-key profile add no affinity headers. This policy changes
 neither request bodies nor ordered replay: `nativeState` remains null,
 `providerOptions` remain unsupported, and no `prompt_cache_key`,
-`previous_response_id`, retention setting, or additional retry is introduced.
+`previous_response_id` or retention setting is introduced. Neither response IDs
+nor retries authorize remote conversation resumption.
 Affinity is a locality hint, not an assertion of cache residency or a cache hit.
 The interoperability basis is pinned Codex
 [ChatGPT session routing and turn lifetime](https://github.com/openai/codex/blob/ade17c62b0caf6fb1354eb7f3bc25853f44656ab/codex-rs/core/src/client.rs),
@@ -327,6 +407,16 @@ validity; backend request/replay errors retain their existing explicit failure
 semantics.
 
 ## Validation Scope
+
+`test/openai_streaming_reliability_test.dart` uses controlled HTTP objects, explicit
+gates, and short deadlines for inactivity, opening waits, retry/publication bounds,
+pause/resume, late completion, cleanup faults, concurrent invocations, authentication
+recovery, affinity, and safe diagnostics. The desktop
+`test/core/durable_chat_session_integration_test.dart` additionally exercises real
+AOT Chat/OpenAI and host authorization through a local HTTP continuation retry after
+an approved tool turn, preserving the model budget, history/context capture, and
+one tool outcome. `test/session_execution_test.dart` covers failed-Run presentation
+from public activity, including Run/Session isolation and remote failure conversion.
 
 The maintained pure-Dart targets are:
 
