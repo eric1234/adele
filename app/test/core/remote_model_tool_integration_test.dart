@@ -328,6 +328,7 @@ void main() {
         'program': '/usr/bin/printf',
         'arguments': ['%s', r'$(touch forbidden); | > literal'],
         'workingDirectory': './nested//',
+        'timeoutSeconds': 601,
       });
       expect(
         literal.outcome.hostData['stdout'],
@@ -345,9 +346,10 @@ void main() {
           'printf "first\\n"; printf "error\\n" >&2; pwd; exit 7',
         ],
         'workingDirectory': 'nested',
-        'timeoutSeconds': 5,
+        'timeoutSeconds': 1800,
       });
       expect(result.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(result.outcome.hostData['timeoutSeconds'], 1800);
       expect(result.outcome.hostData['exitCode'], 7);
       expect(result.outcome.hostData['termination'], 'exited');
       expect(
@@ -379,7 +381,7 @@ void main() {
         ],
       });
       for (final stream in ['stdout', 'stderr']) {
-        expect((bounded.outcome.hostData[stream] as String).length, 32 * 1024);
+        expect((bounded.outcome.hostData[stream] as String).length, 8192);
         expect(bounded.outcome.hostData['${stream}Truncated'], isTrue);
       }
       final timeout = await execute({

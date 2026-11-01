@@ -138,13 +138,16 @@ sandbox. Revocation does not roll back or cancel an already-started mutation.
 
 `runForegroundProcess` accepts a non-empty program, an immutable ordered
 argument vector, an Environment-relative working directory, and a required
-timeout from 1 through 600 seconds. It has no implicit shell semantics. Its
+timeout from 1 through `environmentForegroundProcessTimeoutLimitSeconds` (1800)
+seconds, explicitly selected by the caller. It has no implicit shell semantics. Its
 generated server stream carries non-empty UTF-8 text observations tagged as
 stdout or stderr, followed by one completed event for normal exit or timeout.
-Nonzero exit codes are ordinary process results. Each output message contains at
-most `environmentProcessTextLimit` (16384) well-formed UTF-16 code units. Native
-UTF-8 decoding spans read boundaries with explicit malformed-byte handling;
-partial lines, ANSI, carriage returns, NUL, and line endings are not normalized.
+Nonzero exit codes are ordinary process results; `timedOut` means the program did
+not complete normally, independently of output capture completeness. Each output
+message contains at most `environmentProcessTextLimit` (16384) well-formed UTF-16
+code units. Native UTF-8 decoding spans read boundaries with explicit malformed-byte
+handling; partial lines, ANSI, carriage returns, NUL, and line endings are not
+normalized.
 Providers preserve per-stream order and their observed combined delivery order,
 not an unknowable total ordering of independent native pipes.
 
