@@ -113,6 +113,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Status: ${stage.$2}'), findsOneWidget);
       }
+      // Reads starting at 1 select an empty file; start 3 is beyond a
+      // nonempty two-line file's EOF.
+      final totalLines = range['startLine'] == 3 ? 2 : 0;
+      final sizeBytes = totalLines == 0 ? 0 : 4;
       source.value = _activity(
         readFile: true,
         arguments: {'relativePath': 'lib/main.dart', ...range},
@@ -121,8 +125,8 @@ void main() {
         data: {
           'text': '',
           'returnedLineCount': 0,
-          'totalLines': 2,
-          'sizeBytes': 4,
+          'totalLines': totalLines,
+          'sizeBytes': sizeBytes,
           'revision': 'r1',
         },
       );
@@ -131,8 +135,8 @@ void main() {
       expect(find.text('Status: Succeeded'), findsOneWidget);
       expect(find.text('Requested scope: $scope'), findsOneWidget);
       expect(find.text('Returned lines: 0'), findsOneWidget);
-      expect(find.text('Total lines: 2'), findsOneWidget);
-      expect(find.text('File size (bytes): 4'), findsOneWidget);
+      expect(find.text('Total lines: $totalLines'), findsOneWidget);
+      expect(find.text('File size (bytes): $sizeBytes'), findsOneWidget);
       expect(find.text('Revision: r1'), findsOneWidget);
       expect(find.textContaining('Continuation line:'), findsNothing);
       expect(find.byType(TextButton), findsNothing);
@@ -268,6 +272,8 @@ void main() {
       final compactBinding = ToolActivityCompactPresentationResolver(
         extensions,
       ).resolve(readFileToolId);
+      final richFactory = richBinding.value.createPresentation;
+      final compactFactory = compactBinding.value.createPresentation;
       await tester.pumpWidget(
         _host(Column(children: [compact(source), presentation(source)])),
       );
@@ -281,14 +287,12 @@ void main() {
       await tester.pumpAndSettle();
       if (rich) {
         expect(richBinding.validate, throwsA(isA<StaleExtensionBinding>()));
-        expect(
-          () => richBinding.value.createPresentation(source),
-          throwsA(anything),
-        );
+        expect(() => richFactory(source), throwsStateError);
         compactBinding.validate();
         expect(find.text('Read File: "lib/main.dart"'), findsOneWidget);
       } else {
         expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(() => compactFactory(source), throwsStateError);
         richBinding.validate();
         expect(find.text('Factual tool fallback'), findsOneWidget);
         expect(find.text('Read File'), findsOneWidget);

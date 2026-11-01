@@ -5966,8 +5966,14 @@ void main() {
             hasLength(3),
           );
           expect(
-            runtime.extensions.discover(toolActivityInspectionContributions),
-            hasLength(2),
+            runtime.extensions
+                .discover(toolActivityInspectionContributions)
+                .map((binding) => binding.value.toolId.value),
+            unorderedEquals([
+              'dev.adele.plugin.filesystem-tools.read-file',
+              'dev.adele.plugin.filesystem-tools.apply-patch',
+              'dev.adele.plugin.command-tools.run-command',
+            ]),
           );
           expect(
             runtime.extensions.discover(
@@ -7096,7 +7102,7 @@ final class _ProductFixture {
           runtime.extensions
                   .discover(toolActivityInspectionContributions)
                   .length ==
-              2 &&
+              3 &&
           runtime.extensions
                   .discover(modelNativeActivityPresentationContributions)
                   .length ==
@@ -7105,6 +7111,16 @@ final class _ProductFixture {
               runtime.extensions
                   .discover(displaySourceFileContributions)
                   .isNotEmpty),
+    );
+    expect(
+      runtime.extensions
+          .discover(toolActivityInspectionContributions)
+          .map((binding) => binding.value.toolId.value),
+      unorderedEquals([
+        'dev.adele.plugin.filesystem-tools.read-file',
+        'dev.adele.plugin.filesystem-tools.apply-patch',
+        'dev.adele.plugin.command-tools.run-command',
+      ]),
     );
     expect(picker.calls, 0);
     if (usingRunIds == null) expect(runIds.values, isEmpty);

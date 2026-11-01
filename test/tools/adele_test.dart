@@ -2045,6 +2045,10 @@ exit "$CLIPPY_EXIT"
                     identical(
                       descriptors,
                       stockFrontendDescriptors['dev.adele.plugin.chat-strategy'],
+                    ) ||
+                    identical(
+                      descriptors,
+                      stockFrontendDescriptors['dev.adele.plugin.filesystem-tools'],
                     )
                 ? 2
                 : 1,
