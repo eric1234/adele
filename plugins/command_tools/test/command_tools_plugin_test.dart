@@ -130,7 +130,7 @@ void main() {
       expect(properties['timeoutSeconds'], <String, Object?>{
         'type': 'integer',
         'minimum': 1,
-        'maximum': 600,
+        'maximum': 1800,
       });
       expect(tool.modelDefinition.description, contains('passed verbatim'));
       expect(
@@ -139,11 +139,21 @@ void main() {
       );
       expect(
         tool.modelDefinition.description,
-        allOf(
+        allOf([
           contains('Prefer an available dedicated'),
           contains('absent or unsuitable'),
           contains('tool completion alone does not prove'),
-        ),
+          contains('default timeout is 120 seconds'),
+          contains('timeoutSeconds up to 1800 seconds per invocation'),
+          contains('Do not use nohup, setsid, detached shells'),
+          contains('redirected temporary log files'),
+          contains('termination: timedOut'),
+          contains('nonzero exit code is a process result'),
+          contains(
+            'Model-preview truncation is distinct from incomplete capture',
+          ),
+          contains('the user through Command Output'),
+        ]),
       );
     });
   });
@@ -164,6 +174,30 @@ void main() {
         },
       );
     });
+
+    for (final timeoutSeconds in [1, 600, 601, 1800]) {
+      test(
+        'forwards explicit $timeoutSeconds-second foreground timeout',
+        () async {
+          final process = _ProcessFacet();
+          final tool = await _tool(process);
+          final observation = await _execute(tool, {
+            'program': 'fixture',
+            'timeoutSeconds': timeoutSeconds,
+          });
+
+          expect(
+            observation.outcome.disposition,
+            ToolOutcomeDisposition.success,
+          );
+          expect(
+            observation.outcome.hostData['timeoutSeconds'],
+            timeoutSeconds,
+          );
+          expect(process.requests.single.timeoutSeconds, timeoutSeconds);
+        },
+      );
+    }
 
     test('preserves direct program and argument text exactly', () async {
       final MaterializedTool tool = await _tool(_ProcessFacet());
@@ -244,7 +278,8 @@ void main() {
     });
 
     test('rejects malformed shapes and timeout bounds', () async {
-      final MaterializedTool tool = await _tool(_ProcessFacet());
+      final process = _ProcessFacet();
+      final MaterializedTool tool = await _tool(process);
       for (final Map<String, Object?> invalid in <Map<String, Object?>>[
         <String, Object?>{},
         <String, Object?>{'program': ''},
@@ -261,13 +296,14 @@ void main() {
         <String, Object?>{'program': 'git', 'timeoutSeconds': 1.5},
         <String, Object?>{'program': 'git', 'timeoutSeconds': null},
         <String, Object?>{'program': 'git', 'timeoutSeconds': 0},
-        <String, Object?>{'program': 'git', 'timeoutSeconds': 601},
+        <String, Object?>{'program': 'git', 'timeoutSeconds': 1801},
       ]) {
         await expectLater(
           () => _canonical(tool, invalid),
           throwsA(isA<ToolArgumentValidationException>()),
         );
       }
+      expect(process.executions, 0);
     });
 
     test('rejects NUL and malformed UTF-16 before policy', () async {
@@ -415,6 +451,7 @@ void main() {
         );
         expect(observation.outcome.modelContent, contains('STDOUT:\n'));
         expect(observation.outcome.modelContent, contains('STDERR:\n'));
+        expect(process.requests.single.timeoutSeconds, 120);
       });
     }
 
@@ -443,6 +480,8 @@ void main() {
       expect(outcome.hostData['stderrTruncated'], isFalse);
       expect(outcome.hostData['captureState'], 'complete');
       expect(outcome.modelContent, contains('Termination: timedOut'));
+      expect(outcome.modelContent, contains('did not complete normally'));
+      expect(outcome.modelContent, contains('Capture: complete'));
       expect(outcome.modelContent, contains('Exit code: <not applicable>'));
       expect(outcome.modelContent, contains('partial out'));
     });
@@ -450,9 +489,9 @@ void main() {
     test(
       'terminal output uses deterministic independent head and tail bounds',
       () async {
-        final String head = List<String>.filled(16 * 1024, 'H').join();
+        final String head = List<String>.filled(4 * 1024, 'H').join();
         final String middle = List<String>.filled(2048, 'M').join();
-        final String tail = List<String>.filled(16 * 1024, 'T').join();
+        final String tail = List<String>.filled(4 * 1024, 'T').join();
         final String stderrText = List<String>.filled(1024, 'E').join();
         final _ProcessFacet process = _ProcessFacet(
           events: () => Stream<EnvironmentProcessEvent>.fromIterable(
@@ -465,7 +504,16 @@ void main() {
             ],
           ),
         );
-        final MaterializedTool tool = await _tool(process);
+        final storage = CommandTestStorage();
+        final transcripts = CommandTranscriptStore(storage);
+        addTearDown(() async {
+          await transcripts.close();
+          storage.close();
+        });
+        final MaterializedTool tool = await _tool(
+          process,
+          transcripts: transcripts,
+        );
 
         final observation = await _execute(tool, const <String, Object?>{
           'program': 'verbose',
@@ -474,21 +522,60 @@ void main() {
 
         expect(observation.progress, isEmpty);
         expect(outcome.hostData['captureState'], 'complete');
-        expect(maximumRetainedCommandOutputCharacters, 32 * 1024);
+        expect(maximumRetainedCommandOutputCharacters, 8192);
         expect(outcome.hostData['stdout'], '$head$tail');
-        expect((outcome.hostData['stdout']! as String).length, 32 * 1024);
+        expect((outcome.hostData['stdout']! as String).length, 8192);
         expect(outcome.hostData['stderr'], stderrText);
         expect(outcome.hostData['stdoutTruncated'], isTrue);
         expect(outcome.hostData['stderrTruncated'], isFalse);
         expect(outcome.modelContent, isNot(contains(middle)));
-        expect(outcome.modelContent, contains('Stdout truncated: true'));
+        expect(
+          outcome.modelContent,
+          contains('Stdout preview truncated: true'),
+        );
+        expect(
+          outcome.modelContent,
+          contains('Stderr preview truncated: false'),
+        );
+        expect(outcome.modelContent, contains('Capture: complete'));
+        expect(
+          outcome.modelContent,
+          contains('does not imply full-capture loss'),
+        );
+        expect(
+          outcome.modelContent,
+          contains('the user through Command Output'),
+        );
         expect(process.executions, 1);
+        final page = await transcripts.readAfter(
+          'session-command',
+          'run-command',
+          'tool-command',
+          0,
+          16,
+          65536,
+        );
+        expect(page.state.state, 'complete');
+        expect(
+          page.chunks
+              .where((chunk) => chunk.stream == 'stdout')
+              .map((chunk) => chunk.text)
+              .join(),
+          '$head$middle$tail',
+        );
+        expect(
+          page.chunks
+              .where((chunk) => chunk.stream == 'stderr')
+              .map((chunk) => chunk.text)
+              .join(),
+          stderrText,
+        );
       },
     );
 
     test('retention keeps valid Unicode at the head-tail boundary', () async {
-      final String prefix = List<String>.filled(16 * 1024 - 1, 'H').join();
-      final String suffix = List<String>.filled(16 * 1024 - 1, 'T').join();
+      final String prefix = List<String>.filled(4 * 1024 - 1, 'H').join();
+      final String suffix = List<String>.filled(4 * 1024 - 1, 'T').join();
       final String exactLimit = '$prefix\u{1f600}$suffix';
       final _ProcessFacet process = _ProcessFacet(
         events: () => Stream<EnvironmentProcessEvent>.fromIterable(
@@ -510,6 +597,64 @@ void main() {
       expect(outcome.hostData['stdout'], exactLimit);
       expect(outcome.hostData['stdoutTruncated'], isFalse);
     });
+
+    for (final (stdoutExtra, stderrExtra) in [(0, 0), (1, 0), (0, 1), (1, 1)]) {
+      test(
+        'independent preview limits with excess $stdoutExtra/$stderrExtra',
+        () async {
+          final stdoutHead = 'H' * 4096;
+          final stdoutTail = 'T' * 4096;
+          final stderrHead = 'E' * 4096;
+          final stderrTail = 'R' * 4096;
+          final process = _ProcessFacet(
+            events: () => Stream.fromIterable([
+              _output(
+                EnvironmentProcessOutputStream.stdout,
+                '$stdoutHead${'M' * stdoutExtra}$stdoutTail',
+              ),
+              _output(
+                EnvironmentProcessOutputStream.stderr,
+                '$stderrHead${'M' * stderrExtra}$stderrTail',
+              ),
+              _completed(),
+            ]),
+          );
+          final outcome = (await _execute(await _tool(process), {
+            'program': 'verbose',
+          })).outcome;
+          expect(outcome.hostData['stdout'], '$stdoutHead$stdoutTail');
+          expect(outcome.hostData['stderr'], '$stderrHead$stderrTail');
+          expect(outcome.hostData['stdoutTruncated'], stdoutExtra > 0);
+          expect(outcome.hostData['stderrTruncated'], stderrExtra > 0);
+          expect(outcome.hostData['captureState'], 'complete');
+        },
+      );
+    }
+
+    for (final chunked in [false, true]) {
+      test(
+        'truncated Unicode boundaries remain safe (chunked: $chunked)',
+        () async {
+          final head = 'H' * 4095;
+          final tail = 'T' * 4096;
+          final chunks = [head, '\u{1f600}', 'M' * 16, '\u{1f600}', tail];
+          final process = _ProcessFacet(
+            events: () => Stream.fromIterable([
+              for (final text in chunked ? chunks : [chunks.join()])
+                _output(EnvironmentProcessOutputStream.stdout, text),
+              _completed(),
+            ]),
+          );
+          final outcome = (await _execute(await _tool(process), {
+            'program': 'unicode',
+          })).outcome;
+          expect(outcome.hostData['stdout'], '$head$tail');
+          expect(outcome.hostData['stdoutTruncated'], isTrue);
+          expect(outcome.hostData['stderrTruncated'], isFalse);
+          expect(outcome.hostData['captureState'], 'complete');
+        },
+      );
+    }
 
     test('returns complete structured host data', () async {
       final _ProcessFacet process = _ProcessFacet();
@@ -566,6 +711,14 @@ void main() {
         expect(observation.outcome.hostData['exitCode'], 17);
         expect(observation.outcome.hostData['stdoutTruncated'], isTrue);
         expect(observation.outcome.hostData['stderrTruncated'], isFalse);
+        expect(
+          observation.outcome.modelContent,
+          contains('Partial STDOUT preview (truncated: false)'),
+        );
+        expect(
+          observation.outcome.modelContent,
+          isNot(contains('Capture: complete')),
+        );
       },
     );
 

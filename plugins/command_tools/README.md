@@ -11,6 +11,13 @@ entrypoint is `packages/backend/bin/command_tools_backend.dart`. Validation, eff
 description, capture, and terminal output bounds are not duplicated
 in the backend adapter.
 
+`timeoutSeconds` defaults to 120 and can be selected per invocation from 1 through
+1800 seconds, using the public Environment foreground limit. Long-running builds
+and tests should request a suitable foreground timeout rather than use `nohup`,
+`setsid`, detached shells, or redirected temporary log files solely to bypass
+timeouts or retrieve normal output. This does not extend the separate buffered
+process timeout range or introduce background execution.
+
 Normal startup loads `command-tools/backend.aot`; `AdeleRuntime` has no Command
 activation or production implementation dependency/import and no in-process
 fallback. The combined installation retains the existing PluginId
@@ -41,8 +48,18 @@ Environment as a whole and is marked as uncertain because arbitrary processes
 can have secondary effects that this first command slice does not classify.
 Environment stdout and stderr are captured by this plugin, not forwarded into
 generic tool progress, RunJournal, or activity snapshots. The terminal model result
-independently retains at most 32 Ki UTF-16 code units per stream as a deterministic
-16 Ki head plus 16 Ki tail. Model-result truncation is not transcript truncation.
+independently retains at most 8,192 UTF-16 code units per stream as a deterministic
+4,096-unit head plus 4,096-unit tail, with surrogate-safe boundaries. Model-preview
+truncation is not transcript truncation: full captured output remains available
+to the user through Command Output. Existing `stdoutTruncated` and
+`stderrTruncated` host-data fields retain their names; `captureState` separately
+reports capture completeness.
+
+A completed tool invocation does not prove program or validation success. Inspect
+termination and exit code: `termination: timedOut` means the program did not
+complete normally, while a nonzero exit code is a process result, not necessarily
+a tool-infrastructure failure. Both can retain the successful tool disposition
+and complete capture; no command-specific test/build success is inferred.
 
 ## Full decoded-text capture
 
@@ -82,7 +99,7 @@ invalidation happens only after acknowledgement of readable state.
 | Flush delay | No intentional batching delay: even one received partial-line event is committed before requesting another. Actual latency includes storage/transport admission and commit. |
 | Read page | At most 16 chunks / 65,536 UTF-16 code units; caller bounds may reduce both. The row limit is conservatively reduced by the maximum chunk size. |
 | Metadata | At most 128 KiB encoded JSON at admission, ensuring individual headers remain readable within shared storage limits. |
-| Model result | 32,768 UTF-16 code units per stream, independent head/tail calculation over all received output. |
+| Model result | 8,192 UTF-16 code units per stream, independent head/tail calculation over all received output. |
 | Watcher | One in-flight bounded state read, one admitted notification, and a dirty bit; paused changes coalesce rather than queue per append. |
 
 No transcript text, per-chunk index, snapshots, or append Future chain is retained

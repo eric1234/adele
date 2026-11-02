@@ -95,9 +95,19 @@ final class _RunCommandExecutable implements ToolExecutable {
           'or interpret pipes, redirects, command chaining, or variable expansion; '
           'shell syntax requires explicitly invoking an available shell. '
           'workingDirectory is Environment-relative; omitted or empty means the '
-          'Environment root. Inspect returned termination, exit code, output, and '
-          'truncation indicators: tool completion alone does not prove program '
-          'or validation success.',
+          'Environment root. The default timeout is $_defaultTimeoutSeconds '
+          'seconds; long-running foreground operations can explicitly request '
+          'timeoutSeconds up to '
+          '$environmentForegroundProcessTimeoutLimitSeconds seconds per invocation. '
+          'Do not use nohup, setsid, detached shells, or redirected temporary log '
+          'files merely to bypass command timeouts or obtain normal command '
+          'output. Inspect returned termination, exit code, output, and capture '
+          'status: tool completion alone does not prove program or validation '
+          'success. termination: timedOut means the program did not complete '
+          'normally. A nonzero exit code is a process result, not necessarily a '
+          'tool-infrastructure failure. Model-preview truncation is distinct '
+          'from incomplete capture; full captured output remains available to '
+          'the user through Command Output.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['program'],
@@ -111,7 +121,7 @@ final class _RunCommandExecutable implements ToolExecutable {
           'timeoutSeconds': <String, Object?>{
             'type': 'integer',
             'minimum': 1,
-            'maximum': 600,
+            'maximum': environmentForegroundProcessTimeoutLimitSeconds,
           },
         },
         'additionalProperties': false,
@@ -489,8 +499,9 @@ final class _RunCommandExecutable implements ToolExecutable {
         '${certainty == EffectCertainty.knownNotOccurred ? 'The process was not launched.' : 'External effects may have occurred; capture completeness is unconfirmed.'}\n'
         '${diagnostics['termination'] == null ? '' : 'Known termination: ${diagnostics['termination']}\n'}'
         '${diagnostics['exitCode'] == null ? '' : 'Known exit code: ${diagnostics['exitCode']}\n'}'
-        'Retained partial STDOUT:\n${stdout.value}\n\n'
-        'Retained partial STDERR:\n${stderr.value}',
+        'Preview truncation is separate from capture completeness.\n'
+        'Partial STDOUT preview (truncated: ${stdout.truncated}):\n${stdout.value}\n\n'
+        'Partial STDERR preview (truncated: ${stderr.truncated}):\n${stderr.value}',
     hostData: <String, Object?>{
       ..._baseHostData(request, stdout, stderr),
       'stdoutTruncated': stdout.truncated,
@@ -522,7 +533,8 @@ final class _RunCommandExecutable implements ToolExecutable {
   }
 }
 
-const int maximumRetainedCommandOutputCharacters = 32 * 1024;
+/// Model-preview bound per stream in UTF-16 code units, not a capture limit.
+const int maximumRetainedCommandOutputCharacters = 8 * 1024;
 const int _retainedCommandOutputHeadCharacters =
     maximumRetainedCommandOutputCharacters ~/ 2;
 
@@ -609,8 +621,11 @@ String _modelResult(
     'Timeout seconds: ${request.timeoutSeconds}\n'
     'Termination: $termination\n'
     'Exit code: ${exitCode ?? '<not applicable>'}\n'
-    'Stdout truncated: $stdoutTruncated\n'
-    'Stderr truncated: $stderrTruncated\n\n'
+    '${termination == 'timedOut' ? 'The program did not complete normally.\n' : ''}'
+    'Capture: complete. Full captured output is available to the user through Command Output.\n'
+    'Stdout preview truncated: $stdoutTruncated\n'
+    'Stderr preview truncated: $stderrTruncated\n'
+    'Preview truncation does not imply full-capture loss.\n\n'
     'STDOUT:\n$stdout\n\n'
     'STDERR:\n$stderr';
 

@@ -829,7 +829,7 @@ and never creates directories implicitly.
 
 On Linux x64, the provider also implements the Environment foreground-process
 stream with direct `program` plus `arguments` execution, no implicit shell,
-required timeouts from 1 through 600 seconds, and a resolved cwd confined to the
+required timeouts from 1 through 1800 seconds, and a resolved cwd confined to the
 Environment root. A cwd may use an in-Environment directory symlink when its
 resolved target remains confined. stdout and stderr are incrementally decoded
 as UTF-8 with malformed sequences replaced and are emitted as separately tagged

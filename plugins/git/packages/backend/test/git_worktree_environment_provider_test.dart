@@ -3080,7 +3080,7 @@ void main() {
       final List<EnvironmentProcessEvent> stdoutEvents = await fixture.provider
           .runForegroundProcess(
             fixture.environment.id,
-            fixture.request(<String>['stdout']),
+            fixture.request(<String>['stdout'], timeoutSeconds: 601),
           )
           .toList();
       final List<EnvironmentProcessOutput> stdoutOutput = _outputs(
@@ -3131,7 +3131,7 @@ void main() {
       final List<EnvironmentProcessEvent> nonzero = await fixture.provider
           .runForegroundProcess(
             fixture.environment.id,
-            fixture.request(<String>['exit', '23']),
+            fixture.request(<String>['exit', '23'], timeoutSeconds: 1800),
           )
           .toList();
       expect(
