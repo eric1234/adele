@@ -1,6 +1,7 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,13 +11,16 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
+import 'package:adele_desktop/core/remote_orchestration_host.dart';
 import 'package:adele_desktop/core/session_feedback_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
@@ -1022,6 +1026,322 @@ void main() {
   );
 
   test(
+    'installed OpenAI retries continuation EOF without replaying approved tool work',
+    () async {
+      const openAiPluginId = 'dev.adele.openai';
+      const prompt = 'Read baseline.txt once after approval, then answer.';
+      const answer = 'The already completed read was not repeated.';
+      const bound = Duration(seconds: 15);
+      await compileAotSnapshot(
+        dartExecutable: _dartExecutable(),
+        workingDirectory: Directory.current.parent,
+        entrypoint:
+            'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
+        artifact: File('${artifacts.path}/$openAiPluginId.aot'),
+        stage: 'durable-chat-openai-retry',
+      );
+      final source = await _source();
+      final backends = await start(MonotonicProductIdSource(seed: 'retry'));
+      final observer = _HistoryReadObservingAdapter();
+      final chatBackend = await backends.activate(
+        _chatPluginId,
+        maxModelInvocations: 2,
+        adapters: RemoteExtensionAdapterRegistry([observer]),
+      );
+      final runtime = backends.runtime;
+      final product = await _createSession(runtime, source);
+      final sessionId = product.session.id;
+      final chat = _chatClient(chatBackend.connection);
+      await chat.configureSession(sessionId.value, prompt);
+      await chat.appendUserMessage(
+        sessionId.value,
+        'Remember the prior answer.',
+      );
+      final seed = await _createRun(
+        runtime,
+        sessionId,
+        'before-retry',
+        _Model(await chat.snapshot(sessionId.value), 'Prior answer.'),
+      );
+      await seed.start().timeout(bound);
+      expect(seed.run.state, RunState.completed);
+      await seed.close();
+      await chat.appendUserMessage(sessionId.value, prompt);
+
+      var captures = 0;
+      final contextSource = runtime.extensions.register(
+        point: inferenceContextSources,
+        id: ExtensionId('test.retry.context'),
+        value: InferenceContextSourceContribution(
+          failureMode: InferenceContextFailureMode.required,
+          snapshot: (context) async {
+            expect(context.session.id, sessionId);
+            expect(context.runId, RunId('retry-continuation'));
+            return [
+              InferenceInstructionMaterial(
+                key: 'capture',
+                text: 'Context capture ${++captures}.',
+              ),
+            ];
+          },
+        ),
+      );
+      addTearDown(contextSource.close);
+      final worktree = Directory.fromUri(
+        source.uri.resolve(
+          product.environment.providerState!['worktreeRelativePath']! as String,
+        ),
+      );
+      final tool = _RecordingReadTool(File('${worktree.path}/baseline.txt'));
+      final policy = _LoopPolicy(askAt: {1});
+      final outbound = <String>[];
+      final failures = <(Object, StackTrace)>[];
+      final retryArrived = Completer<void>();
+      final releaseRetry = Completer<void>();
+      late SessionOrchestrationRun run;
+      late List<ExecutionEventRecord> beforeRetry;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          expect(
+            request.headers.value(HttpHeaders.authorizationHeader),
+            'Bearer retry-fixture-access-token',
+          );
+          outbound.add(await utf8.decoder.bind(request).join());
+          final body = jsonDecode(outbound.last) as Map<String, Object?>;
+          expect(body['model'], 'gpt-6-astra');
+          final input = (body['input']! as List).cast<Map<String, Object?>>();
+          final history = input
+              .where(
+                (item) => jsonEncode(item).contains('Historical Run JSON:'),
+              )
+              .single;
+          expect(jsonEncode(history), contains(seed.run.id.value));
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          void event(Map<String, Object?> value) =>
+              request.response.write('data: ${jsonEncode(value)}\n\n');
+          event({'type': 'response.created'});
+          if (outbound.length == 1) {
+            expect(body['instructions'], contains('Context capture 1.'));
+            expect(tool.runIds, isEmpty);
+            event({
+              'type': 'response.output_item.done',
+              'item': {
+                'type': 'function_call',
+                'id': 'read-item',
+                'call_id': 'read-call',
+                'name': 'read_fixture',
+                'arguments': jsonEncode({'path': 'baseline.txt'}),
+                'status': 'completed',
+              },
+            });
+          } else {
+            expect(outbound.length, lessThanOrEqualTo(3));
+            expect(body['instructions'], contains('Context capture 2.'));
+            expect(tool.runIds, [run.run.id.value]);
+            expect(policy.calls, 1);
+            expect(
+              input.where((item) => item['type'] == 'function_call_output'),
+              [
+                {
+                  'type': 'function_call_output',
+                  'call_id': 'read-call',
+                  'output': 'baseline.txt:\nDurable Chat fixture.\n',
+                },
+              ],
+            );
+            if (outbound.length == 2) {
+              // Valid HTTP/SSE, but EOF before semantic output or a terminal.
+              // The earlier tool outcome has already crossed the real Chat RPC.
+              beforeRetry = run.run.journal.records;
+              return;
+            }
+            expect(outbound[2], outbound[1]);
+            retryArrived.complete();
+            await releaseRetry.future;
+            event({
+              'type': 'response.output_item.done',
+              'item': {
+                'type': 'message',
+                'id': 'final-answer',
+                'role': 'assistant',
+                'status': 'completed',
+                'content': [
+                  {
+                    'type': 'output_text',
+                    'text': answer,
+                    'annotations': <Object?>[],
+                  },
+                ],
+              },
+            });
+          }
+          event({
+            'type': 'response.completed',
+            'response': {
+              'id': 'response-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          failures.add((error, stack));
+          if (!retryArrived.isCompleted) retryArrived.complete();
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+      final credentials = File('${source.path}/retry-credentials.json');
+      String encode(Object value) =>
+          base64Url.encode(utf8.encode(jsonEncode(value))).replaceAll('=', '');
+      await credentials.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'instances': {
+            'retry-fixture': {
+              'revision': 1,
+              'credential': {
+                'idToken':
+                    '${encode({'alg': 'none'})}.${encode({
+                      'https://api.openai.com/auth': {'chatgpt_account_id': 'retry-account'},
+                    })}.',
+                'accessToken': 'retry-fixture-access-token',
+                'refreshToken': 'retry-fixture-refresh-never-used',
+                'accountId': 'retry-account',
+                'fedRamp': false,
+              },
+            },
+          },
+        }),
+      );
+      final origin = 'http://${server.address.address}:${server.port}';
+      await backends.activate(
+        openAiPluginId,
+        arguments: [
+          '--chatgpt-only',
+          jsonEncode({
+            'credentialFile': credentials.path,
+            'clientId': 'retry-fixture',
+            'instanceId': 'retry-fixture',
+            'issuer': origin,
+            'endpoint': '$origin/backend-api/codex/responses',
+          }),
+        ],
+      );
+      final model = ModelProviderCapabilityAdapter(
+        runtime.registry.resolve(
+          modelProviderCapability,
+          providerId: ProviderId('dev.adele.openai.chatgpt-experimental'),
+        ),
+        selectedModel: 'gpt-6-astra',
+      );
+      run = await _createRun(
+        runtime,
+        sessionId,
+        'retry-continuation',
+        model,
+        toolCatalog: _readCatalog(tool),
+        policy: policy,
+      );
+      addTearDown(() {
+        if (!releaseRetry.isCompleted) releaseRetry.complete();
+      });
+      await run.start().timeout(bound);
+      expect(run.run.state, RunState.waiting);
+      expect(tool.runIds, isEmpty);
+      expect(policy.calls, 1);
+      expect(captures, 1);
+      expect(outbound, hasLength(1));
+      final advancing = _approve(run);
+      final settled = expectLater(advancing, completes);
+      await retryArrived.future.timeout(bound);
+      if (failures.isNotEmpty) {
+        final (error, stack) = failures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
+      expect(outbound, hasLength(3));
+      expect(run.run.state, RunState.running);
+      expect(run.run.journal.records, orderedEquals(beforeRetry));
+      final continuedInvocation = beforeRetry
+          .map((record) => record.event)
+          .whereType<ModelInvocationStarted>()
+          .last
+          .invocationId;
+      expect(model.invocationCount, 2);
+      expect(captures, 2);
+      expect(observer.hosts, hasLength(2));
+      expect(observer.hosts.last.historyReads, [seed.run.id]);
+      expect(runtime.store.runRecord(run.run.id), isNull);
+      final waiting = await chat.snapshot(sessionId.value);
+      expect(waiting.entries.map((entry) => entry.runId), [
+        seed.run.id.value,
+        null,
+        run.run.id.value,
+      ]);
+      releaseRetry.complete();
+      await settled.timeout(bound);
+
+      expect(run.run.state, RunState.completed);
+      expect(run.run.failure, isNull);
+      expect(run.run.interruptions, isEmpty);
+      expect(model.invocationCount, 2);
+      expect(captures, 2);
+      expect(observer.hosts, hasLength(2));
+      expect(observer.hosts.last.historyReads, [seed.run.id]);
+      expect(tool.runIds, [run.run.id.value]);
+      expect(policy.calls, 1);
+      expect(outbound, hasLength(3));
+      expect(failures, isEmpty);
+      final events = run.run.journal.records.map((record) => record.event);
+      expect(events.whereType<RunStarted>(), hasLength(1));
+      expect(events.whereType<RunCompleted>(), hasLength(1));
+      expect(events.whereType<RunFailed>(), isEmpty);
+      expect(events.whereType<ModelInvocationStarted>(), hasLength(2));
+      expect(events.whereType<ModelInvocationSettled>(), hasLength(2));
+      expect(events.whereType<ModelInvocationFailed>(), isEmpty);
+      expect(events.whereType<ToolInvocationPrepared>(), hasLength(1));
+      expect(events.whereType<ToolPolicyEvaluated>(), hasLength(1));
+      expect(events.whereType<RunInterrupted>(), hasLength(1));
+      expect(events.whereType<RunInterruptionResolved>(), hasLength(1));
+      expect(events.whereType<ToolExecutionStarted>(), hasLength(1));
+      expect(events.whereType<ToolExecutionCompleted>(), hasLength(1));
+      expect(events.whereType<ToolInvocationCompleted>(), isEmpty);
+      final activity = runtime.lifecycle.runActivity(run.run.id)!;
+      expect(activity.models.map((model) => model.id).toSet(), hasLength(2));
+      expect(activity.models.last.id, continuedInvocation);
+      expect(activity.tools.single.providerCallId, 'read-call');
+      expect(
+        activity.tools.single.outcome!.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(
+        runtime.store.runsForSession(sessionId).map((record) => record.id),
+        unorderedEquals([seed.run.id, run.run.id]),
+      );
+      final completed = await chat.snapshot(sessionId.value);
+      _expectHistory(completed, [
+        ('user', 'Remember the prior answer.'),
+        ('assistant', 'Prior answer.'),
+        ('user', prompt),
+        ('assistant', answer),
+      ], instructions: prompt);
+      expect(
+        completed.entries.take(3).map((entry) => (entry.id, entry.runId)),
+        waiting.entries.map((entry) => (entry.id, entry.runId)),
+      );
+    },
+  );
+
+  test(
     'installed Chat fails aggregate transport overflow without dropping history',
     () async {
       final source = await _source();
@@ -1839,12 +2159,17 @@ final class _RuntimeBackends {
   Future<PluginBackendActivation> activate(
     String pluginId, {
     AdeleBackendDispatcher Function(AdeleBackendDispatcher)? interceptStorage,
+    List<String> arguments = const [],
+    int maxModelInvocations = 8,
+    RemoteExtensionAdapterRegistry? adapters,
   }) async {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: File('${artifacts.path}/$pluginId.aot').uri,
+      arguments: arguments,
       settings: {
-        if (pluginId == _chatPluginId) chatMaxModelInvocationsSettingId: 8,
+        if (pluginId == _chatPluginId)
+          chatMaxModelInvocationsSettingId: maxModelInvocations,
       },
       createInfrastructureServices: (connection) {
         final services = projectStorageServices(runtime.lifecycle, connection);
@@ -1860,7 +2185,7 @@ final class _RuntimeBackends {
       connection: connection,
       capabilities: runtime.registry,
       extensions: runtime.extensions,
-      adapters: createRemoteExtensionAdapters(),
+      adapters: adapters ?? createRemoteExtensionAdapters(),
     );
     activations.add(activation);
     expect(connection.isClosed, isFalse);
@@ -1882,6 +2207,79 @@ final class _RuntimeBackends {
       }
     }
   }
+}
+
+/// Observe history reads without replacing the real AOT strategy or host work.
+final class _HistoryReadObservingAdapter
+    implements RemoteExtensionAdapter<OrchestrationStrategyContribution> {
+  final hosts = <_HistoryReadObservingHost>[];
+
+  @override
+  ExtensionPoint<OrchestrationStrategyContribution> get point =>
+      orchestrationStrategyContributions;
+
+  @override
+  OrchestrationStrategyContribution createContribution(
+    RemoteExtensionContext remote,
+  ) {
+    final delegate = const RemoteOrchestrationStrategyAdapter()
+        .createContribution(remote);
+    return OrchestrationStrategyContribution(
+      strategyId: delegate.strategyId,
+      displayName: delegate.displayName,
+      feedbackTarget: delegate.feedbackTarget,
+      materialize: (context) {
+        final host = _HistoryReadObservingHost(context.host);
+        hosts.add(host);
+        return delegate.materialize(
+          OrchestrationStrategyHostContext(
+            session: context.session,
+            host: host,
+            expectedFeedback: context.expectedFeedback,
+          ),
+        );
+      },
+    );
+  }
+}
+
+final class _HistoryReadObservingHost implements OrchestrationExecutionHost {
+  _HistoryReadObservingHost(this.delegate);
+  final OrchestrationExecutionHost delegate;
+  final historyReads = <RunId>[];
+
+  @override
+  RunId get id => delegate.id;
+  @override
+  SessionId get sessionId => delegate.sessionId;
+  @override
+  RunState get state => delegate.state;
+  @override
+  void validateBinding() => delegate.validateBinding();
+  @override
+  void start() => delegate.start();
+  @override
+  void complete() => delegate.complete();
+  @override
+  void fail(Object error) => delegate.fail(error);
+  @override
+  Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) {
+    historyReads.add(runId);
+    return delegate.readHistoricalRun(runId);
+  }
+
+  @override
+  Future<StrategyModelTurn> invokeModel(StrategyInferenceMaterial material) =>
+      delegate.invokeModel(material);
+  @override
+  Future<StrategyToolResult> processProposal({
+    required StrategyToolSnapshot tools,
+    required ProviderToolProposal proposal,
+  }) => delegate.processProposal(tools: tools, proposal: proposal);
+  @override
+  Future<SemanticToolOutcomeInput> resolveApproval(
+    ToolApprovalResolution resolution,
+  ) => delegate.resolveApproval(resolution);
 }
 
 Future<({Project project, Task task, Environment environment, Session session})>

@@ -208,14 +208,39 @@ final class SessionExecutionController extends ChangeNotifier {
     return null;
   }
 
-  String? get failureMessage => switch (_failure) {
-    null => null,
-    ModelFailure(:final kind) => 'Run failed: model ${kind.name}.',
-    InvalidRunOperation(:final message) => 'Run failed: $message',
-    ProviderUnavailable() || ProviderEndpointUnavailable() =>
-      'Run failed: the selected model provider is unavailable.',
-    _ => 'Run failed. Check strategy, model and Task Environment availability.',
-  };
+  String? get failureMessage {
+    final message = switch (_failure) {
+      null => null,
+      ModelFailure(:final kind) => 'Run failed: model ${kind.name}.',
+      InvalidRunOperation(:final message) => 'Run failed: $message',
+      ProviderUnavailable() || ProviderEndpointUnavailable() =>
+        'Run failed: the selected model provider is unavailable.',
+      _ =>
+        'Run failed. Check strategy, model and Task Environment availability.',
+    };
+    if (message == null) return null;
+    final runId = _latestRunId;
+    final activity = runId == null ? null : activityForRun(runId);
+    if (activity == null || activity.state != RunState.failed) return message;
+
+    // Remote strategy failures lose the original model exception. Activity keeps
+    // its safe fields, but does not prove which invocation caused the Run to fail.
+    ModelInvocationActivity? lastFailed;
+    for (final model in activity.models) {
+      if (model.failure != null &&
+          model.terminalSequence != null &&
+          (lastFailed == null ||
+              model.terminalSequence! > lastFailed.terminalSequence!)) {
+        lastFailed = model;
+      }
+    }
+    final failure = lastFailed?.failure;
+    if (failure == null) return message;
+    final code = failure.providerCode;
+    return '$message\nLast failed model invocation: ${failure.kind}'
+        '${code == null ? '' : ' (provider code: $code)'}.\n'
+        '${failure.message}';
+  }
 
   /// Acceptance locks synchronously. Completion reports scheduling, not Run end.
   /// An expected service binding constrains, but never selects, the core choice.

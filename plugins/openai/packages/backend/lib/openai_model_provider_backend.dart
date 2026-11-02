@@ -40,6 +40,10 @@ final class OpenAiModelProvider implements ModelProviderService {
     required String apiKey,
     Uri? endpoint,
     HttpClient? httpClient,
+    this.responseOpenTimeout = const Duration(seconds: 30),
+    this.inactivityTimeout = const Duration(minutes: 5),
+    this.transportRetryDelay = const Duration(milliseconds: 200),
+    this.cleanupTimeout = const Duration(seconds: 1),
   }) : _apiKey = _validateApiKey(apiKey),
        _chatGptAuth = null,
        _profile = _OpenAiRequestProfile.apiKey,
@@ -53,6 +57,10 @@ final class OpenAiModelProvider implements ModelProviderService {
     required OpenAiChatGptAuth auth,
     Uri? endpoint,
     HttpClient? httpClient,
+    this.responseOpenTimeout = const Duration(seconds: 30),
+    this.inactivityTimeout = const Duration(minutes: 5),
+    this.transportRetryDelay = const Duration(milliseconds: 200),
+    this.cleanupTimeout = const Duration(seconds: 1),
   }) : _apiKey = null,
        _chatGptAuth = auth,
        _profile = _OpenAiRequestProfile.chatGpt,
@@ -69,36 +77,47 @@ final class OpenAiModelProvider implements ModelProviderService {
   final Uri _endpoint;
   final HttpClient _httpClient;
   final bool _ownsHttpClient;
+  final Duration responseOpenTimeout;
+  final Duration inactivityTimeout;
+  final Duration transportRetryDelay;
+  final Duration cleanupTimeout;
+  final Set<Future<void> Function()> _invocations = {};
+  bool _closed = false;
 
   void close() {
+    if (_closed) return;
+    _closed = true;
+    for (final cancel in _invocations.toList()) {
+      unawaited(cancel());
+    }
     if (_ownsHttpClient) _httpClient.close();
   }
 
   @override
   Stream<ModelProviderEvent> invoke(ModelProviderRequest request) {
     late StreamController<ModelProviderEvent> controller;
-    HttpClientRequest? outboundRequest;
-    StreamSubscription<String>? lines;
-    _BoundedBodyCapture? errorBodyCapture;
+    _OpenAiHttpAttempt? attempt;
     bool cancelled = false;
     bool settled = false;
-    Future<void>? stoppingFuture;
+    bool published = false;
+    int httpAttempts = 0;
+    int transportRetries = 0;
+    Timer? retryTimer;
+    Completer<void>? retryWait;
     _ChatGptAffinity? affinity;
-    final List<String> affinitySecrets = <String>[?_apiKey];
+    final List<String> affinitySecrets = <String>[
+      ?_apiKey,
+      _endpoint.toString(),
+      if (_endpoint.hasQuery) _endpoint.query,
+    ];
 
-    Future<void> stopNetwork() {
-      final Future<void>? existing = stoppingFuture;
-      if (existing != null) return existing;
-      late final Future<void> operation;
-      operation = () async {
-        outboundRequest?.abort();
-        final StreamSubscription<String>? subscription = lines;
-        if (subscription != null) await subscription.cancel();
-        final _BoundedBodyCapture? capture = errorBodyCapture;
-        if (capture != null) await capture.cancel();
-      }();
-      stoppingFuture = operation;
-      return operation;
+    Future<void> cancel() async {
+      cancelled = true;
+      retryTimer?.cancel();
+      if (retryWait case final wait? when !wait.isCompleted) wait.complete();
+      _invocations.remove(cancel);
+      unawaited(controller.close());
+      await attempt?.stop();
     }
 
     void emitTerminal(ModelProviderTerminal terminal) {
@@ -122,7 +141,14 @@ final class OpenAiModelProvider implements ModelProviderService {
                       failure.providerMessage,
                       affinitySecrets,
                     ),
-                    providerDetails: failure.providerDetails,
+                    providerDetails: <String, Object?>{
+                      'transportStage': attempt?.stage ?? 'authorization',
+                      'cause': 'provider_terminal',
+                      ...failure.providerDetails,
+                      'httpAttemptCount': httpAttempts,
+                      'transportRetryCount': transportRetries,
+                      'outputPublished': published,
+                    },
                   ),
             providerStopReason: _redactProviderText(
               terminal.providerStopReason,
@@ -144,7 +170,6 @@ final class OpenAiModelProvider implements ModelProviderService {
         ),
       );
       unawaited(controller.close());
-      unawaited(stopNetwork());
     }
 
     void fail(
@@ -166,8 +191,19 @@ final class OpenAiModelProvider implements ModelProviderService {
     }
 
     Future<void> start() async {
-      final Map<String, Object?> body;
+      final String body;
       try {
+        try {
+          affinitySecrets.addAll(
+            _endpoint.queryParametersAll.values.expand((values) => values),
+          );
+        } on FormatException {
+          throw const _OpenAiRequestException(
+            ModelProviderFailureKind.invalidRequest,
+            'invalid_endpoint_query',
+            'The OpenAI endpoint query is not valid UTF-8.',
+          );
+        }
         if (_chatGptAuth != null && request.affinity != null) {
           affinity = _ChatGptAffinity(
             request.affinity!,
@@ -181,49 +217,152 @@ final class OpenAiModelProvider implements ModelProviderService {
             ?affinity!.state?.data['accountId'] as String?,
           ]);
         }
-        body = _lowerRequest(request, _profile);
+        body = jsonEncode(_lowerRequest(request, _profile));
       } on _OpenAiRequestException catch (error) {
-        fail(error.kind, error.code, error.message);
+        fail(
+          error.kind,
+          error.code,
+          error.message,
+          details: const {
+            'transportStage': 'request_validation',
+            'cause': 'invalid_request',
+          },
+        );
         return;
       } on Object {
         fail(
           ModelProviderFailureKind.invalidRequest,
           'invalid_request',
           'The model request could not be encoded.',
+          details: const {
+            'transportStage': 'request_validation',
+            'cause': 'invalid_request',
+          },
         );
         return;
       }
-      Future<void> send({
-        required bool recoveredAuthorization,
+      Future<void> send(
+        _OpenAiHttpAttempt current,
         OpenAiChatGptAuthorization? authorization,
-      }) async {
+      ) async {
+        String? requestId;
+        int? status;
+        void reject(
+          ModelProviderFailureKind kind,
+          String code,
+          String message, {
+          bool retryable = false,
+          Map<String, Object?> details = const {},
+        }) {
+          current.finish(
+            _failedTerminal(
+              kind,
+              code,
+              message,
+              details: details,
+              requestId: requestId,
+            ),
+            retryable: retryable,
+          );
+        }
+
+        void transportError(Object error) {
+          if (!current.active) return;
+          final String cause = switch (error) {
+            SocketException() => 'socket',
+            HttpException() => 'http',
+            HandshakeException() => 'tls',
+            TimeoutException() => 'timeout',
+            _ => 'unknown',
+          };
+          final Map<String, Object?> details = {
+            'cause': cause,
+            if (error is SocketException && error.osError != null)
+              'osErrorCode': error.osError!.errorCode,
+          };
+          // Once a status is known, a broken error body must not turn that
+          // nonretryable rejection into a retryable transport failure.
+          if (status != null && (status < 200 || status >= 300)) {
+            final failure = _classifyHttpFailure(
+              status,
+              '',
+              requestId,
+              null,
+              true,
+              affinitySecrets,
+            );
+            reject(
+              failure.kind,
+              failure.code,
+              failure.message,
+              details: {...failure.details, ...details},
+            );
+            return;
+          }
+          final String code = current.stage == 'sse'
+              ? 'stream_transport'
+              : switch (error) {
+                  SocketException() => 'network_error',
+                  HttpException() => 'http_transport',
+                  HandshakeException() => 'tls_error',
+                  TimeoutException() => 'response_open_timeout',
+                  _ => 'transport_error',
+                };
+          reject(
+            ModelProviderFailureKind.transport,
+            code,
+            current.stage == 'sse'
+                ? 'The OpenAI response stream failed.'
+                : switch (error) {
+                    SocketException() =>
+                      'The OpenAI request could not reach the provider.',
+                    HandshakeException() => 'The OpenAI TLS connection failed.',
+                    HttpException() => 'The OpenAI HTTP operation failed.',
+                    TimeoutException() =>
+                      'The OpenAI HTTP response did not open before the deadline.',
+                    _ => 'The OpenAI transport failed.',
+                  },
+            retryable:
+                error is SocketException ||
+                error is HttpException ||
+                error is TimeoutException,
+            details: details,
+          );
+        }
+
         try {
-          final OpenAiChatGptAuthorization? chatGptAuthorization =
-              _chatGptAuth == null
-              ? null
-              : authorization ?? await _chatGptAuth.authorization();
           final OpenAiChatGptCredential? chatGptCredential =
-              chatGptAuthorization?.credential;
+              authorization?.credential;
           if (chatGptCredential != null) {
             affinity?.bind(chatGptCredential);
-            if (affinity != null) {
-              affinitySecrets.add(chatGptCredential.accountId);
-            }
+            affinitySecrets.addAll([
+              chatGptCredential.accessToken,
+              chatGptCredential.accountId,
+            ]);
           }
-          if (cancelled) return;
+          if (!current.active) return;
+          current.timer = Timer(responseOpenTimeout, () {
+            reject(
+              ModelProviderFailureKind.transport,
+              'response_open_timeout',
+              'The OpenAI HTTP response did not open before the deadline.',
+              retryable: true,
+              details: const {'cause': 'timeout'},
+            );
+          });
           final HttpClientRequest outgoing = await _httpClient.postUrl(
             _endpoint,
           );
-          if (cancelled) {
+          // postUrl has no per-request cancellation handle until it completes.
+          // A late acquisition is never allowed to submit headers or a body.
+          if (!current.active) {
             outgoing.abort();
             return;
           }
-          outboundRequest = outgoing;
-          // API keys and affinity headers belong to this endpoint, never a
-          // redirect or downgrade. Preserve the legacy non-affinity ChatGPT path.
-          if (_profile == _OpenAiRequestProfile.apiKey || affinity != null) {
-            outgoing.followRedirects = false;
-          }
+          current.request = outgoing;
+          current.stage = 'request_submission';
+          // Redirects would escape both the captured endpoint and attempt budget.
+          outgoing.followRedirects = false;
           outgoing.headers.contentType = ContentType.json;
           outgoing.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
           outgoing.headers.set(
@@ -245,14 +384,22 @@ final class OpenAiModelProvider implements ModelProviderService {
               outgoing.headers.set('x-codex-turn-state', token);
             }
           }
-          outgoing.write(jsonEncode(body));
+          outgoing.write(body);
+          current.stage = 'response_headers';
           final HttpClientResponse response = await outgoing.close();
-          if (cancelled) {
-            await response.detachSocket().then(
-              (Socket socket) => socket.destroy(),
-            );
+          if (!current.active) {
+            await _containCleanup(() async {
+              try {
+                outgoing.abort();
+              } finally {
+                await response.listen((_) {}, onError: (Object _) {}).cancel();
+              }
+            }, cleanupTimeout);
             return;
           }
+          current.response = response;
+          current.timer?.cancel();
+          status = response.statusCode;
           // Capture before any SSE consumer can cancel at the semantic terminal.
           if (affinity != null) {
             for (final String token
@@ -272,55 +419,43 @@ final class OpenAiModelProvider implements ModelProviderService {
               value.accountId,
             ...affinitySecrets,
           ];
-          final String? requestId = _redactProviderText(
-            _optionalNonBlankString(response.headers.value('x-request-id')) ??
-                _optionalNonBlankString(
-                  response.headers.value('x-oai-request-id'),
-                ),
+          requestId = _redactProviderText(
+            _diagnosticHeader(response.headers, 'x-request-id') ??
+                _diagnosticHeader(response.headers, 'x-oai-request-id'),
             sensitiveValues,
           );
           if (response.statusCode < 200 || response.statusCode >= 300) {
             final _BoundedBodyCapture capture = _BoundedBodyCapture(response);
-            errorBodyCapture = capture;
-            if (stoppingFuture != null) {
-              await capture.cancel();
-              return;
-            }
+            current.stage = 'error_body';
+            current.errorBody = capture;
+            current.timer = Timer(responseOpenTimeout, () {
+              transportError(TimeoutException(''));
+            });
             final _BoundedBody bodyCapture = await capture.result;
-            if (cancelled) return;
-            if (response.statusCode == HttpStatus.unauthorized &&
-                _chatGptAuth != null &&
-                !recoveredAuthorization) {
-              errorBodyCapture = null;
-              final OpenAiChatGptAuthorization recovered = await _chatGptAuth
-                  .recoverUnauthorized(chatGptAuthorization!.revision);
-              if (!cancelled) {
-                await send(
-                  recoveredAuthorization: true,
-                  authorization: recovered,
-                );
-              }
-              return;
-            }
+            if (!current.active) return;
             final _HttpFailure failure = _classifyHttpFailure(
               response.statusCode,
               bodyCapture.text,
               requestId,
               _redactProviderText(
-                _optionalNonBlankString(
-                  response.headers.value(HttpHeaders.retryAfterHeader),
+                _diagnosticHeader(
+                  response.headers,
+                  HttpHeaders.retryAfterHeader,
                 ),
                 sensitiveValues,
               ),
               bodyCapture.truncated,
               sensitiveValues,
             );
-            fail(
-              failure.kind,
-              failure.code,
-              failure.message,
-              details: failure.details,
-              requestId: requestId,
+            current.finish(
+              _failedTerminal(
+                failure.kind,
+                failure.code,
+                failure.message,
+                details: failure.details,
+                requestId: requestId,
+              ),
+              unauthorized: response.statusCode == HttpStatus.unauthorized,
             );
             return;
           }
@@ -328,149 +463,283 @@ final class OpenAiModelProvider implements ModelProviderService {
           final _ResponsesNormalizer normalizer = _ResponsesNormalizer(
             requestId: requestId,
             emit: (ModelProviderEvent event) {
-              if (cancelled || settled) return;
+              if (!current.active || cancelled || settled) return;
               if (event.kind == ModelProviderEventKind.terminal) {
-                emitTerminal(event.terminal!);
+                current.finish(event.terminal!);
               } else {
+                published = true;
                 controller.add(event);
               }
             },
           );
-          lines = response
+          current.stage = 'sse';
+          void resetInactivity() {
+            current.timer?.cancel();
+            if (!current.active || controller.isPaused) return;
+            current.timer = Timer(inactivityTimeout, () {
+              reject(
+                ModelProviderFailureKind.transport,
+                'sse_inactivity',
+                'The OpenAI response stream exceeded the inactivity deadline.',
+                retryable: true,
+                details: const {'cause': 'inactivity'},
+              );
+            });
+          }
+
+          current.resumeInactivity = resetInactivity;
+          resetInactivity();
+          current.lines = response
+              .map((List<int> bytes) {
+                // Count bytes before UTF-8/line/SSE framing, including keepalives
+                // and partial records, rather than requiring semantic progress.
+                resetInactivity();
+                return bytes;
+              })
               .transform(utf8.decoder)
               .transform(const LineSplitter())
               .listen(
                 (String line) {
-                  if (cancelled || settled) return;
+                  if (!current.active) return;
                   try {
                     for (final String data in decoder.addLine(line)) {
                       normalizer.addData(data);
                     }
                   } on _OpenAiResponseException catch (error) {
-                    fail(
+                    reject(
                       ModelProviderFailureKind.malformedResponse,
                       error.code,
                       error.message,
-                      requestId: requestId,
+                      details: const {'cause': 'invalid_sse'},
                     );
                   } on Object {
-                    fail(
+                    reject(
                       ModelProviderFailureKind.malformedResponse,
                       'malformed_stream',
                       'The OpenAI response stream was malformed.',
-                      requestId: requestId,
+                      details: const {'cause': 'invalid_sse'},
                     );
                   }
                 },
                 onError: (Object error, StackTrace stackTrace) {
-                  if (cancelled || settled) return;
+                  if (!current.active) return;
                   if (error is FormatException) {
-                    fail(
+                    reject(
                       ModelProviderFailureKind.malformedResponse,
                       'invalid_utf8',
                       'The OpenAI response stream was not valid UTF-8.',
-                      requestId: requestId,
+                      details: const {'cause': 'invalid_utf8'},
                     );
                   } else {
-                    fail(
-                      ModelProviderFailureKind.transport,
-                      'stream_transport',
-                      'The OpenAI response stream failed.',
-                      requestId: requestId,
-                    );
+                    transportError(error);
                   }
                 },
                 onDone: () {
-                  if (cancelled || settled) return;
+                  if (!current.active) return;
                   try {
                     decoder.finish();
                   } on _OpenAiResponseException catch (error) {
-                    fail(
+                    reject(
                       ModelProviderFailureKind.malformedResponse,
                       error.code,
                       error.message,
-                      requestId: requestId,
+                      details: const {'cause': 'invalid_sse'},
                     );
                     return;
                   }
-                  fail(
+                  reject(
                     ModelProviderFailureKind.malformedResponse,
                     'missing_terminal',
                     'The OpenAI response ended before a semantic terminal.',
-                    requestId: requestId,
+                    retryable: true,
+                    details: const {'cause': 'premature_eof'},
                   );
                 },
               );
-          if (controller.isPaused) lines!.pause();
-        } on OpenAiAuthenticationException catch (error) {
-          if (!cancelled && !settled) {
-            fail(
-              switch (error.failureKind) {
-                OpenAiAuthenticationFailureKind.authentication =>
-                  ModelProviderFailureKind.authentication,
-                OpenAiAuthenticationFailureKind.rateLimited =>
-                  ModelProviderFailureKind.rateLimited,
-                OpenAiAuthenticationFailureKind.unavailable =>
-                  ModelProviderFailureKind.unavailable,
-                OpenAiAuthenticationFailureKind.transport =>
-                  ModelProviderFailureKind.transport,
-                OpenAiAuthenticationFailureKind.malformedResponse =>
-                  ModelProviderFailureKind.malformedResponse,
-              },
-              error.code,
-              error.message,
-              details: error.safeDetails,
-            );
-          }
-        } on SocketException {
-          if (!cancelled && !settled) {
-            fail(
-              ModelProviderFailureKind.transport,
-              'network_error',
-              'The OpenAI request could not reach the provider.',
-            );
-          }
-        } on HandshakeException {
-          if (!cancelled && !settled) {
-            fail(
-              ModelProviderFailureKind.transport,
-              'tls_error',
-              'The OpenAI TLS connection failed.',
-            );
-          }
-        } on HttpException {
-          if (!cancelled && !settled) {
-            fail(
-              ModelProviderFailureKind.transport,
-              'http_transport',
-              'The OpenAI HTTP operation failed.',
-            );
-          }
-        } on Object {
-          if (!cancelled && !settled) {
-            fail(
-              ModelProviderFailureKind.transport,
-              'transport_error',
-              'The OpenAI transport failed.',
-            );
-          }
+          if (controller.isPaused) current.lines!.pause();
+        } on _OpenAiResponseException catch (error) {
+          reject(
+            ModelProviderFailureKind.malformedResponse,
+            error.code,
+            error.message,
+            details: const {'cause': 'invalid_headers'},
+          );
+        } on Object catch (error) {
+          transportError(error);
         }
       }
 
-      await send(recoveredAuthorization: false);
+      try {
+        OpenAiChatGptAuthorization? authorization = await _chatGptAuth
+            ?.authorization();
+        bool recoveredAuthorization = false;
+        while (!cancelled && !settled && httpAttempts < 3) {
+          final current = _OpenAiHttpAttempt(cleanupTimeout);
+          attempt = current;
+          httpAttempts++;
+          unawaited(send(current, authorization));
+          final result = await current.result.future;
+          if (result == null || cancelled) return;
+          final retryTransport =
+              result.retryable &&
+              !published &&
+              transportRetries == 0 &&
+              httpAttempts < 3;
+          final recoverAuthorization =
+              result.unauthorized &&
+              !published &&
+              _chatGptAuth != null &&
+              !recoveredAuthorization &&
+              httpAttempts < 3;
+          // Terminal delivery does not wait on potentially slow transport cleanup.
+          if (!retryTransport && !recoverAuthorization) {
+            emitTerminal(result.terminal);
+            await current.stop();
+            return;
+          }
+          await current.stop();
+          if (cancelled) return;
+          if (recoverAuthorization) {
+            recoveredAuthorization = true;
+            authorization = await _chatGptAuth.recoverUnauthorized(
+              authorization!.revision,
+            );
+          } else {
+            transportRetries++;
+            final wait = Completer<void>();
+            retryWait = wait;
+            retryTimer = Timer(transportRetryDelay, wait.complete);
+            await wait.future;
+          }
+        }
+      } on OpenAiAuthenticationException catch (error) {
+        fail(
+          switch (error.failureKind) {
+            OpenAiAuthenticationFailureKind.authentication =>
+              ModelProviderFailureKind.authentication,
+            OpenAiAuthenticationFailureKind.rateLimited =>
+              ModelProviderFailureKind.rateLimited,
+            OpenAiAuthenticationFailureKind.unavailable =>
+              ModelProviderFailureKind.unavailable,
+            OpenAiAuthenticationFailureKind.transport =>
+              ModelProviderFailureKind.transport,
+            OpenAiAuthenticationFailureKind.malformedResponse =>
+              ModelProviderFailureKind.malformedResponse,
+          },
+          error.code,
+          error.message,
+          details: {
+            'transportStage': 'authorization',
+            'cause': 'authentication',
+            ...error.safeDetails,
+          },
+        );
+      } on Object {
+        fail(
+          ModelProviderFailureKind.transport,
+          'transport_error',
+          'The OpenAI transport failed.',
+          details: const {'cause': 'unknown'},
+        );
+      }
     }
 
     controller = StreamController<ModelProviderEvent>(
       sync: true,
-      onListen: () => unawaited(start()),
-      onPause: () => lines?.pause(),
-      onResume: () => lines?.resume(),
-      onCancel: () async {
-        cancelled = true;
-        await stopNetwork();
+      onListen: () {
+        if (_closed) {
+          fail(
+            ModelProviderFailureKind.unavailable,
+            'provider_closed',
+            'The OpenAI provider is closed.',
+          );
+          return;
+        }
+        _invocations.add(cancel);
+        unawaited(start());
       },
+      onPause: () {
+        if (attempt?.stage == 'sse') attempt?.timer?.cancel();
+        attempt?.lines?.pause();
+      },
+      onResume: () {
+        attempt?.resumeInactivity?.call();
+        attempt?.lines?.resume();
+      },
+      onCancel: cancel,
     );
     return controller.stream;
+  }
+}
+
+// Each attempt owns its fence and resources. Completing it revokes callbacks
+// synchronously, even if the platform cannot yet finish acquisition/cancellation.
+final class _OpenAiHttpAttempt {
+  _OpenAiHttpAttempt(this.cleanupTimeout);
+
+  final Duration cleanupTimeout;
+  final Completer<_OpenAiAttemptResult?> result = Completer();
+  HttpClientRequest? request;
+  HttpClientResponse? response;
+  StreamSubscription<String>? lines;
+  _BoundedBodyCapture? errorBody;
+  Timer? timer;
+  void Function()? resumeInactivity;
+  String stage = 'connection';
+  bool active = true;
+  Future<void>? _stopping;
+
+  void finish(
+    ModelProviderTerminal terminal, {
+    bool retryable = false,
+    bool unauthorized = false,
+  }) {
+    if (!active) return;
+    active = false;
+    timer?.cancel();
+    result.complete(_OpenAiAttemptResult(terminal, retryable, unauthorized));
+  }
+
+  Future<void> stop() {
+    if (_stopping case final existing?) return existing;
+    active = false;
+    timer?.cancel();
+    if (!result.isCompleted) result.complete(null);
+    return _stopping = Future<void>.microtask(
+      () => _containCleanup(() async {
+        try {
+          request?.abort();
+        } finally {
+          await Future.wait<void>([
+            if (lines != null) Future.sync(lines!.cancel),
+            if (errorBody != null) Future.sync(errorBody!.cancel),
+            if (lines == null && errorBody == null && response != null)
+              Future.sync(
+                () => response!.listen((_) {}, onError: (Object _) {}).cancel(),
+              ),
+          ]);
+        }
+      }, cleanupTimeout),
+    );
+  }
+}
+
+final class _OpenAiAttemptResult {
+  const _OpenAiAttemptResult(this.terminal, this.retryable, this.unauthorized);
+  final ModelProviderTerminal terminal;
+  final bool retryable;
+  final bool unauthorized;
+}
+
+Future<void> _containCleanup(
+  Future<void> Function() cleanup,
+  Duration timeout,
+) async {
+  try {
+    await Future<void>.sync(cleanup).timeout(timeout);
+  } on Object {
+    // The attempt is already fenced; late cleanup errors cannot change settlement
+    // or escape. Never force-close a client shared by another invocation.
   }
 }
 
@@ -1248,7 +1517,6 @@ final class _BoundedBodyCapture {
       _add,
       onError: _fail,
       onDone: _finishNaturally,
-      cancelOnError: true,
     );
   }
 
@@ -1267,7 +1535,6 @@ final class _BoundedBodyCapture {
         _bytes.add(chunk.take(remaining).toList(growable: false));
       }
       _result.complete(_captured(truncated: true));
-      unawaited(cancel());
       return;
     }
     _bytes.add(chunk);
@@ -1286,6 +1553,7 @@ final class _BoundedBodyCapture {
   Future<void> cancel() {
     final Future<void>? existing = _cancellation;
     if (existing != null) return existing;
+    if (!_result.isCompleted) _result.complete(_captured(truncated: true));
     final Future<void> operation = _subscription.cancel();
     _cancellation = operation;
     return operation;
@@ -1423,6 +1691,17 @@ String? _optionalString(Object? value) =>
 String? _optionalNonBlankString(Object? value) =>
     value is String && value.trim().isNotEmpty ? value : null;
 
+String? _diagnosticHeader(HttpHeaders headers, String name) {
+  try {
+    return _optionalNonBlankString(headers.value(name));
+  } on HttpException {
+    throw const _OpenAiResponseException(
+      'invalid_response_headers',
+      'The OpenAI response has ambiguous diagnostic headers.',
+    );
+  }
+}
+
 String? _redactProviderText(String? value, List<String> sensitiveValues) {
   if (value == null) return null;
   // Redacting a substring first would prevent matching the complete secret.
@@ -1438,7 +1717,9 @@ String? _redactProviderText(String? value, List<String> sensitiveValues) {
   for (final String sensitive in secrets) {
     redacted = redacted.replaceAll(sensitive, '[REDACTED]');
   }
-  return redacted;
+  // Bound diagnostics only, after redaction so a boundary cannot expose part of
+  // a secret. Semantic text and native output never pass through this function.
+  return redacted.length <= 4096 ? redacted : redacted.substring(0, 4096);
 }
 
 int? _optionalInt(Object? value) => value is int && value >= 0 ? value : null;
