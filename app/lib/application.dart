@@ -1015,6 +1015,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     // Acceptance already fences interaction/owner acquisition and repeat exits;
     // a retention failure must not skip the independent resource closes below.
     final retaining = Future<void>.sync(() {
+      // Disposal or detach may have started closing during reversible preflight.
+      if (!mounted || _closing != null) return;
       _retainingPresentations.value = true;
       _frontends.retainPresentations();
     });

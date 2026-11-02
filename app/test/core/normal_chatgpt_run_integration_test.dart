@@ -3881,7 +3881,23 @@ void main() {
         expect(runtime.store.runsForSession(retained.id), isEmpty);
       }
       expect(tester.takeException(), isNull);
-      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      // /proc reaping is fixture evidence, not canonical shell-exit evidence.
+      // The force-closed second shell still contributes conservative exit risk.
+      expect(second.cleanupSucceeded, isTrue);
+      expect(second.shellCompleted, isFalse);
+      expect(second.hasExitRisk, isTrue);
+      expect(first.cleanupSucceeded, isTrue);
+      expect(first.shellCompleted, isTrue);
+      expect(first.hasExitRisk, isFalse);
+      expect(runtime.terminals.hasActiveWork, isTrue);
+      final exiting = tester.binding.handleRequestAppExit();
+      await _expectActiveWorkExitConfirmation(tester);
+      await _terminalTap(tester, find.text('Exit ADELE'));
+      expect(
+        await exiting.timeout(const Duration(seconds: 15)),
+        AppExitResponse.exit,
+      );
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     }),
     skip: !Platform.isLinux || Abi.current() != Abi.linuxX64,

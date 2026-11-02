@@ -21,8 +21,11 @@ void main() {
         final storage = _GatedStorage();
         final credentials = CredentialService(storage);
         final runtime = NativeAdeleRuntime();
+        final shutdownStarted = Completer<void>();
         var constructions = 0;
         late Future<void> starting;
+        Future<AppExitResponse>? exiting;
+        Future<void>? rejected;
         final roots = PlatformStorageRoots(
           operatingSystem: Platform.operatingSystem,
           configurationRoot: '${root.path}/config',
@@ -34,6 +37,8 @@ void main() {
           await tester.pumpWidget(
             AdeleApplication(
               createRuntime: () => runtime,
+              attachSessionContext: (_) =>
+                  () => shutdownStarted.complete(),
               createCredentials: () {
                 constructions++;
                 return credentials;
@@ -70,17 +75,18 @@ void main() {
           final admitted = credentials.contains(reference);
           await storage.entered.future;
           var exited = false;
-          Future<AppExitResponse>? exiting;
           if (graceful) {
             exiting = tester.binding.handleRequestAppExit().then((result) {
               exited = true;
               return result;
             });
-            await tester.pump();
           } else {
             await tester.pumpWidget(const SizedBox.shrink());
           }
-          await expectLater(
+          // The detach notification and credential admission fence happen in
+          // one synchronous close turn. Preflight need not finish in one pump.
+          await shutdownStarted.future;
+          rejected = expectLater(
             credentials.contains(reference),
             throwsA(
               isA<CredentialFailure>().having(
@@ -95,18 +101,28 @@ void main() {
           await tester.pump();
           expect(drained, isFalse);
           expect(exited, isFalse);
+          expect(storage.calls, 1);
           storage.release.complete();
           expect(await admitted, isFalse);
+          // A broken admission fence must fail, not deadlock on the storage gate.
+          await rejected;
           await closing;
           if (exiting != null) expect(await exiting, AppExitResponse.exit);
           expect(storage.calls, 1);
           expect(tester.takeException(), isNull);
         } finally {
           if (!storage.release.isCompleted) storage.release.complete();
-          await tester.pumpWidget(const SizedBox.shrink());
-          await credentials.close();
-          await runtime.close();
-          await root.delete(recursive: true);
+          try {
+            await Future.wait<void>([
+              ?rejected,
+              if (exiting != null) exiting.then<void>((_) {}),
+            ]);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            await credentials.close();
+            await runtime.close();
+            await root.delete(recursive: true);
+          }
         }
       }),
     );

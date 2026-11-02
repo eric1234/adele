@@ -338,6 +338,83 @@ void main() {
   );
 
   testWidgets(
+    'pending application exit joins disposal without retaining retired presentations',
+    (tester) => tester.runAsync(() async {
+      final preflightEntered = Completer<void>();
+      final preflight = Completer<bool>();
+      var releases = 0;
+      var detachments = 0;
+      var exited = false;
+      final bridge = _RetentionBridge(
+        () => fail('Disposed presentations must not be retained.'),
+      );
+      final host = PreparedMainContentHost(
+        confirm: (_) {
+          preflightEntered.complete();
+          return preflight.future;
+        },
+        createBinding:
+            ({
+              required installation,
+              required descriptor,
+              required session,
+              required paneId,
+            }) => PreparedMainContentPaneBinding(
+              createBridge: (_) => bridge,
+              release: () => releases++,
+            ),
+      );
+      final f = await mount(tester, mainContentHost: host);
+      f.onCleanup = () => detachments++;
+      Future<AppExitResponse>? exiting;
+      try {
+        exiting = tester.binding.handleRequestAppExit().then((response) {
+          exited = true;
+          return response;
+        });
+        await preflightEntered.future.timeout(const Duration(seconds: 2));
+        expect(f.closeEntered.isCompleted, isFalse);
+        expect(f.window.isActive, isTrue);
+        expect(bridge.retentions, 0);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await f.closeEntered.future.timeout(const Duration(seconds: 2));
+        expect(f.window.isActive, isFalse);
+        expect(detachments, 1);
+        expect(exited, isFalse);
+
+        preflight.complete(true);
+        await host.drainOperations().timeout(const Duration(seconds: 2));
+        await tester.pumpAndSettle();
+        expect(exited, isFalse);
+        expect(f.cleanup.isCompleted, isFalse);
+        expect(f.runtime.plugins.state, ApplicationPluginState.ready);
+        expect(bridge.retentions, 0);
+        expect(tester.takeException(), isNull);
+
+        f.cleanup.complete();
+        expect(
+          await exiting.timeout(const Duration(seconds: 2)),
+          AppExitResponse.exit,
+        );
+        expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+        expect(detachments, 1);
+        expect(releases, 1);
+        expect(bridge.retentions, 0);
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!preflight.isCompleted) preflight.complete(true);
+        if (!f.cleanup.isCompleted) f.cleanup.complete();
+        await tester.pumpWidget(const SizedBox.shrink());
+        if (exiting != null) {
+          await exiting.timeout(const Duration(seconds: 2));
+        }
+        await f.close(tester);
+      }
+    }),
+  );
+
+  testWidgets(
     'accepted application exit bounds throwing retention and independently retires resources',
     (tester) => tester.runAsync(() async {
       final failure = StateError('fixture presentation retention failed');
