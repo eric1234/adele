@@ -8,6 +8,96 @@ import 'inference_context_host.dart';
 import 'product_lifecycle.dart';
 import 'run_activity_projection.dart';
 
+/// App-private, irreversible deadline fence, not semantic Run cancellation.
+/// Allocated before preparation so even an unpublished execution is fenced.
+final class ApplicationExitExecutionFence {
+  bool _interrupted = false;
+  final Set<void Function()> _interruptions = {};
+
+  bool get isInterrupted => _interrupted;
+
+  void throwIfInterrupted() {
+    if (isInterrupted) throw const _ApplicationExitInterrupted();
+  }
+
+  void interruptForApplicationExit() {
+    if (isInterrupted) return;
+    _interrupted = true;
+    for (final interrupt in _interruptions.toList()) {
+      interrupt();
+    }
+    _interruptions.clear();
+  }
+
+  Stream<T> _observe<T>(Stream<T> source) {
+    throwIfInterrupted();
+    late final StreamController<T> controller;
+    StreamSubscription<T>? subscription;
+    final setup = Completer<void>();
+    final interruptedCancellation = Completer<void>();
+    Future<void>? cancellation;
+
+    Future<void> cancelSource() => cancellation ??= Future<void>.sync(() async {
+      if (!setup.isCompleted) await setup.future;
+      await subscription?.cancel();
+    });
+
+    void interrupt() {
+      // Cancellation must be initiated even if the consumer is paused. Its
+      // cleanup may hang or fail, but must not hold the host collector open.
+      unawaited(cancelSource().catchError((Object _) {}));
+      if (!interruptedCancellation.isCompleted) {
+        interruptedCancellation.complete();
+      }
+      if (!controller.isClosed) {
+        controller.addError(const _ApplicationExitInterrupted());
+        unawaited(controller.close());
+      }
+    }
+
+    controller = StreamController<T>(
+      onListen: () {
+        if (isInterrupted) {
+          setup.complete();
+          interrupt();
+          return;
+        }
+        _interruptions.add(interrupt);
+        try {
+          subscription = source.listen(
+            (event) {
+              if (!isInterrupted) controller.add(event);
+            },
+            onError: (Object error, StackTrace stack) {
+              if (!isInterrupted) controller.addError(error, stack);
+            },
+            onDone: () => unawaited(controller.close()),
+          );
+        } on Object catch (error, stack) {
+          if (!isInterrupted) controller.addError(error, stack);
+          unawaited(controller.close());
+        } finally {
+          setup.complete();
+        }
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: () {
+        // Preserve normal drain semantics until the application deadline.
+        return Future.any<void>([
+          cancelSource(),
+          interruptedCancellation.future,
+        ]).whenComplete(() => _interruptions.remove(interrupt));
+      },
+    );
+    return controller.stream;
+  }
+}
+
+final class _ApplicationExitInterrupted implements Exception {
+  const _ApplicationExitInterrupted();
+}
+
 /// Captures the canonical Session's exact strategy for this Run. A supplied
 /// selection is validated against this lifecycle, never replaced by resolution.
 Future<SessionOrchestrationRun> createSessionOrchestrationRun({
@@ -20,7 +110,10 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   required ToolPolicy policy,
   ResolvedOrchestrationStrategy? resolvedStrategy,
   SessionFeedbackReceipt? expectedFeedback,
+  ApplicationExitExecutionFence? applicationExitFence,
 }) async {
+  final exitFence = applicationExitFence ?? ApplicationExitExecutionFence();
+  exitFence.throwIfInterrupted();
   final Session? session = lifecycle.store.session(sessionId);
   if (session == null) {
     throw StateError('Session $sessionId is not published.');
@@ -46,6 +139,7 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
     model: model,
     toolCatalog: toolCatalog,
     policy: policy,
+    applicationExitFence: exitFence,
   ).._executionEnabled = false;
   final releaseSessionExecution = lifecycle.retainSessionExecution(session);
   try {
@@ -57,6 +151,7 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
       ),
     );
     try {
+      exitFence.throwIfInterrupted();
       lifecycle.validateResolvedStrategy(session.strategyId, binding);
     } on Object {
       try {
@@ -87,7 +182,9 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
     this._execution,
     this._lifecycle,
     this._releaseSessionExecution,
-  );
+  ) {
+    _host._exitFence._interruptions.add(_interruptForApplicationExit);
+  }
 
   final KernelOrchestrationHost _host;
   OrchestrationExecution? _execution;
@@ -98,12 +195,31 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
   bool _terminalRecordAttempted = false;
   Completer<void>? _advanceSettled;
   Future<void>? _closing;
+  (Object, StackTrace)? _exitRetentionFailure;
 
   AgentRun get run => _host._run;
   RunActivitySource get activity => _host.activity;
   ToolOutcome? get lastToolOutcome => _host._lastToolOutcome;
   ToolInvocation? get lastToolInvocation => _host._lastToolInvocation;
   MaterializedToolSet? get lastModelTools => _host._lastModelTools;
+
+  /// Called synchronously before runtime/storage retirement at the exit deadline.
+  void interruptForApplicationExit() =>
+      _host._exitFence.interruptForApplicationExit();
+
+  void _interruptForApplicationExit() {
+    _closed = true;
+    try {
+      // An actual terminal state may precede pending strategy persistence. Keep
+      // that evidence now, while storage is still open, then seal all late writes.
+      _retainTerminalRun();
+    } on Object catch (error, stack) {
+      _exitRetentionFailure = (error, stack);
+    } finally {
+      _terminalRecordAttempted = true;
+    }
+    unawaited(close().catchError((Object _) {}));
+  }
 
   @override
   Future<void> start() => _advance();
@@ -113,6 +229,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       _advance(resolution: resolution);
 
   Future<void> _advance({ToolApprovalResolution? resolution}) async {
+    _host._exitFence.throwIfInterrupted();
     if (_closed) {
       throw const InvalidRunOperation('The orchestration execution is closed.');
     }
@@ -154,6 +271,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       } else {
         await _host._resume(_execution!, resolution);
       }
+      _host._exitFence.throwIfInterrupted();
       if (run.state == RunState.created ||
           run.state == RunState.running ||
           run.state == RunState.waiting) {
@@ -225,6 +343,9 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       var recordingFailed = false;
       try {
         _retainTerminalRun();
+        if (_exitRetentionFailure case final failure?) {
+          Error.throwWithStackTrace(failure.$1, failure.$2);
+        }
       } on Object {
         recordingFailed = true;
         rethrow;
@@ -236,6 +357,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
         } finally {
           // Retained evidence may outlive settlement, not the backend execution.
           _execution = null;
+          _host._exitFence._interruptions.remove(_interruptForApplicationExit);
           _releaseSessionExecution();
         }
       }
@@ -256,6 +378,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     required ModelPort model,
     required ToolCatalog toolCatalog,
     required ToolPolicy policy,
+    ApplicationExitExecutionFence? applicationExitFence,
   }) : _run = run,
        _lifecycle = lifecycle,
        _session = session,
@@ -264,7 +387,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
        _sourceContextFactory = sourceContextFactory,
        _model = model,
        _toolCatalog = toolCatalog,
-       _policy = policy;
+       _policy = policy,
+       _exitFence = applicationExitFence ?? ApplicationExitExecutionFence();
 
   final AgentRun _run;
   final ProductLifecycleCoordinator _lifecycle;
@@ -275,6 +399,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   final ModelPort _model;
   final ToolCatalog _toolCatalog;
   final ToolPolicy _policy;
+  final ApplicationExitExecutionFence _exitFence;
   final ToolInvocationResolver _resolver = const ToolInvocationResolver();
   final ToolPolicyGate _gate = const ToolPolicyGate();
   int _nextModelInvocation = 1;
@@ -300,7 +425,10 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   RunState get state => _run.state;
 
   @override
-  void validateBinding() => _strategy.validateBinding();
+  void validateBinding() {
+    _exitFence.throwIfInterrupted();
+    _strategy.validateBinding();
+  }
 
   @override
   Future<HistoricalRunEvidence> readHistoricalRun(RunId runId) async {
@@ -362,6 +490,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   }
 
   void _fail(Object error) {
+    if (_exitFence.isInterrupted) return;
     if (_busy) {
       // Preserve the active mechanics operation's terminal evidence first.
       _deferredFailure ??= error;
@@ -400,14 +529,16 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       tools: tools,
     );
     final _ToolSnapshot snapshot = _ToolSnapshot(this, tools, invocationId);
+    _exitFence.throwIfInterrupted();
     _run.record(ModelInvocationStarted(invocationId));
     final List<ModelOutputItem> output = <ModelOutputItem>[];
     try {
       final ModelInvocationObservation observation =
           await collectModelInvocation(
-            _model.invoke(request),
+            _exitFence._observe(_model.invoke(request)),
             invocationId: invocationId,
             onObservation: (ModelObservation observation) {
+              if (_exitFence.isInterrupted) return;
               _run.record(
                 ModelObservationObserved(
                   invocationId: invocationId,
@@ -416,6 +547,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
               );
             },
             onOutput: (ModelOutputItem item) {
+              if (_exitFence.isInterrupted) return;
               output.add(item);
               final ExecutionEventRecord record = _run.record(
                 ModelOutputObserved(invocationId: invocationId, item: item),
@@ -428,6 +560,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
               }
             },
           );
+      _exitFence.throwIfInterrupted();
       switch (observation.terminal) {
         case final ModelInvocationSettledEvent terminal:
           _run.record(
@@ -465,6 +598,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
           );
       }
     } on Object catch (error) {
+      _exitFence.throwIfInterrupted();
       _run.record(
         ModelInvocationFailed(invocationId: invocationId, error: error),
       );
@@ -560,6 +694,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         ),
       );
     } on ToolPolicyEvaluationFailed catch (error) {
+      _exitFence.throwIfInterrupted();
       _run.record(
         ToolPolicyFailed(invocationId: invocation.id, effects: error.effects),
       );
@@ -580,6 +715,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     }
     // Preserve the completed preflight evidence even if the strategy retired
     // while describe() was pending; execution still requires a live binding.
+    _exitFence.throwIfInterrupted();
     _run.record(
       ToolPolicyEvaluated(
         invocationId: invocation.id,
@@ -686,13 +822,15 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         executionStarted: false,
       );
     }
+    _exitFence.throwIfInterrupted();
     _run.record(ToolExecutionStarted(invocation.id));
     late final ToolOutcome outcome;
     try {
       final ToolExecutionObservation observation = await collectToolExecution(
-        start.events(),
+        _exitFence._observe(start.events()),
         retainProgress: false,
         onProgress: (ToolProgress progress) {
+          if (_exitFence.isInterrupted) return;
           _run.record(
             ToolProgressObserved(
               invocationId: invocation.id,
@@ -703,6 +841,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       );
       outcome = observation.outcome;
     } on Object catch (error) {
+      _exitFence.throwIfInterrupted();
       outcome = ToolOutcome(
         disposition: ToolOutcomeDisposition.failure,
         failureKind: ToolFailureKind.infrastructure,
@@ -720,6 +859,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     ToolOutcome outcome, {
     required bool executionStarted,
   }) {
+    _exitFence.throwIfInterrupted();
     _lastToolOutcome = outcome;
     _run.record(
       executionStarted
@@ -765,6 +905,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   }
 
   void _requireIdle() {
+    _exitFence.throwIfInterrupted();
     if (!_executionEnabled) {
       throw const InvalidRunOperation(
         'The execution host is unavailable outside active strategy advancement.',

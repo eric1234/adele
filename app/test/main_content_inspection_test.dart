@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -456,6 +457,66 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+
+    testWidgets(
+      'host exit confirmation blocks cached operations and decline preserves retained data',
+      (tester) async {
+        final f = await fixture(tester);
+        f.contribute(allowed: true, acceptExit: true);
+        await tester.pumpWidget(f.widget());
+        await tester.pumpAndSettle();
+        final pane = f.pane('first');
+        final eval = pane.runtime;
+        final cached = tester
+            .widget<TextButton>(
+              find.widgetWithText(TextButton, 'Inspect first'),
+            )
+            .onPressed!;
+        Future<Object?> write(int count) async => copyStructuredBridgeData(
+          await eval.executeLib(_library, 'writeOperation', [count]),
+        );
+
+        expect(await write(1), {'count': 1});
+        cached();
+        expect(f.requests, hasLength(1));
+        final confirming = Completer<void>();
+        final decision = Completer<bool>();
+        final preflight = f.host.prepareToExit(
+          confirmActiveWork: () {
+            confirming.complete();
+            return decision.future;
+          },
+        );
+        await confirming.future;
+        try {
+          // Exercise the original evaluator/callback, not a disabled widget or
+          // a freshly acquired attachment that could hide permanent retirement.
+          cached();
+          for (var i = 0; i < 2; i++) {
+            expect(await write(2), {
+              'ok': false,
+              'message': 'Contribution operation is unavailable.',
+            });
+          }
+          expect(f.requests, hasLength(1));
+          expect(_read(eval, 'paneId'), 'first');
+          expect(_read(eval, 'retainedData'), {'count': 1});
+          expect(f.pane('first'), same(pane));
+        } finally {
+          decision.complete(false);
+        }
+        expect(await preflight, isFalse);
+        expect(_read(eval, 'retainedData'), {'count': 1});
+        cached();
+        expect(f.requests, hasLength(2));
+        expect(await write(2), {'count': 2});
+        expect(_read(eval, 'retainedData'), {'count': 2});
+        expect(f.pane('first'), same(pane));
+        f.expectNoEnvironmentWork();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
 }
 
@@ -572,6 +633,7 @@ final class _Fixture {
   ExtensionRegistration contribute({
     bool allowed = false,
     bool sessionExecution = false,
+    bool acceptExit = false,
     PreparedSessionServices? services,
   }) {
     final descriptor = PreparedMainContentPresentation(
@@ -583,7 +645,11 @@ final class _Fixture {
       canInspectSessionContent: allowed,
       sessionExecution: sessionExecution,
       retainedData: true,
-      operations: const {'probe': 'operation', 'exit': 'exit'},
+      operations: {
+        'probe': 'operation',
+        'write': 'writeRetained',
+        'exit': acceptExit ? 'acceptExit' : 'exit',
+      },
       exitOperation: 'exit',
       actions: [
         PreparedMainContentAction(
@@ -691,6 +757,15 @@ Future<Map<String, dynamic>> operation() async => <String, dynamic>{
 Future<Map<String, dynamic>> probeOperation() async =>
     await invokeContributionOperation('probe', <String, dynamic>{});
 Future<Map<String, dynamic>> exit() async => <String, dynamic>{'accepted': false};
+Future<Map<String, dynamic>> acceptExit() async => <String, dynamic>{'accepted': true};
+Map<String, dynamic> retainedData() => readContributionData('draft');
+Future<Map<String, dynamic>> writeRetained() async {
+  final next = <String, dynamic>{'count': readContributionArguments()!['count']};
+  writeContributionData('draft', next);
+  return next;
+}
+Future<Map<String, dynamic>> writeOperation(int count) async =>
+    await invokeContributionOperation('write', <String, dynamic>{'count': count});
 Map<String, dynamic> actionResult() => readContributionData('action-result');
 Widget buildAction() => TextButton(
   onPressed: () {

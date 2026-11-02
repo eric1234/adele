@@ -185,6 +185,154 @@ void main() {
     });
   }
 
+  for (final duringModel in [true, false]) {
+    test(
+      'application exit interrupts ${duringModel ? 'model' : 'tool'} collection without awaiting cancellation or inventing terminal evidence',
+      () async {
+        final fixture = await _Fixture.create(
+          decision: ToolPolicyDecision.allow,
+        );
+        final entered = Completer<void>();
+        final cancellation = Completer<void>();
+        var cancellations = 0;
+        Future<void> cancel() {
+          cancellations++;
+          return cancellation.future;
+        }
+
+        final modelEvents = StreamController<ModelEvent>(
+          onListen: entered.complete,
+          onCancel: cancel,
+        );
+        final toolEvents = StreamController<ToolExecutionEvent>(
+          onListen: entered.complete,
+          onCancel: cancel,
+        );
+        if (duringModel) {
+          fixture.model.events = (_) => modelEvents.stream;
+        } else {
+          fixture.tool.events = toolEvents.stream;
+        }
+        final advancing = fixture.strategy.start();
+        final interrupted = expectLater(advancing, throwsA(isA<Exception>()));
+        await entered.future;
+        final records = fixture.run.journal.records;
+        final closing = fixture.strategy.close();
+        fixture.strategy.interruptForApplicationExit();
+        expect(cancellations, 1);
+        fixture.strategy.interruptForApplicationExit();
+        await interrupted.timeout(const Duration(seconds: 1));
+        await closing.timeout(const Duration(seconds: 1));
+        expect(cancellation.isCompleted, isFalse);
+        expect(fixture.strategy.close(), same(closing));
+        expect(fixture.execution.closeCalls, 1);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.failure, isNull);
+        expect(fixture.run.journal.records, records);
+        expect(fixture.store.runRecord(fixture.run.id), isNull);
+        expect(fixture.execution.host.complete, throwsA(isA<Exception>()));
+        expect(
+          () => fixture.execution.host.fail(StateError('late failure')),
+          throwsA(isA<Exception>()),
+        );
+        if (duringModel) {
+          modelEvents.add(
+            ModelInvocationSettledEvent(
+              invocationId: ModelInvocationId('run-authority-model-1'),
+            ),
+          );
+        } else {
+          toolEvents.add(
+            ToolExecutionTerminal(
+              ToolOutcome(
+                disposition: ToolOutcomeDisposition.success,
+                effectCertainty: EffectCertainty.knownOccurred,
+                modelContent: 'Late result',
+              ),
+            ),
+          );
+        }
+        cancellation.completeError(StateError('late cleanup failure'));
+        await Future<void>.delayed(Duration.zero);
+        expect(fixture.run.journal.records, records);
+        expect(cancellations, 1);
+        unawaited(modelEvents.close());
+        unawaited(toolEvents.close());
+      },
+    );
+  }
+
+  for (final fails in [false, true]) {
+    test(
+      'application exit fences late tool preflight ${fails ? 'failure' : 'approval'}',
+      () async {
+        final fixture = await _Fixture.create();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        fixture.tool.beforeDescription = () async {
+          entered.complete();
+          await release.future;
+          if (fails) throw StateError('late description failure');
+        };
+        final advancing = fixture.strategy.start();
+        final interrupted = expectLater(advancing, throwsA(isA<Exception>()));
+        await entered.future;
+        final records = fixture.run.journal.records;
+        fixture.strategy.interruptForApplicationExit();
+        release.complete();
+        await interrupted;
+        await fixture.strategy.close();
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.interruptions, isEmpty);
+        expect(fixture.run.journal.records, records);
+        expect(fixture.strategy.lastToolOutcome, isNull);
+        expect(fixture.tool.executions, 0);
+        expect(fixture.store.runRecord(fixture.run.id), isNull);
+      },
+    );
+  }
+
+  test(
+    'application exit drops deferred failure after detached mechanics',
+    () async {
+      final fixture = await _Fixture.create(decision: ToolPolicyDecision.allow);
+      final entered = Completer<void>();
+      var cancellations = 0;
+      final events = StreamController<ModelEvent>(
+        onListen: entered.complete,
+        onCancel: () => cancellations++,
+      );
+      late Future<void> interrupted;
+      fixture.execution.beforeReturn = () async {
+        fixture.model.events = (_) => events.stream;
+        interrupted = expectLater(
+          fixture.execution.host.invokeModel(
+            StrategyInferenceMaterial(input: const []),
+          ),
+          throwsA(isA<Exception>()),
+        );
+        await entered.future;
+        fixture.execution.host.complete();
+      };
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.state, RunState.running);
+      final records = fixture.run.journal.records;
+      fixture.strategy.interruptForApplicationExit();
+      await interrupted;
+      await fixture.strategy.close();
+      expect(cancellations, 1);
+      expect(fixture.run.state, RunState.running);
+      expect(fixture.run.failure, isNull);
+      expect(fixture.run.journal.records, records);
+      expect(fixture.store.runRecord(fixture.run.id), isNull);
+      expect(fixture.execution.closeCalls, 1);
+      await events.close();
+    },
+  );
+
   test(
     'close retains an already cancelled Run without cancelling waiting work',
     () async {
@@ -1226,9 +1374,13 @@ final class _Execution implements OrchestrationExecution {
 final class _Model implements ModelPort {
   final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
   Future<void> Function()? beforeSettlement;
+  Stream<ModelEvent> Function(SemanticModelRequest)? events;
 
   @override
-  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+  Stream<ModelEvent> invoke(SemanticModelRequest request) =>
+      events?.call(request) ?? _invoke(request);
+
+  Stream<ModelEvent> _invoke(SemanticModelRequest request) async* {
     requests.add(request);
     yield ModelOutputItemCompleted(
       invocationId: request.invocationId,
@@ -1248,6 +1400,8 @@ final class _Model implements ModelPort {
 final class _Tool implements ToolExecutable {
   int executions = 0;
   Future<void> Function()? beforeTerminal;
+  Future<void> Function()? beforeDescription;
+  Stream<ToolExecutionEvent>? events;
 
   @override
   CanonicalToolArguments validateAndNormalize(
@@ -1261,14 +1415,22 @@ final class _Tool implements ToolExecutable {
   Future<EffectDescription> describe(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async => EffectDescription(
-    effects: const <ToolEffect>[ToolEffect.sourceMutation],
-    targets: const <EffectTarget>[],
-    summary: 'Test effect',
-  );
+  ) async {
+    await beforeDescription?.call();
+    return EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.sourceMutation],
+      targets: const <EffectTarget>[],
+      summary: 'Test effect',
+    );
+  }
 
   @override
   Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) => events ?? _execute(arguments, context);
+
+  Stream<ToolExecutionEvent> _execute(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
   ) async* {

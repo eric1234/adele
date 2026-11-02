@@ -346,15 +346,64 @@ bindings, not a new proposal or replacement-generation lookup. Rejection supplie
 a semantic outcome without execution. Closing execution resources does not resolve
 an abandoned interruption or imply Run cancellation.
 
-Window shutdown fences owner creation, Run starts, and presentation decisions,
-then initiates close for every retained Session owner before awaiting their
-collective settlement. Active advancement drains through the existing operation
-deadlines to a normal terminal or waiting boundary; hidden waiting executions
-release without a dialog or an invented decision. One cleanup failure cannot
-skip siblings. Backends and Project storage remain available for admitted Run
-and strategy-history settlement before their normal teardown. Repeated close
-observes the same completion or failure. This is graceful resource cleanup,
-not universal process cancellation or a bounded total shutdown deadline.
+Normal execution-owner close fences owner creation, Run starts, and approval
+decisions, then initiates close for every retained Session owner before awaiting
+their collective settlement. Active advancement drains to a normal terminal or
+waiting boundary; waiting executions release without an invented decision. One
+cleanup failure cannot skip siblings. Repeated close observes the same completion
+or failure. This ordinary graceful close is not general Run cancellation and has
+no total deadline of its own.
+
+### Accepted application exit
+
+Application exit first runs the existing reversible Main Content preflight,
+including hidden retained collections. Plugins retain their document/discard
+policy. The host then asks for interruption confirmation only when canonical
+resource owners report active or uncertain work: retained Session execution
+(including preparation, background advancement, and waiting approval) or
+interactive terminal resources. Console visibility, selected Session, and Chat
+presentation are not risk authorities. Terminal cleanup acknowledgement is
+distinct from actual shell-exit evidence; uncertain removed resources remain a
+window-local risk. Idle, never-started terminal owners do not require confirmation.
+
+Declining either confirmation returns application-exit cancellation without
+closing owners, cancelling streams/terminals, resolving approval, or discarding
+retained frontend data. Temporary interaction gates reopen, and another exit
+request remains possible. Acceptance of one participant is not early permission
+to dispose resources while another participant may still refuse.
+
+After every required confirmation succeeds, `AdeleApplication` establishes an
+irreversible admission fence and one five-second total cleanup budget (injectable
+in native tests). The display becomes inert and explicitly indicates exit; repeat
+exit requests join the same bounded result rather than offering cancellation.
+Session, terminal, Console, frontend-operation, and other application-owned drains
+are initiated independently. A blocked Session cannot postpone a terminal cleanup
+request. Backends and Project storage remain available for cooperative Run and
+strategy-history settlement, followed by normal runtime teardown within that same
+budget, not a sequence of additive per-resource application deadlines.
+
+At the deadline an app-private execution-owner fence prevents late preparation,
+advancement, host effects, and evidence publication. It initiates best-effort model
+and tool stream cancellation through the existing adapters before requesting
+backend/runtime and frontend retirement. Any already-real terminal host state gets
+its existing single retention attempt while storage is still available; later
+finalization cannot write after the cutoff. An in-flight strategy persistence
+operation is not thereby acknowledged or guaranteed durable. Existing committed
+records remain facts; absent acknowledgement is uncertain work, not rollback.
+
+The accepted callback returns exit at the deadline even if cleanup remains pending,
+and reports incomplete resource release rather than success. Cancellation may
+itself stall and cannot guarantee that an external process/effect stopped. No
+terminal Run record, approval decision, model result, or tool outcome is invented
+to unwind shutdown. This adds no public Run cancellation or universal plugin
+shutdown contract, interrupted-Run persistence, replay authorization, or automatic
+resumption. Terminal history, ordinary resource close, and crash recovery remain
+separate.
+
+The bound covers asynchronous waiting after acceptance, not synchronous code that
+blocks the application isolate or OS process termination. Reversible preflight and
+user decisions are outside the budget; hanging preflight and richer plugin
+confirmation participation require separate work.
 
 ## Execution, outcomes, and uncertainty
 

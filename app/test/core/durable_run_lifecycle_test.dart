@@ -334,6 +334,69 @@ void main() {
     },
   );
 
+  for (final completed in [false, true]) {
+    test(
+      'application exit seals ${completed ? 'already terminal' : 'in-flight tool'} evidence before runtime retirement',
+      () async {
+        final run = await createRun();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        addTearDown(() {
+          if (!release.isCompleted) release.complete();
+        });
+        Future<void> suspend() async {
+          entered.complete();
+          await release.future;
+        }
+
+        if (completed) {
+          execution.afterCompletion = suspend;
+        } else {
+          tool.beforeTerminal = suspend;
+        }
+        final advancing = run.start();
+        final interrupted = expectLater(advancing, throwsA(anything));
+        await entered.future;
+        final state = completed ? RunState.completed : RunState.running;
+        expect(run.run.state, state);
+        expect(_runRows(inspection), isEmpty);
+        final evidence = run.run.journal.records;
+        final closing = run.close();
+        run.interruptForApplicationExit();
+        // Retention at the hard boundary is synchronous, not a late finalizer.
+        if (completed) {
+          expectRetained(runtime, run, RunTerminalState.completed);
+        } else {
+          expect(_runRows(inspection), isEmpty);
+          _expectNoEvidence(inspection);
+        }
+        run.interruptForApplicationExit();
+        await runtime.close();
+        if (!completed) {
+          await interrupted.timeout(const Duration(seconds: 1));
+          await closing.timeout(const Duration(seconds: 1));
+        }
+        release.completeError(StateError('late strategy or stream failure'));
+        await interrupted;
+        await closing;
+        await Future<void>.delayed(Duration.zero);
+        expect(run.run.state, state);
+        expect(run.run.failure, isNull);
+        expect(run.run.journal.records, evidence);
+        expect(execution.closeCalls, 1);
+        final fresh = await reopen(run);
+        if (completed) {
+          expectRetained(fresh, run, RunTerminalState.completed);
+        } else {
+          expect(fresh.store.runRecord(run.run.id), isNull);
+          expect(fresh.lifecycle.runActivity(run.run.id), isNull);
+          expect(_runRows(inspection), isEmpty);
+          _expectNoEvidence(inspection);
+        }
+      },
+    );
+  }
+
   for (final resume in [false, true]) {
     for (final strategyFails in [false, true]) {
       test('${resume ? 'approval' : 'start'} SQLite failure '
@@ -698,6 +761,7 @@ final class _Execution implements OrchestrationExecution {
   Object? failure;
   Object? closeFailure;
   Future<void> Function()? beforeProposal;
+  Future<void> Function()? afterCompletion;
   late StrategyModelTurn turn;
   int startCalls = 0;
   int approvalCalls = 0;
@@ -718,6 +782,7 @@ final class _Execution implements OrchestrationExecution {
     );
     if (failure case final error?) throw error;
     if (host.state == RunState.running) host.complete();
+    await afterCompletion?.call();
   }
 
   @override

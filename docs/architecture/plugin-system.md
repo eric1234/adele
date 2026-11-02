@@ -591,6 +591,9 @@ still refuse exit. These exit operations have no Session context or Environment
 grant; hidden records and browser selection do not manufacture one. Plugins own
 confirmation wording and discard decisions over generic host two-choice dialogs.
 Forced teardown and plugin retirement are separate cleanup paths.
+After this preflight accepts, the host may still request active-work confirmation.
+Only final acceptance starts [bounded application exit](execution-model.md#accepted-application-exit);
+plugins acquire no new shutdown callback or indefinite veto over that cleanup.
 
 Execution and owning-backend services are explicit pane-scoped requests, not a
 privileged presentation role. Neither is granted by default. The binder validates
