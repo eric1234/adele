@@ -1835,15 +1835,35 @@ starting irreversible close. `PreparedMainContentHost` fences new finite-operati
 admission, drains admitted work, then invokes every declared exit hook with no
 Session context or Environment grant, including hidden collections while Task
 Browser is shown; no current Environment is fabricated from browser selection.
-Rejection or failure cancels exit without disposing retained documents; acceptance
-does not dispose early while other contributions can still reject. Forced disposal
-is not this cancellable preflight. There is no Project-switch feature.
-After preflight, canonical Session execution and terminal owners supply the host's
-active-work risk, independently of presented content. Declining that confirmation
-also leaves Source documents and plugin authority intact. Accepted exit uses one
-five-second budget, exposed as `AdeleApplication.exitTimeout` for deterministic
-tests. The [execution architecture](../docs/architecture/execution-model.md#accepted-application-exit)
-defines its cooperative ordering, forced cutoff, uncertainty, and preflight limits.
+`AdeleApplication.exitPreflightThreshold` supplies the host's `waitingThreshold`
+(normally five seconds) for cumulative nonhuman preflight time. Native confirmation
+pauses this clock. `ExitPreflightIssue` distinguishes prolonged checks from
+unavailable advice; explicit plugin refusal cancels rather than invoking recovery.
+The application supplies `confirmIncomplete` with only Keep Working / Exit Anyway
+and an incomplete-data/effects warning, followed by the existing `confirmActiveWork`
+over canonical Session execution and terminal owners, independently of presentation.
+The [preflight architecture](../docs/architecture/plugin-system.md#main-content-exit-preflight)
+owns the recovery, human-wait, and retained-owner invariants.
+
+`PreparedFrontend.invoke` revokes an abandoned check's operation bridges and closes
+its wait before recovery is shown. `ContributionBridge` forwards an app-private
+`Future<void> invalidated` alongside each native confirmation request; public plugin
+confirmation contracts are unchanged. Late check access to retained data/native
+resources is fenced without retiring its generation, disposing documents, or
+rolling back admitted effects. Exit advice does not refresh panes. Ordinary admitted
+Save/Close operations retain their existing semantics; their later human decisions
+wait behind recovery/final confirmation and resume on cancellation. The reversible
+application gate stays closed until those exit decisions settle, then cancellation
+restores normal interaction without reviving abandoned checks.
+
+Acceptance does not dispose early while another contribution or the active-work
+confirmation can still reject. Only final acceptance starts the existing total
+five-second cleanup budget, exposed as `AdeleApplication.exitTimeout` for
+deterministic tests. The
+[execution architecture](../docs/architecture/execution-model.md#accepted-application-exit)
+defines cooperative ordering, forced cutoff, and uncertainty. Neither asynchronous
+bound covers synchronous application-isolate blocking. Forced disposal is not this
+cancellable preflight. There is no Project-switch feature.
 Forced OS termination, crashes, hot plugin replacement with unsaved state, and
 cross-window/restart recovery are not protected by this current-window lifetime.
 See [focused Source checks](../docs/development/testing.md#focused-source-checks)

@@ -175,6 +175,9 @@ final class PreparedFrontend {
     required String entrypoint,
     required PreparedFrontendBridge Function() createBridge,
     required T Function(Object? value) decodeResult,
+    // Only reversible application-exit checks supply this lifetime. Ending the
+    // wait revokes this operation's bridges, not its generation or native owners.
+    Future<void>? preflightEnded,
   }) {
     // The completion belongs to the caller's zone, not the eval error zone.
     final completion = Completer<T>();
@@ -189,7 +192,11 @@ final class PreparedFrontend {
 
     void fail(Object error, StackTrace stack) {
       if (completion.isCompleted) return;
-      release();
+      try {
+        release();
+      } on Object {
+        // Preserve the operation failure after attempting all bridge cleanup.
+      }
       completion.completeError(error, stack);
     }
 
@@ -203,6 +210,9 @@ final class PreparedFrontend {
       fail(error, stack);
       return completion.future;
     }
+    preflightEnded?.then((_) {
+      fail(StateError('Exit preflight access ended.'), StackTrace.current);
+    });
     runZonedGuarded(() async {
       try {
         final runtime = Runtime(ByteData.sublistView(bytes))

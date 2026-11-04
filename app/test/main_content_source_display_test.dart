@@ -505,7 +505,7 @@ void main() {
         final providerViews = ExtensionRegistry();
         f.preparedProvider(registry: providerViews);
         var operations = 0;
-        f.confirm = (_) async {
+        f.confirm = (_, _) async {
           operations++;
           return true;
         };
@@ -558,7 +558,7 @@ void main() {
           final display = f.preparedProvider();
           final entered = Completer<void>();
           final release = Completer<bool>();
-          f.confirm = (_) {
+          f.confirm = (_, _) {
             entered.complete();
             return release.future;
           };
@@ -593,7 +593,7 @@ void main() {
           expect(target.focuses, 0);
           expect(replacements, 0);
           expect(find.text('Source idle'), findsOneWidget);
-          f.confirm = (_) async => true;
+          f.confirm = (_, _) async => true;
           expect(await _request(f.pane(_consumerId).runtime, 'fresh.txt'), {
             'status': 'success',
           });
@@ -680,7 +680,7 @@ final class _Fixture {
       environmentRuntime: canonicalRuntime
           ? runtime.lifecycle.environmentRuntime
           : null,
-      confirm: (request) => confirm(request),
+      confirm: (request, invalidated) => confirm(request, invalidated),
       createBinding:
           ({
             required installation,
@@ -717,7 +717,8 @@ final class _Fixture {
   final _registrations = <Future<void> Function()>[];
   late final PreparedMainContentHost host;
   late final PreparedPluginInstallation installation;
-  Future<bool> Function(Map<String, Object?>) confirm = (_) async => true;
+  Future<bool> Function(Map<String, Object?>, Future<void>) confirm =
+      (_, _) async => true;
 
   _Pane pane(ExtensionId id) => panes.lastWhere((pane) => pane.id == id);
 

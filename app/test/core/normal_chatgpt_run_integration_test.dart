@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' show Abi;
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
@@ -3440,6 +3441,7 @@ void main() {
       final fixture = await _ProductFixture.create();
       final root = await prepared.copyInstallations(fixture.directory);
       final helper = await prepared.installTerminal(root);
+      await prepared.installReview(root, stalledExit: true);
       final launcher = await fixture.isolatedRuntime(prepared);
       final home = Directory('${fixture.directory.path}/home');
       await fixture.launch(
@@ -3447,6 +3449,7 @@ void main() {
         prepared,
         root: root,
         dartaotruntimeExecutable: launcher,
+        exitPreflightThreshold: const Duration(milliseconds: 100),
         startupArguments: {
           _gitPluginId: ['--pty-helper=${helper.path}'],
         },
@@ -3667,6 +3670,20 @@ void main() {
         runtime.plugins.host!.processId,
       );
       expect(firstEngine.listeners, isEmpty);
+      final cancelledExit = _requestExitWithStalledCheck(tester);
+      await _expectIncompleteExitConfirmation(tester);
+      expect(find.text('Exit with active work?'), findsNothing);
+      await _terminalTap(tester, find.text('Keep Working'));
+      expect(await cancelledExit, AppExitResponse.cancel);
+      expect(runtime.store.session(session.id), same(session));
+      expect(runtime.terminals.forEnvironment(environment.id), [
+        same(first),
+        same(second),
+      ]);
+      expect(_terminalEngine(tester), same(secondEngine));
+      expect(first.shellCompleted, isFalse);
+      expect(second.shellCompleted, isFalse);
+      expect(newTerminal.binding.validate, returnsNormally);
       await File(
         '$worktree/t2-title-1',
       ).writeAsString('1\n').timeout(const Duration(seconds: 15));
@@ -3890,7 +3907,9 @@ void main() {
       expect(first.shellCompleted, isTrue);
       expect(first.hasExitRisk, isFalse);
       expect(runtime.terminals.hasActiveWork, isTrue);
-      final exiting = tester.binding.handleRequestAppExit();
+      final exiting = _requestExitWithStalledCheck(tester);
+      await _expectIncompleteExitConfirmation(tester);
+      await _terminalTap(tester, find.text('Exit Anyway'));
       await _expectActiveWorkExitConfirmation(tester);
       await _terminalTap(tester, find.text('Exit ADELE'));
       expect(
@@ -5794,11 +5813,18 @@ void main() {
         var cleanups = 0;
         bool? activeDuringCleanup;
         try {
+          Directory? root;
+          if (forced || decline) {
+            root = await prepared.copyInstallations(fixture.directory);
+            await prepared.installReview(root, stalledExit: true);
+          }
           await fixture.launch(
             tester,
             prepared,
+            root: root,
             endpoint: server,
             exitTimeout: exitTimeout,
+            exitPreflightThreshold: const Duration(milliseconds: 100),
             attachSessionContext: (access) {
               context = access;
               detach = access.observe(selections.add);
@@ -5921,12 +5947,33 @@ void main() {
             expect(fixture.runIds.values, hasLength(1));
             expect(requests, 1);
             var exited = false;
-            final exiting = tester.binding.handleRequestAppExit().then((
-              result,
-            ) {
+            var exiting = _requestExitWithStalledCheck(tester).then((result) {
               exited = true;
               return result;
             });
+            if (forced || decline) {
+              await _expectIncompleteExitConfirmation(tester);
+              expect(find.text('Exit with active work?'), findsNothing);
+              expect(connection.isClosed, isFalse);
+              expect(context.isActive, isTrue);
+              expect(runtime.store.runRecord(runId), isNull);
+              if (decline) {
+                await _terminalTap(tester, find.text('Keep Working'));
+                expect(await exiting, AppExitResponse.cancel);
+                expect(context.snapshot, same(selectedSnapshot));
+                expect(runtime.store.session(session.id), same(session));
+                expect(runtime.plugins.state, ApplicationPluginState.ready);
+                expect(cleanups, 0);
+                // A new attempt is independent of the never-completing check.
+                exited = false;
+                exiting = _requestExitWithStalledCheck(tester).then((value) {
+                  exited = true;
+                  return value;
+                });
+                await _expectIncompleteExitConfirmation(tester);
+              }
+              await _terminalTap(tester, find.text('Exit Anyway'));
+            }
             await _expectActiveWorkExitConfirmation(tester);
             expect(exited, isFalse);
             expect(context.isActive, isTrue);
@@ -5945,6 +5992,11 @@ void main() {
               expect(runtime.store.runRecord(runId), isNull);
               expect(runtime.lifecycle.runActivity(runId), isNull);
               await _breadcrumb(tester, 'task-breadcrumb');
+              await _terminalUntil(
+                tester,
+                () => _sessionRow(session.id).evaluate().isNotEmpty,
+                'original Session is available after declining exit',
+              );
               await _openSession(tester, session.id);
               await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
               expect(_session(tester), same(session));
@@ -5980,10 +6032,11 @@ void main() {
               ]);
               finalSnapshot = context.snapshot;
               selectionCount = selections.length;
+              final retry = _requestExitWithStalledCheck(tester);
+              await _expectIncompleteExitConfirmation(tester);
+              await _terminalTap(tester, find.text('Exit Anyway'));
               expect(
-                await tester.binding.handleRequestAppExit().timeout(
-                  const Duration(seconds: 30),
-                ),
+                await retry.timeout(const Duration(seconds: 30)),
                 AppExitResponse.exit,
               );
               expect(find.text('Exit with active work?'), findsNothing);
@@ -6863,6 +6916,11 @@ Future<Map<String, dynamic>> exitReview() async {
   });
   return <String, dynamic>{'accepted': accepted};
 }
+
+Future<Map<String, dynamic>> stalledExitReview() async {
+  await Future.delayed(const Duration(days: 1));
+  return <String, dynamic>{'accepted': true};
+}
 ''';
 
 final class _PreparedProduct {
@@ -6876,6 +6934,7 @@ final class _PreparedProduct {
   File get commandProcess => File('${directory.path}/command-process.aot');
   File backend(String id) => File('${root.path}/$id/backend.aot');
   Future<File>? _mainContentFixture;
+  Future<List<int>>? _reviewFixture;
 
   Future<File> mainContentFixture() => _mainContentFixture ??= () async {
     final artifact = File('${directory.path}/main-content.evc');
@@ -6886,29 +6945,34 @@ final class _PreparedProduct {
     return artifact;
   }();
 
-  Future<void> installReview(Directory root) async {
+  Future<void> installReview(Directory root, {bool stalledExit = false}) async {
     final installed = await Directory('${root.path}/$_reviewPluginId').create();
-    final program =
-        (Compiler()
-              ..addPlugin(flutterEvalPlugin)
-              ..addPlugin(const MainContentDeclarations())
-              ..addPlugin(const ContributionDeclarations())
-              ..addPlugin(const EnvironmentAccessDeclarations())
-              ..entrypoints.add(_reviewLibrary))
-            .compile({
-              'review_workspace': {'main.dart': _reviewSource},
-              'adele_ui': {
-                for (final bridge in [
-                  'main_content_bridge.dart',
-                  'contribution_bridge.dart',
-                  'environment_access_bridge.dart',
-                ])
-                  bridge: await File(
-                    '../packages/ui/lib/$bridge',
-                  ).readAsString(),
-              },
-            });
-    await File('${installed.path}/frontend.evc').writeAsBytes(program.write());
+    // The pinned evaluator caches bridge types across compiler instances.
+    // Compile this fixture once without types left by the stock frontends.
+    final bytes = await (_reviewFixture ??= Isolate.run(() async {
+      final program =
+          (Compiler()
+                ..addPlugin(flutterEvalPlugin)
+                ..addPlugin(const MainContentDeclarations())
+                ..addPlugin(const ContributionDeclarations())
+                ..addPlugin(const EnvironmentAccessDeclarations())
+                ..entrypoints.add(_reviewLibrary))
+              .compile({
+                'review_workspace': {'main.dart': _reviewSource},
+                'adele_ui': {
+                  for (final bridge in [
+                    'main_content_bridge.dart',
+                    'contribution_bridge.dart',
+                    'environment_access_bridge.dart',
+                  ])
+                    bridge: await File(
+                      '../packages/ui/lib/$bridge',
+                    ).readAsString(),
+                },
+              });
+      return program.write();
+    }));
+    await File('${installed.path}/frontend.evc').writeAsBytes(bytes);
     await File(
       '${installed.path}/adele_plugin.installation.json',
     ).writeAsString(
@@ -6930,7 +6994,10 @@ final class _PreparedProduct {
                 'library': _reviewLibrary,
                 'initialize': 'initializeReview',
                 'entrypoint': 'reviewPane',
-                'operations': {'probe': 'probeReview', 'exit': 'exitReview'},
+                'operations': {
+                  'probe': 'probeReview',
+                  'exit': stalledExit ? 'stalledExitReview' : 'exitReview',
+                },
                 'exitOperation': 'exit',
               },
             ],
@@ -7211,6 +7278,7 @@ final class _ProductFixture {
     attachSessionContext,
     bool configureModel = true,
     Duration exitTimeout = const Duration(seconds: 30),
+    Duration exitPreflightThreshold = const Duration(seconds: 5),
     Map<String, List<String>> startupArguments = const {},
   }) async {
     final runtime = usingRuntime ?? this.runtime;
@@ -7267,6 +7335,7 @@ final class _ProductFixture {
         mainContentHost: mainContentHost,
         attachSessionContext: attachSessionContext,
         exitTimeout: exitTimeout,
+        exitPreflightThreshold: exitPreflightThreshold,
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,
@@ -7517,6 +7586,43 @@ Future<void> _expectActiveWorkExitConfirmation(WidgetTester tester) async {
   expect(find.text('Keep Working'), findsOneWidget);
   expect(find.text('Exit ADELE'), findsOneWidget);
 }
+
+Future<void> _expectIncompleteExitConfirmation(WidgetTester tester) async {
+  await _terminalUntil(
+    tester,
+    () => find.text('Exit Anyway').evaluate().isNotEmpty,
+    'recoverable non-human preflight wait',
+  );
+  expect(find.byType(AlertDialog), findsOneWidget);
+  expect(
+    find.text('The exit check is taking longer than expected'),
+    findsOneWidget,
+  );
+  expect(
+    find.textContaining('Unsaved changes or pending operations'),
+    findsOneWidget,
+  );
+  expect(
+    find.textContaining('No interrupted Run will automatically resume'),
+    findsOneWidget,
+  );
+  expect(find.text('Keep Working'), findsOneWidget);
+}
+
+Future<AppExitResponse> _requestExitWithStalledCheck(WidgetTester tester) =>
+    runZoned(
+      tester.binding.handleRequestAppExit,
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) {
+          // Hold only the fixture's interpreted wait forever, without a live
+          // timer. Native preflight and accepted-exit deadlines run normally.
+          if (duration == const Duration(days: 1)) {
+            return parent.createTimer(zone, Duration.zero, () {})..cancel();
+          }
+          return parent.createTimer(zone, duration, callback);
+        },
+      ),
+    );
 
 Future<void> _settingsSection(WidgetTester tester, String label) async {
   await _terminalTap(tester, find.byKey(const ValueKey('settings-section')));

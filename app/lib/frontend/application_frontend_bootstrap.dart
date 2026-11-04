@@ -81,8 +81,15 @@ final class ApplicationFrontendBootstrap {
 
   void unbind(Session session) => _mainContentHost.unbind(session);
 
-  Future<bool> prepareToExit({Future<bool> Function()? confirmActiveWork}) =>
-      _mainContentHost.prepareToExit(confirmActiveWork: confirmActiveWork);
+  Future<bool> prepareToExit({
+    Future<bool> Function()? confirmActiveWork,
+    Duration waitingThreshold = const Duration(seconds: 5),
+    Future<bool> Function(ExitPreflightIssue issue)? confirmIncomplete,
+  }) => _mainContentHost.prepareToExit(
+    confirmActiveWork: confirmActiveWork,
+    waitingThreshold: waitingThreshold,
+    confirmIncomplete: confirmIncomplete,
+  );
 
   Future<void> stopMainContentOperations() => _mainContentHost.stopOperations();
 

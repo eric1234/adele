@@ -88,6 +88,7 @@ void main() {
     WidgetTester tester, {
     PreparedMainContentHost? mainContentHost,
     Duration exitTimeout = const Duration(seconds: 5),
+    Duration exitPreflightThreshold = const Duration(seconds: 5),
   }) async {
     await tester.binding.setSurfaceSize(const Size(1400, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -96,6 +97,7 @@ void main() {
       tester,
       mainContentHost: mainContentHost,
       exitTimeout: exitTimeout,
+      exitPreflightThreshold: exitPreflightThreshold,
     );
     return fixture;
   }
@@ -338,10 +340,329 @@ void main() {
   );
 
   testWidgets(
+    'prolonged application exit preserves the canonical Session and retained content after Keep Working, with an independent retry',
+    (tester) {
+      final timerZone = Zone.current;
+      return tester.runAsync(() async {
+        final f = await mount(tester);
+        try {
+          final pane = tester.element(find.text('Producer session'));
+          final binding = f.runtime.extensions
+              .discover(mainContentContributions)
+              .single;
+          final cachedOpen = tester
+              .widget<TextButton>(
+                find.widgetWithText(TextButton, 'Inspect content'),
+              )
+              .onPressed!;
+          await tester.tap(find.text('Edit content'));
+          await tester.tap(find.text('Inspect content'));
+          await tester.pumpAndSettle();
+          final card = _cards(tester).single;
+          final inspection = tester.element(find.byType(InspectionStackHost));
+          expect(
+            card.content!.occurrenceId,
+            SessionContentOccurrenceId('note-2'),
+          );
+
+          await tester.tap(find.text('Delay exit check'));
+          final exiting = _ExitRequest(tester, timerZone);
+          await tester.pump();
+          await _ExitRequest(
+            tester,
+            timerZone,
+          ).expectResponse(tester, AppExitResponse.cancel);
+          await tester.pump(const Duration(seconds: 4));
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(exiting.response, isNull);
+          expect(f.closeEntered.isCompleted, isFalse);
+
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pumpAndSettle();
+          expect(
+            find.text('The exit check is taking longer than expected'),
+            findsOneWidget,
+          );
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await _ExitRequest(
+            tester,
+            timerZone,
+          ).expectResponse(tester, AppExitResponse.cancel);
+          await tester.pump();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          cachedOpen();
+          await tester.pump();
+          expect(_cards(tester), [same(card)]);
+          expect(card.content!.isActive, isTrue);
+          expect(f.window.snapshot.session, same(f.session));
+          expect(f.closeEntered.isCompleted, isFalse);
+
+          await tester.tap(find.text('Keep Working'));
+          await tester.pumpAndSettle();
+          await exiting.expectResponse(tester, AppExitResponse.cancel);
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(f.window.isActive, isTrue);
+          expect(f.window.snapshot.session, same(f.session));
+          expect(tester.element(find.text('Producer session')), same(pane));
+          expect(
+            tester.element(find.byType(InspectionStackHost)),
+            same(inspection),
+          );
+          expect(_cards(tester), [same(card)]);
+          expect(card.content!.isActive, isTrue);
+          expect(binding.validate, returnsNormally);
+          expect(
+            f.runtime.extensions
+                .discover(mainContentContributions)
+                .single
+                .isSameRegistration(binding),
+            isTrue,
+          );
+          expect(f.runtime.plugins.state, ApplicationPluginState.ready);
+          cachedOpen();
+          await tester.pumpAndSettle();
+          expect(_cards(tester), hasLength(2));
+          expect(
+            _cards(tester).first.content!.occurrenceId,
+            SessionContentOccurrenceId('note-2'),
+          );
+
+          await tester.tap(find.text('Confirm exit check'));
+          final retry = _ExitRequest(tester, timerZone);
+          await tester.pumpAndSettle();
+          expect(find.text('Leave content?'), findsOneWidget);
+          // Finish the abandoned evaluator while the new human decision is open.
+          // Its unconditional late write and confirmation must not regain access.
+          await tester.pump(const Duration(minutes: 1));
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(find.text('Leave content?'), findsOneWidget);
+          expect(find.text('Keep Working'), findsNothing);
+          expect(f.closeEntered.isCompleted, isFalse);
+          await tester.tap(find.text('Stay here'));
+          await tester.pumpAndSettle();
+          await retry.expectResponse(tester, AppExitResponse.cancel);
+          cachedOpen();
+          await tester.pumpAndSettle();
+          expect(
+            _cards(tester).first.content!.occurrenceId,
+            SessionContentOccurrenceId('note-2'),
+          );
+          expect(tester.element(find.text('Producer session')), same(pane));
+          expect(binding.validate, returnsNormally);
+          f.expectNoExecution();
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump(const Duration(minutes: 1));
+          await f.close(tester);
+        }
+      });
+    },
+  );
+
+  testWidgets(
+    'human plugin exit decisions outlive the threshold without recovery and still decline or accept normally',
+    (tester) {
+      final timerZone = Zone.current;
+      return tester.runAsync(() async {
+        const threshold = Duration(seconds: 1);
+        final f = await mount(tester, exitPreflightThreshold: threshold);
+        try {
+          final pane = tester.element(find.text('Producer session'));
+          final canceled = _ExitRequest(tester, timerZone);
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(seconds: 10));
+          expect(find.text('Leave content?'), findsOneWidget);
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(find.text('Keep Working'), findsNothing);
+          expect(find.text('Exit Anyway'), findsNothing);
+          expect(f.window.snapshot.session, same(f.session));
+          expect(f.closeEntered.isCompleted, isFalse);
+          await _ExitRequest(
+            tester,
+            timerZone,
+          ).expectResponse(tester, AppExitResponse.cancel);
+          await tester.pump();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await tester.tap(find.text('Stay here'));
+          await tester.pumpAndSettle();
+          await canceled.expectResponse(tester, AppExitResponse.cancel);
+          expect(tester.element(find.text('Producer session')), same(pane));
+
+          final exiting = _ExitRequest(tester, timerZone);
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(seconds: 10));
+          expect(find.text('Leave content?'), findsOneWidget);
+          expect(find.text('Keep Working'), findsNothing);
+          expect(f.closeEntered.isCompleted, isFalse);
+          await tester.tap(find.text('Leave now'));
+          await tester.pumpAndSettle();
+          expect(f.closeEntered.isCompleted, isTrue);
+          expect(f.window.isActive, isFalse);
+          expect(exiting.response, isNull);
+          expect(tester.element(find.text('Producer session')), same(pane));
+          f.cleanup.complete();
+          await tester.pumpAndSettle();
+          await exiting.expectResponse(tester, AppExitResponse.exit);
+          expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await f.close(tester);
+        }
+      });
+    },
+  );
+
+  testWidgets(
+    'Exit Anyway requires explicit risk acceptance and enters the existing bounded exit while cleanup is held',
+    (tester) {
+      final timerZone = Zone.current;
+      return tester.runAsync(() async {
+        const deadline = Duration(seconds: 2);
+        final f = await mount(tester, exitTimeout: deadline);
+        try {
+          await tester.tap(find.text('Inspect content'));
+          await tester.pumpAndSettle();
+          final card = _cards(tester).single;
+          final pane = tester.element(find.text('Producer session'));
+          final binding = f.runtime.extensions
+              .discover(mainContentContributions)
+              .single;
+          await tester.tap(find.text('Delay exit check'));
+          final exiting = _ExitRequest(tester, timerZone);
+          await tester.pump();
+          await tester.pump(const Duration(seconds: 5));
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(
+            find.textContaining('Unsaved changes or pending operations'),
+            findsOneWidget,
+          );
+          expect(
+            find.textContaining('incomplete or uncertain'),
+            findsOneWidget,
+          );
+          expect(
+            find.textContaining('No interrupted Run will automatically resume'),
+            findsOneWidget,
+          );
+          await tester.pump(const Duration(seconds: 10));
+          expect(exiting.response, isNull);
+          expect(f.closeEntered.isCompleted, isFalse);
+          expect(f.window.isActive, isTrue);
+          expect(card.content!.isActive, isTrue);
+          expect(binding.validate, returnsNormally);
+
+          await tester.tap(find.text('Exit Anyway'));
+          await tester.pump();
+          expect(f.closeEntered.isCompleted, isTrue);
+          expect(f.window.isActive, isFalse);
+          expect(card.content!.isActive, isFalse);
+          expect(f.cleanup.isCompleted, isFalse);
+          expect(exiting.response, isNull);
+          expect(binding.validate, returnsNormally);
+          expect(tester.element(find.text('Producer session')), same(pane));
+          expect(_cards(tester), [same(card)]);
+          final repeated = _ExitRequest(tester, timerZone);
+          await tester.pump(const Duration(seconds: 1));
+          expect(exiting.response, isNull);
+          await tester.pump(const Duration(seconds: 1));
+          await exiting.expectResponse(tester, AppExitResponse.exit);
+          await repeated.expectResponse(tester, AppExitResponse.exit);
+          expect(f.cleanup.isCompleted, isFalse);
+          expect(
+            tester.takeException(),
+            isA<TimeoutException>().having(
+              (error) => error.duration,
+              'duration',
+              deadline,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+          expect(
+            f.runtime.extensions.discover(mainContentContributions),
+            isEmpty,
+          );
+          expect(find.byType(AlertDialog), findsNothing);
+
+          await tester.pump(const Duration(minutes: 1));
+          await _ExitRequest(
+            tester,
+            timerZone,
+          ).expectResponse(tester, AppExitResponse.exit);
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump(const Duration(minutes: 1));
+          await f.close(tester);
+        }
+      });
+    },
+  );
+
+  testWidgets(
+    'application exit failure offers safe recovery without rendering plugin exception text',
+    (tester) {
+      final timerZone = Zone.current;
+      return tester.runAsync(() async {
+        final f = await mount(tester);
+        try {
+          final pane = tester.element(find.text('Producer session'));
+          await tester.tap(find.text('Fail exit check'));
+          final exiting = _ExitRequest(tester, timerZone);
+          await tester.pumpAndSettle();
+          expect(
+            find.text('The exit check could not be completed'),
+            findsOneWidget,
+          );
+          expect(find.textContaining('private-fixture-secret'), findsNothing);
+          expect(find.textContaining('StateError'), findsNothing);
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(find.text('Exit Anyway'), findsOneWidget);
+          expect(f.closeEntered.isCompleted, isFalse);
+          expect(f.window.snapshot.session, same(f.session));
+          await _ExitRequest(
+            tester,
+            timerZone,
+          ).expectResponse(tester, AppExitResponse.cancel);
+          await tester.pump();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await tester.tap(find.text('Keep Working'));
+          await tester.pumpAndSettle();
+          await exiting.expectResponse(tester, AppExitResponse.cancel);
+          expect(f.window.isActive, isTrue);
+          expect(tester.element(find.text('Producer session')), same(pane));
+          await tester.tap(find.text('Confirm exit check'));
+          final retry = _ExitRequest(tester, timerZone);
+          await tester.pumpAndSettle();
+          expect(find.text('Leave content?'), findsOneWidget);
+          await tester.tap(find.text('Stay here'));
+          await tester.pumpAndSettle();
+          await retry.expectResponse(tester, AppExitResponse.cancel);
+          f.expectNoExecution();
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await f.close(tester);
+        }
+      });
+    },
+  );
+
+  testWidgets(
     'pending application exit joins disposal without retaining retired presentations',
     (tester) => tester.runAsync(() async {
       final preflightEntered = Completer<void>();
       final preflight = Completer<bool>();
+      final confirmationInvalidated = Completer<void>();
       var releases = 0;
       var detachments = 0;
       var exited = false;
@@ -349,8 +670,11 @@ void main() {
         () => fail('Disposed presentations must not be retained.'),
       );
       final host = PreparedMainContentHost(
-        confirm: (_) {
+        confirm: (_, invalidated) {
           preflightEntered.complete();
+          unawaited(
+            invalidated.then((_) => confirmationInvalidated.complete()),
+          );
           return preflight.future;
         },
         createBinding:
@@ -379,12 +703,16 @@ void main() {
 
         await tester.pumpWidget(const SizedBox.shrink());
         await f.closeEntered.future.timeout(const Duration(seconds: 2));
+        await confirmationInvalidated.future.timeout(
+          const Duration(seconds: 2),
+        );
         expect(f.window.isActive, isFalse);
         expect(detachments, 1);
         expect(exited, isFalse);
 
-        preflight.complete(true);
         await host.drainOperations().timeout(const Duration(seconds: 2));
+        expect(preflight.isCompleted, isFalse);
+        preflight.complete(true);
         await tester.pumpAndSettle();
         expect(exited, isFalse);
         expect(f.cleanup.isCompleted, isFalse);
@@ -429,7 +757,7 @@ void main() {
         throw failure;
       });
       final host = PreparedMainContentHost(
-        confirm: (_) async => true,
+        confirm: (_, _) async => true,
         createBinding:
             ({
               required installation,
@@ -498,6 +826,30 @@ void main() {
 
 List<InspectionCard> _cards(WidgetTester tester) =>
     tester.widget<InspectionStackHost>(find.byType(InspectionStackHost)).cards;
+
+final class _ExitRequest {
+  _ExitRequest(WidgetTester tester, Zone timerZone) {
+    // Keep application deadlines in widget fake time while fixture I/O and
+    // native callbacks run normally. Never await an unpumped fake-zone future.
+    unawaited(
+      timerZone.run(tester.binding.handleRequestAppExit).then((value) {
+        response = value;
+      }),
+    );
+  }
+
+  AppExitResponse? response;
+
+  Future<void> expectResponse(
+    WidgetTester tester,
+    AppExitResponse expected,
+  ) async {
+    for (var turn = 0; turn < 20 && response == null; turn++) {
+      await tester.pump();
+    }
+    expect(response, expected);
+  }
+}
 
 final class _Fixture {
   _Fixture(this.directory);
@@ -623,6 +975,7 @@ final class _Fixture {
     WidgetTester tester, {
     PreparedMainContentHost? mainContentHost,
     Duration exitTimeout = const Duration(seconds: 5),
+    Duration exitPreflightThreshold = const Duration(seconds: 5),
   }) async {
     final registered = runtime.extensions.changes.firstWhere(
       (_) =>
@@ -638,6 +991,7 @@ final class _Fixture {
         createRuntime: () => runtime,
         mainContentHost: mainContentHost,
         exitTimeout: exitTimeout,
+        exitPreflightThreshold: exitPreflightThreshold,
         readChatGptConfiguration: () => null,
         configurationRoots: PlatformStorageRoots(
           operatingSystem: Platform.operatingSystem,
@@ -709,7 +1063,14 @@ final class _Fixture {
       expect(await exiting, AppExitResponse.exit);
     }
     await tester.pumpWidget(const SizedBox.shrink());
-    await runtime.close();
+    // An accepted exit may have created this Future in the widget's fake zone.
+    // Bridge it to the caller's real zone before awaiting filesystem teardown.
+    var closed = false;
+    final closing = runtime.close().then<void>((_) => closed = true);
+    for (var turn = 0; turn < 20 && !closed; turn++) {
+      await tester.pump();
+    }
+    await closing.timeout(const Duration(seconds: 2));
     for (final registration in registrations.reversed) {
       await registration.close();
     }
@@ -766,6 +1127,12 @@ Future<bool> prepareToDeactivate() async {
   return result['accepted'] == true;
 }
 Future<Map<String, dynamic>> prepareLeave() async {
+  final mode = readContributionData('exit')['mode'];
+  if (mode == 'delay') {
+    await Future<void>.delayed(Duration(minutes: 1));
+    writeContributionData('note', <String, dynamic>{'id': 'late-note'});
+  }
+  if (mode == 'fail') throw StateError('private-fixture-secret: unchecked exit failure');
   final accepted = await confirmContribution(<String, dynamic>{
     'title': 'Leave content?',
     'message': 'Settle this test presentation before departure.',
@@ -779,12 +1146,39 @@ Widget buildProducer() {
   return Column(children: [
     Text('Producer ' + readMainContentContext()['sessionId']),
     TextButton(
-      onPressed: () { inspectSessionContent('test.application-content', 'note-1'); },
+      onPressed: () {
+        if (readMainContentContext().isEmpty) {
+          inspectSessionContent('test.application-content', 'note-1');
+          return;
+        }
+        final note = readContributionData('note')['id'];
+        if (note == null) {
+          inspectSessionContent('test.application-content', 'note-1');
+        } else {
+          inspectSessionContent('test.application-content', note as String);
+        }
+      },
       child: const Text('Inspect content'),
     ),
     TextButton(
       onPressed: () { inspectSessionContent('test.application-native-content', 'native-1'); },
       child: const Text('Inspect native'),
+    ),
+    TextButton(
+      onPressed: () { writeContributionData('note', <String, dynamic>{'id': 'note-2'}); },
+      child: const Text('Edit content'),
+    ),
+    TextButton(
+      onPressed: () { writeContributionData('exit', <String, dynamic>{'mode': 'delay'}); },
+      child: const Text('Delay exit check'),
+    ),
+    TextButton(
+      onPressed: () { writeContributionData('exit', <String, dynamic>{'mode': 'fail'}); },
+      child: const Text('Fail exit check'),
+    ),
+    TextButton(
+      onPressed: () { writeContributionData('exit', <String, dynamic>{'mode': 'confirm'}); },
+      child: const Text('Confirm exit check'),
     ),
   ]);
 }

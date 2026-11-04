@@ -356,21 +356,30 @@ no total deadline of its own.
 
 ### Accepted application exit
 
-Application exit first runs the existing reversible Main Content preflight,
+Application exit first runs the
+[reversible Main Content preflight](plugin-system.md#main-content-exit-preflight),
 including hidden retained collections. Plugins retain their document/discard
-policy. The host then asks for interruption confirmation only when canonical
-resource owners report active or uncertain work: retained Session execution
+policy. Its short cumulative nonhuman threshold is separate from accepted cleanup:
+native human decisions pause it, and no timer authorizes exit. Explicit refusal
+cancels exit; incomplete or unavailable advice offers Keep Working or Exit Anyway
+with an explicit incomplete-data/effects warning, after fencing the abandoned
+check. Successful advice or deliberate Exit Anyway then reaches the same existing
+interruption confirmation, only when canonical resource owners report active or
+uncertain work: retained Session execution
 (including preparation, background advancement, and waiting approval) or
 interactive terminal resources. Console visibility, selected Session, and Chat
 presentation are not risk authorities. Terminal cleanup acknowledgement is
 distinct from actual shell-exit evidence; uncertain removed resources remain a
 window-local risk. Idle, never-started terminal owners do not require confirmation.
 
-Declining either confirmation returns application-exit cancellation without
-closing owners, cancelling streams/terminals, resolving approval, or discarding
-retained frontend data. Temporary interaction gates reopen, and another exit
-request remains possible. Acceptance of one participant is not early permission
-to dispose resources while another participant may still refuse.
+Keep Working or declining any required confirmation returns application-exit
+cancellation without closing owners, cancelling streams/terminals, resolving
+approval, or discarding retained frontend data. Temporary interaction gates reopen;
+deferred human confirmations for ordinary admitted Save/Close work resume, and
+another exit request remains possible. Abandoned exit-check authority stays revoked,
+without retiring its generation or unrelated owners. Already-admitted effects are
+not rolled back. Acceptance of one participant or incomplete-check recovery is not
+early permission to dispose resources while another participant may still refuse.
 
 After every required confirmation succeeds, `AdeleApplication` establishes an
 irreversible admission fence and one five-second total cleanup budget (injectable
@@ -400,10 +409,12 @@ shutdown contract, interrupted-Run persistence, replay authorization, or automat
 resumption. Terminal history, ordinary resource close, and crash recovery remain
 separate.
 
-The bound covers asynchronous waiting after acceptance, not synchronous code that
-blocks the application isolate or OS process termination. Reversible preflight and
-user decisions are outside the budget; hanging preflight and richer plugin
-confirmation participation require separate work.
+The cleanup bound covers asynchronous waiting after final acceptance, not
+synchronous code that blocks the application isolate or OS process termination.
+Reversible preflight has its own soft recovery threshold; preflight and human
+decisions consume none of the accepted cleanup budget. Neither threshold preempts
+synchronous isolate blocking, and richer plugin confirmation participation remains
+separate work.
 
 ## Execution, outcomes, and uncertainty
 
