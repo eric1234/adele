@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -32,6 +33,258 @@ void main() {
       expect(descriptor.executionHostServices, [
         authorizedEnvironmentProcessServiceId,
       ]);
+      expect(fixture.messages, isEmpty);
+    },
+  );
+
+  test('search materializes one separate authority-free descriptor', () async {
+    fixture.host.close();
+    final local = searchCommandOutputToolRegistration(fixture.search);
+    final run = (await fixture.client.materialize('session')).single;
+    final search = (await fixture.searchClient.materialize('session')).single;
+    expect(search.toolId, searchCommandOutputToolId.value);
+    expect(search.routeId, searchCommandOutputToolId.value);
+    expect(search.routeId, isNot(run.routeId));
+    expect(search.modelAlias, 'search_command_output');
+    expect(search.toolDescription, local.definition.description);
+    expect(search.modelDescription, local.modelDefinition.description);
+    expect(search.argumentsSchema, local.modelDefinition.argumentsSchema);
+    expect(search.executionHostServices, isEmpty);
+    expect(fixture.storage.schemaChecks, 0);
+    expect(fixture.storage.queries, 0);
+    expect(fixture.messages, isEmpty);
+  });
+
+  test(
+    'search validation and description need no Environment or host token',
+    () async {
+      fixture.host.close();
+      final local = searchCommandOutputToolRegistration(
+        fixture.search,
+      ).executable;
+      final expected = await local.validateAndNormalize(_searchProposed);
+      final arguments = await fixture.searchClient.validateAndNormalize(
+        searchCommandOutputToolId.value,
+        _searchProposed,
+      );
+      expect(arguments.snapshot, expected.snapshot);
+      final expectedDescription = await local.describe(
+        expected,
+        ToolExecutionContext(
+          sessionId: SessionId('session'),
+          runId: RunId('current-run'),
+          toolInvocationId: 'current-search',
+        ),
+      );
+      final description = await fixture.searchClient.describe(
+        searchCommandOutputToolId.value,
+        arguments,
+        'session',
+        'current-run',
+        'current-search',
+        null,
+      );
+      expect(description.effects, [RemoteToolEffect.resourceInspection]);
+      expect(description.uncertainty, RemoteEffectUncertainty.none);
+      expect(description.summary, expectedDescription.summary);
+      expect(
+        description.targetUris,
+        expectedDescription.targets.map((target) => target.uri),
+      );
+      for (final invalid in <Map<String, Object?>>[
+        {},
+        {..._searchProposed, 'sessionId': 'other'},
+        {..._searchProposed, 'environmentId': 'forged'},
+        {..._searchProposed, 'program': 'git'},
+        {..._searchProposed, 'pattern': '['},
+        {..._searchProposed, 'maxMatches': 11},
+      ]) {
+        await expectLater(
+          fixture.searchClient.validateAndNormalize(
+            searchCommandOutputToolId.value,
+            invalid,
+          ),
+          throwsA(
+            isA<RemoteToolArgumentValidationFailure>().having(
+              (error) => error.code,
+              'code',
+              'invalid_arguments',
+            ),
+          ),
+        );
+      }
+      expect(fixture.storage.schemaChecks, 0);
+      expect(fixture.storage.queries, 0);
+      expect(fixture.messages, isEmpty);
+    },
+  );
+
+  test('search adapters reject the sibling route without fallback', () async {
+    for (final (client, rejected) in [
+      (fixture.client, searchCommandOutputToolId.value),
+      (fixture.searchClient, runCommandToolId.value),
+      (fixture.searchClient, 'search_command_output'),
+    ]) {
+      await expectLater(
+        client.validateAndNormalize(rejected, _searchProposed),
+        throwsA(
+          isA<AdeleRemoteFailure>()
+              .having((error) => error.code, 'code', 'internal_error')
+              .having((error) => error.declaredFailureType, 'type', isNull),
+        ),
+      );
+      final arguments = RemoteCanonicalToolArguments(snapshot: _searchProposed);
+      await expectLater(
+        client.describe(rejected, arguments, 'session', 'run', 'search', null),
+        throwsA(isA<AdeleRemoteFailure>()),
+      );
+      await expectLater(
+        client
+            .execute(
+              rejected,
+              arguments,
+              'session',
+              'run',
+              'search',
+              null,
+              null,
+            )
+            .toList(),
+        throwsA(isA<AdeleRemoteFailure>()),
+      );
+    }
+    expect(fixture.storage.schemaChecks, 0);
+    expect(fixture.messages, isEmpty);
+  });
+
+  test(
+    'search uses the executing Session and retained candidate IDs without process authority',
+    () async {
+      await fixture.seedSearchCapture();
+      fixture.host.close();
+      final writes = fixture.storage.transactions;
+      final arguments = await fixture.searchClient.validateAndNormalize(
+        searchCommandOutputToolId.value,
+        _searchProposed,
+      );
+      final events = await fixture.searchClient
+          .execute(
+            searchCommandOutputToolId.value,
+            arguments,
+            'session',
+            'later-run',
+            'search-invocation',
+            null,
+            null,
+          )
+          .toList();
+      expect(events.map((event) => event.kind), [
+        RemoteToolExecutionEventKind.terminal,
+      ]);
+      final outcome = events.single.outcome!;
+      expect(outcome.disposition, RemoteToolOutcomeDisposition.success);
+      expect(outcome.modelContent, contains('hit one'));
+      expect(outcome.modelContent, contains('hit two'));
+      final wrongSession = await fixture.searchClient
+          .execute(
+            searchCommandOutputToolId.value,
+            arguments,
+            'other',
+            'later-run',
+            'search-invocation',
+            null,
+            null,
+          )
+          .single;
+      expect(
+        wrongSession.outcome!.disposition,
+        RemoteToolOutcomeDisposition.failure,
+      );
+      expect(wrongSession.outcome!.modelContent, isNot(contains('hit one')));
+      expect(fixture.storage.transactions, writes);
+      expect(fixture.process.settled, 0);
+      expect(fixture.messages, isEmpty);
+    },
+  );
+
+  test(
+    'one generation retains continuation across distinct tool invocations',
+    () async {
+      await fixture.seedSearchCapture();
+      final writes = fixture.storage.transactions;
+      final firstArguments = await fixture.searchClient.validateAndNormalize(
+        searchCommandOutputToolId.value,
+        {..._searchProposed, 'maxMatches': 1},
+      );
+      Future<RemoteToolOutcome> execute(
+        RemoteModelToolServiceClient client,
+        RemoteCanonicalToolArguments arguments,
+        String invocation,
+      ) async =>
+          (await client
+                  .execute(
+                    searchCommandOutputToolId.value,
+                    arguments,
+                    'session',
+                    'later-run',
+                    invocation,
+                    null,
+                    null,
+                  )
+                  .single)
+              .outcome!;
+      final first = await execute(
+        fixture.searchClient,
+        firstArguments,
+        'search-one',
+      );
+      expect(first.disposition, RemoteToolOutcomeDisposition.success);
+      final firstResult = jsonDecode(first.modelContent) as Map;
+      final cursor = firstResult['cursor']! as String;
+      expect(firstResult['lines'], hasLength(1));
+      expect((firstResult['lines'] as List).single['text'], 'hit one');
+      final nextArguments = await fixture.searchClient.validateAndNormalize(
+        searchCommandOutputToolId.value,
+        {...firstArguments.snapshot, 'cursor': cursor},
+      );
+      await fixture.searchClient.materialize('session');
+      final next = await execute(
+        fixture.searchClient,
+        nextArguments,
+        'search-two',
+      );
+      expect(next.disposition, RemoteToolOutcomeDisposition.success);
+      final nextResult = jsonDecode(next.modelContent) as Map;
+      expect((nextResult['lines'] as List).single['text'], 'hit two');
+
+      final replacement = RemoteModelToolServiceDispatcher(
+        CommandOutputSearchBackend(CommandOutputSearch(fixture.transcripts)),
+      );
+      addTearDown(replacement.close);
+      final replacementClient = RemoteModelToolServiceClient(
+        _Channel(replacement),
+      );
+      final reads = fixture.storage.queries;
+      final invalidated = await execute(
+        replacementClient,
+        nextArguments,
+        'search-three',
+      );
+      expect(invalidated.disposition, RemoteToolOutcomeDisposition.failure);
+      expect(invalidated.hostData['code'], 'invalid_search_cursor');
+      expect(fixture.storage.queries, reads);
+      final fresh = await execute(
+        replacementClient,
+        firstArguments,
+        'search-four',
+      );
+      expect(fresh.disposition, RemoteToolOutcomeDisposition.success);
+      expect(
+        (jsonDecode(fresh.modelContent)['lines'] as List).single['text'],
+        'hit one',
+      );
+      expect(fixture.storage.transactions, writes);
+      expect(fixture.process.settled, 0);
       expect(fixture.messages, isEmpty);
     },
   );
@@ -122,6 +375,8 @@ void main() {
       expect(outcome.disposition, RemoteToolOutcomeDisposition.success);
       expect(outcome.effectCertainty, RemoteEffectCertainty.knownOccurred);
       expect(outcome.hostData, {
+        'runId': 'run-data',
+        'toolInvocationId': 'invocation-1',
         'environmentId': 'environment-data',
         'program': 'git',
         'arguments': ['diff', '--check', 'literal | argument'],
@@ -354,6 +609,14 @@ const _proposed = <String, Object?>{
   'workingDirectory': './src//.',
 };
 
+const _searchProposed = <String, Object?>{
+  'runId': 'retained-run',
+  'toolInvocationId': 'retained-command',
+  'pattern': 'hit',
+  'before': 0,
+  'after': 0,
+};
+
 final class _NoEffects implements AuthorizedEnvironmentProcessFacet {
   _NoEffects([String environment = 'environment'])
     : environmentId = EnvironmentId(environment);
@@ -384,6 +647,43 @@ final class _Fixture {
   late final backend = CommandToolsBackend(host, transcripts);
   late final forward = RemoteModelToolServiceDispatcher(backend);
   late final client = RemoteModelToolServiceClient(_Channel(forward));
+  late final search = CommandOutputSearch(transcripts);
+  late final searchBackend = CommandOutputSearchBackend(search);
+  late final searchForward = RemoteModelToolServiceDispatcher(searchBackend);
+  late final searchClient = RemoteModelToolServiceClient(
+    _Channel(searchForward),
+  );
+
+  Future<void> seedSearchCapture() async {
+    final writer = await transcripts.begin(
+      context: ToolExecutionContext(
+        sessionId: SessionId('session'),
+        runId: RunId('retained-run'),
+        toolInvocationId: 'retained-command',
+      ),
+      environmentId: 'retired-environment',
+      request: EnvironmentForegroundProcessRequest(
+        program: 'fixture',
+        arguments: [],
+        relativeWorkingDirectory: '',
+        timeoutSeconds: 30,
+      ),
+    );
+    await writer.append(
+      EnvironmentProcessOutput(
+        stream: EnvironmentProcessOutputStream.stdout,
+        text: 'hit one\nhit two\n',
+      ),
+    );
+    await writer.seal(
+      EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.exited,
+        exitCode: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      ),
+    );
+  }
 
   Future<List<RemoteToolExecutionEvent>> execute({
     String token = 'operation',
@@ -453,6 +753,7 @@ final class _Fixture {
   Future<void> close() async {
     host.close();
     await forward.close();
+    await searchForward.close();
     await reverse.close();
     await transcripts.close();
     storage.close();
@@ -504,7 +805,7 @@ final class _Process implements AuthorizedEnvironmentProcessService {
   }
 }
 
-final class _Channel implements AdeleRequestChannel {
+final class _Channel implements AdeleStreamChannel {
   const _Channel(this.dispatcher);
   final AdeleBackendDispatcher dispatcher;
   @override
@@ -517,6 +818,41 @@ final class _Channel implements AdeleRequestChannel {
     });
     if (response['ok'] != true) throw _RemoteFailure(response['error']! as Map);
     return response['payload'];
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) async* {
+    final replies = StreamController<Map<String, Object?>>();
+    final iterator = StreamIterator(replies.stream);
+    try {
+      await dispatcher.handle({
+        'kind': 'streamOpen',
+        'requestId': 1,
+        'method': method,
+        'payload': payload,
+      }, replies.add);
+      while (true) {
+        await dispatcher.handle({
+          'kind': 'streamCredit',
+          'requestId': 1,
+          'credit': 1,
+        }, replies.add);
+        if (!await iterator.moveNext()) break;
+        final frame = iterator.current;
+        if (frame['kind'] == 'streamDone') break;
+        if (frame['kind'] == 'streamFailure') {
+          throw _RemoteFailure(frame['error']! as Map);
+        }
+        yield frame['payload'];
+      }
+    } finally {
+      await dispatcher.handle({
+        'kind': 'streamCancel',
+        'requestId': 1,
+      }, replies.add);
+      await iterator.cancel();
+      await replies.close();
+    }
   }
 }
 

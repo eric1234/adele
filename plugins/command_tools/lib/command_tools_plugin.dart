@@ -8,10 +8,13 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
+import 'src/command_output_search.dart';
+import 'src/command_output_search_tool.dart';
 import 'src/command_transcripts.dart';
 import 'src/process_outcome.dart';
 
 export 'src/command_output_search.dart';
+export 'src/command_output_search_tool.dart';
 export 'src/command_transcripts.dart';
 
 final PluginId commandToolsPluginId = PluginId(
@@ -44,6 +47,31 @@ final class CommandToolsPlugin {
         id: commandToolsExtensionId,
         value: _CommandModelTools(transcripts),
       );
+
+  /// Independent read-only contribution; does not request a process facet.
+  /// Keep its registration alive for the lifetime of search continuations.
+  ExtensionRegistration activateSearch(ExtensionRegistry extensions) {
+    final store = transcripts;
+    if (store == null) {
+      throw StateError('Command output search requires transcript storage.');
+    }
+    return extensions.register(
+      point: modelToolContributions,
+      id: commandOutputSearchExtensionId,
+      value: _CommandOutputSearchTools(CommandOutputSearch(store)),
+    );
+  }
+}
+
+final class _CommandOutputSearchTools implements ModelToolContribution {
+  const _CommandOutputSearchTools(this.search);
+
+  final CommandOutputSearch search;
+
+  @override
+  Future<Iterable<ToolRegistration>> materialize(
+    ModelToolHostContext context,
+  ) async => [searchCommandOutputToolRegistration(search)];
 }
 
 final class _CommandModelTools implements ModelToolContribution {
@@ -108,7 +136,9 @@ final class _RunCommandExecutable implements ToolExecutable {
           'normally. A nonzero exit code is a process result, not necessarily a '
           'tool-infrastructure failure. Model-preview truncation is distinct '
           'from incomplete capture; full captured output remains available to '
-          'the user through Command Output.',
+          'the user through Command Output. Use search_command_output with the '
+          'returned exact runId/toolInvocationId to search retained output '
+          'without rerunning the command, including text omitted from previews.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['program'],
@@ -322,7 +352,7 @@ final class _RunCommandExecutable implements ToolExecutable {
         if (completed.stdoutTruncated || completed.stderrTruncated) {
           throw StateError('The Environment did not deliver complete output.');
         }
-        return _success(request, completed, stdout, stderr);
+        return _success(request, completed, stdout, stderr, context);
       } on Object catch (error) {
         Object? cleanupFailure;
         try {
@@ -367,6 +397,7 @@ final class _RunCommandExecutable implements ToolExecutable {
               ? ToolFailureKind.domain
               : ToolFailureKind.infrastructure,
           cause: error,
+          captureReference: capture == null ? null : _captureReference(context),
           certainty: executionAdmitted
               ? EffectCertainty.uncertain
               : EffectCertainty.knownNotOccurred,
@@ -456,6 +487,7 @@ final class _RunCommandExecutable implements ToolExecutable {
     EnvironmentProcessCompleted completed,
     _BoundedCommandOutput stdout,
     _BoundedCommandOutput stderr,
+    ToolExecutionContext context,
   ) {
     final bool stdoutTruncated = completed.stdoutTruncated || stdout.truncated;
     final bool stderrTruncated = completed.stderrTruncated || stderr.truncated;
@@ -470,9 +502,11 @@ final class _RunCommandExecutable implements ToolExecutable {
         stderr: stderr.value,
         stdoutTruncated: stdoutTruncated,
         stderrTruncated: stderrTruncated,
+        captureReference: _captureReference(context),
       ),
       hostData: <String, Object?>{
         ..._baseHostData(request, stdout, stderr),
+        ..._captureReference(context),
         'termination': completed.termination.name,
         'exitCode': completed.exitCode,
         'captureState': 'complete',
@@ -489,6 +523,7 @@ final class _RunCommandExecutable implements ToolExecutable {
     required String modelContent,
     required ToolFailureKind kind,
     required Object cause,
+    Map<String, Object?>? captureReference,
     Map<String, Object?> diagnostics = const <String, Object?>{},
     EffectCertainty certainty = EffectCertainty.uncertain,
   }) => ToolOutcome(
@@ -500,11 +535,14 @@ final class _RunCommandExecutable implements ToolExecutable {
         '${certainty == EffectCertainty.knownNotOccurred ? 'The process was not launched.' : 'External effects may have occurred; capture completeness is unconfirmed.'}\n'
         '${diagnostics['termination'] == null ? '' : 'Known termination: ${diagnostics['termination']}\n'}'
         '${diagnostics['exitCode'] == null ? '' : 'Known exit code: ${diagnostics['exitCode']}\n'}'
+        '${captureReference == null ? '' : _modelCaptureReference(captureReference)}'
+        '${captureReference == null ? '' : 'Capture incomplete or unconfirmed; search inspects only committed output.\n'}'
         'Preview truncation is separate from capture completeness.\n'
         'Partial STDOUT preview (truncated: ${stdout.truncated}):\n${stdout.value}\n\n'
         'Partial STDERR preview (truncated: ${stderr.truncated}):\n${stderr.value}',
     hostData: <String, Object?>{
       ..._baseHostData(request, stdout, stderr),
+      ...?captureReference,
       'stdoutTruncated': stdout.truncated,
       'stderrTruncated': stderr.truncated,
       ...diagnostics,
@@ -615,6 +653,7 @@ String _modelResult(
   required String stderr,
   required bool stdoutTruncated,
   required bool stderrTruncated,
+  required Map<String, Object?> captureReference,
 }) =>
     'Program: ${jsonEncode(request.program)}\n'
     'Arguments: ${jsonEncode(request.arguments)}\n'
@@ -624,11 +663,22 @@ String _modelResult(
     'Exit code: ${exitCode ?? '<not applicable>'}\n'
     '${termination == 'timedOut' ? 'The program did not complete normally.\n' : ''}'
     'Capture: complete. Full captured output is available to the user through Command Output.\n'
+    '${_modelCaptureReference(captureReference)}'
     'Stdout preview truncated: $stdoutTruncated\n'
     'Stderr preview truncated: $stderrTruncated\n'
     'Preview truncation does not imply full-capture loss.\n\n'
     'STDOUT:\n$stdout\n\n'
     'STDERR:\n$stderr';
+
+Map<String, Object?> _captureReference(ToolExecutionContext context) => {
+  'runId': context.runId.value,
+  'toolInvocationId': context.toolInvocationId,
+};
+
+String _modelCaptureReference(Map<String, Object?> reference) =>
+    'Retained command output: ${jsonEncode(reference)}\n'
+    'Use search_command_output with these exact identifiers to search retained '
+    'output without rerunning the command.\n';
 
 bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
 bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;

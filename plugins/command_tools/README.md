@@ -1,9 +1,10 @@
 # Command Tools
 
-Command Tools is an independently installed stock plugin that contributes the
-`run_command` model tool (`dev.adele.plugin.command-tools.run-command`). It asks
-the Session host only for `AuthorizedEnvironmentProcessFacet` and runs one
-foreground executable directly with verbatim arguments; it does not implicitly
+Command Tools is an independently installed stock plugin that contributes
+`run_command` (`dev.adele.plugin.command-tools.run-command`) and
+`search_command_output` (`dev.adele.plugin.command-tools.search-command-output`).
+Run Command asks the Session host only for `AuthorizedEnvironmentProcessFacet`
+and runs one foreground executable directly with verbatim arguments; it does not implicitly
 invoke a shell. The root `command_tools_plugin` package owns the semantics;
 `packages/backend` (`command_tools_backend`) reuses them through public generated
 model-tool and Environment transport plus `adele_plugin_backend_support`. Its
@@ -27,14 +28,20 @@ defines. Self-hosting supplies explicit `commandToolsArtifact`; its
 `includeCommandTools` switch controls backend start/registration, not runtime
 construction.
 
-Readiness advertises one extension at `dev.adele.extension.model-tools`, with
-registration ID `dev.adele.plugin.command-tools.model-tools`, generated service
-`modelTool`, configuration context `default`, and exactly
-`hostServices: ['authorizedEnvironmentProcess']`. There are no capability
-exposures. The `run_command` descriptor has the same process-only
-`executionHostServices`. Materialization and validation receive no host token;
-description uses pure identity and argument data. Only execution after host
-policy/approval receives operation-scoped process authority.
+Readiness advertises two extensions at `dev.adele.extension.model-tools` through
+the generated `modelTool` service in the same backend generation. The existing
+`dev.adele.plugin.command-tools.model-tools` contribution retains configuration
+context `default` and exactly `hostServices: ['authorizedEnvironmentProcess']`.
+Its only descriptor is `run_command`, with the same process-only
+`executionHostServices`. The separate
+`dev.adele.plugin.command-tools.output-search` contribution uses
+configuration context `command-output-search`, with `hostServices: []` and
+`executionHostServices: []`, and materializes only `search_command_output`.
+There are no capability exposures, additional backend processes, or new host
+services. Exact context routing prevents duplicate aliases or accidental process
+dependencies. Materialization and validation receive no host token; description
+uses pure identity and argument data. Only approved Run Command execution receives
+operation-scoped process authority.
 
 Generated `AuthorizedEnvironmentProcessService.runForegroundProcess` reuses the
 existing request/event DTOs with no authority-selection IDs. Reverse server
@@ -51,7 +58,8 @@ generic tool progress, RunJournal, or activity snapshots. The terminal model res
 independently retains at most 8,192 UTF-16 code units per stream as a deterministic
 4,096-unit head plus 4,096-unit tail, with surrogate-safe boundaries. Model-preview
 truncation is not transcript truncation: full captured output remains available
-to the user through Command Output. Existing `stdoutTruncated` and
+to the user through Command Output and to the model through retained-output search.
+Existing `stdoutTruncated` and
 `stderrTruncated` host-data fields retain their names; `captureState` separately
 reports capture completeness.
 
@@ -69,7 +77,10 @@ once from its generation-scoped infrastructure context under the actual
 `dev.adele.plugin.command-tools` owner, independently of each operation's process
 token. Native callers explicitly inject `CommandTranscriptStore`; omission allows
 materialization/description but rejects execution before process launch. There is
-no default in-memory transcript or native application reader.
+no default in-memory transcript or native application reader. Native callers retain
+the existing run-only `activate` method and explicitly call `activateSearch` for
+the independent search contribution with configured transcript storage. Each
+registration has its own ordinary exact binding and retirement lifetime.
 
 The current v1 baseline has `adele_command_captures` headers keyed by the host's
 existing Run-local tool-invocation ID with composite key `(invocation_id, run_id)`
@@ -163,9 +174,108 @@ generated unary and server-streamed calls with exact generation/view lifetimes.
 `CommandOutputSearchResult`, and `CommandOutputSearchLine` values. It accepts the
 existing `CommandOutputService` reader, not a writer or Environment facet. Session
 identity is supplied by a trusted caller; Run and invocation select the exact
-retained capture through the reader's existing association checks. This API has
-no generated transport or registration. **Model access, including a
-`search_command_output` tool, is not implemented.**
+retained capture through the reader's existing association checks. The shared
+semantic model-tool adapter reuses this engine through ordinary generated
+model-tool transport, not a second search service protocol. Both native and remote
+registrations use the same schema, validation, effects, and outcome projection.
+
+### Agent workflow and authority
+
+1. Execute `run_command` normally, including host-owned approval. Read its actual
+   termination, exit code, preview-truncation flags, and capture status.
+2. Use the returned exact `runId` and `toolInvocationId` reference with
+   `search_command_output` and a line-oriented regex `pattern` to inspect omitted
+   text. Earlier Runs in the current Session are eligible too.
+3. Read the returned matching and surrounding lines, capture/coverage status, and
+   search stop reason. If a continuation cursor is returned, repeat the same
+   reference, pattern, and options with that cursor to continue searching.
+
+The stable model-visible reference is one JSON-valued line:
+
+```text
+Retained command output: {"runId":"original-run","toolInvocationId":"original-invocation"}
+```
+
+The same two fields appear at the top level of structured `hostData`. Neither
+representation supplies a model-selectable Session or Environment.
+The reference is historical evidence identity from the original
+`ToolExecutionContext`, not a new Command ID, process handle, provider call ID,
+execution token, or permission grant. Run Command only publishes it after capture
+admission is acknowledged. Pre-admission rejection or lost acknowledgement does
+not claim a searchable capture; a later failure retains the reference with an
+explicit incomplete-capture warning.
+
+Search takes no model-selectable Session, Environment, program, or host token.
+Its authoritative Session comes from the actual search invocation's execution
+context. Project Storage authorization and the reader's Session/Run/invocation
+association checks remain in force; knowing another Session's reference cannot
+authorize access. Search uses the generation's existing storage grant, never the
+originating process invocation. It needs no Environment materialization or
+process/filesystem/mutation facet, including after the originating command has
+settled or its Environment provider has retired.
+
+The effect is a certain `resourceInspection` of the selected retained command
+output, not `sourceRead` or process execution. The normal host policy permits that
+single read-only effect without command-execution approval; it still gates
+processes/mutations and denies uncertain or mixed inspection effects.
+
+The model schema is an object with only these fields and
+`additionalProperties: false`:
+
+| Field | Required | Meaning / limits |
+| --- | --- | --- |
+| `runId` | Yes | Original Run identity, string of 1 through 1,024 UTF-16 units. |
+| `toolInvocationId` | Yes | Original Run-local invocation identity, string of 1 through 1,024 UTF-16 units. |
+| `pattern` | Yes | Nonempty regex, at most 256 UTF-16 code units. |
+| `before` | No | Integer 0 through 10; S1 default 3. |
+| `after` | No | Integer 0 through 10; S1 default 5. |
+| `maxMatches` | No | Integer 1 through 10; S1 default 10. |
+| `cursor` | No | Opaque string, at most 196,608 units, returned by the previous search. |
+
+S1 validates regex syntax and line-oriented restrictions as well as the declared
+bounds. The cursor cannot change the reference,
+Session, pattern, options, or captured snapshot.
+
+### Model results and bounds
+
+Search returns a compact JSON object in `modelContent`, not an internal engine
+object dump. The reference, searched pattern and requested options accompany
+`captureState`, known `termination`/`exitCode`, `committedOutputOnly`, `matchCount`,
+`stop`, `reachedEnd`, `exhaustive`, `contextIncomplete`, cumulative
+`unsearchedLongLines`/`regexTimeouts`, and per-call `scannedCodeUnits`/`storagePages`.
+`lines` identifies `stdout` or `stderr`, one-based `lineNumber`, `isMatch`, first
+match offsets, the bounded `text`, original `length`, `excerptOffset`, explicit
+`truncatedBefore`/`truncatedAfter`, LF `terminated` status, and stable storage
+`chunk`/`offset` locators. Text uses JSON escaping, with control and Unicode line
+separator characters escaped rather than rendered as extra transcript lines.
+
+`continuation` distinguishes `available`, `none`, and
+`unavailableModelResultLimit`; `cursor` appears only in model content, not a second
+copy in `hostData`. Host data retains bounded summary/status fields, not duplicate
+lines. `cursorTooLarge` explicitly identifies a token omitted for the model budget.
+No-match results must be interpreted with `stop`, `reachedEnd`, `exhaustive`, and
+capture completeness. A failed/interrupted capture can have an exhaustive search
+of its retained prefix, never proof that uncaptured output lacked a diagnostic.
+Absent/live captures and invalid/stale continuation are distinct domain failures;
+storage, corrupt-capture, and infrastructure failures are not successful empty
+searches. Invalid/stale cursors instruct a fresh search, not a command rerun.
+
+The plugin limits one search model result to **256 KiB of UTF-8 JSON**, retaining
+S1's bounded excerpts intact, and one model-facing cursor to **16,384 ASCII
+characters**. These are model-context limits, not a claim that the generated
+transport cannot carry S1's larger cursor. An oversized cursor is omitted whole,
+with `cursorTooLarge: true`, `cursor: null`, and explicit guidance to start a fresh
+search with narrower context or a more selective pattern. The actual engine stop
+and coverage flags remain unchanged; this is neither a fabricated end nor a
+silently truncated token. There is no alternate paging system or search-job state.
+
+The shared backend transport bounds the entire encoded frame at **8 MiB** and
+does not impose a smaller `modelContent` string limit. Tests measure encoded
+outcomes including control-character escaping and cursor content, not just raw
+excerpt lengths. Model continuation carries `modelContent`, not host-private
+fields; repeated results still consume the normal accumulated context budget.
+This feature does not compact history or guarantee provider-specific context
+capacity.
 
 Search admits terminal `complete`, `failed`, and `interrupted` capture snapshots.
 `absent` and live `capturing` return distinct non-search statuses, not exhaustive

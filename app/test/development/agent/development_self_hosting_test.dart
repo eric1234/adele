@@ -339,10 +339,10 @@ void main() {
           await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
         ),
       ];
-      expect(materialized, hasLength(7));
+      expect(materialized, hasLength(8));
       expect(
         materialized.map((tool) => tool.modelDefinition.alias).toSet(),
-        hasLength(7),
+        hasLength(8),
       );
       for (final sourceTool in sourceTools) {
         final sourceModel = sourceTool.modelDefinition;
@@ -480,7 +480,7 @@ void main() {
           (tool) => tool.modelDefinition.alias,
         ),
         developmentSelfHostingToolAliases.where(
-          (alias) => alias != 'run_command',
+          (alias) => alias != 'run_command' && alias != 'search_command_output',
         ),
         reason: 'Command termination must not enable an in-process fallback.',
       );
@@ -511,7 +511,13 @@ void main() {
       expect(affinityStates, <String?>[null, null]);
       expect(
         outbound.last['tools'],
-        capturedTools.where((tool) => tool['name'] != 'run_command').toList(),
+        capturedTools
+            .where(
+              (tool) =>
+                  tool['name'] != 'run_command' &&
+                  tool['name'] != 'search_command_output',
+            )
+            .toList(),
       );
       expect(outbound.last['tool_choice'], 'auto');
       expect(outbound.last['parallel_tool_calls'], isTrue);
@@ -650,7 +656,7 @@ void main() {
           (tool) => tool.modelDefinition.alias,
         ),
         developmentSelfHostingToolAliases.where(
-          (alias) => alias != 'run_command',
+          (alias) => alias != 'run_command' && alias != 'search_command_output',
         ),
       );
       final reducedSearch = reduced.runtime.extensions

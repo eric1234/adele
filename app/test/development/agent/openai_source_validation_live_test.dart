@@ -144,12 +144,14 @@ Future<void> _runSourceValidation({
       (MaterializedTool tool) => tool.modelDefinition.alias,
     ),
     <String>[
+      'run_command',
+      'search_command_output',
+      'search',
+      'glob',
       'read_file',
       'apply_patch',
       'create_file',
       'delete_file',
-      'run_command',
-      'search',
     ],
   );
   final SourceCodingLiveProviderActivation model = await startProvider(harness);

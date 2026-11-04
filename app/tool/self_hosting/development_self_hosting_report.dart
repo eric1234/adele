@@ -13,6 +13,7 @@ const int developmentSelfHostingReportSchemaVersion = 1;
 
 const List<String> developmentSelfHostingToolAliases = <String>[
   'run_command',
+  'search_command_output',
   'search',
   'glob',
   'read_file',

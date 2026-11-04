@@ -6,17 +6,24 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
+import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
+import 'package:command_tools_contract/command_tools_contract.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart'
+    show commandOutputSearchExtensionId, searchCommandOutputToolId;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -225,14 +232,26 @@ void main() {
       final fixture = await commandFixture();
       final process = fixture.process;
       expect(fixture.command.connection.capabilityExposures, isEmpty);
-      final exposure = fixture.command.connection.extensionExposures.single;
+      final exposure = fixture.command.connection.extensionExposures
+          .singleWhere((item) => item.extensionId == '$_commandId.model-tools');
       expect(exposure.extensionId, '$_commandId.model-tools');
       expect(exposure.metadata, {
         'hostServices': [authorizedEnvironmentProcessServiceId],
       });
       expect(
-        fixture.tools.tools.single.definition.id.value,
-        '$_commandId.run-command',
+        fixture.tools.tools.map((tool) => tool.modelDefinition.alias),
+        unorderedEquals(['run_command', 'search_command_output']),
+      );
+      final searchExposure = fixture.command.connection.extensionExposures
+          .singleWhere(
+            (item) => item.extensionId == commandOutputSearchExtensionId.value,
+          );
+      expect(searchExposure.configurationContext, 'command-output-search');
+      expect(searchExposure.serviceId, remoteModelToolServiceId);
+      expect(searchExposure.metadata, {'hostServices': <String>[]});
+      expect(
+        fixture.tools.byAlias('search_command_output')!.definition.id,
+        searchCommandOutputToolId,
       );
       expect(process.opens, 0);
       final tool = fixture.tools.byAlias('run_command')!;
@@ -300,6 +319,351 @@ void main() {
       expect(observation.outcome.disposition, ToolOutcomeDisposition.success);
       expect(process.opens, 1);
       expect(process.requested, [AuthorizedEnvironmentProcessFacet]);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'real Command AOT recovers an omitted diagnostic through model-facing search continuations without rerunning',
+    () async {
+      final fixture = await commandFixture();
+      final captured = await _captureDiagnosticOutput(
+        fixture.tools,
+        fixture.process,
+        fixture.worktree,
+      );
+      expect(captured.output.length, greaterThan(8192));
+      expect(captured.outcome.modelContent, isNot(contains(_outputDiagnostic)));
+      expect(captured.outcome.hostData['stdoutTruncated'], isTrue);
+      expect(
+        captured.outcome.hostData['stdout'],
+        isNot(contains(_outputDiagnostic)),
+      );
+      expect(captured.outcome.hostData['captureState'], 'complete');
+      expect(captured.outcome.hostData['exitCode'], 7);
+      expect(fixture.process.opens, 1);
+
+      final reference = _commandOutputReference(captured.outcome.modelContent);
+      expect(reference, {
+        'runId': captured.invocation.context.runId.value,
+        'toolInvocationId': captured.invocation.id.value,
+      });
+      final before = await _commandOutputSnapshot(
+        fixture.command.connection,
+        fixture.process.sessionId,
+        reference,
+      );
+      expect(
+        (before['chunks']! as List<Map<String, Object?>>)
+            .map((chunk) => chunk['text'])
+            .join(),
+        captured.output,
+      );
+
+      // This peer sees the actual provider request, not ToolOutcome.hostData.
+      final peer = _OutputSearchModel();
+      final model = ModelProviderCapabilityAdapter(
+        _outputSearchModelBinding(peer),
+        selectedModel: 'scripted-output-search',
+      );
+      final input = <SemanticModelInputItem>[
+        SemanticToolProposalInput(proposal: captured.invocation.proposal),
+        SemanticToolOutcomeInput(
+          providerCallId: captured.invocation.proposal.providerCallId,
+          outcome: captured.outcome,
+        ),
+      ];
+      final run = AgentRun(
+        id: RunId('model-output-search-run'),
+        sessionId: fixture.process.sessionId,
+      )..start();
+      final invocations = <ToolInvocationId>[];
+      String? answer;
+      for (var turn = 0; turn < 4; turn++) {
+        final events = await model
+            .invoke(
+              SemanticModelRequest(
+                invocationId: ModelInvocationId('output-search-model-$turn'),
+                context: InferenceContextSnapshot.fromStrategy(
+                  StrategyInferenceMaterial(input: input),
+                ),
+                tools: fixture.tools,
+              ),
+            )
+            .toList()
+            .timeout(_bound);
+        expect(events.last, isA<ModelInvocationSettledEvent>());
+        final item = events.whereType<ModelOutputItemCompleted>().single.item;
+        if (item is ModelTextOutput) {
+          answer = item.content;
+          break;
+        }
+        final proposal = (item as ModelToolProposalOutput).proposal;
+        expect(proposal.alias, 'search_command_output');
+        final result = await _searchCommandOutput(
+          fixture.tools,
+          run,
+          proposal.arguments,
+          proposal: proposal,
+        );
+        invocations.add(result.invocation.id);
+        expect(result.outcome.disposition, ToolOutcomeDisposition.success);
+        final body = _jsonMap(result.outcome.modelContent);
+        expect(body['captureState'], 'complete');
+        expect(body['termination'], 'exited');
+        expect(body['exitCode'], 7);
+        expect(body['committedOutputOnly'], isFalse);
+        expect(body['contextIncomplete'], isFalse);
+        expect(body['cursorTooLarge'], isFalse);
+        if (turn < 2) {
+          final lines = (body['lines']! as List).cast<Map<String, Object?>>();
+          expect(body['stop'], 'matchLimit');
+          expect(body['reachedEnd'], isFalse);
+          expect(body['exhaustive'], isFalse);
+          expect(body['continuation'], 'available');
+          expect(body['cursor'], isA<String>());
+          expect(lines.map((line) => line['text']), [
+            'context before ${turn + 1}',
+            '$_outputDiagnostic ${turn + 1}',
+            'context after ${turn + 1}',
+          ]);
+          expect(lines.map((line) => line['lineNumber']), [
+            for (var line = 81 + turn * 4; line <= 83 + turn * 4; line++) line,
+          ]);
+          expect(lines.map((line) => line['isMatch']), [false, true, false]);
+          for (final line in lines) {
+            expect(line['stream'], 'stdout');
+            expect(line['chunk'], greaterThan(0));
+            expect(line['offset'], greaterThanOrEqualTo(0));
+            expect(line['truncatedBefore'], isFalse);
+            expect(line['truncatedAfter'], isFalse);
+          }
+        } else {
+          expect(body['lines'], isEmpty);
+          expect(body['stop'], 'end');
+          expect(body['reachedEnd'], isTrue);
+          expect(body['exhaustive'], isTrue);
+          expect(body['continuation'], 'none');
+          expect(body['cursor'], isNull);
+        }
+        input.add(SemanticToolProposalInput(proposal: proposal));
+        input.add(
+          SemanticToolOutcomeInput(
+            providerCallId: proposal.providerCallId,
+            outcome: result.outcome,
+          ),
+        );
+        expect(fixture.process.opens, 1);
+      }
+      expect(answer, 'Recovered: $_outputDiagnostic 1; $_outputDiagnostic 2');
+      expect(peer.calls, 4);
+      expect(peer.reference, reference);
+      expect(invocations.toSet(), hasLength(3));
+      run.complete();
+      expect(
+        await _commandOutputSnapshot(
+          fixture.command.connection,
+          fixture.process.sessionId,
+          reference,
+        ),
+        before,
+        reason:
+            'Search must not alter retained text, metadata, or capture state.',
+      );
+      expect(fixture.process.opens, 1);
+      expect(fixture.process.requested, [AuthorizedEnvironmentProcessFacet]);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'historical Command output search needs no Environment and isolates associations and retired generations',
+    () async {
+      final fixture = await commandFixture();
+      final captured = await _captureDiagnosticOutput(
+        fixture.tools,
+        fixture.process,
+        fixture.worktree,
+      );
+      final reference = _commandOutputReference(captured.outcome.modelContent);
+      final sessionId = fixture.process.sessionId;
+      final other = fixture.lifecycle.createSession(
+        taskId: fixture.lifecycle.store.session(sessionId)!.taskId,
+        strategyId: chatStrategyId,
+      );
+      final before = await _commandOutputSnapshot(
+        fixture.command.connection,
+        sessionId,
+        reference,
+      );
+      await fixture.git.close();
+      expect(
+        fixture.tools.byAlias('run_command')!.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        fixture.tools
+            .byAlias('search_command_output')!
+            .executable
+            .validateBinding,
+        returnsNormally,
+      );
+
+      // The overall catalog still needs process authority for run_command.
+      // Select the separate advertised contribution, retaining its exact binding.
+      final context = _NoEnvironmentContext(sessionId);
+      final tools = await _commandOutputSearchTools(extensions, context);
+      final run = AgentRun(
+        id: RunId('later-historical-output-search'),
+        sessionId: sessionId,
+      )..start();
+      expect(run.id.value, isNot(reference['runId']));
+      final arguments = <String, Object?>{
+        ...reference,
+        'pattern': _outputDiagnostic,
+        'before': 1,
+        'after': 1,
+        'maxMatches': 1,
+      };
+      final first = await _searchCommandOutput(tools, run, arguments);
+      expect(first.outcome.disposition, ToolOutcomeDisposition.success);
+      final firstBody = _jsonMap(first.outcome.modelContent);
+      expect(firstBody['matchCount'], 1);
+      expect(firstBody['captureState'], 'complete');
+      final cursor = firstBody['cursor']! as String;
+      final continuedArguments = {...arguments, 'cursor': cursor};
+      final second = await _searchCommandOutput(tools, run, continuedArguments);
+      expect(second.invocation.id, isNot(first.invocation.id));
+      expect(second.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(second.outcome.modelContent, contains('$_outputDiagnostic 2'));
+      expect(
+        second.outcome.modelContent,
+        isNot(contains('$_outputDiagnostic 1')),
+      );
+
+      for (final wrong in [
+        {...arguments, 'runId': 'unrelated-run'},
+        {...arguments, 'toolInvocationId': 'unrelated-invocation'},
+      ]) {
+        final missing = await _searchCommandOutput(tools, run, wrong);
+        final body = _jsonMap(missing.outcome.modelContent);
+        expect(body['captureState'], 'absent');
+        expect(body['stop'], 'absent');
+        expect(body['exhaustive'], isFalse);
+        expect(body['lines'], isEmpty);
+        expect(body['cursor'], isNull);
+        expect(
+          missing.outcome.modelContent,
+          isNot(contains('$_outputDiagnostic 1')),
+        );
+      }
+      final otherContext = _NoEnvironmentContext(other.id);
+      final otherTools = await _commandOutputSearchTools(
+        extensions,
+        otherContext,
+      );
+      final otherRun = AgentRun(
+        id: RunId('other-session-output-search'),
+        sessionId: other.id,
+      )..start();
+      final isolated = await _searchCommandOutput(
+        otherTools,
+        otherRun,
+        arguments,
+      );
+      expect(isolated.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(isolated.outcome.hostData['code'], 'association_mismatch');
+      expect(
+        isolated.outcome.modelContent,
+        isNot(contains('$_outputDiagnostic 1')),
+      );
+      expect(_jsonMap(isolated.outcome.modelContent), isNot(contains('lines')));
+      otherRun.complete();
+      for (final key in ['sessionId', 'environmentId']) {
+        final invalid = await _commandOutputSearchResolution(tools, run, {
+          ...arguments,
+          key: other.id.value,
+        });
+        expect(
+          (invalid as RejectedToolProposal).failure.kind,
+          ToolProposalFailureKind.invalidArguments,
+        );
+      }
+      final wrongContext = ToolExecutionContext(
+        sessionId: other.id,
+        runId: run.id,
+        toolInvocationId: 'wrong-session-execution',
+      );
+      await expectLater(
+        () => first.invocation.tool.executable.describe(
+          first.invocation.arguments,
+          wrongContext,
+        ),
+        throwsStateError,
+      );
+      await expectLater(
+        first.invocation.tool.executable
+            .execute(first.invocation.arguments, wrongContext)
+            .toList(),
+        throwsStateError,
+      );
+      expect(context.requested, isEmpty);
+      expect(otherContext.requested, isEmpty);
+
+      await fixture.command.close();
+      final replacement = await start(
+        commandArtifact,
+        _commandId,
+        lifecycle: fixture.lifecycle,
+      );
+      final fresh = await _commandOutputSearchTools(extensions, context);
+      final rejected = await _searchCommandOutput(
+        fresh,
+        run,
+        continuedArguments,
+      );
+      expect(rejected.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(rejected.outcome.hostData['code'], 'invalid_search_cursor');
+      final restarted = await _searchCommandOutput(fresh, run, arguments);
+      expect(restarted.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(
+        _jsonMap(restarted.outcome.modelContent)['lines'],
+        firstBody['lines'],
+      );
+      final stale = await _commandOutputSearchResolution(tools, run, arguments);
+      expect(
+        (stale as RejectedToolProposal).failure.kind,
+        ToolProposalFailureKind.staleBinding,
+      );
+      for (final old in [
+        tools.byAlias('search_command_output')!,
+        fixture.tools.byAlias('search_command_output')!,
+      ]) {
+        expect(
+          old.executable.validateBinding,
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        await expectLater(
+          old.executable
+              .execute(first.invocation.arguments, first.invocation.context)
+              .toList(),
+          throwsA(isA<StaleToolBindingException>()),
+        );
+      }
+      expect(
+        await _commandOutputSnapshot(
+          replacement.connection,
+          sessionId,
+          reference,
+        ),
+        before,
+      );
+      expect(context.requested, isEmpty);
+      expect(fixture.process.opens, 1);
+      expect(fixture.git.connection.isClosed, isTrue);
+      expect(replacement.connection.isClosed, isFalse);
+      expect(host.isClosed, isFalse);
+      run.complete();
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
@@ -1316,6 +1680,331 @@ void main() {
       expect(host.isClosed, isFalse);
     },
   );
+}
+
+const _outputDiagnostic = 'ADELE_RETAINED_MIDDLE_DIAGNOSTIC';
+
+Future<({ToolInvocation invocation, ToolOutcome outcome, String output})>
+_captureDiagnosticOutput(
+  MaterializedToolSet tools,
+  _ObservedProcess process,
+  Directory worktree,
+) async {
+  final output =
+      '${[...List.filled(80, 'padding ${'x' * 80}'), 'context before 1', '$_outputDiagnostic 1', 'context after 1', 'between diagnostics', 'context before 2', '$_outputDiagnostic 2', 'context after 2', ...List.filled(80, 'padding ${'y' * 80}')].join('\n')}\n';
+  // Keep the diagnostic out of argv, which is itself part of the model preview.
+  await File(
+    '${worktree.path}/retained-output.sh',
+  ).writeAsString("printf '%s' '$output'\nexit 7\n");
+  final invocation = await _commandInvocation(tools, process.sessionId, {
+    'program': '/bin/sh',
+    'arguments': ['retained-output.sh'],
+  });
+  final run = AgentRun(
+    id: invocation.context.runId,
+    sessionId: process.sessionId,
+  )..start();
+  final pending = await const ToolPolicyGate().evaluate(
+    invocation: invocation,
+    policy: const ApprovalGatedToolPolicy(),
+    interruptionId: RunInterruptionId('capture-output-approval'),
+  );
+  expect(pending, isA<ToolApprovalRequired>());
+  run.interrupt((pending as ToolApprovalRequired).interruption);
+  final approved = const ToolPolicyGate().approve(
+    run.resolveInterruption(
+      ToolApprovalResolution(
+        interruptionId: pending.interruption.id,
+        toolInvocationId: invocation.id,
+        approved: true,
+      ),
+    ),
+  );
+  final observation = await collectToolExecution(
+    run.startToolExecution(approved).events(),
+  ).timeout(_bound);
+  expect(observation.outcome.disposition, ToolOutcomeDisposition.success);
+  expect(observation.progress, isEmpty);
+  run.complete();
+  return (invocation: invocation, outcome: observation.outcome, output: output);
+}
+
+Map<String, Object?> _jsonMap(String text) =>
+    Map<String, Object?>.from(jsonDecode(text) as Map);
+
+Map<String, Object?> _commandOutputReference(String modelContent) {
+  const prefix = 'Retained command output: ';
+  final line = const LineSplitter()
+      .convert(modelContent)
+      .singleWhere((line) => line.startsWith(prefix));
+  final reference = _jsonMap(line.substring(prefix.length));
+  expect(reference.keys, unorderedEquals(['runId', 'toolInvocationId']));
+  for (final value in reference.values) {
+    expect(
+      value,
+      isA<String>().having((text) => text.isNotEmpty, 'nonempty', true),
+    );
+  }
+  return reference;
+}
+
+Future<MaterializedToolSet> _commandOutputSearchTools(
+  ExtensionRegistry extensions,
+  ModelToolHostContext context,
+) async {
+  final binding = extensions
+      .discover(modelToolContributions)
+      .singleWhere((binding) => binding.id == commandOutputSearchExtensionId);
+  final registrations = await binding.value.materialize(context);
+  binding.validate();
+  final catalog = ToolCatalog();
+  for (final registration in registrations) {
+    catalog.register(registration);
+  }
+  final tools = catalog.materialize();
+  expect(tools.tools.single.definition.id, searchCommandOutputToolId);
+  return tools;
+}
+
+Future<ToolProposalResolution> _commandOutputSearchResolution(
+  MaterializedToolSet tools,
+  AgentRun run,
+  Map<String, Object?> arguments, {
+  ProviderToolProposal? proposal,
+}) {
+  final index = _nextCommandInvocation++;
+  return const ToolInvocationResolver()
+      .resolve(
+        invocationId: ToolInvocationId('output-search-invocation-$index'),
+        proposal:
+            proposal ??
+            ProviderToolProposal(
+              providerCallId: 'output-search-call-$index',
+              alias: 'search_command_output',
+              arguments: arguments,
+            ),
+        tools: tools,
+        sessionId: run.sessionId,
+        runId: run.id,
+      )
+      .timeout(_bound);
+}
+
+Future<({ToolInvocation invocation, ToolOutcome outcome})> _searchCommandOutput(
+  MaterializedToolSet tools,
+  AgentRun run,
+  Map<String, Object?> arguments, {
+  ProviderToolProposal? proposal,
+}) async {
+  final resolved = await _commandOutputSearchResolution(
+    tools,
+    run,
+    arguments,
+    proposal: proposal,
+  );
+  expect(resolved, isA<ResolvedToolProposal>());
+  final invocation = (resolved as ResolvedToolProposal).invocation;
+  final allowed = await const ToolPolicyGate().evaluate(
+    invocation: invocation,
+    policy: const ApprovalGatedToolPolicy(),
+    interruptionId: RunInterruptionId('output-search-${invocation.id.value}'),
+  );
+  expect(allowed, isA<ToolExecutionAllowed>());
+  expect(allowed.effects.effects, {ToolEffect.resourceInspection});
+  expect(allowed.effects.uncertainty, EffectUncertainty.none);
+  final observation = await collectToolExecution(
+    run.startToolExecution(allowed as ToolExecutionAllowed).events(),
+  ).timeout(_bound);
+  expect(observation.progress, isEmpty);
+  return (invocation: invocation, outcome: observation.outcome);
+}
+
+Future<Map<String, Object?>> _commandOutputSnapshot(
+  PluginBackendConnection connection,
+  SessionId sessionId,
+  Map<String, Object?> reference,
+) async {
+  final client = CommandOutputServiceClient(
+    connection.channelFor(
+      connection.defaultConfigurationContext,
+      commandOutputServiceId,
+    ),
+  );
+  final runId = reference['runId']! as String;
+  final invocationId = reference['toolInvocationId']! as String;
+  final state = await client
+      .getState(sessionId.value, runId, invocationId)
+      .timeout(_bound);
+  expect(state.state, 'complete');
+  final chunks = <Map<String, Object?>>[];
+  var cursor = 0;
+  while (true) {
+    final page = await client
+        .readAfter(
+          sessionId.value,
+          runId,
+          invocationId,
+          cursor,
+          commandOutputPageChunks,
+          commandOutputPageCodeUnits,
+        )
+        .timeout(_bound);
+    expect(page.state.version, state.version);
+    expect(page.state.highWater, state.highWater);
+    if (page.chunks.isEmpty) break;
+    for (final chunk in page.chunks) {
+      expect(chunk.cursor, ++cursor);
+      chunks.add({
+        'cursor': chunk.cursor,
+        'stream': chunk.stream,
+        'text': chunk.text,
+      });
+    }
+  }
+  expect(cursor, state.highWater);
+  expect(
+    chunks.fold(0, (sum, chunk) => sum + (chunk['text']! as String).length),
+    state.totalCodeUnits,
+  );
+  return {
+    'state': {
+      'sessionId': state.sessionId,
+      'runId': state.runId,
+      'toolInvocationId': state.toolInvocationId,
+      'state': state.state,
+      'version': state.version,
+      'highWater': state.highWater,
+      'totalCodeUnits': state.totalCodeUnits,
+      'program': state.program,
+      'argumentsJson': state.argumentsJson,
+      'workingDirectory': state.workingDirectory,
+      'environmentId': state.environmentId,
+      'timeoutSeconds': state.timeoutSeconds,
+      'termination': state.termination,
+      'exitCode': state.exitCode,
+      'failure': state.failure,
+    },
+    'chunks': chunks,
+  };
+}
+
+final class _NoEnvironmentContext implements ModelToolHostContext {
+  _NoEnvironmentContext(this.sessionId);
+  @override
+  final SessionId sessionId;
+  final requested = <Type>[];
+  @override
+  Future<T> requireHostService<T extends Object>() async {
+    requested.add(T);
+    throw StateError('Retained-output search must not request $T.');
+  }
+}
+
+ProviderBinding _outputSearchModelBinding(AdeleStreamChannel channel) {
+  final registry = CapabilityRegistry();
+  registry.register(
+    provider: ProviderDescriptor(
+      id: ProviderId('dev.adele.test.output-search-model'),
+      capability: modelProviderCapability,
+      pluginId: 'dev.adele.test.output-search-model',
+      displayName: 'Scripted retained-output search',
+      serviceId: modelProviderServiceId,
+    ),
+    endpoint: AdeleRequestChannelEndpoint(
+      channel: channel,
+      serviceId: modelProviderServiceId,
+      isAvailable: () => true,
+    ),
+  );
+  return registry.resolve(modelProviderCapability);
+}
+
+final class _OutputSearchModel implements AdeleStreamChannel {
+  int calls = 0;
+  late Map<String, Object?> reference;
+  final matches = <String>[];
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      throw StateError('Model invocation requires streaming.');
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) async* {
+    expect(method, modelProviderServiceInvokeId);
+    calls++;
+    final request = payload['request']! as Map<String, Object?>;
+    final outcomes = (request['input']! as List<Object?>)
+        .cast<Map<String, Object?>>()
+        .where((item) => item['kind'] == 'toolOutcome')
+        .map((item) => item['toolOutcome']! as Map<String, Object?>)
+        .toList();
+    for (final outcome in outcomes) {
+      expect(outcome.keys, unorderedEquals(['callId', 'status', 'content']));
+      expect(outcome['status'], 'success');
+    }
+    String? cursor;
+    var finished = false;
+    if (calls == 1) {
+      expect(outcomes, hasLength(1));
+      final content = outcomes.single['content']! as String;
+      expect(content, isNot(contains(_outputDiagnostic)));
+      reference = _commandOutputReference(content);
+    } else {
+      final result = _jsonMap(outcomes.last['content']! as String);
+      expect(result['runId'], reference['runId']);
+      expect(result['toolInvocationId'], reference['toolInvocationId']);
+      for (final line
+          in (result['lines']! as List<Object?>).cast<Map<String, Object?>>()) {
+        if (line['isMatch'] == true) matches.add(line['text']! as String);
+      }
+      cursor = result['cursor'] as String?;
+      finished = result['exhaustive'] == true;
+      expect(finished || cursor != null, isTrue);
+    }
+    yield {
+      'kind': 'output',
+      'observation': null,
+      'terminal': null,
+      'output': {
+        'kind': finished ? 'text' : 'toolProposal',
+        'itemId': null,
+        'nativeMetadata': null,
+        'nativePresentation': null,
+        'text': finished ? 'Recovered: ${matches.join('; ')}' : null,
+        'toolProposal': finished
+            ? null
+            : {
+                'callId': 'scripted-output-search-$calls',
+                'name': 'search_command_output',
+                'arguments': {
+                  ...reference,
+                  'pattern': _outputDiagnostic,
+                  'before': 1,
+                  'after': 1,
+                  'maxMatches': 1,
+                  'cursor': ?cursor,
+                },
+              },
+      },
+    };
+    yield {
+      'kind': 'terminal',
+      'observation': null,
+      'output': null,
+      'terminal': {
+        'settlement': 'completed',
+        'incompleteReason': null,
+        'failure': null,
+        'providerStopReason': 'stop',
+        'usage': null,
+        'effectiveModel': 'scripted-output-search',
+        'responseId': null,
+        'requestId': null,
+        'nativeState': null,
+        'affinityState': null,
+      },
+    };
+  }
 }
 
 EnvironmentEstablishmentOwner? _establishmentOwner(

@@ -13,9 +13,9 @@ final class CommandOutputSearchRequest {
     required this.runId,
     required this.toolInvocationId,
     required this.pattern,
-    this.before = 3,
-    this.after = 5,
-    this.maxMatches = 10,
+    this.before = CommandOutputSearch.defaultBefore,
+    this.after = CommandOutputSearch.defaultAfter,
+    this.maxMatches = CommandOutputSearch.maximumMatches,
     this.cursor,
   });
 
@@ -150,6 +150,9 @@ final class CommandOutputSearch {
 
   final CommandOutputService output;
   final Hmac _mac;
+  static const int defaultBefore = 3;
+  static const int defaultAfter = 5;
+  static const int maximumIdentityCodeUnits = 1024;
   static const int maximumPatternCodeUnits = 256;
   static const int maximumContextLines = 10;
   static const int maximumMatches = 10;
@@ -166,7 +169,7 @@ final class CommandOutputSearch {
   Future<CommandOutputSearchResult> search(
     CommandOutputSearchRequest request,
   ) async {
-    _validate(request);
+    validateRequest(request);
     // Authenticate before any read. Even a valid cursor is never read authority.
     final saved = request.cursor == null ? null : _decode(request.cursor!);
     if (saved != null && saved[0] != _query(request)) {
@@ -334,12 +337,14 @@ final class CommandOutputSearch {
     );
   }
 
-  static void _validate(CommandOutputSearchRequest r) {
+  /// Pure validation shared with model-tool admission; never reads storage.
+  /// Cursor authentication and capture association are checked by [search].
+  static void validateRequest(CommandOutputSearchRequest r) {
     if ([
           r.sessionId,
           r.runId,
           r.toolInvocationId,
-        ].any((id) => id.isEmpty || id.length > 1024) ||
+        ].any((id) => id.isEmpty || id.length > maximumIdentityCodeUnits) ||
         r.pattern.isEmpty ||
         r.pattern.length > maximumPatternCodeUnits ||
         r.pattern.contains(RegExp('[\x00\r\n\u2028\u2029]')) ||

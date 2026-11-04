@@ -178,8 +178,8 @@ void main() {
           extensions: runtime.extensions,
         );
         expect(
-          catalog.materialize().tools.single.modelDefinition.alias,
-          'run_command',
+          catalog.materialize().tools.map((tool) => tool.modelDefinition.alias),
+          unorderedEquals(['run_command', 'search_command_output']),
         );
         expect(
           runtime.lifecycle.environmentRuntime

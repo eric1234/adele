@@ -4,6 +4,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
+import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -111,6 +112,47 @@ void main() {
   }
 
   test(
+    'retained output inspection is certain and needs no approval or reads',
+    () async {
+      catalog.register(
+        searchCommandOutputToolRegistration(
+          CommandOutputSearch(_UnreadCommandOutput()),
+        ),
+      );
+      final invocation = await _resolve(
+        catalog.materialize(),
+        context,
+        'search_command_output',
+        {
+          'runId': 'earlier-run',
+          'toolInvocationId': 'earlier-invocation',
+          'pattern': 'diagnostic',
+        },
+      );
+      final result = await const ToolPolicyGate().evaluate(
+        invocation: invocation,
+        policy: const ApprovalGatedToolPolicy(),
+        interruptionId: RunInterruptionId('inspection-policy'),
+      );
+      expect(result, isA<ToolExecutionAllowed>());
+      expect(result.effects.effects, {ToolEffect.resourceInspection});
+      expect(result.effects.uncertainty, EffectUncertainty.none);
+      expect(
+        result.effects.targets.single.uri.toString(),
+        contains('earlier-run'),
+      );
+      expect(
+        result.effects.targets.single.uri.toString(),
+        contains('earlier-invocation'),
+      );
+      expect(
+        result.effects.targets.single.uri.scheme,
+        isNot('adele-environment'),
+      );
+    },
+  );
+
+  test(
     'evaluates every effect set and uncertainty without alias authority',
     () async {
       final MaterializedTool read = catalog.materialize().byAlias('read_file')!;
@@ -156,7 +198,8 @@ void main() {
                   ),
                 );
             final bool certainRead =
-                mask == (1 << ToolEffect.sourceRead.index) &&
+                (mask == (1 << ToolEffect.sourceRead.index) ||
+                    mask == (1 << ToolEffect.resourceInspection.index)) &&
                 uncertainty == EffectUncertainty.none;
             final bool certainMutation =
                 mask == (1 << ToolEffect.sourceMutation.index) &&
@@ -177,6 +220,12 @@ void main() {
       }
     },
   );
+}
+
+final class _UnreadCommandOutput implements CommandOutputService {
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('Policy description must not read command output.');
 }
 
 Future<ToolInvocation> _resolve(

@@ -1364,8 +1364,12 @@ void main() {
         'Retired process',
       );
       expect(
-        tools.tools.single.executable.validateBinding,
+        tools.byAlias('run_command')!.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        tools.byAlias('search_command_output')!.executable.validateBinding,
+        returnsNormally,
       );
     },
   );
@@ -1397,7 +1401,7 @@ void main() {
           await source.close();
         });
         context.process.processStream = source.stream;
-        final tool = (await materialize()).single.executable;
+        final tool = (await compose()).byAlias('run_command')!.executable;
         final arguments = await tool.validateAndNormalize({'program': 'fails'});
         final pending = collectToolExecution(
           tool.execute(arguments, execution),
@@ -1458,7 +1462,7 @@ void main() {
         );
         addTearDown(source.close);
         context.process.processStream = source.stream;
-        final tool = (await materialize()).single.executable;
+        final tool = (await compose()).byAlias('run_command')!.executable;
         final arguments = await tool.validateAndNormalize({'program': 'idle'});
         final errors = <Object>[];
         final done = Completer<void>();

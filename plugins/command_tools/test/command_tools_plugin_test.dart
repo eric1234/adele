@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -681,6 +682,15 @@ void main() {
       expect(outcome.hostData, containsPair('termination', 'exited'));
       expect(outcome.hostData, containsPair('exitCode', 0));
       expect(outcome.hostData, containsPair('captureState', 'complete'));
+      expect(outcome.hostData, containsPair('runId', 'run-command'));
+      expect(
+        outcome.hostData,
+        containsPair('toolInvocationId', 'tool-command'),
+      );
+      expect(_modelCaptureReference(outcome), {
+        'runId': 'run-command',
+        'toolInvocationId': 'tool-command',
+      });
       expect(outcome.hostData, containsPair('stdout', ''));
       expect(outcome.hostData, containsPair('stderr', ''));
       expect(process.requests.single.program, 'git');
@@ -1095,7 +1105,48 @@ void main() {
         EffectCertainty.knownNotOccurred,
       );
       expect(process.executions, 0);
+      expect(_modelCaptureReference(observation.outcome), isNull);
+      expect(observation.outcome.hostData, isNot(contains('runId')));
+      expect(observation.outcome.hostData, isNot(contains('toolInvocationId')));
     });
+
+    test(
+      'model references preserve exact admitted opaque identifiers',
+      () async {
+        final process = _ProcessFacet();
+        final executable = commandToolRegistration(
+          process,
+          transcripts: transcripts,
+        ).executable;
+        const runId = 'run-"quoted"\ninternal';
+        const invocationId = 'invocation-\\opaque';
+        final outcome = (await collectToolExecution(
+          executable.execute(
+            await executable.validateAndNormalize({'program': 'fixture'}),
+            ToolExecutionContext(
+              runId: RunId(runId),
+              sessionId: SessionId('session-command'),
+              toolInvocationId: invocationId,
+            ),
+          ),
+        )).outcome;
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(_modelCaptureReference(outcome), {
+          'runId': runId,
+          'toolInvocationId': invocationId,
+        });
+        expect(outcome.hostData['runId'], runId);
+        expect(outcome.hostData['toolInvocationId'], invocationId);
+        expect(
+          (await transcripts.getState(
+            'session-command',
+            runId,
+            invocationId,
+          )).state,
+          'complete',
+        );
+      },
+    );
 
     test(
       'reused invocation cannot launch twice or change the original completion',
@@ -1108,6 +1159,8 @@ void main() {
         });
         expect(first.outcome.disposition, ToolOutcomeDisposition.success);
         expect(duplicate.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(_modelCaptureReference(duplicate.outcome), isNull);
+        expect(duplicate.outcome.hostData, isNot(contains('runId')));
         expect(
           duplicate.outcome.effectCertainty,
           EffectCertainty.knownNotOccurred,
@@ -1410,6 +1463,26 @@ void main() {
                   : EffectCertainty.uncertain,
             );
             expect(outcome.hostData['captureState'], 'failed');
+            if (phase == 'setup') {
+              expect(_modelCaptureReference(outcome), isNull);
+              expect(outcome.hostData, isNot(contains('runId')));
+              expect(outcome.hostData, isNot(contains('toolInvocationId')));
+            } else {
+              expect(_modelCaptureReference(outcome), {
+                'runId': 'run-command',
+                'toolInvocationId': 'tool-command',
+              });
+              expect(outcome.hostData['runId'], 'run-command');
+              expect(outcome.hostData['toolInvocationId'], 'tool-command');
+              expect(
+                outcome.modelContent,
+                contains('Capture incomplete or unconfirmed'),
+              );
+              expect(
+                outcome.modelContent,
+                contains('search inspects only committed output'),
+              );
+            }
             expect(process.executions, phase == 'setup' ? 0 : 1);
             expect(settled, phase == 'setup' ? 0 : 1);
             expect(injected, 1);
@@ -1511,6 +1584,16 @@ ToolExecutionContext _executionContext() => ToolExecutionContext(
   sessionId: SessionId('session-command'),
   toolInvocationId: 'tool-command',
 );
+
+Map<String, Object?>? _modelCaptureReference(ToolOutcome outcome) {
+  const prefix = 'Retained command output: ';
+  final lines = outcome.modelContent
+      .split('\n')
+      .where((line) => line.startsWith(prefix));
+  if (lines.isEmpty) return null;
+  return jsonDecode(lines.single.substring(prefix.length))
+      as Map<String, Object?>;
+}
 
 Future<ToolInvocation> _resolveInvocation(
   MaterializedTool tool,
