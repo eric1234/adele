@@ -156,6 +156,120 @@ only fresh permitted plugin storage access, not the former execution token or an
 Environment materialization. The generic interpreted own-backend bridge carries
 generated unary and server-streamed calls with exact generation/view lifetimes.
 
+## Retained output search
+
+`lib/src/command_output_search.dart` supplies the pure-Dart, backend-internal
+`CommandOutputSearch` engine and immutable `CommandOutputSearchRequest`,
+`CommandOutputSearchResult`, and `CommandOutputSearchLine` values. It accepts the
+existing `CommandOutputService` reader, not a writer or Environment facet. Session
+identity is supplied by a trusted caller; Run and invocation select the exact
+retained capture through the reader's existing association checks. This API has
+no generated transport or registration. **Model access, including a
+`search_command_output` tool, is not implemented.**
+
+Search admits terminal `complete`, `failed`, and `interrupted` capture snapshots.
+`absent` and live `capturing` return distinct non-search statuses, not exhaustive
+empty results. Failed/interrupted results explicitly report `committedOutputOnly`;
+even exhaustive retained-output search says nothing about uncaptured output or
+process success. Results expose only capture state and known termination/exit
+facts, not potentially large command metadata or failure prose from the header.
+Storage, association, backing availability, and malformed-record failures propagate
+rather than becoming no-match results. Every page must retain
+the initial state/version/extent, and each completed pipe pass checks the retained
+UTF-16 total against its header. Search does not create capture rows, change
+lifecycle, launch processes, subscribe to capture, or rerun a command. As with
+existing passive reads, the reader may ensure its existing schema.
+
+### Lines and results
+
+Patterns use case-sensitive `RegExp(pattern)` with Dart's default flags, like the
+stock filesystem Search tool. Empty patterns, literal NUL/CR/LF/U+2028/U+2029,
+malformed regexes, invalid bounds, and empty or over-1,024-unit identity strings
+are rejected before storage reads. Zero-width matches are supported. Regexes run
+on individual logical lines, never across LF or between pipes; only the first
+match on a line identifies a hit.
+
+LF alone delimits a logical line and is excluded from its text. CR, including the
+CR in CRLF, ANSI/control characters, NUL, and Unicode remain literal captured
+content. Chunk boundaries have no line significance; a final unterminated line is
+included, and trailing LF does not invent another empty line. This is not terminal
+screen search. Stdout is searched first, then stderr, with independent one-based
+line numbers and no claim of chronological ordering between pipes. Both passes
+use bounded combined-storage pages; ignored other-pipe text counts toward scan
+work, so a full traversal reads the committed extent twice.
+
+Each returned line includes its stream, per-stream line number, starting storage
+chunk ordinal and zero-based UTF-16 offset, original content length, LF-termination
+flag, excerpt offset/text, and independent leading/trailing truncation flags.
+Matching lines additionally carry the first match's UTF-16 start/end offsets;
+`isMatch` distinguishes admitted hits from context. Excerpts center on the first
+match where possible and do not split a surrogate pair. Context uses bounded
+excerpts too, not unbounded complete lines. Overlapping windows share each line
+once within a response; lines are ordered by pipe then line number.
+
+| Search bound | Limit |
+| --- | --- |
+| Pattern | 256 UTF-16 code units. |
+| Before/after context | Defaults 3/5 lines; each accepts 0 through 10. |
+| Matching lines | Default and maximum 10; caller may request 1 through 10. |
+| Returned text | At most 16,384 UTF-16 code units across all line excerpts, excluding metadata/cursor. |
+| Individual excerpt | At most 512 UTF-16 code units, independently truncated. |
+| Searchable logical line | At most 16,384 UTF-16 code units, excluding LF. |
+| Scan work | At most 2,097,152 consumed UTF-16 code units per request, including other-pipe text and context lookahead. |
+| Storage pages | At most 128 per request, each at most 16 chunks / 65,536 UTF-16 units using existing Command Output bounds. A final page can read ahead of the consumed scan budget. |
+| Logical lines | At most 16,384 completed lines per request, also bounding work on empty/tiny lines. |
+| Regex execution | Separate request-local Dart isolate; at most 250 ms per line and 1 second cumulative evaluation/RPC time per request. Startup has a separate 5-second handshake timeout; storage latency is not a wall-clock search deadline. |
+| Continuation | At most 196,608 encoded code units, including worst-case JSON escaping of bounded partial-line/context text. |
+
+Lines over the searchable-line bound are **not regex searched**, even if their
+prefix would appear to match: applying an arbitrary regex to an incomplete line
+could invent anchor/lookaround matches. Their length and LF boundaries are drained
+incrementally without buffering the remainder. Cumulative `unsearchedLongLines`
+reports this coverage gap, including when a request stops inside such a line.
+A regex evaluation timeout kills its isolate, increments cumulative
+`regexTimeouts`, and stops the response with that line explicitly unsearched;
+continuation advances past it. Expiring the cumulative regex budget between lines
+instead resumes the pending line without skipping it. These bounds avoid both
+unbounded line buffers and catastrophic backtracking in the backend isolate.
+
+### Continuation and completeness
+
+`stop` identifies end, absence, live capture, or the match/text/scan/page/line/regex
+limit. `reachedEnd` only means the terminal retained extent was traversed;
+`exhaustive` additionally requires no oversized-line or regex-timeout coverage
+gaps across the entire continuation chain. Thus an exhausted no-match scan is
+distinct from a completed exhaustive no-match search. `contextIncomplete` reports
+requested after-context cut short by a resource limit; reaching a pipe's real end
+with fewer surrounding lines is not incomplete context.
+
+The opaque cursor carries a bounded partial line, rolling before-context excerpts,
+pending after-context, per-stream counts, source position, and cumulative coverage
+gaps. It is bound to the exact Session/Run/invocation, pattern, context/match limits,
+and capture
+state/version/extent. Malformed, modified, unrelated, and stale tokens fail
+explicitly. A cursor never supplies authority or overrides caller identities.
+HMAC-SHA256 uses one random engine-instance key, with no cursor registry, persistent
+search job, table, or index. Keep one engine for the backend generation; replacing
+the engine invalidates its cursors and requires a new search. This deliberately
+does not promise continuation across backend replacement, although fresh readers
+can always search retained storage without the original writer.
+
+After the match limit, bounded after-context lookahead does not consume future
+hits: continuation replays from just after the last admitted match. A text-limited
+response resumes before the line it could not admit. Context may consequently
+repeat across responses or later become a hit, but admitted matching-line identities
+are neither skipped nor repeated along a continuation chain. If context lookahead
+cannot finish within the request budgets, `contextIncomplete` is explicit and the
+cursor carries outstanding context into later pages, without readmitting old hits.
+Already-returned context can repeat when replaying interrupted lookahead. Source
+locators and per-stream line numbers remain stable through chunk, page, and request
+boundaries.
+
+The SQLite-backed `test/command_output_search_test.dart` exercises these semantics
+through retained storage, including fresh readers, failure/corruption, bounded
+multi-megabyte scans, continuation, and read-only behavior. The owning maintained
+target is `dart tools/adele.dart test --target command_tools_plugin`.
+
 ## Failure and lifetime
 
 Process outcome, committed extent, capture completeness, backend availability, and
