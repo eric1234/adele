@@ -106,18 +106,7 @@ ${commandCaptures.columns.map((column) => 'h.$column').join(', ')},
       );
       final run = retained[runId];
       if (run == null) {
-        // Read only an ownership boolean, never another Session's Run or output.
-        final foreign = await query(
-          'command Run association',
-          'SELECT EXISTS (SELECT 1 FROM adele_product_runs '
-              'WHERE id = :run AND session_id <> :session) AS foreign_run '
-              'WHERE $sessionExists LIMIT 1',
-          {':run': runId},
-        );
-        evidenceRequire(
-          foreign.length == 1 && foreign.single['foreign_run'] == 0,
-          'Command Run belongs to another Session.',
-        );
+        await requireRunSession(runId);
       } else {
         final evidence = run['evidence'] as Map<String, Object?>;
         final tools =

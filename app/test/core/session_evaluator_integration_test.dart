@@ -589,6 +589,47 @@ void main() {
     });
   }
 
+  test(
+    'unsealed Run ownership rejects foreign Chat provenance without export',
+    () async {
+      final other = otherSession();
+      await chat.appendUserMessage(other.id.value, 'Foreign pending question.');
+      final run = await createRun(
+        other,
+        'foreign-unsealed',
+        _Model('Not yet answered.', withTools: true),
+        decision: ToolPolicyDecision.ask,
+      );
+      await run.start();
+      expect(run.run.state, RunState.waiting);
+      expect(runtime.store.runRecord(run.run.id), isNull);
+      await chat.appendUserMessage(session.id.value, 'Our question.');
+      _inspect(
+        source,
+        (database) => database.execute(
+          'UPDATE adele_chat_entries SET run_id = ? WHERE session_id = ?',
+          [run.run.id.value, session.id.value],
+        ),
+        write: true,
+      );
+      final before = _inspect(source, _snapshot);
+      final emitted = <String>[];
+      await expectLater(
+        evaluator.collectSession(session.id.value).forEach(emitted.add),
+        throwsA(
+          isA<SessionEvidenceFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'malformed_data',
+          ),
+        ),
+      );
+      expect(emitted, isEmpty);
+      expect(_inspect(source, _snapshot), before);
+      expect((await collect(other))['runs'], isEmpty);
+    },
+  );
+
   test('keyset pagination retains over 1000 canonical messages and bounded '
       'stream chunks without truncation', () async {
     // These remain normal Chat writes, not synthetic successful evidence rows.
@@ -628,6 +669,7 @@ void main() {
     );
     final run = await createRun(session, 'corruption-run', _Model('Retained.'));
     await run.start();
+    final foreignSession = otherSession();
 
     Future<void> failure(String code) async {
       final before = _inspect(source, _snapshot);
@@ -660,6 +702,18 @@ void main() {
         'invalid provider id',
         _environmentProvider.value,
         task.environment.id.value,
+      ),
+      (
+        'UPDATE adele_execution_run_activity SET session_id = ? WHERE run_id = ?',
+        foreignSession.id.value,
+        session.id.value,
+        run.run.id.value,
+      ),
+      (
+        'UPDATE adele_execution_run_activity SET terminal_run_id = ? WHERE run_id = ?',
+        null,
+        run.run.id.value,
+        run.run.id.value,
       ),
     ]) {
       _inspect(
