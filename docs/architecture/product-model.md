@@ -8,8 +8,9 @@ This document defines the shared product-domain semantics and ownership that
 ADELE core and unrelated plugins must agree on. It combines accepted constraints
 with the current implementation. Project identity/source, Tasks, Environment
 records/provider-state snapshots, Sessions, their semantic Environment
-associations, and terminal Run records have per-Project SQLite storage. Terminal
-public activity snapshots are retained separately under the execution schema owner.
+associations, and terminal Run records have per-Project SQLite storage. Incremental
+public execution evidence is retained separately under the execution schema owner,
+including unsealed activity without a terminal product record.
 Plugin-owned relational state, including Chat conversation/configuration/plain-text
 Draft Request, uses the same backing without becoming core product fields. Live
 Run execution remains non-durable. Elsewhere, "durable" describes
@@ -122,7 +123,7 @@ The Run table has `id TEXT PRIMARY KEY`, `session_id TEXT NOT NULL` referencing
 `CHECK (terminal_state IN ('completed', 'failed', 'cancelled'))`. It has no JSON,
 timestamps, evidence, or chronological ordering fields. States are stored by name,
 not enum ordinal; [terminal Run history](#terminal-run-history) defines their scope.
-The separate `dev.adele.execution` version-1 schema stores terminal public activity
+The separate `dev.adele.execution` version-1 schema stores public execution activity
 without adding evidence fields or orchestration dependencies to product values.
 Its relational model belongs to [execution history](execution-model.md#terminal-execution-history).
 
@@ -182,9 +183,13 @@ inside an in-flight operation. SQLite work follows the final validation
 synchronously. The identity/source transaction commits first;
 `ProjectDatabase.loadProductGraph` reads only core product tables and parses all
 Task, Environment, Session, authority, and terminal Run rows, returning the latter
-as `runRecords`. Separate `loadExecutionHistory` reads and validates terminal
-activity against those records. Both restore sets are validated before either is
-published; lifecycle owns the activity map, not the product store.
+as `runRecords`. Separate `loadExecutionRestoreSet` reads and validates both sealed
+terminal activity and unsealed evidence. An unsealed execution root references a
+canonical Session, not a fictitious product Run record. Its optional terminal link
+must pair the same Run and Session; product's composite unique identity constraint
+supports that relationship without depending on execution semantics. All restore
+sets are validated before any are published; lifecycle owns the activity and
+recovery maps, not the product store.
 `InMemoryProductStore.publishRestoredProject` validates the complete
 graph before any live-store mutation. Validation requires Tasks in that Project,
 Environments and Sessions belonging to those Tasks, one finalized primary
@@ -212,11 +217,13 @@ defines Chat's participation. Persisted Session/Environment associations are
 semantic relationships, not serialized execution authority. Live bindings,
 materializations, facets, and host-issued tokens must never be serialized.
 
-Only terminal Run records and their public activity snapshots are retained, not
-active/waiting Runs, active claims, approval restart state, or continuation/replay
-recovery. Restoration creates no execution or actionable approval and allocates no
-Run IDs. Historical native envelopes are opaque evidence, never future continuation
-input. Chat's current plain-text draft is durable plugin-owned state, not
+Terminal product Run records remain distinct from incrementally committed execution
+evidence. On reopen, unsealed evidence without a terminal product record is
+historically **interrupted**, retaining its last observed Run state independently.
+This does not restore active/waiting Runs, active claims, approval restart state, or
+continuation/replay. Restoration creates no execution or actionable approval and
+allocates no Run IDs. Historical native envelopes are opaque evidence, never future
+continuation input. Chat's current plain-text draft is durable plugin-owned state, not
 workbench state. Task Browser reads the restored live graph, but its selection and
 navigation are transient; storage does not restore the workbench or automatically
 select/resume a Task or Session. Profiles, general settings, and
@@ -529,8 +536,9 @@ The current window supports independently active Sessions within one open Projec
 while presenting only one Session at a time. Each Session permits at most one
 active Run, including an unresolved approval. Selection does not own execution;
 the [execution model](execution-model.md#session-strategy-and-run) defines retained
-ownership, status, and concurrency boundaries. This introduces no durable status
-or restart recovery for active work.
+ownership, status, and concurrency boundaries. Historical interruption
+classification does not recreate active work or claim its Session slot after
+restart.
 
 Exact executable bindings apply during a Run. Retained strategy, model, and tool
 bindings must not silently switch generations on continuation or approval resume.
@@ -569,11 +577,15 @@ order defines historical chronology.
 
 The generic application Run wrapper records actual terminal state under the
 [execution finalization rules](execution-model.md#terminal-run-retention).
-Created, running, and waiting Runs have no durable record; resource close does not
-invent an outcome or an `abandoned` state. Reopening restores records only, not
-strategies, Environment materializations, execution, or approvals; the separate
-execution-history load restores their read-only activity. This is terminal history,
-not active Run recovery or automatic resume.
+Created, running, and waiting Runs have no terminal product record; resource close
+does not invent an outcome or an `abandoned` state. Execution-owned checkpoints can
+exist independently under the same canonical Run ID and Session ID. Their
+[historical recovery classification](execution-model.md#terminal-execution-history)
+is not a new `RunTerminalState`. Reopening restores records and read-only evidence,
+not strategies, Environment materializations, execution, or approvals. A failed
+terminal transaction preserves any earlier committed unsealed prefix, without
+turning the observed live terminal transition into an authoritative product record.
+There is no automatic resume.
 
 ## Child Sessions
 
@@ -614,8 +626,9 @@ semantic data.
 loads the validated Project/Task/Environment/Session graph, terminal Run records,
 and semantic Session/Environment associations, not live bindings or access tokens.
 It remains the canonical runtime graph rather than a SQL facade. Lifecycle retains
-execution-owned terminal activity separately, and plugin state is loaded by its
-owner separately; complete runtime restoration is not implied.
+execution-owned terminal activity and recovered unsealed evidence separately, and
+plugin state is loaded by its owner separately; complete runtime restoration is
+not implied.
 
 ## Core-owned and plugin-owned durable state
 

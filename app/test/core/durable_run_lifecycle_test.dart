@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -116,7 +117,10 @@ void main() {
     ]);
   }
 
-  Future<AdeleRuntime> reopen(SessionOrchestrationRun run) async {
+  Future<AdeleRuntime> reopen(
+    SessionOrchestrationRun run, {
+    RunActivitySnapshot? expectedRecovered,
+  }) async {
     await runtime.close();
     final ids = _NoAllocationIds();
     final fresh = AdeleRuntime(ids: ids, runIds: ids);
@@ -152,6 +156,7 @@ void main() {
     expect(restored, isNot(same(session)));
     expect(restored.taskId, session.taskId);
     expect(restored.strategyId, _strategy);
+    expect(fresh.lifecycle.hasSessionExecution(restored), isFalse);
     final authority = fresh.store.requireSessionAuthority(session.id);
     expect(
       authority.environmentId,
@@ -186,6 +191,33 @@ void main() {
       _expectActivity(retained, run.activity.snapshot);
       expect(retained, isNot(same(run.activity.snapshot)));
     }
+    final recovered = fresh.lifecycle.recoveredRun(run.run.id);
+    if (retained != null || expectedRecovered != null) {
+      expect(recovered, isNotNull);
+    }
+    if (recovered != null) {
+      expect(recovered.session, same(restored));
+      expect(recovered.runId, run.run.id);
+      expect(recovered.terminalRecord, same(fresh.store.runRecord(run.run.id)));
+      expect(
+        recovered.status,
+        retained == null
+            ? RecoveredRunStatus.interrupted
+            : RecoveredRunStatus.terminal,
+      );
+      _expectActivity(
+        recovered.activity,
+        expectedRecovered ?? run.activity.snapshot,
+      );
+      final scoped = fresh.lifecycle.recoveredRunsForSession(session.id);
+      expect(scoped, [same(recovered)]);
+      expect(() => scoped.clear(), throwsUnsupportedError);
+    }
+    expect(fresh.lifecycle.recoveredRun(RunId('unknown')), isNull);
+    expect(
+      fresh.lifecycle.recoveredRunsForSession(SessionId('unknown')),
+      isEmpty,
+    );
     expect(fresh.plugins.host, isNull);
     expect(fresh.plugins.backends, isEmpty);
     expect(ids.calls, 0);
@@ -294,6 +326,19 @@ void main() {
       expect(_runRows(inspection), isEmpty);
       expect(run.run.state, state);
       expect(run.run.interruptions, interruptions);
+      if (waiting) {
+        final recovered = fresh.lifecycle.recoveredRun(run.run.id)!;
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(recovered.activity.state, RunState.waiting);
+        expect(recovered.activity.tools.single.outcome, isNull);
+        expect(
+          recovered.activity.tools.single.changes.last.kind,
+          ToolActivityKind.approvalRequested,
+        );
+      } else {
+        expect(fresh.lifecycle.recoveredRun(run.run.id), isNull);
+        _expectNoEvidence(inspection);
+      }
     });
   }
 
@@ -361,6 +406,7 @@ void main() {
         expect(run.run.state, state);
         expect(_runRows(inspection), isEmpty);
         final evidence = run.run.journal.records;
+        final committed = _executionRows(inspection);
         final closing = run.close();
         run.interruptForApplicationExit();
         // Retention at the hard boundary is synchronous, not a late finalizer.
@@ -368,7 +414,7 @@ void main() {
           expectRetained(runtime, run, RunTerminalState.completed);
         } else {
           expect(_runRows(inspection), isEmpty);
-          _expectNoEvidence(inspection);
+          _expectCommittedPrefix(runtime, run);
         }
         run.interruptForApplicationExit();
         await runtime.close();
@@ -383,6 +429,7 @@ void main() {
         expect(run.run.state, state);
         expect(run.run.failure, isNull);
         expect(run.run.journal.records, evidence);
+        if (!completed) expect(_executionRows(inspection), committed);
         expect(execution.closeCalls, 1);
         final fresh = await reopen(run);
         if (completed) {
@@ -391,7 +438,14 @@ void main() {
           expect(fresh.store.runRecord(run.run.id), isNull);
           expect(fresh.lifecycle.runActivity(run.run.id), isNull);
           expect(_runRows(inspection), isEmpty);
-          _expectNoEvidence(inspection);
+          expect(_executionRows(inspection), committed);
+          final recovered = fresh.lifecycle.recoveredRun(run.run.id)!;
+          expect(recovered.status, RecoveredRunStatus.interrupted);
+          expect(recovered.activity.tools.single.outcome, isNull);
+          expect(
+            recovered.activity.tools.single.changes.last.kind,
+            ToolActivityKind.executionStarted,
+          );
         }
       },
     );
@@ -440,7 +494,9 @@ void main() {
         expect(runtime.lifecycle.runActivity(run.run.id), isNull);
         expect(runtime.lifecycle.runActivitiesForSession(session.id), isEmpty);
         expect(_runRows(inspection), isEmpty);
-        _expectNoEvidence(inspection);
+        final prefix = _beforeTerminal(run.activity.snapshot);
+        _expectCommittedPrefix(runtime, run, expected: prefix);
+        final committed = _executionRows(inspection);
 
         // Use the lifecycle's same connection, not the inspection connection,
         // to prove the failed terminal transaction left storage usable.
@@ -463,11 +519,16 @@ void main() {
         expect(run.run.journal.records, orderedEquals(evidence));
         expect(runtime.store.runRecord(run.run.id), isNull);
         expect(_runRows(inspection), isEmpty);
-        final fresh = await reopen(run);
+        final fresh = await reopen(run, expectedRecovered: prefix);
         expect(fresh.store.session(other.id), isNotNull);
         expect(fresh.store.runRecord(run.run.id), isNull);
         expect(fresh.store.runsForSession(session.id), isEmpty);
         expect(_runRows(inspection), isEmpty);
+        expect(_executionRows(inspection), committed);
+        expect(
+          fresh.lifecycle.recoveredRun(run.run.id)!.status,
+          RecoveredRunStatus.interrupted,
+        );
       });
     }
   }
@@ -549,7 +610,12 @@ void main() {
         } else {
           expectRetained(runtime, run, RunTerminalState.failed);
         }
-        final fresh = await reopen(run);
+        final fresh = await reopen(
+          run,
+          expectedRecovered: recordingFails
+              ? _beforeTerminal(run.activity.snapshot)
+              : null,
+        );
         if (recordingFails) {
           expect(fresh.store.runRecord(run.run.id), isNull);
           expect(fresh.store.runsForSession(session.id), isEmpty);
@@ -559,6 +625,444 @@ void main() {
       },
     );
   }
+
+  for (final boundary in [
+    'model output',
+    'second model invocation',
+    'prepared tool',
+    'tool execution start',
+  ]) {
+    test('reopen preserves $boundary without inventing settlement', () async {
+      final run = await createRun();
+      final gate = _Gate();
+      addTearDown(gate.release);
+      switch (boundary) {
+        case 'model output':
+          model.beforeTerminal = (_) => gate.wait();
+        case 'second model invocation':
+          execution.invokeAgain = true;
+          model.beforeTerminal = (call) async {
+            if (call == 2) await gate.wait();
+          };
+        case 'prepared tool':
+          tool.beforeDescribe = gate.wait;
+        case 'tool execution start':
+          tool.beforeTerminal = gate.wait;
+      }
+      final advancing = expectLater(run.start(), throwsA(anything));
+      await gate.entered.future;
+      if (boundary == 'model output' || boundary == 'second model invocation') {
+        await _waitForActivity(
+          run,
+          (activity) =>
+              activity.models.length == model.calls &&
+              activity.models.last.outputs.length == 3,
+        );
+      }
+      final prefix = run.activity.snapshot;
+      _expectCommittedPrefix(runtime, run);
+      expect(prefix.state, RunState.running);
+      expect(prefix.failure, isNull);
+      switch (boundary) {
+        case 'model output':
+          expect(prefix.models.single.startSequence, 2);
+          expect(prefix.models.single.outputs.map((item) => item.sequence), [
+            4,
+            5,
+            6,
+          ]);
+          expect(prefix.models.single.terminalSequence, isNull);
+          expect(prefix.models.single.settlement, isNull);
+          expect(prefix.models.single.failure, isNull);
+          expect(prefix.tools, isEmpty);
+        case 'second model invocation':
+          expect(prefix.models, hasLength(2));
+          expect(prefix.models.first.settlement, ModelSettlement.completed);
+          expect(prefix.models.first.terminalSequence, 7);
+          expect(prefix.models.last.terminalSequence, isNull);
+          expect(prefix.models.last.settlement, isNull);
+          expect(prefix.models.last.failure, isNull);
+          final completed = prefix.tools.single;
+          expect(completed.modelInvocationId, prefix.models.first.id);
+          expect(completed.proposalSequence, 6);
+          expect(
+            completed.outcome!.effectCertainty,
+            EffectCertainty.knownOccurred,
+          );
+        case 'prepared tool':
+          expect(prefix.tools.single.changes.map((change) => change.kind), [
+            ToolActivityKind.prepared,
+          ]);
+          expect(prefix.tools.single.effects, isNull);
+          expect(prefix.tools.single.outcome, isNull);
+          expect(tool.executions, 0);
+        case 'tool execution start':
+          expect(
+            prefix.tools.single.changes.last.kind,
+            ToolActivityKind.executionStarted,
+          );
+          expect(prefix.tools.single.outcome, isNull);
+          expect(tool.executions, 1);
+      }
+      final committed = _executionRows(inspection);
+      run.interruptForApplicationExit();
+      gate.release();
+      await advancing;
+      await run.close();
+      // Late successful provider/tool continuation cannot append after cutoff,
+      // even while the original database is still open and writable.
+      expect(_executionRows(inspection), committed);
+      _expectActivity(run.activity.snapshot, prefix);
+      final fresh = await reopen(run, expectedRecovered: prefix);
+      expect(
+        fresh.lifecycle.recoveredRun(run.run.id)!.status,
+        RecoveredRunStatus.interrupted,
+      );
+      expect(fresh.lifecycle.runActivity(run.run.id), isNull);
+      expect(fresh.store.runRecord(run.run.id), isNull);
+    });
+  }
+
+  for (final approved in [false, true]) {
+    test('resolved approval ${approved ? 'with dispatch' : 'without dispatch'} '
+        'reopens as evidence, never actionable authority', () async {
+      final run = await createRun(decision: ToolPolicyDecision.ask);
+      await run.start();
+      final resolution = _approval(run.run, approved: approved);
+      final gate = _Gate();
+      addTearDown(gate.release);
+      if (approved) {
+        tool.beforeTerminal = gate.wait;
+      } else {
+        execution.afterApproval = gate.wait;
+      }
+      final advancing = expectLater(
+        run.resolveApproval(resolution),
+        throwsA(anything),
+      );
+      await gate.entered.future;
+      final prefix = run.activity.snapshot;
+      _expectCommittedPrefix(runtime, run);
+      expect(prefix.state, RunState.running);
+      expect(run.run.interruptions, isEmpty);
+      final activity = prefix.tools.single;
+      final request = activity.changes.singleWhere(
+        (change) => change.kind == ToolActivityKind.approvalRequested,
+      );
+      final resolved = activity.changes.singleWhere(
+        (change) => change.kind == ToolActivityKind.approvalResolved,
+      );
+      expect(request.interruptionId, resolution.interruptionId);
+      expect(resolved.interruptionId, request.interruptionId);
+      expect(resolved.approved, approved);
+      expect(tool.executions, approved ? 1 : 0);
+      if (approved) {
+        expect(activity.changes.last.kind, ToolActivityKind.executionStarted);
+        expect(activity.outcome, isNull);
+      } else {
+        expect(
+          activity.changes.map((change) => change.kind),
+          isNot(contains(ToolActivityKind.executionStarted)),
+        );
+        expect(
+          activity.outcome!.disposition,
+          ToolOutcomeDisposition.userRejected,
+        );
+        expect(
+          activity.outcome!.effectCertainty,
+          EffectCertainty.knownNotOccurred,
+        );
+      }
+      run.interruptForApplicationExit();
+      gate.release();
+      await advancing;
+      await run.close();
+      final fresh = await reopen(run, expectedRecovered: prefix);
+      expect(
+        fresh.lifecycle.recoveredRun(run.run.id)!.status,
+        RecoveredRunStatus.interrupted,
+      );
+      expect(
+        fresh.lifecycle.hasSessionExecution(fresh.store.session(session.id)!),
+        isFalse,
+      );
+    });
+  }
+
+  test(
+    'cancelled Run seals its previously committed approval prefix once',
+    () async {
+      final run = await createRun(decision: ToolPolicyDecision.ask);
+      await run.start();
+      _expectCommittedPrefix(runtime, run);
+      run.run.cancel();
+      await run.close();
+      expectRetained(runtime, run, RunTerminalState.cancelled);
+      expect(run.activity.snapshot.tools.single.outcome, isNull);
+      _rejectRunInsert(inspection);
+      await run.close();
+      final fresh = await reopen(run);
+      expectRetained(fresh, run, RunTerminalState.cancelled);
+      expect(
+        fresh.lifecycle.recoveredRun(run.run.id)!.status,
+        RecoveredRunStatus.terminal,
+      );
+    },
+  );
+
+  for (final resume in [false, true]) {
+    test('${resume ? 'approved' : 'allowed'} tool start checkpoint failure '
+        'prevents dispatch and cannot be retried', () async {
+      final run = await createRun(
+        decision: resume ? ToolPolicyDecision.ask : ToolPolicyDecision.allow,
+      );
+      if (resume) await run.start();
+      inspection.execute('''
+        CREATE TRIGGER reject_checkpoint BEFORE INSERT ON adele_execution_tool_changes
+        WHEN NEW.kind = 'executionStarted'
+        BEGIN SELECT RAISE(ABORT, 'checkpoint-failure'); END;
+      ''');
+      final failure = isA<SqliteException>().having(
+        (error) => error.message,
+        'message',
+        contains('checkpoint-failure'),
+      );
+      await expectLater(
+        resume ? run.resolveApproval(_approval(run.run)) : run.start(),
+        throwsA(failure),
+      );
+      expect(tool.executions, 0);
+      expect(run.run.state, RunState.running);
+      expect(run.run.failure, isNull);
+      final live = run.activity.snapshot;
+      final uncommitted = live.tools.single;
+      expect(uncommitted.changes.last.kind, ToolActivityKind.executionStarted);
+      final prefix = RunActivitySnapshot(
+        runId: live.runId,
+        sessionId: live.sessionId,
+        state: live.state,
+        sequence: live.sequence - 1,
+        lifecycle: live.lifecycle,
+        models: live.models,
+        tools: [
+          ToolInvocationActivity(
+            id: uncommitted.id,
+            preparedSequence: uncommitted.preparedSequence,
+            modelInvocationId: uncommitted.modelInvocationId,
+            proposalSequence: uncommitted.proposalSequence,
+            toolId: uncommitted.toolId,
+            alias: uncommitted.alias,
+            providerCallId: uncommitted.providerCallId,
+            canonicalArguments: uncommitted.canonicalArguments,
+            changes: uncommitted.changes.take(uncommitted.changes.length - 1),
+            effects: uncommitted.effects,
+          ),
+        ],
+      );
+      _expectCommittedPrefix(runtime, run, expected: prefix);
+      final committed = _executionRows(inspection);
+      inspection.execute('DROP TRIGGER reject_checkpoint');
+      await expectLater(run.start(), throwsA(failure));
+      await run.close();
+      expect(tool.executions, 0);
+      expect(_executionRows(inspection), committed);
+      final fresh = await reopen(run, expectedRecovered: prefix);
+      final recovered = fresh.lifecycle.recoveredRun(run.run.id)!;
+      expect(recovered.activity.tools.single.outcome, isNull);
+      expect(
+        recovered.activity.tools.single.changes.last.kind,
+        resume
+            ? ToolActivityKind.approvalResolved
+            : ToolActivityKind.policyEvaluated,
+      );
+      expect(fresh.store.runRecord(run.run.id), isNull);
+    });
+  }
+
+  test(
+    'failed approval checkpoint rolls back request and waiting together',
+    () async {
+      final run = await createRun(decision: ToolPolicyDecision.ask);
+      inspection.execute('''
+      CREATE TRIGGER reject_checkpoint BEFORE INSERT ON adele_execution_tool_changes
+      WHEN NEW.kind = 'approvalRequested'
+      BEGIN SELECT RAISE(ABORT, 'checkpoint-failure'); END;
+    ''');
+      await expectLater(run.start(), throwsA(isA<SqliteException>()));
+      expect(tool.executions, 0);
+      expect(run.run.state, RunState.waiting);
+      expect(run.run.failure, isNull);
+      final database = runtime.lifecycle.databaseForSession(session.id)!;
+      expect(database.autocommit, isTrue);
+      final prefix = database.loadExecutionRestoreSet([]).unsealed.single;
+      expect(prefix.state, RunState.running);
+      expect(prefix.sequence, 9);
+      expect(prefix.lifecycle.map((entry) => (entry.sequence, entry.state)), [
+        (1, RunState.running),
+      ]);
+      expect(prefix.models.single.terminalSequence, 7);
+      expect(
+        prefix.tools.single.changes.map(
+          (entry) => (entry.sequence, entry.kind),
+        ),
+        [(8, ToolActivityKind.prepared), (9, ToolActivityKind.policyEvaluated)],
+      );
+      final committed = _executionRows(inspection);
+      inspection.execute('DROP TRIGGER reject_checkpoint');
+      await run.close();
+      expect(_executionRows(inspection), committed);
+      final fresh = await reopen(run, expectedRecovered: prefix);
+      expect(
+        fresh.lifecycle.recoveredRun(run.run.id)!.activity.state,
+        RunState.running,
+      );
+      expect(fresh.store.runRecord(run.run.id), isNull);
+    },
+  );
+
+  test(
+    'SIGKILL after committed pre-dispatch prefix survives a fresh runtime',
+    () async {
+      final crashSource = Directory.systemTemp.createTempSync(
+        'adele-killed-run-',
+      );
+      addTearDown(() => crashSource.deleteSync(recursive: true));
+      final dart = _dartExecutable();
+      final sdk = File(dart).parent.parent.path;
+      final kernel = '${crashSource.path}/writer.dill';
+      // Reuse Flutter's prepared assets, as configuration_store's writers do.
+      // Nested `dart run` rebuilds hooks and prefixes our JSON with hook output.
+      final compilation = await Process.run('$sdk/bin/dartaotruntime', [
+        '$sdk/bin/snapshots/gen_kernel_aot.dart.snapshot',
+        '--platform=$sdk/lib/_internal/vm_platform_strong.dill',
+        '--packages=${File('../.dart_tool/package_config.json').absolute.path}',
+        '--native-assets=${File('build/native_assets/linux/native_assets.json').absolute.path}',
+        '--output=$kernel',
+        'test/core/fixtures/partial_run_writer.dart',
+      ]);
+      expect(
+        compilation.exitCode,
+        0,
+        reason: '${compilation.stdout}\n${compilation.stderr}',
+      );
+      final process = await Process.start(dart, [
+        '--disable-dart-dev',
+        kernel,
+        crashSource.path,
+      ]);
+      final output = StringBuffer();
+      final errorOutput = StringBuffer();
+      final lines = StreamIterator(
+        process.stdout
+            .transform(utf8.decoder)
+            .map((chunk) {
+              output.write(chunk);
+              return chunk;
+            })
+            .transform(const LineSplitter()),
+      );
+      final errors = process.stderr
+          .transform(utf8.decoder)
+          .forEach(errorOutput.write);
+      String diagnostics() => 'stdout:\n$output\nstderr:\n$errorOutput';
+      try {
+        Future<Map<String, Object?>> checkpoint() async {
+          while (await lines.moveNext()) {
+            if (lines.current.startsWith('{')) {
+              return jsonDecode(lines.current) as Map<String, Object?>;
+            }
+          }
+          await errors;
+          throw StateError(
+            'Writer exited before checkpoint (${await process.exitCode}):\n'
+            '${diagnostics()}',
+          );
+        }
+
+        final marker = await checkpoint().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => throw TimeoutException(
+            'Writer did not reach its committed checkpoint.\n${diagnostics()}',
+          ),
+        );
+        expect(marker['checkpoint'], 'committed');
+        // The child is blocked on stdin, not a timer, and never runs close/finally.
+        expect(process.kill(ProcessSignal.sigkill), isTrue);
+        expect(await process.exitCode, -ProcessSignal.sigkill.signalNumber);
+        await errors;
+        expect(errorOutput.toString(), isEmpty);
+        final ids = _NoAllocationIds();
+        final fresh = AdeleRuntime(ids: ids, runIds: ids);
+        addTearDown(fresh.close);
+        final freshChannel = _ProviderChannel();
+        _registerProviders(fresh, freshChannel);
+        await fresh.lifecycle.openProject(
+          sourceLocation: crashSource.uri,
+          provider: fresh.lifecycle.resolveProjectProvider(_projectProvider),
+        );
+        final runId = RunId(marker['runId']! as String);
+        final sessionId = SessionId(marker['sessionId']! as String);
+        final recovered = fresh.lifecycle.recoveredRun(runId)!;
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(recovered.terminalRecord, isNull);
+        expect(recovered.session, same(fresh.store.session(sessionId)));
+        expect(recovered.activity.state, RunState.running);
+        expect(recovered.activity.sequence, marker['sequence']);
+        expect(recovered.activity.failure, isNull);
+        final model = recovered.activity.models.single;
+        expect(model.id.value, marker['modelId']);
+        expect(model.startSequence, 2);
+        expect(model.outputs.map((output) => output.sequence), [4, 5]);
+        expect(
+          (model.outputs.first.item as ModelTextOutput).content,
+          'Committed before kill',
+        );
+        expect(model.settlement, ModelSettlement.completed);
+        final tool = recovered.activity.tools.single;
+        expect(tool.id.value, marker['toolId']);
+        expect(tool.modelInvocationId, model.id);
+        expect(tool.proposalSequence, marker['proposalSequence']);
+        expect(tool.providerCallId, 'kill-call');
+        expect(tool.canonicalArguments, {'target': 'fixture'});
+        expect(tool.changes.map((change) => change.kind), [
+          ToolActivityKind.prepared,
+          ToolActivityKind.policyEvaluated,
+          ToolActivityKind.executionStarted,
+        ]);
+        expect(tool.outcome, isNull);
+        expect(fresh.store.runRecord(runId), isNull);
+        expect(fresh.store.runsForSession(sessionId), isEmpty);
+        expect(fresh.lifecycle.runActivity(runId), isNull);
+        expect(fresh.lifecycle.hasSessionExecution(recovered.session), isFalse);
+        expect(fresh.lifecycle.recoveredRun(RunId('never-started')), isNull);
+        expect(
+          fresh.extensions.discover(orchestrationStrategyContributions),
+          isEmpty,
+        );
+        expect(
+          fresh.registry.providersFor(environmentProviderCapability),
+          isEmpty,
+        );
+        expect(
+          fresh.lifecycle.environmentRuntime.currentMaterialization(
+            fresh.store.requireSessionAuthority(sessionId).environmentId,
+          ),
+          isNull,
+        );
+        expect(fresh.plugins.host, isNull);
+        expect(freshChannel.environmentCalls, 0);
+        expect(ids.calls, 0);
+      } finally {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode;
+        await lines.cancel();
+        await errors;
+        await process.stdin.close();
+      }
+    },
+    skip: !Platform.isLinux,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 }
 
 Future<Session> _createSession(AdeleRuntime runtime, Directory source) async {
@@ -638,9 +1142,49 @@ List<Map<String, Object?>> _runRows(Database database) => [
 ];
 
 void _rejectRunInsert(Database database) => database.execute('''
-  CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_execution_model_outputs
+  CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_product_runs
   BEGIN SELECT RAISE(ABORT, 'durable-run-insert-failure'); END;
 ''');
+
+Map<String, List<List<Object?>>> _executionRows(Database database) => {
+  for (final row in database.select(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'adele_execution_%' ORDER BY name",
+  ))
+    row['name'] as String: database
+        .select('SELECT * FROM ${row['name']} ORDER BY rowid')
+        .map((value) => value.values.toList())
+        .toList(),
+};
+
+RunActivitySnapshot _beforeTerminal(RunActivitySnapshot activity) =>
+    RunActivitySnapshot(
+      runId: activity.runId,
+      sessionId: activity.sessionId,
+      state: activity.lifecycle[activity.lifecycle.length - 2].state,
+      sequence: activity.sequence - 1,
+      lifecycle: activity.lifecycle.take(activity.lifecycle.length - 1),
+      models: activity.models,
+      tools: activity.tools,
+      rejectedProposals: activity.rejectedProposals,
+    );
+
+void _expectCommittedPrefix(
+  AdeleRuntime runtime,
+  SessionOrchestrationRun run, {
+  RunActivitySnapshot? expected,
+}) {
+  final database = runtime.lifecycle.databaseForSession(run.run.sessionId)!;
+  expect(database.autocommit, isTrue);
+  final restored = database.loadExecutionRestoreSet(
+    database.loadProductGraph().runRecords,
+  );
+  expect(restored.terminal, isEmpty);
+  _expectActivity(restored.unsealed.single, expected ?? run.activity.snapshot);
+  expect(runtime.store.runRecord(run.run.id), isNull);
+  expect(runtime.lifecycle.runActivity(run.run.id), isNull);
+  // Recovery evidence is published on reopen, not as a second live authority.
+  expect(runtime.lifecycle.recoveredRun(run.run.id), isNull);
+}
 
 void _expectNoEvidence(Database database) {
   for (final row in database.select(
@@ -671,6 +1215,14 @@ void _expectActivity(RunActivitySnapshot actual, RunActivitySnapshot expected) {
     expect(model.startSequence, original.startSequence);
     expect(model.terminalSequence, original.terminalSequence);
     expect(model.settlement, original.settlement);
+    expect(model.incompleteReason, original.incompleteReason);
+    expect(model.failure?.kind, original.failure?.kind);
+    expect(model.failure?.message, original.failure?.message);
+    expect(model.metadata?.effectiveModel, original.metadata?.effectiveModel);
+    expect(
+      model.metadata?.providerResponseId,
+      original.metadata?.providerResponseId,
+    );
     expect(
       model.outputs.map((entry) => entry.sequence),
       original.outputs.map((entry) => entry.sequence),
@@ -679,14 +1231,21 @@ void _expectActivity(RunActivitySnapshot actual, RunActivitySnapshot expected) {
       model.outputs.map((entry) => entry.item.runtimeType),
       original.outputs.map((entry) => entry.item.runtimeType),
     );
+    if (model.outputs.isEmpty) continue;
     final text = model.outputs.first.item as ModelTextOutput;
     expect(
       text.content,
       (original.outputs.first.item as ModelTextOutput).content,
     );
-    expect(text.providerItemId, 'text-1');
+    expect(
+      text.providerItemId,
+      (original.outputs.first.item as ModelTextOutput).providerItemId,
+    );
+    if (model.outputs.length == 1) continue;
     final native = model.outputs[1].item as ModelNativeOutput;
     final originalNative = original.outputs[1].item as ModelNativeOutput;
+    expect(native.providerItemId, originalNative.providerItemId);
+    expect(native.presentation!.kind, originalNative.presentation!.kind);
     expect(
       native.providerNativeMetadata.kind,
       originalNative.providerNativeMetadata.kind,
@@ -700,6 +1259,11 @@ void _expectActivity(RunActivitySnapshot actual, RunActivitySnapshot expected) {
       originalNative.providerNativeMetadata.data,
     );
     expect(native.presentation!.data, originalNative.presentation!.data);
+    expect(
+      () => native.providerNativeMetadata.data.clear(),
+      throwsUnsupportedError,
+    );
+    expect(() => native.presentation!.data.clear(), throwsUnsupportedError);
     expect(
       native.presentation!.compactText,
       originalNative.presentation!.compactText,
@@ -721,18 +1285,36 @@ void _expectActivity(RunActivitySnapshot actual, RunActivitySnapshot expected) {
     expect(tool.proposalSequence, original.proposalSequence);
     expect(tool.preparedSequence, original.preparedSequence);
     expect(tool.toolId, original.toolId);
+    expect(tool.alias, original.alias);
+    expect(tool.providerCallId, original.providerCallId);
     expect(tool.canonicalArguments, original.canonicalArguments);
-    expect(tool.effects!.effects, original.effects!.effects);
-    expect(tool.effects!.summary, original.effects!.summary);
+    expect(tool.effects?.effects, original.effects?.effects);
+    expect(tool.effects?.summary, original.effects?.summary);
     expect(
       tool.changes.map((entry) => (entry.sequence, entry.kind)),
       original.changes.map((entry) => (entry.sequence, entry.kind)),
     );
-    expect(tool.outcome!.disposition, original.outcome!.disposition);
-    expect(tool.outcome!.effectCertainty, original.outcome!.effectCertainty);
-    expect(tool.outcome!.modelContent, original.outcome!.modelContent);
-    expect(tool.outcome!.hostData, original.outcome!.hostData);
+    for (var j = 0; j < tool.changes.length; j++) {
+      final change = tool.changes[j];
+      final prior = original.changes[j];
+      expect(change.policyDecision, prior.policyDecision);
+      expect(change.interruptionId, prior.interruptionId);
+      expect(change.approved, prior.approved);
+      expect(change.effects?.effects, prior.effects?.effects);
+      expect(change.effects?.summary, prior.effects?.summary);
+      expect(change.progress?.content, prior.progress?.content);
+      expect(change.progress?.kind, prior.progress?.kind);
+      expect(change.outcome?.effectCertainty, prior.outcome?.effectCertainty);
+    }
+    expect(tool.outcome?.disposition, original.outcome?.disposition);
+    expect(tool.outcome?.effectCertainty, original.outcome?.effectCertainty);
+    expect(tool.outcome?.modelContent, original.outcome?.modelContent);
+    expect(tool.outcome?.hostData, original.outcome?.hostData);
+    expect(() => tool.changes.clear(), throwsUnsupportedError);
+    expect(() => tool.canonicalArguments.clear(), throwsUnsupportedError);
   }
+  expect(() => actual.lifecycle.clear(), throwsUnsupportedError);
+  expect(() => actual.models.clear(), throwsUnsupportedError);
   expect(() => actual.tools.clear(), throwsUnsupportedError);
 }
 
@@ -762,6 +1344,8 @@ final class _Execution implements OrchestrationExecution {
   Object? closeFailure;
   Future<void> Function()? beforeProposal;
   Future<void> Function()? afterCompletion;
+  Future<void> Function()? afterApproval;
+  bool invokeAgain = false;
   late StrategyModelTurn turn;
   int startCalls = 0;
   int approvalCalls = 0;
@@ -780,6 +1364,9 @@ final class _Execution implements OrchestrationExecution {
           .single
           .proposal,
     );
+    if (invokeAgain) {
+      await host.invokeModel(StrategyInferenceMaterial(input: const []));
+    }
     if (failure case final error?) throw error;
     if (host.state == RunState.running) host.complete();
     await afterCompletion?.call();
@@ -789,6 +1376,7 @@ final class _Execution implements OrchestrationExecution {
   Future<void> resolveApproval(ToolApprovalResolution resolution) async {
     approvalCalls++;
     await host.resolveApproval(resolution);
+    await afterApproval?.call();
     if (failure case final error?) throw error;
     host.complete();
   }
@@ -802,6 +1390,7 @@ final class _Execution implements OrchestrationExecution {
 
 final class _Model implements ModelPort {
   int calls = 0;
+  Future<void> Function(int call)? beforeTerminal;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
@@ -840,6 +1429,7 @@ final class _Model implements ModelPort {
         ),
       ),
     );
+    await beforeTerminal?.call(calls);
     yield ModelInvocationSettledEvent(invocationId: request.invocationId);
   }
 }
@@ -847,6 +1437,7 @@ final class _Model implements ModelPort {
 final class _Tool implements ToolExecutable {
   int executions = 0;
   Future<void> Function()? beforeTerminal;
+  Future<void> Function()? beforeDescribe;
 
   @override
   CanonicalToolArguments validateAndNormalize(Map<String, Object?> arguments) =>
@@ -859,11 +1450,14 @@ final class _Tool implements ToolExecutable {
   Future<EffectDescription> describe(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async => EffectDescription(
-    effects: const [ToolEffect.sourceMutation],
-    targets: const [],
-    summary: 'Deterministic fixture effect',
-  );
+  ) async {
+    await beforeDescribe?.call();
+    return EffectDescription(
+      effects: const [ToolEffect.sourceMutation],
+      targets: const [],
+      summary: 'Deterministic fixture effect',
+    );
+  }
 
   @override
   Stream<ToolExecutionEvent> execute(
@@ -902,13 +1496,13 @@ ToolCatalog _catalog(ToolExecutable tool) => ToolCatalog()
     ),
   );
 
-ToolApprovalResolution _approval(AgentRun run) {
+ToolApprovalResolution _approval(AgentRun run, {bool approved = true}) {
   final interruption =
       run.interruptions.values.single as ToolApprovalInterruption;
   return ToolApprovalResolution(
     interruptionId: interruption.id,
     toolInvocationId: interruption.toolInvocationId,
-    approved: true,
+    approved: approved,
   );
 }
 
@@ -918,4 +1512,42 @@ final class _Policy implements ToolPolicy {
 
   @override
   ToolPolicyDecision evaluate(ToolPolicyInput input) => decision;
+}
+
+final class _Gate {
+  final entered = Completer<void>();
+  final _release = Completer<void>();
+
+  Future<void> wait() {
+    entered.complete();
+    return _release.future;
+  }
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+}
+
+Future<void> _waitForActivity(
+  SessionOrchestrationRun run,
+  bool Function(RunActivitySnapshot) ready,
+) async {
+  if (ready(run.activity.snapshot)) return;
+  await run.activity.changes.firstWhere((_) => ready(run.activity.snapshot));
+}
+
+String _dartExecutable() {
+  final root = Platform.environment['FLUTTER_ROOT'];
+  if (root != null) {
+    final dart = File('$root/bin/cache/dart-sdk/bin/dart');
+    if (dart.existsSync()) return dart.path;
+  }
+  var directory = File(Platform.resolvedExecutable).parent;
+  while (!File('${directory.path}/dart-sdk/bin/dart').existsSync()) {
+    if (directory.parent.path == directory.path) {
+      throw StateError('Pinned Dart SDK not found.');
+    }
+    directory = directory.parent;
+  }
+  return '${directory.path}/dart-sdk/bin/dart';
 }

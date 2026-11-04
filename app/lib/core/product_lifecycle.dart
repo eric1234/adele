@@ -14,6 +14,30 @@ import 'resource_cleanup.dart';
 typedef EnvironmentProviderForBinding =
     EnvironmentProvider Function(ProviderBinding binding);
 
+/// Historical retention classification, never a live Run state or interruption.
+enum RecoveredRunStatus { terminal, interrupted }
+
+/// Application-owned, immutable evidence loaded on Project opening.
+///
+/// An interrupted record preserves the last observed state in [activity], but
+/// carries no execution, approval, or continuation authority.
+final class RecoveredRunEvidence {
+  const RecoveredRunEvidence._({
+    required this.session,
+    required this.activity,
+    required this.terminalRecord,
+  });
+
+  final Session session;
+  final RunActivitySnapshot activity;
+  final RunRecord? terminalRecord;
+
+  RunId get runId => activity.runId;
+  RecoveredRunStatus get status => terminalRecord == null
+      ? RecoveredRunStatus.interrupted
+      : RecoveredRunStatus.terminal;
+}
+
 /// Trusted host capture of an exact provider registration's backend origin.
 /// This is never supplied by a provider result or transported to a plugin.
 final class EnvironmentEstablishmentOwner {
@@ -617,12 +641,24 @@ final class ProductLifecycleCoordinator {
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
   final Map<ProjectId, ProjectDatabase> _temporaryProjectDatabases = {};
   final Map<RunId, RunActivitySnapshot> _runActivities = {};
+  final Map<RunId, RecoveredRunEvidence> _recoveredRuns = {};
+  final Map<RunId, SessionId> _checkpointSessions = {};
   final Map<SessionId, int> _sessionExecutions = {};
   final Set<Future<Project>> _projectOpens = {};
   Future<void>? _closing;
 
   /// Immutable terminal evidence, without executable bindings or authority.
   RunActivitySnapshot? runActivity(RunId runId) => _runActivities[runId];
+
+  /// Only committed evidence restored by a fresh Project open. Null means no
+  /// generic evidence was restored, not proof that execution never started.
+  RecoveredRunEvidence? recoveredRun(RunId runId) => _recoveredRuns[runId];
+
+  /// No cross-Run chronology or live execution enumeration is implied.
+  List<RecoveredRunEvidence> recoveredRunsForSession(SessionId sessionId) =>
+      List<RecoveredRunEvidence>.unmodifiable(
+        _recoveredRuns.values.where((entry) => entry.session.id == sessionId),
+      );
 
   List<RunActivitySnapshot> runActivitiesForSession(SessionId sessionId) =>
       List<RunActivitySnapshot>.unmodifiable(
@@ -706,13 +742,31 @@ final class ProductLifecycleCoordinator {
         return current;
       }
       final graph = database.loadProductGraph();
-      final activities = database.loadExecutionHistory(graph.runRecords);
-      for (final activity in activities) {
-        if (_runActivities.containsKey(activity.runId)) {
+      final evidence = database.loadExecutionRestoreSet(graph.runRecords);
+      final sessions = {
+        for (final session in graph.sessions) session.id: session,
+      };
+      final records = {
+        for (final record in graph.runRecords) record.id: record,
+      };
+      final recovered = <RunId, RecoveredRunEvidence>{};
+      for (final activity in [...evidence.terminal, ...evidence.unsealed]) {
+        final session = sessions[activity.sessionId];
+        if (session == null ||
+            store.runRecord(activity.runId) != null ||
+            _runActivities.containsKey(activity.runId) ||
+            _checkpointSessions.containsKey(activity.runId) ||
+            _recoveredRuns.containsKey(activity.runId) ||
+            recovered.containsKey(activity.runId)) {
           throw StateError(
-            'Run activity ${activity.runId} is already published.',
+            'Invalid or conflicting restored Run activity ${activity.runId}.',
           );
         }
+        recovered[activity.runId] = RecoveredRunEvidence._(
+          session: session,
+          activity: activity,
+          terminalRecord: records[activity.runId],
+        );
       }
       // Both restore sets are validated before either is published. These final
       // synchronous mutations cannot interleave with another lifecycle operation.
@@ -724,9 +778,10 @@ final class ProductLifecycleCoordinator {
         authorities: graph.authorities,
         runRecords: graph.runRecords,
       );
-      for (final activity in activities) {
+      for (final activity in evidence.terminal) {
         _runActivities[activity.runId] = activity;
       }
+      _recoveredRuns.addAll(recovered);
       _projectDatabases[project.id] = database;
       return project;
     } on Object {
@@ -758,9 +813,36 @@ final class ProductLifecycleCoordinator {
     if (_runActivities.containsKey(record.id)) {
       throw StateError('Run activity ${record.id} is already published.');
     }
+    if (_recoveredRuns.containsKey(record.id) ||
+        (_checkpointSessions.containsKey(record.id) &&
+            _checkpointSessions[record.id] != record.sessionId)) {
+      throw StateError('Run ${record.id} is not this live Session execution.');
+    }
     databaseForSession(record.sessionId)?.insertTerminalRun(record, activity);
     store.publishTerminalRun(record);
     _runActivities[record.id] = activity;
+    _checkpointSessions.remove(record.id);
+  }
+
+  /// Mandatory core execution checkpoint, independent of UI observation.
+  /// Returning acknowledges a committed transaction only for durable Projects;
+  /// explicitly volatile Projects do not acquire durable or temporary backing.
+  void checkpointRunActivity(Session session, RunActivitySnapshot activity) {
+    validateSessionInput(session);
+    if (activity.sessionId != session.id ||
+        store.runRecord(activity.runId) != null ||
+        _recoveredRuns.containsKey(activity.runId) ||
+        (_checkpointSessions.containsKey(activity.runId) &&
+            _checkpointSessions[activity.runId] != session.id)) {
+      throw StateError('Run activity does not belong to this live Session.');
+    }
+    final database = databaseForSession(session.id);
+    if (database == null) {
+      validatePartialRunActivity(activity);
+    } else {
+      database.checkpointRunActivity(activity);
+    }
+    _checkpointSessions[activity.runId] = session.id;
   }
 
   /// Resolves semantic Session scope without resolving a strategy or Environment.

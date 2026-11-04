@@ -15,6 +15,9 @@ strategy-owned state, Environment relationship, or parent Session relationship.
 `RunRecord` and `RunTerminalState` are terminal product data, not a live Run or an
 activity snapshot. Their minimal shape and retention/restore semantics belong to
 the [terminal Run history model](../../docs/architecture/product-model.md#terminal-run-history).
+Incrementally retained unsealed evidence and its historical interrupted
+classification belong to the application's execution owner, not a new product
+Run identity or terminal state.
 
 ## Strategy Identity
 

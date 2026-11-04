@@ -250,9 +250,10 @@ against that origin without replacing its captured binding or exposing generatio
 identities to plugins. UI placement does not own the controller or Run lifetime.
 Chat's canonical persistence uses a separate generation-scoped
 [Project storage service](../project_storage/README.md), not the start/resume
-invocation context. Live Run execution remains non-durable; terminal product
-records and explicit public activity snapshots are retained atomically by the
-application under the
+invocation context. Live Run execution remains non-durable; public semantic activity
+is checkpointed incrementally by the application, independently of presentation.
+Terminal product records and final public activity snapshots are retained
+atomically by the application under the
 [terminal retention rules](../../docs/architecture/execution-model.md#terminal-run-retention),
 not through a new strategy persistence operation.
 
@@ -303,11 +304,17 @@ start, resume, approval, cancellation, or tool methods. The application host
 projects the internal Run journal into these values without exposing the journal
 or retaining executable objects in snapshots. Cancelling a subscription only
 detaches observation. Terminal evidence remains readable after completion/failure.
-The application retains terminal `RunActivitySnapshot` values with product Run
-records and restores them as read-only history. This package owns those immutable
-semantic values, not SQLite, codecs for internal journals, or storage lifetime.
+The application checkpoints public semantic evidence during execution and seals
+terminal `RunActivitySnapshot` values with product Run records. Its private recovery
+view classifies restored unsealed evidence as interrupted, without changing the
+snapshot's last observed state or restoring approval authority. This package owns
+those immutable semantic values, not SQLite, codecs for internal journals, or
+storage lifetime.
 See [terminal execution history](../../docs/architecture/execution-model.md#terminal-execution-history)
-for the relational and commit-before-publication boundary.
+for the relational and commit-before-publication boundary. These mandatory core
+checkpoints are not subscriptions to `RunActivitySource.changes`; subscriber
+failures still cannot fail execution. The public historical transport below remains
+terminal-only and does not yet expose recovered interrupted evidence.
 
 The read model retains exact model invocation identity, ordered output occurrence
 identity, and resolved tool invocation identity across lifecycle changes. Model

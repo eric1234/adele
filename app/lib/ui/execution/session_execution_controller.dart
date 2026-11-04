@@ -440,9 +440,8 @@ final class SessionExecutionController extends ChangeNotifier {
         if ((run == null || run.state == RunState.created) && runId != null) {
           _preparationStates[runId] = RunState.failed;
         }
-        if (run?.state == RunState.running || run?.state == RunState.waiting) {
-          run!.fail(error);
-        }
+        // The core Run owner alone establishes execution outcomes. A checkpoint
+        // failure can leave factual nonterminal state without permission to advance.
         _failure = error;
         _pendingApproval = null;
         _pendingInterruption = null;

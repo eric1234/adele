@@ -24,6 +24,7 @@ void main() {
   late List<Session> sessions;
   late List<(SessionId, EnvironmentId)> authorities;
   late List<RunRecord> runRecords;
+  late List<RunActivitySnapshot> partials;
   late Database inspection;
 
   setUp(() {
@@ -82,6 +83,19 @@ void main() {
     for (final record in runRecords) {
       database.insertTerminalRun(record, _activity(record));
     }
+    partials = [
+      _partialActivity(RunId('partial-a'), sessions.first.id),
+      _partialActivity(RunId('partial-b'), sessions.first.id),
+      RunActivitySnapshot(
+        runId: RunId('partial-created'),
+        sessionId: sessions.last.id,
+        state: RunState.created,
+        sequence: 0,
+      ),
+    ];
+    for (final partial in partials) {
+      database.checkpointRunActivity(partial);
+    }
     database.close();
     inspection = sqlite3.open(database.path);
     addTearDown(inspection.close);
@@ -111,10 +125,15 @@ void main() {
       expect(lifecycle.store.session(session.id), isNull);
       expect(lifecycle.store.sessionAuthority(session.id), isNull);
       expect(lifecycle.store.runsForSession(session.id), isEmpty);
+      expect(lifecycle.recoveredRunsForSession(session.id), isEmpty);
     }
     for (final record in runRecords) {
       expect(lifecycle.store.runRecord(record.id), isNull);
       expect(lifecycle.runActivity(record.id), isNull);
+      expect(lifecycle.recoveredRun(record.id), isNull);
+    }
+    for (final partial in partials) {
+      expect(lifecycle.recoveredRun(partial.runId), isNull);
     }
   }
 
@@ -174,8 +193,50 @@ void main() {
         expect(activity.sessionId, record.sessionId);
         expect(activity.state.name, record.state.name);
         expect(activity.lifecycle.last.state, activity.state);
+        final recovered = lifecycle.recoveredRun(record.id)!;
+        expect(recovered.status, RecoveredRunStatus.terminal);
+        expect(recovered.activity, same(activity));
+        expect(recovered.terminalRecord, same(restored));
+        expect(
+          recovered.session,
+          same(lifecycle.store.session(record.sessionId)),
+        );
+      }
+      for (final partial in partials) {
+        final recovered = lifecycle.recoveredRun(partial.runId)!;
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(
+          recovered.session,
+          same(lifecycle.store.session(partial.sessionId)),
+        );
+        expect(recovered.terminalRecord, isNull);
+        expect(recovered.activity.runId, partial.runId);
+        expect(recovered.activity.sessionId, partial.sessionId);
+        expect(recovered.activity.state, partial.state);
+        expect(recovered.activity.sequence, partial.sequence);
+        expect(recovered.activity.failure, isNull);
+        expect(lifecycle.store.runRecord(partial.runId), isNull);
+        expect(lifecycle.runActivity(partial.runId), isNull);
+        expect(lifecycle.hasSessionExecution(recovered.session), isFalse);
+        expect(
+          () => recovered.activity.lifecycle.clear(),
+          throwsUnsupportedError,
+        );
       }
       for (final session in sessions) {
+        final recovered = lifecycle.recoveredRunsForSession(session.id);
+        expect(
+          recovered.map((value) => value.runId),
+          unorderedEquals([
+            ...runRecords
+                .where((value) => value.sessionId == session.id)
+                .map((value) => value.id),
+            ...partials
+                .where((value) => value.sessionId == session.id)
+                .map((value) => value.runId),
+          ]),
+        );
+        expect(() => recovered.clear(), throwsUnsupportedError);
         expect(
           lifecycle.store.runsForSession(session.id).map((record) => record.id),
           unorderedEquals(
@@ -185,6 +246,9 @@ void main() {
           ),
         );
       }
+      expect(lifecycle.recoveredRun(RunId('no-evidence')), isNull);
+      expect(lifecycle.runActivity(RunId('no-evidence')), isNull);
+      expect(lifecycle.recoveredRunsForSession(SessionId('unknown')), isEmpty);
       expect(await open(lifecycle), same(reopened));
       expect(_snapshot(inspection), before);
     },
@@ -265,6 +329,36 @@ void main() {
           expectedEnvironments[i],
         );
       }
+    },
+  );
+
+  test(
+    'recovered partial identity cannot be checkpointed or sealed as a live Run',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final recovered = lifecycle.recoveredRun(partials.first.runId)!;
+      final before = _snapshot(inspection);
+      expect(
+        () => lifecycle.checkpointRunActivity(
+          recovered.session,
+          recovered.activity,
+        ),
+        throwsStateError,
+      );
+      final record = RunRecord(
+        id: recovered.runId,
+        sessionId: recovered.session.id,
+        state: RunTerminalState.completed,
+      );
+      expect(
+        () => lifecycle.retainTerminalRun(record, _activity(record)),
+        throwsStateError,
+      );
+      expect(lifecycle.recoveredRun(recovered.runId), same(recovered));
+      expect(lifecycle.store.runRecord(recovered.runId), isNull);
+      expect(lifecycle.runActivity(recovered.runId), isNull);
+      expect(_snapshot(inspection), before);
     },
   );
 
@@ -395,49 +489,63 @@ void main() {
     },
   );
 
-  test(
-    'terminal retention commits and reopens without live execution',
-    () async {
-      final lifecycle = _lifecycle();
-      await open(lifecycle);
-      final record = RunRecord(
-        id: RunId('retained'),
-        sessionId: sessions.first.id,
-        state: RunTerminalState.completed,
-      );
-      final activity = _activity(record);
-      lifecycle.retainTerminalRun(record, activity);
-      expect(lifecycle.store.runRecord(record.id), same(record));
-      expect(lifecycle.runActivity(record.id), same(activity));
-      expect(
-        lifecycle.databaseForSession(record.sessionId)!.autocommit,
-        isTrue,
-      );
-      expect(
-        inspection.select('SELECT * FROM adele_product_runs WHERE id = ?', [
-          record.id.value,
-        ]),
-        [
-          {
-            'id': record.id.value,
-            'session_id': record.sessionId.value,
-            'terminal_state': record.state.name,
-          },
-        ],
-      );
-      await lifecycle.close();
-      final fresh = _lifecycle();
-      await open(fresh);
-      final restored = fresh.store.runRecord(record.id)!;
-      expect(restored.sessionId, record.sessionId);
-      expect(restored.state, record.state);
-      expect(fresh.runActivity(record.id)!.state, activity.state);
-      expect(
-        fresh.environmentRuntime.currentMaterialization(environments.first.id),
-        isNull,
-      );
-    },
-  );
+  test('terminal retention commits and reopens without live execution', () async {
+    final lifecycle = _lifecycle();
+    await open(lifecycle);
+    final record = RunRecord(
+      id: RunId('retained'),
+      sessionId: sessions.first.id,
+      state: RunTerminalState.completed,
+    );
+    final activity = _activity(record);
+    final session = lifecycle.store.session(record.sessionId)!;
+    lifecycle.checkpointRunActivity(
+      session,
+      _partialActivity(record.id, record.sessionId),
+    );
+    expect(lifecycle.store.runRecord(record.id), isNull);
+    expect(lifecycle.runActivity(record.id), isNull);
+    expect(lifecycle.recoveredRun(record.id), isNull);
+    lifecycle.retainTerminalRun(record, activity);
+    expect(lifecycle.store.runRecord(record.id), same(record));
+    expect(lifecycle.runActivity(record.id), same(activity));
+    expect(lifecycle.recoveredRun(record.id), isNull);
+    expect(
+      inspection.select(
+        'SELECT run_id, terminal_run_id FROM adele_execution_run_activity WHERE run_id = ?',
+        [record.id.value],
+      ),
+      [
+        {'run_id': record.id.value, 'terminal_run_id': record.id.value},
+      ],
+    );
+    expect(lifecycle.databaseForSession(record.sessionId)!.autocommit, isTrue);
+    expect(
+      inspection.select('SELECT * FROM adele_product_runs WHERE id = ?', [
+        record.id.value,
+      ]),
+      [
+        {
+          'id': record.id.value,
+          'session_id': record.sessionId.value,
+          'terminal_state': record.state.name,
+        },
+      ],
+    );
+    await lifecycle.close();
+    final fresh = _lifecycle();
+    await open(fresh);
+    final restored = fresh.store.runRecord(record.id)!;
+    expect(restored.sessionId, record.sessionId);
+    expect(restored.state, record.state);
+    expect(fresh.runActivity(record.id)!.state, activity.state);
+    expect(fresh.recoveredRun(record.id)!.status, RecoveredRunStatus.terminal);
+    expect(fresh.recoveredRun(record.id)!.terminalRecord, same(restored));
+    expect(
+      fresh.environmentRuntime.currentMaterialization(environments.first.id),
+      isNull,
+    );
+  });
 
   test(
     'failed Run COMMIT publishes nothing and restores autocommit for retry',
@@ -533,6 +641,13 @@ void main() {
       final before = _snapshot(inspection);
       lifecycle.databaseForSession(record.sessionId)!.close();
       expect(
+        () => lifecycle.checkpointRunActivity(
+          lifecycle.store.session(record.sessionId)!,
+          _partialActivity(record.id, record.sessionId),
+        ),
+        throwsStateError,
+      );
+      expect(
         () => lifecycle.retainTerminalRun(record, _activity(record)),
         throwsStateError,
       );
@@ -607,6 +722,13 @@ void main() {
     final before = _snapshot(inspection);
     final closing = lifecycle.close();
     expect(
+      () => lifecycle.checkpointRunActivity(
+        lifecycle.store.session(record.sessionId)!,
+        _partialActivity(record.id, record.sessionId),
+      ),
+      throwsStateError,
+    );
+    expect(
       () => lifecycle.retainTerminalRun(record, _activity(record)),
       throwsStateError,
     );
@@ -662,48 +784,137 @@ void main() {
     },
   );
 
-  test('explicit createProject keeps Session and Run retention volatile', () {
-    final extensions = ExtensionRegistry();
-    _registerStrategy(extensions);
-    final lifecycle = _lifecycle(
-      extensions: extensions,
-      ids: MonotonicProductIdSource(seed: 'volatile'),
-    );
-    final before = _snapshot(inspection);
-    final volatile = lifecycle.createProject(source.uri);
-    final task = Task(
-      id: tasks.first.id,
-      projectId: volatile.id,
-      title: 'Volatile',
-    );
-    lifecycle.store.publishTaskWithPrimaryEnvironment(task, environments.first);
-    final session = lifecycle.createSession(
-      taskId: task.id,
-      strategyId: _strategyId,
-    );
-    expect(lifecycle.store.session(session.id), same(session));
-    expect(
-      lifecycle.store.requireSessionAuthority(session.id).environmentId,
-      environments.first.id,
-    );
-    final record = RunRecord(
-      id: RunId('volatile'),
-      sessionId: session.id,
-      state: RunTerminalState.cancelled,
-    );
-    expect(lifecycle.databaseForSession(session.id), isNull);
-    final activity = _activity(record);
-    lifecycle.retainTerminalRun(record, activity);
-    expect(lifecycle.store.runRecord(record.id), same(record));
-    expect(lifecycle.runActivity(record.id), same(activity));
-    final activities = lifecycle.runActivitiesForSession(session.id);
-    expect(activities, [same(activity)]);
-    expect(() => activities.clear(), throwsUnsupportedError);
-    expect(lifecycle.store.runsForSession(session.id), [record]);
-    expect(_snapshot(inspection), before);
-  });
+  test(
+    'explicit createProject keeps Session and Run retention volatile',
+    () async {
+      final extensions = ExtensionRegistry();
+      _registerStrategy(extensions);
+      final lifecycle = _lifecycle(
+        extensions: extensions,
+        ids: MonotonicProductIdSource(seed: 'volatile'),
+      );
+      final before = _snapshot(inspection);
+      final volatile = lifecycle.createProject(source.uri);
+      final task = Task(
+        id: tasks.first.id,
+        projectId: volatile.id,
+        title: 'Volatile',
+      );
+      lifecycle.store.publishTaskWithPrimaryEnvironment(
+        task,
+        environments.first,
+      );
+      final session = lifecycle.createSession(
+        taskId: task.id,
+        strategyId: _strategyId,
+      );
+      expect(lifecycle.store.session(session.id), same(session));
+      expect(
+        lifecycle.store.requireSessionAuthority(session.id).environmentId,
+        environments.first.id,
+      );
+      final record = RunRecord(
+        id: RunId('volatile'),
+        sessionId: session.id,
+        state: RunTerminalState.cancelled,
+      );
+      expect(lifecycle.databaseForSession(session.id), isNull);
+      final activity = _activity(record);
+      lifecycle.checkpointRunActivity(
+        session,
+        _partialActivity(record.id, session.id),
+      );
+      expect(lifecycle.recoveredRun(record.id), isNull);
+      expect(lifecycle.runActivity(record.id), isNull);
+      expect(lifecycle.store.runRecord(record.id), isNull);
+      expect(_snapshot(inspection), before);
+      lifecycle.retainTerminalRun(record, activity);
+      expect(lifecycle.store.runRecord(record.id), same(record));
+      expect(lifecycle.runActivity(record.id), same(activity));
+      final activities = lifecycle.runActivitiesForSession(session.id);
+      expect(activities, [same(activity)]);
+      expect(() => activities.clear(), throwsUnsupportedError);
+      expect(lifecycle.store.runsForSession(session.id), [record]);
+      expect(_snapshot(inspection), before);
+      await lifecycle.close();
+      final fresh = _lifecycle();
+      await open(fresh);
+      expect(fresh.recoveredRun(record.id), isNull);
+      expect(fresh.runActivity(record.id), isNull);
+      expect(fresh.store.runRecord(record.id), isNull);
+      expect(fresh.store.session(session.id), isNull);
+    },
+  );
+
+  test(
+    'checkpoint validates canonical Session and snapshot before SQL',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final session = lifecycle.store.session(sessions.first.id)!;
+      final partial = _partialActivity(RunId('new-partial'), session.id);
+      final before = _snapshot(inspection);
+      inspection.execute('''
+      CREATE TRIGGER reject_checkpoint BEFORE INSERT ON adele_execution_run_activity
+      BEGIN SELECT RAISE(ABORT, 'unexpected SQL'); END;
+    ''');
+      expect(
+        () => lifecycle.checkpointRunActivity(
+          Session(
+            id: session.id,
+            taskId: session.taskId,
+            strategyId: session.strategyId,
+          ),
+          partial,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => lifecycle.checkpointRunActivity(
+          session,
+          _partialActivity(partial.runId, sessions.last.id),
+        ),
+        throwsStateError,
+      );
+      expect(
+        () => lifecycle.checkpointRunActivity(
+          session,
+          _activity(
+            RunRecord(
+              id: partial.runId,
+              sessionId: session.id,
+              state: RunTerminalState.completed,
+            ),
+          ),
+        ),
+        throwsFormatException,
+      );
+      expect(lifecycle.recoveredRun(partial.runId), isNull);
+      expect(_snapshot(inspection), before);
+    },
+  );
 
   for (final (name, sql, error) in [
+    (
+      'orphan partial Session',
+      "UPDATE adele_execution_run_activity SET session_id = 'missing' WHERE run_id = 'partial-a'",
+      isA<FormatException>(),
+    ),
+    (
+      'partial with missing sequence evidence',
+      "UPDATE adele_execution_run_activity SET latest_sequence = 9 WHERE run_id = 'partial-b'",
+      isA<FormatException>(),
+    ),
+    (
+      'partial with terminal lifecycle but no product record',
+      "UPDATE adele_execution_run_lifecycle SET state = 'completed' WHERE run_id = 'partial-a'",
+      isA<FormatException>(),
+    ),
+    (
+      'terminal sealed to another Session',
+      "UPDATE adele_execution_run_activity SET session_id = 'session-task-a' WHERE run_id = 'run-cancelled'",
+      isA<FormatException>(),
+    ),
     (
       'missing terminal activity',
       "DELETE FROM adele_execution_run_activity WHERE run_id = 'run-cancelled'",
@@ -711,7 +922,7 @@ void main() {
     ),
     (
       'orphan terminal activity',
-      "UPDATE adele_execution_run_activity SET run_id = 'unknown' WHERE run_id = 'run-cancelled'",
+      "UPDATE adele_execution_run_activity SET run_id = 'unknown', terminal_run_id = 'unknown' WHERE run_id = 'run-cancelled'",
       isA<FormatException>(),
     ),
     (
@@ -732,7 +943,7 @@ void main() {
     (
       'orphan Run',
       "UPDATE adele_product_runs SET session_id = 'missing' WHERE id = 'run-cancelled'",
-      isA<StateError>(),
+      isA<FormatException>(),
     ),
     (
       'invalid Run state',
@@ -999,6 +1210,17 @@ RunActivitySnapshot _activity(RunRecord record) {
         : null,
   );
 }
+
+RunActivitySnapshot _partialActivity(RunId runId, SessionId sessionId) =>
+    RunActivitySnapshot(
+      runId: runId,
+      sessionId: sessionId,
+      state: RunState.running,
+      sequence: 1,
+      lifecycle: const [
+        RunLifecycleActivity(sequence: 1, state: RunState.running),
+      ],
+    );
 
 final class _ProjectChannel implements AdeleRequestChannel {
   @override
