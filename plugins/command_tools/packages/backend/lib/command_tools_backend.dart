@@ -1,4 +1,4 @@
-/// Remote Command Tools over operation-scoped, host-authorized processes.
+/// Remote Command Tools and read-only retained-output search.
 library;
 
 import 'package:adele_environment/adele_environment.dart';
@@ -7,6 +7,101 @@ import 'package:adele_model_tool/remote_model_tool.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
+
+const commandOutputSearchConfigurationContext = 'command-output-search';
+
+/// Shares one search engine for this backend generation, not each invocation.
+final class CommandOutputSearchBackend implements RemoteModelToolService {
+  CommandOutputSearchBackend(CommandOutputSearch search)
+    : _registration = searchCommandOutputToolRegistration(search);
+
+  final ToolRegistration _registration;
+
+  @override
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async => [
+    RemoteToolDescriptor.fromLocal(
+      _registration,
+      routeId: searchCommandOutputToolId.value,
+      executionHostServices: const [],
+    ),
+  ];
+
+  @override
+  Future<RemoteCanonicalToolArguments> validateAndNormalize(
+    String routeId,
+    Map<String, Object?> proposedArguments,
+  ) async {
+    _requireRoute(routeId);
+    final CanonicalToolArguments arguments;
+    try {
+      arguments = await _registration.executable.validateAndNormalize(
+        proposedArguments,
+      );
+    } on ToolArgumentValidationException catch (error) {
+      throw RemoteToolArgumentValidationFailure(
+        code: 'invalid_arguments',
+        message: error.message,
+        details: const <String, Object?>{},
+      );
+    }
+    return RemoteCanonicalToolArguments.fromLocal(arguments);
+  }
+
+  @override
+  Future<RemoteEffectDescription> describe(
+    String routeId,
+    RemoteCanonicalToolArguments arguments,
+    String sessionId,
+    String runId,
+    String toolInvocationId,
+    String? environmentId,
+  ) async {
+    _requireRoute(routeId);
+    return RemoteEffectDescription.fromLocal(
+      await _registration.executable.describe(
+        arguments.toLocal(),
+        ToolExecutionContext(
+          sessionId: SessionId(sessionId),
+          runId: RunId(runId),
+          toolInvocationId: toolInvocationId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Stream<RemoteToolExecutionEvent> execute(
+    String routeId,
+    RemoteCanonicalToolArguments arguments,
+    String sessionId,
+    String runId,
+    String toolInvocationId,
+    String? environmentId,
+    String? hostInvocationContext,
+  ) async* {
+    _requireRoute(routeId);
+    yield* _registration.executable
+        .execute(
+          arguments.toLocal(),
+          ToolExecutionContext(
+            sessionId: SessionId(sessionId),
+            runId: RunId(runId),
+            toolInvocationId: toolInvocationId,
+          ),
+        )
+        .map(RemoteToolExecutionEvent.fromLocal);
+  }
+
+  void _requireRoute(String routeId) {
+    if (routeId != searchCommandOutputToolId.value) {
+      throw ArgumentError.value(
+        routeId,
+        'routeId',
+        'Unknown Command Output Search tool route.',
+      );
+    }
+  }
+}
 
 final class CommandToolsBackend implements RemoteModelToolService {
   const CommandToolsBackend(this._hostRequests, this.transcripts);

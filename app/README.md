@@ -1933,8 +1933,9 @@ instruction sources. The retained strategy selection passes into
 `createSessionOrchestrationRun`. Detailed capture/continuation semantics belong to
 the [execution model](../docs/architecture/execution-model.md) and [Chat README](../plugins/chat_strategy/README.md).
 
-Current `ApprovalGatedToolPolicy` allows a single certain source-read effect, asks
-for a single certain source-mutation effect or a single process-execution effect,
+Current `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
+resource-inspection effect, asks for a single certain source-mutation effect or
+a single process-execution effect,
 and denies other combinations. Approvals are host-owned exact-invocation
 interruptions. Common host UI offers `Allow once` / `Deny`, rejects stale/duplicate
 decisions, and applies display-safety checks without changing executed arguments.

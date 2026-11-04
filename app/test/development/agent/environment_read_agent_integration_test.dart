@@ -180,6 +180,7 @@ void main() {
         tools.tools.map((MaterializedTool tool) => tool.modelDefinition.alias),
         <String>[
           'run_command',
+          'search_command_output',
           'search',
           'glob',
           'read_file',
@@ -833,6 +834,7 @@ void main() {
         'create_file',
         'delete_file',
         'run_command',
+        'search_command_output',
       ]);
       for (final MaterializedTool tool in tools.tools) {
         final Object? properties =

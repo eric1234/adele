@@ -4071,6 +4071,7 @@ void main() {
                 'create_file',
                 'delete_file',
                 'run_command',
+                'search_command_output',
               ]),
             );
             for (final forbidden in [
@@ -6205,7 +6206,7 @@ void main() {
           );
           expect(
             runtime.extensions.discover(modelToolContributions),
-            hasLength(3),
+            hasLength(4),
           );
           expect(
             runtime.extensions
@@ -6582,6 +6583,7 @@ void main() {
               _commandPluginId,
             ])
               if (id != pluginId) '$id.model-tools',
+            if (pluginId != _commandPluginId) '$_commandPluginId.output-search',
           ]),
         );
         expect(

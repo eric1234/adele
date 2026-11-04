@@ -30,6 +30,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       hostInfrastructureContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
+  if (defaultConfigurationContext == commandOutputSearchConfigurationContext) {
+    throw StateError('Conflicting Command Tools configuration contexts.');
+  }
 
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
   final transcripts = CommandTranscriptStore(
@@ -48,6 +51,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         ),
         commandOutputServiceId: CommandOutputServiceDispatcher(transcripts),
       },
+      commandOutputSearchConfigurationContext: {
+        remoteModelToolServiceId: RemoteModelToolServiceDispatcher(
+          CommandOutputSearchBackend(CommandOutputSearch(transcripts)),
+        ),
+      },
     },
   );
   final requests = ReceivePort();
@@ -65,6 +73,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           metadata: const <String, Object?>{
             'hostServices': [authorizedEnvironmentProcessServiceId],
           },
+        ).toMap(),
+        AdeleExtensionExposure(
+          extensionPointId: modelToolContributions.value,
+          extensionId: commandOutputSearchExtensionId.value,
+          serviceId: remoteModelToolServiceId,
+          configurationContext: commandOutputSearchConfigurationContext,
+          metadata: const <String, Object?>{'hostServices': <String>[]},
         ).toMap(),
       ],
     });
