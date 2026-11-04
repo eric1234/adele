@@ -64,7 +64,11 @@ final class MainContentFixtureResources {
   MainContentFixtureResources({this.environmentRuntime, this.confirm});
 
   final EnvironmentRuntime? environmentRuntime;
-  final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final Future<bool> Function(
+    Map<String, Object?> request,
+    Future<void> invalidated,
+  )?
+  confirm;
   final Map<(SessionId, String), NativeCodeEditor> _editors = {};
   bool _disposed = false;
 

@@ -920,10 +920,11 @@ void main() {
   );
 
   testWidgets(
-    'hidden exit preflight snapshots actual text despite missed native notifications and Cancel retains it',
+    'hidden exit preflight snapshots actual text and waits for human decisions beyond the short threshold without losing the document',
     (tester) => tester.runAsync(() async {
       final fixture = await start(tester);
-      await fixture.display(_path);
+      final generation = fixture.frontends.generations.single;
+      final opened = await fixture.display(_path);
       await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
       final original = _editor(tester);
       await fixture.hide(tester);
@@ -941,29 +942,72 @@ void main() {
       expect(notifications, 0);
       expect(original.controller!.text, 'hidden edit $_original');
       original.controller!.removeListener(changed);
-      expect(await fixture.frontends.prepareToExit(), isFalse);
-      expect(fixture.confirmations.single, contains(_path));
-      expect(
-        fixture.confirmations.single,
-        contains(fixture.additional.id.value),
-      );
-      expect(find.byType(CodeForge), findsNothing);
-      expect(fixture.provider.replacements, isEmpty);
-      await fixture.mount(tester, fixture.session);
-      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
-      expect(_editor(tester).controller, same(original.controller));
-      expect(_editor(tester).undoController, same(original.undoController));
-      expect(original.controller!.text, 'hidden edit $_original');
-      expect(fixture.provider.reads, hasLength(1));
 
-      await fixture.hide(tester);
-      fixture.discard = true;
-      expect(await fixture.frontends.prepareToExit(), isTrue);
-      // Advice to exit is not final disposal: another participant may still veto.
-      await fixture.mount(tester, fixture.session);
-      await _until(tester, () => find.byType(CodeForge).evaluate().length == 1);
-      expect(_editor(tester).controller, same(original.controller));
-      expect(original.controller!.text, 'hidden edit $_original');
+      const threshold = Duration(milliseconds: 250);
+      for (final discard in [false, true]) {
+        final decision = Completer<bool>();
+        addTearDown(() {
+          if (!decision.isCompleted) decision.complete(false);
+        });
+        fixture.discard = decision.future;
+        final previousConfirmations = fixture.confirmations.length;
+        var completed = false;
+        var incompleteChecks = 0;
+        var activeWorkChecks = 0;
+        final exiting = fixture.frontends
+            .prepareToExit(
+              waitingThreshold: threshold,
+              confirmIncomplete: (_) async {
+                incompleteChecks++;
+                return false;
+              },
+              confirmActiveWork: () async {
+                activeWorkChecks++;
+                return true;
+              },
+            )
+            .then((accepted) {
+              completed = true;
+              return accepted;
+            });
+        await _until(
+          tester,
+          () => fixture.confirmations.length == previousConfirmations + 1,
+        );
+        expect(fixture.confirmations.last, contains(_path));
+        expect(
+          fixture.confirmations.last,
+          contains(fixture.additional.id.value),
+        );
+        await Future<void>.delayed(threshold * 2);
+        await tester.pump();
+        expect(completed, isFalse);
+        expect(incompleteChecks, 0);
+        expect(activeWorkChecks, 0);
+        expect(find.byType(CodeForge), findsNothing);
+        expect(original.controller!.text, 'hidden edit $_original');
+        expect(fixture.provider.replacements, isEmpty);
+
+        decision.complete(discard);
+        expect(await exiting, discard);
+        expect(incompleteChecks, 0);
+        expect(activeWorkChecks, discard ? 1 : 0);
+        // Advice to exit is not final disposal: another participant may still veto.
+        await fixture.mount(tester, fixture.session);
+        await _until(
+          tester,
+          () => find.byType(CodeForge).evaluate().length == 1,
+        );
+        expect(_editor(tester).controller, same(original.controller));
+        expect(_editor(tester).undoController, same(original.undoController));
+        expect(original.controller!.text, 'hidden edit $_original');
+        expect((await fixture.display(_path))['id'], opened['id']);
+        expect(fixture.provider.reads, hasLength(1));
+        expect(fixture.provider.replacements, isEmpty);
+        expect(fixture.frontends.generations.single, same(generation));
+        expect(generation.state, InstalledFrontendState.active);
+        if (!discard) await fixture.hide(tester);
+      }
       expect(tester.takeException(), isNull);
     }),
   );
@@ -1111,7 +1155,7 @@ final class _Fixture {
             binding.endpointAs<_Endpoint>().provider,
         retainEnvironment: store.replaceEnvironment,
       ),
-      confirm: (request) async {
+      confirm: (request, _) async {
         expect(request['title'], 'Discard unsaved changes?');
         expect(request['acceptLabel'], 'Discard');
         expect(request['cancelLabel'], 'Cancel');
@@ -1153,7 +1197,7 @@ final class _Fixture {
   late CapabilityRegistration registration;
   late final PreparedMainContentHost host;
   late final ApplicationFrontendBootstrap frontends;
-  bool discard = false;
+  FutureOr<bool> discard = false;
   Session? current;
 
   CapabilityRegistration register(_Provider provider) => registry.register(

@@ -61,6 +61,7 @@ final class AdeleApplication extends StatefulWidget {
     this.navigatorKey,
     this.configurationRoots,
     this.exitTimeout = const Duration(seconds: 5),
+    this.exitPreflightThreshold = const Duration(seconds: 5),
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -104,6 +105,10 @@ final class AdeleApplication extends StatefulWidget {
   /// One total budget after exit acceptance, not a deadline for user preflight.
   /// Native tests can shorten it without changing resource-owner deadlines.
   final Duration exitTimeout;
+
+  /// Soft threshold for the whole reversible check, excluding human decisions.
+  /// Reaching it offers recovery; it never accepts exit automatically.
+  final Duration exitPreflightThreshold;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -317,8 +322,24 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         setState(() => _preparingExit = true);
         _executions.refresh();
         _dismissCommandPalette();
+        final decisionEnded = Completer<void>();
         try {
           final prepared = await _frontends.prepareToExit(
+            waitingThreshold: widget.exitPreflightThreshold,
+            confirmIncomplete: (issue) => _confirmContribution({
+              'title': issue == ExitPreflightIssue.prolonged
+                  ? 'The exit check is taking longer than expected'
+                  : 'The exit check could not be completed',
+              'message':
+                  'Unsaved changes or pending operations may not have been checked. '
+                  'Some data or external effects may be incomplete or uncertain. '
+                  'Exiting anyway may interrupt pending execution or interactive '
+                  'terminals. No interrupted Run will automatically resume on restart. '
+                  'Keep working to review your work, or explicitly accept these risks '
+                  'and continue toward exit.',
+              'cancelLabel': 'Keep Working',
+              'acceptLabel': 'Exit Anyway',
+            }, decisionEnded.future),
             confirmActiveWork: () async {
               if (!_executions.hasActiveWork &&
                   !_runtime.terminals.hasActiveWork) {
@@ -334,7 +355,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     'Interrupted work will not resume automatically.',
                 'cancelLabel': 'Keep Working',
                 'acceptLabel': 'Exit ADELE',
-              });
+              }, decisionEnded.future);
             },
           );
           if (_closing != null) {
@@ -347,6 +368,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           _dismissSettings();
           return AppExitResponse.exit;
         } finally {
+          decisionEnded.complete();
           if (mounted && _closing == null) {
             setState(() => _preparingExit = false);
             _executions.refresh();
@@ -563,29 +585,43 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
   }
 
-  Future<bool> _confirmContribution(Map<String, Object?> request) async {
+  Future<bool> _confirmContribution(
+    Map<String, Object?> request,
+    Future<void> invalidated,
+  ) async {
     final context = _navigator.currentContext;
     if (!mounted || _closing != null || context == null) return false;
-    return await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text(request['title']! as String),
-            content: SingleChildScrollView(
-              child: Text(request['message']! as String),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: Text(request['cancelLabel']! as String),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: Text(request['acceptLabel']! as String),
-              ),
-            ],
+    var live = true;
+    final route = DialogRoute<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(request['title']! as String),
+        content: SingleChildScrollView(
+          child: Text(request['message']! as String),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(request['cancelLabel']! as String),
           ),
-        ) ??
-        false;
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(request['acceptLabel']! as String),
+          ),
+        ],
+      ),
+    );
+    // Retiring one operation withdraws only its own route. A late dialog result
+    // never belongs to a newer operation or exit attempt.
+    invalidated.then((_) {
+      live = false;
+      final navigator = route.navigator;
+      if (navigator != null && navigator.mounted && route.isActive) {
+        navigator.removeRoute(route);
+      }
+    });
+    final accepted = await _navigator.currentState!.push(route) ?? false;
+    return live && mounted && _closing == null && accepted;
   }
 
   void _inspectionChanged() {
@@ -980,6 +1016,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     // Publish the irreversible fence before invoking any resource callbacks.
     final completion = Completer<void>();
     _closing = completion.future;
+    _mainContentHost.cancelExitPreflight();
     completion.complete(Future<void>.sync(_drainAndCloseRuntime));
     return completion.future;
   }

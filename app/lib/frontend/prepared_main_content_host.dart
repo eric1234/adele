@@ -28,6 +28,9 @@ import 'session_feedback_bridge.dart';
 import 'session_presentation_lifecycle_bridge.dart';
 import 'structured_bridge_data.dart';
 
+/// Safe host-owned reasons, never plugin exception text or an inferred hang.
+enum ExitPreflightIssue { prolonged, unavailable }
+
 /// Optional native resources selected once for an admitted pane. Each mounted
 /// presentation receives a fresh bridge over that same captured owner.
 final class PreparedMainContentPaneBinding {
@@ -57,7 +60,11 @@ final class PreparedMainContentHost {
 
   final MainContentActionCoordinator actionCoordinator;
   final EnvironmentRuntime? environmentRuntime;
-  final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final Future<bool> Function(
+    Map<String, Object?> request,
+    Future<void> invalidated,
+  )?
+  confirm;
   final bool Function(
     Session session,
     SessionContentKind kind,
@@ -72,7 +79,9 @@ final class PreparedMainContentHost {
   final Map<PreparedMainContentPresentation, Set<PreparedFrontendBridge>>
   _contextualAccess = {};
   bool _accepting = true;
-  bool _preflighting = false;
+  _ExitPreflight? _preflight;
+  bool get _preflighting => _preflight != null;
+  int _confirmations = 0;
 
   final PreparedMainContentPaneBinding? Function({
     required PreparedPluginInstallation installation,
@@ -631,13 +640,15 @@ final class PreparedMainContentHost {
     _MainContentAttachment? attachment,
     String operation,
     Map<String, Object?> arguments, {
-    bool preflight = false,
+    _ExitPreflight? preflight,
     bool Function()? canPresent,
   }) {
     if (!_accepting ||
-        (_preflighting && !preflight) ||
+        (_preflighting && preflight == null) ||
+        (preflight != null && !preflight.checking) ||
         !retained.isActive() ||
-        (!preflight && (attachment == null || !attachment.access.isActive))) {
+        (preflight == null &&
+            (attachment == null || !attachment.access.isActive))) {
       return Future.error(StateError('Contribution operation is unavailable.'));
     }
     final entrypoint = retained.descriptor.operations[operation];
@@ -668,26 +679,28 @@ final class PreparedMainContentHost {
     }
     final capturedArguments =
         copyStructuredBridgeData(arguments) as Map<String, Object?>;
+    bool available() => retained.isActive() && (preflight?.checking ?? true);
     late final Future<Map<String, Object?>> pending;
     pending = retained.generation
         .invoke<Map<String, Object?>>(
           library: retained.descriptor.library,
           entrypoint: entrypoint,
+          preflightEnded: preflight?.ended.future,
           createBridge: () => PreparedFrontendBridges([
-            MainContentBridge(context: context, isActive: retained.isActive),
+            MainContentBridge(context: context, isActive: available),
             ContributionBridge(
               owner: retained.owner,
-              isActive: retained.isActive,
+              isActive: available,
               arguments: capturedArguments,
               nativeCodeEditor: retained.descriptor.nativeCodeEditor,
               retainedData: retained.descriptor.retainedData,
               readSetting: retained.readSetting,
-              confirm: confirm,
+              confirm: _confirmOperation,
             ),
-            EnvironmentAccessBridge(files: files, isActive: retained.isActive),
+            EnvironmentAccessBridge(files: files, isActive: available),
           ]),
           decodeResult: (value) {
-            if (!retained.isActive()) {
+            if (!available()) {
               throw StateError(
                 'Contribution owner retired during the operation.',
               );
@@ -696,6 +709,9 @@ final class PreparedMainContentHost {
           },
         )
         .then((result) async {
+          // Exit advice does not reconcile panes. A refresh would grant a new
+          // initializer attachment authority beyond this check's lifetime.
+          if (preflight != null) return result;
           final current = retained.attachment;
           if (current != null &&
               current.access.isActive &&
@@ -723,36 +739,127 @@ final class PreparedMainContentHost {
     return pending;
   }
 
+  Future<bool> _confirmOperation(
+    Map<String, Object?> request,
+    Future<void> invalidated,
+  ) async {
+    var live = true;
+    final retired = invalidated.then((_) => live = false);
+    // An ordinary admitted operation may reach confirmation after recovery was
+    // offered. Do not stack it over recovery or the final active-work decision.
+    while (true) {
+      final attempt = _preflight;
+      if (attempt == null || attempt.checking) break;
+      final mayResume = await Future.any([attempt.finished.future, retired]);
+      if (!mayResume) return false;
+    }
+    if (!live || !_accepting || _closed) return false;
+    _confirmations++;
+    _preflight?.waitForHuman(true);
+    try {
+      return await Future.any([
+        Future<bool>.sync(() => confirm?.call(request, invalidated) ?? false),
+        retired,
+      ]);
+    } finally {
+      _confirmations--;
+      _preflight?.waitForHuman(_confirmations != 0);
+    }
+  }
+
   /// Reversible opt-in preflight, before frontend or execution shutdown. Hidden
   /// collections are checked by fresh operations without mounting their views.
   Future<bool> prepareToExit({
     Future<bool> Function()? confirmActiveWork,
+    Duration waitingThreshold = const Duration(seconds: 5),
+    Future<bool> Function(ExitPreflightIssue issue)? confirmIncomplete,
   }) async {
-    if (_preflighting || !_accepting) return false;
-    _preflighting = true;
+    if (_preflighting || !_accepting || _closed) return false;
+    final attempt = _preflight = _ExitPreflight(waitingThreshold);
+    attempt.waitForHuman(_confirmations != 0);
+    var accepted = false;
     try {
-      await drainOperations();
-      for (final retained in _retained.values) {
-        final operation = retained.descriptor.exitOperation;
-        if (operation == null || !retained.isActive()) continue;
-        final result = await _invoke(
-          retained,
-          null,
-          operation,
-          const {},
-          preflight: true,
+      // Observe the entire continuation, even when an incomplete check wins.
+      unawaited(_checkExit(attempt));
+      final result = await attempt.result.future;
+      if (result == _ExitCheck.rejected || result == _ExitCheck.cancelled) {
+        return false;
+      }
+      if (result != _ExitCheck.accepted) {
+        final proceed = await attempt.decide(
+          () =>
+              confirmIncomplete?.call(
+                result == _ExitCheck.prolonged
+                    ? ExitPreflightIssue.prolonged
+                    : ExitPreflightIssue.unavailable,
+              ) ??
+              false,
         );
-        if (result['accepted'] != true) return false;
+        if (!proceed) return false;
       }
       // Keep the reversible finite-operation gate through the host's final
       // active-work decision, so new Save/Close work cannot bypass preflight.
-      return await confirmActiveWork?.call() ?? true;
+      accepted = await attempt.decide(() => confirmActiveWork?.call() ?? true);
+      return accepted;
     } on Object {
       return false;
     } finally {
-      _preflighting = false;
+      attempt.cancel();
+      if (identical(_preflight, attempt)) _preflight = null;
+      attempt.finished.complete(!accepted && !_closed && _accepting);
     }
   }
+
+  Future<void> _checkExit(_ExitPreflight attempt) async {
+    try {
+      await drainOperations();
+      if (!attempt.checking) return;
+      final participants = _retained.values
+          .where(
+            (retained) =>
+                retained.descriptor.exitOperation != null &&
+                retained.isActive(),
+          )
+          .toList();
+      attempt.participants.addAll(participants);
+      for (final retained in participants) {
+        if (!attempt.checking) return;
+        final result = await _invoke(
+          retained,
+          null,
+          retained.descriptor.exitOperation!,
+          const {},
+          preflight: attempt,
+        );
+        if (!attempt.checking) return;
+        if (result['accepted'] == false) {
+          attempt.finishChecks(_ExitCheck.rejected);
+          return;
+        }
+        if (result['accepted'] != true) {
+          attempt.finishChecks(_ExitCheck.unavailable);
+          return;
+        }
+      }
+      // Startup/registration changes must not turn an unconsulted participant
+      // into accepted advice. A later attempt captures the fresh cohort.
+      if (_retained.values.any(
+        (retained) =>
+            retained.descriptor.exitOperation != null &&
+            retained.isActive() &&
+            !attempt.participants.contains(retained),
+      )) {
+        attempt.finishChecks(_ExitCheck.unavailable);
+        return;
+      }
+      attempt.finishChecks(_ExitCheck.accepted);
+    } on Object {
+      attempt.finishChecks(_ExitCheck.unavailable);
+    }
+  }
+
+  /// Forced application disposal is not a user decision or accepted exit.
+  void cancelExitPreflight() => _preflight?.cancel();
 
   Future<void> drainOperations() async {
     while (_operations.isNotEmpty) {
@@ -765,6 +872,7 @@ final class PreparedMainContentHost {
 
   Future<void> stopOperations() {
     _accepting = false;
+    cancelExitPreflight();
     return drainOperations();
   }
 
@@ -772,6 +880,9 @@ final class PreparedMainContentHost {
     revokeContextualAccess(descriptor);
     final retained = _retained.remove(descriptor);
     if (retained == null) return;
+    if (_preflight?.participants.contains(retained) ?? false) {
+      _preflight!.finishChecks(_ExitCheck.unavailable);
+    }
     retained.attachment = null;
     retained.owner.dispose();
   }
@@ -829,6 +940,7 @@ final class PreparedMainContentHost {
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
+    cancelExitPreflight();
     for (final descriptor in _contextualAccess.keys.toList()) {
       revokeContextualAccess(descriptor);
     }
@@ -840,6 +952,61 @@ final class PreparedMainContentHost {
           retained.owner.dispose();
         },
     ]);
+  }
+}
+
+enum _ExitCheck { accepted, rejected, prolonged, unavailable, cancelled }
+
+/// One reversible attempt. Only non-human time across the whole check cohort
+/// counts; none of these signals crosses into the interpreted plugin API.
+final class _ExitPreflight {
+  _ExitPreflight(this.threshold);
+
+  final Duration threshold;
+  final result = Completer<_ExitCheck>();
+  final ended = Completer<void>();
+  final finished = Completer<bool>();
+  final _cancelled = Completer<bool>();
+  final participants = <_RetainedMainContent>{};
+  final _elapsed = Stopwatch();
+  Timer? _timer;
+  bool checking = true;
+
+  void waitForHuman(bool waiting) {
+    _timer?.cancel();
+    if (!checking) return;
+    if (waiting) {
+      _elapsed.stop();
+    } else {
+      _elapsed.start();
+      _timer = Timer(
+        threshold - _elapsed.elapsed,
+        () => finishChecks(_ExitCheck.prolonged),
+      );
+    }
+  }
+
+  void finishChecks(_ExitCheck outcome) {
+    if (!checking) return;
+    checking = false;
+    _timer?.cancel();
+    _elapsed.stop();
+    ended.complete();
+    result.complete(outcome);
+  }
+
+  Future<bool> decide(FutureOr<bool> Function() decision) async {
+    if (_cancelled.isCompleted) return false;
+    final accepted = await Future.any([
+      Future<bool>.sync(decision),
+      _cancelled.future,
+    ]);
+    return !_cancelled.isCompleted && accepted;
+  }
+
+  void cancel() {
+    if (!_cancelled.isCompleted) _cancelled.complete(false);
+    finishChecks(_ExitCheck.cancelled);
   }
 }
 

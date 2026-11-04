@@ -207,7 +207,11 @@ final class ContributionBridge extends ContributionDeclarations
   final bool nativeCodeEditor;
   final Future<Map<String, Object?>> Function(String, Map<String, Object?>)?
   invoke;
-  final Future<bool> Function(Map<String, Object?> request)? confirm;
+  final Future<bool> Function(
+    Map<String, Object?> request,
+    Future<void> invalidated,
+  )?
+  confirm;
   final Object Function(String id)? readSetting;
   final Zone _nativeZone = Zone.current;
   final Set<EvalCallable> _listeners = Set.identity();
@@ -215,6 +219,7 @@ final class ContributionBridge extends ContributionDeclarations
   bool _active = true;
   bool _listening = false;
   bool _scheduled = false;
+  final _invalidated = Completer<void>();
 
   bool get available {
     if (!_active || !owner.isActive) return false;
@@ -435,7 +440,8 @@ final class ContributionBridge extends ContributionDeclarations
         }
         return _future(() async {
           try {
-            final accepted = await confirm?.call(request) ?? false;
+            final accepted =
+                await confirm?.call(request, _invalidated.future) ?? false;
             return available && accepted;
           } on Object {
             return false;
@@ -469,6 +475,7 @@ final class ContributionBridge extends ContributionDeclarations
   void invalidate() {
     if (!_active) return;
     _active = false;
+    _invalidated.complete();
     _listeners.clear();
     if (_listening) owner.removeListener(_changed);
     _listening = false;

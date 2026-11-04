@@ -582,18 +582,52 @@ Native admission and presentation gating live in `PreparedMainContentHost` in
 [`app/lib/frontend/prepared_main_content_host.dart`](../../app/lib/frontend/prepared_main_content_host.dart),
 not in a Diff- or Source-specific host route.
 
+<a id="main-content-exit-preflight"></a>
+
 Window-local retention is not durable workbench persistence. Pane close requests
-owner policy; application-exit preflight also consults opted-in retained collections without
-mounting hidden views, including while Task Browser is shown. Cancellation or
-failure precedes irreversible frontend/execution revocation and leaves retained
-documents available. Acceptance is not early disposal if another participant can
-still refuse exit. These exit operations have no Session context or Environment
+owner policy; reversible application-exit preflight also consults opted-in retained
+collections without mounting hidden views, including while Task Browser is shown.
+The host gates new finite operations, drains already-admitted work, then consults
+the exit participants. These exit operations have no Session context or Environment
 grant; hidden records and browser selection do not manufacture one. Plugins own
 confirmation wording and discard decisions over generic host two-choice dialogs.
-Forced teardown and plugin retirement are separate cleanup paths.
-After this preflight accepts, the host may still request active-work confirmation.
-Only final acceptance starts [bounded application exit](execution-model.md#accepted-application-exit);
-plugins acquire no new shutdown callback or indefinite veto over that cleanup.
+An explicit `false` rejects exit. Failed, malformed, or unavailable advice is instead
+an incomplete check, not an invented plugin refusal or permission to exit.
+
+One short soft threshold, normally about five seconds, counts cumulative nonhuman
+time across the whole preflight, including the drain and all exit participants;
+it is not a fresh allowance per participant. Native human confirmation pauses that
+clock. Neither a slow check nor a human decision expires into automatic consent.
+When a check exceeds the threshold or becomes unavailable, the host offers only
+**Keep Working** and **Exit Anyway**, not Continue Waiting. Exit Anyway explicitly
+warns that unchecked data may be lost and unfinished effects may remain uncertain;
+it is a deliberate bypass of incomplete advice, not successful completion of it.
+
+Before showing that recovery choice, the host closes the abandoned check's wait and
+revokes its operation-local bridges. Late completion cannot access retained data or
+native resources, open another confirmation, reconcile panes, or affect a later
+exit attempt. Exit advice never triggers pane reconciliation, even on normal
+completion. This fencing does not retire the frontend generation, dispose retained
+documents or unrelated owners, or roll back effects already admitted. Forced
+teardown and plugin retirement remain separate cleanup paths.
+
+The application retains its reversible interaction/admission gate throughout
+recovery and any final active-work confirmation. Ordinary admitted Save/Close work
+keeps its existing authority and settlement semantics; abandoning an exit check
+does not cancel it. Human confirmations it reaches during recovery or final
+active-work confirmation are deferred rather than stacked over those decisions,
+and resume if exit is cancelled. Keep Working or a later refusal reopens normal
+interaction with the same retained data and native owners, without reviving the
+abandoned check or undoing already-admitted changes. A new exit request starts a
+fresh check.
+
+Acceptance of plugin advice or Exit Anyway is not early disposal while another
+participant can still refuse. The host still applies the existing canonical
+active-work confirmation. Only final acceptance starts the separate five-second
+[bounded application cleanup](execution-model.md#accepted-application-exit).
+Public plugin contracts remain unchanged: there is no new shutdown callback,
+deadline policy, or indefinite veto over accepted cleanup. The soft threshold
+covers asynchronous waiting, not synchronous code blocking the application isolate.
 
 Execution and owning-backend services are explicit pane-scoped requests, not a
 privileged presentation role. Neither is granted by default. The binder validates

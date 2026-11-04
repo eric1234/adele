@@ -144,7 +144,7 @@ Future<void> _workspace(
   final root = GlobalKey();
   final resources = MainContentFixtureResources(
     environmentRuntime: runtime.lifecycle.environmentRuntime,
-    confirm: (request) async {
+    confirm: (request, invalidated) async {
       if (automated) return false;
       final navigator = _elements(root)
           .map((element) => element.widget)
@@ -153,26 +153,32 @@ Future<void> _workspace(
           .navigatorKey!
           .currentContext;
       if (navigator == null) return false;
-      return await showDialog<bool>(
-            context: navigator,
-            builder: (context) => AlertDialog(
-              title: Text(request['title'] as String),
-              content: SingleChildScrollView(
-                child: Text(request['message'] as String),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: Text(request['cancelLabel'] as String),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  child: Text(request['acceptLabel'] as String),
-                ),
-              ],
+      final route = DialogRoute<bool>(
+        context: navigator,
+        builder: (context) => AlertDialog(
+          title: Text(request['title'] as String),
+          content: SingleChildScrollView(
+            child: Text(request['message'] as String),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text(request['cancelLabel'] as String),
             ),
-          ) ??
-          false;
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(request['acceptLabel'] as String),
+            ),
+          ],
+        ),
+      );
+      invalidated.then((_) {
+        final owner = route.navigator;
+        if (owner != null && owner.mounted && route.isActive) {
+          owner.removeRoute(route);
+        }
+      });
+      return await Navigator.of(navigator).push(route) ?? false;
     },
   );
   final previousPicker = FileSelectorPlatform.instance;

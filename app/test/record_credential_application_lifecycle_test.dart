@@ -326,7 +326,7 @@ void main() {
       final preflightEntered = Completer<void>();
       final releasePreflight = Completer<bool>();
       final host = PreparedMainContentHost(
-        confirm: (_) {
+        confirm: (_, _) {
           preflightEntered.complete();
           return releasePreflight.future;
         },
