@@ -11,6 +11,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'src/command_transcripts.dart';
 import 'src/process_outcome.dart';
 
+export 'src/command_output_search.dart';
 export 'src/command_transcripts.dart';
 
 final PluginId commandToolsPluginId = PluginId(

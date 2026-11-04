@@ -15,6 +15,7 @@ dependencies:
   adele_plugin_api: ^0.1.0
   adele_project_storage: ^0.1.0
   command_tools_contract: ^0.1.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   adele_product: ^0.1.0
