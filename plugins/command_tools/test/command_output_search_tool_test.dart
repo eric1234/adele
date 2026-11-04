@@ -205,7 +205,7 @@ void main() {
       final writer = await _begin(store);
       await _append(
         writer,
-        'zero\none\ntwo\nhit\r\x1b[31m\x00\x85\u2028\u2029\u{1f600}\nfour\nfive\nsix\nseven\neight\nnine\n',
+        'zero\none\ntwo\nhit\r\x1b[31m\x00\x85\u2028\u2029\u{1f600}\u202e\u2066\nfour\nfive\nsix\nseven\neight\nnine\n',
       );
       await _append(writer, 'error hit\ntail', stderr: true);
       await writer.seal(_completed(exitCode: 17));
@@ -241,9 +241,9 @@ void main() {
         'lineNumber': 4,
         'chunk': 1,
         'offset': 13,
-        'text': 'hit\r\x1b[31m\x00\x85\u2028\u2029\u{1f600}',
+        'text': 'hit\r\x1b[31m\x00\x85\u2028\u2029\u{1f600}\u202e\u2066',
         'excerptOffset': 0,
-        'length': 15,
+        'length': 17,
         'terminated': true,
         'isMatch': true,
         'matchStart': 0,
@@ -258,10 +258,17 @@ void main() {
         '\x85',
         '\u2028',
         '\u2029',
+        '\u202e',
+        '\u2066',
+        '\u{1f600}',
       ]) {
         expect(outcome.modelContent, isNot(contains(control)));
       }
       expect(outcome.modelContent, contains(r'\u001b'));
+      expect(
+        outcome.modelContent.codeUnits.every((unit) => unit < 0x7f),
+        isTrue,
+      );
       expect(outcome.hostData, isNot(contains('lines')));
       expect(outcome.hostData, isNot(contains('cursor')));
       expect(outcome.hostData, isNot(contains('stdout')));

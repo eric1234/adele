@@ -350,9 +350,10 @@ Map<String, Object?> _line(CommandOutputSearchLine line) => {
   'truncatedAfter': line.truncatedAfter,
 };
 
+// ASCII JSON preserves decoded text without rendering Unicode display controls.
 String _encode(Map<String, Object?> value) =>
     jsonEncode(value).replaceAllMapped(
-      RegExp('[\x7f-\x9f\u2028\u2029]'),
+      RegExp('[\x7f-\uffff]'),
       (match) =>
           '\\u${match[0]!.codeUnitAt(0).toRadixString(16).padLeft(4, '0')}',
     );

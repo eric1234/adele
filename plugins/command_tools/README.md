@@ -246,8 +246,9 @@ object dump. The reference, searched pattern and requested options accompany
 `lines` identifies `stdout` or `stderr`, one-based `lineNumber`, `isMatch`, first
 match offsets, the bounded `text`, original `length`, `excerptOffset`, explicit
 `truncatedBefore`/`truncatedAfter`, LF `terminated` status, and stable storage
-`chunk`/`offset` locators. Text uses JSON escaping, with control and Unicode line
-separator characters escaped rather than rendered as extra transcript lines.
+`chunk`/`offset` locators. Text uses ASCII JSON escaping, including non-ASCII text,
+Unicode line separators, and bidirectional controls. Decoding preserves the exact
+excerpt without allowing invisible controls to change its displayed structure.
 
 `continuation` distinguishes `available`, `none`, and
 `unavailableModelResultLimit`; `cursor` appears only in model content, not a second
