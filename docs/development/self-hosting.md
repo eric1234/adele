@@ -18,9 +18,10 @@ retained-evidence procedure and distinguishes it from desktop handoff preparatio
 For work performed in a normal durable ADELE Session, let work settle and invoke
 **Prepare Evaluation Handoff...** from the Command Palette. The sensitive-data
 dialog requires **Continue**; **Cancel** writes nothing. There is no Save dialog
-or format/destination picker. On successful completion, use **Copy path** in the
-snackbar to obtain the absolute directory path and direct the evaluator to its
-`README.md` and `evidence.json`.
+or format/destination picker. On successful completion, use **Copy README path** in
+the snackbar and provide that absolute file path to an evaluator with local file
+access. The README contains the complete evaluation assignment and references its
+adjacent `evidence.json`; no additional prompt is needed.
 
 The [Session Evaluator procedure](../../plugins/session_evaluator/README.md#desktop-handoff)
 owns output placement, lifecycle/failure semantics, source-hint validation, and
