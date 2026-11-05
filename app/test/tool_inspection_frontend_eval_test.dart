@@ -112,6 +112,28 @@ Future<Widget> buildSession() async {
   });
   tearDown(() => frontends.close());
 
+  void expectRetainedCommandInspection() {
+    final inspections = extensions.discover(toolActivityInspectionContributions);
+    expect(
+      inspections
+          .where((binding) => binding.value.toolId == runCommandToolId)
+          .map((binding) => binding.id.value),
+      ['dev.adele.plugin.command-tools.inspection'],
+    );
+    expect(
+      inspections.any((binding) => binding.value.toolId == applyPatchToolId),
+      isFalse,
+    );
+    expect(
+      inspections.any(
+        (binding) =>
+            binding.value.toolId.value ==
+            'dev.adele.plugin.filesystem-tools.read-file',
+      ),
+      isFalse,
+    );
+  }
+
   Widget presentation(_Source source) => ToolActivityInspectionResolver(
     extensions,
   ).resolve(source.value.toolId).value.createPresentation(source);
@@ -208,10 +230,7 @@ Future<Widget> buildSession() async {
       expect(second.listening, isFalse);
       expect(process.listening, isTrue);
       expect(extensions.discover(modelToolContributions), hasLength(2));
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectRetainedCommandInspection();
       expect(() => retainedFactory(first), throwsStateError);
       expect(tester.takeException(), isNull);
     },
@@ -474,10 +493,7 @@ Future<Widget> buildSession() async {
       );
       expect(find.text('Proposal rejected: unknownAlias.'), findsOneWidget);
       expect(extensions.discover(modelToolContributions), hasLength(2));
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectRetainedCommandInspection();
       expect(retained.state, RunState.running);
       expect(retained.tools, orderedEquals([running, patch]));
       expect(
@@ -550,10 +566,7 @@ Future<Widget> buildSession() async {
         );
         expect(vanished.generations.single.failure, isA<FileSystemException>());
       });
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectRetainedCommandInspection();
       final _Source process = _Source(_activity(patch: false));
       await tester.pumpWidget(_host(presentation(process)));
       expect(find.text('Run Command'), findsOneWidget);

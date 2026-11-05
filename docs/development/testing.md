@@ -184,6 +184,13 @@ that coverage independently with development-only host dependencies and shared
 app-side compiler support. Generic desktop/native infrastructure and whole-product
 multi-plugin integration remain in `adele_desktop`.
 
+Catalog-backed tests should verify independently specified Plugin, Extension,
+Tool and presentation-kind identities, plus uniqueness and activation boundaries,
+rather than rely on globally fixed contribution counts. Exact cardinalities
+remain appropriate for deliberately closed synthetic fixtures. Stock startup
+readiness failures should include the actual registered identities so missing
+or ambiguous contributions do not appear as unrelated generic timeouts.
+
 Single-plugin Apply Patch and Run Command rich/compact Inspection semantics live
 in the [Filesystem frontend suite](../../plugins/filesystem_tools/packages/frontend/test/filesystem_tools_frontend_eval_test.dart)
 and [Command Inspection suite](../../plugins/command_tools/packages/frontend/test/command_tools_inspection_frontend_eval_test.dart).

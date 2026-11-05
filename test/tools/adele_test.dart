@@ -2023,8 +2023,30 @@ exit "$CLIPPY_EXIT"
   test(
     'stock descriptors name existing frontend entrypoints and sibling actions',
     () {
-      expect(stockFrontendDescriptors, hasLength(8));
-      expect(stockFrontendExtensionDescriptors, hasLength(3));
+      // Known stock owners must remain published, but new owners may be added.
+      expect(
+        stockFrontendDescriptors.keys,
+        containsAll([
+          'dev.adele.diff-viewer',
+          'dev.adele.source-editor',
+          'dev.adele.plugin.terminal',
+          'dev.adele.plugin.task-browser',
+          'dev.adele.plugin.chat-strategy',
+          'dev.adele.plugin.filesystem-tools',
+          'dev.adele.plugin.command-tools',
+          'dev.adele.openai',
+        ]),
+      );
+      expect(
+        stockFrontendExtensionDescriptors.keys,
+        containsAll([
+          'dev.adele.source-editor',
+          'dev.adele.plugin.terminal',
+          'dev.adele.plugin.local-directory-project',
+        ]),
+      );
+      final declaredExtensionIds = <String>{};
+      final declaredToolIds = <String>{};
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
           (jsonDecode(config.readAsStringSync())
@@ -2035,26 +2057,44 @@ exit "$CLIPPY_EXIT"
         ...stockFrontendExtensionDescriptors.entries,
       ]) {
         final descriptors = entry.value;
-        expect(
-          descriptors,
-          hasLength(
-            identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.command-tools'],
-                    ) ||
-                    identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.chat-strategy'],
-                    ) ||
-                    identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.filesystem-tools'],
-                    )
-                ? 2
-                : 1,
-          ),
-        );
+        expect(descriptors, isNotEmpty, reason: entry.key);
         for (final descriptor in descriptors) {
+          for (final field in [
+            'extensionId',
+            'inspectionExtensionId',
+            'compactExtensionId',
+          ]) {
+            if (descriptor[field] case final String extensionId) {
+              expect(
+                declaredExtensionIds.add(extensionId),
+                isTrue,
+                reason: 'Duplicate stock Extension ID $extensionId (${entry.key})',
+              );
+            }
+          }
+          if (descriptor['role'] == 'toolActivity') {
+            for (final field in [
+              'inspectionExtensionId',
+              'compactExtensionId',
+              'inspectionEntrypoint',
+              'compactEntrypoint',
+            ]) {
+              expect(
+                descriptor[field],
+                isA<String>(),
+                reason: '${entry.key}: toolActivity.$field is required',
+              );
+            }
+            final toolId = descriptor['toolId'];
+            expect(toolId, isA<String>(), reason: '${entry.key}: toolId');
+            if (toolId is String) {
+              expect(
+                declaredToolIds.add(toolId),
+                isTrue,
+                reason: 'Duplicate stock Tool ID $toolId (${entry.key})',
+              );
+            }
+          }
           if (descriptor['kind'] == 'consoleActionCommand' ||
               descriptor['kind'] == 'mainContentActionCommand') {
             final console = descriptor['kind'] == 'consoleActionCommand';

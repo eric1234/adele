@@ -89,6 +89,23 @@ const _localDirectoryProjectPluginId =
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
 const _sourceEditorPluginId = 'dev.adele.source-editor';
+const _requiredToolInspections = <(String, String)>[
+  (
+    'dev.adele.plugin.filesystem-tools.read-file',
+    'dev.adele.plugin.filesystem-tools.read-file-inspection',
+  ),
+  (
+    'dev.adele.plugin.filesystem-tools.apply-patch',
+    'dev.adele.plugin.filesystem-tools.inspection',
+  ),
+  (
+    'dev.adele.plugin.command-tools.run-command',
+    'dev.adele.plugin.command-tools.inspection',
+  ),
+];
+const _openAiReasoningPresentationKind = 'openai.responses.reasoning-summary.v1';
+const _openAiReasoningInspectionExtensionId =
+    'dev.adele.plugin.openai.activity-presentation';
 const _foldingSetting = '$_sourceEditorPluginId.enable-folding';
 const _reviewPluginId = 'test.review-workspace';
 const _reviewLibrary = 'package:review_workspace/main.dart';
@@ -134,6 +151,30 @@ void main() {
       );
     }
   });
+
+  testWidgets(
+    'normal stock startup accepts an additional independent Tool Inspection',
+    (tester) => tester.runAsync(() async {
+      final fixture = await _ProductFixture.create();
+      final extra = fixture.runtime.extensions.register(
+        point: toolActivityInspectionContributions,
+        id: ExtensionId('dev.example.additional-inspection'),
+        value: ToolActivityInspectionContribution(
+          toolId: ToolId('dev.example.additional-tool'),
+          createPresentation: (_) => const SizedBox.shrink(),
+        ),
+      );
+      addTearDown(extra.close);
+      await fixture.launch(tester, prepared);
+      _expectRequiredToolInspections(fixture.runtime.extensions);
+      expect(
+        fixture.runtime.extensions
+            .discover(toolActivityInspectionContributions)
+            .map((binding) => binding.value.toolId.value),
+        contains('dev.example.additional-tool'),
+      );
+    }),
+  );
 
   testWidgets(
     'normal Source Editor retains Environment documents without Chat, a model or a Run',
@@ -6208,24 +6249,16 @@ void main() {
             runtime.extensions.discover(modelToolContributions),
             hasLength(4),
           );
+          _expectRequiredToolInspections(runtime.extensions);
+          _expectRequiredModelNativeInspection(runtime.extensions);
           expect(
             runtime.extensions
-                .discover(toolActivityInspectionContributions)
-                .map((binding) => binding.value.toolId.value),
-            unorderedEquals([
-              'dev.adele.plugin.filesystem-tools.read-file',
-              'dev.adele.plugin.filesystem-tools.apply-patch',
-              'dev.adele.plugin.command-tools.run-command',
-            ]),
-          );
-          expect(
-            runtime.extensions.discover(
-              modelNativeActivityPresentationContributions,
-            ),
-            hasLength(1),
-          );
-          expect(
-            runtime.extensions.discover(projectSelectorContributions),
+                .discover(projectSelectorContributions)
+                .where(
+                  (binding) =>
+                      binding.id.value ==
+                      'dev.adele.plugin.local-directory-project.project-selector',
+                ),
             hasLength(1),
           );
           await fixture.openTask(tester);
@@ -7356,34 +7389,82 @@ final class _ProductFixture {
     );
     await _pumpUntil(
       tester,
-      () =>
-          runtime.extensions
-              .discover(projectSelectorContributions)
-              .isNotEmpty &&
-          runtime.extensions.discover(taskBrowserContributions).isNotEmpty &&
-          runtime.extensions
-                  .discover(toolActivityInspectionContributions)
-                  .length ==
-              3 &&
-          runtime.extensions
-                  .discover(modelNativeActivityPresentationContributions)
-                  .length ==
-              1 &&
-          (!hasSource ||
-              runtime.extensions
-                  .discover(displaySourceFileContributions)
-                  .isNotEmpty),
+      () {
+        final inspectedToolIds = runtime.extensions
+            .discover(toolActivityInspectionContributions)
+            .map((binding) => binding.value.toolId.value)
+            .toSet();
+        return runtime.extensions
+                .discover(projectSelectorContributions)
+                .any(
+                  (binding) =>
+                      binding.id.value ==
+                      'dev.adele.plugin.local-directory-project.project-selector',
+                ) &&
+            runtime.extensions.discover(taskBrowserContributions).any(
+              (binding) =>
+                  binding.id.value ==
+                  'dev.adele.plugin.task-browser.task-browser',
+            ) &&
+            _requiredToolInspections.every(
+              (required) => inspectedToolIds.contains(required.$1),
+            ) &&
+            runtime.extensions
+                .discover(modelNativeActivityPresentationContributions)
+                .any(
+                  (binding) =>
+                      binding.value.presentationKind ==
+                      _openAiReasoningPresentationKind,
+                ) &&
+            (!hasSource ||
+                runtime.extensions.discover(displaySourceFileContributions).any(
+                  (binding) =>
+                      binding.id.value ==
+                      'dev.adele.source-editor.main-content',
+                ));
+      },
+      failureDetails: () {
+        final inspections = [
+          for (final binding in runtime.extensions.discover(
+            toolActivityInspectionContributions,
+          ))
+            (binding.value.toolId.value, binding.id.value),
+        ];
+        final native = [
+          for (final binding in runtime.extensions.discover(
+            modelNativeActivityPresentationContributions,
+          ))
+            (binding.value.presentationKind, binding.id.value),
+        ];
+        final selectors = [
+          for (final binding in runtime.extensions.discover(
+            projectSelectorContributions,
+          ))
+            binding.id.value,
+        ];
+        final browsers = [
+          for (final binding in runtime.extensions.discover(
+            taskBrowserContributions,
+          ))
+            binding.id.value,
+        ];
+        final sourceDisplays = [
+          for (final binding in runtime.extensions.discover(
+            displaySourceFileContributions,
+          ))
+            binding.id.value,
+        ];
+        return 'Expected Tool Inspections: $_requiredToolInspections; '
+            'registered: $inspections\n'
+            'Model-native presentations: $native\n'
+            'Project selectors: $selectors; Task browsers: $browsers; '
+            'Source displays: $sourceDisplays\n'
+            'Plugin state: ${runtime.plugins.state}; '
+            'catalog issues: ${runtime.plugins.catalog?.issues}';
+      },
     );
-    expect(
-      runtime.extensions
-          .discover(toolActivityInspectionContributions)
-          .map((binding) => binding.value.toolId.value),
-      unorderedEquals([
-        'dev.adele.plugin.filesystem-tools.read-file',
-        'dev.adele.plugin.filesystem-tools.apply-patch',
-        'dev.adele.plugin.command-tools.run-command',
-      ]),
-    );
+    _expectRequiredToolInspections(runtime.extensions);
+    _expectRequiredModelNativeInspection(runtime.extensions);
     expect(picker.calls, 0);
     if (usingRunIds == null) expect(runIds.values, isEmpty);
   }
@@ -7796,19 +7877,73 @@ Future<void> _terminalReaped(WidgetTester tester, List<int> pids) =>
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
 
+void _expectRequiredToolInspections(ExtensionRegistry registry) {
+  final registrations = [
+    for (final binding in registry.discover(toolActivityInspectionContributions))
+      (binding.value.toolId.value, binding.id.value),
+  ];
+  for (final required in _requiredToolInspections) {
+    expect(
+      registrations.where((entry) => entry.$1 == required.$1),
+      [required],
+      reason: 'Registered Tool Inspections: $registrations',
+    );
+  }
+  expect(
+    registrations.map((entry) => entry.$1).toSet(),
+    hasLength(registrations.length),
+    reason: 'Ambiguous Tool Inspection Tool IDs: $registrations',
+  );
+  expect(
+    registrations.map((entry) => entry.$2).toSet(),
+    hasLength(registrations.length),
+    reason: 'Duplicate Tool Inspection Extension IDs: $registrations',
+  );
+}
+
+void _expectRequiredModelNativeInspection(ExtensionRegistry registry) {
+  final registrations = [
+    for (final binding in registry.discover(
+      modelNativeActivityPresentationContributions,
+    ))
+      (binding.value.presentationKind, binding.id.value),
+  ];
+  expect(
+    registrations.where(
+      (entry) => entry.$1 == _openAiReasoningPresentationKind,
+    ),
+    [
+      (
+        _openAiReasoningPresentationKind,
+        _openAiReasoningInspectionExtensionId,
+      ),
+    ],
+    reason: 'Registered model-native Inspections: $registrations',
+  );
+  expect(
+    registrations.map((entry) => entry.$1).toSet(),
+    hasLength(registrations.length),
+    reason: 'Ambiguous model-native presentation kinds: $registrations',
+  );
+}
+
 Future<void> _pumpUntil(
   WidgetTester tester,
-  FutureOr<bool> Function() ready,
-) async {
+  FutureOr<bool> Function() ready, {
+  String Function()? failureDetails,
+}) async {
   final deadline = DateTime.now().add(const Duration(seconds: 15));
   while (!await ready() && DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(Duration.zero);
     await tester.pump();
   }
+  final isReady = await ready();
+  final details = isReady ? null : failureDetails?.call();
   expect(
-    await ready(),
+    isReady,
     isTrue,
-    reason: 'Timed out waiting for installed product state.',
+    reason: 'Timed out waiting for installed product state.'
+        '${details == null ? '' : '\n$details'}',
   );
   await _composerFrames(tester);
 }
