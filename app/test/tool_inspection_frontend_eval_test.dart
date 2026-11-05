@@ -32,6 +32,8 @@ void main() {
   late ExtensionRegistry extensions;
   late ApplicationFrontendBootstrap frontends;
   late InstalledFrontendActivation filesystem;
+  late List<ExtensionBinding<ToolActivityInspectionContribution>>
+  filesystemInspections;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-tool-inspection-');
@@ -109,6 +111,14 @@ Future<Widget> buildSession() async {
           generation.installation.metadata.id.value ==
           'dev.adele.plugin.filesystem-tools',
     );
+    filesystemInspections = extensions
+        .discover(toolActivityInspectionContributions)
+        .where(
+          (binding) => filesystem.registrations.any(
+            (registration) => registration.owns(binding),
+          ),
+        )
+        .toList();
   });
   tearDown(() => frontends.close());
 
@@ -122,6 +132,30 @@ Future<Widget> buildSession() async {
         source: source,
         fallback: Text(fallback),
       );
+
+  void expectFilesystemInspectionsRetired() {
+    expect(
+      ToolActivityInspectionResolver(extensions).resolve(runCommandToolId).id,
+      ExtensionId('dev.adele.plugin.command-tools.inspection'),
+    );
+    for (final binding in filesystemInspections) {
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+    }
+    expect(
+      extensions
+          .discover(toolActivityInspectionContributions)
+          .where(
+            (binding) =>
+                filesystemInspections.any(
+                  (retired) => retired.id == binding.id,
+                ) ||
+                binding.value.toolId.value ==
+                    'dev.adele.plugin.filesystem-tools.read-file' ||
+                binding.value.toolId == applyPatchToolId,
+          ),
+      isEmpty,
+    );
+  }
 
   testWidgets(
     'failed compact EVC preserves refreshed facts without retry or sibling failure',
@@ -208,10 +242,7 @@ Future<Widget> buildSession() async {
       expect(second.listening, isFalse);
       expect(process.listening, isTrue);
       expect(extensions.discover(modelToolContributions), hasLength(2));
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectFilesystemInspectionsRetired();
       expect(() => retainedFactory(first), throwsStateError);
       expect(tester.takeException(), isNull);
     },
@@ -474,10 +505,7 @@ Future<Widget> buildSession() async {
       );
       expect(find.text('Proposal rejected: unknownAlias.'), findsOneWidget);
       expect(extensions.discover(modelToolContributions), hasLength(2));
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectFilesystemInspectionsRetired();
       expect(retained.state, RunState.running);
       expect(retained.tools, orderedEquals([running, patch]));
       expect(
@@ -550,10 +578,7 @@ Future<Widget> buildSession() async {
         );
         expect(vanished.generations.single.failure, isA<FileSystemException>());
       });
-      expect(
-        extensions.discover(toolActivityInspectionContributions),
-        hasLength(1),
-      );
+      expectFilesystemInspectionsRetired();
       final _Source process = _Source(_activity(patch: false));
       await tester.pumpWidget(_host(presentation(process)));
       expect(find.text('Run Command'), findsOneWidget);
