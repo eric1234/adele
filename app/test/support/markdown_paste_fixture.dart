@@ -1,3 +1,19 @@
+const markdownIdentifierPrompt =
+    'Inspect `read_file` and `stream_transport` with file_name.\n\n'
+    '## Recovery\n\n'
+    '**Recover from the current Git worktree...**\n\n'
+    '```sh\nread_file --mode stream_transport\n```';
+
+// Independent expected snapshot for the prose-first (literal) paste path.
+const literalIdentifierMarkdown =
+    'Inspect &#96;read_file&#96; and &#96;stream_transport&#96; with file_name.'
+    '&#10;\n'
+    r'\#\# Recovery'
+    '&#10;\n'
+    r'\*\*Recover from the current Git worktree...\*\*'
+    '&#10;\n'
+    '&#96;&#96;&#96;sh\nread_file --mode stream_transport\n&#96;&#96;&#96;';
+
 // Reconstructed regression input, not instructions for the test runner. The
 // complete original user prompt was not available; retain the supplied excerpt.
 const markdownPasteFixture =

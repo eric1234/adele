@@ -802,48 +802,61 @@ void main() {
     },
   );
 
-  testWidgets('rich draft hydration retains exact source without a save', (
-    tester,
-  ) async {
-    const original =
-        '# Heading\r\n\r\n**bold** and *italic* and `code`\r\n\r\n'
-        '- parent\r\n  - child\r\n\r\n~~~dart\r\n  final x = 1;  \r\n~~~\r\n';
-    source.draftRequest = original;
-    await tester.pumpWidget(_host(generation, source));
-    await _frames(tester);
-    final owner = _owner(tester);
-    final state = _state(tester);
-    expect(_draft(tester), original);
-    expect(owner.revision, 0);
-    expect(state.document.root.children.map((node) => node.type), [
-      HeadingBlockKeys.type,
-      ParagraphBlockKeys.type,
-      BulletedListBlockKeys.type,
-      RichDocumentMarkdown.codeBlockType,
-    ]);
-    expect(
-      state.document.root.children[2].children.single.delta!.toPlainText(),
-      'child',
-    );
-    expect(
-      state.document.root.children.last.delta!.toPlainText(),
-      '  final x = 1;  ',
-    );
-    expect(source.writes, isEmpty);
-    source.notifyListeners();
-    await _frames(tester);
-    expect(_owner(tester), same(owner));
-    expect(_state(tester), same(state));
-    expect(_draft(tester), original);
-    expect(source.writes, isEmpty);
-    final departure = source.lifecycle.prepareToDeactivate();
-    await _frames(tester);
-    await departure;
-    expect(source.writes, isEmpty);
-    expect(source.submitted, isEmpty);
-    expect(source.starts, 0);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'rich draft hydration retains and submits exact source without a save',
+    (tester) async {
+      const original =
+          '# Heading\r\n\r\n**bold** and *italic* and `code` with read\\_file and stream_transport\r\n\r\n'
+          '- parent\r\n  - child\r\n\r\n~~~dart\r\n  final x = 1;  \r\n~~~\r\n';
+      source.draftRequest = original;
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final owner = _owner(tester);
+      final state = _state(tester);
+      expect(_draft(tester), original);
+      expect(owner.revision, 0);
+      expect(state.document.root.children.map((node) => node.type), [
+        HeadingBlockKeys.type,
+        ParagraphBlockKeys.type,
+        BulletedListBlockKeys.type,
+        RichDocumentMarkdown.codeBlockType,
+      ]);
+      expect(
+        state.document.root.children[1].delta!.toPlainText(),
+        'bold and italic and code with read_file and stream_transport',
+      );
+      expect(
+        state.document.root.children[2].children.single.delta!.toPlainText(),
+        'child',
+      );
+      expect(
+        state.document.root.children.last.delta!.toPlainText(),
+        '  final x = 1;  ',
+      );
+      expect(source.writes, isEmpty);
+      source.notifyListeners();
+      await _frames(tester);
+      expect(_owner(tester), same(owner));
+      expect(_state(tester), same(state));
+      expect(_draft(tester), original);
+      expect(source.writes, isEmpty);
+      final departure = source.lifecycle.prepareToDeactivate();
+      await _frames(tester);
+      await departure;
+      expect(source.writes, isEmpty);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      await tester.tap(find.text('Send'));
+      await _frames(tester);
+      expect(source.submitted, [original]);
+      expect(source.entries.single.content, original);
+      expect(source.writes, isEmpty);
+      expect(source.starts, 1);
+      expect(owner.isDisposed, isTrue);
+      expect(_draft(tester), isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'multiline input and native formatting save and submit Markdown',
@@ -889,159 +902,181 @@ void main() {
     },
   );
 
-  testWidgets(
-    'compiled Chat imports a full clipboard Markdown prompt and submits it once',
-    (tester) async {
-      final saved = Completer<void>();
-      source.saveGate = saved;
-      addTearDown(() {
-        if (!saved.isCompleted) saved.complete();
-      });
-      await tester.pumpWidget(_host(generation, source));
-      await _frames(tester);
-      final owner = _owner(tester);
-      final state = _state(tester);
-      expect(owner.revision, 0);
-      expect(source.writes, isEmpty);
-      await _select(tester, Selection.collapsed(Position(path: [0])));
-      await _pasteClipboard(tester, markdownPasteFixture);
+  for (final proseFirst in [false, true]) {
+    testWidgets(
+      'compiled Chat ${proseFirst ? 'pastes a prose-first identifier prompt literally' : 'imports a full clipboard Markdown prompt'} and submits it once',
+      (tester) async {
+        final saved = Completer<void>();
+        source.saveGate = saved;
+        addTearDown(() {
+          if (!saved.isCompleted) saved.complete();
+        });
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        final owner = _owner(tester);
+        final state = _state(tester);
+        expect(owner.revision, 0);
+        expect(source.writes, isEmpty);
+        await _select(tester, Selection.collapsed(Position(path: [0])));
+        await _pasteClipboard(
+          tester,
+          proseFirst ? markdownIdentifierPrompt : markdownPasteFixture,
+        );
 
-      final blocks = state.document.root.children;
-      expect(
-        blocks
-            .where((node) => node.type == HeadingBlockKeys.type)
-            .map(
-              (node) => (node.attributes['level'], node.delta!.toPlainText()),
-            ),
-        [
-          (1, 'ADELE \u2014 Implement Custom read_file Inspection Card'),
-          (2, 'Goal'),
-          (3, 'Tool approvals'),
-          (2, '1. Rich Inspection card'),
-          (3, 'Ownership and boundaries'),
-          (2, '2. Compact activity summary'),
-          (3, 'Examples'),
-          (2, '3. Preview fidelity'),
-          (2, '4. Lifecycle and safety'),
-          (2, '5. Regression coverage'),
-          (3, 'Native and evaluated presentation'),
-          (2, '6. Validation'),
-          (2, '7. Delivery'),
-        ],
-      );
-      expect(
-        blocks.first.delta!.toJson(),
-        (Delta()
-              ..insert('ADELE \u2014 Implement Custom ')
-              ..insert('read_file', attributes: {'code': true})
-              ..insert(' Inspection Card'))
-            .toJson(),
-      );
-      expect(
-        blocks
-            .singleWhere(
-              (node) => node.delta!.toPlainText().startsWith(
-                'ADELE has already created',
-              ),
-            )
-            .delta!
-            .toJson(),
-        (Delta()..insert(
-              'ADELE has already created and selected the isolated Git worktree and Task branch.',
-              attributes: {'bold': true},
-            ))
-            .toJson(),
-      );
-      expect(
-        blocks.where((node) => node.type == BulletedListBlockKeys.type),
-        hasLength(12),
-      );
-      expect(
-        blocks.where((node) => node.type == NumberedListBlockKeys.type),
-        hasLength(11),
-      );
-      final code = blocks.singleWhere(
-        (node) => node.type == RichDocumentMarkdown.codeBlockType,
-      );
-      const commands =
-          'dart tools/adele.dart test --target filesystem_tools_frontend\n'
-          'dart tools/adele.dart analyze\n'
-          'dart tools/adele.dart format --check\n'
-          'dart tools/adele.dart generate --check\n'
-          'git diff --check';
-      expect(code.attributes['language'], 'sh');
-      expect(code.delta!.toJson(), (Delta()..insert(commands)).toJson());
-      // Independently spell the adapter's punctuation normalization, not a
-      // decode/encode round trip that could hide missing prompt content.
-      final markdown = markdownPasteFixture
-          .trimRight()
-          .replaceAll(':', r'\:')
-          .replaceAllMapped(
-            RegExp(r'^(## [1-7])\.', multiLine: true),
-            (match) => '${match[1]}\\.',
+        final blocks = state.document.root.children;
+        if (proseFirst) {
+          expect(blocks, hasLength(1));
+          expect(blocks.single.type, ParagraphBlockKeys.type);
+          expect(blocks.single.children, isEmpty);
+          expect(blocks.single.delta!.toJson(), [
+            {'insert': markdownIdentifierPrompt},
+          ]);
+        } else {
+          expect(
+            blocks
+                .where((node) => node.type == HeadingBlockKeys.type)
+                .map(
+                  (node) =>
+                      (node.attributes['level'], node.delta!.toPlainText()),
+                ),
+            [
+              (1, 'ADELE \u2014 Implement Custom read_file Inspection Card'),
+              (2, 'Goal'),
+              (3, 'Tool approvals'),
+              (2, '1. Rich Inspection card'),
+              (3, 'Ownership and boundaries'),
+              (2, '2. Compact activity summary'),
+              (3, 'Examples'),
+              (2, '3. Preview fidelity'),
+              (2, '4. Lifecycle and safety'),
+              (2, '5. Regression coverage'),
+              (3, 'Native and evaluated presentation'),
+              (2, '6. Validation'),
+              (2, '7. Delivery'),
+            ],
           );
-      expect(owner.snapshot, returnsNormally);
-      expect(owner.snapshot(), {
-        'markdown': markdown,
-        'revision': 1,
-        'readOnly': false,
-        'editingEnabled': true,
-        'isBlank': false,
-        'unsupportedReason': null,
-      });
-      expect(_owner(tester), same(owner));
-      expect(_state(tester), same(state));
-      expect(source.writes, [markdown]);
-      final writes = source.calls.where(
-        (call) => call.$1 == 'chat.session.setDraftRequest',
-      );
-      expect(writes, hasLength(1));
-      expect(writes.single.$2, {
-        'sessionId': 'session-opaque',
-        'content': markdown,
-      });
-      expect(source.inFlightSaves, 1);
-      expect(source.submitted, isEmpty);
-      expect(source.starts, 0);
-      await tester.tap(find.text('Send'));
-      await _frames(tester);
-      expect(source.submitted, isEmpty);
-      expect(source.starts, 0);
-      saved.complete();
-      await _frames(tester);
-      expect(source.events, [
-        'save:$markdown',
-        'saved:$markdown',
-        'submit:$markdown',
-        'accepted:$markdown',
-        'start',
-      ]);
-      expect(source.submitted, [markdown]);
-      expect(source.entries.single.role, 'user');
-      expect(source.entries.single.content, markdown);
-      expect(source.draftRequest, isEmpty);
-      expect(source.writes, [markdown]);
-      expect(source.starts, 1);
-      expect(source.maxInFlightSaves, 1);
-      expect(owner.isDisposed, isTrue);
-      expect(state.isDisposed, isTrue);
-      final replacement = _owner(tester);
-      expect(replacement, isNot(same(owner)));
-      expect(_state(tester), isNot(same(state)));
-      expect(_draft(tester), isEmpty);
-      source.finish();
-      await _frames(tester);
-      await _select(tester, Selection.collapsed(Position(path: [0])));
-      await _control(tester, LogicalKeyboardKey.keyZ);
-      expect(_owner(tester), same(replacement));
-      expect(_draft(tester), isEmpty);
-      expect(source.draftRequest, isEmpty);
-      expect(source.writes, [markdown]);
-      expect(source.submitted, [markdown]);
-      expect(source.starts, 1);
-      expect(tester.takeException(), isNull);
-    },
-  );
+          expect(
+            blocks.first.delta!.toJson(),
+            (Delta()
+                  ..insert('ADELE \u2014 Implement Custom ')
+                  ..insert('read_file', attributes: {'code': true})
+                  ..insert(' Inspection Card'))
+                .toJson(),
+          );
+          expect(
+            blocks
+                .singleWhere(
+                  (node) => node.delta!.toPlainText().startsWith(
+                    'ADELE has already created',
+                  ),
+                )
+                .delta!
+                .toJson(),
+            (Delta()..insert(
+                  'ADELE has already created and selected the isolated Git worktree and Task branch.',
+                  attributes: {'bold': true},
+                ))
+                .toJson(),
+          );
+          expect(
+            blocks.where((node) => node.type == BulletedListBlockKeys.type),
+            hasLength(12),
+          );
+          expect(
+            blocks.where((node) => node.type == NumberedListBlockKeys.type),
+            hasLength(11),
+          );
+          final code = blocks.singleWhere(
+            (node) => node.type == RichDocumentMarkdown.codeBlockType,
+          );
+          const commands =
+              'dart tools/adele.dart test --target filesystem_tools_frontend\n'
+              'dart tools/adele.dart analyze\n'
+              'dart tools/adele.dart format --check\n'
+              'dart tools/adele.dart generate --check\n'
+              'git diff --check';
+          expect(code.attributes['language'], 'sh');
+          expect(code.delta!.toJson(), (Delta()..insert(commands)).toJson());
+        }
+        // Independently spell the adapter's punctuation normalization, not a
+        // decode/encode round trip that could hide missing prompt content.
+        final markdown = proseFirst
+            ? literalIdentifierMarkdown
+            : markdownPasteFixture
+                  .trimRight()
+                  .replaceAll(':', r'\:')
+                  .replaceAllMapped(
+                    RegExp(r'^(## [1-7])\.', multiLine: true),
+                    (match) => '${match[1]}\\.',
+                  );
+        expect(owner.snapshot, returnsNormally);
+        expect(owner.snapshot(), {
+          'markdown': markdown,
+          'revision': 1,
+          'readOnly': false,
+          'editingEnabled': true,
+          'isBlank': false,
+          'unsupportedReason': null,
+        });
+        expect(_owner(tester), same(owner));
+        expect(_state(tester), same(state));
+        expect(source.writes, [markdown]);
+        final writes = source.calls.where(
+          (call) => call.$1 == 'chat.session.setDraftRequest',
+        );
+        expect(writes, hasLength(1));
+        expect(writes.single.$2, {
+          'sessionId': 'session-opaque',
+          'content': markdown,
+        });
+        expect(source.inFlightSaves, 1);
+        expect(source.submitted, isEmpty);
+        expect(source.starts, 0);
+        await tester.tap(find.text('Send'));
+        await _frames(tester);
+        expect(source.submitted, isEmpty);
+        expect(source.starts, 0);
+        saved.complete();
+        await _frames(tester);
+        expect(source.events, [
+          'save:$markdown',
+          'saved:$markdown',
+          'submit:$markdown',
+          'accepted:$markdown',
+          'start',
+        ]);
+        expect(source.submitted, [markdown]);
+        expect(source.entries.single.role, 'user');
+        expect(source.entries.single.content, markdown);
+        final submissions = source.calls.where(
+          (call) => call.$1 == 'chat.session.submitDraftRequest',
+        );
+        expect(submissions, hasLength(1));
+        expect(submissions.single.$2, {'sessionId': 'session-opaque'});
+        expect(source.draftRequest, isEmpty);
+        expect(source.writes, [markdown]);
+        expect(source.starts, 1);
+        expect(source.maxInFlightSaves, 1);
+        expect(owner.isDisposed, isTrue);
+        expect(state.isDisposed, isTrue);
+        final replacement = _owner(tester);
+        expect(replacement, isNot(same(owner)));
+        expect(_state(tester), isNot(same(state)));
+        expect(_draft(tester), isEmpty);
+        source.finish();
+        await _frames(tester);
+        await _select(tester, Selection.collapsed(Position(path: [0])));
+        await _control(tester, LogicalKeyboardKey.keyZ);
+        expect(_owner(tester), same(replacement));
+        expect(_draft(tester), isEmpty);
+        expect(source.draftRequest, isEmpty);
+        expect(source.writes, [markdown]);
+        expect(source.submitted, [markdown]);
+        expect(source.starts, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'compiled Chat rejects unsupported clipboard Markdown without mutation and allows literal recovery',

@@ -683,6 +683,107 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final (name, source, initial, literal, expected) in [
+    (
+      'structured',
+      '# Task\n\n$markdownIdentifierPrompt',
+      '',
+      false,
+      '# Task\n\n$markdownIdentifierPrompt',
+    ),
+    (
+      'prose-first',
+      markdownIdentifierPrompt,
+      '',
+      false,
+      literalIdentifierMarkdown,
+    ),
+    (
+      'explicit literal',
+      '# Task\n\n$markdownIdentifierPrompt',
+      '',
+      true,
+      '\\# Task&#10;\n$literalIdentifierMarkdown',
+    ),
+    (
+      'existing text',
+      '# Task\n\n$markdownIdentifierPrompt',
+      'Seed',
+      false,
+      'Seed\\# Task&#10;\n$literalIdentifierMarkdown',
+    ),
+  ]) {
+    testWidgets('$name identifier paste preserves native semantics', (
+      tester,
+    ) async {
+      final owner = NativeRichDocumentEditor(markdown: initial);
+      await tester.pumpWidget(host(owner.buildView()));
+      await frames(tester);
+      final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+      final state = editor.editorState;
+      editor.focusNode!.requestFocus();
+      state.selection = Selection.collapsed(
+        Position(path: [0], offset: state.document.first!.delta!.length),
+      );
+      await frames(tester);
+      await Clipboard.setData(ClipboardData(text: source));
+      if (literal) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await control(tester, LogicalKeyboardKey.keyV);
+      if (literal) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await frames(tester);
+      final blocks = state.document.root.children;
+      if (name == 'structured') {
+        expect(blocks.map((node) => node.type), [
+          'heading',
+          'paragraph',
+          'heading',
+          'paragraph',
+          'code_block',
+        ]);
+        expect(
+          blocks[1].delta,
+          Delta()
+            ..insert('Inspect ')
+            ..insert('read_file', attributes: {'code': true})
+            ..insert(' and ')
+            ..insert('stream_transport', attributes: {'code': true})
+            ..insert(' with file_name.'),
+        );
+        expect(
+          blocks[3].delta,
+          Delta()..insert(
+            'Recover from the current Git worktree...',
+            attributes: {'bold': true},
+          ),
+        );
+        expect(
+          blocks[4].delta,
+          Delta()..insert('read_file --mode stream_transport'),
+        );
+      } else {
+        expect(blocks.single.type, 'paragraph');
+        expect(blocks.single.delta, Delta()..insert('$initial$source'));
+      }
+      expect(owner.snapshot()['markdown'], expected);
+      final restored = RichDocumentMarkdown.decode(expected);
+      expect(restored.toJson(), state.document.toJson());
+      restored.dispose();
+      if (name == 'structured') {
+        state.selection = Selection.collapsed(Position(path: [0], offset: 4));
+        await frames(tester);
+        await insertAtSelection(tester, ' updated_file');
+        expect(
+          owner.snapshot()['markdown'],
+          '# Task updated_file\n\n$markdownIdentifierPrompt',
+        );
+      }
+      owner.dispose();
+      await frames(tester);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'code typing and formatting shortcuts retain literal plain text',
     (tester) async {
