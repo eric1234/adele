@@ -14,8 +14,8 @@ Map<String, Object?> readSessionExecution() =>
 Future<String> startSessionRun() =>
     throw UnsupportedError('Interpreted host only.');
 
-/// Opens accepted preparing/live/waiting or retained terminal activity belonging
-/// to this canonical Session, or returns null when unavailable. Preparation and
+/// Opens accepted preparing/live/waiting, terminal, or recovered interrupted
+/// activity belonging to this canonical Session, or null when unavailable. Preparation and
 /// startup failure may have an empty evidence list. Fresh presentations receive fresh
 /// opaque handles, never revived old handles or execution/approval authority.
 String? openSessionRunActivity(String runId) =>
@@ -36,6 +36,9 @@ void unsubscribeSessionExecution(void Function() listener) =>
 
 /// Immutable primitive evidence. Tool outputs retain proposal `arguments`, an
 /// optional `rejection`, and optional prepared `tool` lifecycle/changes/outcome.
+/// `status` is `live`, `terminal`, or `interrupted`; `state` remains the observed
+/// Run state. Interrupted running/waiting is historical, never live occupancy or
+/// a pending approval. Missing model settlement and tool outcomes remain null.
 /// All remain attached to the original output handle; identities grant no action
 /// or approval authority. Raw provider-native replay data is not exposed.
 Map<String, Object?> readSessionRunActivity(String runHandle) =>

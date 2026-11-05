@@ -257,36 +257,42 @@ Future<List<dynamic>> settleBadDecode() => settleSessionOperation(badDecode());
     },
   );
 
-  testWidgets(
-    'retained activity handles use the same read and inspect authorization',
-    (tester) async {
-      final source = _Source();
-      final bridge = SessionExecutionBridge(
-        source: source,
-        isActive: () => source.active,
-      );
-      addTearDown(() {
-        bridge.invalidate();
-        source.dispose();
-      });
-      final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
-      Object? invoke(String entry) =>
-          copyStructuredBridgeData(runtime.executeLib(_library, entry));
-      expect(invoke('missing'), isNull);
-      expect(invoke('open'), 'run-handle');
-      expect(source.starts, 0);
-      expect(invoke('inspect'), isFalse);
-      expect((invoke('activity') as Map)['state'], 'completed');
-      expect(invoke('inspect'), isTrue);
-      expect(invoke('guess'), isFalse);
-      expect(invoke('open'), 'run-handle');
-      bridge.retainPresentation();
-      expect((invoke('activity') as Map)['state'], 'completed');
-      expect(invoke('inspect'), isFalse);
-      expect(() => invoke('open'), throwsA(anything));
-      expect(source.starts, 0);
-    },
-  );
+  for (final interrupted in [false, true]) {
+    testWidgets(
+      'retained activity handles use the same read and inspect authorization; interrupted=$interrupted',
+      (tester) async {
+        final source = _Source()
+          ..runStatus = interrupted ? 'interrupted' : 'terminal'
+          ..runState = interrupted ? 'waiting' : 'completed';
+        final bridge = SessionExecutionBridge(
+          source: source,
+          isActive: () => source.active,
+        );
+        addTearDown(() {
+          bridge.invalidate();
+          source.dispose();
+        });
+        final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+        Object? invoke(String entry) =>
+            copyStructuredBridgeData(runtime.executeLib(_library, entry));
+        expect(invoke('missing'), isNull);
+        expect(invoke('open'), 'run-handle');
+        expect(source.starts, 0);
+        expect(invoke('inspect'), isFalse);
+        expect((invoke('activity') as Map)['state'], source.runState);
+        expect((invoke('activity') as Map)['status'], source.runStatus);
+        expect(invoke('inspect'), isTrue);
+        expect(invoke('guess'), isFalse);
+        expect(invoke('open'), 'run-handle');
+        bridge.retainPresentation();
+        expect((invoke('activity') as Map)['state'], source.runState);
+        expect((invoke('activity') as Map)['status'], source.runStatus);
+        expect(invoke('inspect'), isFalse);
+        expect(() => invoke('open'), throwsA(anything));
+        expect(source.starts, 0);
+      },
+    );
+  }
 
   testWidgets(
     'exit retention preserves display while revoking actions and late settlement',
@@ -513,6 +519,7 @@ final class _Source extends ChangeNotifier implements SessionExecutionSource {
   int revision = 1;
   int starts = 0;
   String runState = 'completed';
+  String runStatus = 'terminal';
   Completer<String>? pending;
   bool get observing => hasListeners;
   @override
@@ -538,6 +545,7 @@ final class _Source extends ChangeNotifier implements SessionExecutionSource {
   @override
   Map<String, Object?> readRunActivity(String handle) => {
     'runHandle': handle,
+    'status': runStatus,
     'state': runState,
     'models': [
       {'handle': 'model-handle', 'outputs': <Object?>[]},

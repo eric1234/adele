@@ -1,5 +1,6 @@
 import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
@@ -17,12 +18,14 @@ final class ActivityOutputPresentation extends StatelessWidget {
     required this.activity,
     required this.target,
     required this.compact,
+    this.status = SessionRunActivityStatus.live,
   });
 
   final ExtensionRegistry extensions;
   final RunActivitySnapshot? activity;
   final ModelOutputInspectionTarget target;
   final bool compact;
+  final SessionRunActivityStatus status;
 
   @override
   Widget build(BuildContext context) {
@@ -65,6 +68,7 @@ final class ActivityOutputPresentation extends StatelessWidget {
             activity: tool,
             extensions: extensions,
             compact: compact,
+            status: status,
             runEndedWithoutOutcome: terminal && tool.outcome == null,
           ),
         );
@@ -80,6 +84,9 @@ final class ActivityOutputPresentation extends StatelessWidget {
         key: occurrenceKey,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (status == SessionRunActivityStatus.interrupted &&
+              rejection != null)
+            const Text('Interrupted Run; historical proposal.'),
           Text(
             'Proposal: ${compact ? compactDisplayText(proposal.alias) : inspectionDisplayText(proposal.alias)}',
             maxLines: 3,
@@ -87,6 +94,8 @@ final class ActivityOutputPresentation extends StatelessWidget {
           Text(
             rejection != null
                 ? 'Proposal rejected: ${rejection.kind.name}.'
+                : status == SessionRunActivityStatus.interrupted
+                ? 'Interrupted Run. No proposal decision recorded.'
                 : terminal
                 ? 'Not processed before the Run ended.'
                 : 'Waiting to be processed.',
@@ -97,8 +106,14 @@ final class ActivityOutputPresentation extends StatelessWidget {
     if (output?.item case ModelNativeOutput(
       presentation: final ModelNativePresentation presentation,
     )) {
-      return compact
-          ? ModelNativeActivityCompactHost(
+      return Column(
+        key: occurrenceKey,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (status == SessionRunActivityStatus.interrupted)
+            const Text('Interrupted Run; historical model activity.'),
+          if (compact)
+            ModelNativeActivityCompactHost(
               key: occurrenceKey,
               extensions: extensions,
               presentation: presentation,
@@ -108,11 +123,14 @@ final class ActivityOutputPresentation extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             )
-          : ModelNativeActivityInspectionHost(
+          else
+            ModelNativeActivityInspectionHost(
               key: occurrenceKey,
               extensions: extensions,
               presentation: presentation,
-            );
+            ),
+        ],
+      );
     }
     return const Text('Activity output is unavailable.');
   }
@@ -126,6 +144,7 @@ final class _ToolOutput extends StatefulWidget {
     required this.activity,
     required this.extensions,
     required this.compact,
+    required this.status,
     required this.runEndedWithoutOutcome,
   });
 
@@ -134,6 +153,7 @@ final class _ToolOutput extends StatefulWidget {
   final ToolInvocationActivity activity;
   final ExtensionRegistry extensions;
   final bool compact;
+  final SessionRunActivityStatus status;
   final bool runEndedWithoutOutcome;
 
   @override
@@ -154,38 +174,59 @@ final class _ToolOutputState extends State<_ToolOutput> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (widget.runEndedWithoutOutcome)
-        Padding(
-          padding: EdgeInsets.only(bottom: widget.compact ? 4 : 8),
-          child: Text(
-            widget.compact
+  Widget build(BuildContext context) {
+    final interrupted = widget.status == SessionRunActivityStatus.interrupted;
+    final String? notice;
+    if (interrupted) {
+      notice = widget.activity.outcome != null
+          ? 'Interrupted Run; recorded tool outcome.'
+          : widget.activity.changes.any(
+              (change) => change.kind == ToolActivityKind.executionStarted,
+            )
+          ? 'Interrupted Run; execution started, no outcome recorded. '
+                'Effects may have occurred.'
+          : 'Interrupted Run; tool prepared, no execution start recorded.';
+    } else {
+      notice = widget.runEndedWithoutOutcome
+          ? widget.compact
                 ? 'Run ended; last observed activity.'
                 : 'Run ended without a terminal tool result. '
-                      'Last observed activity:',
+                      'Last observed activity:'
+          : null;
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (notice != null)
+          Padding(
+            padding: EdgeInsets.only(bottom: widget.compact ? 4 : 8),
+            child: Text(notice),
           ),
-        ),
-      if (widget.compact)
-        ToolActivityCompactHost(
-          key: ValueKey(_source),
-          extensions: widget.extensions,
-          source: _source,
-          fallback: Text(
-            'Tool: ${compactDisplayText(widget.activity.alias)}',
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
+        if (interrupted && widget.activity.outcome == null)
+          const Text(
+            'Recorded approvals are historical, not actionable. '
+            'Last observed activity:',
           ),
-        )
-      else
-        ToolActivityInspectionHost(
-          key: ValueKey(_source),
-          extensions: widget.extensions,
-          source: _source,
-        ),
-    ],
-  );
+        if (widget.compact)
+          ToolActivityCompactHost(
+            key: ValueKey(_source),
+            extensions: widget.extensions,
+            source: _source,
+            fallback: Text(
+              'Tool: ${compactDisplayText(widget.activity.alias)}',
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          )
+        else
+          ToolActivityInspectionHost(
+            key: ValueKey(_source),
+            extensions: widget.extensions,
+            source: _source,
+          ),
+      ],
+    );
+  }
 
   @override
   void dispose() {

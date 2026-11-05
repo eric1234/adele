@@ -1,5 +1,6 @@
 import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -33,6 +34,8 @@ void main() {
     int sequence, {
     bool done = false,
     String? alias,
+    List<ToolActivityChange> changes = const [],
+    ToolOutcomeActivity? outcome,
   }) => ToolInvocationActivity(
     id: ToolInvocationId('tool-$sequence'),
     preparedSequence: sequence + 10,
@@ -47,7 +50,9 @@ void main() {
         sequence: sequence + 10,
         kind: done ? ToolActivityKind.completed : ToolActivityKind.prepared,
       ),
+      ...changes,
     ],
+    outcome: outcome,
   );
 
   ModelOutputActivity native(int sequence, {bool safe = true}) =>
@@ -119,10 +124,12 @@ void main() {
   Widget card(
     RunActivitySnapshot? current, {
     ValueChanged<ModelOutputInspectionTarget>? inspect,
+    SessionRunActivityStatus status = SessionRunActivityStatus.live,
   }) => InspectionHost(
     key: ValueKey(window.cards.first.id),
     card: window.cards.first,
     activity: current,
+    status: status,
     heading: 'Ordered operations',
     extensions: extensions,
     onCollapse: () => window.collapse(window.cards.first.id),
@@ -136,6 +143,151 @@ void main() {
     window = WindowInspection()..presentSession(session);
     addTearDown(window.dispose);
   });
+
+  testWidgets(
+    'interrupted unfinished models retain exact Inspection admission',
+    (tester) async {
+      final current = RunActivitySnapshot(
+        runId: RunId('interrupted'),
+        sessionId: session.id,
+        state: RunState.running,
+        sequence: 5,
+        models: [
+          ModelInvocationActivity(
+            id: modelId,
+            startSequence: 1,
+            outputs: [
+              native(2),
+              native(3, safe: false),
+              ModelOutputActivity(
+                sequence: 5,
+                item: ModelToolProposalOutput(proposal(5)),
+              ),
+            ],
+          ),
+        ],
+      );
+      for (final status in [
+        SessionRunActivityStatus.live,
+        SessionRunActivityStatus.terminal,
+      ]) {
+        expect(
+          window.inspectActivity(
+            session: session,
+            activity: current,
+            modelInvocationId: modelId,
+            status: status,
+          ),
+          isFalse,
+        );
+      }
+      const status = SessionRunActivityStatus.interrupted;
+      expect(
+        window.inspectActivity(
+          session: session,
+          activity: current,
+          modelInvocationId: modelId,
+          status: status,
+        ),
+        isTrue,
+      );
+      final group = window.cards.single.id;
+      expect(
+        window.inspectOutput(
+          session: session,
+          activity: current,
+          modelInvocationId: ModelInvocationId('wrong'),
+          outputSequence: 2,
+          status: status,
+        ),
+        isFalse,
+      );
+      for (final sequence in [3, 4, 6]) {
+        expect(
+          window.inspectOutput(
+            session: session,
+            activity: current,
+            modelInvocationId: modelId,
+            outputSequence: sequence,
+            status: status,
+          ),
+          isFalse,
+        );
+      }
+      final impostor = Session(
+        id: session.id,
+        taskId: session.taskId,
+        strategyId: session.strategyId,
+      );
+      expect(
+        window.inspectOutput(
+          session: impostor,
+          activity: current,
+          modelInvocationId: modelId,
+          outputSequence: 2,
+          status: status,
+        ),
+        isFalse,
+      );
+      expect(
+        window.inspectOutput(
+          session: session,
+          activity: current,
+          modelInvocationId: modelId,
+          outputSequence: 2,
+          status: status,
+          originCardId: group,
+        ),
+        isTrue,
+      );
+      await tester.pumpWidget(frame(card(current, status: status)));
+      expect(find.text('Safe 2'), findsOneWidget);
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      expect(
+        window.inspectOutput(
+          session: session,
+          activity: current,
+          modelInvocationId: modelId,
+          outputSequence: 5,
+          status: status,
+          originCardId: group,
+        ),
+        isTrue,
+      );
+      await tester.pumpWidget(frame(card(current, status: status)));
+      expect(
+        find.text('Interrupted Run. No proposal decision recorded.'),
+        findsNWidgets(2),
+      );
+      expect(find.text('Waiting to be processed.'), findsNothing);
+      expect(window.dismiss(group), isTrue);
+      expect(
+        window.inspectOutput(
+          session: session,
+          activity: current,
+          modelInvocationId: modelId,
+          outputSequence: 5,
+          status: status,
+          originCardId: group,
+        ),
+        isFalse,
+      );
+      window.presentSession(impostor);
+      expect(window.cards, isEmpty);
+      expect(
+        window.inspectActivity(
+          session: session,
+          activity: current,
+          modelInvocationId: modelId,
+          status: status,
+        ),
+        isFalse,
+      );
+    },
+  );
 
   testWidgets('groups contain compact rows in exact output order, never rich', (
     tester,
@@ -544,28 +696,391 @@ void main() {
   }
 
   testWidgets(
-    'exact occurrence rejects mismatched Run, Session, model, or sequence',
+    'interrupted proposals retain decisions without appearing queued',
     (tester) async {
-      for (final current in [
-        activity(run: 'wrong'),
-        activity(sessionId: 'wrong'),
-        activity(invocationId: 'wrong'),
-        activity(outputs: [native(9)]),
-        activity(outputs: [native(2, safe: false)]),
-        null,
-      ]) {
+      final current = activity(
+        rejected: [
+          RejectedToolProposalActivity(
+            sequence: 39,
+            modelInvocationId: modelId,
+            proposalSequence: 3,
+            proposal: proposal(3),
+            kind: ToolProposalFailureKind.unknownAlias,
+            message: 'PRIVATE-ERROR',
+          ),
+        ],
+      );
+      window.inspectActivity(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
+      );
+      await tester.pumpWidget(
+        frame(card(current, status: SessionRunActivityStatus.interrupted)),
+      );
+      expect(find.text('INTERRUPTED ACTIVITY'), findsOneWidget);
+      expect(
+        find.text(
+          'Last observed Run state: waiting. '
+          'No authoritative Run outcome recorded.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Interrupted Run. No proposal decision recorded.'),
+        findsNWidgets(2),
+      );
+      expect(find.text('Proposal rejected: unknownAlias.'), findsOneWidget);
+      expect(find.text('Waiting to be processed.'), findsNothing);
+      expect(find.textContaining('PRIVATE-ERROR'), findsNothing);
+      expect(current.state, RunState.waiting);
+      expect(current.tools, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'interrupted approval evidence stays historical across collapse',
+    (tester) async {
+      int creations = 0;
+      final registration = extensions.register(
+        point: toolActivityInspectionContributions,
+        id: ExtensionId('dev.example.interrupted-waiting'),
+        value: ToolActivityInspectionContribution(
+          toolId: supported,
+          createPresentation: (_) {
+            creations++;
+            return const Text('Waiting for approval');
+          },
+        ),
+      );
+      addTearDown(registration.close);
+      final waiting = tool(
+        2,
+        changes: [
+          const ToolActivityChange(
+            sequence: 13,
+            kind: ToolActivityKind.policyEvaluated,
+            policyDecision: ToolActivityPolicyDecision.ask,
+          ),
+          ToolActivityChange(
+            sequence: 14,
+            kind: ToolActivityKind.approvalRequested,
+            interruptionId: RunInterruptionId('approval'),
+          ),
+        ],
+      );
+      final current = activity(tools: [waiting]);
+      window.inspectOutput(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
+        outputSequence: 2,
+      );
+      final id = window.cards.single.id;
+      Widget view() =>
+          frame(card(current, status: SessionRunActivityStatus.interrupted));
+      await tester.pumpWidget(view());
+      final source = tester
+          .widget<ToolActivityInspectionHost>(
+            find.byType(ToolActivityInspectionHost),
+          )
+          .source;
+      expect(source.snapshot, same(waiting));
+      expect(source.sessionId, session.id);
+      expect(source.runId, current.runId);
+      expect(
+        find.text(
+          'Interrupted Run; tool prepared, no execution start recorded.',
+        ),
+        findsNWidgets(2),
+      );
+      expect(
+        find.text(
+          'Recorded approvals are historical, not actionable. '
+          'Last observed activity:',
+        ),
+        findsNWidgets(2),
+      );
+      expect(find.text('Waiting for approval'), findsOneWidget);
+      expect(find.text('Allow once'), findsNothing);
+      expect(find.text('Deny'), findsNothing);
+      window.collapse(id);
+      await tester.pumpWidget(view());
+      expect(find.text('Waiting for approval'), findsNothing);
+      expect(
+        find.text(
+          'Interrupted Run; tool prepared, no execution start recorded.',
+        ),
+        findsOneWidget,
+      );
+      window.expand(id);
+      await tester.pumpWidget(view());
+      expect(window.cards.single.id, same(id));
+      expect(creations, 1);
+      expect(
+        tester
+            .widget<ToolActivityInspectionHost>(
+              find.byType(ToolActivityInspectionHost),
+            )
+            .source,
+        same(source),
+      );
+      expect(waiting.changes.last.kind, ToolActivityKind.approvalRequested);
+      expect(waiting.changes.last.approved, isNull);
+      expect(waiting.outcome, isNull);
+      expect(current.state, RunState.waiting);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final compact in [true, false]) {
+    testWidgets(
+      'interrupted prepared and started evidence differ compact=$compact',
+      (tester) async {
+        final prepared = tool(2);
+        final started = tool(
+          3,
+          changes: [
+            const ToolActivityChange(
+              sequence: 14,
+              kind: ToolActivityKind.executionStarted,
+            ),
+            ToolActivityChange(
+              sequence: 15,
+              kind: ToolActivityKind.progress,
+              progress: ToolProgress(content: 'Working'),
+            ),
+          ],
+        );
+        final current = activity(
+          state: RunState.running,
+          tools: [prepared, started],
+        );
         await tester.pumpWidget(
           frame(
-            ActivityOutputPresentation(
-              extensions: extensions,
-              activity: current,
-              target: target(2),
-              compact: true,
+            Column(
+              children: [
+                for (final sequence in [2, 3])
+                  ActivityOutputPresentation(
+                    extensions: extensions,
+                    activity: current,
+                    status: SessionRunActivityStatus.interrupted,
+                    target: target(sequence),
+                    compact: compact,
+                  ),
+              ],
             ),
           ),
         );
-        expect(find.text('Activity output is unavailable.'), findsOneWidget);
-        expect(find.textContaining('RAW-SECRET'), findsNothing);
+        expect(
+          find.text(
+            'Interrupted Run; tool prepared, no execution start recorded.',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            'Interrupted Run; execution started, no outcome recorded. '
+            'Effects may have occurred.',
+          ),
+          findsOneWidget,
+        );
+        final sources = compact
+            ? tester
+                  .widgetList<ToolActivityCompactHost>(
+                    find.byType(ToolActivityCompactHost),
+                  )
+                  .map((host) => host.source)
+            : tester
+                  .widgetList<ToolActivityInspectionHost>(
+                    find.byType(ToolActivityInspectionHost),
+                  )
+                  .map((host) => host.source);
+        expect(sources.first.snapshot, same(prepared));
+        expect(sources.last.snapshot, same(started));
+        expect(started.changes.last.progress?.content, 'Working');
+        expect(
+          sources.every((source) => source.snapshot.outcome == null),
+          isTrue,
+        );
+        expect(current.state, RunState.running);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('interrupted Run preserves actual tool outcome facts', (
+    tester,
+  ) async {
+    final registration = extensions.register(
+      point: toolActivityInspectionContributions,
+      id: ExtensionId('dev.example.outcome'),
+      value: ToolActivityInspectionContribution(
+        toolId: supported,
+        createPresentation: (source) => ListenableBuilder(
+          listenable: source,
+          builder: (_, _) {
+            final outcome = source.snapshot.outcome!;
+            return Text(
+              '${outcome.disposition.name}: ${outcome.effectCertainty.name}: '
+              '${outcome.modelContent}',
+            );
+          },
+        ),
+      ),
+    );
+    addTearDown(registration.close);
+    for (final (disposition, certainty) in [
+      (ToolOutcomeDisposition.success, EffectCertainty.knownOccurred),
+      (ToolOutcomeDisposition.policyDenied, EffectCertainty.knownNotOccurred),
+      (ToolOutcomeDisposition.failure, EffectCertainty.uncertain),
+    ]) {
+      final outcome = ToolOutcomeActivity(
+        disposition: disposition,
+        effectCertainty: certainty,
+        modelContent: 'Recorded result',
+        failureKind: disposition == ToolOutcomeDisposition.failure
+            ? ToolFailureKind.infrastructure
+            : null,
+      );
+      final completed = tool(
+        2,
+        outcome: outcome,
+        changes: [
+          ToolActivityChange(
+            sequence: 20,
+            kind: ToolActivityKind.completed,
+            outcome: outcome,
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        frame(
+          ActivityOutputPresentation(
+            extensions: extensions,
+            activity: activity(state: RunState.running, tools: [completed]),
+            status: SessionRunActivityStatus.interrupted,
+            target: target(2),
+            compact: false,
+          ),
+        ),
+      );
+      final source = tester
+          .widget<ToolActivityInspectionHost>(
+            find.byType(ToolActivityInspectionHost),
+          )
+          .source;
+      expect(source.snapshot, same(completed));
+      expect(source.snapshot.outcome, same(outcome));
+      expect(
+        find.text('Interrupted Run; recorded tool outcome.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('${disposition.name}: ${certainty.name}: Recorded result'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Effects may have occurred.'), findsNothing);
+      expect(find.textContaining('no outcome recorded'), findsNothing);
+    }
+  });
+
+  testWidgets(
+    'interrupted native evidence retains safe fallbacks and exact retirement',
+    (tester) async {
+      final current = activity(outputs: [native(2)]);
+      window.inspectOutput(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
+        outputSequence: 2,
+      );
+      final id = window.cards.single.id;
+      Widget view() =>
+          frame(card(current, status: SessionRunActivityStatus.interrupted));
+      await tester.pumpWidget(view());
+      expect(find.text('Safe 2'), findsOneWidget);
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Interrupted Run; historical model activity.'),
+        findsNWidgets(2),
+      );
+      int creations = 0;
+      final received = <ModelNativePresentation>[];
+      final contribution = ModelNativeActivityPresentationContribution(
+        presentationKind: 'dev.example.safe',
+        createInspection: (presentation) {
+          received.add(presentation);
+          return Text('Rich ${++creations}');
+        },
+      );
+      final registration = extensions.register(
+        point: modelNativeActivityPresentationContributions,
+        id: ExtensionId('dev.example.interrupted-native'),
+        value: contribution,
+      );
+      addTearDown(registration.close);
+      await tester.pumpAndSettle();
+      expect(find.text('Rich 1'), findsOneWidget);
+      expect(received.single.data, {'text': 'Rich 2'});
+      window.collapse(id);
+      await tester.pumpWidget(view());
+      window.expand(id);
+      await tester.pumpWidget(view());
+      expect(creations, 1);
+      registration.close();
+      await tester.pumpAndSettle();
+      expect(find.text('Rich 1'), findsNothing);
+      expect(find.text('Safe 2'), findsOneWidget);
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      final replacement = extensions.register(
+        point: modelNativeActivityPresentationContributions,
+        id: ExtensionId('dev.example.interrupted-native'),
+        value: contribution,
+      );
+      addTearDown(replacement.close);
+      await tester.pumpAndSettle();
+      expect(find.text('Rich 2'), findsOneWidget);
+      expect(creations, 2);
+      expect(received.last, same(received.first));
+      expect(window.cards.single.id, same(id));
+      expect(find.textContaining('RAW-SECRET'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'exact occurrence rejects mismatched Run, Session, model, or sequence',
+    (tester) async {
+      for (final status in SessionRunActivityStatus.values) {
+        for (final current in [
+          activity(run: 'wrong'),
+          activity(sessionId: 'wrong'),
+          activity(invocationId: 'wrong'),
+          activity(outputs: [native(9)]),
+          activity(outputs: [native(2, safe: false)]),
+          null,
+        ]) {
+          await tester.pumpWidget(
+            frame(
+              ActivityOutputPresentation(
+                extensions: extensions,
+                activity: current,
+                status: status,
+                target: target(2),
+                compact: true,
+              ),
+            ),
+          );
+          expect(find.text('Activity output is unavailable.'), findsOneWidget);
+          expect(find.textContaining('RAW-SECRET'), findsNothing);
+        }
       }
       final current = activity();
       window.inspectActivity(
@@ -573,8 +1088,16 @@ void main() {
         activity: current,
         modelInvocationId: modelId,
       );
-      await tester.pumpWidget(frame(card(activity(run: 'wrong'))));
+      await tester.pumpWidget(
+        frame(
+          card(
+            activity(run: 'wrong'),
+            status: SessionRunActivityStatus.interrupted,
+          ),
+        ),
+      );
       expect(find.text('Activity is unavailable.'), findsOneWidget);
+      expect(find.text('INTERRUPTED ACTIVITY'), findsNothing);
       expect(find.text('Ordered operations'), findsNothing);
       expect(find.byType(ActivityOutputPresentation), findsNothing);
     },

@@ -1987,8 +1987,9 @@ strategy, Environment, or Run identity is created by this read-only restoration.
 `KernelOrchestrationHost.readHistoricalRun` admits eligible same-Session restored
 interrupted evidence through the existing bounded public historical transport.
 Stock Chat consumes that read-only projection as model context, without replay or
-continuation authority. Chat activity rendering and Inspection remain terminal-only
-for restored history.
+continuation authority. User-facing activity instead reads the application-owned
+recovered evidence through `SessionExecutionController`; it does not invoke the
+strategy's historical-read operation to reconstruct a UI.
 The [execution evidence contract](../docs/architecture/execution-model.md#terminal-execution-history)
 owns acknowledgement, partial validation, terminal sealing, and recovery limits.
 
@@ -2059,8 +2060,9 @@ host. See the [Chat frontend](../plugins/chat_strategy/packages/frontend/README.
 ## Activity Inspection
 
 `RunActivityProjection` exposes read-only public execution snapshots. The execution
-controller observes live activity and can read retained terminal snapshots from
-lifecycle; it is neither the durable store nor the owner of canonical Chat history.
+controller observes live activity and can read terminal and recovered interrupted
+snapshots from lifecycle; it is neither the durable store nor the owner of canonical
+Chat history.
 Durable retention and restore use the separate
 [execution-history boundary](../docs/architecture/execution-model.md#terminal-execution-history).
 The full read model retains opaque native historical evidence, while frontend
@@ -2068,12 +2070,25 @@ bridges expose narrower safe presentation data, never future continuation input.
 
 The generic `openSessionRunActivity` bridge operation resolves a semantic Run ID
 only within the presented Session and returns a fresh opaque read-only handle for
-its retained live/waiting Run or terminal history, or null when unavailable. Restored
-snapshots use the existing activity reads, compact presentation, and Inspection
+its accepted preparing/live/waiting Run, terminal history, or recovered interrupted
+history, or null when unavailable. Restored snapshots use the existing activity
+reads, compact presentation, and Inspection
 paths, not a separate history renderer. Chat supplies its own durable user-entry
 association and fills missing view-local handles; app composition does not query
 Chat tables. A historical lookup starts no Run, resolves no approval, and requires
-no live model/tool provider or Environment materialization.
+no live model/tool provider, executable strategy, or Environment materialization.
+Independent prepared execution-service consumers can attach without resolving a
+strategy; declared owning-backend affinity still requires its exact strategy/backend.
+Stock Chat needs its backend for canonical Chat entries, independently of model
+provider availability. No native Chat fallback is supplied when that backend is absent.
+
+`activityStatusForRun` supplies the read-only `live`, `terminal`, or `interrupted`
+classification. The bridge's `status` carries it separately from `state`, which
+preserves the last observed Run state. `stateForRun`, current-Run ownership,
+`canStart`, and pending approval retain live semantics. Restored waiting/running
+evidence never occupies a Run slot or enables a decision. Current activity takes
+precedence, terminal recovery is deduplicated by Run identity, and a scheduling
+attempt cannot reuse a previously owned or restored Run identity.
 
 `SessionExecutionController.sessionStateRevision` separately signals completed
 materialization/association and terminal settlement. Chat compares it across
@@ -2095,6 +2110,15 @@ same path. Prepared rich Inspection may declare owning-backend service and conso
 target allowlists. `ApplicationFrontendBootstrap` captures those exact counterparts
 once per view, without strategy affinity or Session execution controls. Compact
 presentation receives only facts and never opens output observation or rendering.
+Interrupted classification also reaches `WindowInspection`, `InspectionHost`, and
+`ActivityOutputPresentation`: unfinished model output remains inspectable by its
+original identity/sequence, and missing decisions, execution starts, or outcomes
+receive explicit historical/uncertain labels rather than active waiting text.
+The ordinary presenters still receive the unchanged read-only tool or safe-native
+facts. No approval controls come from these historical sources. Cards and opaque
+handles remain presentation-local; frozen exit display retains classification but
+not interactive access. Only committed output items are available, not raw model
+deltas or reconstructed answers.
 
 Common execution/approval UI implementation and authority remain host-owned;
 contributing plugins choose its placement through the public bridge. Plugins

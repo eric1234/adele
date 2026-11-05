@@ -4,6 +4,8 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Widget;
 
+import '../execution/session_execution_controller.dart';
+
 /// Window navigation retains identities, never activity or execution objects.
 sealed class InspectionTarget {
   const InspectionTarget({required this.sessionId});
@@ -174,6 +176,7 @@ final class WindowInspection extends ChangeNotifier {
     Session session,
     RunActivitySnapshot activity,
     ModelInvocationId modelInvocationId,
+    SessionRunActivityStatus status,
   ) {
     if (_closed ||
         !identical(session, _session) ||
@@ -184,19 +187,24 @@ final class WindowInspection extends ChangeNotifier {
         .where(
           (model) =>
               model.id == modelInvocationId &&
-              model.settlement == ModelSettlement.completed &&
-              model.failure == null,
+              (status == SessionRunActivityStatus.interrupted ||
+                  (model.settlement == ModelSettlement.completed &&
+                      model.failure == null)),
         )
         .firstOrNull;
   }
 
-  /// The caller first validates the emitted activity handle against retained evidence.
+  /// The caller validates the emitted handle and supplies the host-owned activity
+  /// classification. Interrupted observations need not have a settled model.
   bool inspectActivity({
     required Session session,
     required RunActivitySnapshot activity,
     required ModelInvocationId modelInvocationId,
+    SessionRunActivityStatus status = SessionRunActivityStatus.live,
   }) {
-    if (_model(session, activity, modelInvocationId) == null) return false;
+    if (_model(session, activity, modelInvocationId, status) == null) {
+      return false;
+    }
     _prepend(
       ActivityGroupInspectionTarget(
         sessionId: session.id,
@@ -214,9 +222,10 @@ final class WindowInspection extends ChangeNotifier {
     required RunActivitySnapshot activity,
     required ModelInvocationId modelInvocationId,
     required int outputSequence,
+    SessionRunActivityStatus status = SessionRunActivityStatus.live,
     InspectionCardId? originCardId,
   }) {
-    final model = _model(session, activity, modelInvocationId);
+    final model = _model(session, activity, modelInvocationId, status);
     if (model == null) return false;
     if (originCardId != null &&
         !_cards.any((card) {

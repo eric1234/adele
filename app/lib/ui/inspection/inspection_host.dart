@@ -1,3 +1,4 @@
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_desktop/ui/inspection/session_content_inspection_host.dart';
@@ -73,10 +74,12 @@ final class InspectionHost extends StatelessWidget {
     required this.onExpand,
     required this.onDismiss,
     required this.onInspectOutput,
+    this.status = SessionRunActivityStatus.live,
   });
 
   final InspectionCard card;
   final RunActivitySnapshot? activity;
+  final SessionRunActivityStatus status;
   final String heading;
   final ExtensionRegistry extensions;
   final VoidCallback onCollapse;
@@ -137,7 +140,11 @@ final class InspectionHost extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'ACTIVITY',
+                            model != null &&
+                                    status ==
+                                        SessionRunActivityStatus.interrupted
+                                ? 'INTERRUPTED ACTIVITY'
+                                : 'ACTIVITY',
                             style: Theme.of(context).textTheme.labelSmall,
                           ),
                           Text(
@@ -148,12 +155,20 @@ final class InspectionHost extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
+                          if (model != null &&
+                              status == SessionRunActivityStatus.interrupted)
+                            Text(
+                              'Last observed Run state: ${snapshot!.state.name}. '
+                              'No authoritative Run outcome recorded.',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
                         ],
                       ),
                       ModelOutputInspectionTarget() =>
                         ActivityOutputPresentation(
                           extensions: extensions,
                           activity: activity,
+                          status: status,
                           target: target,
                           compact: true,
                         ),
@@ -202,6 +217,7 @@ final class InspectionHost extends StatelessWidget {
                     ModelOutputInspectionTarget() => ActivityOutputPresentation(
                       extensions: extensions,
                       activity: activity,
+                      status: status,
                       target: target,
                       compact: false,
                     ),
@@ -259,6 +275,7 @@ final class InspectionHost extends StatelessWidget {
               child: ActivityOutputPresentation(
                 extensions: extensions,
                 activity: activity,
+                status: status,
                 target: target,
                 compact: true,
               ),

@@ -305,8 +305,9 @@ native implementations supply their behavior; calling a stub natively throws
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.
-  `String? openSessionRunActivity(String runId)` accepts a semantic Run ID, validates that accepted preparing/live/waiting or terminal
-  activity belongs to the presented Session, and returns a read-only opaque handle
+  `String? openSessionRunActivity(String runId)` accepts a semantic Run ID and
+  validates that accepted preparing/live/waiting, terminal, or recovered interrupted
+  activity belongs to the presented Session. It returns a read-only opaque handle
   for those same activity/Inspection paths, or null when unavailable. It grants no
   execution or approval authority and creates no Run. Run start resolves when
   scheduled, not when execution completes. A fresh presentation receives fresh
@@ -323,6 +324,16 @@ native implementations supply their behavior; calling a stub natively throws
   Tool output handles retain immutable proposal arguments, rejection evidence,
   prepared identity/arguments, ordered lifecycle/policy/approval/progress evidence,
   and public outcome data, never executable objects or diagnostic exceptions.
+  Activity `status` is `live`, `terminal`, or `interrupted`, separate from the
+  observed `state`. A recovered interrupted `waiting`/`running` state describes
+  history, not current execution or approval. Missing model settlement, proposal
+  resolution, execution starts, and terminal outcomes remain missing. Consumers
+  must label incomplete observations without synthesizing canonical answers or
+  results. Safe native and tool outputs, including unfinished interrupted models,
+  retain their original handles and Inspection validation. Independent read-only
+  use needs no executable strategy/provider; independently declared owning-backend
+  affinity still requires its exact counterpart. Reading or dismissing activity
+  cannot resume execution, repeat a tool, or resolve approval.
   `buildSessionExecutionStatus()` places the existing native Run status and approval
   controls inside the requesting pane. The plugin chooses placement; the host
   retains the controller, exact approval identity, and decision validation. Removing

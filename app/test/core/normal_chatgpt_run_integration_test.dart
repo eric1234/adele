@@ -5020,6 +5020,430 @@ void main() {
   }
 
   testWidgets(
+    'prepared Chat reopens interrupted activity read-only and admits a fresh Run',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1800, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const prompt = 'Read the source, then ask before running the command.';
+      const narration = 'Read the source and wait before running a command.';
+      const nextPrompt = 'Summarize the interrupted attempt without tools.';
+      const answer = 'The read completed; the command was not started.';
+      const interrupted = 'Interrupted - last observed waiting for approval';
+      const siblingDraft = 'Keep this sibling draft unchanged.';
+      const markerName = 'interrupted-command-must-not-run';
+      final commandArguments = <String, Object?>{
+        'program': 'touch',
+        'arguments': [markerName],
+        'workingDirectory': '',
+        'timeoutSeconds': 5,
+      };
+      final fixture = await _ProductFixture.create();
+      final outbound = <Map<String, Object?>>[];
+      final failures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          switch (outbound.length) {
+            case 1:
+              expect(body['input'], [_userInput(prompt)]);
+              _output(request.response, _reasoningItem());
+              _output(request.response, _message('purpose', narration));
+              _output(
+                request.response,
+                _call('read', 'read_file', {'relativePath': _sourcePath}),
+              );
+              _output(
+                request.response,
+                _call('unresolved', 'run_command', commandArguments),
+              );
+            case 2:
+              // A new Run receives semantic history, never old tool replay or
+              // an automatically resumed approval/model continuation.
+              final input = body['input']! as List;
+              expect(input, hasLength(3));
+              expect(input.first, _userInput(prompt));
+              expect(input.last, _userInput(nextPrompt));
+              final historical = input[1] as Map;
+              final content =
+                  (historical['content'] as List).single['text'] as String;
+              expect(content, startsWith('Historical execution observations '));
+              final evidence =
+                  jsonDecode(content.split('Historical Run JSON:\n').last)
+                      as Map;
+              expect(evidence['historyStatus'], 'interrupted');
+              expect(evidence['lastObservedState'], 'waiting');
+              expect(evidence['terminalStatus'], isNull);
+              final events = (evidence['events'] as List)
+                  .cast<Map<String, Object?>>();
+              final readOutcome =
+                  events.singleWhere(
+                        (event) => event['observation'] == 'completed',
+                      )['outcome']
+                      as Map;
+              expect(readOutcome['modelContent'], contains(_taskText));
+              expect(
+                events.where(
+                  (event) => event['observation'] == 'approvalResolved',
+                ),
+                isEmpty,
+              );
+              expect(jsonEncode(input), isNot(contains(_encrypted)));
+              expect(jsonEncode(input), isNot(contains(_privateReasoning)));
+              _output(request.response, _message('fresh-answer', answer));
+            default:
+              fail('Unexpected model invocation ${outbound.length}.');
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': 'interrupted-ui-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          failures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+
+      void expectHistory(
+        ChatSessionSnapshot actual,
+        ChatSessionSnapshot expected,
+      ) {
+        expect(actual.instructions, expected.instructions);
+        expect(actual.draftRequest, expected.draftRequest);
+        expect(
+          actual.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+          expected.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+        );
+      }
+
+      final runtime = fixture.runtime;
+      NativeAdeleRuntime? fresh;
+      try {
+        await fixture.launch(tester, prepared, endpoint: server);
+        await fixture.openTask(tester);
+        final project = fixture.shell(tester).project!;
+        final task = fixture.shell(tester).task!;
+        final environment = fixture.shell(tester).environment!;
+        final worktree = Directory(
+          developmentGitWorktreePath(project, environment),
+        );
+        final marker = File('${worktree.path}/$markerName');
+        final chat = _chatClient(
+          runtime.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final sibling = _session(tester);
+        await chat.appendUserMessage(sibling.id.value, _siblingPrompt);
+        await _enterComposer(tester, siblingDraft);
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+        );
+        final siblingHistory = await chat.snapshot(sibling.id.value);
+        await _tap(tester, 'New Chat Session');
+        await _send(tester, prompt);
+        await _pumpUntil(
+          tester,
+          () => fixture.status(tester).pendingApproval != null,
+        );
+        _rethrowEndpointFailure(failures);
+        final session = _session(tester);
+        final runId = fixture.runIds.values.single;
+        final liveStatus = fixture.status(tester);
+        final approval = liveStatus.pendingApproval!;
+        expect(approval.toolId, '$_commandPluginId.run-command');
+        expect(find.text('Allow once'), findsOneWidget);
+        expect(find.text('Deny'), findsOneWidget);
+        final saved = await chat.snapshot(session.id.value);
+        expect(saved.entries, hasLength(1));
+        expect(saved.entries.single.role, 'user');
+        expect(saved.entries.single.content, _plainMarkdown(prompt));
+        expect(saved.entries.single.runId, runId.value);
+        expect(saved.draftRequest, '');
+        final database = runtime.lifecycle.databaseForSession(session.id)!;
+        // Read the validated committed prefix, not a hand-built activity fixture.
+        final committed = database.loadExecutionRestoreSet(const []);
+        expect(committed.terminal, isEmpty);
+        final prefix = committed.unsealed.single;
+        expect(prefix.runId, runId);
+        expect(prefix.sessionId, session.id);
+        expect(prefix.state, RunState.waiting);
+        expect(prefix.models, hasLength(1));
+        expect(prefix.models.single.settlement, ModelSettlement.completed);
+        expect(prefix.tools.map((tool) => tool.alias), [
+          'read_file',
+          'run_command',
+        ]);
+        expect(prefix.tools.first.outcome!.modelContent, contains(_taskText));
+        expect(prefix.tools.last.outcome, isNull);
+        expect(
+          prefix.tools.last.changes.last.kind,
+          ToolActivityKind.approvalRequested,
+        );
+        expect(runtime.store.runRecord(runId), isNull);
+        expect(runtime.lifecycle.runActivity(runId), isNull);
+        expect(await marker.exists(), isFalse);
+
+        final exiting = tester.binding.handleRequestAppExit();
+        await _expectActiveWorkExitConfirmation(tester);
+        await _terminalTap(tester, find.text('Exit ADELE'));
+        expect(await exiting, AppExitResponse.exit);
+        expect(runtime.plugins.state, ApplicationPluginState.closed);
+        expect(runtime.store.runRecord(runId), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+
+        final ids = _NoReopenIds();
+        final reopened = fresh = NativeAdeleRuntime(ids: ids);
+        await fixture.launch(
+          tester,
+          prepared,
+          endpoint: server,
+          usingRuntime: reopened,
+          usingRunIds: fixture.runIds,
+        );
+        await _tap(tester, 'Open Local Directory...');
+        await _pumpUntil(tester, () => fixture.shell(tester).project != null);
+        expect(fixture.shell(tester).project!.id, project.id);
+        final restoredSession = reopened.store.session(session.id)!;
+        expect(restoredSession, isNot(same(session)));
+        final recovered = reopened.lifecycle.recoveredRun(runId)!;
+        expect(recovered.session, same(restoredSession));
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(recovered.terminalRecord, isNull);
+        expect(recovered.activity, isNot(same(prefix)));
+        expect(
+          _activityEvidence(recovered.activity),
+          _activityEvidence(prefix),
+        );
+        expect(reopened.store.runsForSession(session.id), isEmpty);
+        expect(reopened.lifecycle.runActivitiesForSession(session.id), isEmpty);
+        expect(reopened.lifecycle.recoveredRunsForSession(sibling.id), isEmpty);
+        final restoredChat = _chatClient(
+          reopened.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        await _tap(tester, task.title);
+        await _pumpUntil(
+          tester,
+          () => _sessionRow(session.id).evaluate().isNotEmpty,
+        );
+        await _openSession(tester, session.id);
+        await _pumpUntil(
+          tester,
+          () => find.text(interrupted).evaluate().isNotEmpty,
+        );
+        expect(_session(tester), same(restoredSession));
+        expect(_chatView(), findsOneWidget);
+        expect(find.text(_plainMarkdown(prompt)), findsOneWidget);
+        expect(find.text(narration), findsOneWidget);
+        expect(
+          find.text('Historical activity; no terminal Run outcome recorded.'),
+          findsOneWidget,
+        );
+        expect(fixture.status(tester).pendingApproval, isNull);
+        expect(fixture.status(tester).isAdvancing, isFalse);
+        expect(fixture.status(tester).failureMessage, isNull);
+        expect(fixture.status(tester).unavailableReason, isNull);
+        expect(_composerState(tester).editable, isTrue);
+        expect(find.text('Allow once'), findsNothing);
+        expect(find.text('Deny'), findsNothing);
+        expect(find.text('Running...'), findsNothing);
+        expect(
+          reopened.lifecycle.hasSessionExecution(restoredSession),
+          isFalse,
+        );
+        expect(
+          reopened.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+        expectHistory(await restoredChat.snapshot(session.id.value), saved);
+
+        await _tap(tester, narration);
+        expect(find.byType(InspectionHost), findsOneWidget);
+        expect(find.text('INTERRUPTED ACTIVITY'), findsOneWidget);
+        expect(find.text('Reasoning: $_reasoning'), findsOneWidget);
+        await _tap(tester, 'Read File: "$_sourcePath"');
+        expect(find.byType(InspectionHost), findsNWidgets(2));
+        await _pumpUntil(
+          tester,
+          () => find.text('Lifecycle: completed').evaluate().isNotEmpty,
+        );
+        final inspected = tester
+            .widget<ToolActivityInspectionHost>(
+              find.byType(ToolActivityInspectionHost),
+            )
+            .source;
+        expect(inspected.sessionId, session.id);
+        expect(inspected.runId, runId);
+        expect(inspected.snapshot.id, prefix.tools.first.id);
+        expect(inspected.snapshot.outcome!.modelContent, contains(_taskText));
+        // Long compact labels can overflow the narrow Inspection column; use
+        // the visible leading edge rather than the label's off-column center.
+        final commandLabel = find.textContaining('Run Command:');
+        await tester.ensureVisible(commandLabel);
+        await tester.tapAt(
+          tester.getTopLeft(commandLabel) + const Offset(8, 8),
+        );
+        await _pumpUntil(
+          tester,
+          () => find.text('Lifecycle: approvalRequested').evaluate().isNotEmpty,
+        );
+        expect(find.byType(InspectionHost), findsNWidgets(3));
+        final commandInspection = tester
+            .widgetList<ToolActivityInspectionHost>(
+              find.byType(ToolActivityInspectionHost),
+            )
+            .singleWhere(
+              (host) => host.source.snapshot.id == prefix.tools.last.id,
+            );
+        expect(
+          commandInspection.source.snapshot,
+          same(recovered.activity.tools.last),
+        );
+        expect(commandInspection.source.snapshot.outcome, isNull);
+        expect(
+          find.text(
+            'Interrupted Run; tool prepared, no execution start recorded.',
+          ),
+          findsWidgets,
+        );
+        expect(find.text('Allow once'), findsNothing);
+        expect(find.text('Deny'), findsNothing);
+        _expectNoSecrets(tester);
+
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+        );
+        expect(find.byType(InspectionHost), findsNothing);
+        await _openSession(tester, sibling.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        expect(_session(tester), same(reopened.store.session(sibling.id)));
+        expect(find.text(_siblingPrompt), findsOneWidget);
+        expect(_composerMarkdown(tester), _plainMarkdown(siblingDraft));
+        expect(find.text(interrupted), findsNothing);
+        expect(find.text(narration), findsNothing);
+        expect(find.text(_plainMarkdown(prompt)), findsNothing);
+        expectHistory(
+          await restoredChat.snapshot(sibling.id.value),
+          siblingHistory,
+        );
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(MainContentHost).evaluate().isEmpty,
+        );
+        await _openSession(tester, session.id);
+        await _pumpUntil(
+          tester,
+          () => find.text(interrupted).evaluate().isNotEmpty,
+        );
+        expect(find.byType(InspectionHost), findsNothing);
+        expect(find.text(_siblingPrompt), findsNothing);
+        // The retired approval callback cannot acquire the fresh Session owner.
+        liveStatus.onDecision(approval, true);
+        liveStatus.onDecision(approval, false);
+        await _composerFrames(tester);
+        expect(outbound, hasLength(1));
+        expect(fixture.runIds.values, [runId]);
+        expect(ids.calls, 0);
+        expect(await marker.exists(), isFalse);
+        expectHistory(await restoredChat.snapshot(session.id.value), saved);
+        expect(
+          _activityEvidence(recovered.activity),
+          _activityEvidence(prefix),
+        );
+
+        await _send(tester, nextPrompt);
+        await _pumpUntil(
+          tester,
+          () =>
+              find.text(answer).evaluate().isNotEmpty &&
+              !fixture.status(tester).isAdvancing,
+        );
+        _rethrowEndpointFailure(failures);
+        final nextRunId = fixture.runIds.values.last;
+        expect(fixture.runIds.values, hasLength(2));
+        expect(nextRunId, isNot(runId));
+        expect(outbound, hasLength(2));
+        expect(reopened.store.runRecord(runId), isNull);
+        expect(reopened.store.runsForSession(session.id).single.id, nextRunId);
+        expect(
+          reopened.store.runRecord(nextRunId)!.state,
+          RunTerminalState.completed,
+        );
+        expect(reopened.lifecycle.runActivity(nextRunId)!.tools, isEmpty);
+        expect(await marker.exists(), isFalse);
+        expect(ids.calls, 0);
+        final completed = await restoredChat.snapshot(session.id.value);
+        expect(
+          completed.entries.map(
+            (entry) => (entry.role, entry.content, entry.runId),
+          ),
+          [
+            ('user', _plainMarkdown(prompt), runId.value),
+            ('user', _plainMarkdown(nextPrompt), nextRunId.value),
+            ('assistant', answer, null),
+          ],
+        );
+        expect(completed.entries.first.id, saved.entries.single.id);
+        expect(completed.instructions, saved.instructions);
+        expect(completed.draftRequest, '');
+        expectHistory(
+          await restoredChat.snapshot(sibling.id.value),
+          siblingHistory,
+        );
+        expect(find.text(interrupted), findsOneWidget);
+        expect(find.text('Allow once'), findsNothing);
+        expect(find.text('Deny'), findsNothing);
+        _expectNoSecrets(tester);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+        await fresh?.close();
+      }
+    }),
+    timeout: const Timeout(Duration(seconds: 90)),
+  );
+
+  testWidgets(
     'normal Chat restores rich Markdown, saves native edits, departs, restores and submits one Run',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));

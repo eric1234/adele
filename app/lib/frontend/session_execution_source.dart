@@ -49,11 +49,17 @@ final class SessionExecutionPresentationSource
   final Map<String, ActivityInspectionTarget> _emitted = {};
   final Map<(RunId, ModelInvocationId, int?), String> _handles = {};
   Map<RunId, RunActivitySnapshot>? _retainedActivity;
+  Map<RunId, SessionRunActivityStatus>? _retainedActivityStatus;
   RunExecutionStatus? _retainedStatus;
 
   RunActivitySnapshot? _activityForRun(RunId runId) => _retainedActivity == null
       ? controller.activityForRun(runId)
       : _retainedActivity![runId];
+
+  SessionRunActivityStatus? _activityStatusForRun(RunId runId) =>
+      _retainedActivityStatus == null
+      ? controller.activityStatusForRun(runId)
+      : _retainedActivityStatus![runId];
 
   bool get _available {
     if (!_active) return false;
@@ -156,6 +162,11 @@ final class SessionExecutionPresentationSource
       throw StateError('Run handle was not emitted to this view.');
     }
     final activity = controller.activityForRun(runId);
+    final status = controller.activityStatusForRun(runId);
+    final state = controller.stateForRun(runId) ?? activity?.state;
+    if (status == null || state == null) {
+      throw StateError('Run activity is unavailable.');
+    }
     final tools = {
       for (final tool in activity?.tools ?? <ToolInvocationActivity>[])
         (tool.modelInvocationId, tool.proposalSequence): tool,
@@ -167,7 +178,8 @@ final class SessionExecutionPresentationSource
     };
     return copyStructuredBridgeData({
           'runHandle': handle,
-          'state': controller.stateForRun(runId)!.name,
+          'status': status.name,
+          'state': state.name,
           'models': [
             for (final model in activity?.models ?? <ModelInvocationActivity>[])
               {
@@ -323,6 +335,7 @@ final class SessionExecutionPresentationSource
     _emitted.clear();
     _handles.clear();
     _retainedActivity = null;
+    _retainedActivityStatus = null;
     _retainedStatus = null;
   }
 
@@ -340,6 +353,10 @@ final class SessionExecutionPresentationSource
     _retainedActivity = {
       for (final activity in controller.activitySnapshots)
         activity.runId: activity,
+    };
+    _retainedActivityStatus = {
+      for (final runId in _retainedActivity!.keys)
+        runId: ?controller.activityStatusForRun(runId),
     };
     _active = false;
   }
@@ -437,6 +454,9 @@ final class _SessionActivity extends StatelessWidget {
           child: ActivityOutputPresentation(
             extensions: source.extensions,
             activity: source._activityForRun(target.runId),
+            status:
+                source._activityStatusForRun(target.runId) ??
+                SessionRunActivityStatus.live,
             target: target,
             compact: true,
           ),
