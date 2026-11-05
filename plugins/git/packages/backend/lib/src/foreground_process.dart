@@ -3,14 +3,17 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:crypto/crypto.dart';
 
 import 'worktree_environment.dart';
 
 part 'buffered_process.dart';
+part 'shell_process.dart';
 
 // The pinned Dart Process pipe stream aggregates up to 4 MiB plus one native
 // read. This bounds full decoded Strings owned by our queue across both pipes,
@@ -55,7 +58,10 @@ final class GitForegroundProcessSupervisor {
     this.maximumPendingOutputCharacters = _maximumPendingOutputCharacters,
     this.maximumEventCharacters = environmentProcessTextLimit,
     this.drainClock,
-  }) {
+    Map<String, String>? shellEnvironment,
+  }) : _shellEnvironment = Map<String, String>.unmodifiable(
+         shellEnvironment ?? Platform.environment,
+       ) {
     if (maximumPendingOutputCharacters < 1 ||
         maximumPendingOutputCharacters > _maximumPendingOutputCharacters) {
       throw ArgumentError.value(maximumPendingOutputCharacters);
@@ -69,6 +75,9 @@ final class GitForegroundProcessSupervisor {
   final int maximumPendingOutputCharacters;
   final int maximumEventCharacters;
   final GitForegroundProcessDrainClock? drainClock;
+  final Map<String, String> _shellEnvironment;
+  late final String _shellGeneration = _newShellGeneration();
+  final Set<Future<void>> _shellDiscoveries = <Future<void>>{};
   final Set<_ForegroundProcessExecution> _active =
       <_ForegroundProcessExecution>{};
   bool _closing = false;
@@ -84,12 +93,75 @@ final class GitForegroundProcessSupervisor {
     required EnvironmentId environmentId,
     required WorktreeEnvironment environment,
     required EnvironmentForegroundProcessRequest request,
+  }) => _run(
+    environmentId: environmentId,
+    environment: environment,
+    request: request,
+  );
+
+  Future<EnvironmentShellProfile> describeShell({
+    required EnvironmentId environmentId,
+    required WorktreeEnvironment environment,
+  }) async {
+    void requireOpen() {
+      if (_closing) {
+        throw const EnvironmentFailure(
+          code: 'process_provider_closed',
+          message: 'The Environment provider is shutting down.',
+          details: <String, Object?>{},
+        );
+      }
+    }
+
+    requireOpen();
+    final settled = Completer<void>();
+    _shellDiscoveries.add(settled.future);
+    try {
+      final root = await environment.resolveProcessWorkingDirectory('');
+      requireOpen();
+      final shell = await _resolveShell(
+        environmentId,
+        root,
+        _shellEnvironment,
+        _shellGeneration,
+      );
+      requireOpen();
+      return shell.profile;
+    } finally {
+      _shellDiscoveries.remove(settled.future);
+      settled.complete();
+    }
+  }
+
+  Stream<EnvironmentProcessEvent> runShell({
+    required EnvironmentId environmentId,
+    required WorktreeEnvironment environment,
+    required EnvironmentShellCommandRequest request,
+  }) => _run(
+    environmentId: environmentId,
+    environment: environment,
+    shellRequest: request,
+  );
+
+  Stream<EnvironmentProcessEvent> _run({
+    required EnvironmentId environmentId,
+    required WorktreeEnvironment environment,
+    EnvironmentForegroundProcessRequest? request,
+    EnvironmentShellCommandRequest? shellRequest,
   }) {
     late final _ForegroundProcessExecution execution;
     execution = _ForegroundProcessExecution(
       environmentId: environmentId,
       environment: environment,
       request: request,
+      shellRequest: shellRequest,
+      shellEnvironment: _shellEnvironment,
+      resolveShell: () => _resolveShell(
+        environmentId,
+        environment.root,
+        _shellEnvironment,
+        _shellGeneration,
+      ),
       maximumPendingOutputCharacters: maximumPendingOutputCharacters,
       maximumEventCharacters: maximumEventCharacters,
       drainClock: drainClock ?? GitForegroundProcessDrainClock(),
@@ -104,14 +176,15 @@ final class GitForegroundProcessSupervisor {
 
   Future<void> _close() async {
     _closing = true;
-    await Future.wait<void>(
-      _active
+    await Future.wait<void>([
+      ..._shellDiscoveries,
+      ..._active
           .toList(growable: false)
           .map(
             (_ForegroundProcessExecution execution) =>
                 execution.cancel(closeStream: true),
           ),
-    );
+    ]);
   }
 }
 
@@ -169,6 +242,9 @@ final class _ForegroundProcessExecution {
     required this.environmentId,
     required this.environment,
     required this.request,
+    required this.shellRequest,
+    required this.shellEnvironment,
+    required this.resolveShell,
     required this.maximumPendingOutputCharacters,
     required this.maximumEventCharacters,
     required this.drainClock,
@@ -192,7 +268,10 @@ final class _ForegroundProcessExecution {
 
   final EnvironmentId environmentId;
   final WorktreeEnvironment environment;
-  final EnvironmentForegroundProcessRequest request;
+  final EnvironmentForegroundProcessRequest? request;
+  final EnvironmentShellCommandRequest? shellRequest;
+  final Map<String, String> shellEnvironment;
+  final Future<_ResolvedShell> Function() resolveShell;
   final int maximumPendingOutputCharacters;
   final int maximumEventCharacters;
   final GitForegroundProcessDrainClock drainClock;
@@ -231,6 +310,13 @@ final class _ForegroundProcessExecution {
 
   Stream<EnvironmentProcessEvent> get stream => _controller.stream;
 
+  String get _relativeWorkingDirectory =>
+      shellRequest?.relativeWorkingDirectory ??
+      request!.relativeWorkingDirectory;
+
+  int get _timeoutSeconds =>
+      shellRequest?.timeoutSeconds ?? request!.timeoutSeconds;
+
   Future<void> cancel({bool closeStream = false}) async {
     if (!_cancelled) {
       _cancelled = true;
@@ -244,7 +330,11 @@ final class _ForegroundProcessExecution {
 
   Future<void> _run() async {
     try {
-      _requireSupportedPlatform();
+      if (shellRequest == null) {
+        _requireSupportedPlatform();
+      } else {
+        _requireShellSupportedPlatform();
+      }
       if (!_canStart()) {
         throw _failure(
           'process_provider_closed',
@@ -252,39 +342,60 @@ final class _ForegroundProcessExecution {
         );
       }
       Directory workingDirectory = await environment
-          .resolveProcessWorkingDirectory(request.relativeWorkingDirectory);
+          .resolveProcessWorkingDirectory(_relativeWorkingDirectory);
       if (_cancelled) return;
       final Map<String, String> childEnvironment = _childEnvironment(
         workingDirectory,
+        parentEnvironment: shellRequest == null ? null : shellEnvironment,
       );
-      final String executable = await _resolveExecutable(
-        request.program,
-        workingDirectory,
-        childEnvironment['PATH']!,
-      );
+      late final String executable;
+      late final List<String> arguments;
+      if (request case final direct?) {
+        executable = await _resolveExecutable(
+          direct.program,
+          workingDirectory,
+          childEnvironment['PATH']!,
+        );
+        arguments = direct.arguments;
+      }
       final String launcher = await _resolveSetSid();
 
       // Resolve again immediately before spawn so aliases cannot silently move
       // this invocation to a different directory during setup.
       final Directory revalidated = await environment
-          .resolveProcessWorkingDirectory(request.relativeWorkingDirectory);
+          .resolveProcessWorkingDirectory(_relativeWorkingDirectory);
       if (revalidated.path != workingDirectory.path) {
         throw _failure(
           'process_working_directory_changed',
           'The process working directory changed while it was being resolved.',
           details: <String, Object?>{
-            'relativeWorkingDirectory': request.relativeWorkingDirectory,
+            'relativeWorkingDirectory': _relativeWorkingDirectory,
           },
         );
       }
       workingDirectory = revalidated;
       if (_cancelled || !_canStart()) return;
 
+      if (shellRequest case final shellCommand?) {
+        // Discovery stays inside this execution's ownership. Cancellation/close
+        // waits for it and fences spawn, including a late Process.start result.
+        final shell = await resolveShell();
+        if (shell.profile.profileId != shellCommand.expectedProfileId) {
+          throw _failure(
+            environmentShellProfileChangedCode,
+            'The selected Environment shell profile changed.',
+          );
+        }
+        executable = shell.invocation;
+        arguments = <String>[...shell.arguments, shellCommand.command];
+        if (_cancelled || !_canStart()) return;
+      }
+
       final Process process;
       try {
         process = await Process.start(
           launcher,
-          <String>['--', executable, ...request.arguments],
+          <String>['--', executable, ...arguments],
           workingDirectory: workingDirectory.path,
           environment: childEnvironment,
           includeParentEnvironment: false,
@@ -306,7 +417,7 @@ final class _ForegroundProcessExecution {
       _exitCode = exitCodeFuture;
       unawaited(process.stdin.close().catchError((Object _) {}));
       _listenToOutput(process);
-      _timeout = Timer(Duration(seconds: request.timeoutSeconds), () {
+      _timeout = Timer(Duration(seconds: _timeoutSeconds), () {
         if (_cancelled || _producerClosing) return;
         _timedOut = true;
         if (_controller.isPaused && !_outputDelivered.isCompleted) {
@@ -702,9 +813,13 @@ Future<String> _resolveSetSid() async {
   );
 }
 
-Map<String, String> _childEnvironment(Directory workingDirectory) {
+Map<String, String> _childEnvironment(
+  Directory workingDirectory, {
+  Map<String, String>? parentEnvironment,
+}) {
   final Map<String, String> environment = <String, String>{};
-  for (final MapEntry<String, String> entry in Platform.environment.entries) {
+  for (final MapEntry<String, String> entry
+      in (parentEnvironment ?? Platform.environment).entries) {
     if (_retainedEnvironmentVariables.contains(entry.key) ||
         entry.key.startsWith('LC_')) {
       environment[entry.key] = entry.value;
@@ -721,13 +836,18 @@ Map<String, String> _childEnvironment(Directory workingDirectory) {
 Future<String> _resolveExecutable(
   String program,
   Directory workingDirectory,
-  String path,
-) async {
+  String path, {
+  bool preserveInvocationPath = false,
+}) async {
   if (program.contains('/')) {
     final String candidate = program.startsWith('/')
         ? program
         : '${workingDirectory.path}/$program';
-    return _requireExecutable(candidate, program);
+    return _requireExecutable(
+      candidate,
+      program,
+      preserveInvocationPath: preserveInvocationPath,
+    );
   }
   bool foundNonExecutable = false;
   for (final String entry in path.split(':')) {
@@ -740,7 +860,11 @@ Future<String> _resolveExecutable(
     final FileStat stat = await FileStat.stat(candidate);
     if (stat.type != FileSystemEntityType.file) continue;
     if (_linuxEffectiveAccess.canExecute(candidate)) {
-      return _requireExecutable(candidate, program);
+      return _requireExecutable(
+        candidate,
+        program,
+        preserveInvocationPath: preserveInvocationPath,
+      );
     }
     foundNonExecutable = true;
   }
@@ -755,7 +879,11 @@ Future<String> _resolveExecutable(
   );
 }
 
-Future<String> _requireExecutable(String candidate, String program) async {
+Future<String> _requireExecutable(
+  String candidate,
+  String program, {
+  bool preserveInvocationPath = false,
+}) async {
   final FileStat stat = await FileStat.stat(candidate);
   if (stat.type != FileSystemEntityType.file) {
     throw EnvironmentFailure(
@@ -771,7 +899,8 @@ Future<String> _requireExecutable(String candidate, String program) async {
       details: <String, Object?>{'program': program},
     );
   }
-  return File(candidate).resolveSymbolicLinks();
+  final resolved = await File(candidate).resolveSymbolicLinks();
+  return preserveInvocationPath ? candidate : resolved;
 }
 
 Future<bool> _isExecutableFile(String path) async {

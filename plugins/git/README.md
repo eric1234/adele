@@ -945,6 +945,82 @@ provide application-level confinement equivalent to the historical
 DevelopmentSource proof. They are not an operating-system sandbox and cannot
 eliminate every pathname replacement race against another local process.
 
+## Noninteractive shell commands
+
+On Linux x64, the same provider implements the optional `EnvironmentShellProvider`
+facet. `describeShell` returns the canonical interpreter path, a syntax dialect,
+and an opaque profile identity. `runShellCommand` accepts that expected identity
+and passes the command text verbatim as one `-c` argument, without splitting,
+interpolating, trimming, or using `runInShell`. This is separate from direct argv
+execution and interactive terminals; neither changes its existing behavior.
+
+Shell selection uses the provider generation's snapshotted `SHELL`, as one literal
+path or PATH-searched executable name. Relative selections and relative PATH
+entries are resolved from the Environment root, independently of the command's
+cwd. Only an absent `SHELL` chooses `/bin/sh`. An empty, malformed, missing,
+non-executable, or unsupported preference fails with `shell_unavailable`, without
+substitution. The existing effective-user execute-access and environment-hygiene
+helpers apply. A bounded executable-format preflight accepts only native ELF64
+little-endian x64 interpreters with an available executable loader when one is
+declared. Script-backed shell wrappers and plain executable text are unsupported:
+invalid shebang-interpreter chains can otherwise trigger implicit `/bin/sh`
+substitution. This checks basic launch prerequisites, not all dynamic dependencies
+or arbitrary program behavior, and discovery never runs shell startup code.
+
+Supported canonical executable basenames and invocation conventions are:
+
+| Interpreter | Dialect | Arguments before the raw command |
+| --- | --- | --- |
+| `sh`, `dash` | `posix` | `-c` |
+| `bash` | `bash` | `--noprofile --norc -c` |
+| `zsh` | `zsh` | `-f -c` |
+| `ksh`, `ksh93`, `mksh` | `ksh` | `-c` |
+
+Aliases to these known targets are accepted; unknown renamed targets and explicit
+restricted/login aliases are unsupported. If the selected invocation basename is
+`sh`, the provider retains that invocation path and reports `posix`, even when its
+canonical target is Bash or another supported shell. This preserves the shell's
+`argv[0]`-selected sh mode instead of accidentally launching its default dialect.
+The profile still identifies the actual canonical binary; the private invocation
+path and flags also participate in its identity. Other aliases launch the canonical
+target with its advertised dialect.
+
+These are noninteractive, non-login invocations, not a promise that no startup
+code can run. Bash's profile/rc flags and omission of `BASH_ENV` suppress its usual
+user startup hooks. The allowlist also excludes `ENV`, `ZDOTDIR`, shell option
+variables and exported Bash functions. Zsh's `-f` normally suppresses user startup
+files, but its global `zshenv` is still read and can itself change startup behavior.
+System shell configuration, executable implementations and commands remain trusted
+same-user code, not an OS sandbox.
+
+Profile identities bind the provider generation, Environment/root, configured
+selection, resolved executable, invocation convention, and observable executable
+mode, size and modification/change timestamps. Access time is excluded. There is
+no retained profile table, credential, or authorization token. The provider resolves
+and recomputes that identity immediately before launch; a usable but different
+selection fails with `shell_profile_changed`, and a now-unavailable selection fails
+with `shell_unavailable`. Another Environment or provider generation cannot reuse
+the profile. These observations are not an atomic filesystem/exec transaction:
+same-user path/content races and changes finer than observable metadata can escape
+them. Remaining post-check exec/loader failures can surface as launcher status
+126/127, which are not reclassified because shell commands can legitimately return
+those statuses.
+
+Shell execution runs inside the existing `GitForegroundProcessSupervisor`, not a
+stream wrapper around it. Listening admits ownership before asynchronous discovery;
+unlistened streams do not launch. Cwd confinement, stdin EOF, UTF-8 output,
+backpressure, timeouts, cancellation, process-group cleanup and shutdown are the
+same as direct foreground execution. Shutdown also fences profile publication and
+waits for pending discovery; late native starts remain owned until cleanup.
+
+The provider-local `shellEnvironment` constructor seam snapshots a replacement
+environment source for shell discovery and shell-command children only. It still
+applies the allowlist, canonical `PWD` and `TERM=dumb`; it does not change Git,
+direct/buffered processes or terminal environments. It is not a public request
+override or backend startup setting. Tests use controlled `SHELL`/`PATH` and
+temporary `HOME` directories rather than personal startup files. This provider
+facet alone adds no model tool or authorized process-service grant.
+
 ## Buffered binary processes
 
 The same selected provider implements the optional

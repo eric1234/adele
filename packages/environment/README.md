@@ -3,9 +3,10 @@
 `adele_environment` defines one coherent Environment provider capability for
 establishment, restoration, bounded text-file reads, create-new text files,
 conditional replacement and deletion of existing text files, direct-child
-directory listings, bounded foreground process execution, optional buffered binary
-process execution, and optional interactive terminal resources. It uses ADELE's
-generated contract transport and existing capability registry.
+directory listings, bounded foreground process execution, optional provider-selected
+shell commands, optional buffered binary process execution, and optional interactive
+terminal resources. It uses ADELE's generated contract transport and existing
+capability registry.
 
 The wire carries a narrow closed snapshot of the relevant Environment, Task,
 and Project values. The backend adapter reconstructs fresh canonical product
@@ -161,6 +162,53 @@ facts in declared `EnvironmentFailure.details`; consumers must preserve those
 facts while treating output as incomplete. The stock
 [Git provider](../../plugins/git/README.md#filesystem-and-processes)
 documents its concrete bounds, drain deadline, and failure evidence.
+
+## Shell commands
+
+`EnvironmentShellProvider` is an optional facet of the selected Environment provider.
+`describeShell(EnvironmentId)` returns `EnvironmentShellProfile`; `runShellCommand`
+accepts an `EnvironmentId` and `EnvironmentShellCommandRequest` and returns the same
+`Stream<EnvironmentProcessEvent>` used by foreground execution. Both methods are
+declared on `EnvironmentProviderService` and forwarded by the native/backend and
+generated/host adapters. An adapter wrapping a provider without this facet returns
+declared `EnvironmentFailure` with `environmentShellUnavailableCode`
+(`shell_unavailable`) for both operations. The generated host wrapper implements
+the optional interface even when the underlying provider does not; a Dart interface
+check alone is not evidence that shell execution is available.
+
+The profile contains an opaque `profileId` (1..256 ASCII characters matching
+`[A-Za-z0-9._:-]+`), provider-selected `interpreter` information (1..4096 UTF-16 code
+units, with no C0/C1 controls or malformed Unicode), and an open `dialect` token
+(1..64 characters matching `[a-z][a-z0-9_.-]*`). Dialect is neither a closed enum nor
+a universal registry. The [shell selection boundary](../../docs/architecture/contracts-and-capabilities.md#environment-shell-selection)
+defines profile scope, provider-owned selection comparison, and its separation from
+credentials and execution authority.
+
+The request requires `command`, `expectedProfileId`, `relativeWorkingDirectory`, and
+`timeoutSeconds`. Raw command text is preserved verbatim, including surrounding
+whitespace, newlines, quoting, and shell operators: it is never trimmed, split into
+argv, or normalized. Commands contain 1..65536 UTF-16 code units, must not be
+whitespace-only, and reject NUL and malformed Unicode. `expectedProfileId` uses the
+same validation as the profile ID. Cwd follows foreground text validation (no NUL
+or malformed Unicode), with empty meaning Environment root; provider-owned
+confinement is not replaced by DTO syntax checks. Timeout uses the unchanged
+foreground range of 1..1800 seconds.
+
+Providers compare the expected selection at execution and report
+`environmentShellProfileChangedCode` (`shell_profile_changed`) for a mismatch, or
+`environmentShellUnavailableCode` when no usable selection remains. Neither failure
+permits another interpreter or host-local fallback. Execution is lazy and
+single-subscription, retaining foreground output bounds, observed ordering,
+backpressure, explicit exit/timeout completion, declared failures, and cancellation
+cleanup. Cancellation abandons the execution; EOF without completion is not success.
+Calls do not establish durable shell sessions or carry shell state between commands.
+
+`EnvironmentForegroundProcessRequest`, `runForegroundProcess`, and all authorized
+Environment facets/services retain their existing APIs and semantics. This provider
+contract does not add authorized shell integration or grant Command Tools shell
+access. `test/environment_shell_test.dart` covers DTO validation, strict generated
+wire shapes and roundtrips, native/generated forwarding and cancellation, and
+declared changed/unavailable failures.
 
 ## Buffered binary processes
 
