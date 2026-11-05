@@ -198,6 +198,26 @@ authorizes eligible unary requests. Environment-bound exposure grants no service
 on its own. Domain contracts and semantics remain entirely plugin-owned; a callable
 provider is not inherently an Environment owner.
 
+### Environment shell selection
+
+An optional shell facet belongs to the same selected Environment provider, not a
+second Capability or host-local process service. Its described shell profile is
+execution information scoped to one Environment and one provider generation.
+The opaque profile ID identifies that selection; neither it, the interpreter
+description, nor the open dialect token is a credential, invocation authority,
+durable configuration Profile, or universal shell registry entry.
+
+The provider compares the command's expected profile ID with its current selection
+at execution, before launching. A changed selection fails explicitly with
+`shell_profile_changed`; absent support or an unavailable selection fails with
+`shell_unavailable`. No mismatch or absence permits substituting an interpreter,
+provider, or host-local execution. Working-directory confinement and interpreter
+selection remain provider-owned. Calls reuse bounded foreground event/cleanup
+semantics without creating durable shell sessions. This provider surface does not
+extend authorized Environment services or model-tool execution authority, and
+direct program/argv execution remains unchanged. Exact values, validation, and
+adapter behavior belong to the [Environment contract](../../packages/environment/README.md#shell-commands).
+
 ## Live discovery and exact binding
 
 ```text

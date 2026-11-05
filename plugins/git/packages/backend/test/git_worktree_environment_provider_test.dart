@@ -3072,6 +3072,988 @@ void main() {
     expect(await File('${root.path}/missing.txt').exists(), isFalse);
   });
 
+  group(
+    'shell commands',
+    () {
+      for (final selection in [
+        (shell: '/bin/bash', dialect: 'bash'),
+        (shell: '/bin/sh', dialect: 'posix'),
+      ]) {
+        test(
+          '${selection.shell} preserves raw shell syntax and exit data',
+          () async {
+            final fixture = await _createProcessFixture(
+              shellEnvironment: {
+                'SHELL': selection.shell,
+                'PATH': '/usr/bin:/bin',
+              },
+            );
+            final root = fixture.provider.liveObjects
+                .resolve(fixture.environment.id)
+                .root;
+            final profile = await fixture.provider.describeShell(
+              fixture.environment.id,
+            );
+            expect(profile.dialect, selection.dialect);
+            expect(
+              await File(profile.interpreter).resolveSymbolicLinks(),
+              await File(selection.shell).resolveSymbolicLinks(),
+            );
+            final events = await fixture.provider
+                .runShellCommand(
+                  fixture.environment.id,
+                  EnvironmentShellCommandRequest(
+                    command: r'''
+literal='spaces ; $(touch should-not-run) * [literal] "double"'
+printf '%s\n' "$literal" > 'shell output.txt'
+printf 'alpha\nbeta\n' | while IFS= read -r line; do printf '<%s>' "$line"; done
+printf '\n'
+false && printf not-run
+false || printf 'recovered\n'
+printf 'first\n' > 'chain.txt' && printf 'second\n' >> 'chain.txt'
+printf 'stderr-only\n' >&2
+exit 23
+''',
+                    expectedProfileId: profile.profileId,
+                    relativeWorkingDirectory: '',
+                    timeoutSeconds: 5,
+                  ),
+                )
+                .toList();
+
+            expect(
+              _outputText(
+                events,
+                stream: EnvironmentProcessOutputStream.stdout,
+              ),
+              '<alpha><beta>\nrecovered\n',
+            );
+            expect(
+              _outputText(
+                events,
+                stream: EnvironmentProcessOutputStream.stderr,
+              ),
+              'stderr-only\n',
+            );
+            expect(
+              await File('${root.path}/shell output.txt').readAsString(),
+              'spaces ; \$(touch should-not-run) * [literal] "double"\n',
+            );
+            expect(
+              await File('${root.path}/chain.txt').readAsString(),
+              'first\nsecond\n',
+            );
+            expect(await File('${root.path}/should-not-run').exists(), isFalse);
+            expect(events.last.kind, EnvironmentProcessEventKind.completed);
+            expect(
+              _completion(events).termination,
+              EnvironmentProcessTermination.exited,
+            );
+            expect(_completion(events).exitCode, 23);
+            expect(_completion(events).stdoutTruncated, isFalse);
+            expect(_completion(events).stderrTruncated, isFalse);
+            for (final exitCode in [126, 127]) {
+              final exited = await fixture.provider
+                  .runShellCommand(
+                    fixture.environment.id,
+                    EnvironmentShellCommandRequest(
+                      command: 'exit $exitCode',
+                      expectedProfileId: profile.profileId,
+                      relativeWorkingDirectory: '',
+                      timeoutSeconds: 5,
+                    ),
+                  )
+                  .toList();
+              expect(
+                _completion(exited).termination,
+                EnvironmentProcessTermination.exited,
+              );
+              expect(_completion(exited).exitCode, exitCode);
+            }
+            expect(
+              (await fixture.provider.describeShell(
+                fixture.environment.id,
+              )).profileId,
+              profile.profileId,
+            );
+          },
+        );
+      }
+
+      test('only absent SHELL selects /bin/sh independently of PATH', () async {
+        final fixture = await _createProcessFixture(
+          shellEnvironment: {'PATH': '/adele-no-shell-search-directory'},
+        );
+        final profile = await fixture.provider.describeShell(
+          fixture.environment.id,
+        );
+        expect(profile.dialect, 'posix');
+        expect(
+          await File(profile.interpreter).resolveSymbolicLinks(),
+          await File('/bin/sh').resolveSymbolicLinks(),
+        );
+        final events = await fixture.provider
+            .runShellCommand(
+              fixture.environment.id,
+              EnvironmentShellCommandRequest(
+                command: 'printf fallback',
+                expectedProfileId: profile.profileId,
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            )
+            .toList();
+        expect(_outputText(events), 'fallback');
+        expect(_completion(events).exitCode, 0);
+      });
+
+      test(
+        'resolves literal SHELL through PATH at the Environment root',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': 'chosen-shell', 'PATH': 'shell-bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          await Directory('${root.path}/shell-bin').create();
+          await Link('${root.path}/shell-bin/chosen-shell').create('/bin/bash');
+          final nested = await Directory(
+            '${root.path}/nested/shell-bin',
+          ).create(recursive: true);
+          await Link(
+            '${nested.path}/chosen-shell',
+          ).create(Platform.resolvedExecutable);
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          expect(profile.dialect, 'bash');
+          expect(
+            await File(profile.interpreter).resolveSymbolicLinks(),
+            await File('/bin/bash').resolveSymbolicLinks(),
+          );
+          final events = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command:
+                      r'''values=('one two' 'three'); [[ -n "$BASH_VERSION" ]] && printf '<%s>' "${values[@]}"''',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: 'nested',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(events), '<one two><three>');
+          expect(_completion(events).exitCode, 0);
+        },
+      );
+
+      test('Bash selected through a sh alias retains POSIX mode', () async {
+        final fixture = await _createProcessFixture(
+          shellEnvironment: {'SHELL': './sh', 'PATH': '/usr/bin:/bin'},
+        );
+        final root = fixture.provider.liveObjects
+            .resolve(fixture.environment.id)
+            .root;
+        await Link('${root.path}/sh').create('/bin/bash');
+        final profile = await fixture.provider.describeShell(
+          fixture.environment.id,
+        );
+        expect(profile.dialect, 'posix');
+        final events = await fixture.provider
+            .runShellCommand(
+              fixture.environment.id,
+              EnvironmentShellCommandRequest(
+                command: 'shopt -oq posix && printf posix',
+                expectedProfileId: profile.profileId,
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            )
+            .toList();
+        expect(_outputText(events), 'posix');
+        expect(_completion(events).exitCode, 0);
+      });
+
+      for (final selection in [
+        (name: 'empty', shell: ''),
+        (name: 'whitespace', shell: '   '),
+        (name: 'missing', shell: '/adele-missing-shell'),
+        (name: 'not in PATH', shell: 'bash'),
+        (name: 'command instead of executable', shell: '/bin/bash -c'),
+        (name: 'unsupported', shell: Platform.resolvedExecutable),
+        (name: 'nonexecutable', shell: './bash'),
+      ]) {
+        test(
+          '${selection.name} SHELL fails without fallback or command effects',
+          () async {
+            final fixture = await _createProcessFixture(
+              shellEnvironment: {
+                'SHELL': selection.shell,
+                'PATH': '/adele-no-shell-search-directory',
+              },
+            );
+            final root = fixture.provider.liveObjects
+                .resolve(fixture.environment.id)
+                .root;
+            if (selection.name == 'nonexecutable') {
+              await File(
+                '${root.path}/bash',
+              ).writeAsString('#!/bin/sh\nprintf unexpected\n');
+            }
+            await expectLater(
+              fixture.provider.describeShell(fixture.environment.id),
+              throwsA(_failureWithCode(environmentShellUnavailableCode)),
+            );
+            await expectLater(
+              fixture.provider.runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf spawned > shell-spawned.txt',
+                  expectedProfileId: 'unavailable-profile',
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              ),
+              emitsInOrder([
+                emitsError(_failureWithCode(environmentShellUnavailableCode)),
+                emitsDone,
+              ]),
+            );
+            expect(
+              await File('${root.path}/shell-spawned.txt').exists(),
+              isFalse,
+            );
+          },
+        );
+      }
+
+      for (final executable in [
+        (name: 'plain executable text', header: ''),
+        (
+          name: 'missing shebang interpreter',
+          header: '#!/adele-missing-interpreter\n',
+        ),
+        (name: 'script with native shebang interpreter', header: '#!/bin/sh\n'),
+      ]) {
+        test(
+          '${executable.name} is unavailable without shell substitution',
+          () async {
+            final fixture = await _createProcessFixture(
+              shellEnvironment: {'SHELL': './bash', 'PATH': '/usr/bin:/bin'},
+            );
+            final root = fixture.provider.liveObjects
+                .resolve(fixture.environment.id)
+                .root;
+            final shell = File('${root.path}/bash');
+            await shell.writeAsString(
+              '${executable.header}printf substituted > substituted-shell.txt\n',
+            );
+            final chmod = await Process.run('chmod', ['700', shell.path]);
+            expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+            await expectLater(
+              fixture.provider.describeShell(fixture.environment.id),
+              throwsA(_failureWithCode(environmentShellUnavailableCode)),
+            );
+            await expectLater(
+              fixture.provider.runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf unexpected',
+                  expectedProfileId: 'unavailable-profile',
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              ),
+              emitsError(_failureWithCode(environmentShellUnavailableCode)),
+            );
+            expect(
+              await File('${root.path}/substituted-shell.txt').exists(),
+              isFalse,
+            );
+          },
+        );
+      }
+
+      test(
+        'rejects a shell script backed by an executable plain-text interpreter',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': './bash', 'PATH': '/usr/bin:/bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final interpreter = File(
+            '${fixture.container.path}/plain-interpreter',
+          );
+          await interpreter.writeAsString(
+            'printf interpreter > script-backed-shell.txt\n',
+          );
+          final shell = File('${root.path}/bash');
+          await shell.writeAsString(
+            '#!${interpreter.path}\nprintf substituted > script-backed-shell.txt\n',
+          );
+          final chmod = await Process.run('chmod', [
+            '700',
+            interpreter.path,
+            shell.path,
+          ]);
+          expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+          await expectLater(
+            fixture.provider.describeShell(fixture.environment.id),
+            throwsA(_failureWithCode(environmentShellUnavailableCode)),
+          );
+          await expectLater(
+            fixture.provider.runShellCommand(
+              fixture.environment.id,
+              EnvironmentShellCommandRequest(
+                command: 'printf unexpected',
+                expectedProfileId: 'unavailable-profile',
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            ),
+            emitsInOrder([
+              emitsError(_failureWithCode(environmentShellUnavailableCode)),
+              emitsDone,
+            ]),
+          );
+          expect(
+            await File('${root.path}/script-backed-shell.txt').exists(),
+            isFalse,
+          );
+        },
+      );
+
+      test(
+        'snapshots shell configuration and changes profiles with provider generation',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/bash', 'PATH': '/usr/bin:/bin'},
+          );
+          final originalEnvironment = Map<String, String>.of(
+            fixture.shellEnvironment!,
+          );
+          fixture.shellEnvironment!.addAll({
+            'SHELL': '/bin/sh',
+            'PATH': '/adele-changed-path',
+            'HOME': '${fixture.container.path}/changed-home',
+          });
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          expect(profile.dialect, 'bash');
+          final events = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command:
+                      r'''test -n "$BASH_VERSION" && printf '%s\n%s\n' "$HOME" "$PATH"''',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(
+            _outputText(events),
+            '${originalEnvironment['HOME']}\n${originalEnvironment['PATH']}\n',
+          );
+          expect(_completion(events).exitCode, 0);
+          expect(
+            (await fixture.provider.describeShell(
+              fixture.environment.id,
+            )).profileId,
+            profile.profileId,
+          );
+
+          final replacement = GitWorktreeEnvironmentProvider(
+            liveObjects: fixture.provider.liveObjects,
+            shellEnvironment: originalEnvironment,
+          );
+          addTearDown(replacement.close);
+          final replacementProfile = await replacement.describeShell(
+            fixture.environment.id,
+          );
+          expect(replacementProfile.interpreter, profile.interpreter);
+          expect(replacementProfile.dialect, profile.dialect);
+          expect(replacementProfile.profileId, isNot(profile.profileId));
+          await expectLater(
+            replacement.runShellCommand(
+              fixture.environment.id,
+              EnvironmentShellCommandRequest(
+                command: 'printf stale > stale-generation.txt',
+                expectedProfileId: profile.profileId,
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            ),
+            emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+          );
+          final root = replacement.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          expect(
+            await File('${root.path}/stale-generation.txt').exists(),
+            isFalse,
+          );
+          final fresh = await replacement
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf fresh',
+                  expectedProfileId: replacementProfile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(fresh), 'fresh');
+          expect(_completion(fresh).exitCode, 0);
+        },
+      );
+
+      test(
+        'rejects another Environment profile in the same provider generation',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/bash', 'PATH': '/usr/bin:/bin'},
+          );
+          final second = _environment(
+            fixture.environment.task.project.sourceLocation,
+            taskId: 'task-other-shell',
+            environmentId: 'environment-other-shell',
+            title: 'Other shell Environment',
+          );
+          await fixture.provider.establish(second);
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final secondProfile = await fixture.provider.describeShell(second.id);
+          expect(secondProfile.interpreter, profile.interpreter);
+          expect(secondProfile.dialect, profile.dialect);
+          expect(secondProfile.profileId, isNot(profile.profileId));
+          await expectLater(
+            fixture.provider.runShellCommand(
+              second.id,
+              EnvironmentShellCommandRequest(
+                command: 'printf foreign > foreign-profile.txt',
+                expectedProfileId: profile.profileId,
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            ),
+            emitsInOrder([
+              emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+              emitsDone,
+            ]),
+          );
+          final root = fixture.provider.liveObjects.resolve(second.id).root;
+          expect(
+            await File('${root.path}/foreign-profile.txt').exists(),
+            isFalse,
+          );
+          final events = await fixture.provider
+              .runShellCommand(
+                second.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf own-profile',
+                  expectedProfileId: secondProfile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(events), 'own-profile');
+          expect(_completion(events).exitCode, 0);
+        },
+      );
+
+      test(
+        'does not load interactive login or injected Bash startup files',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {
+              'SHELL': '/bin/bash',
+              'PATH': '/usr/bin:/bin',
+              'BASH_ENV': 'injected-startup',
+              'ENV': 'injected-startup',
+              'GIT_DIR': '/foreign-git-directory',
+            },
+          );
+          final home = fixture.shellEnvironment!['HOME']!;
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          for (final path in [
+            '$home/.bashrc',
+            '$home/.bash_profile',
+            '${root.path}/injected-startup',
+          ]) {
+            await File(path).writeAsString('printf startup-loaded\nexit 91\n');
+          }
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final events = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command:
+                      r'''printf '%s\n%s\n%s\n' "${BASH_ENV-unset}" "${ENV-unset}" "${GIT_DIR-unset}"''',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(events), 'unset\nunset\nunset\n');
+          expect(_completion(events).exitCode, 0);
+        },
+      );
+
+      test(
+        'revalidates shell retargeting executable mode changes and deletion',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {
+              'SHELL': './chosen-shell',
+              'PATH': '/usr/bin:/bin',
+            },
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final link = await Link(
+            '${root.path}/chosen-shell',
+          ).create('/bin/bash');
+          final replacementDirectory = await Directory(
+            '${fixture.container.path}/replacement-shell',
+          ).create();
+          final replacement = await File(
+            '/bin/bash',
+          ).copy('${replacementDirectory.path}/bash');
+          final chmod = await Process.run('chmod', ['700', replacement.path]);
+          expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final stale = fixture.provider.runShellCommand(
+            fixture.environment.id,
+            EnvironmentShellCommandRequest(
+              command: 'printf stale > stale-shell.txt',
+              expectedProfileId: profile.profileId,
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          );
+          await link.update(replacement.path);
+          await expectLater(
+            stale,
+            emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+          );
+          expect(await File('${root.path}/stale-shell.txt').exists(), isFalse);
+          final changed = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          expect(changed.profileId, isNot(profile.profileId));
+          final fresh = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf retargeted',
+                  expectedProfileId: changed.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(fresh), 'retargeted');
+          expect(_completion(fresh).exitCode, 0);
+
+          final changedMode = await Process.run('chmod', [
+            '500',
+            replacement.path,
+          ]);
+          expect(
+            changedMode.exitCode,
+            0,
+            reason: changedMode.stderr.toString(),
+          );
+          await expectLater(
+            fixture.provider.runShellCommand(
+              fixture.environment.id,
+              EnvironmentShellCommandRequest(
+                command: 'printf stale > stale-mode.txt',
+                expectedProfileId: changed.profileId,
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            ),
+            emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+          );
+          expect(await File('${root.path}/stale-mode.txt').exists(), isFalse);
+          final modeProfile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          expect(modeProfile.profileId, isNot(changed.profileId));
+          expect(modeProfile.interpreter, changed.interpreter);
+          expect(modeProfile.dialect, changed.dialect);
+          final modeEvents = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf fresh-mode',
+                  expectedProfileId: modeProfile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .toList();
+          expect(_outputText(modeEvents), 'fresh-mode');
+          expect(_completion(modeEvents).exitCode, 0);
+
+          final deleted = fixture.provider.runShellCommand(
+            fixture.environment.id,
+            EnvironmentShellCommandRequest(
+              command: 'printf deleted > deleted-shell.txt',
+              expectedProfileId: modeProfile.profileId,
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          );
+          await link.delete();
+          await expectLater(
+            fixture.provider.describeShell(fixture.environment.id),
+            throwsA(_failureWithCode(environmentShellUnavailableCode)),
+          );
+          await expectLater(
+            deleted,
+            emitsError(_failureWithCode(environmentShellUnavailableCode)),
+          );
+          expect(
+            await File('${root.path}/deleted-shell.txt').exists(),
+            isFalse,
+          );
+        },
+      );
+
+      test(
+        'confines root nested and aliased working directories before launch',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final nested = await Directory('${root.path}/nested-shell').create();
+          await Link('${root.path}/inside-link').create(nested.path);
+          final outside = await Directory(
+            '${fixture.container.path}/outside-shell',
+          ).create();
+          await Link('${root.path}/outside-link').create(outside.path);
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          for (final location in [
+            (relative: '', expected: root.path),
+            (relative: './nested-shell//', expected: nested.path),
+            (relative: 'inside-link', expected: nested.path),
+          ]) {
+            final events = await fixture.provider
+                .runShellCommand(
+                  fixture.environment.id,
+                  EnvironmentShellCommandRequest(
+                    command: 'pwd -P',
+                    expectedProfileId: profile.profileId,
+                    relativeWorkingDirectory: location.relative,
+                    timeoutSeconds: 5,
+                  ),
+                )
+                .toList();
+            expect(_outputText(events), '${location.expected}\n');
+            expect(_completion(events).exitCode, 0);
+          }
+          for (final invalid in [
+            (path: '..', code: 'invalid_path'),
+            (path: root.path, code: 'invalid_path'),
+            (path: 'outside-link', code: 'outside_root'),
+            (path: 'missing-directory', code: 'not_found'),
+            (path: 'README.md', code: 'not_directory'),
+          ]) {
+            await expectLater(
+              fixture.provider.runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: r'''printf spawned > "$HOME/cwd-spawned"''',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: invalid.path,
+                  timeoutSeconds: 5,
+                ),
+              ),
+              emitsError(_failureWithCode(invalid.code)),
+            );
+          }
+          expect(
+            await File(
+              '${fixture.shellEnvironment!['HOME']}/cwd-spawned',
+            ).exists(),
+            isFalse,
+          );
+        },
+      );
+
+      test(
+        'closes stdin to EOF instead of leaving a shell read blocked',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final events = await fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command:
+                      'if IFS= read -r value; then exit 41; fi; printf eof',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 2,
+                ),
+              )
+              .toList()
+              .timeout(const Duration(seconds: 5));
+          expect(_outputText(events), 'eof');
+          expect(
+            _completion(events).termination,
+            EnvironmentProcessTermination.exited,
+          );
+          expect(_completion(events).exitCode, 0);
+        },
+      );
+
+      test(
+        'is lazy and rejects a mismatched expected profile without execution',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final marker = File('${root.path}/lazy-shell.txt');
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final stream = fixture.provider.runShellCommand(
+            fixture.environment.id,
+            EnvironmentShellCommandRequest(
+              command: 'printf listened > lazy-shell.txt',
+              expectedProfileId: profile.profileId,
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          expect(await marker.exists(), isFalse);
+          final events = await stream.toList();
+          expect(await marker.readAsString(), 'listened');
+          expect(_completion(events).exitCode, 0);
+
+          final stale = fixture.provider.runShellCommand(
+            fixture.environment.id,
+            EnvironmentShellCommandRequest(
+              command: 'printf overwritten > lazy-shell.txt',
+              expectedProfileId: 'not-the-observed-profile',
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          );
+          await expectLater(
+            stale,
+            emitsInOrder([
+              emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+              emitsDone,
+            ]),
+          );
+          expect(await marker.readAsString(), 'listened');
+        },
+      );
+
+      test(
+        'close fences an in-flight shell description before publication',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/bash', 'PATH': '/usr/bin:/bin'},
+          );
+          final discovery = fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final rejected = expectLater(
+            discovery,
+            throwsA(_failureWithCode('process_provider_closed')),
+          );
+          await fixture.provider.close().timeout(const Duration(seconds: 5));
+          await rejected.timeout(const Duration(seconds: 5));
+          expect(fixture.provider.liveObjects.length, 0);
+        },
+      );
+
+      test(
+        'close prevents an unlistened shell command from starting later',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final marker = File('${root.path}/deferred-shell.txt');
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final stream = fixture.provider.runShellCommand(
+            fixture.environment.id,
+            EnvironmentShellCommandRequest(
+              command: 'printf started > deferred-shell.txt',
+              expectedProfileId: profile.profileId,
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          );
+          await fixture.provider.close().timeout(const Duration(seconds: 5));
+          expect(await marker.exists(), isFalse);
+          await expectLater(
+            stream,
+            emitsInOrder([
+              emitsError(_failureWithCode('process_provider_closed')),
+              emitsDone,
+            ]),
+          ).timeout(const Duration(seconds: 5));
+          expect(await marker.exists(), isFalse);
+          expect(fixture.provider.liveObjects.length, 0);
+        },
+      );
+
+      test(
+        'immediate subscription cancellation prevents shell command effects',
+        () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final root = fixture.provider.liveObjects
+              .resolve(fixture.environment.id)
+              .root;
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final events = <EnvironmentProcessEvent>[];
+          final failures = <Object>[];
+          final subscription = fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  command: 'printf started > cancelled-shell.txt',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 5,
+                ),
+              )
+              .listen(events.add, onError: failures.add);
+          addTearDown(subscription.cancel);
+          await subscription.cancel().timeout(const Duration(seconds: 5));
+          expect(events, isEmpty);
+          expect(failures, isEmpty);
+          expect(
+            await File('${root.path}/cancelled-shell.txt').exists(),
+            isFalse,
+          );
+        },
+      );
+
+      for (final stop in ['timeout', 'cancellation', 'shutdown']) {
+        test('$stop terminates and reaps the owned shell and child', () async {
+          final fixture = await _createProcessFixture(
+            shellEnvironment: {'SHELL': '/bin/sh', 'PATH': '/usr/bin:/bin'},
+          );
+          final profile = await fixture.provider.describeShell(
+            fixture.environment.id,
+          );
+          final started = Completer<void>();
+          final done = Completer<void>();
+          final events = <EnvironmentProcessEvent>[];
+          final failures = <Object>[];
+          final text = StringBuffer();
+          final pids = <int>[];
+          addTearDown(() {
+            for (final pid in pids) {
+              Process.killPid(pid, ProcessSignal.sigkill);
+            }
+          });
+          final subscription = fixture.provider
+              .runShellCommand(
+                fixture.environment.id,
+                EnvironmentShellCommandRequest(
+                  // As in the direct timeout test, a native leader reaps its child
+                  // after TERM without spending the deadline on Dart JIT startup.
+                  command:
+                      r'''sleep 300 & child=$!; trap 'wait "$child"; exit 0' TERM; printf 'owned:%s:%s\n' "$$" "$child"; wait "$child"''',
+                  expectedProfileId: profile.profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: stop == 'timeout' ? 1 : 20,
+                ),
+              )
+              .listen(
+                (event) {
+                  events.add(event);
+                  if (event.output case final output?) {
+                    text.write(output.text);
+                    final match = RegExp(
+                      r'owned:(\d+):(\d+)\n',
+                    ).firstMatch(text.toString());
+                    if (match != null && !started.isCompleted) {
+                      pids.addAll([int.parse(match[1]!), int.parse(match[2]!)]);
+                      started.complete();
+                    }
+                  }
+                },
+                onError: failures.add,
+                onDone: done.complete,
+              );
+          addTearDown(subscription.cancel);
+          await started.future.timeout(const Duration(seconds: 5));
+          if (stop == 'timeout') {
+            await done.future.timeout(const Duration(seconds: 10));
+            expect(
+              _completion(events).termination,
+              EnvironmentProcessTermination.timedOut,
+            );
+            expect(_completion(events).exitCode, isNull);
+          } else if (stop == 'cancellation') {
+            await subscription.cancel().timeout(const Duration(seconds: 5));
+            expect(events.every((event) => event.completed == null), isTrue);
+          } else {
+            await fixture.provider.close().timeout(const Duration(seconds: 5));
+            await done.future.timeout(const Duration(seconds: 5));
+            expect(fixture.provider.liveObjects.length, 0);
+            expect(events.every((event) => event.completed == null), isTrue);
+          }
+          expect(failures, isEmpty);
+          for (final pid in pids) {
+            expect(await Directory('/proc/$pid').exists(), isFalse);
+          }
+          pids.clear();
+        });
+      }
+    },
+    skip: !Platform.isLinux ? 'Shell execution is Linux-only.' : false,
+  );
+
   test(
     'streams direct argv stdout stderr ordering and nonzero exits',
     () async {
@@ -4030,12 +5012,14 @@ final class _ProcessFixture {
     required this.provider,
     required this.environment,
     required this.helper,
+    this.shellEnvironment,
   });
 
   final Directory container;
   final GitWorktreeEnvironmentProvider provider;
   final LocalEnvironment environment;
   final File helper;
+  final Map<String, String>? shellEnvironment;
 
   EnvironmentForegroundProcessRequest request(
     List<String> arguments, {
@@ -4049,12 +5033,20 @@ final class _ProcessFixture {
   );
 }
 
-Future<_ProcessFixture> _createProcessFixture() async {
+Future<_ProcessFixture> _createProcessFixture({
+  Map<String, String>? shellEnvironment,
+}) async {
   final ({Directory container, Directory source}) repository =
       await _createRepository();
   addTearDown(() => repository.container.delete(recursive: true));
+  if (shellEnvironment != null) {
+    final home = await Directory(
+      '${repository.container.path}/shell-home',
+    ).create();
+    shellEnvironment = {'HOME': home.path, ...shellEnvironment};
+  }
   final GitWorktreeEnvironmentProvider provider =
-      GitWorktreeEnvironmentProvider();
+      GitWorktreeEnvironmentProvider(shellEnvironment: shellEnvironment);
   addTearDown(provider.close);
   final LocalEnvironment environment = _environment(
     repository.source.uri,
@@ -4198,6 +5190,7 @@ Future<void> main(List<String> arguments) async {
     provider: provider,
     environment: environment,
     helper: helper,
+    shellEnvironment: shellEnvironment,
   );
 }
 

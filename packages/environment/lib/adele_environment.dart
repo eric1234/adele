@@ -18,6 +18,12 @@ const String environmentRevisionConflictCode = 'revision_conflict';
 
 const String environmentTerminalUnavailableCode = 'terminal_unavailable';
 
+/// Failure code when the selected Environment has no usable shell support.
+const String environmentShellUnavailableCode = 'shell_unavailable';
+
+/// Failure code when execution no longer matches the expected shell selection.
+const String environmentShellProfileChangedCode = 'shell_profile_changed';
+
 const String environmentBufferedProcessUnavailableCode =
     'buffered_process_unavailable';
 
@@ -418,6 +424,100 @@ final class EnvironmentForegroundProcessRequest {
   final int timeoutSeconds;
 }
 
+/// Execution information scoped to one Environment and provider generation.
+/// This is neither a credential nor invocation authority or durable session state.
+@AdeleValue('environment.shellProfile')
+final class EnvironmentShellProfile {
+  EnvironmentShellProfile({
+    required this.profileId,
+    required this.interpreter,
+    required this.dialect,
+  }) {
+    _requireShellProfileId(profileId);
+    if (interpreter.isEmpty || interpreter.length > 4096) {
+      throw const FormatException(
+        'Shell interpreter must contain 1..4096 UTF-16 code units.',
+      );
+    }
+    _requireWellFormedUnicode('Shell interpreter', interpreter);
+    for (final codeUnit in interpreter.codeUnits) {
+      if (codeUnit < 0x20 || (codeUnit >= 0x7f && codeUnit <= 0x9f)) {
+        throw const FormatException(
+          'Shell interpreter must not contain control characters.',
+        );
+      }
+    }
+    if (dialect.isEmpty ||
+        dialect.length > 64 ||
+        !_shellDialect.hasMatch(dialect)) {
+      throw const FormatException(
+        'Shell dialect must be a 1..64 character lower-case ASCII token.',
+      );
+    }
+  }
+
+  /// Opaque selection identity, meaningful only within its Environment/generation.
+  final String profileId;
+
+  /// Provider-selected interpreter information, not a caller-supplied executable.
+  final String interpreter;
+
+  /// Open provider-described syntax token, not a closed enum or universal registry.
+  final String dialect;
+}
+
+/// One bounded command interpreted by the expected provider-selected shell.
+@AdeleValue('environment.shellCommandRequest')
+final class EnvironmentShellCommandRequest {
+  EnvironmentShellCommandRequest({
+    required this.command,
+    required this.expectedProfileId,
+    required this.relativeWorkingDirectory,
+    required this.timeoutSeconds,
+  }) {
+    if (command.isEmpty || command.length > 65536 || command.trim().isEmpty) {
+      throw const FormatException(
+        'Shell command requires 1..65536 UTF-16 code units and non-whitespace text.',
+      );
+    }
+    _requireProcessText('Shell command', command);
+    _requireShellProfileId(expectedProfileId);
+    _requireProcessText(
+      'Shell relative working directory',
+      relativeWorkingDirectory,
+    );
+    if (timeoutSeconds < 1 ||
+        timeoutSeconds > environmentForegroundProcessTimeoutLimitSeconds) {
+      throw const FormatException(
+        'Shell timeout must be between 1 and '
+        '$environmentForegroundProcessTimeoutLimitSeconds seconds.',
+      );
+    }
+  }
+
+  /// Raw text preserved verbatim, without trimming, splitting, or normalization.
+  final String command;
+
+  /// The selection to compare at execution, not a credential or authority token.
+  final String expectedProfileId;
+
+  /// Environment-relative directory, or empty for root; confinement is provider-owned.
+  final String relativeWorkingDirectory;
+
+  final int timeoutSeconds;
+}
+
+final RegExp _shellProfileId = RegExp(r'^[A-Za-z0-9._:-]+$');
+final RegExp _shellDialect = RegExp(r'^[a-z][a-z0-9_.-]*$');
+
+void _requireShellProfileId(String value) {
+  if (value.isEmpty || value.length > 256 || !_shellProfileId.hasMatch(value)) {
+    throw const FormatException(
+      'Shell profile ID must be a 1..256 character ASCII token.',
+    );
+  }
+}
+
 /// Finite binary process input, with no implicit shell interpretation.
 @AdeleValue('environment.bufferedProcessRequest')
 final class EnvironmentBufferedProcessRequest {
@@ -797,6 +897,15 @@ abstract interface class EnvironmentProviderService {
     EnvironmentBufferedProcessRequest request,
   );
 
+  @AdeleMethod('describeShell')
+  Future<EnvironmentShellProfile> describeShell(String environmentId);
+
+  @AdeleMethod('runShellCommand')
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    String environmentId,
+    EnvironmentShellCommandRequest request,
+  );
+
   @AdeleMethod('openTerminal')
   Stream<EnvironmentTerminalEvent> openTerminal(
     String environmentId,
@@ -1000,6 +1109,7 @@ final class GeneratedEnvironmentProvider
     implements
         EnvironmentProvider,
         EnvironmentBufferedProcessProvider,
+        EnvironmentShellProvider,
         EnvironmentTerminalProvider {
   const GeneratedEnvironmentProvider({
     required this.providerId,
@@ -1093,6 +1203,17 @@ final class GeneratedEnvironmentProvider
     product.EnvironmentId environmentId,
     EnvironmentBufferedProcessRequest request,
   ) => _service.runBufferedProcess(environmentId.value, request);
+
+  @override
+  Future<EnvironmentShellProfile> describeShell(
+    product.EnvironmentId environmentId,
+  ) => _service.describeShell(environmentId.value);
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    product.EnvironmentId environmentId,
+    EnvironmentShellCommandRequest request,
+  ) => _service.runShellCommand(environmentId.value, request);
 
   @override
   Stream<EnvironmentTerminalEvent> openTerminal(
@@ -1236,6 +1357,30 @@ final class EnvironmentProviderServiceAdapter
     );
   }
 
+  EnvironmentShellProvider get _shell {
+    final provider = _provider;
+    if (provider is EnvironmentShellProvider) {
+      return provider as EnvironmentShellProvider;
+    }
+    throw const EnvironmentFailure(
+      code: environmentShellUnavailableCode,
+      message: 'This Environment provider does not support shell commands.',
+      details: <String, Object?>{},
+    );
+  }
+
+  @override
+  Future<EnvironmentShellProfile> describeShell(String environmentId) async =>
+      _shell.describeShell(_environmentId(environmentId));
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    String environmentId,
+    EnvironmentShellCommandRequest request,
+  ) async* {
+    yield* _shell.runShellCommand(_environmentId(environmentId), request);
+  }
+
   EnvironmentTerminalProvider get _terminals {
     final provider = _provider;
     if (provider is EnvironmentTerminalProvider) {
@@ -1306,6 +1451,30 @@ abstract interface class EnvironmentBufferedProcessProvider {
   Future<EnvironmentBufferedProcessResult> runBufferedProcess(
     product.EnvironmentId environmentId,
     EnvironmentBufferedProcessRequest request,
+  );
+}
+
+/// Optional shell execution facet of the same selected Environment provider.
+/// It grants no independent invocation authority or authorized host-service access.
+abstract interface class EnvironmentShellProvider {
+  /// Describes the current Environment- and provider-generation-scoped selection.
+  /// Unavailable support fails with [environmentShellUnavailableCode].
+  Future<EnvironmentShellProfile> describeShell(
+    product.EnvironmentId environmentId,
+  );
+
+  /// Executes verbatim text only if the current selection matches expectedProfileId.
+  /// A mismatch fails with [environmentShellProfileChangedCode]; unavailable shell
+  /// support fails with [environmentShellUnavailableCode], never a fallback.
+  /// Providers own selection comparison at execution and cwd confinement.
+  ///
+  /// Lazy, single-subscription execution reuses foreground output/completion,
+  /// timeout, backpressure, and cancellation semantics. Cancellation abandons the
+  /// execution; EOF without explicit completion is not success. No durable shell
+  /// session or state carries between calls.
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    product.EnvironmentId environmentId,
+    EnvironmentShellCommandRequest request,
   );
 }
 

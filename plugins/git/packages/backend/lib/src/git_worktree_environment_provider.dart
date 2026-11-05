@@ -18,18 +18,25 @@ final class GitWorktreeEnvironmentProvider
     implements
         EnvironmentProvider,
         EnvironmentTerminalProvider,
-        EnvironmentBufferedProcessProvider {
+        EnvironmentBufferedProcessProvider,
+        EnvironmentShellProvider {
   /// [terminalEnvironment] replaces the terminal's inherited environment source
   /// for controlled tests. It is snapshotted and allowlisted, not passed verbatim;
   /// null uses the host environment. Git and foreground processes are unaffected.
+  /// [shellEnvironment] similarly replaces only shell discovery and shell-command
+  /// child environments, without changing direct processes or terminals.
   GitWorktreeEnvironmentProvider({
     LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>? liveObjects,
     GitTerminalDriver? terminalDriver,
     String? ptyHelperPath,
     Map<String, String>? terminalEnvironment,
+    Map<String, String>? shellEnvironment,
   }) : liveObjects =
            liveObjects ??
            LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>(),
+       _processes = GitForegroundProcessSupervisor(
+         shellEnvironment: shellEnvironment,
+       ),
        _terminals = GitTerminalSupervisor(
          driver: terminalDriver,
          helperPath: ptyHelperPath,
@@ -39,8 +46,7 @@ final class GitWorktreeEnvironmentProvider
   @override
   final ProviderId providerId = ProviderId(gitWorktreeEnvironmentProviderId);
   final LiveObjectRegistry<EnvironmentId, WorktreeEnvironment> liveObjects;
-  final GitForegroundProcessSupervisor _processes =
-      GitForegroundProcessSupervisor();
+  final GitForegroundProcessSupervisor _processes;
   final GitBufferedProcessSupervisor _bufferedProcesses =
       GitBufferedProcessSupervisor();
   final GitTerminalSupervisor _terminals;
@@ -305,6 +311,23 @@ final class GitWorktreeEnvironmentProvider
     EnvironmentId environmentId,
     EnvironmentForegroundProcessRequest request,
   ) => _processes.run(
+    environmentId: environmentId,
+    environment: _resolve(environmentId),
+    request: request,
+  );
+
+  @override
+  Future<EnvironmentShellProfile> describeShell(EnvironmentId environmentId) =>
+      _processes.describeShell(
+        environmentId: environmentId,
+        environment: _resolve(environmentId),
+      );
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentId environmentId,
+    EnvironmentShellCommandRequest request,
+  ) => _processes.runShell(
     environmentId: environmentId,
     environment: _resolve(environmentId),
     request: request,

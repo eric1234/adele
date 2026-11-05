@@ -923,127 +923,150 @@ void main() {
     skip: !Platform.isLinux ? 'Portable Git inspection requires Linux.' : false,
   );
 
-  test(
-    'AOT foreground paused transport retains output across normal exit',
-    () async {
-      final fixture = await _createRepository();
-      addTearDown(() => fixture.container.delete(recursive: true));
-      final host = await PluginBackendHost.start(
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-      );
-      addTearDown(() async {
-        if (!host.isClosed) await host.close(graceful: false);
-      });
-      final registry = CapabilityRegistry();
-      final providerId = ProviderId(gitWorktreeEnvironmentProviderId);
-      final activation = await _register(
-        await host.startPlugin(
-          pluginId: gitPluginId,
-          artifactUri: pluginArtifact.uri,
-        ),
-        registry,
-      );
-      final provider = GeneratedEnvironmentProvider(
-        providerId: providerId,
-        service: EnvironmentProviderServiceClient(
-          registry
-              .resolve(environmentProviderCapability, providerId: providerId)
-              .requestChannel,
-        ),
-      );
-      final project = Project(
-        id: ProjectId('paused-project'),
-        sourceLocation: fixture.projectSourceA.uri,
-      );
-      final task = Task(
-        id: TaskId('paused-task'),
-        projectId: project.id,
-        title: 'Paused output',
-      );
-      final environment = Environment(
-        id: EnvironmentId('paused-environment'),
-        taskId: task.id,
-        role: EnvironmentRole.primary,
-        providerId: providerId,
-        providerState: null,
-      );
-      await provider.establish(
-        LocalEnvironment(project: project, task: task, value: environment),
-      );
-      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      addTearDown(server.close);
-      final connection = server.first;
-      final paused = Completer<void>();
-      final done = Completer<void>();
-      final events = <EnvironmentProcessEvent>[];
-      final failures = <Object>[];
-      late StreamSubscription<EnvironmentProcessEvent> subscription;
-      subscription = provider
-          .runForegroundProcess(
-            environment.id,
-            EnvironmentForegroundProcessRequest(
-              program: '/bin/bash',
-              arguments: [
-                '-c',
-                'exec 3<>/dev/tcp/127.0.0.1/${server.port}; '
-                    r'''printf '%s' "$1"; printf '%s' "$2" >&2; exit 23''',
-                'probe',
-                'O' * 4096,
-                'E' * 4096,
-              ],
-              relativeWorkingDirectory: '',
-              timeoutSeconds: 10,
-            ),
-          )
-          .listen(
-            (event) {
-              events.add(event);
-              if (!paused.isCompleted) {
-                subscription.pause();
-                paused.complete();
-              }
-            },
-            onError: failures.add,
-            onDone: done.complete,
-          );
-      addTearDown(subscription.cancel);
-      final socket = await connection.timeout(const Duration(seconds: 5));
-      addTearDown(socket.destroy);
-      final exited = socket.drain<void>();
-      await paused.future.timeout(const Duration(seconds: 5));
-      await exited.timeout(const Duration(seconds: 5));
-      expect(done.isCompleted, isFalse);
-      expect(events, hasLength(1));
-      expect(
-        (await provider.readFile(environment.id, 'README.md')).text,
-        'AOT Git fixture A\n',
-      );
-      subscription.resume();
-      await done.future.timeout(const Duration(seconds: 5));
-      expect(failures, isEmpty);
-      expect(_stdoutText(events), 'O' * 4096);
-      expect(
-        events
-            .where(
-              (event) =>
-                  event.output?.stream == EnvironmentProcessOutputStream.stderr,
-            )
-            .map((event) => event.output!.text)
-            .join(),
-        'E' * 4096,
-      );
-      expect(events.last.completed!.exitCode, 23);
-      expect(events.last.completed!.stdoutTruncated, isFalse);
-      expect(events.last.completed!.stderrTruncated, isFalse);
-      await activation.close();
-      await host.close();
-    },
-    timeout: const Timeout(Duration(minutes: 4)),
-  );
+  for (final shellExecution in [false, true]) {
+    test(
+      'AOT ${shellExecution ? 'shell' : 'direct'} paused transport retains output across normal exit',
+      () async {
+        final fixture = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        final home = Directory('${fixture.container.path}/home')..createSync();
+        final host = await PluginBackendHost.start(
+          dartaotruntimeExecutable: dartaotruntime,
+          hostArtifactPath: hostArtifact.path,
+          environment: {
+            'SHELL': '/bin/bash',
+            'PATH': '/usr/bin:/bin',
+            'HOME': home.path,
+          },
+        );
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final registry = CapabilityRegistry();
+        final providerId = ProviderId(gitWorktreeEnvironmentProviderId);
+        final activation = await _register(
+          await host.startPlugin(
+            pluginId: gitPluginId,
+            artifactUri: pluginArtifact.uri,
+          ),
+          registry,
+        );
+        final provider = GeneratedEnvironmentProvider(
+          providerId: providerId,
+          service: EnvironmentProviderServiceClient(
+            registry
+                .resolve(environmentProviderCapability, providerId: providerId)
+                .requestChannel,
+          ),
+        );
+        final project = Project(
+          id: ProjectId('paused-project'),
+          sourceLocation: fixture.projectSourceA.uri,
+        );
+        final task = Task(
+          id: TaskId('paused-task'),
+          projectId: project.id,
+          title: 'Paused output',
+        );
+        final environment = Environment(
+          id: EnvironmentId('paused-environment'),
+          taskId: task.id,
+          role: EnvironmentRole.primary,
+          providerId: providerId,
+          providerState: null,
+        );
+        await provider.establish(
+          LocalEnvironment(project: project, task: task, value: environment),
+        );
+        final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(server.close);
+        final connection = server.first;
+        final paused = Completer<void>();
+        final done = Completer<void>();
+        final events = <EnvironmentProcessEvent>[];
+        final failures = <Object>[];
+        late StreamSubscription<EnvironmentProcessEvent> subscription;
+        final stream = shellExecution
+            ? provider.runShellCommand(
+                environment.id,
+                EnvironmentShellCommandRequest(
+                  command:
+                      'exec 3<>/dev/tcp/127.0.0.1/${server.port}; '
+                      "printf '%s' '${'O' * 4096}'; "
+                      "printf '%s' '${'E' * 4096}' >&2; exit 23",
+                  expectedProfileId: (await provider.describeShell(
+                    environment.id,
+                  )).profileId,
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 10,
+                ),
+              )
+            : provider.runForegroundProcess(
+                environment.id,
+                EnvironmentForegroundProcessRequest(
+                  program: '/bin/bash',
+                  arguments: [
+                    '-c',
+                    'exec 3<>/dev/tcp/127.0.0.1/${server.port}; '
+                        r'''printf '%s' "$1"; printf '%s' "$2" >&2; exit 23''',
+                    'probe',
+                    'O' * 4096,
+                    'E' * 4096,
+                  ],
+                  relativeWorkingDirectory: '',
+                  timeoutSeconds: 10,
+                ),
+              );
+        subscription = stream.listen(
+          (event) {
+            events.add(event);
+            if (!paused.isCompleted) {
+              subscription.pause();
+              paused.complete();
+            }
+          },
+          onError: failures.add,
+          onDone: done.complete,
+        );
+        addTearDown(subscription.cancel);
+        final socket = await connection.timeout(const Duration(seconds: 5));
+        addTearDown(socket.destroy);
+        final exited = socket.drain<void>();
+        await paused.future.timeout(const Duration(seconds: 5));
+        await exited.timeout(const Duration(seconds: 5));
+        expect(done.isCompleted, isFalse);
+        expect(events, hasLength(1));
+        expect(
+          (await provider.readFile(environment.id, 'README.md')).text,
+          'AOT Git fixture A\n',
+        );
+        subscription.resume();
+        await done.future.timeout(const Duration(seconds: 5));
+        expect(failures, isEmpty);
+        expect(_stdoutText(events), 'O' * 4096);
+        expect(
+          events
+              .where(
+                (event) =>
+                    event.output?.stream ==
+                    EnvironmentProcessOutputStream.stderr,
+              )
+              .map((event) => event.output!.text)
+              .join(),
+          'E' * 4096,
+        );
+        expect(events.last.completed!.exitCode, 23);
+        expect(events.last.completed!.stdoutTruncated, isFalse);
+        expect(events.last.completed!.stderrTruncated, isFalse);
+        await activation.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 4)),
+    );
+  }
 
   test(
-    'AOT generations ignore inherited Git routing/discovery and restore state',
+    'AOT generations preserve shell profiles and ignore inherited Git routing',
     () async {
       final ({
         Directory container,
@@ -1054,9 +1077,14 @@ void main() {
       fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
       final shim = await _createGitRepairShim(fixture.container, 'unavailable');
+      final shellHome = Directory('${fixture.container.path}/shell-home')
+        ..createSync();
+      final shellDirectory = Directory('${fixture.container.path}/shell bin')
+        ..createSync();
+      final shell = Link('${shellDirectory.path}/bash')
+        ..createSync('/bin/bash');
       final String childPath =
-          'relative-bin:${shim.directory.path}:'
-          '${Platform.environment['PATH'] ?? '/usr/bin:/bin'}';
+          'relative-bin:${shim.directory.path}:/usr/bin:/bin';
       final String gitDirVariable = Platform.isWindows ? 'git_dir' : 'GIT_DIR';
       final String ceilingVariable = Platform.isWindows
           ? 'Git_Ceiling_Directories'
@@ -1073,6 +1101,8 @@ void main() {
           'ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK': 'sentinel',
           'OPENAI_API_KEY': 'sentinel',
           'PATH': childPath,
+          'SHELL': shell.path,
+          'HOME': shellHome.path,
         },
       );
       addTearDown(() async {
@@ -1297,6 +1327,57 @@ void main() {
             ),
         isTrue,
       );
+      final shellProfileA = await providerA.describeShell(durable.id);
+      expect(shellProfileA.dialect, 'bash');
+      expect(shellProfileA.interpreter, contains('bash'));
+      expect(
+        (await providerA.describeShell(durable.id)).profileId,
+        shellProfileA.profileId,
+      );
+      EnvironmentShellCommandRequest shellRequest(String command) =>
+          EnvironmentShellCommandRequest(
+            command: command,
+            expectedProfileId: shellProfileA.profileId,
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 10,
+          );
+      final shellEvents = await providerA
+          .runShellCommand(
+            durable.id,
+            shellRequest(r'''
+test -n "$BASH_VERSION" && printf 'selected-bash\n'
+printf '%s\n' 'literal ; $(not-run) * "quotes"' | tr 'a-z' 'A-Z'
+git rev-parse --show-prefix
+printf 'shell-stderr' >&2
+test -z "$OPENAI_API_KEY" && test -z "$ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK"
+exit 23
+'''),
+          )
+          .toList();
+      expect(
+        _stdoutText(shellEvents),
+        'selected-bash\nLITERAL ; \$(NOT-RUN) * "QUOTES"\nproject-source/\n',
+      );
+      expect(
+        shellEvents
+            .where(
+              (event) =>
+                  event.output?.stream == EnvironmentProcessOutputStream.stderr,
+            )
+            .map((event) => event.output!.text)
+            .join(),
+        'shell-stderr',
+      );
+      expect(shellEvents.last.kind, EnvironmentProcessEventKind.completed);
+      expect(
+        shellEvents.last.completed!.termination,
+        EnvironmentProcessTermination.exited,
+      );
+      expect(shellEvents.last.completed!.exitCode, 23);
+      final deferredShellA = providerA.runShellCommand(
+        durable.id,
+        shellRequest('printf should-not-run'),
+      );
       final Stream<EnvironmentProcessEvent> deferredGenerationA = providerA
           .runForegroundProcess(
             durable.id,
@@ -1364,6 +1445,10 @@ void main() {
         deferredGenerationA,
         emitsError(isA<PluginConnectionClosed>()),
       );
+      await expectLater(
+        deferredShellA,
+        emitsError(isA<PluginConnectionClosed>()),
+      );
 
       expect(durable.providerId, providerId);
       expect(durable.providerState, established.providerState);
@@ -1405,6 +1490,38 @@ void main() {
           .toList();
       expect(freshProcess.last.completed!.exitCode, 0);
       expect(_stdoutText(freshProcess), contains('M README.md'));
+      final shellProfileB = await providerB.describeShell(refreshed.id);
+      expect(shellProfileB.profileId, isNot(shellProfileA.profileId));
+      await expectLater(
+        providerB.runShellCommand(
+          refreshed.id,
+          shellRequest('printf should-not-run'),
+        ),
+        emitsError(_failureWithCode(environmentShellProfileChangedCode)),
+      );
+      final freshShellRequest = EnvironmentShellCommandRequest(
+        command: 'printf fresh-shell',
+        expectedProfileId: shellProfileB.profileId,
+        relativeWorkingDirectory: '',
+        timeoutSeconds: 10,
+      );
+      expect(
+        _stdoutText(
+          await providerB
+              .runShellCommand(refreshed.id, freshShellRequest)
+              .toList(),
+        ),
+        'fresh-shell',
+      );
+      await shell.delete();
+      await expectLater(
+        providerB.describeShell(refreshed.id),
+        throwsA(_failureWithCode(environmentShellUnavailableCode)),
+      );
+      await expectLater(
+        providerB.runShellCommand(refreshed.id, freshShellRequest),
+        emitsError(_failureWithCode(environmentShellUnavailableCode)),
+      );
       expect(
         await shim.log.exists(),
         isFalse,
